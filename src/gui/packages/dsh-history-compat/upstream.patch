@@ -1,0 +1,140 @@
+diff --git a/packages/session/session-format-v0-to-v1/src/payload-validation.ts b/packages/session/session-format-v0-to-v1/src/payload-validation.ts
+index 5b19f7cc6..d606418ed 100644
+--- a/packages/session/session-format-v0-to-v1/src/payload-validation.ts
++++ b/packages/session/session-format-v0-to-v1/src/payload-validation.ts
+@@ -953,7 +953,10 @@ function modelRouteValue(value: SessionFormatJsonValue | undefined, label: strin
+ }
+ 
+ function subagentDescriptorValue(data: JsonRecord, label: string): void {
+-  literalValue(data['version'], [3], `${label} version`)
++  literalValue(data['version'], [2, 3], `${label} version`)
++  if (data['version'] === 2 && Object.hasOwn(data, 'agentReasoningEffort')) {
++    throw new SessionFormatError(`${label} version 2 cannot declare agentReasoningEffort`)
++  }
+   nonEmptyString(data['provider'], `${label} provider`)
+   if (data['mode'] === 'one-shot') {
+     assertReleasedV0Keys(data, ['mode', 'version', 'provider'], ['label'], `${label} data`)
+@@ -963,7 +966,10 @@ function subagentDescriptorValue(data: JsonRecord, label: string): void {
+   literalValue(data['mode'], ['continuable'], `${label} mode`)
+   nonEmptyString(data['label'], `${label} label`)
+   for (const key of ['agentProvider', 'agentModel', 'agentReasoningEffort', 'persona'] as const) {
+-    if (data[key] !== undefined) nonEmptyString(data[key], `${label} ${key}`)
++    if (data[key] !== undefined) {
++      const validate = key === 'persona' && data['version'] === 2 ? stringValue : nonEmptyString
++      validate(data[key], `${label} ${key}`)
++    }
+   }
+   if ((data['agentProvider'] === undefined) !== (data['agentModel'] === undefined)) {
+     throw new SessionFormatError(`${label} agentProvider and agentModel must be paired`)
+diff --git a/packages/session/session-format-v0-to-v1/src/validation.ts b/packages/session/session-format-v0-to-v1/src/validation.ts
+index f61080c7b..59229949d 100644
+--- a/packages/session/session-format-v0-to-v1/src/validation.ts
++++ b/packages/session/session-format-v0-to-v1/src/validation.ts
+@@ -195,7 +195,7 @@ export function assertReleasedEventPayload(event: SessionFormatEvent, version: 0
+     )
+   }
+   const data = releasedV0Record(event.data, `${event.type} ${event.seq} data`)
+-  if (event.type === 'subagent/descriptor' && data['version'] !== 3) {
++  if (event.type === 'subagent/descriptor' && data['version'] !== 2 && data['version'] !== 3) {
+     const descriptorVersion = sessionFormatCount(data['version'], `${event.type} ${event.seq} version`)
+     if (version === 0) {
+       throw new SessionFormatUnsupportedMigrationError(
+diff --git a/packages/session/session-format-v2-to-v3/tests/migration.spec.ts b/packages/session/session-format-v2-to-v3/tests/migration.spec.ts
+index 4b242ca29..eb950ec87 100644
+--- a/packages/session/session-format-v2-to-v3/tests/migration.spec.ts
++++ b/packages/session/session-format-v2-to-v3/tests/migration.spec.ts
+@@ -497,3 +497,29 @@ describe('v3 PTC event admission and relationships', () => {
+     expect(() => restoreReleasedV3Artifact(artifact([turn, obsolete, settle]), new Set())).toThrow(/no unique start/)
+   })
+ })
++
++it('preserves released descriptor v2 payloads through V2 to V3 migration without inventing composition', () => {
++  for (const descriptor of [
++    { version: 2, mode: 'one-shot', provider: 'spawn' },
++    { version: 2, mode: 'continuable', provider: 'spawn', label: 'empty persona', persona: '' },
++    { version: 2, mode: 'continuable', provider: 'spawn', label: 'historical child', agentProvider: 'mock', agentModel: 'mock', persona: 'preserve', toolFilter: { allow: ['read'], deny: ['write'] } },
++  ]) {
++    const input = deepFreeze([event('subagent/descriptor', descriptor)])
++    const output = migrate(input)
++    expect(output.events[0]?.data).toEqual(descriptor)
++    expect(output.events[0]?.data).not.toHaveProperty('agentReasoningEffort')
++  }
++})
++
++it('rejects unknown and malformed historical descriptors at migration admission', () => {
++  const descriptor = { version: 2, mode: 'continuable', provider: 'spawn', label: 'child' }
++  for (const payload of [
++    { ...descriptor, version: 4 },
++    { ...descriptor, persona: false },
++    { ...descriptor, version: 3, persona: '' },
++    { ...descriptor, agentReasoningEffort: 'high' },
++    { ...descriptor, agentProvider: 'mock' },
++    { ...descriptor, toolFilter: { allow: [1] } },
++    { ...descriptor, unknownField: true },
++  ]) expect(() => migrate([event('subagent/descriptor', payload)])).toThrow()
++})
+diff --git a/packages/subagent/subagent/src/descriptor.ts b/packages/subagent/subagent/src/descriptor.ts
+index de9191cc5..d56a174d1 100644
+--- a/packages/subagent/subagent/src/descriptor.ts
++++ b/packages/subagent/subagent/src/descriptor.ts
+@@ -207,7 +207,10 @@ function parseSubagentDescriptor(value: unknown): SubagentDescriptorData | undef
+   if (typeof version !== 'number') {
+     throw new Error('persisted subagent descriptor version must be a number')
+   }
+-  if (version !== SUBAGENT_DESCRIPTOR_VERSION) return undefined
++  if (version !== 2 && version !== SUBAGENT_DESCRIPTOR_VERSION) return undefined
++  if (version === 2 && Object.hasOwn(value, 'agentReasoningEffort')) {
++    throw new Error('persisted subagent descriptor version 2 cannot declare agentReasoningEffort')
++  }
+ 
+   const mode = value['mode']
+   if (mode !== 'one-shot' && mode !== 'continuable') {
+@@ -306,12 +309,13 @@ export function snapshotSubagentDescriptor(input: SubagentDescriptorInput): Suba
+  * Fold a persisted child log to its supported descriptor. The first
+  * `subagent/descriptor` event is authoritative — the establishing provider
+  * appends exactly one, so a later same-type event cannot rewrite the declared
+- * composition.
++ * composition. Version 2 records normalize in memory without adding a reasoning
++ * effort or rewriting the persisted payload.
+  * @param events - the loaded child session events.
+  * @returns the descriptor, or `undefined` when the log has none or its
+- *   version is not {@link SUBAGENT_DESCRIPTOR_VERSION} (the child cannot be
++ *   version is neither 2 nor {@link SUBAGENT_DESCRIPTOR_VERSION} (the child cannot be
+  *   classified by this runtime).
+- * @throws when a current-version persisted payload does not match its complete
++ * @throws when a supported persisted payload does not match its complete
+  *   declared schema.
+  */
+ export function foldSubagentDescriptor(events: readonly SessionEvent[]): SubagentDescriptorData | undefined {
+diff --git a/packages/subagent/subagent/tests/descriptor-history.spec.ts b/packages/subagent/subagent/tests/descriptor-history.spec.ts
+new file mode 100644
+index 000000000..02dc88fed
+--- /dev/null
++++ b/packages/subagent/subagent/tests/descriptor-history.spec.ts
+@@ -0,0 +1,26 @@
++import { describe, expect, it } from 'vitest'
++import type { SessionEvent } from '@deepseek-ai/dsh-session'
++import { foldSubagentDescriptor } from '../src/descriptor.ts'
++
++const event = (data: unknown) => ({ type: 'subagent/descriptor', seq: 0, time: 1, data }) as SessionEvent
++
++describe('released descriptor v2 history', () => {
++  it('preserves an explicitly empty historical persona', () => {
++    const old = Object.freeze({ version: 2, mode: 'continuable', provider: 'spawn', label: 'child', persona: '' })
++    expect(foldSubagentDescriptor([event(old)])).toEqual({ ...old, version: 3 })
++    expect(old).toEqual({ version: 2, mode: 'continuable', provider: 'spawn', label: 'child', persona: '' })
++  })
++  it('normalizes a detached continuable descriptor without mutating the saved record', () => {
++    const old = Object.freeze({ version: 2, mode: 'continuable', provider: 'spawn', label: 'child', agentProvider: 'mock', agentModel: 'mock', toolFilter: { deny: ['write'] } })
++    const restored = foldSubagentDescriptor([event(old)])
++    expect(restored).toEqual({ ...old, version: 3 })
++    expect(restored).not.toBe(old)
++    expect(restored).not.toHaveProperty('agentReasoningEffort')
++    expect(old.version).toBe(2)
++  })
++  it('preserves one-shot identity and rejects new fields in old records', () => {
++    expect(foldSubagentDescriptor([event({ version: 2, mode: 'one-shot', provider: 'spawn' })])).toEqual({ version: 3, mode: 'one-shot', provider: 'spawn' })
++    expect(() => foldSubagentDescriptor([event({ version: 2, mode: 'continuable', provider: 'spawn', label: 'child', agentReasoningEffort: 'high' })])).toThrow('version 2 cannot declare agentReasoningEffort')
++    expect(foldSubagentDescriptor([event({ version: 4, mode: 'one-shot', provider: 'spawn' })])).toBeUndefined()
++  })
++})

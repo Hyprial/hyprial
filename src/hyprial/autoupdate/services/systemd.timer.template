@@ -1,0 +1,11 @@
+[Unit]
+Description=Twice-daily Harness Bridge latest tag pull
+
+[Timer]
+OnCalendar=*-*-* {{CALENDAR_A}}
+OnCalendar=*-*-* {{CALENDAR_B}}
+Persistent=true
+Unit={{SERVICE_UNIT}}
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,20 @@
+/* The presence of tokens activates styling; default GUI has no new overrides. */
+[data-gui-layout][data-gui-styled=true], [data-gui-styled=true] {
+  font-family:var(--gui-style-font);font-size:var(--gui-style-size);line-height:var(--gui-style-line-height);
+}
+[data-gui-styled=true]{color:var(--gui-style-text);background-color:var(--gui-style-background)}
+.h2bgui-workspace[data-gui-styled=true]{padding:var(--gui-style-spacing);border-radius:var(--gui-style-radius)}
+[data-gui-styled=true] :is(input,textarea,select,button){font-family:inherit;font-size:inherit;line-height:inherit}
+[data-gui-styled=true] :is(input,textarea,select):not([data-native-conversation] *){color:var(--gui-style-text);background:var(--gui-style-surface);border-color:var(--gui-style-border)}
+[data-gui-styled=true] button{border-radius:var(--gui-style-radius);border-color:var(--gui-style-border)}
+[data-gui-styled=true] :is(h1,h2,h3){line-height:1.25}
+.h2bgui-workspace[data-gui-styled=true]>h2{font-size:calc(var(--gui-style-size) * var(--gui-style-heading-scale))}
+.h2bgui-workspace[data-gui-styled=true]>.h2bgui-node{box-shadow:var(--gui-style-shadow);border-radius:var(--gui-style-radius)}
+.h2bgui-workspace .h2bgui-node{box-sizing:border-box;overflow-wrap:anywhere}
+.h2bgui-workspace .h2bgui-node-Text{margin-block:0}
+[data-gui-styled=true] :is(.h2bcontrol,.wb-workbench,.h2bcontact-detail,.gui-kanban-data,.gui-contact-browser,.gui-session-library){font-family:var(--gui-style-font);font-size:var(--gui-style-size);line-height:var(--gui-style-line-height);color:var(--gui-style-text)}
+[data-gui-layout][data-gui-styled=true] :is(.h2bcontrol-card,.wb-card,.h2bcontact-card),[data-gui-styled=true] :is(.h2bcontrol-card,.wb-card,.h2bcontact-card){border-radius:var(--gui-style-radius);border-width:var(--gui-style-border-width);box-shadow:var(--gui-style-shadow)}
+[data-gui-layout][data-gui-styled=true] .h2bcontact-card-action.primary,[data-gui-styled=true] .h2bcontact-card-action.primary{color:var(--gui-style-on-primary);background:var(--gui-style-primary)}
+[data-gui-styled=true] :is(.gui-contact-library button,.gui-session-library button){background:var(--gui-style-surface);color:var(--gui-style-text)}
+[data-gui-styled=true] :is(button,input,textarea,select):focus-visible{outline:2px solid var(--gui-style-primary);outline-offset:2px}
+@media(max-width:600px){.h2bgui-workspace[data-gui-styled=true]{padding:min(var(--gui-style-spacing),12px)}}

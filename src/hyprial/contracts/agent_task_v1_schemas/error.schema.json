@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.hyprial.com/mfu/h2b-agent-task/v1/error.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["code", "message", "retryable", "details"],
+  "properties": {
+    "code": {
+      "enum": ["UNSUPPORTED", "INVALID_REQUEST", "PAYLOAD_TOO_LARGE", "IDENTITY_OVERRIDE_FORBIDDEN", "CALLER_NOT_AUTHORIZED", "SERVICE_BINDING_NOT_FOUND", "EXTERNAL_REF_CONFLICT", "RUN_NOT_FOUND", "TARGET_NOT_FOUND", "RESULT_NOT_READY", "RESULT_REF_CONFLICT", "RUN_NOT_CANCELLABLE", "TRANSPORT_ERROR", "PROTOCOL_ERROR"]
+    },
+    "message": { "type": "string", "minLength": 1, "maxLength": 2000 },
+    "retryable": { "type": "boolean" },
+    "details": { "type": "object", "maxProperties": 32 }
+  }
+}

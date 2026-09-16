@@ -1,0 +1,30 @@
+{
+  "contract": "mfu-h2b-agent-task",
+  "version": 1,
+  "namespace": "mfu.agent-task.v1",
+  "repository": "https://code.hyprial.com/HyprialOS/mfu.git",
+  "commit": "af5525512278a5126508f6ae8df6d02beb2782cb",
+  "path": "contracts/h2b-agent-task/v1",
+  "files": {
+    "README.md": "sha256:b7edd7b55516ed02dfaac41a1a48852f9f1ebbbcfb3c9018e21975b2932ad965",
+    "examples/blocked.example.json": "sha256:60e71823e0e5f6e94996713da85c7fdadc65b12c7280691f047460a41374d1ee",
+    "examples/progress.example.json": "sha256:3b7a659d0101dddc68ca53f97b844692ab3dc9465ac808071936d2e48535f56e",
+    "examples/projection.example.json": "sha256:04b17e2ffe00d5c7368454c7b7f8563ef7ce3bae18e49ee5fb9cba6f8dc5bf5a",
+    "examples/question.example.json": "sha256:75037859032ca07c1ea964419b7f7f05e428c980bbbaa39d22be05aee7f6b289",
+    "examples/reply.example.json": "sha256:1a3419af7ee741e6683d4c28e52a0864c233612e4854bbaa7840fb385d1e26bb",
+    "examples/result-response.example.json": "sha256:7f07c3c6731bbdcdca8af1b1b37ec6e7bb48b0ec23481d440798ecd9853093a7",
+    "examples/result-submitted.example.json": "sha256:0afdf7ddfd50615f4ca6c9db0be2e14c213b511f502c5fbcaa138206256d1ecf",
+    "examples/start.example.json": "sha256:4c126f129211c0ded13300c1745d53beb24ed61cdf739dc98e08c09075134bc9",
+    "fixtures/conformance.json": "sha256:72c9e724a19fd950849825342a23f3f578c99dfb183bf028063f7b9d43e9fff6",
+    "manifest.json": "sha256:315baeddf3bd39d9d45a2f16ff5547958ea4b133e61f5935a2e9ec6a0d3104f2",
+    "schemas/activity-envelope.schema.json": "sha256:be1fd215b24e71db111a80a78aa6d294eea7438b8cfd8d408c0c3b27604c863b",
+    "schemas/agent-task-capabilities.schema.json": "sha256:77aaa4ca4ce9d7241da6fed4528bde3ec7aa0e88ce307cf177821c0419669661",
+    "schemas/agent-task-projection.schema.json": "sha256:69b0a5a8034ab3880c9fcfcf72cb49946863ee147208253593acd8c0a7c9e091",
+    "schemas/agent-task-result.schema.json": "sha256:2cbd839a74c5c6a1aa2365029471dfc5acf67cc050f32e28eab3f586aded8905",
+    "schemas/agent-task-start.schema.json": "sha256:8c321a1a37ccf68325ace92489b08ab7a5675c4f30cce8abc949a308a9b657db",
+    "schemas/common.schema.json": "sha256:7c81dcb0bf8aaf2835bbd5a5c5eb891a833e9befa1d86f4bb669979d8198c9ce",
+    "schemas/error.schema.json": "sha256:f873441b4b933100da292cc837a5790c934addefef0c521e3563b308094bfeed",
+    "schemas/mfu-work-package.schema.json": "sha256:b2ae0e03fd0fde5d3b7b65c8984ff49b6a7824b0010dc1dbd490d886c036a878",
+    "schemas/mfu-work-result.schema.json": "sha256:a52b8c09e541e80e78047d9ff08a928ff1439c8970c0bef84efb629a0830185e"
+  }
+}

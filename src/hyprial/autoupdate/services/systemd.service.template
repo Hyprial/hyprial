@@ -1,0 +1,13 @@
+[Unit]
+Description=Harness Bridge latest tag pull
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart={{EXECUTABLE_ARG}} autoupdate run --json
+Environment={{HOME_ENV}}
+Environment={{PATH_ENV}}
+Environment={{HYPRIAL_HOME_ENV}}
+StandardOutput=append:{{STDOUT_ARG}}
+StandardError=append:{{STDERR_ARG}}

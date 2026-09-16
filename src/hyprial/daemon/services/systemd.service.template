@@ -1,0 +1,24 @@
+[Unit]
+Description=Harness Bridge daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart={{EXECUTABLE_ARG}} daemon run
+Environment={{HOME_ENV}}
+Environment={{PATH_ENV}}
+Environment={{HYPRIAL_HOME_ENV}}
+Environment={{STATE_DIR_ENV}}
+Environment="HYPRIAL_SERVICE_MANAGED=1"
+Environment="HYPRIAL_SERVICE_MANAGER=systemd"
+Environment="HYPRIAL_SERVICE_UNIT=hyprial.service"
+Restart=always
+RestartSec=5
+KillMode=control-group
+TimeoutStopSec=45
+StandardOutput=append:{{STDOUT_ARG}}
+StandardError=append:{{STDERR_ARG}}
+
+[Install]
+WantedBy=default.target

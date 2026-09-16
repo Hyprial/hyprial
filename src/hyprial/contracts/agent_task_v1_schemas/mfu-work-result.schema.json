@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.hyprial.com/mfu/h2b-agent-task/v1/mfu-work-result.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "attemptId", "status", "summary", "repository", "branch", "commits", "pullRequests", "artifacts", "checks", "blockers"],
+  "properties": {
+    "schemaVersion": { "const": "mfu.work-result/v1" },
+    "attemptId": { "type": "string", "minLength": 1, "maxLength": 240 },
+    "status": { "enum": ["completed", "blocked", "failed"] },
+    "summary": { "type": "string", "minLength": 1, "maxLength": 4000 },
+    "repository": { "type": "string", "maxLength": 2000 },
+    "branch": { "type": "string", "maxLength": 240 },
+    "commits": {
+      "type": "array", "maxItems": 100,
+      "items": { "type": "string", "pattern": "^[0-9a-fA-F]{7,64}$" }
+    },
+    "pullRequests": {
+      "type": "array", "maxItems": 100,
+      "items": { "type": "string", "maxLength": 2000, "pattern": "^https://" }
+    },
+    "artifacts": {
+      "type": "array", "maxItems": 100,
+      "items": { "$ref": "common.schema.json#/$defs/artifactRef" }
+    },
+    "checks": {
+      "type": "array", "maxItems": 100,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "status", "detail"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 400 },
+          "status": { "enum": ["passed", "failed", "skipped"] },
+          "detail": { "type": "string", "maxLength": 2000 }
+        }
+      }
+    },
+    "blockers": {
+      "type": "array", "maxItems": 100,
+      "items": { "type": "string", "minLength": 1, "maxLength": 2000 }
+    }
+  }
+}

@@ -1,0 +1,108 @@
+.gui-system-bar,.gui-all-functions,.gui-studio,.gui-system-error,.gui-personal-page,.gui-top-navigation { box-sizing:border-box; color:var(--dsw-alias-label-primary,#1e293b); font:13px/1.5 system-ui,sans-serif; }
+.gui-system-bar { position:fixed; right:16px; bottom:12px; z-index:100; display:flex; gap:6px; padding:6px; border:1px solid var(--dsw-alias-border-l1,#dce1e9); border-radius:12px; background:var(--dsw-alias-bg-base,#fff); box-shadow:0 4px 20px #0001; pointer-events:auto; }
+.gui-system-bar a,.gui-system-bar button,.gui-all-functions button,.gui-studio button,.gui-personal-page button,.gui-top-navigation button { box-sizing:border-box; padding:7px 10px; border:1px solid var(--dsw-alias-border-l1,#dce1e9); border-radius:7px; color:inherit; background:var(--dsw-alias-bg-module-platform,#f8fafc); font:inherit; text-decoration:none; cursor:pointer; }
+.gui-studio button:hover,.gui-system-bar button:hover,.gui-top-navigation button:hover { background:var(--dsw-alias-interactive-bg-hover-accent,#eaf0ff); }
+.gui-studio button:disabled { opacity:.5; cursor:default; }
+.gui-all-functions { position:fixed; z-index:101; right:16px; bottom:72px; width:min(280px,calc(100vw - 32px)); max-height:70vh; overflow:auto; display:flex; flex-direction:column; gap:6px; padding:12px; border:1px solid var(--dsw-alias-border-l1,#dce1e9); border-radius:12px; background:var(--dsw-alias-bg-base,#fff); box-shadow:0 8px 32px #0002; pointer-events:auto; }
+.gui-system-error { position:fixed; bottom:76px; left:16px; max-width:min(580px,calc(100vw - 32px)); z-index:110; padding:12px; background:#fff0ef; color:#9a2c25; pointer-events:auto; }
+.gui-studio { position:fixed; inset:16px 16px 72px; z-index:90; background:var(--dsw-alias-bg-base,#fff); border:1px solid var(--dsw-alias-border-l1,#dce1e9); border-radius:16px; box-shadow:0 12px 80px #0003; display:flex; flex-direction:column; overflow:hidden; pointer-events:auto; }
+.gui-studio-header { display:flex; justify-content:space-between; align-items:center; padding:18px 22px; border-bottom:1px solid var(--dsw-alias-border-l1,#dce1e9); flex:none; gap:16px; }
+.gui-studio-header strong { display:block; font-size:20px; }.gui-studio-header small { color:var(--dsw-alias-label-secondary,#64748b); }
+.gui-studio-body { display:grid; grid-template-columns:230px minmax(0,1fr); flex:1; min-height:0; }
+.gui-studio-library { padding:18px 14px; display:flex; flex-direction:column; align-items:stretch; gap:9px; overflow:auto; border-right:1px solid var(--dsw-alias-border-l1,#dce1e9); }
+.gui-studio-library button { text-align:left; overflow-wrap:anywhere; }.gui-studio-library h4 { margin:18px 0 0; }.gui-studio-library input { width:100%; margin-top:6px; }
+.gui-studio-main { overflow:auto; min-width:0; padding:22px; }.gui-studio-empty { max-width:580px; padding:48px 20px; margin:auto; }.gui-studio-empty h2 { font-size:28px; }.gui-studio-empty p { font-size:15px; line-height:1.9; color:var(--dsw-alias-label-secondary,#64748b); }
+.gui-studio-actions { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:18px; }.gui-studio-actions strong { margin-right:auto; }
+.gui-design-request { padding:14px; border-radius:12px; background:var(--dsw-alias-bg-module-platform,#f7f9fc); display:flex; flex-wrap:wrap; gap:8px; }
+.gui-design-request textarea,.gui-json-editor { width:100%; box-sizing:border-box; background:var(--dsw-alias-bg-base,#fff); color:inherit; border:1px solid var(--dsw-alias-border-l1,#dce1e9); border-radius:8px; padding:12px; font:inherit; min-height:92px; resize:vertical; }
+.gui-preview-note { color:var(--dsw-alias-label-secondary,#64748b); font-size:12px; }.gui-preview { padding:20px; border:1px solid var(--dsw-alias-border-l1,#dce1e9); border-radius:12px; min-height:200px; margin-bottom:16px; }.gui-json-editor { margin:12px 0; min-height:280px; font:12px/1.6 ui-monospace,monospace; }
+.gui-feature-preview { display:flex; flex-direction:column; align-items:flex-start; gap:8px; width:100%; min-height:110px; padding:18px!important; }.gui-feature-preview small { font-size:11px; color:var(--dsw-alias-label-secondary,#64748b); }.gui-feature-preview.selected { outline:2px solid var(--dsw-static-blue-500,#4263eb); }
+.gui-studio select { color:inherit; background:var(--dsw-alias-bg-base,#fff); border:1px solid var(--dsw-alias-border-l1,#dce1e9); padding:7px; border-radius:6px; max-width:100%; margin-left:8px; }.gui-studio details { margin:18px 0; }.gui-studio summary { cursor:pointer; }.gui-error { color:#b42318; background:#fef3f2; padding:10px; border-radius:8px; }
+.gui-inspector { display:flex; flex-wrap:wrap; gap:14px; padding:16px 0; align-items:flex-end; }.gui-inspector label { display:flex; flex-direction:column; gap:6px; font-size:12px; }.gui-inspector input { box-sizing:border-box; padding:7px; min-height:34px; color:inherit; border:1px solid var(--dsw-alias-border-l1,#dce1e9); border-radius:6px; background:var(--dsw-alias-bg-base,#fff); max-width:220px; }.gui-inspector select { margin-left:0; }.gui-conversation-preview { padding:14px; border:1px solid var(--dsw-alias-border-l1,#dce1e9); border-radius:10px; }.gui-conversation-preview button { padding:7px 10px; border-radius:6px; cursor:pointer; }.gui-conversation-preview p { font-size:12px; color:var(--dsw-alias-label-secondary,#64748b); }
+.gui-personal-page { height:100%; overflow:auto; min-width:0; padding:18px 20px 70px; background:var(--dsw-alias-bg-base,#fff); pointer-events:auto; }.gui-personal-page>header { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:20px; }.gui-feature-reference { padding:18px; border:1px solid var(--dsw-alias-border-l1,#dce1e9); border-radius:10px; }.gui-personal-page .wb-workbench { min-width:0; }.gui-top-navigation { display:flex; gap:8px; padding:8px 14px; overflow:auto; }.gui-personal-page .h2bcontrol { height:100%; min-height:480px; }
+[data-gui-density="compact"] .h2bapps-secondary-head { height:44px; }[data-gui-density="compact"] .h2bapps-menu-btn { padding:7px 9px; }[data-gui-density="compact"] .gui-top-navigation { padding:5px 12px; }
+@media(max-width:760px) { .gui-studio { inset:6px 6px 68px; border-radius:10px; }.gui-studio-header { padding:12px; }.gui-studio-header strong { font-size:16px; }.gui-studio-header small { display:none; }.gui-studio-body { grid-template-columns:minmax(0,1fr); grid-template-rows:auto minmax(0,1fr); }.gui-studio-library { max-height:150px; display:flex; flex-direction:row; flex-wrap:wrap; padding:10px; border-right:0; border-bottom:1px solid var(--dsw-alias-border-l1,#dce1e9); }.gui-studio-library h4 { display:none; }.gui-studio-main { padding:12px; }.gui-preview { padding:12px; }.gui-studio-empty { padding:10px; }.gui-system-bar { right:6px; bottom:8px; max-width:calc(100vw - 12px); gap:3px; }.gui-system-bar a,.gui-system-bar button { padding:6px; font-size:11px; }.h2bgui-node-Grid,.h2bgui-node-Split { grid-template-columns:minmax(0,1fr)!important; }.gui-personal-page { padding:12px 12px 70px; } }
+
+/* Studio: one editor canvas, separate management, persistent primary actions. */
+.gui-studio{inset:16px 16px 76px;border-radius:14px;container-type:inline-size}
+.gui-studio-header{padding:12px 18px;gap:12px;align-items:center;flex-wrap:wrap;background:var(--dsw-alias-bg-base,#fff)}
+.gui-studio-heading{min-width:160px;flex:1}.gui-studio-heading strong{font-size:17px;overflow-wrap:anywhere}.gui-studio-heading small{display:block;font-size:12px}
+.gui-studio-primary-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.gui-studio-primary-actions button{white-space:nowrap}.gui-studio button.gui-primary{background:#3563df;color:#fff;border-color:#3563df}.gui-studio button.gui-primary:disabled{background:#6b83b8}
+.gui-studio>.gui-error,.gui-studio-notice,.gui-safe-mode{margin:0;padding:9px 18px;flex:none;font-size:12px;border-bottom:1px solid var(--dsw-alias-border-l1,#dce1e9)}
+.gui-studio-notice{background:var(--dsw-alias-bg-module-platform,#f4f7fb)}.gui-safe-mode{background:#fff5d9;color:#695000}.gui-safe-mode a{color:inherit;font-weight:600}
+.gui-studio-manager{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(300px,1fr);gap:24px;padding:24px;overflow:auto;min-height:0}
+.gui-studio-manager .gui-studio-library{display:block;padding:0;border:0;overflow:visible;max-height:none}.gui-studio-manager h2{font-size:18px;margin:0 0 16px}.gui-studio-create{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}.gui-studio-create select{margin:0}
+.gui-draft-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;margin:14px 0}.gui-draft-grid button{min-height:76px;padding:16px;text-align:left;background:var(--dsw-alias-bg-base,#fff)}
+.gui-studio-manager .gui-profile-manager{padding:0 0 0 24px;border-left:1px solid var(--dsw-alias-border-l1,#dce1e9)}.gui-profile-manager h3{margin:12px 0 8px}.gui-profile-manager ul,.gui-profile-manager ol{padding-left:20px}.gui-profile-manager li{margin:6px 0}.gui-profile-manager button{margin:3px}.gui-profile-manager p{font-size:12px;color:var(--dsw-alias-label-secondary,#64748b)}
+.gui-release-list button{display:block;width:100%;margin:6px 0}
+.gui-studio-edit-main{padding:14px 18px;flex:1;min-height:0;overflow:auto}.gui-studio-edit-main .gui-editor-fieldset{margin:0;padding:0}.gui-editor-legend{font-size:12px;color:var(--dsw-alias-label-secondary,#64748b);font-weight:400!important;margin:0 0 10px}
+.gui-studio-edit-main .gui-visual-editor{border:0;padding:0}.gui-studio .gui-editor-canvas{min-height:420px;padding:18px;background-color:var(--gui-style-background,var(--dsw-alias-bg-module-platform,#f4f6fa));background-image:radial-gradient(#8392a525 1px,transparent 1px);background-size:16px 16px}
+.gui-studio .gui-editor-node{background:var(--gui-style-surface,var(--dsw-alias-bg-base,#fff));border-color:var(--gui-style-border,#8392a550);padding:12px}.gui-studio .gui-editor-left,.gui-studio .gui-editor-inspector{background:var(--dsw-alias-bg-base,#fff);border:1px solid var(--dsw-alias-border-l1,#dce1e9);border-radius:10px;padding:12px}
+.gui-editor-field input:not([type=range]),.gui-editor-field textarea,.gui-editor-field select{padding:7px 8px;border:1px solid var(--dsw-alias-border-l1,#dce1e9);border-radius:6px;background:var(--dsw-alias-bg-base,#fff);color:inherit;margin:0}
+.gui-studio .gui-editor-inspector details{margin:4px 0}.gui-editor-advanced,.gui-editor-more{border-top:1px solid var(--dsw-alias-border-l1,#dce1e9);padding-top:12px}.gui-editor-more .gui-studio-actions{margin:10px 0 0}.gui-studio .gui-editor-navigation{font-size:12px}.gui-trial-banner{position:fixed;left:16px;bottom:18px;max-width:calc(100vw - 520px);padding:8px 12px;background:#fff5d9;color:#695000;border:1px solid #e9d58b;border-radius:8px;font:12px/1.5 system-ui;z-index:99;pointer-events:none}
+.gui-studio.is-docked{right:calc(min(40vw,480px) + 28px)}
+.gui-agent-dock{position:fixed;right:16px;top:16px;bottom:76px;width:min(40vw,480px);display:flex;flex-direction:column;z-index:91;border:1px solid var(--dsw-alias-border-l1,#dce1e9);border-radius:12px;overflow:hidden;pointer-events:none;font:13px/1.5 system-ui;color:var(--dsw-alias-label-primary,#1e293b)}
+.gui-agent-dock>header{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 12px;background:var(--dsw-alias-bg-base,#fff);pointer-events:auto;border-bottom:1px solid var(--dsw-alias-border-l1,#dce1e9)}
+.gui-agent-dock button{padding:6px 9px;background:var(--dsw-alias-bg-module-platform,#f4f6fa);color:inherit;border:1px solid var(--dsw-alias-border-l1,#dce1e9);border-radius:6px;cursor:pointer}.gui-agent-dock button:disabled{opacity:.5;cursor:default}
+.gui-agent-dock .gui-design-request{border-radius:0;padding:10px 12px;gap:6px;flex:none;pointer-events:auto;background:var(--dsw-alias-bg-module-platform,#f4f6fa)}.gui-agent-dock .gui-design-request label{width:100%;font-size:12px}.gui-agent-dock textarea{min-height:66px;height:66px;max-height:180px;padding:8px;font:12px/1.5 system-ui}.gui-agent-dock small{font-size:11px;color:var(--dsw-alias-label-secondary,#64748b)}.gui-agent-seat{flex:1;min-height:0;pointer-events:none}
+@container(max-width:720px){.gui-studio .gui-editor-panel-switch{display:flex}.gui-studio .gui-editor-body{display:block}.gui-studio .gui-visual-editor[data-mobile-panel=canvas] .gui-editor-left,.gui-studio .gui-visual-editor[data-mobile-panel=canvas] .gui-editor-inspector,.gui-studio .gui-visual-editor[data-mobile-panel=left] .gui-editor-canvas,.gui-studio .gui-visual-editor[data-mobile-panel=left] .gui-editor-inspector,.gui-studio .gui-visual-editor[data-mobile-panel=inspector] .gui-editor-left,.gui-studio .gui-visual-editor[data-mobile-panel=inspector] .gui-editor-canvas{display:none}}
+@media(max-width:900px){.gui-studio-manager{grid-template-columns:1fr;padding:16px}.gui-studio-manager .gui-profile-manager{border-left:0;border-top:1px solid var(--dsw-alias-border-l1,#dce1e9);padding:16px 0 0}.gui-studio.is-docked{right:16px;bottom:calc(52dvh + 12px)}.gui-agent-dock{top:calc(48dvh + 4px);bottom:76px;left:16px;right:16px;width:auto}.gui-agent-dock .gui-design-request{padding:6px 10px}.gui-agent-dock textarea{height:44px;min-height:44px}.gui-agent-dock small{display:none}.gui-trial-banner{bottom:68px;max-width:calc(100vw - 32px)}}
+@media(max-width:600px){.gui-studio{inset:6px 6px 70px}.gui-studio-header{padding:10px;gap:8px}.gui-studio-heading{flex-basis:100%}.gui-studio-heading small{display:block}.gui-studio-primary-actions{gap:4px}.gui-studio-primary-actions button{padding:6px 7px;font-size:11px}.gui-studio-edit-main{padding:10px}.gui-studio .gui-editor-canvas{min-height:280px;padding:10px}.gui-studio.is-docked{right:6px}.gui-agent-dock{left:6px;right:6px}.gui-system-bar{max-width:calc(100vw - 12px);flex-wrap:wrap}}
+
+.gui-personal-page[data-gui-scope=shell]{padding:0 0 70px}
+
+/* The running workspace exposes one menu; authoring owns its own frame. */
+.gui-workspace-menu { position:fixed; right:16px; bottom:68px; z-index:105; display:flex; flex-direction:column; gap:8px; width:min(320px,calc(100vw - 32px)); max-height:calc(100vh - 100px); overflow:auto; padding:16px; border:1px solid var(--dsw-alias-border-l1,#dce1e9); border-radius:14px; color:var(--dsw-alias-label-primary,#1e293b); background:var(--dsw-alias-bg-base,#fff); box-shadow:0 8px 32px #0003; pointer-events:auto; font:13px/1.5 system-ui,sans-serif; }
+.gui-workspace-menu button,.gui-workspace-menu a,.gui-trial-banner button,.gui-use-notice button { font:inherit; color:inherit; background:var(--dsw-alias-bg-module-platform,#f8fafc); border:1px solid var(--dsw-alias-border-l1,#dce1e9); border-radius:8px; padding:8px 12px; cursor:pointer; text-decoration:none; }
+.gui-workspace-menu button { text-align:left; }.gui-workspace-menu strong { overflow-wrap:anywhere; }.gui-workspace-menu details { border-top:1px solid var(--dsw-alias-border-l1,#dce1e9); padding-top:10px; }.gui-workspace-menu details[open] a { display:block; margin-top:10px; }.gui-workspace-menu p { color:var(--dsw-alias-label-secondary,#64748b); font-size:12px; }
+.gui-trial-banner { display:flex; align-items:center; gap:12px; flex-wrap:wrap; pointer-events:auto; z-index:110; }.gui-trial-banner span { flex:1; }
+.gui-use-notice { position:fixed; bottom:74px; left:50%; transform:translateX(-50%); max-width:calc(100vw - 40px); box-sizing:border-box; display:flex; align-items:center; gap:12px; padding:12px 16px; border-radius:12px; border:1px solid var(--dsw-alias-border-l1,#dce1e9); background:var(--dsw-alias-bg-base,#fff); color:var(--dsw-alias-label-primary,#1e293b); z-index:100; pointer-events:auto; font:13px/1.5 system-ui,sans-serif; }
+.gui-studio { inset:8px; }.gui-studio-header small { display:block; }@media(min-width:901px){.gui-studio.is-docked { bottom:8px; }}
+@media(max-width:700px){.gui-studio-header{align-items:flex-start;flex-direction:column;flex-wrap:nowrap;padding:12px}.gui-studio-heading{flex:none;min-width:0;width:100%}.gui-studio-primary-actions{flex-wrap:wrap;max-width:100%}.gui-trial-banner{font-size:12px}.gui-use-notice{width:calc(100vw - 32px)}}
+
+/* The fixed studio owns the viewport. Only its tree, canvas and inspector scroll. */
+.gui-studio[data-gui-view=edit] .gui-studio-edit-main{display:flex;flex-direction:column;overflow:hidden;gap:8px;padding:10px 14px}
+.gui-studio[data-gui-view=edit] .gui-editor-fieldset{display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden}
+.gui-studio[data-gui-view=edit] .gui-visual-editor{flex:1;min-height:0;overflow:hidden}
+.gui-studio[data-gui-view=edit] .gui-editor-canvas{min-height:0}
+.gui-studio[data-gui-view=edit] .gui-editor-advanced,.gui-studio[data-gui-view=edit] .gui-editor-more{flex:none;margin:0;padding-top:6px;max-height:32%;overflow:auto}
+.gui-studio[data-gui-view=edit] .gui-editor-body{grid-template-columns:180px minmax(180px,1fr) 280px}
+.gui-studio[data-gui-view=edit] .gui-editor-inspector>strong{background:var(--dsw-alias-bg-base,#fff)}
+.gui-collaboration-tabs{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.gui-collaboration-tabs [aria-selected=true],.gui-collaboration-tabs [aria-pressed=true]{background:var(--dsw-alias-interactive-bg-hover-accent,#eaf0ff);outline:1px solid #548ce8}
+.gui-agent-focus{flex:none;pointer-events:auto;padding:10px 12px;background:var(--dsw-alias-bg-base,#fff);border-bottom:1px solid var(--dsw-alias-border-l1,#dce1e9);overflow-wrap:anywhere;max-height:26%;overflow:auto}
+.gui-agent-focus strong,.gui-agent-focus small{display:block}.gui-agent-focus button{margin:6px 6px 0 0}
+@media(min-width:901px){
+ .gui-studio.is-docked{right:calc(clamp(320px,30vw,440px) + 20px)}
+ .gui-agent-dock{right:8px;top:8px;bottom:8px;width:clamp(320px,30vw,440px)}
+ .gui-studio[data-collaboration=agent] .gui-editor-body{grid-template-columns:180px minmax(180px,1fr)}
+ .gui-studio[data-collaboration=agent] .gui-editor-inspector{display:none}
+}
+@media(min-width:901px) and (max-width:1599px){
+ .gui-studio[data-collaboration=split] .gui-editor-body{grid-template-columns:180px minmax(180px,1fr)}
+ .gui-studio[data-collaboration=split] .gui-editor-inspector{display:none}
+}
+@container(max-width:720px){.gui-studio[data-gui-view=edit] .gui-editor-body{display:block}.gui-studio .gui-editor-left,.gui-studio .gui-editor-canvas,.gui-studio .gui-editor-inspector{height:100%}}
+@media(max-width:900px){
+ .gui-studio.is-docked{inset:8px;visibility:hidden}
+ .gui-agent-dock{left:8px;right:8px;top:8px;bottom:8px;width:auto;background:transparent;box-shadow:0 8px 48px #0005}
+ .gui-agent-focus{max-height:24%}
+}
+@media(max-height:650px){.gui-studio-header{padding:6px 12px}.gui-studio-notice[data-gui-scope] p{margin:4px 0}.gui-studio-notice{padding:5px 12px}.gui-editor-breadcrumbs{max-height:48px;margin:6px 0}}
+
+.gui-studio-notice[data-gui-scope]{display:flex;align-items:center;gap:8px 12px;flex-wrap:wrap}.gui-studio-notice[data-gui-scope]>p{flex:1;min-width:180px;margin:0}.gui-studio-notice[data-gui-scope]>strong,.gui-studio-notice[data-gui-scope]>button{flex:none}
+.gui-collaboration-tabs{padding:6px 18px;border-bottom:1px solid var(--dsw-alias-border-l1,#dce1e9);flex:none}.gui-collaboration-tabs button{font:inherit;padding:6px 12px;background:var(--dsw-alias-bg-base,#fff);color:inherit;border:1px solid var(--dsw-alias-border-l1,#dce1e9);border-radius:8px;cursor:pointer}@media(max-width:1599px){.gui-collaboration-split{display:none}}
+/* Agent owns the right collaboration column; properties expand above it. */
+.gui-studio[data-collaboration=agent-first] .gui-editor-body{grid-template-columns:180px minmax(180px,1fr)}
+.gui-studio[data-collaboration=agent-first] .gui-editor-inspector{display:none}
+.gui-studio[data-collaboration=agent-first][data-properties-open=true] .gui-editor-inspector{display:flex!important;position:fixed;z-index:94;right:8px;top:58px;width:clamp(320px,30vw,440px);height:calc(var(--gui-properties-height) - 24px);box-sizing:border-box;visibility:visible;pointer-events:auto;overflow:auto;border-radius:0;padding:10px 12px}
+.gui-agent-properties-space{flex:none;box-sizing:border-box;position:relative;pointer-events:none}
+.gui-agent-properties-space input{position:absolute;bottom:2px;left:12px;width:calc(100% - 24px);height:18px;pointer-events:auto}
+.gui-agent-dock .gui-agent-focus{display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:6px 10px;max-height:110px;font-size:11px;flex:none;border-top:1px solid var(--dsw-alias-border-l1,#dce1e9)}
+.gui-agent-dock .gui-agent-focus button{font-size:11px;padding:3px 6px;margin:0}.gui-agent-focus [data-gui-action=locate-focus]{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.gui-agent-dock .gui-agent-focus small{width:100%;font-size:10px}
+@media(max-width:900px){.gui-studio[data-collaboration=agent-first][data-properties-open=true] .gui-editor-inspector{left:8px;right:8px;width:auto;height:min(calc(var(--gui-properties-height) - 24px),30vh)}.gui-agent-properties-space{max-height:calc(30vh + 24px)}}
+.gui-studio[data-collaboration=agent-first]{z-index:92}
+/* The layout overlay enables pointer events on direct children; the transparent
+   dock must let native conversation controls underneath receive clicks. */
+.gui-agent-dock[aria-label]{pointer-events:none}
+.gui-agent-dock>header{height:49px;min-height:49px;box-sizing:border-box;flex:none;padding:6px 10px}

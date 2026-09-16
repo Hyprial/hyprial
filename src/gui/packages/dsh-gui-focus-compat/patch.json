@@ -1,0 +1,23 @@
+{
+  "schema": "hyprial.dsh-gui-focus-compat/v1",
+  "patchVersion": 1,
+  "files": [
+    {
+      "package": "@deepseek-ai/dsh-client-ui-conversation",
+      "version": "0.1.5-rc.2",
+      "file": "lib/client.js",
+      "beforeSha256": "81314dfd95864f2522f8edb812e3f8e08b04a8ef2141913e6e8cbdaae1ffc37f",
+      "afterSha256": "aa80af66a873fc33dc7b8dda0d53610eb2627afccc13150a8fb4065cbb681381",
+      "replacements": [
+        {
+          "before": "\t\tvar ConversationController = class extends _deepseek_ai_cordis.Service {\n",
+          "after": "\t\tvar ConversationController = class extends _deepseek_ai_cordis.Service {\n\t\t\t/** Hyprial audited native composer context extension. */\n\t\t\tguiDesignContextVersion = 1;\n"
+        },
+        {
+          "before": "\t\t\tasync sendSession(session, text, attachmentIds, mode, signal) {\n",
+          "after": "\t\t\tasync sendSession(session, text, attachmentIds, mode, signal) {\n\t\t\t\t// Capture design focus at native submit admission; unrelated sessions remain unchanged.\n\t\t\t\tconst designContext = { sessionId: session.sessionId, text, contextText: \"\", signal };\n\t\t\t\ttry {\n\t\t\t\t\tawait this.ctx.parallel(\"gui-design/before-send\", designContext);\n\t\t\t\t} catch (error) {\n\t\t\t\t\tthrow error instanceof AggregateError ? error.errors[0] ?? error : error;\n\t\t\t\t}\n\t\t\t\tif (signal?.aborted) throw signal.reason ?? new Error(\"GUI design submission cancelled\");\n\t\t\t\tif (typeof designContext.contextText !== \"string\") throw new Error(\"GUI design context must be text\");\n\t\t\t\tif (designContext.contextText) text = designContext.contextText + \"\\n\\n\" + text;\n"
+        }
+      ]
+    }
+  ]
+}

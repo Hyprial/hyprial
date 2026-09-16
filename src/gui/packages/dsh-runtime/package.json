@@ -1,0 +1,9 @@
+{
+  "name": "@hyprial/gui-dsh-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "dependencies": {
+    "@deepseek-ai/dsh": "0.1.5-rc.1",
+    "pnpm": "11.24.0"
+  }
+}

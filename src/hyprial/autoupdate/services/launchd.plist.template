@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>{{LABEL}}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{{EXECUTABLE}}</string>
+    <string>autoupdate</string>
+    <string>run</string>
+    <string>--json</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>{{HOME}}</string>
+    <key>PATH</key>
+    <string>{{PATH}}</string>
+    <key>HYPRIAL_HOME</key>
+    <string>{{HYPRIAL_HOME}}</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict>
+      <key>Hour</key>
+      <integer>{{HOUR_A}}</integer>
+      <key>Minute</key>
+      <integer>{{MINUTE_A}}</integer>
+    </dict>
+    <dict>
+      <key>Hour</key>
+      <integer>{{HOUR_B}}</integer>
+      <key>Minute</key>
+      <integer>{{MINUTE_B}}</integer>
+    </dict>
+  </array>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
+  <key>StandardOutPath</key>
+  <string>{{STDOUT_LOG}}</string>
+  <key>StandardErrorPath</key>
+  <string>{{STDERR_LOG}}</string>
+</dict>
+</plist>

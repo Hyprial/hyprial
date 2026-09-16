@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Internal compatibility name for existing GUI bridge argv. Users use hyprial.
+set -euo pipefail
+# Translate only in this child process. The GUI still uses its stable internal
+# names; the public CLI receives exclusively the current environment spelling.
+while IFS= read -r gui_legacy_name; do
+  case "$gui_legacy_name" in
+    H2B_*) gui_current_name="HYPRIAL_${gui_legacy_name#H2B_}" ;;
+    DSH_H2B_*) gui_current_name="DSH_HYPRIAL_${gui_legacy_name#DSH_H2B_}" ;;
+    *) continue ;;
+  esac
+  if [[ ! ${!gui_current_name+x} ]]; then
+    printf -v "$gui_current_name" '%s' "${!gui_legacy_name}"
+  fi
+  export "$gui_current_name"
+  unset "$gui_legacy_name"
+done < <(compgen -e)
+if [[ ! ${HYPRIAL_HOME+x} ]]; then
+  export HYPRIAL_HOME="$HOME/.hyprial"
+fi
+exec hyprial "$@"

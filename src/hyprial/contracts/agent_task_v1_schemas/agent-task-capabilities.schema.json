@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.hyprial.com/mfu/h2b-agent-task/v1/agent-task-capabilities.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocolVersion", "namespace", "operations", "features", "serviceIdentity"],
+  "properties": {
+    "protocolVersion": { "const": 1 },
+    "namespace": { "const": "mfu.agent-task.v1" },
+    "operations": {
+      "type": "array", "minItems": 6, "uniqueItems": true,
+      "contains": { "const": "agent.task.start" },
+      "items": { "enum": ["agent.task.capabilities", "agent.task.start", "agent.task.status", "agent.task.result", "agent.task.cancel", "agent.task.observe"] }
+    },
+    "features": {
+      "type": "object", "additionalProperties": false,
+      "required": ["externalRefIdempotency", "typedActivity", "explicitFinalResult", "durableResult", "multiTarget"],
+      "properties": {
+        "externalRefIdempotency": { "const": true },
+        "typedActivity": { "const": true },
+        "explicitFinalResult": { "const": true },
+        "durableResult": { "const": true },
+        "multiTarget": { "const": true }
+      }
+    },
+    "serviceIdentity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["actorName", "actorUri", "binding"],
+      "properties": {
+        "actorName": { "const": "mfu-coordinator" },
+        "actorUri": { "$ref": "common.schema.json#/$defs/agentUri" },
+        "binding": { "const": "daemon-managed" }
+      }
+    }
+  }
+}

@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.hyprial.com/mfu/h2b-agent-task/v1/common.schema.json",
+  "$defs": {
+    "boundedId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^[^\\u0000-\\u001f]+$"
+    },
+    "targetRef": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9._-]+$"
+    },
+    "agentUri": {
+      "type": "string",
+      "minLength": 9,
+      "maxLength": 512,
+      "pattern": "^agent:[A-Za-z0-9._-]+:[A-Za-z0-9._-]+:[A-Za-z0-9._-]+$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "instant": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$"
+    },
+    "artifactRef": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": { "const": "path" },
+            "value": { "type": "string", "minLength": 1, "maxLength": 2000, "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$" }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": { "const": "url" },
+            "value": { "type": "string", "minLength": 9, "maxLength": 2000, "pattern": "^https://" }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": { "const": "text" },
+            "value": { "type": "string", "minLength": 1, "maxLength": 2000 }
+          }
+        }
+      ]
+    },
+    "targetInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["targetRef", "target", "role", "delegates"],
+      "properties": {
+        "targetRef": { "$ref": "#/$defs/targetRef" },
+        "target": { "$ref": "#/$defs/agentUri" },
+        "role": { "enum": ["owner", "participant"] },
+        "delegates": {
+          "type": "array",
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/agentUri" }
+        }
+      }
+    },
+    "targetProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["targetRef", "target", "conversationId", "attempts", "state", "resultRef"],
+      "properties": {
+        "targetRef": { "$ref": "#/$defs/targetRef" },
+        "target": { "$ref": "#/$defs/agentUri" },
+        "conversationId": {
+          "oneOf": [{ "$ref": "#/$defs/boundedId" }, { "type": "null" }]
+        },
+        "attempts": { "type": "integer", "minimum": 0 },
+        "state": {
+          "enum": ["reserved", "dispatching", "running", "waiting", "completed", "failed", "cancelled"]
+        },
+        "resultRef": {
+          "oneOf": [{ "$ref": "#/$defs/boundedId" }, { "type": "null" }]
+        }
+      }
+    }
+  }
+}

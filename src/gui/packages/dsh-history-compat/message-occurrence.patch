@@ -1,0 +1,17 @@
+diff --git a/packages/client/ui-chat/src/client/conversation-nodes/message.ts b/packages/client/ui-chat/src/client/conversation-nodes/message.ts
+--- a/packages/client/ui-chat/src/client/conversation-nodes/message.ts
++++ b/packages/client/ui-chat/src/client/conversation-nodes/message.ts
+@@ -47,7 +47,12 @@ export const messageDefinition: ConversationNodeDefinition<MessageNode> = {
+   match: event => event.type === 'user/message'
+     && isAppendSurfaceEvent(event)
+     && !isCompactionCheckpoint(event)
+-    ? { id: String(event.data.id), role: 'start' }
++    ? {
++      // A durable occurrence is distinct from its transport message identity.
++      // Re-delivery may append the same message ID at another sequence.
++      id: JSON.stringify([String(event.data.id), event.seq]),
++      role: 'start',
++    }
+     : null,
+   start: (_context, match, reader) => {
+     if (match.event.type !== 'user/message') throw new Error('input-message start requires user/message')

@@ -1,0 +1,18 @@
+{
+  "schema": "hyprial.codex-package/v1",
+  "name": "dsh-codex",
+  "version": "0.2.7-hyprial.6",
+  "file": "dsh-codex-0.2.7-hyprial.6.tgz",
+  "sha256": "c1651e04a1a836b38cf725009f36608d3c1b54c04ec12c62d1a6ad90bc8f843e",
+  "piAiVersion": "0.84.4",
+  "sourceSha256": "d73cf5e4c44d283ba7584ac0899d71031b3d218ab86190a2fee97154f37a6597",
+  "buildDshVersion": "0.1.1-rc.2",
+  "compatibilityGate": "npm-latest",
+  "upstream": {
+    "repository": "https://github.com/Yan-Zero/dsh-codex",
+    "tag": "v0.2.7",
+    "commit": "6c6c2fd297c5f8be2e34f31d8d696f1931518822",
+    "license": "Apache-2.0",
+    "distribution": "GUI repository compatibility build; not published to public npm"
+  }
+}

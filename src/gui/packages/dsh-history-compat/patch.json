@@ -1,0 +1,67 @@
+{
+  "schema": "hyprial.dsh-history-compat/v1",
+  "upstreamCommit": "fb2c4b9e698e30edb738bca4cf0618587db7d203",
+  "patchVersion": 2,
+  "files": [
+    {
+      "package": "@deepseek-ai/dsh-client-ui-chat",
+      "version": "0.1.5-rc.2",
+      "file": "lib/client.js",
+      "beforeSha256": "6527556d25c7b2a27f2e3bfb96cc2ae3d9244f1213147e245b17684ad8d9e396",
+      "afterSha256": "adcdbfda652968b65a743d4b646b99cc4656dfd4cb74e1bcd8ab8188cf75f72b",
+      "replacements": [
+        {
+          "before": "\t\t\tmatch: (event) => event.type === \"user/message\" && isAppendSurfaceEvent(event) && !isCompactionCheckpoint(event) ? {\n\t\t\t\tid: String(event.data.id),\n\t\t\t\trole: \"start\"",
+          "after": "\t\t\tmatch: (event) => event.type === \"user/message\" && isAppendSurfaceEvent(event) && !isCompactionCheckpoint(event) ? {\n\t\t\t\t// A durable occurrence is distinct from its transport message identity.\n\t\t\t\t// Re-delivery may append the same message ID at another sequence.\n\t\t\t\tid: JSON.stringify([String(event.data.id), event.seq]),\n\t\t\t\trole: \"start\""
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-session-format-v0-to-v1",
+      "version": "0.1.5-rc.2",
+      "file": "lib/index.js",
+      "beforeSha256": "15ae26b90310d83b1b90a5e7cad9e2f34282fddaba2f19f2fd2232382065603d",
+      "afterSha256": "c71d1f4cc7c1148f33b2ea051824fc1679cb18dfeb6b015d6a2f8526f5fc2869",
+      "replacements": [
+        {
+          "before": "literalValue(data[\"version\"], [3], `${label} version`);",
+          "after": "literalValue(data[\"version\"], [2, 3], `${label} version`);\n\tif (data[\"version\"] === 2 && Object.hasOwn(data, \"agentReasoningEffort\")) throw new SessionFormatError(`${label} version 2 cannot declare agentReasoningEffort`);"
+        },
+        {
+          "before": "event.type === \"subagent/descriptor\" && data[\"version\"] !== 3",
+          "after": "event.type === \"subagent/descriptor\" && data[\"version\"] !== 2 && data[\"version\"] !== 3"
+        },
+        {
+          "before": "\tfor (const key of [\n\t\t\"agentProvider\",\n\t\t\"agentModel\",\n\t\t\"agentReasoningEffort\",\n\t\t\"persona\"\n\t]) if (data[key] !== void 0) nonEmptyString(data[key], `${label} ${key}`);",
+          "after": "\tfor (const key of [\n\t\t\"agentProvider\",\n\t\t\"agentModel\",\n\t\t\"agentReasoningEffort\",\n\t\t\"persona\"\n\t]) if (data[key] !== void 0) {\n\t\tconst validate = key === \"persona\" && data[\"version\"] === 2 ? stringValue : nonEmptyString;\n\t\tvalidate(data[key], `${label} ${key}`);\n\t}"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-subagent",
+      "version": "0.1.5-rc.2",
+      "file": "lib/index.js",
+      "beforeSha256": "b8ea0e37bd6f1d9c4bd870c4ca03839f6d0e42f648a83578e31a448f6dffe4ef",
+      "afterSha256": "21d5796babd59b0a0531770beb73fae49337d622975f585c3e99279a62792670",
+      "replacements": [
+        {
+          "before": "if (version !== 3) return void 0;",
+          "after": "if (version !== 2 && version !== 3) return void 0;\n\tif (version === 2 && Object.hasOwn(value, \"agentReasoningEffort\")) throw new Error(\"persisted subagent descriptor version 2 cannot declare agentReasoningEffort\");"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-subagent",
+      "version": "0.1.5-rc.2",
+      "file": "lib/types/descriptor.js",
+      "beforeSha256": "c4be859381a6100f6a529c2f614454a5b50f9aae269f35bc6021bd6bf60cfcb4",
+      "afterSha256": "87adb477fef669e6f14c0fa26cc06c29e366e9ddc8eb5452f41903799a792f60",
+      "replacements": [
+        {
+          "before": "if (version !== SUBAGENT_DESCRIPTOR_VERSION)\n        return undefined;",
+          "after": "if (version !== 2 && version !== SUBAGENT_DESCRIPTOR_VERSION)\n        return undefined;\n    if (version === 2 && Object.hasOwn(value, \"agentReasoningEffort\")) {\n        throw new Error(\"persisted subagent descriptor version 2 cannot declare agentReasoningEffort\");\n    }"
+        }
+      ]
+    }
+  ]
+}

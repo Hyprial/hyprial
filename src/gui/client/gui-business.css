@@ -1,0 +1,44 @@
+.gui-session-library,.gui-contact-browser,.gui-contact-library,.gui-direct-browser{display:flex;flex-direction:column;gap:10px;min-width:0;min-height:0;padding:12px}
+.gui-session-library header,.gui-contact-browser header{display:flex;justify-content:space-between;align-items:center;gap:12px}
+.gui-session-library button,.gui-contact-library button{text-align:left;overflow-wrap:anywhere;padding:10px;border:1px solid var(--dsw-alias-border-l1,#dce1e9);border-radius:8px;background:var(--dsw-alias-bg-module-platform,#fff);color:var(--dsw-alias-label-primary,#172033)}
+.gui-contact-library small{display:block;overflow-wrap:anywhere;opacity:.7}
+.gui-session-library label,.gui-contact-library label{display:flex;flex-direction:column;gap:6px}
+.gui-session-library input,.gui-contact-library input{width:100%;box-sizing:border-box;min-width:0}
+.gui-direct-browser{flex:1}.gui-direct-browser .gui-module-placeholder{flex:1;min-height:320px}
+.gui-direct-browser>.gui-session-library{max-height:200px;overflow:auto;flex-shrink:0}.gui-direct-seat{display:flex;flex:1 0 400px;min-height:400px}
+.gui-profile-manager{display:flex;flex-direction:column;gap:12px;padding:12px;min-width:0}.gui-profile-manager article{border:1px solid var(--dsw-alias-border-l1,#dce1e9);border-radius:8px;padding:12px;overflow-wrap:anywhere}.gui-profile-manager button{margin:4px}
+.gui-kanban-data{padding:16px;min-width:0;overflow-wrap:anywhere}.gui-kanban-data header{display:flex;align-items:center;justify-content:space-between;gap:12px}.gui-kanban-data ul{list-style:none;padding:0}.gui-kanban-data li{padding:12px 0;border-bottom:1px solid var(--dsw-alias-border-l1,#dce1e9)}.gui-kanban-data code{display:block;overflow-wrap:anywhere}.gui-kanban-data pre{white-space:pre-wrap;overflow-wrap:anywhere}.gui-kanban-data dd{margin:0 0 12px}.gui-kanban-data dt{opacity:.65}.gui-kanban-data input{max-width:100%;box-sizing:border-box}
+[data-gui-module-instance]{container-type:inline-size;container-name:gui-module}
+.h2bapps-rail:empty{display:none}
+.gui-system-bar{max-width:calc(100vw - 24px);flex-wrap:wrap;justify-content:flex-end}.gui-system-bar [data-gui-action=studio]{min-width:0;max-width:min(260px,calc(100vw - 80px));overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@container gui-module (max-width:680px){.wb-layout{grid-template-columns:minmax(0,1fr)}.wb-library{max-height:220px;overflow:auto;border-right:0}.wb-workbench{padding:12px}.wb-detail{padding:12px}.wb-heading{flex-wrap:wrap}.h2bcontrol-grid{grid-template-columns:minmax(0,1fr)}}
+
+/* Each contact module owns bounded list/detail scroll regions, not viewport-sized children. */
+.gui-contact-browser{box-sizing:border-box;flex:1 1 0;height:100%;overflow:hidden;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-primary,#172033);container-type:inline-size;container-name:gui-contacts}
+.gui-contact-browser>header,.gui-contact-browser>[role=alert]{flex:none}
+.gui-contact-browser>header{flex-wrap:wrap}
+.gui-contact-content{display:grid;grid-template-columns:minmax(160px,36%) minmax(0,1fr);flex:1;min-height:0;min-width:0;gap:12px;overflow:hidden}
+.gui-contact-library{padding:0;overflow:auto;min-height:0;min-width:0;align-items:stretch}
+.gui-contact-library>*{flex-shrink:0}.gui-contact-library button{width:100%;box-sizing:border-box}
+.gui-contact-library button[aria-pressed=true]{outline:2px solid var(--dsw-static-blue-500,#3b82f6);outline-offset:-2px;background:var(--dsw-alias-interactive-bg-hover,#e9eef8)}
+.gui-contact-library input{padding:8px;border:1px solid var(--dsw-alias-border-l1,#dce1e9);border-radius:6px;background:var(--dsw-alias-bg-module-platform,#fff);color:var(--dsw-alias-label-primary,#172033)}
+.gui-contact-detail-pane{min-height:0;min-width:0;overflow:auto;border:1px solid var(--dsw-alias-border-l1,#dce1e9);border-radius:8px}
+.gui-contact-detail-pane .h2bcontact-detail{height:auto;min-height:100%;min-width:0}
+.gui-contact-detail-pane .h2bcontact-detail-body{flex:none;min-width:0;padding:16px;align-items:flex-start}
+.gui-contact-detail-pane .h2bcontact-card{min-width:0;padding:16px}.gui-contact-detail-pane .h2bcontact-card-top>div{min-width:0}.gui-contact-detail-pane .h2bcontact-card-name{overflow-wrap:anywhere}
+.gui-contact-browser[data-view=list] .gui-contact-content,.gui-contact-browser[data-view=detail] .gui-contact-content{grid-template-columns:minmax(0,1fr)}
+@container gui-contacts (max-width:600px){.gui-contact-content{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(100px,40%) minmax(0,1fr)}.gui-contact-browser[data-view=list] .gui-contact-content,.gui-contact-browser[data-view=detail] .gui-contact-content{grid-template-rows:minmax(0,1fr)}}
+
+.gui-contact-browser[data-native=true][data-view=detail]{padding:0;gap:0}.gui-contact-browser[data-native=true][data-view=detail] .gui-contact-detail-pane{border:0;border-radius:0}
+
+/* Reuse the native object browser and its state; hide workspace chrome only. */
+[data-gui-object-panel] .h2bapps-rail,[data-gui-object-panel] .h2bapps-collapsed,
+[data-gui-object-panel] [class*=_logoRow],[data-gui-object-panel] [class*=_footArea],
+[data-gui-object-panel] [class*=_panelList]{display:none!important}
+[data-gui-object-panel] .h2bapps-shell{display:flex;min-width:0;height:100%}
+[data-gui-object-panel] .h2bapps-secondary{width:100%;min-width:0;border-left:0}
+[data-gui-object-panel]:has([data-object-surface=contacts]) [class*=_newSession],
+[data-gui-object-panel]:has([data-object-surface=control]) [class*=_newSession]{display:none!important}
+.gui-object-toggle{flex-shrink:0;padding:7px 12px;border:1px solid var(--dsw-alias-border-l1,#dce1e9);border-radius:8px;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-primary,#172033);box-shadow:0 2px 8px #0002}
+.gui-object-backdrop{pointer-events:auto;position:fixed;inset:48px 0 0;z-index:19;border:0;background:#0005}
+.gui-top-navigation>button{flex-shrink:0;white-space:nowrap}

@@ -1,0 +1,65 @@
+[project]
+name = "hyprial"
+version = "0.4.5"
+description = "Harness Bridge: decentralized agent communication (Python rewrite)"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+dependencies = [
+    "cryptography",
+    "eclipse-zenoh==1.9.0",
+    "lark-oapi",
+    "jsonschema>=4.26,<5",
+    "mcp==2.0.0",
+    "packaging",
+    "PyYAML",
+    "typer",
+    "rich",
+    "pykka>=4.2,<5",
+]
+
+[project.scripts]
+hyprial = "hyprial.cli:main"
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.4,<9",
+    "pytest-xdist>=3.8,<4",
+    "ruff>=0.12,<1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hyprial"]
+
+[tool.ruff]
+target-version = "py312"
+# Repro artifacts under notes/repro are kept VERBATIM on purpose: their
+# value is byte-fidelity when re-run against future baselines (the PR #332
+# findings were re-read on f6598d1 with exactly these files).  Linting them
+# invites "fixing" a script whose shape is the evidence -- so they are out
+# of lint scope, not out of the tree.
+extend-exclude = ["notes/repro"]
+
+[tool.ruff.lint]
+# Mandatory Pyflakes plus structural pycodestyle hygiene.  F821 catches
+# exception classes referenced without being imported before tests exercise
+# the exceptional path.
+# W605 added 2026-09-13: a docstring in contract/migration-cutover/drill-run.py
+# recorded a `git grep -nE '\bexec...'` command, and because the docstring was
+# not raw, `\b` became a backspace and `\(` stayed literal -- so the command
+# the file documented was not the command that had been run. Nothing caught it:
+# the default rule set omits W605, and the drill ran under python 3.9 where the
+# warning is silenced. Enabling it was free: the whole repo had exactly one
+# occurrence, the one above.
+select = ["E4", "E7", "E9", "F", "W605"]
+
+[tool.ruff.lint.per-file-ignores]
+# Verbatim slice of 4fd2be7:src/h2b/daemon/application.py (see the file
+# header): unused imports/locals and names resolved elsewhere in the original
+# module are inherent to an excerpt.  "Fixing" them would break the
+# byte-for-byte agreement with the frozen source that
+# test_frozen_application_slice_matches_pre_liveness_history enforces.
+"tests/fixtures/pre-liveness-application-4fd2be7.py" = ["E", "F"]

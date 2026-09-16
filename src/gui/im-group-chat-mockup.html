@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>三人群聊 · UI 改造评审 — Mockup</title>
+<style>
+  :root {
+    --bg-base: #ffffff;
+    --bg-app: #f7f8fa;
+    --sidebar-fill: #f9fafb;
+    --bg-hover: rgba(38, 49, 72, 0.06);
+    --bg-active: rgba(65, 118, 230, 0.10);
+    --border-l1: rgba(0, 0, 0, 0.05);
+    --border-l2: rgba(0, 0, 0, 0.10);
+    --brand: #4176E6;
+    --brand-deep: #2f5cc0;
+    --brand-50: #edf3fe;
+    --user-bubble: #edf3fe;
+    --violet: #7c5cff;
+    --violet-deep: #6d28d9;
+    --label-primary: #1f2329;
+    --label-secondary: #646a73;
+    --label-tertiary: #8f959e;
+    --success: #22c55e;
+    --warn: #f59e0b;
+    --danger: #ef4444;
+    --radius-lg: 14px;
+    --radius-md: 10px;
+    --shadow-card: 0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.06);
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font-family: var(--font);
+    color: var(--label-primary);
+    background: var(--bg-app);
+    -webkit-font-smoothing: antialiased;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  .app { display: flex; height: 100vh; overflow: hidden; }
+
+  /* ---------- 左栏：会话列表 ---------- */
+  .sidebar {
+    width: 268px; flex: none;
+    background: var(--sidebar-fill);
+    border-right: 1px solid var(--border-l1);
+    display: flex; flex-direction: column;
+  }
+  .sidebar-head { padding: 14px 14px 8px; }
+  .brand { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 15px; }
+  .brand .fish { width: 24px; height: 24px; border-radius: 7px; background: linear-gradient(135deg, var(--brand), var(--brand-deep)); color: #fff; display: grid; place-items: center; font-size: 13px; }
+  .search {
+    margin-top: 12px; width: 100%; height: 34px; border: 1px solid var(--border-l1);
+    border-radius: 10px; background: var(--bg-base); padding: 0 12px; font-size: 13px; color: var(--label-primary);
+    outline: none; transition: box-shadow .15s;
+  }
+  .search:focus { box-shadow: 0 0 0 2px rgba(65, 118, 230, 0.18); border-color: var(--brand); }
+  .new-chat {
+    margin: 10px 14px 6px; height: 38px; border: 1px solid var(--border-l2); border-radius: 12px;
+    background: var(--bg-base); color: var(--label-primary); font-size: 14px; font-weight: 500;
+    display: flex; align-items: center; justify-content: center; gap: 6px; cursor: pointer;
+  }
+  .new-chat:hover { background: var(--bg-hover); }
+
+  .list { flex: 1; overflow-y: auto; padding: 4px 8px 12px; }
+  .section-label { padding: 12px 10px 6px; font-size: 12px; color: var(--label-tertiary); letter-spacing: .02em; }
+  .session-row {
+    display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: var(--radius-md);
+    cursor: pointer; position: relative;
+  }
+  .session-row:hover { background: var(--bg-hover); }
+  .session-row.active { background: var(--bg-active); }
+  .session-avatar {
+    width: 36px; height: 36px; flex: none; border-radius: 9px; display: grid; place-items: center;
+    color: #fff; font-size: 15px; font-weight: 600; position: relative;
+  }
+  .session-avatar.group { background: linear-gradient(135deg, #4f8bff, #4176E6); }
+  .session-avatar.violet { background: linear-gradient(135deg, var(--violet), var(--violet-deep)); }
+  .session-avatar.neutral { background: linear-gradient(135deg, #94a3b8, #64748b); }
+  .session-meta { flex: 1; min-width: 0; }
+  .session-title { display: flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .session-title .members { color: var(--label-tertiary); font-weight: 400; font-size: 12px; }
+  .session-preview { margin-top: 1px; font-size: 12.5px; color: var(--label-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .session-preview .who { color: var(--label-secondary); }
+  .session-side { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; flex: none; }
+  .session-time { font-size: 11px; color: var(--label-tertiary); }
+  .unread { min-width: 16px; height: 16px; padding: 0 5px; border-radius: 999px; background: var(--brand); color: #fff; font-size: 11px; display: grid; place-items: center; }
+
+  /* ---------- 中栏：群聊 ---------- */
+  .chat { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg-base); }
+  .chat-head { flex: none; display: flex; align-items: center; gap: 12px; padding: 14px 20px; border-bottom: 1px solid var(--border-l1); }
+  .chat-title-block { flex: 1; min-width: 0; }
+  .chat-title { font-size: 15px; font-weight: 600; }
+  .chat-subtitle { font-size: 12.5px; color: var(--label-tertiary); margin-top: 1px; }
+  .chat-subtitle b { color: var(--label-secondary); font-weight: 500; }
+  .head-actions { display: flex; align-items: center; gap: 6px; position: relative; }
+  .icon-btn { width: 32px; height: 32px; border-radius: 9px; display: grid; place-items: center; cursor: pointer; color: var(--label-secondary); border: none; background: transparent; font-size: 16px; }
+  .icon-btn:hover { background: var(--bg-hover); }
+  .contacts-card { position:absolute; right:0; top:40px; z-index:20; width:350px; background:var(--bg-base); border:1px solid var(--border-l2); border-radius:14px; box-shadow:0 12px 32px rgba(16,24,40,.14); padding:10px; }
+  .contacts-head { display:flex; align-items:center; justify-content:space-between; padding:2px 4px 8px; font-weight:600; }
+  .contacts-head span { color:var(--brand); font-size:12px; font-weight:500; }
+  .contacts-search { width:100%; height:32px; border:1px solid var(--border-l2); border-radius:8px; padding:0 9px; margin-bottom:6px; }
+  .contact-row { display:flex; align-items:center; gap:9px; padding:8px; border-radius:9px; }
+  .contact-row:hover { background:var(--bg-hover); }
+  .contact-avatar { width:32px; height:32px; border-radius:9px; color:#fff; background:linear-gradient(135deg,var(--violet),var(--violet-deep)); display:grid; place-items:center; position:relative; }
+  .contact-avatar::after { content:""; position:absolute; right:-2px; bottom:-2px; width:8px; height:8px; border:2px solid #fff; border-radius:50%; background:var(--success); }
+  .contact-main { flex:1; min-width:0; }
+  .contact-name { font-size:13px; font-weight:500; }
+  .contact-uri { font-size:11px; color:var(--label-tertiary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .contact-kind { font-size:10px; color:var(--label-tertiary); background:var(--bg-hover); border-radius:999px; padding:1px 6px; }
+
+  .messages { flex: 1; overflow-y: auto; padding: 18px 24px 10px; }
+  .day-divider { text-align: center; margin: 4px 0 18px; }
+  .day-divider span { font-size: 12px; color: var(--label-tertiary); background: var(--bg-app); padding: 3px 10px; border-radius: 999px; }
+
+  .msg { display: flex; gap: 10px; margin-bottom: 16px; max-width: 720px; }
+  .msg.user { flex-direction: row-reverse; margin-left: auto; }
+  .msg .avatar {
+    width: 36px; height: 36px; flex: none; border-radius: 9px; display: grid; place-items: center;
+    color: #fff; font-size: 14px; font-weight: 600; margin-top: 2px;
+  }
+  .msg .avatar.agent { background: linear-gradient(135deg, var(--brand), var(--brand-deep)); }
+  .msg .avatar.subagent { background: linear-gradient(135deg, var(--violet), var(--violet-deep)); }
+  .msg .avatar.me { background: linear-gradient(135deg, #4f8bff, #4176E6); }
+  .msg-body { min-width: 0; }
+  .msg.user .msg-body { display: flex; flex-direction: column; align-items: flex-end; }
+  .msg-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 3px; }
+  .msg.user .msg-head { flex-direction: row-reverse; }
+  .msg-name { font-size: 13px; font-weight: 600; }
+  .msg-name.subagent { color: var(--violet-deep); }
+  .msg-role { font-size: 11px; color: var(--label-tertiary); }
+  .msg-time { font-size: 11.5px; color: var(--label-tertiary); }
+  .bubble {
+    padding: 9px 13px; border-radius: 12px; font-size: 14px; line-height: 1.6;
+    background: var(--bg-app); border: 1px solid var(--border-l1); max-width: 100%;
+  }
+  .msg.user .bubble { background: var(--user-bubble); border-color: transparent; }
+  .bubble p { margin: 0; }
+  .bubble p + p { margin-top: 6px; }
+
+  /* 子智能体状态条 + 折叠过程 */
+  .status-pill { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; padding: 2px 9px; border-radius: 999px; font-weight: 500; }
+  .status-pill.running { background: #fef3c7; color: #b45309; }
+  .status-pill.done { background: #dcfce7; color: #15803d; }
+  .status-pill .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .status-pill.running .dot { animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+
+  .folded {
+    margin-top: 8px; border: 1px dashed var(--border-l2); border-radius: 9px; background: var(--bg-base);
+    font-size: 12.5px; cursor: pointer; overflow: hidden;
+  }
+  .folded-summary { display: flex; align-items: center; gap: 7px; padding: 7px 10px; color: var(--label-secondary); }
+  .folded-summary .chev { transition: transform .15s; color: var(--label-tertiary); }
+  .folded.open .folded-summary .chev { transform: rotate(90deg); }
+  .folded-summary .steps { color: var(--label-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .folded-detail { display: none; border-top: 1px solid var(--border-l1); padding: 8px 10px; }
+  .folded.open .folded-detail { display: block; }
+  .step { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 12.5px; color: var(--label-secondary); }
+  .step .mark { width: 16px; height: 16px; border-radius: 50%; display: grid; place-items: center; font-size: 10px; flex: none; }
+  .step.done .mark { background: #dcfce7; color: #15803d; }
+  .step.active .mark { background: #fef3c7; color: #b45309; }
+
+  /* ---------- 输入区 ---------- */
+  .composer-wrap { flex: none; padding: 10px 24px 16px; }
+  .composer {
+    max-width: 720px; margin: 0 auto; border: 1px solid var(--border-l2); border-radius: 18px;
+    background: var(--bg-base); box-shadow: var(--shadow-card); padding: 10px 12px 8px;
+  }
+  .mention-chip { display: inline-flex; align-items: center; gap: 6px; background: var(--brand-50); color: var(--brand-deep); font-size: 12.5px; font-weight: 500; padding: 3px 9px; border-radius: 8px; margin: 0 2px 8px 0; cursor: pointer; }
+  .mention-chip .x { opacity: .55; }
+  .composer textarea { width: 100%; border: none; outline: none; resize: none; font-family: inherit; font-size: 14px; color: var(--label-primary); background: transparent; line-height: 1.5; }
+  .composer-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 2px; }
+  .composer-tools { display: flex; gap: 4px; }
+  .tool-btn { width: 28px; height: 28px; border-radius: 8px; border: none; background: transparent; cursor: pointer; color: var(--label-tertiary); font-size: 15px; display: grid; place-items: center; }
+  .tool-btn:hover { background: var(--bg-hover); color: var(--label-secondary); }
+  .send-btn { height: 32px; padding: 0 18px; border: none; border-radius: 9px; background: var(--brand); color: #fff; font-size: 13.5px; font-weight: 500; cursor: pointer; }
+  .send-btn:hover { background: var(--brand-deep); }
+
+  /* ---------- 右栏：话题/详情 ---------- */
+  .details { width: 316px; flex: none; background: var(--bg-base); border-left: 1px solid var(--border-l1); display: flex; flex-direction: column; }
+  .details.hidden { display: none; }
+  .details-head { flex: none; display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid var(--border-l1); }
+  .details-title { font-size: 14px; font-weight: 600; }
+  .details-body { flex: 1; overflow-y: auto; padding: 16px; }
+  .person { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .person .avatar { width: 40px; height: 40px; border-radius: 10px; background: linear-gradient(135deg, var(--violet), var(--violet-deep)); color: #fff; display: grid; place-items: center; font-weight: 600; }
+  .person-name { font-size: 14.5px; font-weight: 600; }
+  .person-sub { font-size: 12px; color: var(--label-tertiary); margin-top: 1px; }
+  .detail-section { margin-top: 18px; }
+  .detail-section h4 { margin: 0 0 8px; font-size: 12px; font-weight: 600; color: var(--label-tertiary); text-transform: uppercase; letter-spacing: .04em; }
+  .meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .meta-cell { background: var(--bg-app); border: 1px solid var(--border-l1); border-radius: 9px; padding: 8px 10px; }
+  .meta-cell .k { font-size: 11px; color: var(--label-tertiary); }
+  .meta-cell .v { font-size: 13px; font-weight: 600; margin-top: 1px; }
+  .detail-actions { display: flex; gap: 8px; margin-top: 18px; }
+  .detail-actions button { flex: 1; height: 34px; border-radius: 9px; border: 1px solid var(--border-l2); background: var(--bg-base); font-size: 13px; cursor: pointer; color: var(--label-primary); }
+  .detail-actions button:hover { background: var(--bg-hover); }
+  .detail-actions button.primary { background: var(--brand); color: #fff; border-color: transparent; }
+  .detail-actions button.primary:hover { background: var(--brand-deep); }
+
+  .mock-badge {
+    position: fixed; top: 12px; right: 12px; z-index: 50; font-size: 11px; font-weight: 600;
+    background: rgba(15,17,21,.72); color: #fff; padding: 4px 10px; border-radius: 999px; letter-spacing: .03em;
+  }
+</style>
+</head>
+<body>
+  <div class="mock-badge">STATIC MOCKUP · 静态示意</div>
+  <div class="app">
+    <!-- 左栏 -->
+    <aside class="sidebar">
+      <div class="sidebar-head">
+        <div class="brand"><span class="fish">🦈</span>DeepSeek Harness</div>
+        <input class="search" placeholder="搜索会话…" />
+      </div>
+      <button class="new-chat">＋ 新建群聊</button>
+      <div class="list">
+        <div class="section-label">置顶</div>
+        <div class="session-row active">
+          <div class="session-avatar group">群</div>
+          <div class="session-meta">
+            <div class="session-title">UI 改造评审 <span class="members">· 3</span></div>
+            <div class="session-preview"><span class="who">阿澜：</span>满意，先做一个 HTML mockup</div>
+          </div>
+          <div class="session-side"><span class="session-time">14:02</span><span class="unread">3</span></div>
+        </div>
+        <div class="section-label">最近</div>
+        <div class="session-row">
+          <div class="session-avatar violet">澜</div>
+          <div class="session-meta">
+            <div class="session-title">阿澜 · 私聊</div>
+            <div class="session-preview">我可以并行处理多个评审</div>
+          </div>
+          <div class="session-side"><span class="session-time">13:47</span></div>
+        </div>
+        <div class="session-row">
+          <div class="session-avatar neutral">产</div>
+          <div class="session-meta">
+            <div class="session-title">产品组 <span class="members">· 5</span></div>
+            <div class="session-preview"><span class="who">你：</span>发一下本周 demo</div>
+          </div>
+          <div class="session-side"><span class="session-time">昨天</span></div>
+        </div>
+        <div class="session-row">
+          <div class="session-avatar neutral">工</div>
+          <div class="session-meta">
+            <div class="session-title">我的 AI 工作台</div>
+            <div class="session-preview">已归档 12 个任务</div>
+          </div>
+          <div class="session-side"><span class="session-time">周二</span></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- 中栏 -->
+    <main class="chat">
+      <div class="chat-head">
+        <div class="chat-title-block">
+          <div class="chat-title">UI 改造评审</div>
+          <div class="chat-subtitle">3 名成员 · <b>你</b> · <b>主智能体</b> · <b>阿澜</b></div>
+        </div>
+        <div class="head-actions">
+          <button class="icon-btn" title="h2b 通讯录">👥</button>
+          <button class="icon-btn" title="搜索">🔍</button>
+          <button class="icon-btn" title="更多">⋮</button>
+          <div class="contacts-card">
+            <div class="contacts-head">h2b 通讯录 <span>刷新</span></div>
+            <input class="contacts-search" placeholder="搜索名称、地址或类型" />
+            <div class="contact-row">
+              <div class="contact-avatar">监</div>
+              <div class="contact-main"><div class="contact-name">kanban-watcher</div><div class="contact-uri">agent:alice:workstation.example.net:kanban-watcher</div></div>
+              <span class="contact-kind">agent</span>
+            </div>
+            <div class="contact-row">
+              <div class="contact-avatar" style="background:linear-gradient(135deg,#4f8bff,#4176E6)">工</div>
+              <div class="contact-main"><div class="contact-name">cc-worker</div><div class="contact-uri">agent:huangjiajia:LAPTOP-E0QGQ218:cc-worker</div></div>
+              <span class="contact-kind">agent</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="messages">
+        <div class="day-divider"><span>今天 14:00</span></div>
+
+        <div class="msg user">
+          <div class="avatar me">我</div>
+          <div class="msg-body">
+            <div class="msg-head"><span class="msg-name">你</span><span class="msg-time">14:00</span></div>
+            <div class="bubble"><p>把当前 UI 改成飞书式 IM，再加个 subagent 变三人群聊，先画个线框图看看。</p></div>
+          </div>
+        </div>
+
+        <div class="msg">
+          <div class="avatar agent">DS</div>
+          <div class="msg-body">
+            <div class="msg-head"><span class="msg-name">主智能体</span><span class="msg-role">DeepSeek</span><span class="msg-time">14:01</span></div>
+            <div class="bubble"><p>可以。我先派一位「体验顾问」阿澜，以第三人身份评审这个方案。</p></div>
+          </div>
+        </div>
+
+        <div class="msg">
+          <div class="avatar subagent">澜</div>
+          <div class="msg-body">
+            <div class="msg-head">
+              <span class="msg-name subagent">阿澜</span>
+              <span class="msg-role">子智能体 · 体验顾问</span>
+              <span class="status-pill done"><span class="dot"></span>完成 · 12s</span>
+              <span class="msg-time">14:02</span>
+            </div>
+            <div class="bubble">
+              <div class="folded" id="folded">
+                <div class="folded-summary">
+                  <span class="chev">▸</span>过程：<span class="steps">读方案 → 分析价值与风险 → 拟结论</span>
+                </div>
+                <div class="folded-detail">
+                  <div class="step done"><span class="mark">✓</span>读取方案（继承会话上下文）</div>
+                  <div class="step done"><span class="mark">✓</span>分析「三人群聊」的价值与风险</div>
+                  <div class="step done"><span class="mark">✓</span>拟结论（3 点建议）</div>
+                </div>
+              </div>
+              <p style="margin-top:8px"><b>结论：</b>最有价值的是把「躲在 subagent 工具卡里的并行工作」外显成可见、可打断、可纠偏的一等参与者。最大的坑是「假平等 + 噪音」——主↔子九成是机器往返，平铺进时间线会淹没用户。建议：分层不混流、先给人设、折叠中间往返。</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="msg">
+          <div class="avatar agent">DS</div>
+          <div class="msg-body">
+            <div class="msg-head"><span class="msg-name">主智能体</span><span class="msg-role">DeepSeek</span><span class="msg-time">14:02</span></div>
+            <div class="bubble"><p>阿澜这个方向比「平铺三气泡」更经得起推敲。我把它落到线框里了，你看下。</p></div>
+          </div>
+        </div>
+
+        <div class="msg user">
+          <div class="avatar me">我</div>
+          <div class="msg-body">
+            <div class="msg-head"><span class="msg-name">你</span><span class="msg-time">14:03</span></div>
+            <div class="bubble"><p>满意，先做一个 HTML mockup 我看一下。</p></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="composer-wrap">
+        <div class="composer">
+          <span class="mention-chip">@阿澜 <span class="x">✕</span></span>
+          <textarea rows="1" placeholder="输入消息…（Enter 发送）"></textarea>
+          <div class="composer-foot">
+            <div class="composer-tools">
+              <button class="tool-btn" title="附件">📎</button>
+              <button class="tool-btn" title="表情">😊</button>
+              <button class="tool-btn" title="@子agent">@</button>
+            </div>
+            <button class="send-btn">发送</button>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- 右栏 -->
+    <aside class="details" id="details">
+      <div class="details-head">
+        <div class="details-title">话题 / 详情</div>
+        <button class="icon-btn" id="detailsClose" title="关闭">✕</button>
+      </div>
+      <div class="details-body">
+        <div class="person">
+          <div class="avatar">澜</div>
+          <div>
+            <div class="person-name">阿澜 <span class="status-pill done"><span class="dot"></span>完成</span></div>
+            <div class="person-sub">子智能体 · 体验顾问</div>
+          </div>
+        </div>
+
+        <div class="detail-section">
+          <h4>完整过程</h4>
+          <div class="step done"><span class="mark">✓</span>读取方案（继承会话上下文）</div>
+          <div class="step done"><span class="mark">✓</span>分析「三人群聊」的价值与风险</div>
+          <div class="step done"><span class="mark">✓</span>拟结论（3 点建议）</div>
+        </div>
+
+        <div class="detail-section">
+          <h4>结论</h4>
+          <div class="bubble" style="background:var(--bg-app)">最有价值的是把并行工作外显成可读、可打断、可纠偏的一等参与者；最大的坑是「假平等 + 噪音」。建议：分层不混流、先给人设、折叠中间往返。</div>
+        </div>
+
+        <div class="detail-section">
+          <h4>元信息</h4>
+          <div class="meta-grid">
+            <div class="meta-cell"><div class="k">耗时</div><div class="v">12s</div></div>
+            <div class="meta-cell"><div class="k">Tokens</div><div class="v">129</div></div>
+            <div class="meta-cell"><div class="k">会话</div><div class="v">继承本群</div></div>
+            <div class="meta-cell"><div class="k">状态</div><div class="v">已交付</div></div>
+          </div>
+        </div>
+
+        <div class="detail-actions">
+          <button>重新运行</button>
+          <button class="primary">在群聊中查看</button>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <script>
+    // 会话列表选中态
+    document.querySelectorAll('.session-row').forEach(function (row) {
+      row.addEventListener('click', function () {
+        document.querySelectorAll('.session-row').forEach(function (r) { r.classList.remove('active'); });
+        row.classList.add('active');
+      });
+    });
+    // 折叠过程展开/收起
+    document.getElementById('folded').addEventListener('click', function () {
+      this.classList.toggle('open');
+    });
+    // 关闭详情栏
+    document.getElementById('detailsClose').addEventListener('click', function () {
+      document.getElementById('details').classList.toggle('hidden');
+    });
+  </script>
+</body>
+</html>

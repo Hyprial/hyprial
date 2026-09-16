@@ -1,0 +1,27 @@
+version: 1
+name: selfdrive
+schedule:
+  interval: 15m
+source:
+  kind: pac-journal
+  idle_threshold: 30m
+policy:
+  routes:
+    - { tag: "route:worker", target_from: "tagarg" }
+    - { tag: "route:self", target: "self" }
+    - { tag: "route:human", escalate_to: "{{escalate_to}}" }
+  default: escalate
+  task_template: |
+    你被 routine 唤醒:{{reason}}
+    【自驱任务 {{nonce}}】{{task.description}}
+    (task {{task.uuid}},标签:{{task.tags}})
+    完成后回复以 "DONE {{nonce}}" 开头;做不了回复 "BLOCKED {{nonce}}" 加原因。
+limits:
+  max_in_flight: 3
+  circuit_breaker:
+    window_runs: 5
+    escalate_ratio: 1.0
+    action: "pause+alarm"
+on_task_timeout:
+  action: escalate
+  escalate_to: "{{escalate_to}}"

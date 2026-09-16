@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.hyprial.com/mfu/h2b-agent-task/v1/activity-envelope.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "eventId", "runId", "targetRef", "conversationId", "kind", "at", "payload"],
+  "properties": {
+    "schemaVersion": { "const": "hyprial.agent-task.event/v1" },
+    "eventId": { "$ref": "common.schema.json#/$defs/boundedId" },
+    "runId": { "$ref": "common.schema.json#/$defs/boundedId" },
+    "targetRef": { "$ref": "common.schema.json#/$defs/targetRef" },
+    "conversationId": { "$ref": "common.schema.json#/$defs/boundedId" },
+    "kind": { "enum": ["progress", "question", "blocked", "result.submitted"] },
+    "at": { "$ref": "common.schema.json#/$defs/instant" },
+    "payload": { "type": "object" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "kind": { "const": "progress" } } },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object", "additionalProperties": false,
+            "required": ["summary", "percent", "phase"],
+            "properties": {
+              "summary": { "type": "string", "minLength": 1, "maxLength": 2000 },
+              "percent": { "oneOf": [{ "type": "number", "minimum": 0, "maximum": 100 }, { "type": "null" }] },
+              "phase": { "oneOf": [{ "type": "string", "minLength": 1, "maxLength": 240 }, { "type": "null" }] }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "question" } } },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object", "additionalProperties": false,
+            "required": ["question", "blocking", "responseFormat"],
+            "properties": {
+              "question": { "type": "string", "minLength": 1, "maxLength": 4000 },
+              "blocking": { "type": "boolean" },
+              "responseFormat": { "oneOf": [{ "type": "string", "minLength": 1, "maxLength": 1000 }, { "type": "null" }] }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "blocked" } } },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object", "additionalProperties": false,
+            "required": ["summary", "blockers", "retryable"],
+            "properties": {
+              "summary": { "type": "string", "minLength": 1, "maxLength": 2000 },
+              "blockers": { "type": "array", "minItems": 1, "maxItems": 100, "items": { "type": "string", "minLength": 1, "maxLength": 2000 } },
+              "retryable": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "result.submitted" } } },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object", "additionalProperties": false,
+            "required": ["resultRef", "resultDigest", "result", "artifactRefs"],
+            "properties": {
+              "resultRef": { "$ref": "common.schema.json#/$defs/boundedId" },
+              "resultDigest": { "$ref": "common.schema.json#/$defs/digest" },
+              "result": { "$ref": "mfu-work-result.schema.json" },
+              "artifactRefs": { "type": "array", "maxItems": 100, "items": { "$ref": "common.schema.json#/$defs/artifactRef" } }
+            }
+          }
+        }
+      }
+    }
+  ]
+}
