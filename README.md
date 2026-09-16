@@ -1,4 +1,4 @@
-# Harness Bridge
+# hyprial
 
 面向 AI agent 与其运行 harness 的去中心 durable 通信层。
 
@@ -7,8 +7,7 @@
 
 ## 简介
 
-Harness Bridge（命令名 `hyprial`）让分布在不同 harness、进程和机器上的
-AI agent 通过统一的消息协议协作。daemon 持有去中心化的 durable inbox 和
+hyprial 让分布在不同 harness、进程和机器上的 AI agent 通过统一的消息协议协作。daemon 持有去中心化的 durable inbox 和
 路由状态；connector 把 Claude Code、Codex、Pi 等 harness 接入同一网络；
 adapter 再把 Lark 等外部平台接到相同的消息面。
 
@@ -19,11 +18,11 @@ adapter 再把 Lark 等外部平台接到相同的消息面。
 
 ## Quickstart
 
-前置条件：Python 3.12+、[uv](https://docs.astral.sh/uv/) 和内部 Forgejo 的
-SSH 访问权限。当前分发仍来自内部仓库；本次 README 改写不改变分发边界。
+前置条件：Python 3.12+ 和 [uv](https://docs.astral.sh/uv/)。分发走公网发布仓
+[`Hyprial/hyprial`](https://github.com/Hyprial/hyprial)，安装不需要内网访问权限。
 
 ```sh
-uv tool install git+ssh://git@git.internal.hyprial.com/HyprialOS/harness-bridge.git@<version-tag>
+uv tool install git+https://github.com/Hyprial/hyprial.git@<version-tag>
 hyprial version --json
 hyprial init
 hyprial doctor
@@ -34,7 +33,7 @@ hyprial doctor
 机器仍可单独运行 `hyprial login` 重新登录。也可以从 login 开始：
 
 ```sh
-uv tool install git+ssh://git@git.internal.hyprial.com/HyprialOS/harness-bridge.git@<version-tag>
+uv tool install git+https://github.com/Hyprial/hyprial.git@<version-tag>
 hyprial login
 hyprial doctor
 ```
@@ -47,8 +46,9 @@ hyprial doctor
 
 ## 安装
 
-正式安装必须钉 Forgejo 上的版本 tag；不要把 `dev` 当作版本来源。可执行文件
-`hyprial` 默认安装到 `~/.local/bin`，请确保该目录在 `PATH` 中。
+正式安装必须钉[公网发布仓](https://github.com/Hyprial/hyprial/releases)上的版本 tag；
+不要把 `dev` 当作版本来源。可执行文件 `hyprial` 默认安装到 `~/.local/bin`，
+请确保该目录在 `PATH` 中。
 
 当前没有需要迁移的旧 TypeScript 主机，也不再提供旧状态迁移。若意外发现仍装有
 旧版的机器，不要覆盖安装：先停止并删除旧版、归档其状态目录，再按全新主机安装。
@@ -58,10 +58,13 @@ hyprial doctor
 不会切换到 `dev`：
 
 ```sh
-uv tool install --force git+ssh://git@git.internal.hyprial.com/HyprialOS/harness-bridge.git@v0.4.0
+uv tool install --force git+https://github.com/Hyprial/hyprial.git@v0.4.0
 ```
 
-### 取源慢／认证失败的诊断与应急 ssh 改写
+### 取源慢／认证失败的诊断与应急 ssh 改写（内网开发者适用）
+
+> 本节只适用于 catalog 仍指向内部 Forgejo 的场景，也就是已加入开发内网的贡献者。
+> 从公网发布仓安装 hyprial 本身不经过下面这些地址。
 
 `hyprial install <app>` 从 catalog 钉住的 git 源取应用，走 `code.hyprial.com` 的 https。
 两类失败会在原始报错之后追加提示：
@@ -126,6 +129,11 @@ env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=url.ssh://git@git.internal.hyprial.com/.
 
 ## Development
 
+> **开发仍在内部网络进行。** 下面的 clone 地址是内网 Forgejo，只有已加入开发内网的
+> 机器能够访问；公网发布仓只承载发行版本，不接收补丁。
+> **希望贡献代码，请先联系 maintainer 申请加入开发内网**，拿到内网访问权限后再执行下面的步骤。
+> 在此之前可以通过公网发布仓的 issue 反馈问题。
+
 ```sh
 git clone ssh://git@git.internal.hyprial.com/HyprialOS/harness-bridge.git
 cd harness-bridge
@@ -153,7 +161,10 @@ GUI 的 CI 位于 `.forgejo/workflows/gui.yml`；源码发布包构建及隔离�
 [GUI 合仓实施记录](docs/gui-migration/implementation.md)。源码合仓尚不代表公开
 catalog 或现有用户安装已切换，发行切换条件也记录在该文档中。
 
-欢迎提交问题和补丁。开发环境、测试要求、提交范围以及仓库现有 agent/harness
+欢迎提交问题和补丁。**补丁需要开发内网访问权限** —— 请先联系 maintainer 申请加入，
+流程见上面的 [Development](#development)；在此之前可以在
+[公网发布仓](https://github.com/Hyprial/hyprial/issues)提 issue。
+开发环境、测试要求、提交范围以及仓库现有 agent/harness
 约定见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## License
