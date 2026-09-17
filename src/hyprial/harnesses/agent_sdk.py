@@ -182,9 +182,16 @@ class IsolatedAgentSdkClient:
                 "harness-bridge": worker_channel.mcp_server
             }
             self.options["allowedTools"] = list(worker_channel.allowed_tools)
+        identity_environment = (
+            worker_channel.identity_environment() if worker_channel is not None else {}
+        )
         self._env = {
             **base_environment,
             **provider_environment,
+            # Same daemon-bound identity the pi carrier gets (PAC fenced writes
+            # and any shell-out to `hyprial` need it in the worker's own env);
+            # explicit whitelist items, see WorkerChannel.identity_environment.
+            **identity_environment,
             "HYPRIAL_AGENT_SDK_OPTIONS": json.dumps(
                 self.options,
                 separators=(",", ":"),
@@ -204,6 +211,7 @@ class IsolatedAgentSdkClient:
                 env_delta={
                     **(env or {}),
                     **provider_environment,
+                    **identity_environment,
                     "HYPRIAL_AGENT_SDK_OPTIONS": self._env[
                         "HYPRIAL_AGENT_SDK_OPTIONS"
                     ],

@@ -44,6 +44,31 @@ class WorkerChannel:
     mcp_server: dict[str, object]
     allowed_tools: tuple[str, ...]
 
+    def identity_environment(self) -> dict[str, str]:
+        """The worker's daemon-bound identity + daemon pinning as env.
+
+        ``HYPRIAL_WORKER_ACTOR`` / ``HYPRIAL_WORKER_SESSION_REF`` let any
+        harness carrier (and its subprocesses, e.g. a shell-out to
+        ``hyprial pac``) present the session binding this daemon minted to
+        the fenced write methods.  ``HYPRIAL_MANAGED_WORKER`` is the
+        worker-context MARKER (M2): marker present without the binding pair
+        is a loud CLI refusal, never a silent fall-back to the human
+        identity.  The pair is already in P1a's
+        ``agents.environment.GENERATED_CHILD_ENVIRONMENT_NAMES`` (PR #513);
+        the marker must be added alongside before the P1b cutover
+        (cross-point noted in PR #536).  Boundary note (accepted risk,
+        Allen 2026-09-14:
+        「先不用考虑进程隔离的问题，未来将agent容器化后自然可以避免其它agent读取」):
+        every subprocess of the worker inherits all three.
+        """
+
+        return {
+            "HYPRIAL_WORKER_ACTOR": self.actor,
+            "HYPRIAL_WORKER_SESSION_REF": self.session_ref,
+            "HYPRIAL_MANAGED_WORKER": "1",
+            **child_state_environment(self.hyprial_home, self.state_dir),
+        }
+
     def pi_environment(self) -> dict[str, str]:
         """The pi carrier for this channel: identity + daemon pinning as env.
 
@@ -53,11 +78,7 @@ class WorkerChannel:
         worker's own canonical actor and to reach THIS daemon's socket.
         """
 
-        return {
-            "HYPRIAL_WORKER_ACTOR": self.actor,
-            "HYPRIAL_WORKER_SESSION_REF": self.session_ref,
-            **child_state_environment(self.hyprial_home, self.state_dir),
-        }
+        return self.identity_environment()
 
 
 def build_worker_channel(

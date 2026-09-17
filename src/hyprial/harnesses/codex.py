@@ -968,6 +968,14 @@ class CodexAppServerClient:
         self.command = (*command, *provider_args, "app-server", "--stdio")
         self._session = session or _CodexSession(session_ref)
         self._worker_channel = worker_channel
+        # Same daemon-bound identity the pi and claude carriers inject
+        # (WorkerChannel.identity_environment): a codex worker's shell-outs to
+        # ``hyprial`` must present the session binding to the fenced PAC write
+        # methods, and the exec runtime's own subprocesses inherit the same
+        # env -- the three harnesses stay isomorphic on this surface.
+        identity_environment = (
+            worker_channel.identity_environment() if worker_channel is not None else {}
+        )
         if spec.containerized:
             if worker_channel is None:
                 raise ValueError(
@@ -976,15 +984,19 @@ class CodexAppServerClient:
             self.command = wrap_worker_launch(
                 spec,
                 inner_argv=self.command,
-                env_delta={**(env or {}), **provider_environment},
+                env_delta={**(env or {}), **provider_environment, **identity_environment},
                 state_dir=worker_channel.state_dir,
             )
             # Bare Docker ``-e KEY`` flags copy from this child environment;
             # values never enter argv or Docker error text.
-            combined = {**(env or {}), **provider_environment}
+            combined = {**(env or {}), **provider_environment, **identity_environment}
             self._env = combined or None
         else:
-            combined = {**(env or {}), **provider_environment}
+            combined = {
+                **(env or {}),
+                **provider_environment,
+                **identity_environment,
+            }
             self._env = combined or None
         self._request_timeout_seconds = request_timeout_seconds
         self._thread_start_timeout_seconds = thread_start_timeout_seconds

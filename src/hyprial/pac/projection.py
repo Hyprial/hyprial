@@ -26,9 +26,24 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .graph import FORWARD, canonical_edge
+from .journal import activation_id
+from .principal import principal_kind
 from .reactor import TURN, WITHDRAW, turn_text, withdraw_text
 from .store import connect
-from .journal import activation_id
+
+
+def _blocked_on_kind(owner: str, actor_names: set[str], requires: Any) -> str:
+    """blockedOn classification by URI kind (design §5.3).
+
+    A full principal decides by its own kind -- ``requires`` never turns a
+    person into an agent.  A pre-URI legacy short name is not reclassified
+    by guessing: the historical heuristic applies to exactly those rows.
+    """
+
+    kind = principal_kind(owner)
+    if kind is not None:
+        return "agent" if kind == "agent" else "human"
+    return "agent" if owner in actor_names or requires is not None else "human"
 
 
 @dataclass(slots=True)
@@ -266,8 +281,8 @@ def restate(structure: dict[str, Any], events: list[dict[str, Any]]) -> dict[str
                 "round": state.set_counts.get(node_id, 0),
                 "turn": "current" if current else None,
                 "blockedOn": (
-                    "agent" if current and (node["owner"] in actor_names or node.get("requires") is not None)
-                    else "human" if current
+                    _blocked_on_kind(node["owner"], actor_names, node.get("requires"))
+                    if current
                     else "none"
                 ),
                 **(

@@ -5869,6 +5869,15 @@ def _start_interactive_claude(
     # the target session as the ref. The Harness ref and the Claude session id
     # are therefore always the same value and can never collide.
     session_ref = resume if resume is not None else str(uuid4())
+    # M2: the attached TUI (and every shell it runs) carries the carrier's
+    # daemon-bound identity, so its `hyprial pac` writes ride the fenced
+    # path instead of falling to the human identity.
+    launch_environment = {
+        **launch_environment,
+        "HYPRIAL_WORKER_ACTOR": actor,
+        "HYPRIAL_WORKER_SESSION_REF": session_ref,
+        "HYPRIAL_MANAGED_WORKER": "1",
+    }
     identity_args = (
         ["--resume", session_ref]
         if resume is not None
@@ -6418,6 +6427,7 @@ def _start_interactive_pi(
         # socket (never an ambient production daemon).
         "HYPRIAL_WORKER_ACTOR": actor,
         "HYPRIAL_WORKER_SESSION_REF": session_ref,
+        "HYPRIAL_MANAGED_WORKER": "1",
         **child_state_environment(_hyprial_home(), state_dir),
     }
     if tmux:

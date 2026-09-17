@@ -53,6 +53,7 @@ from .errors import (
 )
 from .graph import BACK, FORWARD, canonical_edge
 from .journal import activation_id, append_event
+from .migrations import unrewritten_owners_note
 from .store import PacGraphStore
 
 TURN = "turn"
@@ -471,10 +472,12 @@ class PacReactor:
                     {"nodeId": node_id, "owner": node.owner, "actor": actor},
                 )
             if actor != node.owner:
+                note = unrewritten_owners_note(self._store._db, graph_id)
                 raise PacError(
                     PAC_FLAG_NOT_OWNER,
                     f"actor {actor!r} is not the owner of {node_id!r} (owner "
-                    f"{node.owner!r}); an owner flips only their own node",
+                    f"{node.owner!r}); an owner flips only their own node"
+                    + (f"; {note}" if note else ""),
                     {"nodeId": node_id, "owner": node.owner, "actor": actor},
                 )
             if action == "set" and node.flag:

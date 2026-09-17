@@ -17,6 +17,7 @@ from typing import Any
 from .errors import PAC_EVENTS_RESYNC, PAC_GRAPH_NOT_FOUND, PacError
 from .journal import activation_id, envelope
 from .migrations import SCHEMA_VERSION
+from .principal import principal_kind
 from .store import connect
 
 
@@ -150,6 +151,22 @@ def _requests_and_counts(db: sqlite3.Connection, graph_id: str):
     return assignments, counts, sorted(notifications, key=lambda r: (r["eventId"], r["edge"]))
 
 
+def _blocked_on_kind(node: sqlite3.Row, actor_names: set[str]) -> str:
+    """blockedOn classification by URI kind (design §5.3).
+
+    A full principal decides by its own kind -- a ``user:`` owner is human
+    even when ``requires`` is set (a capability requirement never turns a
+    person into an agent).  A pre-URI legacy short name cannot be
+    reclassified by guessing: fall back to the historical heuristic for
+    exactly those rows.
+    """
+
+    kind = principal_kind(node["owner"])
+    if kind is not None:
+        return "agent" if kind == "agent" else "human"
+    return "agent" if node["owner"] in actor_names or node["requires_json"] is not None else "human"
+
+
 def snapshot(path: Path, graph_id: str) -> dict[str, Any]:
     with read_transaction(path) as db:
         graph = _head(db, graph_id)  # first read pins the SQLite snapshot
@@ -169,7 +186,7 @@ def snapshot(path: Path, graph_id: str) -> dict[str, Any]:
             if not all(next(bool(item["flag"]) for item in nodes if item["node_id"] == pred)
                        for pred in predecessors):
                 return "none"
-            return "agent" if node["owner"] in actor_names or node["requires_json"] is not None else "human"
+            return _blocked_on_kind(node, actor_names)
 
         blocked = {node["node_id"]: blocked_on(node) for node in nodes}
         assignments = [
@@ -202,9 +219,20 @@ def snapshot(path: Path, graph_id: str) -> dict[str, Any]:
                     else None
                 ),
             })
+        owners = [graph["created_by"], *(n["owner"] for n in nodes)]
+        identity_format = (
+            "principal-uri-v1"
+            if all(principal_kind(owner) is not None for owner in owners)
+            else "mixed-legacy"
+        )
         return {
             "schemaVersion": 1, "type": "snapshot", "graphId": graph_id,
             "journalId": journal_id, "cursor": high, "cursorFloor": floor,
+            # Explicit identity-format boundary (design §2.3): consumers must
+            # not infer the owner era from row content, and a consumer that
+            # does not understand the format must resync, not silently fold
+            # principals into an empty graph.
+            "identityFormat": identity_format,
             "version": graph["version"], "structure": structure,
             "flags": {n["node_id"]: {
                 "flag": bool(n["flag"]), "setBy": n["flag_set_by"], "setAt": n["flag_set_at"],

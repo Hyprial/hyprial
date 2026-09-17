@@ -105,8 +105,11 @@ hyprial <域> <子命令> --help   # 参数面
   activate/close 不要求额外设置 HYPRIAL_HOME。
   `hyprial pac graph close <graph>` 由本机 owner 单调关闭 task/clock run;不改 flag、不造 completion,
   不再派发/重发剩余通知。已经在途的真实回执仍会记录,但不会重新打开任务。
-- `hyprial pac flag set/reset <graph> <node> --actor <owner>` — 激活后显式改 flag;
+- `hyprial pac flag set/reset <graph> <node> [--actor <principal URI>]` — 激活后显式改 flag;
+  `--actor` 只可回声已验证身份(本机人为 `user:<owner>`,受管 worker 由载体注入绑定,
+  省略即以已验证身份行事);owner 段精确相等,不以短名或 owner 段放行。
   通知送达不等于任务完成。`hyprial pac notify resend <graph>` 重试未确认的通知。
+  升级报告:`hyprial pac migration status` 列出 schema-8 改写/保留的 owner。
 - 外部消费者唯一受支持的增量合同:
   `hyprial pac events <graph> --snapshot --json` 取同一读事务的 snapshot@cursor;
   `hyprial pac events <graph> --after <cursor> --journal-id <journalId> [--follow] --json`

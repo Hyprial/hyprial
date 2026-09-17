@@ -24,7 +24,7 @@ import typer
 
 from hyprial.home import HYPRIALHomeNotInitialized, require_initialized_hyprial_home
 
-from .errors import PAC_GRAPH_NOT_FOUND, PacError
+from .errors import PAC_GRAPH_NOT_FOUND, PAC_OWNER_UNKNOWN, PAC_PRINCIPAL_UNVERIFIED, PacError
 from .context import node_context
 from .graph import (
     add_edge,
@@ -32,11 +32,11 @@ from .graph import (
     activate_graph,
     create_graph,
     close_graph,
-    known_agent_names,
     show_graph,
 )
 from .projection import Projection, audit
 from .reactor import NullSender, PacReactor, planned_to_json
+from .resolve import resolve_owner
 from .store import PacGraphStore, default_database_path
 
 pac_app = typer.Typer(
@@ -46,11 +46,15 @@ pac_app = typer.Typer(
 graph_app = typer.Typer(help="Edit the graph file (CAS-versioned structure).", no_args_is_help=True)
 flag_app = typer.Typer(help="Flip node flags (owner-only; drives the reactor).", no_args_is_help=True)
 notify_app = typer.Typer(help="Notification delivery maintenance.", no_args_is_help=True)
+migration_app = typer.Typer(
+    help="Read-only schema-era migration reports.", no_args_is_help=True
+)
 actor_app = typer.Typer(help="Control run-owned actors.", no_args_is_help=True)
 debug_app = typer.Typer(help="Internal PAC diagnostics; not a public automation contract.", no_args_is_help=True)
 pac_app.add_typer(graph_app, name="graph")
 pac_app.add_typer(flag_app, name="flag")
 pac_app.add_typer(notify_app, name="notify")
+pac_app.add_typer(migration_app, name="migration")
 pac_app.add_typer(actor_app, name="actor")
 pac_app.add_typer(debug_app, name="debug", hidden=True)
 
@@ -66,15 +70,75 @@ def _state_dir() -> Path:
 
 
 def _actor_owner() -> str:
-    """An acting principal is required; never turn missing identity into denial."""
+    """The local HUMAN principal as a full URI; never a bare short name.
+
+    This is the trusted local identity boundary (``HYPRIAL_OWNER`` or the
+    login-written settings), the same source the daemon mints its own URIs
+    from.  Missing identity is a loud error, never a denial-by-default.
+    """
     from hyprial.daemon.identity import resolve_node_owner
     from hyprial.home import configured_hyprial_home
+    from hyprial.uri import canonical_user_uri
 
     home, _source = configured_hyprial_home()
     try:
-        return resolve_node_owner(hyprial_home=home)
+        return canonical_user_uri(resolve_node_owner(hyprial_home=home))
     except ValueError as error:
-        raise PacError("PAC_OWNER_UNKNOWN", str(error)) from error
+        raise PacError(PAC_OWNER_UNKNOWN, str(error)) from error
+
+
+def _worker_binding(json_out: bool) -> tuple[str, str] | None:
+    """The daemon-bound worker identity from env, both variables or neither.
+
+    A daemon-managed worker receives ``HYPRIAL_WORKER_ACTOR`` /
+    ``HYPRIAL_WORKER_SESSION_REF`` (with the ``HYPRIAL_MANAGED_WORKER``
+    marker) at launch.  Their presence routes PAC identity-bearing writes
+    through the daemon's fenced IPC methods.  M2: a managed-worker context
+    missing its binding -- marker present, pair absent or partial -- is a
+    tampered or broken carrier and fails LOUD as a structured refusal;
+    the human path is entered only when NO worker marker is present (the
+    positive criterion for "a human is typing" is the trusted local
+    identity itself, never the absence of worker variables).
+    """
+
+    actor = os.environ.get("HYPRIAL_WORKER_ACTOR")
+    session_ref = os.environ.get("HYPRIAL_WORKER_SESSION_REF")
+    if actor and session_ref:
+        return actor, session_ref
+    marker = os.environ.get("HYPRIAL_MANAGED_WORKER")
+    if actor or session_ref or marker:
+        missing = [
+            name
+            for name, value in (
+                ("HYPRIAL_WORKER_ACTOR", actor),
+                ("HYPRIAL_WORKER_SESSION_REF", session_ref),
+            )
+            if not value
+        ]
+        _fail(
+            PacError(
+                PAC_PRINCIPAL_UNVERIFIED,
+                "managed-worker context without its session binding "
+                f"(missing {', '.join(missing)}); refusing to write under the "
+                "human identity -- the carrier must inject the full binding",
+            ),
+            json_out,
+        )
+    return None
+
+
+def _check_actor_claim(actor_claim: str | None, verified: str) -> None:
+    """``--actor`` is a claim checked AGAINST the verified identity, never a
+    credential and never an override (design §5.1)."""
+
+    if actor_claim is not None and actor_claim != verified:
+        raise PacError(
+            PAC_PRINCIPAL_UNVERIFIED,
+            f"--actor {actor_claim!r} disagrees with the verified acting "
+            f"principal {verified!r}; the flag surface trusts the verified "
+            "identity, not the claim",
+            {"claimed": actor_claim, "verified": verified},
+        )
 
 
 def _database_path() -> Path:
@@ -138,19 +202,20 @@ def _guard(json_out: bool) -> None:
 class DaemonNotificationSender:
     """Deliver one notification through the daemon's public send seam.
 
-    Recipient mapping: an owner that names a registered local agent sends
-    to that agent (the daemon resolves the short name); every other owner
-    is a person, addressed as ``user:<owner>``.
+    The recipient is the node owner VERBATIM (design §5.2): a full principal
+    URI stored on the node.  The old "local agent name else user:" heuristic
+    is gone -- an agent owner is delivered to that agent's four-segment URI,
+    a person to ``user:<owner>``, and an agent URI is never downgraded to its
+    owner segment.  Both senders (this CLI one and the resident
+    ``DaemonPacNotificationSender``) must hand the transport byte-identical
+    targets.
     """
 
     def __init__(self, state_dir: Path) -> None:
         self._state_dir = state_dir
-        self._agents: set[str] | None = None
 
     def _recipient(self, owner: str) -> str:
-        if self._agents is None:
-            self._agents = known_agent_names(self._state_dir)
-        return owner if owner in self._agents else f"user:{owner}"
+        return owner
 
     def send(
         self,
@@ -203,7 +268,7 @@ def _reactor(sender: Any | None = None) -> PacReactor:
 @graph_app.command("create")
 def graph_create(
     name: str = typer.Argument(..., help="Human graph name; the id is minted from it."),
-    created_by: str = typer.Option(..., "--by", help="Short name of the creating owner."),
+    created_by: str = typer.Option(..., "--by", help="Full principal URI of the creator (user:<owner> or agent:<owner>:<machine>:<actor>)."),
     operation_key: str | None = typer.Option(
         None,
         "--operation-key",
@@ -216,6 +281,8 @@ def graph_create(
     _guard(json_out)
     store = PacGraphStore(_database_path())
     try:
+        if ":" not in created_by:
+            created_by = resolve_owner(created_by, state_dir=_state_dir()).selected_uri
         head = create_graph(
             store,
             name=name,
@@ -233,7 +300,7 @@ def graph_create(
 def graph_add_node(
     graph_id: str = typer.Argument(..., help="Graph id (see `pac graph show`)."),
     node_id: str = typer.Argument(..., help="Node id (one workflow step)."),
-    owner: str = typer.Option(..., "--owner", help="Owner short name (person or agent)."),
+    owner: str = typer.Option(..., "--owner", help="Owner principal URI (user:<owner> or agent:<owner>:<machine>:<actor>); a bare name resolves only when it is already unique on this graph."),
     brief_ref: str = typer.Option(..., "--brief-ref", help="Reference to the node's explanation; PAC stores the reference, never a body."),
     kind: str = typer.Option("task", "--kind", help="Node kind: task, clock, actor, or end."),
     deadline_ms: int | None = typer.Option(None, "--deadline-ms", help="Clock-node deadline in epoch ms."),
@@ -257,6 +324,10 @@ def graph_add_node(
     _guard(json_out)
     store = PacGraphStore(_database_path())
     try:
+        if ":" not in owner:
+            owner = resolve_owner(
+                owner, state_dir=_state_dir(), store=store, graph_id=graph_id
+            ).selected_uri
         result = add_node(
             store,
             _state_dir(),
@@ -325,8 +396,20 @@ def graph_activate(
     graph_id: str = typer.Argument(..., help="Completed draft graph to freeze."),
     json_out: bool = typer.Option(False, "--json", help="Machine-readable activation metadata."),
 ) -> None:
-    """Activate a graph as the local principal; structure is then immutable."""
+    """Activate a graph as the verified principal; structure is then immutable."""
     _guard(json_out)
+    binding = _worker_binding(json_out)
+    if binding is not None:
+        verified, session_ref = binding
+        try:
+            document = _daemon_pac_call(
+                "pac.graph.activate",
+                {"graphId": graph_id, "actor": verified, "sessionRef": session_ref},
+            )
+        except PacError as error:
+            _fail(error, json_out)
+        _emit(document, json_out, f"graph {graph_id} active; structure frozen")
+        return
     store = PacGraphStore(_database_path())
     try:
         document = activate_graph(store, graph_id, actor=_actor_owner())
@@ -342,8 +425,20 @@ def graph_close(
     graph_id: str = typer.Argument(..., help="Task/clock graph to close monotonically."),
     json_out: bool = typer.Option(False, "--json", help="Machine-readable closure metadata."),
 ) -> None:
-    """Close the run as the local graph owner; this does not change any flag."""
+    """Close the run as the verified graph owner; this does not change any flag."""
     _guard(json_out)
+    binding = _worker_binding(json_out)
+    if binding is not None:
+        verified, session_ref = binding
+        try:
+            document = _daemon_pac_call(
+                "pac.graph.close",
+                {"graphId": graph_id, "actor": verified, "sessionRef": session_ref},
+            )
+        except PacError as error:
+            _fail(error, json_out)
+        _emit(document, json_out, f"graph {graph_id} closed")
+        return
     store = PacGraphStore(_database_path())
     try:
         document = close_graph(store, graph_id, actor=_actor_owner())
@@ -393,6 +488,27 @@ def actor_stop(
     from .lifecycle import request_actor_stop
 
     _guard(json_out)
+    binding = _worker_binding(json_out)
+    if binding is not None:
+        verified, session_ref = binding
+        try:
+            _daemon_pac_call(
+                "pac.actor.stop",
+                {
+                    "graphId": graph_id,
+                    "actorName": actor_name,
+                    "actor": verified,
+                    "sessionRef": session_ref,
+                },
+            )
+        except PacError as error:
+            _fail(error, json_out)
+        _emit(
+            {"ok": True, "graphId": graph_id, "actorName": actor_name, "desired": "down"},
+            json_out,
+            f"actor {actor_name} stopping",
+        )
+        return
     store = PacGraphStore(_database_path())
     try:
         request_actor_stop(store, graph_id, actor_name, actor=_actor_owner())
@@ -412,22 +528,76 @@ def actor_stop(
 # --------------------------------------------------------------------------- #
 
 
+def _daemon_pac_call(method: str, params: dict[str, Any]) -> dict[str, Any]:
+    """One fenced daemon PAC call; daemon refusals keep their PAC code."""
+
+    from hyprial.cli import CliError, _daemon_request
+
+    try:
+        result = _daemon_request(method, params)
+    except CliError as error:
+        raise PacError(error.code, str(error), getattr(error, "data", None)) from error
+    if not isinstance(result, dict):
+        raise PacError(
+            "PAC_IPC_INVALID_RESPONSE", f"daemon {method} returned a non-object result"
+        )
+    return result
+
+
 def _flag_command(
     graph_id: str,
     node_id: str,
-    actor: str,
+    actor: str | None,
     reason_ref: str | None,
     json_out: bool,
     *,
     action: str,
 ) -> None:
     _guard(json_out)
+    binding = _worker_binding(json_out)
+    if binding is not None:
+        # Agent path: the daemon verifies the session binding and applies the
+        # owner-only check against THAT identity (G1=A exact equality).  The
+        # local database is never written under an unverified agent claim.
+        verified, session_ref = binding
+        try:
+            _check_actor_claim(actor, verified)
+            document = _daemon_pac_call(
+                f"pac.flag.{action}",
+                {
+                    "graphId": graph_id,
+                    "nodeId": node_id,
+                    "actor": verified,
+                    "sessionRef": session_ref,
+                    **({"reasonRef": reason_ref} if reason_ref is not None else {}),
+                },
+            )
+        except PacError as error:
+            _fail(error, json_out)
+        human_lines = [
+            f"{action} {node_id} by {verified} (event {document.get('event', {}).get('eventId')})",
+            *(
+                f"  -> {item.get('recipient')}: {item.get('text')}"
+                for item in document.get("notifications", [])
+            ),
+        ]
+        if document.get("undelivered"):
+            human_lines.append(
+                f"  ({document['undelivered']} notification(s) undelivered; "
+                "`hyprial pac notify resend` retries them)"
+            )
+        _emit(document, json_out, "\n".join(human_lines))
+        return
+    # Human path: the trusted local boundary resolves user:<owner> and the
+    # write stays local; --actor may only echo that identity.
+    verified = _actor_owner()
     reactor = _reactor(DaemonNotificationSender(_state_dir()))
     try:
+        _check_actor_claim(actor, verified)
         if action == "set":
-            outcome = reactor.set_flag(graph_id, node_id, actor=actor, reason_ref=reason_ref)
+            outcome = reactor.set_flag(graph_id, node_id, actor=verified, reason_ref=reason_ref)
         else:
-            outcome = reactor.reset_flag(graph_id, node_id, actor=actor, reason_ref=reason_ref)
+            outcome = reactor.reset_flag(graph_id, node_id, actor=verified, reason_ref=reason_ref)
     except PacError as error:
         _fail(error, json_out)
     finally:
@@ -442,7 +612,7 @@ def _flag_command(
     if outcome.delivery_error:
         document["deliveryError"] = outcome.delivery_error
     human = [
-        f"{action} {node_id} by {actor} (event {outcome.event['eventId']})",
+        f"{action} {node_id} by {verified} (event {outcome.event['eventId']})",
         *(f"  -> {item.recipient}: {item.text}" for item in outcome.planned),
     ]
     if outcome.undelivered:
@@ -456,8 +626,8 @@ def _flag_command(
 @flag_app.command("set")
 def flag_set(
     graph_id: str = typer.Argument(..., help="Graph id."),
-    node_id: str = typer.Argument(..., help="Node id owned by the acting owner."),
-    actor: str = typer.Option(..., "--actor", help="Acting owner short name; must own the node."),
+    node_id: str = typer.Argument(..., help="Node id owned by the acting principal."),
+    actor: str | None = typer.Option(None, "--actor", help="Optional claim checked against the verified acting principal (never a credential)."),
     reason_ref: str | None = typer.Option(None, "--reason-ref", help="Reference recording why the flag was set."),
     json_out: bool = typer.Option(False, "--json", help="Machine-readable output."),
 ) -> None:
@@ -469,8 +639,8 @@ def flag_set(
 @flag_app.command("reset")
 def flag_reset(
     graph_id: str = typer.Argument(..., help="Graph id."),
-    node_id: str = typer.Argument(..., help="Node id owned by the acting owner."),
-    actor: str = typer.Option(..., "--actor", help="Acting owner short name; must own the node."),
+    node_id: str = typer.Argument(..., help="Node id owned by the acting principal."),
+    actor: str | None = typer.Option(None, "--actor", help="Optional claim checked against the verified acting principal (never a credential)."),
     reason_ref: str | None = typer.Option(None, "--reason-ref", help="Reference recording why the flag was reset."),
     json_out: bool = typer.Option(False, "--json", help="Machine-readable output."),
 ) -> None:
@@ -539,6 +709,55 @@ def pac_events(
 # --------------------------------------------------------------------------- #
 # notifications / clocks
 # --------------------------------------------------------------------------- #
+
+
+@migration_app.command("status")
+def migration_status(
+    json_out: bool = typer.Option(False, "--json", help="Machine-readable output."),
+) -> None:
+    """The schema-8 era report: what the owner rewrite did, what it kept."""
+
+    _guard(json_out)
+    import sqlite3
+
+    database = f"file:{_database_path()}?mode=ro"
+    connection = sqlite3.connect(database, uri=True)
+    try:
+        try:
+            row = connection.execute(
+                "SELECT user_version, migrated_at_ms, graphs_total, "
+                "owners_rewritten, owners_kept, report_json "
+                "FROM schema_era WHERE id=1"
+            ).fetchone()
+        except sqlite3.OperationalError:
+            row = None  # pre-v8 database: the report surface does not exist yet
+    finally:
+        connection.close()
+    if row is None:
+        _emit(
+            {"ok": True, "era": None,
+             "note": "no schema-8 era report: this database predates the "
+                     "principal-URI migration or has not been opened since"},
+            json_out,
+            "no schema-8 era report on this database",
+        )
+        return
+    document = {
+        "ok": True,
+        "schemaVersion": row[0],
+        "migratedAtMs": row[1],
+        "graphsTotal": row[2],
+        "ownersRewritten": row[3],
+        "ownersKept": row[4],
+        "report": json.loads(row[5]),
+    }
+    kept = sum(len(graph["kept"]) for graph in document["report"]["graphs"])
+    _emit(
+        document,
+        json_out,
+        f"schema {document['schemaVersion']}: {document['ownersRewritten']} owner(s) "
+        f"rewritten, {kept} kept (see --json for the per-graph list)",
+    )
 
 
 @notify_app.command("resend")

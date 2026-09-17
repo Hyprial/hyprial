@@ -18,6 +18,7 @@ from uuid import uuid4
 import yaml
 
 from .errors import PAC_GRAPH_NOT_FOUND, PAC_GRAPH_NOT_OWNER, PAC_NODE_NOT_FOUND, PacError
+from .migrations import unrewritten_owners_note
 from .journal import append_event
 from .reactor import (
     NullSender,
@@ -171,7 +172,12 @@ def request_actor_stop(store: PacGraphStore, graph_id: str, actor_name: str, *, 
         if graph is None:
             raise PacError(PAC_GRAPH_NOT_FOUND, f"graph {graph_id!r} not found")
         if graph["created_by"] != actor:
-            raise PacError(PAC_GRAPH_NOT_OWNER, "only the graph owner can stop its actor")
+            note = unrewritten_owners_note(store._db, graph_id)
+            raise PacError(
+                PAC_GRAPH_NOT_OWNER,
+                "only the graph owner can stop its actor"
+                + (f"; {note}" if note else ""),
+            )
         node = next((item for item in store.nodes(graph_id) if item.actor_name == actor_name), None)
         if node is None:
             raise PacError(PAC_NODE_NOT_FOUND, f"actor {actor_name!r} not found on {graph_id!r}")

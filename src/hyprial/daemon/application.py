@@ -4155,6 +4155,14 @@ class DaemonApplication:
                 return self._workflow_service.start(yaml_text=yaml_text, sender=source)
             except WorkflowServiceError as error:
                 raise DaemonRequestError(error.code, str(error)) from error
+        if method in (
+            "pac.flag.set",
+            "pac.flag.reset",
+            "pac.graph.activate",
+            "pac.graph.close",
+            "pac.actor.stop",
+        ):
+            return self._handle_pac_write(method, params)
         if method == "agent.task.capabilities":
             service = self._require_agent_task_service()
             try:
@@ -6318,6 +6326,104 @@ class DaemonApplication:
                 "agent.task service is not running",
             )
         return self._workflow_service
+
+    def _pac_bound_caller(self, params: JsonObject) -> str:
+        """Authenticate the acting PAC principal via the daemon session binding.
+
+        Same fence shape as ``_agent_task_bound_caller``: actor + sessionRef
+        must name a binding THIS daemon minted.  PAC owner-only checks
+        (G1=A, exact URI equality) run against the verified identity this
+        returns -- a presented identity without the binding is a claim,
+        never a credential (design-pac-owner-full-uri §5.1).
+        """
+
+        if "actor" not in params or "sessionRef" not in params:
+            raise DaemonRequestError(
+                ipc_errors.CALLER_NOT_AUTHORIZED,
+                "pac write methods require an authenticated daemon-managed "
+                "session binding (actor + sessionRef)",
+            )
+        actor = self._mcp_actor(params)
+        try:
+            actor = self._fence_interactive_session(actor, params)
+        except DaemonRequestError as error:
+            raise DaemonRequestError(
+                ipc_errors.CALLER_NOT_AUTHORIZED,
+                "caller does not hold the pac write session binding",
+                {"cause": error.code},
+            ) from error
+        return actor
+
+    def _handle_pac_write(self, method: str, params: JsonObject) -> JsonObject:
+        """Fenced PAC write surface (flag set/reset, graph activate/close,
+        actor stop) -- the ONLY path that writes PAC state under an agent
+        identity.  The human CLI path stays local with ``user:<owner>`` from
+        the trusted local boundary; agent identities never write the local
+        database unverified.
+        """
+
+        from hyprial.pac.errors import PacError
+        from hyprial.pac.graph import activate_graph, close_graph
+        from hyprial.pac.lifecycle import request_actor_stop
+        from hyprial.pac.reactor import PacReactor, planned_to_json
+        from hyprial.pac.store import PacGraphStore, default_database_path
+
+        from .pac_actor import DaemonPacNotificationSender
+
+        caller = self._pac_bound_caller(params)
+        store = PacGraphStore(default_database_path(self.state_dir))
+        try:
+            if method in ("pac.flag.set", "pac.flag.reset"):
+                graph_id = _required_string(params.get("graphId"), "graphId")
+                node_id = _required_string(params.get("nodeId"), "nodeId")
+                reason_ref = params.get("reasonRef")
+                reactor = PacReactor(store, sender=DaemonPacNotificationSender(self))
+                try:
+                    if method == "pac.flag.set":
+                        outcome = reactor.set_flag(
+                            graph_id, node_id, actor=caller, reason_ref=reason_ref
+                        )
+                    else:
+                        outcome = reactor.reset_flag(
+                            graph_id, node_id, actor=caller, reason_ref=reason_ref
+                        )
+                finally:
+                    reactor.close()
+                document: JsonObject = {
+                    "ok": True,
+                    "event": outcome.event,
+                    "notifications": [
+                        planned_to_json(item) for item in outcome.planned
+                    ],
+                    "delivered": len(outcome.delivered),
+                    "undelivered": len(outcome.undelivered),
+                }
+                if outcome.delivery_error:
+                    document["deliveryError"] = outcome.delivery_error
+                return document
+            if method == "pac.graph.activate":
+                graph_id = _required_string(params.get("graphId"), "graphId")
+                return {"ok": True, **activate_graph(store, graph_id, actor=caller)}
+            if method == "pac.graph.close":
+                graph_id = _required_string(params.get("graphId"), "graphId")
+                return {"ok": True, **close_graph(store, graph_id, actor=caller)}
+            if method == "pac.actor.stop":
+                graph_id = _required_string(params.get("graphId"), "graphId")
+                actor_name = _required_string(params.get("actorName"), "actorName")
+                request_actor_stop(store, graph_id, actor_name, actor=caller)
+                return {
+                    "ok": True,
+                    "graphId": graph_id,
+                    "actorName": actor_name,
+                    "desired": "down",
+                }
+            raise DaemonRequestError(  # pragma: no cover - dispatch guards this
+                ipc_errors.METHOD_NOT_FOUND, f"unknown PAC method {method!r}"
+            )
+        except PacError as error:
+            raise DaemonRequestError(error.code, str(error), error.data) from error
+        finally:
+            store.close()
 
     def _agent_task_bound_caller(self, params: JsonObject) -> str:
         """Authenticate one daemon-provisioned caller-to-service binding."""

@@ -272,7 +272,7 @@ def connect(path: Path, *, read_only: bool = False) -> sqlite3.Connection:
     connection.execute("PRAGMA journal_mode=WAL")
     connection.execute("PRAGMA foreign_keys=ON")
     try:
-        migrate(connection, SCHEMA)
+        migrate(connection, SCHEMA, state_dir=Path(path).parent)
     except BaseException:
         connection.close()
         raise

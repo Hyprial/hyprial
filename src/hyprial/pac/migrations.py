@@ -7,13 +7,18 @@ not a changed CREATE TABLE IF NOT EXISTS declaration.
 
 from __future__ import annotations
 
+import json
 import sqlite3
+from pathlib import Path
 from time import time_ns
+from typing import Any
 from uuid import uuid4
 
+from .errors import PAC_MIGRATION_SOURCE_UNREADABLE, PacError
 from .journal import JOURNAL_SCHEMA, append_event
+from .principal import principal_kind
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 def _create_v1(db: sqlite3.Connection, schema: str) -> None:
@@ -192,7 +197,213 @@ def _upgrade_v6_to_v7(db: sqlite3.Connection) -> None:
     db.execute("ALTER TABLE nodes ADD COLUMN guarded_by_node_id TEXT")
 
 
-def migrate(db: sqlite3.Connection, legacy_schema: str) -> None:
+def _upgrade_v7_to_v8(db: sqlite3.Connection, state_dir: Path) -> None:
+    """The principal-URI era (design-pac-owner-full-uri; PR #536 review B1/B2).
+
+    **B1 -- cursor neutrality**: this step appends NOTHING to the journal.
+    ``cursorFloor`` and every consumer's cursor stay where they were; the
+    public event contract's externally visible quantities do not move
+    because of a schema bump.  The era marker is this ``user_version`` plus
+    the snapshot's computed ``identityFormat``; the rewrite outcomes live in
+    a dedicated metadata table (``schema_era``), not in the event stream.
+
+    **B2 -- authorization continuity**: the v7 world wrote short-name
+    owners while the v8 world authorizes exact principal URIs (G1=A), so a
+    graph that kept its short names would be locked out of flag/close/stop.
+    This migration rewrites the two AUTHORIZATION fields -- ``nodes.owner``
+    and ``graphs.created_by`` -- to full principal URIs, but ONLY where the
+    local agents registry / user profiles resolve the short name uniquely.
+    Ambiguous or unresolvable values are kept VERBATIM (never guessed); the
+    kept values are listed per graph in the ``schema_era`` report, and the
+    authorization refusals for those graphs point at it.  Historical fact
+    fields (``flag_set_by``, ``activated_by``/``closed_by``, notifications,
+    journal rows) stay untouched (design §2.3).
+
+    A source that exists but cannot be read (corrupt sqlite, malformed
+    JSON) aborts the WHOLE migration: zero writes, loud failure -- "we
+    could not look" is never folded into "unresolvable".  An absent source
+    is a legitimate empty candidate set (a fresh home has no agents yet).
+    """
+
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS schema_era (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            user_version INTEGER NOT NULL,
+            migrated_at_ms INTEGER NOT NULL,
+            graphs_total INTEGER NOT NULL,
+            owners_rewritten INTEGER NOT NULL,
+            owners_kept INTEGER NOT NULL,
+            report_json TEXT NOT NULL
+        )
+        """
+    )
+    registry_uris, profile_owners = _era_resolution_sources(state_dir)
+
+    def resolve(short_name: str) -> tuple[str | None, str | None]:
+        """("user:<owner>" | "agent:…" | None, reason for keeping)."""
+
+        candidates = set()
+        if short_name in profile_owners:
+            candidates.add(f"user:{short_name}")
+        if short_name in registry_uris:
+            candidates.add(registry_uris[short_name])
+        if len(candidates) == 1:
+            return candidates.pop(), None
+        if len(candidates) > 1:
+            return None, "ambiguous"
+        return None, "unresolvable"
+
+    report: dict[str, Any] = {"graphs": []}
+    graphs_total = owners_rewritten = owners_kept = 0
+    for graph in db.execute(
+        "SELECT graph_id, created_by FROM graphs ORDER BY graph_id"
+    ).fetchall():
+        graphs_total += 1
+        kept: list[dict[str, str]] = []
+        graph_rewritten = 0
+        if principal_kind(graph["created_by"]) is None:
+            rewritten_uri, keep_reason = resolve(graph["created_by"])
+            if rewritten_uri is not None:
+                db.execute(
+                    "UPDATE graphs SET created_by=? WHERE graph_id=?",
+                    (rewritten_uri, graph["graph_id"]),
+                )
+                owners_rewritten += 1
+                graph_rewritten += 1
+            else:
+                owners_kept += 1
+                kept.append(
+                    {"field": "graphs.created_by", "value": graph["created_by"],
+                     "reason": keep_reason or "unresolvable"}
+                )
+        for node in db.execute(
+            "SELECT node_id, owner FROM nodes WHERE graph_id=? ORDER BY node_id",
+            (graph["graph_id"],),
+        ).fetchall():
+            if principal_kind(node["owner"]) is not None:
+                continue  # already a full principal URI
+            rewritten_uri, keep_reason = resolve(node["owner"])
+            if rewritten_uri is not None:
+                db.execute(
+                    "UPDATE nodes SET owner=? WHERE graph_id=? AND node_id=?",
+                    (rewritten_uri, graph["graph_id"], node["node_id"]),
+                )
+                owners_rewritten += 1
+                graph_rewritten += 1
+            else:
+                owners_kept += 1
+                kept.append(
+                    {"field": "nodes.owner", "nodeId": node["node_id"],
+                     "value": node["owner"], "reason": keep_reason or "unresolvable"}
+                )
+        report["graphs"].append(
+            {"graphId": graph["graph_id"],
+             "rewritten": graph_rewritten,
+             "kept": kept}
+        )
+    # rewrite counts per graph: recompute from the kept side is not enough;
+    # keep the per-graph rewritten count alongside
+    db.execute(
+        "INSERT OR REPLACE INTO schema_era (id, user_version, migrated_at_ms, "
+        "graphs_total, owners_rewritten, owners_kept, report_json) "
+        "VALUES (1, ?, ?, ?, ?, ?, ?)",
+        (
+            SCHEMA_VERSION,
+            time_ns() // 1_000_000,
+            graphs_total,
+            owners_rewritten,
+            owners_kept,
+            json.dumps(report, ensure_ascii=False),
+        ),
+    )
+
+
+def _era_resolution_sources(state_dir: Path) -> tuple[dict[str, str], set[str]]:
+    """(registry actor -> canonical uri, profile owner names) for rewrites.
+
+    Read-only against the REAL serializations.  A source that exists but
+    cannot be parsed raises PAC_MIGRATION_SOURCE_UNREADABLE -- the migration
+    then aborts as a whole (zero writes) instead of treating every owner as
+    unresolvable.
+    """
+
+    registry_uris: dict[str, str] = {}
+    database = Path(state_dir) / "agents.sqlite3"
+    if database.is_file():
+        try:
+            connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+            try:
+                rows = connection.execute(
+                    "SELECT actor, uri FROM agents"
+                ).fetchall()
+            finally:
+                connection.close()
+        except sqlite3.Error as error:
+            raise PacError(
+                PAC_MIGRATION_SOURCE_UNREADABLE,
+                f"cannot read the agents registry at {database}: {error}; "
+                "the schema-8 migration refuses to rewrite owners half-blind",
+            ) from error
+        registry_uris = {str(row[0]): str(row[1]) for row in rows}
+
+    profile_owners: set[str] = set()
+    store_path = Path(state_dir) / "users.json"
+    if store_path.is_file():
+        try:
+            document = json.loads(store_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            raise PacError(
+                PAC_MIGRATION_SOURCE_UNREADABLE,
+                f"cannot read the user profiles at {store_path}: {error}; "
+                "the schema-8 migration refuses to rewrite owners half-blind",
+            ) from error
+        users = document.get("users") if isinstance(document, dict) else None
+        if not isinstance(users, list):
+            raise PacError(
+                PAC_MIGRATION_SOURCE_UNREADABLE,
+                f"user profiles at {store_path} have an unsupported shape; "
+                "the schema-8 migration refuses to rewrite owners half-blind",
+            )
+        profile_owners = {
+            str(profile["owner"])
+            for profile in users
+            if isinstance(profile, dict) and isinstance(profile.get("owner"), str)
+        }
+    return registry_uris, profile_owners
+
+
+def unrewritten_owners_note(db: sqlite3.Connection, graph_id: str) -> str | None:
+    """The B2 pointer for authorization refusals on a half-migrated graph."""
+
+    try:
+        row = db.execute(
+            "SELECT report_json FROM schema_era WHERE id=1"
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return None  # pre-v8 database: the pointer surface does not exist yet
+    if row is None:
+        return None
+    try:
+        report = json.loads(row[0])
+    except ValueError:
+        return None
+    graph = next(
+        (item for item in report.get("graphs", [])
+         if isinstance(item, dict) and item.get("graphId") == graph_id),
+        None,
+    )
+    if graph is None or not graph.get("kept"):
+        return None
+    return (
+        "this graph still carries pre-URI short-name owners the schema-8 "
+        "migration could not rewrite (unresolvable or ambiguous); "
+        "`hyprial pac migration status` lists them -- re-create the "
+        "affected nodes with full principal URIs"
+    )
+
+
+def migrate(db: sqlite3.Connection, legacy_schema: str, state_dir: Path | None = None) -> None:
     db.execute("BEGIN IMMEDIATE")
     try:
         version = db.execute("PRAGMA user_version").fetchone()[0]
@@ -226,6 +437,10 @@ def migrate(db: sqlite3.Connection, legacy_schema: str) -> None:
         if version == 6:
             _upgrade_v6_to_v7(db)
             db.execute("PRAGMA user_version = 7")
+            version = 7
+        if version == 7:
+            _upgrade_v7_to_v8(db, state_dir or Path("."))
+            db.execute("PRAGMA user_version = 8")
         db.commit()
     except BaseException:
         db.rollback()

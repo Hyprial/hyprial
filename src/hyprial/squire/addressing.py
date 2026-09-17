@@ -14,6 +14,7 @@ from uuid import uuid4
 
 from hyprial.transport import KeySpace, Registration, TransportSession
 from hyprial.contracts import ipc_errors
+from hyprial.uri import parse_user_uri
 
 from .profile import UserProfileStore
 
@@ -38,10 +39,12 @@ class UserDeliveryTarget:
 
     @classmethod
     def parse(cls, value: str) -> UserDeliveryTarget:
-        if not value.startswith("user:"):
-            raise ValueError("user target must start with user:")
-        owner = value.removeprefix("user:")
-        if not owner or ":" in owner or owner.strip() != owner:
+        # The pure grammar lives in hyprial.uri (one reader); this class only
+        # translates the rejection into its historical ValueError surface.
+        owner = parse_user_uri(value)
+        if owner is None:
+            if not value.startswith("user:"):
+                raise ValueError("user target must start with user:")
             raise ValueError("user target must contain a non-empty owner")
         return cls(owner)
 

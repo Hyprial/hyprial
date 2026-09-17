@@ -2,11 +2,34 @@
 
 from __future__ import annotations
 
+import os
+import socket
 from pathlib import Path
 from typing import Any
 
 from .errors import PAC_NODE_NOT_FOUND, PacError
+from .principal import principal_matches_local_actor
 from .subscription import snapshot
+
+
+def _local_identity() -> tuple[str | None, str]:
+    """(local owner, local machine) for execution-binding association.
+
+    An unresolvable owner is not an error here: association simply stays
+    empty (fail closed) rather than guessing a binding.
+    """
+
+    owner: str | None = None
+    try:
+        from hyprial.daemon.identity import node_owner_or_none
+        from hyprial.home import configured_hyprial_home
+
+        home, _source = configured_hyprial_home()
+        owner = node_owner_or_none(hyprial_home=home)
+    except Exception:  # noqa: BLE001 - association degrades to none, never guesses
+        owner = None
+    machine = os.environ.get("HYPRIAL_NODE_ID", socket.gethostname()).strip()
+    return owner, machine
 
 
 def node_context(database: Path, graph_id: str, node_id: str) -> dict[str, Any]:
@@ -24,11 +47,27 @@ def node_context(database: Path, graph_id: str, node_id: str) -> dict[str, Any]:
     predecessors = sorted(edge["from"] for edge in state["structure"]["edges"]
                           if edge["to"] == node_id and edge["kind"] == "forward")
     activation = next((item for item in state["assignments"] if item["nodeId"] == node_id), None)
+    # Actor association requires the FROZEN execution binding (design §5.3):
+    # the node owner must be exactly agent:<local owner>:<local machine>:
+    # <actorName> -- never a bare-name equality (a foreign same-named agent
+    # must not associate with this runtime), and never a same-owner
+    # different-actor URI.  Without a resolvable local owner there is no
+    # binding to match against, so association stays empty.
+    local_owner, local_machine = _local_identity()
     actor = next(
         (
             item
             for item in state["actors"]
-            if item["nodeId"] == node_id or item["actorName"] == node["owner"]
+            if item["nodeId"] == node_id
+            or (
+                local_owner is not None
+                and principal_matches_local_actor(
+                    node["owner"],
+                    owner=local_owner,
+                    machine=local_machine,
+                    actor_name=item["actorName"],
+                )
+            )
         ),
         None,
     )
@@ -65,7 +104,13 @@ def node_context(database: Path, graph_id: str, node_id: str) -> dict[str, Any]:
                     **actor,
                     "assignments": [
                         item for item in state["assignments"]
-                        if item["owner"] == actor["actorName"]
+                        if local_owner is not None
+                        and principal_matches_local_actor(
+                            item["owner"],
+                            owner=local_owner,
+                            machine=local_machine,
+                            actor_name=actor["actorName"],
+                        )
                     ],
                 }
             }

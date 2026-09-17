@@ -89,6 +89,61 @@ def short_actor_name(value: str) -> str:
     return parsed[2] if parsed is not None else value
 
 
+#: The ``user:<owner>`` person-address prefix.  A person is not bound to a
+#: machine: delivery is receiver-owned (the owner's own Squire routes it), so
+#: the URI carries no machine or actor segment.
+USER_URI_PREFIX = "user:"
+
+
+def uri_scheme(value: str) -> str | None:
+    """The lowercase scheme before the first colon, or None for a bare word.
+
+    The one classification point for "what kind of address string is this";
+    consumers (e.g. PAC's principal grammar) must not sniff scheme prefixes
+    themselves (URI 产生点唯一,读写同源).  Saying the scheme says nothing
+    about validity: parsing stays with the per-scheme parse helpers.
+    """
+
+    scheme, separator, _ = value.partition(":")
+    if not separator:
+        return None
+    return scheme.lower() if scheme else None
+
+
+def canonical_user_uri(owner: str) -> str:
+    """Compose the two-segment ``user:<owner>`` URI.
+
+    Same purity bar as :func:`canonical_agent_uri`: non-empty, no colon, no
+    leading/trailing whitespace -- the strict shape
+    ``squire.addressing.UserDeliveryTarget.parse`` has always enforced, lifted
+    here so schema modules can use it without importing Squire's transport
+    dependencies.  The grammar deliberately says nothing about what an owner
+    may contain beyond that (it is a user identity, not a host login).
+    """
+
+    if not owner or not owner.strip() or owner.strip() != owner:
+        raise ValueError("user identity owner must be non-empty without surrounding whitespace")
+    if ":" in owner:
+        raise ValueError("user identity owner must not contain ':'")
+    return f"{USER_URI_PREFIX}{owner}"
+
+
+def parse_user_uri(value: str) -> str | None:
+    """Decompose a canonical ``user:<owner>`` URI.
+
+    Returns the owner segment for exactly the strict two-segment shape,
+    ``None`` for every other shape.  This is the ONLY user-URI deconstructor
+    -- the same one-reader rule as :func:`parse_agent_uri`.
+    """
+
+    if not value.startswith(USER_URI_PREFIX):
+        return None
+    owner = value[len(USER_URI_PREFIX):]
+    if not owner or ":" in owner or owner.strip() != owner:
+        return None
+    return owner
+
+
 TARGET_KIND_AGENT = "agent"
 TARGET_KIND_HOST = "host"
 TARGET_KIND_USER = "user"

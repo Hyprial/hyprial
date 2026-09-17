@@ -48,14 +48,16 @@ from .errors import (
     PAC_NODE_EXISTS,
     PAC_NODE_NOT_FOUND,
     PAC_NODE_SHAPE_INVALID,
-    PAC_OWNER_UNKNOWN,
+    PAC_OPERATION_KEY_CONFLICT,
     PacError,
 )
+from .principal import parse_principal
 from .store import MAX_BRIEF_REF_LENGTH, MAX_OPERATION_KEY_LENGTH, PacGraphStore
 from .journal import append_event
+from .migrations import unrewritten_owners_note
 
-#: Short names only: an owner is a person or agent name, never a derived
-#: URI (concept §2: "存名字不存派发 URI").
+#: Actor names stay LOCAL short names (the run-owned runtime key); only the
+#: owner side moved to full principal URIs.  Used for --actor-name validation.
 OWNER_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 #: The one implementation restriction on node ids: non-empty, no arrows
@@ -73,23 +75,8 @@ def canonical_edge(from_node: str, to_node: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Owner resolution (edit-time validation input)
+# Owner validation (write boundary: full principal URIs only)
 # --------------------------------------------------------------------------- #
-
-
-def _naming_principal() -> str | None:
-    """Optional naming principal; missing identity is not malformed identity."""
-
-    from hyprial.daemon.identity import node_owner_or_none
-    from hyprial.home import configured_hyprial_home
-
-    home, _source = configured_hyprial_home()
-    try:
-        return node_owner_or_none(hyprial_home=home)
-    except ValueError as error:
-        # Preserve the canonical diagnostic; only translate its transport into
-        # the PAC error envelope. Do not silently treat invalid identity as None.
-        raise PacError(PAC_OWNER_UNKNOWN, str(error)) from error
 
 
 def known_agent_names(state_dir: Path) -> set[str]:
@@ -115,44 +102,18 @@ def known_agent_names(state_dir: Path) -> set[str]:
             connection.close()
 
 
-def resolve_known_owners(state_dir: Path) -> set[str]:
-    """Owners an edit may name: this node's principal + registered agents."""
-
-    names = known_agent_names(state_dir)
-    principal = _naming_principal()
-    if principal:
-        names.add(principal)
-    return names
-
-
 def _validate_owner(
     store: PacGraphStore,
     state_dir: Path,
     graph_id: str,
     owner: str,
 ) -> None:
-    if not OWNER_NAME_PATTERN.fullmatch(owner):
-        raise PacError(
-            PAC_OWNER_UNKNOWN,
-            f"owner {owner!r} is not a short name (people/agent names only; "
-            "derived agent: URIs are stored nowhere in the graph)",
-        )
-    existing = {
-        name
-        for node in store.nodes(graph_id)
-        for name in (node.owner, node.actor_name)
-        if name is not None
-    }
-    if owner in existing:
-        return
-    if owner in resolve_known_owners(state_dir):
-        return
-    raise PacError(
-        PAC_OWNER_UNKNOWN,
-        f"owner {owner!r} is neither an owner already on this graph nor a "
-        "known principal/agent name on this node",
-        {"owner": owner},
-    )
+    # The write boundary accepts exactly a full principal URI (D1): shape and
+    # character hygiene only.  Whether THIS node knows the principal is not a
+    # legality input (§1.3): a foreign, offline, or not-yet-launched agent is
+    # a storable owner.  Bare short names are resolved BEFORE this boundary
+    # (pac.resolve); reaching it unqualified is a caller defect, not a lookup.
+    parse_principal(owner)
 
 
 def _validate_reference(value: str, *, field: str) -> None:
@@ -299,6 +260,9 @@ def create_graph(
     if not name or not name.strip():
         raise PacError(PAC_NODE_SHAPE_INVALID, "graph name must not be empty")
     _validate_operation_key(operation_key)
+    # The creator is a principal URI (D1 §1.1): graph activate/close/stop
+    # authorize against it by exact equality, so it must be storable verbatim.
+    parse_principal(created_by)
     graph_id = f"{name.strip()}-{uuid4().hex[:8]}"
     at = time_ns() // 1_000_000
     db = store.write()
@@ -321,6 +285,23 @@ def create_graph(
             if existing is None:
                 raise
             db.rollback()
+            # The durable key arbitrates replays, but a replay is only the
+            # same request when its creating principal matches the graph the
+            # key minted (design §6 tail): a different --by under a known key
+            # is a conflict, never a silent re-bind and never a second graph.
+            if existing["created_by"] != created_by:
+                raise PacError(
+                    PAC_OPERATION_KEY_CONFLICT,
+                    f"operation key is already bound to graph "
+                    f"{existing['graph_id']!r} created by "
+                    f"{existing['created_by']!r}; replaying it as "
+                    f"{created_by!r} is refused",
+                    {
+                        "graphId": existing["graph_id"],
+                        "createdBy": existing["created_by"],
+                        "presentedBy": created_by,
+                    },
+                )
             return _graph_head(existing)
         append_event(
             db,
@@ -558,7 +539,12 @@ def activate_graph(store: PacGraphStore, graph_id: str, *, actor: str) -> dict[s
     with store.write() as db:
         graph = _require_graph(store, graph_id)
         if actor != graph["created_by"]:
-            raise PacError(PAC_GRAPH_NOT_OWNER, "only the graph owner can activate it")
+            note = unrewritten_owners_note(db, graph_id)
+            raise PacError(
+                PAC_GRAPH_NOT_OWNER,
+                "only the graph owner can activate it"
+                + (f"; {note}" if note else ""),
+            )
         if graph["closed_at"] is not None:
             raise PacError(PAC_GRAPH_CLOSED, "a closed graph cannot be activated again")
         if graph["activated_at"] is None:
@@ -575,7 +561,12 @@ def close_graph(store: PacGraphStore, graph_id: str, *, actor: str) -> dict[str,
     with store.write() as db:
         graph = _require_graph(store, graph_id)
         if actor != graph["created_by"]:
-            raise PacError(PAC_GRAPH_NOT_OWNER, "only the graph owner can close it")
+            note = unrewritten_owners_note(db, graph_id)
+            raise PacError(
+                PAC_GRAPH_NOT_OWNER,
+                "only the graph owner can close it"
+                + (f"; {note}" if note else ""),
+            )
         if graph["closed_at"] is None:
             at = time_ns() // 1_000_000
             db.execute("UPDATE graphs SET closed_at=?, closed_by=? WHERE graph_id=?", (at, actor, graph_id))
