@@ -19,13 +19,16 @@ import { fileURLToPath } from "node:url";
 import { createAgentTaskClient } from "./integration/agent-task-client.js";
 import { readSessionLedger, writeSessionLedger, mergeLegacyLedger } from "./integration/session-ledger.js";
 
+import { pacConfig, pacRequest } from './integration/pac-bridge.js';
+
 import { chatKeyOwner, chatKeySession, chatWorkSessions, consolidateDirectChats, directChatIndex } from "./integration/direct-chat-index.js";
 
 const IPC_VERSION = 1;
 const MAX_DOCUMENT_BYTES = 1024 * 1024;
 const MAX_DAEMON_BYTES = 8 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 5_000;
-const MAX_SESSION_PARTICIPANTS = 3;
+const MAX_CONTACT_BYTES = 512 * 1024;
+const NETWORK_UNAVAILABLE_REASON = "message.pending.list provides no authenticated sender proof; verified network admission requires a real authentication contract";
 const SOURCE = "dsh-cordis-demo";
 const RUNTIME = "dsh_interactive";
 
@@ -55,6 +58,15 @@ const MFU_WORKFLOW_OPERATIONS = new Set([
   "workflow.status",
   "workflow.result",
   "workflow.cancel",
+]);
+// Web-domain reception operations. The `remote-` prefix selects the canonical
+// remote identity for the same sessionId; both domains share handlers/storage.
+const RECEPTION_OPERATIONS = new Set([
+  "reception-policy-get",
+  "reception-policy-set",
+  "whitelist-list",
+  "whitelist-add",
+  "whitelist-remove",
 ]);
 
 function requiredString(value, label, maxLength = 1024) {
@@ -203,23 +215,11 @@ function daemonRequest(method, params = {}, { mutation = false, env = process.en
   });
 }
 
-async function identityFor(sessionId, env = process.env, kind = "web") {
-  requiredString(sessionId, "sessionId", 4096);
-  const status = await daemonRequest("ps", {}, { env });
-  let actorName = "";
-  if (kind === "remote") {
-    const ledger = await readLedger(ledgerPath(env));
-    const configured = ledger.remoteNames[sessionId];
-    if (typeof configured === "string" && /^dsh-[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/.test(configured)) actorName = configured;
-  }
-  return sessionIdentity(sessionId, status.daemon, kind, actorName);
-}
-
 function ledgerKey(identity) {
   return `${identity.actor}\n${identity.sessionRef}`;
 }
 
-async function canonicalSessionIdentityFor(sessionId, env = process.env) {
+async function canonicalSessionIdentityFor(sessionId, env = process.env, fallbackKind = "web") {
   requiredString(sessionId, "sessionId", 4096);
   const ledger = await readLedger(ledgerPath(env));
   const bindings = Object.values(ledger.remoteBindings).filter(binding => binding.sessionId === sessionId);
@@ -227,13 +227,109 @@ async function canonicalSessionIdentityFor(sessionId, env = process.env) {
   if (configured && (typeof configured !== "string" || !/^dsh-[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/.test(configured))) {
     throw new BridgeError("REMOTE_BINDING_MISMATCH", "saved session network name is invalid");
   }
-  const kind = bindings.length || configured ? "remote" : "web";
+  const selected = ledger.sessionBindings?.[sessionId];
+  const kind = bindings.length || configured ? "remote" : fallbackKind;
   const status = await daemonRequest("ps", {}, { env });
-  const identity = sessionIdentity(sessionId, status.daemon, kind, configured || "");
+  const identity = selected
+    ? { actor: selected.actor, actorName: selected.actor.split(':')[3], sessionRef: selected.sessionRef }
+    : sessionIdentity(sessionId, status.daemon, kind, configured || "");
+  if (selected && identity.actor.split(':').slice(1, 3).join(':') !== [status.daemon.owner, status.daemon.nodeId].join(':')) throw new BridgeError('SESSION_IDENTITY_MISMATCH', 'session binding belongs to a different owner or node; explicit migration required');
   if (bindings.some(binding => binding.actor !== identity.actor || binding.sessionRef !== identity.sessionRef)) {
     throw new BridgeError("REMOTE_BINDING_MISMATCH", "saved binding does not match session identity");
   }
   return identity;
+}
+
+async function setSessionBinding(sessionId, identity, env, changes) {
+  const file = ledgerPath(env);
+  const release = await acquireLedgerLock(file);
+  try {
+    const ledger = await readLedger(file);
+    ledger.sessionBindings ||= {};
+    const previous = ledger.sessionBindings[sessionId];
+    if (previous && (previous.actor !== identity.actor || previous.sessionRef !== identity.sessionRef)) throw new BridgeError('SESSION_BINDING_CHANGED', 'session identity changed; reconnect explicitly');
+    ledger.sessionBindings[sessionId] = { ...previous, actor: identity.actor, sessionRef: identity.sessionRef, enabled: false, ...changes };
+    await writeSessionLedger(file, ledger);
+    return ledger.sessionBindings[sessionId];
+  } finally { await release(); }
+}
+
+async function adoptSessionIdentity(sessionId, identity, env, humanChat) {
+  const file = ledgerPath(env);
+  const snapshot = await daemonRequest('ps', {}, { env });
+  const legacy = (snapshot.agents || []).filter(agent =>
+    typeof agent.uri === 'string' && agent.uri.split(':').slice(0, 3).join(':') === identity.actor.split(':').slice(0, 3).join(':') && agent.uri !== identity.actor && ['dsh-web:' + sessionId, 'dsh-remote:' + sessionId].includes(agent.lastSessionId)
+  ).map(agent => ({ actor: agent.uri, sessionRef: agent.lastSessionId }));
+  const release = await acquireLedgerLock(file);
+  try {
+    const ledger = await readLedger(file);
+    const before = structuredClone(ledger);
+    ledger.sessionBindings ||= {};
+    const previous = ledger.sessionBindings[sessionId];
+    if (previous && (previous.actor !== identity.actor || previous.sessionRef !== identity.sessionRef)) throw new BridgeError('SESSION_BINDING_CHANGED', 'session identity changed; reconnect explicitly');
+    const aliases = [...new Map([...legacy, ...(previous?.legacyIdentities || [])].map(item => [ledgerKey(item), item])).values()];
+    // Preserve original records for rollback and historical attribution. The
+    // receive path drains each alias under its own authorization and dedup key.
+    ledger.sessionBindings[sessionId] = { ...previous, actor: identity.actor, sessionRef: identity.sessionRef, enabled: true, humanChat, legacyIdentities: aliases };
+    const key = ledgerKey(identity);
+    if (!previous) ledger.participants[key] = [...new Set([...(ledger.participants[key] || []), ...aliases.flatMap(item => ledger.participants[ledgerKey(item)] || [])])];
+    if (!previous) {
+      const backup = await open(file + '.before-session-identity-' + Date.now() + '-' + randomUUID() + '.json', 'wx', 0o600);
+      try { await backup.writeFile(JSON.stringify(before)); await backup.sync(); }
+      finally { await backup.close(); }
+    }
+    await writeSessionLedger(file, ledger);
+  } finally { await release(); }
+}
+
+async function registerSession(sessionId, identity, env, humanChat = false) {
+  // Commit the selected identity before IPC, so every concurrent entry uses it.
+  await adoptSessionIdentity(sessionId, identity, env, humanChat);
+  const result = await daemonRequest('session.register', fenced(identity, {
+    cwd: env.H2B_DSH_DEMO_CWD?.trim() || process.cwd(),
+    command: ['dsh-hyprial-plugin'], source: SOURCE, runtime: RUNTIME,
+  }), { mutation: true, env });
+  await setSessionBinding(sessionId, identity, env, { enabled: true, humanChat });
+  return { ...result, actor: identity.actor, sessionRef: identity.sessionRef };
+}
+
+async function retireDrainedAliases(sessionId, identity, env) {
+  const file = ledgerPath(env);
+  const binding = (await readLedger(file)).sessionBindings?.[sessionId];
+  const aliases = (binding?.legacyIdentities || []).filter(alias => !alias.retired);
+  if (!aliases.length) return [];
+  const pins = await daemonRequest('adapter.pins', {}, { env });
+  const retired = [], warnings = [];
+  for (const alias of aliases) {
+    if (Object.values(pins.pins || {}).includes(alias.actor)) continue;
+    try {
+      // Include denied messages in this check: migration must not discard them.
+      const pending = await daemonRequest('message.pending.list', fenced(alias), { env });
+      if (!Array.isArray(pending.messages) || pending.messages.length) continue;
+      await daemonRequest('session.unregister', fenced(alias), { mutation: true, env });
+      retired.push(ledgerKey(alias));
+    } catch (error) { warnings.push({ actor: alias.actor, code: error.code || 'BRIDGE_ERROR' }); }
+  }
+  if (retired.length) {
+    const release = await acquireLedgerLock(file);
+    try {
+      const ledger = await readLedger(file);
+      const current = ledger.sessionBindings?.[sessionId];
+      if (current?.actor === identity.actor && current.sessionRef === identity.sessionRef) {
+        current.legacyIdentities = current.legacyIdentities.map(alias => retired.includes(ledgerKey(alias)) ? { ...alias, retired: true, retiredAt: Date.now() } : alias);
+        await writeSessionLedger(file, ledger);
+      }
+    } finally { await release(); }
+  }
+  return warnings;
+}
+
+async function sessionStatus(sessionId, identity, env) {
+  const result = await daemonRequest('identity.whoami', fenced(identity), { env });
+  const directory = await daemonRequest('targets', { kind: 'agent' }, { env });
+  const online = result.sessionRegistered === true && directory.targets?.some(row => row.targetUri === identity.actor && row.status === 'online') === true;
+  const binding = (await readLedger(ledgerPath(env))).sessionBindings?.[sessionId];
+  return { ...result, actor: identity.actor, sessionRef: identity.sessionRef, online, enabled: binding?.enabled === true, status: online ? 'online' : 'offline' };
 }
 
 async function readLedger(file) {
@@ -248,6 +344,13 @@ async function readLedger(file) {
       Array.isArray(document.participants)
     )) {
       throw new Error("unexpected participants schema");
+    }
+    if (document.receptionPolicies !== undefined && (
+      typeof document.receptionPolicies !== "object" ||
+      !document.receptionPolicies ||
+      Array.isArray(document.receptionPolicies)
+    )) {
+      throw new Error("unexpected receptionPolicies schema");
     }
     if (document.humanChats !== undefined && (
       typeof document.humanChats !== "object" ||
@@ -271,13 +374,14 @@ async function readLedger(file) {
     return {
       ...document,
       participants: document.participants || {},
+      receptionPolicies: document.receptionPolicies || {},
       humanChats: document.humanChats || {},
       remoteBindings: document.remoteBindings || {},
       remoteNames: document.remoteNames || {},
     };
   } catch (error) {
     if (error?.code === "ENOENT") {
-      return { version: 1, sessions: {}, participants: {}, humanChats: {}, remoteBindings: {}, remoteNames: {} };
+      return { version: 1, sessions: {}, participants: {}, receptionPolicies: {}, humanChats: {}, remoteBindings: {}, remoteNames: {} };
     }
     throw new BridgeError("INVALID_LEDGER", `cannot read injected ledger: ${error.message}`);
   }
@@ -311,6 +415,11 @@ async function updateRemoteName(file, sessionId, actorName) {
   const release = await acquireLedgerLock(file);
   try {
     const ledger = await readLedger(file);
+    const previous = ledger.sessionBindings?.[sessionId];
+    if (previous) {
+      ledger.identityHistory = [...(ledger.identityHistory || []), { sessionId, ...previous, retiredAt: Date.now() }];
+      delete ledger.sessionBindings[sessionId];
+    }
     if (actorName) ledger.remoteNames[sessionId] = actorName;
     else delete ledger.remoteNames[sessionId];
     await writeSessionLedger(file, ledger);
@@ -372,7 +481,7 @@ function remoteAdapterPrincipals(adapter, identity) {
   ]);
 }
 
-async function acquireLedgerLock(file) {
+async function acquireLedgerLock(file, staleMs = 10_000) {
   const lock = `${file}.lock`;
   await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
   const deadline = Date.now() + 2_000;
@@ -387,7 +496,7 @@ async function acquireLedgerLock(file) {
       if (error?.code !== "EEXIST") throw error;
       try {
         const info = await stat(lock);
-        if (Date.now() - info.mtimeMs > 10_000) {
+        if (Date.now() - info.mtimeMs > staleMs) {
           await unlink(lock).catch(() => {});
           continue;
         }
@@ -419,34 +528,93 @@ async function recordInjected(file, identity, deliveryId) {
   }
 }
 
-async function updateParticipants(file, identity, update, { maxEntries } = {}) {
+function contactAddress(value) {
+  requiredString(value, "contact", 2048);
+  if (!canonicalAgentPrincipal(value) || /[\s\x00-\x1f\x7f]/u.test(value)) {
+    throw new BridgeError("INVALID_CONTACT", "contact must be an exact four-part Agent URI");
+  }
+  return value; // Address syntax only, never evidence of sender authentication.
+}
+
+// Contacts are the explicit URI reception allowlist. Keep the existing durable
+// participants map as the single source of truth; no identity/history migration.
+async function updateParticipants(file, identity, update, { revokeAliases = false } = {}) {
   const release = await acquireLedgerLock(file);
   try {
     const ledger = await readLedger(file);
     const key = ledgerKey(identity);
+    const previousBytes = Buffer.byteLength(JSON.stringify(ledger.participants));
     const current = Array.isArray(ledger.participants[key])
-      ? ledger.participants[key].filter(canonicalAgentPrincipal)
-      : [];
-    const next = [...new Set(update(current))].filter(canonicalAgentPrincipal).sort();
-    if (maxEntries !== undefined && next.length > maxEntries) {
-      throw new BridgeError(
-        "PARTICIPANT_LIMIT_EXCEEDED",
-        `a DSH Web session may authorize at most ${maxEntries} H2B participants`,
-      );
+      ? ledger.participants[key].filter(canonicalAgentPrincipal) : [];
+    const next = [...new Set(update(current))].sort();
+    if (revokeAliases) {
+      const sessionId = identity.sessionRef.slice(identity.sessionRef.indexOf(':') + 1);
+      for (const alias of ledger.sessionBindings?.[sessionId]?.legacyIdentities || []) {
+        const aliasKey = ledgerKey(alias);
+        ledger.participants[aliasKey] = update(ledger.participants[aliasKey] || []).filter(canonicalAgentPrincipal);
+      }
     }
     if (next.length > 0) ledger.participants[key] = next;
     else delete ledger.participants[key];
+    const nextBytes = Buffer.byteLength(JSON.stringify(ledger.participants));
+    // Existing oversized lists remain usable and can be reduced incrementally.
+    if (nextBytes > MAX_CONTACT_BYTES && nextBytes > previousBytes) {
+      throw new BridgeError("CONTACT_LIMIT_EXCEEDED", "aggregate contact data exceeds the byte limit");
+    }
     await writeSessionLedger(file, ledger);
     return next;
-  } finally {
-    await release();
-  }
+  } finally { await release(); }
 }
 
 async function participantSet(file, identity) {
   const ledger = await readLedger(file);
   const values = ledger.participants[ledgerKey(identity)];
   return new Set(Array.isArray(values) ? values.filter(canonicalAgentPrincipal) : []);
+}
+
+// Reception policy is per exact ledgerKey(identity). Only an explicitly saved
+// 'whitelist' entry restricts reception; absence (or any other persisted value)
+// defaults to open network Agent reception. Whitelist content lives in the
+// existing participants map: it was never a separate store and is not migrated.
+function receptionPolicyOf(ledger, identity) {
+  return ledger.receptionPolicies?.[ledgerKey(identity)] === "whitelist" ? "whitelist" : "open";
+}
+
+async function receptionState(file, identity) {
+  const ledger = await readLedger(file);
+  const values = ledger.participants[ledgerKey(identity)];
+  return {
+    policy: receptionPolicyOf(ledger, identity),
+    whitelist: new Set(Array.isArray(values) ? values.filter(canonicalAgentPrincipal) : []),
+  };
+}
+
+async function updateReceptionPolicy(file, identity, policy) {
+  const release = await acquireLedgerLock(file);
+  try {
+    const ledger = await readLedger(file);
+    const key = ledgerKey(identity);
+    if (policy === "whitelist") ledger.receptionPolicies[key] = "whitelist";
+    else delete ledger.receptionPolicies[key];
+    await writeSessionLedger(file, ledger);
+    return policy;
+  } finally { await release(); }
+}
+
+function receptionPayload(identity, { policy, whitelist, fixedAllowedPrincipals }) {
+  const entries = [...whitelist].sort();
+  return {
+    ok: true,
+    actor: identity.actor,
+    sessionRef: identity.sessionRef,
+    policy,
+    whitelist: entries,
+    // Deprecated one-release alias retained for the pre-policy contacts API.
+    contacts: entries,
+    fixedAllowedPrincipals,
+    networkVerificationAvailable: false,
+    unavailableReason: NETWORK_UNAVAILABLE_REASON,
+  };
 }
 
 function boundedTimestamp(value) {
@@ -555,21 +723,66 @@ function fenced(identity, params = {}) {
   return { actor: identity.actor, sessionRef: identity.sessionRef, ...params };
 }
 
-async function pendingFor(identity, env, { allowedPrincipals = new Set() } = {}) {
+async function pendingFor(identity, env, options = {}) {
+  const result = await pendingForOne(identity, env, { ...options, pacActor: identity.actor });
+  const sessionId = identity.sessionRef.slice(identity.sessionRef.indexOf(':') + 1);
+  const ledger = await readLedger(ledgerPath(env));
+  const binding = ledger.sessionBindings?.[sessionId];
+  if (binding?.actor !== identity.actor) return result;
+  for (const legacy of binding.legacyIdentities || []) {
+    if (legacy.retired) continue;
+    try {
+      const previous = await pendingForOne(legacy, env, { ...options, pacActor: identity.actor });
+      result.messages.push(...previous.messages.map(message => ({ ...message, sourceIdentity: legacy })));
+      result.deniedCount += previous.deniedCount;
+    } catch (error) {
+      // A superseded alias must never re-register. Keep its persisted data for
+      // explicit recovery; do not block the canonical inbox on an absent alias.
+      if (!['STALE_SESSION', 'SESSION_SUPERSEDED'].includes(error.code)) throw error;
+    }
+  }
+  result.message = result.messages.find(message => !message.injected) || null;
+  return result;
+}
+
+async function deliveryIdentity(identity, env, messageId) {
+  const sessionId = identity.sessionRef.slice(identity.sessionRef.indexOf(':') + 1);
+  const binding = (await readLedger(ledgerPath(env))).sessionBindings?.[sessionId];
+  for (const legacy of binding?.legacyIdentities || []) {
+    try {
+      const pending = await pendingForOne(legacy, env);
+      if (pending.messages.some(message => message.messageId === messageId)) return legacy;
+    } catch (error) { if (!['STALE_SESSION', 'SESSION_SUPERSEDED'].includes(error.code)) throw error; }
+  }
+  return identity;
+}
+
+async function pendingForOne(identity, env, { allowedPrincipals = new Set(), includePacDispatch = false, pacActor = identity.actor } = {}) {
+  const pac = includePacDispatch ? null : await pacConfig(env);
   const response = await daemonRequest("message.pending.list", fenced(identity), { env });
   const messages = Array.isArray(response.messages) ? response.messages : [];
   const allowedFrom = allowlist(env);
   for (const principal of allowedPrincipals) allowedFrom.add(principal);
-  const participants = await participantSet(ledgerPath(env), identity);
-  for (const participant of participants) allowedFrom.add(participant);
-  const injected = await injectedSet(ledgerPath(env), identity);
+  const file = ledgerPath(env);
+  const reception = await receptionState(file, identity);
+  // Whitelist entries are enforced only in whitelist mode; the env allowlist and
+  // exact adapter grants stay additive under both policies.
+  if (reception.policy === "whitelist") for (const entry of reception.whitelist) allowedFrom.add(entry);
+  const injected = await injectedSet(file, identity);
   const allowed = [];
   let deniedCount = 0;
   for (const raw of messages) {
     if (!raw || typeof raw !== "object") continue;
-    if (!canonicalPrincipal(raw.from) || !allowedFrom.has(raw.from)) {
+    // Open mode admits only canonical Agent senders. User/adapter/channel
+    // principals still require an explicit env or adapter grant.
+    if (!canonicalPrincipal(raw.from) || !(allowedFrom.has(raw.from) || (reception.policy === "open" && canonicalAgentPrincipal(raw.from)))) {
       deniedCount += 1;
       continue;
+    }
+    // The structured remote-task consumer is the sole owner of these requests;
+    // do not race it by also injecting the same request into a conversational turn.
+    if (pac?.enabled && pac.roles.coordinator.actor === pacActor && pac.remoteDispatchers?.includes(raw.from) && raw.intent === 'request') {
+      try { if (JSON.parse(raw.message)?.schema === 'dsh.pac.task/v1') continue; } catch {}
     }
     const deliveryId = typeof raw.deliveryId === "string" && raw.deliveryId
       ? raw.deliveryId
@@ -587,6 +800,34 @@ async function pendingFor(identity, env, { allowedPrincipals = new Set() } = {})
     deniedCount,
     injectedCount: allowed.length - allowed.filter((item) => !item.injected).length,
   };
+}
+
+// One terminal path shared by native tools and Host completion. A missing
+// pending item is a no-op for Host retries, never permission to send a reply.
+async function settleMessage(identity, env, { messageId, message = '', tool = null }) {
+  const digest = createHash('sha256').update(ledgerKey(identity) + '\n' + messageId).digest('hex');
+  const release = await acquireLedgerLock(ledgerPath(env) + '.terminal-' + digest, 120_000);
+  try {
+    const principals = new Set();
+    for (const binding of await remoteBindings(ledgerPath(env))) {
+      if (binding.actor !== identity.actor || binding.sessionRef !== identity.sessionRef) continue;
+      for (const principal of remoteAdapterPrincipals(binding.adapter, identity)) principals.add(principal);
+    }
+    const pending = await pendingFor(identity, env, { allowedPrincipals: principals });
+    const item = pending.messages.find(item => item.messageId === messageId);
+    if (!item) {
+      if (tool) throw new BridgeError('MESSAGE_NOT_AUTHORIZED', 'message is not in this session authorized inbox');
+      return { ok: true, disposition: 'not-pending', messageId };
+    }
+    if (tool === 'reply' && item.intent === 'reply')
+      throw new BridgeError('MESSAGE_ALREADY_A_REPLY', 'consume a result with ACK; a result cannot request another reply');
+    // Only a bound external adapter owns automatic text replies. Agent requests,
+    // replies, PAC notifications and unknown origins all terminate with ACK.
+    const reply = tool === 'reply' || (!tool && principals.has(item.from) && item.intent !== 'reply' && Boolean(message));
+    const result = await daemonRequest(reply ? 'message.reply' : 'message.ack',
+      fenced(item.sourceIdentity || identity, { messageId, ...(reply ? { message } : {}) }), { mutation: true, env });
+    return { ...result, disposition: reply ? 'replied' : 'acknowledged' };
+  } finally { await release(); }
 }
 
 async function migrateLegacyState(env = process.env, { apply = false, legacyFile = fileURLToPath(new URL('./.dsh-h2b-state/dsh-web-injected.json', import.meta.url)) } = {}) {
@@ -635,22 +876,26 @@ async function recoverPinnedBindings(env = process.env, { apply = false } = {}) 
       const candidates = directory.agents.filter(item => item.uri === actor && item.preferredHarness === 'dsh');
       if (candidates.length !== 1) { entries.push({ adapter, actor, status: 'unresolved-registry' }); continue; }
       const ref = candidates[0].lastSessionId;
-      if (typeof ref !== 'string' || !ref.startsWith('dsh-remote:session-')) { entries.push({ adapter, actor, status: 'unresolved-session' }); continue; }
-      const sessionId = ref.slice('dsh-remote:'.length);
+      if (typeof ref !== 'string' || !/^dsh-(?:remote|web):session-/.test(ref)) { entries.push({ adapter, actor, status: 'unresolved-session' }); continue; }
+      const sessionId = ref.slice(ref.indexOf(':') + 1);
       const actorName = typeof actor === 'string' ? actor.split(':')[3] : '';
       if (!/^dsh-[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/.test(actorName)) { entries.push({ adapter, actor, status: 'unsupported-actor' }); continue; }
-      const identity = sessionIdentity(sessionId, status.daemon, 'remote', actorName);
+      const identity = sessionIdentity(sessionId, status.daemon, ref.startsWith('dsh-web:') ? 'web' : 'remote', actorName);
       if (actor !== identity.actor) { entries.push({ adapter, actor, status: 'foreign-identity' }); continue; }
       const existing = ledger.remoteBindings[adapter];
-      if ((existing && (existing.sessionId !== sessionId || existing.actor !== actor)) ||
+      const selected = ledger.sessionBindings?.[sessionId];
+      if ((selected && (selected.actor !== actor || selected.sessionRef !== ref)) || (existing && (existing.sessionId !== sessionId || existing.actor !== actor)) ||
           (ledger.remoteNames[sessionId] && ledger.remoteNames[sessionId] !== actorName)) {
         entries.push({ adapter, actor, sessionId, status: 'conflict' });
         continue;
       }
-      if (existing && ledger.remoteNames[sessionId] === actorName) {
+      if (existing && (selected || ledger.remoteNames[sessionId] === actorName)) {
         entries.push({ adapter, actor, sessionId, status: 'already-consistent' }); continue;
       }
-      ledger.remoteNames[sessionId] = actorName;
+      if (ref.startsWith('dsh-web:')) {
+        ledger.sessionBindings ||= {};
+        ledger.sessionBindings[sessionId] = selected || { actor, sessionRef: ref, enabled: true, humanChat: Boolean(ledger.humanChats[ledgerKey(identity)]) };
+      } else ledger.remoteNames[sessionId] = actorName;
       ledger.remoteBindings[adapter] = existing || {
         sessionId, actor, sessionRef: ref, boundAt: Date.now(),
         broadcastMode: 'off', broadcastRoute: '', recoveredFrom: 'h2b-pin-and-agent-registry',
@@ -673,10 +918,62 @@ async function recoverPinnedBindings(env = process.env, { apply = false } = {}) 
 }
 
 async function handleRpc(request, env = process.env) {
+  const lifecycle = ['connect', 'remote-connect', 'disconnect', 'remote-disconnect', 'remote-name-configure', 'carrier-heartbeat'];
+  if (request && (lifecycle.includes(request.operation) || (request.operation === 'session-tool' && request.tool === 'prepare'))) {
+    const id = requiredString(request.sessionId, 'sessionId', 4096);
+    const lock = ledgerPath(env) + '.session-' + createHash('sha256').update(id).digest('hex');
+    const release = await acquireLedgerLock(lock, 60_000);
+    try { return await handleSessionRpc(request, env); }
+    finally { await release(); }
+  }
+  return handleSessionRpc(request, env);
+}
+
+async function handleSessionRpc(request, env = process.env) {
   if (!request || typeof request !== "object" || Array.isArray(request)) {
     throw new BridgeError("INVALID_ARGUMENT", "RPC request must be an object");
   }
   const operation = requiredString(request.operation, "operation", 64);
+  if (operation.startsWith('pac-')) {
+    const config = await pacConfig(env);
+    if (operation === 'pac-poll') {
+      if (!config?.enabled) return { ok: true, jobs: [], configured: false };
+      const incomingErrors = [];
+      if (config.remoteDispatchers?.length) {
+        const role = config.roles.coordinator;
+        const identity = await canonicalSessionIdentityFor(role.sessionId, env);
+        if (identity.actor !== role.actor) throw new BridgeError('PAC_IDENTITY_CHANGED', 'coordinator identity changed; reconfigure PAC');
+        await daemonRequest('session.register', fenced(identity, { cwd: process.cwd(), command: ['dsh-pac'], source: SOURCE, runtime: RUNTIME }), { mutation: true, env });
+        const pending = await pendingFor(identity, env, { allowedPrincipals: new Set(config.remoteDispatchers), includePacDispatch: true });
+        for (const item of pending.messages) {
+          if (!config.remoteDispatchers.includes(item.from) || item.intent !== 'request') continue;
+          let task; try { task = JSON.parse(item.message); } catch { continue; }
+          if (task?.schema !== 'dsh.pac.task/v1') continue;
+          try {
+            if (Object.keys(task).some(k => !['schema', 'taskKey', 'title', 'brief'].includes(k))) throw new Error('unsupported remote task field');
+            await pacRequest({ operation: 'tool', tool: 'create', actor: identity.actor, sessionId: role.sessionId, source: item.from, args: { taskKey: task.taskKey, title: task.title, brief: task.brief } }, env, config);
+            await daemonRequest('message.ack', fenced(item.sourceIdentity || identity, { messageId: item.messageId }), { mutation: true, env });
+          } catch (error) { incomingErrors.push({ messageId: item.messageId, code: error.code || 'PAC_REMOTE_TASK_REJECTED', message: error.message }); }
+        }
+      }
+      return { ...await pacRequest({ operation: 'poll' }, env, config), incomingErrors };
+    }
+    const sessionId = requiredString(request.sessionId, 'sessionId', 4096);
+    const identity = await canonicalSessionIdentityFor(sessionId, env);
+    if (!config?.enabled) {
+      if (operation === 'pac-tool' && request.tool === 'list') return { ok: true, configured: false, tasks: [], setup: 'Configure coordinator/worker/verifier with scripts/configure-pac.py' };
+      throw new BridgeError('PAC_NOT_CONFIGURED', 'configure and enable PAC roles first');
+    }
+    if (!Object.values(config.roles).some(r => r.sessionId === sessionId && r.actor === identity.actor)) throw new BridgeError('PAC_NOT_OWNER', 'session is not a configured PAC role');
+    if (operation === 'pac-tool') {
+      const fields = { list: [], inspect: ['graphId'], create: ['taskKey', 'title', 'brief'], context: ['graphId', 'nodeId'], begin: ['graphId', 'nodeId', 'expectedToken'], complete: ['graphId', 'nodeId', 'expectedToken', 'evidenceRef'], cancel: ['graphId', 'expectedToken', 'evidenceRef'], rework: ['graphId', 'expectedToken', 'evidenceRef'] }[request.tool];
+      if (!fields || !request.args || typeof request.args !== 'object' || Array.isArray(request.args) || Object.keys(request.args).some(k => !fields.includes(k)) || fields.some(k => typeof request.args[k] !== 'string' || !request.args[k].trim()) || Object.keys(request).some(k => !['operation','sessionId','tool','args'].includes(k))) throw new BridgeError('PAC_ARGUMENT_REJECTED', 'unsupported PAC arguments or identity override');
+      await daemonRequest('session.register', fenced(identity, { cwd: process.cwd(), command: ['dsh-pac'], source: SOURCE, runtime: RUNTIME }), { mutation: true, env });
+      return pacRequest({ operation: 'tool', tool: request.tool, args: request.args, actor: identity.actor, sessionId }, env, config);
+    }
+    if (!['pac-reserve', 'pac-received'].includes(operation)) throw new BridgeError('PAC_INVALID_OPERATION', 'unsupported PAC carrier operation');
+    return pacRequest({ operation: operation.slice(4), actor: identity.actor, sessionId, graphId: request.graphId, nodeId: request.nodeId, messageId: request.messageId, expectedToken: request.expectedToken }, env, config);
+  }
   if (operation === "remote-bindings") {
     return { ok: true, bindings: await remoteBindings(ledgerPath(env)) };
   }
@@ -691,6 +988,34 @@ async function handleRpc(request, env = process.env) {
       return { ok: true, chats: directChatIndex(ledger, owner) };
     } finally { await release(); }
   }
+  if (operation === 'identity-migration-preview') {
+    const ledger = await readLedger(ledgerPath(env));
+    const snapshot = await daemonRequest('ps', {}, { env });
+    const rows = [];
+    const ids = new Set([...Object.keys(ledger.remoteNames), ...Object.keys(ledger.sessionBindings || {}), ...Object.values(ledger.remoteBindings).map(binding => binding.sessionId)]);
+    for (const sessionId of ids) {
+      const selected = await canonicalSessionIdentityFor(sessionId, env);
+      const legacy = (snapshot.agents || []).filter(agent => agent.uri !== selected.actor && agent.uri?.split(':').slice(0, 3).join(':') === selected.actor.split(':').slice(0, 3).join(':') && ['dsh-web:' + sessionId, 'dsh-remote:' + sessionId].includes(agent.lastSessionId));
+      rows.push({ sessionId, actor: selected.actor, sessionRef: selected.sessionRef, persisted: Boolean(ledger.sessionBindings?.[sessionId]), enabled: ledger.sessionBindings?.[sessionId]?.enabled ?? null, legacyActors: legacy.map(agent => ({ actor: agent.uri, sessionRef: agent.lastSessionId, status: agent.status })), adapters: Object.entries(ledger.remoteBindings).filter(([, binding]) => binding.sessionId === sessionId).map(([adapter]) => adapter) });
+    }
+    return { ok: true, readOnly: true, sessions: rows };
+  }
+  if (operation === 'carrier-list') {
+    const ledger = await readLedger(ledgerPath(env));
+    const sessions = Object.entries(ledger.sessionBindings || {}).map(([sessionId, b]) => ({ sessionId, actor: b.actor, enabled: b.enabled, humanChat: b.humanChat === true }));
+    // Adopt only an explicitly named, already registered legacy work session.
+    // Historical anonymous web chats are never implicitly resumed as agents.
+    const missing = Object.entries(ledger.remoteNames).filter(([id]) => !ledger.sessionBindings?.[id]);
+    if (missing.length) {
+      const snapshot = await daemonRequest('ps', {}, { env });
+      for (const [sessionId, name] of missing) {
+        const actor = `agent:${snapshot.daemon.owner}:${snapshot.daemon.nodeId}:${name}`;
+        const registered = snapshot.interactiveSessions?.some(item => item.actor === actor && item.sessionRef === 'dsh-remote:' + sessionId && item.source === SOURCE);
+        if (registered) sessions.push({ sessionId, actor, enabled: true, humanChat: false, legacy: true });
+      }
+    }
+    return { ok: true, sessions };
+  }
   const sessionId = requiredString(request.sessionId, "sessionId", 4096);
   if (operation === 'session-tool') {
     const specs = { 'workflow-node': ['runId', 'target'], identity: [], prepare: [], targets: [], send: ['target', 'message'], inbox: [], reply: ['messageId', 'message'], ack: ['messageId'] };
@@ -701,10 +1026,7 @@ async function handleRpc(request, env = process.env) {
     }
     const identity = await canonicalSessionIdentityFor(sessionId, env);
     if (request.tool === 'prepare') {
-      await daemonRequest('session.register', fenced(identity, {
-        cwd: env.H2B_DSH_DEMO_CWD?.trim() || process.cwd(),
-        command: ['dsh-h2b-talk-demo'], source: SOURCE, runtime: RUNTIME,
-      }), { mutation: true, env });
+      await registerSession(sessionId, identity, env);
       const status = await daemonRequest('identity.whoami', fenced(identity), { env });
       if (status.sessionRegistered !== true) throw new BridgeError('WORKFLOW_SENDER_NOT_READY', 'Workflow sender registration could not be verified');
       return { ...status, actor: identity.actor, sessionRef: identity.sessionRef, sessionId };
@@ -717,28 +1039,37 @@ async function handleRpc(request, env = process.env) {
     }
     if (request.tool === 'identity') return { ok: true, actor: identity.actor, sessionRef: identity.sessionRef, sessionId };
     if (request.tool === 'targets') return daemonRequest('targets', { kind: 'agent' }, { env });
-    if (request.tool === 'inbox') return pendingFor(identity, env);
+    if (request.tool === 'inbox') {
+      const allowedPrincipals = new Set();
+      for (const binding of await remoteBindings(ledgerPath(env))) {
+        if (binding.actor === identity.actor && binding.sessionRef === identity.sessionRef)
+          for (const principal of remoteAdapterPrincipals(binding.adapter, identity)) allowedPrincipals.add(principal);
+      }
+      return pendingFor(identity, env, { allowedPrincipals });
+    }
     if (request.tool === 'send') {
       const target = requiredString(args.target, 'target', 2048);
       const message = requiredString(args.message, 'message', 256 * 1024);
       if (!canonicalAgentPrincipal(target)) throw new BridgeError('INVALID_PARTICIPANT', 'target must be an exact four-part Agent URI');
-      const directory = await daemonRequest('targets', { kind: 'agent' }, { env });
-      if (!directory.targets?.some(item => item.targetKind === 'agent' && item.targetUri === target && item.status !== 'offline' && item.deliverable !== false)) throw new BridgeError('PARTICIPANT_NOT_AVAILABLE', 'target is not available');
-      // Preserve the existing bounded, per-session participant authorization.
-      await updateParticipants(ledgerPath(env), identity, current => [...current, target], { maxEntries: MAX_SESSION_PARTICIPANTS });
+      contactAddress(target);
+      const contacts = await participantSet(ledgerPath(env), identity);
+      if (!contacts.has(target)) {
+        const directory = await daemonRequest('targets', { kind: 'agent' }, { env });
+        if (!directory.targets?.some(item => item.targetKind === 'agent' && item.targetUri === target && item.deliverable !== false)) throw new BridgeError('PARTICIPANT_NOT_AVAILABLE', 'target is not listed or deliverable; save its exact URI as a contact to attempt delivery');
+      }
+      // Saved addresses need no live directory entry. Only the daemon decides
+      // whether delivery is queued, rejected, or accepted; return its result.
+      await updateParticipants(ledgerPath(env), identity, current => [...current, target]);
       return daemonRequest('message.send', fenced(identity, { to: [target], message }), { mutation: true, env });
     }
     const messageId = requiredString(args.messageId, 'messageId', 4096);
-    const pending = await pendingFor(identity, env);
-    if (!pending.messages.some(item => item.messageId === messageId)) throw new BridgeError('MESSAGE_NOT_AUTHORIZED', 'message is not in this session authorized inbox');
-    const params = { messageId };
-    if (request.tool === 'reply') params.message = requiredString(args.message, 'message', 256 * 1024);
-    return daemonRequest(request.tool === 'reply' ? 'message.reply' : 'message.ack', fenced(identity, params), { mutation: true, env });
+    const message = request.tool === 'reply' ? requiredString(args.message, 'message', 256 * 1024) : '';
+    return settleMessage(identity, env, { messageId, message, tool: request.tool });
   }
   const remote = operation.startsWith("remote-");
   const normalizedOperation = remote ? operation.slice("remote-".length) : operation;
   if (normalizedOperation === "name-configure") {
-    const current = await identityFor(sessionId, env, "remote");
+    const current = await canonicalSessionIdentityFor(sessionId, env, "remote");
     const actorName = remoteEntryName(request.entryName);
     const next = sessionIdentity(sessionId, (await daemonRequest("ps", {}, { env })).daemon, "remote", actorName);
     const bindings = await remoteBindings(ledgerPath(env));
@@ -758,12 +1089,38 @@ async function handleRpc(request, env = process.env) {
     await updateRemoteName(ledgerPath(env), sessionId, actorName);
     return { ok: true, previousActor: current.actor, actor: next.actor, actorName: next.actorName, entryName: actorName ? actorName.slice(4) : "" };
   }
-  // Unprefixed diagnostic reads describe the session's selected identity,
-  // just like its native tools. Legacy web mutation paths remain explicit:
-  // querying a renamed/pinned session must never register or migrate an alias.
-  const identity = !remote && ["status", "identity"].includes(normalizedOperation)
-    ? await canonicalSessionIdentityFor(sessionId, env)
-    : await identityFor(sessionId, env, remote ? "remote" : "web");
+  // Entry transport never selects a second identity once a binding exists.
+  const identity = await canonicalSessionIdentityFor(sessionId, env, remote ? 'remote' : 'web');
+
+  if (operation === 'carrier-heartbeat') {
+    const binding = (await readLedger(ledgerPath(env))).sessionBindings?.[sessionId];
+    if (!binding?.enabled) return { ok: true, disabled: true };
+    try {
+      const result = await daemonRequest('session.heartbeat', fenced(identity), { mutation: true, env });
+      const migrationWarnings = await retireDrainedAliases(sessionId, identity, env);
+      return { ...result, migrationWarnings };
+    } catch (error) {
+      if (error.code === 'STALE_DAEMON_GENERATION') return daemonRequest('session.refresh', fenced(identity), { mutation: true, env });
+      if (error.code === 'STALE_SESSION') {
+        const snapshot = await daemonRequest('ps', {}, { env });
+        if ((snapshot.interactiveSessions || []).some(item => item.actor === identity.actor && item.sessionRef !== identity.sessionRef)) throw new BridgeError('SESSION_SUPERSEDED', 'another session owns this Agent');
+        return registerSession(sessionId, identity, env, binding.humanChat === true);
+      }
+      if (error.code === 'SESSION_SUPERSEDED') {
+        await setSessionBinding(sessionId, identity, env, { enabled: false, error: error.code });
+      }
+      throw error;
+    }
+  }
+  if (operation === 'carrier-pending') {
+    const ledger = await readLedger(ledgerPath(env));
+    if (!ledger.sessionBindings?.[sessionId]?.enabled) return { ok: true, messages: [] };
+    const allowedPrincipals = new Set();
+    for (const [adapter, binding] of Object.entries(ledger.remoteBindings)) {
+      if (binding.sessionId === sessionId) for (const principal of remoteAdapterPrincipals(adapter, identity)) allowedPrincipals.add(principal);
+    }
+    return pendingFor(identity, env, { allowedPrincipals });
+  }
 
   if (normalizedOperation === "identity") {
     const configuredName = identity.sessionRef.startsWith("dsh-remote:") ? (await readLedger(ledgerPath(env))).remoteNames[sessionId] : "";
@@ -870,26 +1227,19 @@ async function handleRpc(request, env = process.env) {
   }
 
   if (normalizedOperation === "connect") {
-    const result = await daemonRequest(
-      "session.register",
-      fenced(identity, {
-        cwd: env.H2B_DSH_DEMO_CWD?.trim() || process.cwd(),
-        command: ["dsh-h2b-talk-demo"],
-        source: SOURCE,
-        runtime: RUNTIME,
-      }),
-      { mutation: true, env },
-    );
-    return { ...result, actor: identity.actor, sessionRef: identity.sessionRef };
+    const ledger = await readLedger(ledgerPath(env));
+    const humanChat = request.humanChat === true || Boolean(ledger.humanChats[ledgerKey(identity)]);
+    return registerSession(sessionId, identity, env, humanChat);
   }
 
   if (normalizedOperation === "status") {
-    const result = await daemonRequest("identity.whoami", fenced(identity), { env });
-    return { ...result, actor: identity.actor, sessionRef: identity.sessionRef };
+    return sessionStatus(sessionId, identity, env);
   }
 
   if (normalizedOperation === "pending") {
     if (!remote) {
+      const selected = (await readLedger(ledgerPath(env))).sessionBindings?.[sessionId];
+      if (request.observeOnly === true && selected?.enabled && !selected.humanChat) return { ok: true, messages: [], hostManaged: true };
       const result = await pendingFor(identity, env);
       const ledger = await readLedger(ledgerPath(env));
       const key = ledgerKey(identity);
@@ -910,6 +1260,48 @@ async function handleRpc(request, env = process.env) {
     return pendingFor(identity, env, { allowedPrincipals: remoteAdapterPrincipals(adapter, identity) });
   }
 
+  // Reception policy and its optional per-session whitelist. contact-add,
+  // contact-remove, and contact-list remain thin deprecated aliases of the
+  // whitelist-* operations over the same durable participants storage.
+  const contactAliases = { "contact-add": "whitelist-add", "contact-remove": "whitelist-remove", "contact-list": "whitelist-list" };
+  if (RECEPTION_OPERATIONS.has(normalizedOperation) || Object.hasOwn(contactAliases, normalizedOperation)) {
+    const effective = contactAliases[normalizedOperation] || normalizedOperation;
+    const entryField = Object.hasOwn(contactAliases, normalizedOperation) ? "contact" : "entry";
+    const fields = effective === "reception-policy-set"
+      ? ["operation", "sessionId", "policy"]
+      : ["reception-policy-get", "whitelist-list"].includes(effective)
+        ? ["operation", "sessionId"]
+        : ["operation", "sessionId", entryField];
+    if (Object.keys(request).some(key => !fields.includes(key))) {
+      throw new BridgeError("INVALID_ARGUMENT", "unsupported reception field; client verification claims are not accepted");
+    }
+    if (remote) {
+      const canonical = await canonicalSessionIdentityFor(sessionId, env);
+      if (canonical.actor !== identity.actor || canonical.sessionRef !== identity.sessionRef) {
+        throw new BridgeError("REMOTE_BINDING_MISMATCH", "remote reception policy requires this session's canonical remote identity");
+      }
+    }
+    const fixedAllowedPrincipals = [...allowlist(env)].sort();
+    const file = ledgerPath(env);
+    let { policy, whitelist } = await receptionState(file, identity);
+    if (effective === "reception-policy-set") {
+      if (request.policy !== "open" && request.policy !== "whitelist") {
+        throw new BridgeError("INVALID_POLICY", "policy must be exactly 'open' or 'whitelist'");
+      }
+      policy = await updateReceptionPolicy(file, identity, request.policy);
+    } else if (effective !== "whitelist-list" && effective !== "reception-policy-get") {
+      const entry = contactAddress(request[entryField]);
+      // whitelist-add edits content only; it must not silently enable whitelist mode.
+      whitelist = await updateParticipants(file, identity, current => effective === "whitelist-add"
+        ? [...current, entry] : current.filter(item => item !== entry),
+        { revokeAliases: effective === "whitelist-remove" });
+    }
+    return receptionPayload(identity, { policy, whitelist, fixedAllowedPrincipals });
+  }
+
+  // Legacy participant-* operations keep writing the same durable participants
+  // array. They now only edit whitelist content: in the default 'open' policy
+  // they no longer gate reception at all, and they never enable whitelist mode.
   if (operation === "participant-authorize") {
     const participant = requiredString(request.participant, "participant", 2048);
     if (!canonicalAgentPrincipal(participant)) {
@@ -920,23 +1312,22 @@ async function handleRpc(request, env = process.env) {
     }
     const result = await daemonRequest("targets", { kind: "agent" }, { env });
     const targets = Array.isArray(result.targets) ? result.targets : [];
-    const verified = targets.some((target) => (
+    const listed = targets.some((target) => (
       target &&
       typeof target === "object" &&
       target.targetKind === "agent" &&
       target.targetUri === participant
     ));
-    if (!verified) {
+    if (!listed) {
       throw new BridgeError(
         "PARTICIPANT_NOT_AVAILABLE",
-        "participant is not a verified live H2B agent target",
+        "participant is not listed in the H2B agent target directory (listing is not authentication)",
       );
     }
     const participants = await updateParticipants(
       ledgerPath(env),
       identity,
       (current) => [...current, participant],
-      { maxEntries: MAX_SESSION_PARTICIPANTS },
     );
     return {
       ok: true,
@@ -961,6 +1352,7 @@ async function handleRpc(request, env = process.env) {
       ledgerPath(env),
       identity,
       (current) => current.filter((item) => item !== participant),
+      { revokeAliases: true },
     );
     return {
       ok: true,
@@ -988,11 +1380,11 @@ async function handleRpc(request, env = process.env) {
     if (!canonicalAgentPrincipal(target)) {
       throw new BridgeError("INVALID_CHAT_TARGET", "chat target must be an exact canonical agent: identity");
     }
-    const participants = await participantSet(ledgerPath(env), identity);
-    if (!participants.has(target)) {
+    const contacts = await participantSet(ledgerPath(env), identity);
+    if (!contacts.has(target)) {
       throw new BridgeError(
-        "CHAT_TARGET_NOT_AUTHORIZED",
-        "chat target must be verified and authorized for this DSH Web session before binding",
+        "CHAT_TARGET_NOT_SAVED",
+        "chat target must be saved as a contact for this DSH Web session before binding",
       );
     }
     const now = Date.now();
@@ -1076,7 +1468,7 @@ async function handleRpc(request, env = process.env) {
     return { ok: true, actor: identity.actor, sessionRef: identity.sessionRef, binding };
   }
 
-  if (normalizedOperation === "mark-injected") {
+  if (normalizedOperation === "mark-injected" || operation === "carrier-mark-injected") {
     const deliveryId = requiredString(request.deliveryId, "deliveryId", 4096);
     let allowedPrincipals = new Set();
     if (remote) {
@@ -1084,12 +1476,18 @@ async function handleRpc(request, env = process.env) {
       await requireRemoteBinding(ledgerPath(env), adapter, sessionId, identity);
       allowedPrincipals = remoteAdapterPrincipals(adapter, identity);
     }
+    if (operation === 'carrier-mark-injected') {
+      const ledger = await readLedger(ledgerPath(env));
+      for (const [adapter, binding] of Object.entries(ledger.remoteBindings)) {
+        if (binding.sessionId === sessionId) for (const principal of remoteAdapterPrincipals(adapter, identity)) allowedPrincipals.add(principal);
+      }
+    }
     const pending = await pendingFor(identity, env, { allowedPrincipals });
     const message = pending.messages.find((item) => item.deliveryId === deliveryId);
     if (!message) {
       throw new BridgeError("DELIVERY_NOT_ALLOWED", "delivery is not pending for this session and allowlist");
     }
-    const recorded = await recordInjected(ledgerPath(env), identity, deliveryId);
+    const recorded = await recordInjected(ledgerPath(env), message.sourceIdentity || identity, deliveryId);
     return {
       ok: true,
       actor: identity.actor,
@@ -1110,7 +1508,19 @@ async function handleRpc(request, env = process.env) {
     if (request.conversationId !== undefined) {
       params.conversationId = requiredString(request.conversationId, "conversationId", 4096);
     }
+    if (canonicalAgentPrincipal(target)) {
+      await updateParticipants(ledgerPath(env), identity, current => [...current, contactAddress(target)]);
+    }
     return daemonRequest("message.send", fenced(identity, params), { mutation: true, env });
+  }
+
+  if (operation === 'remote-complete') {
+    const canonical = await canonicalSessionIdentityFor(sessionId, env);
+    if (canonical.actor !== identity.actor || canonical.sessionRef !== identity.sessionRef)
+      throw new BridgeError('REMOTE_BINDING_MISMATCH', 'completion requires the canonical remote identity');
+    const messageId = requiredString(request.messageId, 'messageId', 4096);
+    const message = request.message === '' ? '' : requiredString(request.message, 'message', 256 * 1024);
+    return settleMessage(identity, env, { messageId, message });
   }
 
   if (normalizedOperation === "reply") {
@@ -1118,17 +1528,18 @@ async function handleRpc(request, env = process.env) {
     const message = requiredString(request.message, "message", 256 * 1024);
     return daemonRequest(
       "message.reply",
-      fenced(identity, { messageId, message }),
+      fenced(await deliveryIdentity(identity, env, messageId), { messageId, message }),
       { mutation: true, env },
     );
   }
 
   if (normalizedOperation === "ack") {
     const messageId = requiredString(request.messageId, "messageId", 4096);
-    return daemonRequest("message.ack", fenced(identity, { messageId }), { mutation: true, env });
+    return daemonRequest("message.ack", fenced(await deliveryIdentity(identity, env, messageId), { messageId }), { mutation: true, env });
   }
 
   if (normalizedOperation === "disconnect") {
+    await setSessionBinding(sessionId, identity, env, { enabled: false });
     const result = await daemonRequest("session.unregister", fenced(identity), { mutation: true, env });
     return { ...result, actor: identity.actor, sessionRef: identity.sessionRef };
   }

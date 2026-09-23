@@ -110,6 +110,7 @@ class DispatchOutcomeKind(StrEnum):
     FETCH_UNCONFIRMED = "fetch_unconfirmed"
     ALARM_DELIVERED = "alarm_delivered"
     ALARM_LOCAL = "alarm_local"
+    ALARM_UNROUTABLE = "alarm_unroutable"
     PROGRESS_DELIVERED = "progress_delivered"
 
 
@@ -133,6 +134,14 @@ class DispatchOutcome:
     custody_mailbox: str | None = None
     notice: InboxMessage | None = None
     notice_local: bool = False
+
+
+def _alarm_failure(outcome: DispatchOutcome) -> str:
+    """Why an alarm dispatch did not reach a reader, for the failure log."""
+
+    if outcome.kind is DispatchOutcomeKind.ALARM_UNROUTABLE:
+        return "recipient-not-an-address"
+    return "delivery-rejected"
 
 
 @dataclass(frozen=True, slots=True)
@@ -607,10 +616,31 @@ class DeliveryIoWorker:
                 alarm,
                 AlarmEmitter.render(alarm),
             )
-        elif alarm.audience != "human":
+        elif alarm.audience == "operator":
+            # An operator alarm is local by construction: its sender is this
+            # node's own id (a bare node name, not a routable agent URI) and
+            # the local operator reads it back via system_notices(node_id).
+            # It must NOT be rejected as an unrouteable bare name (2026-09-14
+            # defect class A is about user-typed addresses, not the daemon's
+            # own operator notice).
             notice = self._alarm_notice(alarm)
+            delivered = True
+            outcome_kind = DispatchOutcomeKind.ALARM_LOCAL
+        elif alarm.audience != "human":
             target_node = self._agent_node(alarm.sender)
-            if target_node is None or target_node == self._node_id:
+            if target_node is None:
+                # A recipient that is not an address (a bare name like
+                # "hq-adjutant") has no reader: the notices table is keyed by
+                # exact URI on every read path, so writing here would record
+                # delivery nobody can observe (2026-09-14 defect class A).
+                # Fail loud instead -- alarm.failed, no notice row.
+                return (
+                    False,
+                    DispatchOutcomeKind.ALARM_UNROUTABLE,
+                    None,
+                )
+            notice = self._alarm_notice(alarm)
+            if target_node == self._node_id:
                 delivered = True
                 outcome_kind = DispatchOutcomeKind.ALARM_LOCAL
             else:
@@ -1403,6 +1433,12 @@ class DeliveryCustody:
             "conversationId": alarm.conversation_id,
             "sender": alarm.sender,
             "recipient": alarm.recipient,
+            # Split the two receivers that used to share "recipient": the
+            # notice goes to alarm.sender, while alarm.recipient is the
+            # original message's addressee (2026-09-14 spec item 5c; the
+            # actor path must carry the same fields as AlarmEmitter).
+            "noticeRecipient": alarm.sender,
+            "originalRecipient": alarm.recipient,
             "reason": alarm.reason,
             "audience": alarm.audience,
         }
@@ -1582,7 +1618,7 @@ class DeliveryCustody:
                 "info" if delivered else "error",
                 "alarm.delivered" if delivered else "alarm.failed",
                 **fields,
-                **({} if delivered else {"failure": "delivery-rejected"}),
+                **({} if delivered else {"failure": _alarm_failure(outcome)}),
             )
             self._publish(event)
             self._publish_alarm_completed(
@@ -1822,7 +1858,7 @@ class DeliveryCustody:
                     **(
                         {}
                         if outcome.recipient_online
-                        else {"failure": "delivery-rejected"}
+                        else {"failure": _alarm_failure(outcome)}
                     ),
                 )
             result = SubmissionResult(item.message.message_id, False, code=reason)
@@ -2117,6 +2153,16 @@ class DeliveryCustody:
                     message.message_id,
                 ),
             )
+            self._service._alarm._safe_log(
+                "warn",
+                "outbox.retry_scheduled",
+                messageId=message.message_id,
+                recipient=message.recipient,
+                sender=message.sender,
+                attempts=attempts,
+                nextAttemptMs=now_ms + delay * 1000,
+                reason="recipient offline",
+            )
             return
         self._service._db.execute(
             """UPDATE outbox
@@ -2182,6 +2228,16 @@ class DeliveryCustody:
                     item.message.message_id,
                 ),
             )
+        self._service._alarm._safe_log(
+            "warn",
+            "outbox.retry_scheduled",
+            messageId=item.message.message_id,
+            recipient=item.message.recipient,
+            sender=item.message.sender,
+            attempts=attempts,
+            nextAttemptMs=now_ms + delay * 1000,
+            reason="recipient offline",
+        )
         return SubmissionResult(item.message.message_id, True, queued=True)
 
     def _publish_final(

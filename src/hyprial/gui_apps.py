@@ -1,4 +1,4 @@
-"""Two independently owned GUI processes in one installed GUI package."""
+"""DSH GUI lifecycle and bounded retirement of the old Dashboard process."""
 
 from __future__ import annotations
 
@@ -10,33 +10,36 @@ from hyprial import gui_runtime as runtime
 from hyprial.contracts import ipc_errors
 from hyprial.installers import InstallError
 
-APPS = ("dashboard", "dsh")
+APPS = ("dsh",)
 
 
 def resolve_invocation(
     app_or_action: str = "start", action: str | None = None,
 ) -> tuple[str, str | None]:
     """Normalize GUI application subcommands before any lifecycle work."""
-    if app_or_action in (*APPS, "all"):
-        selected = app_or_action
-        verb = action or "start"
-    else:
-        if action is not None:
-            raise InstallError(ipc_errors.INVALID_ARGUMENT, "Use hyprial gui <dashboard|dsh|all> [start|status|stop]")
-        selected = None
-        verb = app_or_action
-    if verb not in ("start", "status", "stop", "upgrade"):
-        raise InstallError(ipc_errors.INVALID_ARGUMENT, "GUI action must be start, status, stop, or upgrade")
-    if verb == "upgrade" and selected is not None:
-        raise InstallError(ipc_errors.INVALID_ARGUMENT, "Upgrade the whole package with hyprial gui upgrade (no application selector)")
-    return verb, selected
+    if action is not None or app_or_action not in ("start", "status", "stop", "upgrade"):
+        raise InstallError(
+            ipc_errors.INVALID_ARGUMENT,
+            "Use hyprial gui [start|status|stop|upgrade]; dashboard/dsh/all selectors are retired",
+        )
+    return app_or_action, None
 
 
 def _selected(action: str, app: str | None) -> tuple[str, ...]:
-    if app is not None and app not in (*APPS, "all"):
-        raise InstallError(ipc_errors.INVALID_ARGUMENT, "GUI application must be dashboard, dsh, or all")
-    choice = app or ("all" if action == "status" else "dashboard")
-    return APPS if choice == "all" else (choice,)
+    if app is not None:
+        raise InstallError(ipc_errors.INVALID_ARGUMENT, "GUI application selectors are retired; use hyprial gui")
+    return APPS
+
+
+def _retire_dashboard(home: Path) -> None:
+    """Stop only a verifiably owned legacy process; never delete its record."""
+    if not (home / "apps/gui/runtimes/dashboard/process.json").exists():
+        return
+    state = runtime.gui_status(home, "gui", component="dashboard")
+    if state["state"] == "unknown":
+        raise InstallError("GUI_PROCESS_UNKNOWN", "Cannot verify retired Dashboard ownership; refusing replacement")
+    if state["state"] == "running":
+        runtime.stop_gui(home, "gui", component="dashboard")
 
 
 def _each(home: Path, action: str, apps: tuple[str, ...]) -> dict[str, Any]:
@@ -63,7 +66,7 @@ def _each(home: Path, action: str, apps: tuple[str, ...]) -> dict[str, Any]:
     if not result["ok"]:
         raise InstallError(
             "GUI_APP_FAILED",
-            "One or more GUI applications failed; other applications were left independent",
+            "DSH GUI operation failed",
             result,
         )
     return result
@@ -78,6 +81,7 @@ def perform(home: Path, action: str, app: str | None = None) -> dict[str, Any]:
     # Serialize starts/stops with package upgrades, while keeping the existing
     # per-process identity locks. Distinct path avoids recursive flock.
     with runtime._lifecycle_lock(home / "apps" / "gui" / "lifecycle"):
+        _retire_dashboard(home)
         return _each(home, action, selected)
 
 
@@ -95,6 +99,7 @@ def upgrade(home: Path, run_upgrade: Callable[..., dict[str, Any]]) -> dict[str,
                     "GUI_PROCESS_UNKNOWN",
                     "Cannot verify GUI process ownership; refusing package replacement",
                 )
+            _retire_dashboard(home)
             for app, state in states.items():
                 if state["state"] == "running":
                     stopped.append(app)

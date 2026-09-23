@@ -97,9 +97,17 @@ class ForwardingEndpoints:
         controller: ForwardingController,
         *,
         on_failure: Callable[[str], None] | None = None,
+        on_success: Callable[[], None] | None = None,
     ) -> None:
         self._controller = controller
         self._on_failure = on_failure
+        self._on_success = on_success
+
+    @property
+    def controller(self) -> ForwardingController:
+        """The owned control surface; the supervisor reads ``pid`` from it."""
+
+        return self._controller
 
     def list_reachable_endpoints(self) -> tuple[str, ...]:
         try:
@@ -120,11 +128,16 @@ class ForwardingEndpoints:
                         f"sidecar returned invalid local port for {peer}: {port!r}"
                     )
                 endpoints.append(f"tcp/127.0.0.1:{port}")
-            return tuple(endpoints)
         except Exception as error:  # noqa: BLE001 - discovery stays best effort
             if self._on_failure is not None:
                 self._on_failure(str(error))
             return ()
+        # The success hook is what lets an owner tell "answered again" from
+        # "never answered": a wedged child that recovers must be visible as
+        # a state change, not inferred from the absence of failure events.
+        if self._on_success is not None:
+            self._on_success()
+        return tuple(endpoints)
 
     def close(self) -> None:
         self._controller.close()

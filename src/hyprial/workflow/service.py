@@ -19,7 +19,7 @@ import yaml
 
 from hyprial.actor_runtime import ActorRuntime
 from hyprial.actor_runtime.contracts import ActorSpec, AdmissionResult
-from hyprial.alarm import Alarm, AlarmEmitter
+from hyprial.alarm import Alarm, AlarmEmitter, AlarmResult
 from hyprial.assign_reconcile import AssignReconcileReport, RoutineExistsProbe
 from hyprial.contracts import ipc_errors
 from hyprial.contracts.agent_task import (
@@ -38,6 +38,7 @@ from hyprial.contracts.agent_task import (
 from hyprial.contracts.ports import PortAdmission, PortCommandRejected
 from hyprial.dispatch.identity import DISPATCH_SERVICE_ACTOR_NAME
 from hyprial.inbox.io import InboxIoDeferred, InboxIoError
+from hyprial.log import Logger
 
 from .executor import TargetState, WorkflowDispatchError
 from .ports import (
@@ -65,7 +66,7 @@ from .registry import (
     WorkflowRegistry,
 )
 from .store import WorkflowStore
-from .schema import WorkflowSpec
+from .schema import WorkflowSchemaError, WorkflowSpec
 
 
 class WorkflowServiceError(RuntimeError):
@@ -89,27 +90,101 @@ class _EmitterAlarm:
         self,
         emitter: AlarmEmitter,
         deliver_user: Callable[[str, str, str], bool] | None = None,
+        logger: Logger | None = None,
     ) -> None:
         self._emitter = emitter
         self._deliver_user = deliver_user
+        self._logger = logger
 
-    def escalate(self, *, to: str, text: str) -> None:
-        if to.startswith("user:") and self._deliver_user is not None:
-            if self._deliver_user(to, text, f"workflow-{uuid4().hex[:12]}"):
-                return
-        self._emitter.emit(
+    def escalate(
+        self,
+        *,
+        to: str,
+        text: str,
+        reason: str | None = None,
+        conversation_id: str = "workflow",
+    ) -> AlarmResult:
+        # The escalation text (routine name, breaker reason) is the payload --
+        # it must survive to the reader verbatim.  The pre-2026-09-14 code
+        # dropped it and rendered only "delivery failed ...
+        # WORKFLOW_TARGET_TIMEOUT", which erased why the alarm existed.
+        # ``conversation_id`` is the throttle ledger key's first component;
+        # callers pass a per-routine / per-run id so one routine's alarm does
+        # not eat another routine's (B3, 2026-09-14).  The returned status is
+        # the completion code the routine/workflow caller records (S1).
+        effective_reason = reason or "WORKFLOW_TARGET_TIMEOUT"
+        if to.startswith("user:"):
+            try:
+                delivered = self._deliver_user is not None and self._deliver_user(
+                    to, text, f"workflow-{uuid4().hex[:12]}"
+                )
+            except InboxIoError as error:
+                # The DM callback raises transient (timeout) / permanent
+                # failures as InboxIoError; the alarm path is best-effort and
+                # must record loud rather than propagate into the routine loop.
+                self._log_alarm_failed(
+                    to,
+                    text,
+                    effective_reason,
+                    conversation_id,
+                    "user-delivery-timeout"
+                    if not error.permanent
+                    else "user-delivery-rejected",
+                )
+                return AlarmResult("failed", "human")
+            if delivered:
+                return AlarmResult("delivered", "human")
+            # DM path failed or unwired: fail LOUD with the text preserved,
+            # never degrade to a system notice keyed by an unreadable
+            # recipient (user: has no notice reader).
+            failure = (
+                "user-delivery-unwired"
+                if self._deliver_user is None
+                else "user-delivery-rejected"
+            )
+            self._log_alarm_failed(to, text, effective_reason, conversation_id, failure)
+            return AlarmResult("failed", "human")
+        return self._emitter.emit(
             Alarm(
                 correlation_id=f"workflow-{uuid4().hex[:12]}",
                 message_id=f"workflow-{uuid4().hex[:12]}",
-                conversation_id="workflow",
+                conversation_id=conversation_id,
                 sender=to,
                 recipient="workflow",
-                reason="WORKFLOW_TARGET_TIMEOUT",
+                reason=effective_reason,
                 audience=_audience_for_recipient(to),  # type: ignore[arg-type]
+                text=text,
             ),
             delivery=None,
             terminal=False,
         )
+
+    def _log_alarm_failed(
+        self, to: str, text: str, reason: str, conversation_id: str, failure: str
+    ) -> None:
+        if self._logger is None:
+            return
+        try:
+            self._logger.log(
+                "error",
+                "alarm.failed",
+                **{
+                    "correlationId": f"workflow-escalate-{uuid4().hex[:12]}",
+                    "conversationId": conversation_id,
+                    "sender": to,
+                    "recipient": to,
+                    "noticeRecipient": to,
+                    "originalRecipient": to,
+                    "reason": reason,
+                    "audience": _audience_for_recipient(to),
+                    "textLength": len(text),
+                    "failure": failure,
+                },
+            )
+        except (NameError, ImportError):
+            raise
+        except Exception:  # noqa: BLE001 - logging must never break escalation
+            pass
 
 
 _ResultT = TypeVar("_ResultT")
@@ -131,12 +206,14 @@ class WorkflowFacade:
         clock_ms: Callable[[], int] | None = None,
         mailbox_capacity: int = 128,
         service_actor: str | None = None,
+        logger: Logger | None = None,
         routine_probe: RoutineExistsProbe | None = None,
         assign_reconcile_sink: Callable[[AssignReconcileReport], None] | None = None,
         dispatch_gate: Callable[[WorkflowSpec, str | None, str], tuple[str, ...]] | None = None,
     ) -> None:
         self._inbox_projection = inbox_projection
-        self._alarm = _EmitterAlarm(alarm, deliver_user)
+        self._alarm = _EmitterAlarm(alarm, deliver_user, logger)
+        self._logger = logger
         self._delivery_io = delivery_io
         self._acknowledge_io = acknowledge_io
         self._clock_ms = clock_ms or _wall_ms
@@ -176,6 +253,7 @@ class WorkflowFacade:
                 routine_probe=self._routine_probe,
                 assign_reconcile_sink=self._assign_reconcile_sink,
                 dispatch_gate=dispatch_gate,
+                logger=self._logger,
             )
 
         self._handle = self._runtime.start(
@@ -370,7 +448,15 @@ class WorkflowFacade:
         }
 
     def status(self, *, run_id: str) -> dict[str, object]:
-        persisted = self._projection.load_run(run_id)
+        try:
+            persisted = self._projection.load_run(run_id)
+        except WorkflowSchemaError as error:
+            # A stored run that no longer validates (e.g. a legacy bare-name
+            # address) must answer loud, not crash the read path.
+            raise WorkflowServiceError(
+                "WORKFLOW_SCHEMA_ERROR",
+                f"stored run {run_id} no longer validates: {error}",
+            ) from error
         if persisted is None:
             raise WorkflowServiceError(
                 "WORKFLOW_RUN_NOT_FOUND", f"no such run: {run_id}"
@@ -378,7 +464,15 @@ class WorkflowFacade:
         return persisted.run.status()
 
     def node_context(self, *, run_id: str, target_ref: str, sender: str) -> dict[str, object]:
-        persisted = self._projection.load_run(run_id)
+        try:
+            persisted = self._projection.load_run(run_id)
+        except WorkflowSchemaError as error:
+            # A stored run that no longer validates must answer loud, not
+            # crash the read path (2026-09-14 S3).
+            raise WorkflowServiceError(
+                "WORKFLOW_SCHEMA_ERROR",
+                f"stored run {run_id} no longer validates: {error}",
+            ) from error
         if persisted is None or persisted.run.sender != sender:
             raise WorkflowServiceError("WORKFLOW_NODE_FORBIDDEN", "Run is not readable by this sender")
         run = persisted.run
@@ -394,9 +488,21 @@ class WorkflowFacade:
                 if run.spec.await_.match else None}
 
     def list(self, *, limit: int = 50) -> dict[str, object]:
+        runs, rejections = self._projection.list_runs_report(limit=limit)
+        # Rejections ride the listing so a schema-broken run cannot vanish
+        # from `workflow list` -- it stays visible with its error.
         return {
             "runs": [
-                item.run.status() for item in self._projection.list_runs(limit=limit)
+                item.run.status() for item in runs
+            ]
+            + [
+                {
+                    "runId": rejection.run_id,
+                    "name": None,
+                    "state": "schema-error",
+                    "schemaError": rejection.error,
+                }
+                for rejection in rejections
             ]
         }
 
@@ -717,7 +823,11 @@ class WorkflowFacade:
                             )
                         break
             else:
-                self._alarm.escalate(to=effect.to, text=effect.text)
+                self._alarm.escalate(
+                    to=effect.to,
+                    text=effect.text,
+                    conversation_id=f"workflow:{effect.run_id}",
+                )
             succeeded = True
         except InboxIoDeferred:
             raise

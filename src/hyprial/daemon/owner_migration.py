@@ -78,6 +78,8 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from hyprial.contracts import ipc_errors
+
 #: Address forms whose second segment is the owner.  Both delimiters matter:
 #: the trailing colon is what stops ``agent:h2oslabs:`` from matching the
 #: machine name ``h2oslabsmac-studio``.
@@ -85,6 +87,20 @@ ADDRESS_PREFIXES = ("agent:", "adapter:", "channel:", "route:")
 
 #: The complete durable input set.  Preview and apply intentionally import
 #: these names instead of maintaining parallel inventories.
+#:
+#: ``pac-graph.sqlite3`` (P1b B0, Allen 2026-09-18): PAC authorizes by exact
+#: principal-URI equality (``user:<owner>`` / ``agent:<owner>:<machine>:
+#: <actor>``) and a stale owner spelling locks a graph out of flag/close/stop
+#: with no error anywhere — the task just runs to timeout.  Every
+#: owner-bearing column participates through the same shape-driven scan as
+#: the other databases: ``graphs.created_by`` / ``activated_by`` /
+#: ``closed_by``, ``nodes.owner`` / ``flag_set_by``, ``flag_events.actor``,
+#: principal URIs inside ``journal.data_json`` envelopes, and
+#: ``notifications.recipient`` / ``sender``.  Fenced the same way as the rest:
+#: the migration only runs under the daemon state-ownership fence
+#: (``daemon run`` acquires ``daemon.lock`` BEFORE constructing
+#: DaemonApplication), so a live previous generation — including PAC's
+#: resident clock writer — blocks startup and thus the migration.
 MIGRATION_DATABASES = (
     "agents.sqlite3",
     "adapters.sqlite3",
@@ -92,6 +108,7 @@ MIGRATION_DATABASES = (
     "lifecycle-operations.sqlite3",
     "routines.sqlite3",
     "workflows.sqlite3",
+    "pac-graph.sqlite3",
 )
 MIGRATION_TEXT_FILES = ("desired-state.json.v1", "users.json")
 
@@ -121,6 +138,9 @@ class ResidualForm:
 
 #: ⚠️ DATA, not branches — see the module docstring.  Add a row when another
 #: deployment aborts on a residual that is genuinely not an owner segment.
+#: (``build_plan`` additionally appends the per-run hyprial-home path-prefix
+#: residual from :func:`_home_root_residual` — same class as the first row
+#: below, but machine-specific, so it is constructed rather than listed.)
 ALLOWED_RESIDUALS: tuple[ResidualForm, ...] = (
     ResidualForm(
         name="home-directory path",
@@ -213,6 +233,111 @@ class Unclassified:
     sample: str
 
 
+class OwnerMigrationCustodyConflict(RuntimeError):
+    """The startup auto-rewrite refused: live per-agent grants would ride it.
+
+    ``migrate_owner_if_needed`` models exactly one legal transition — the
+    benign host-login → user-identity alias rewrite, where the same human
+    keeps their agents, homes and grants under the new spelling.  A *real*
+    account or hosting switch must not inherit that authority (the agent-home
+    design: 账号切换不因短名相同沿用凭据授权), and an owner-string rewrite
+    cannot tell the two apart.  When live secret grants are present the
+    daemon refuses to start until the operator chooses explicitly; nothing
+    has been written.  The account-switch re-authorization fence itself is
+    deferred to #493 (design b9e2ccae §7) — this gate is what keeps that
+    deferred wiring from being an open inheritance path in the meantime.
+
+    ⚠️ Scope note (why ``grants`` gates and ``homes`` only reports): every
+    ``session.register`` auto-creates an agent, and P1a provisions that
+    agent's home — so active ``agent-home`` resources exist on any node with
+    registered sessions, including ones with zero credential custody.  A
+    home without a grant carries no delivery authority (the resolver needs
+    a named grant), and alias rewrites *must* keep homes (T01: the directory
+    key survives an owner-alias rewrite).  Gating on homes would therefore
+    brick the #352 alias rewrite for every realistic state while closing no
+    credential hole; homes are counted and reported for diagnosis instead.
+
+    ⚠️ Honesty note (h2b-developer, #513 comment 12723 附条件 3 and comment
+    12899 ②): the refusal message may only name commands that actually
+    exist, and a destructive one only with its cost stated in the same
+    breath.  The first recourse it names is **non-destructive**: switch
+    the login identity back to the previous spelling with
+    ``hyprial login --switch-account`` (a switch requires the daemon
+    stopped — which it is, since this refusal *is* the failed start) and
+    bring the daemon up under that spelling, where no rewrite triggers
+    and nothing is deleted.  It also states the known blind spot of that
+    recourse (h2b-developer comment on head 89063212): when the previous
+    spelling came from the host login (#352 alias rewrite) there is no
+    account to switch back to, and this build has no non-destructive CLI
+    path for that case — the message says so instead of letting the
+    operator discover it after trying.  ``revoke_secret_grant`` (drops
+    the grants, keeps the agents) and the confirmed alias path
+    (``migrate_owner``) are internal API with **no CLI entry point** in
+    this build — the message says so, points the revoke entry at its
+    follow-up and the account-switch re-authorization wiring at #493,
+    and invents no commands.  ``hyprial agent destroy`` is named only as
+    a **last resort**, ordered last, with its consequences spelled out
+    (irreversible; the cascade deletes the agent record with its pins
+    and grants; historical addressees stop resolving; a same-name
+    rebuild does not restore the destroyed history).
+    ``tests/test_agent_home_dirs.py`` pins that every ``hyprial …``
+    invocation the message names — flags included — is registered in the
+    real CLI tree, that ``destroy`` is ordered last, that naming it
+    obliges the consequences clause, and that the host-login blind spot
+    is stated.
+
+    ⭐ Carries ``.code``/``.data`` (``OWNER_MIGRATION_CUSTODY_CONFLICT``)
+    so the refused ``daemon run`` child emits a machine-readable code on
+    its startup log and the launcher / login orchestration can report
+    the **named** switch outcome instead of a plain startup failure
+    (infra-op acceptance on #513: S3 merged first, so #513 wires its
+    exception codes into S3's failure_data).
+    """
+
+    def __init__(self, *, old: str, new: str, grants: int, homes: int) -> None:
+        self.old = old
+        self.new = new
+        self.grants = grants
+        self.homes = homes
+        self.code = ipc_errors.OWNER_MIGRATION_CUSTODY_CONFLICT
+        self.data = {
+            "old": old,
+            "new": new,
+            "grants": grants,
+            "homes": homes,
+        }
+        signals = [f"{grants} agent_secret_grants row(s)"]
+        if homes:
+            signals.append(f"{homes} active agent-home lifecycle resource(s)")
+        super().__init__(
+            f"owner migration refused before writing anything: state under "
+            f"{old!r} holds live per-agent secret custody ({'; '.join(signals)}). "
+            "The startup rewrite only models the benign host-login alias "
+            "change, where the same human keeps their grants; a real account "
+            "switch must not inherit them. Nothing was written, and nothing "
+            "needs to be deleted to get the daemon back. First recourse "
+            "(non-destructive): switch the login identity back to the "
+            f"previous spelling {old!r} — `hyprial login --switch-account` "
+            "(a switch requires the daemon stopped; this refusal happened "
+            "at startup, so it is) — then start under that spelling "
+            "(`hyprial daemon run`, or the platform service): no rewrite "
+            f"triggers under {old!r}. If the previous spelling came from "
+            "the host login (an alias rewrite, not an account — there is "
+            "no account to switch back to), this build has no "
+            "non-destructive CLI path for it; see #493. Revoking only the "
+            "grants while keeping "
+            "the agents (`revoke_secret_grant`) and the confirmed alias "
+            "path (`migrate_owner`) have no CLI entry point in this build — "
+            "the revoke entry is a tracked follow-up, and the "
+            "account-switch re-authorization wiring is #493. Last resort, "
+            "only if you mean it: `hyprial agent destroy` on the agents "
+            "holding grants — irreversible: deletes the agent record, its "
+            "pins and grants, and discards its undelivered messages; "
+            "historical messages to it will no longer resolve, and "
+            "recreating the same name does not restore it."
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class PendingWrite:
     source: str
@@ -266,6 +391,30 @@ ARCHIVAL_COLUMNS = (
     ("runs", "yaml_text"),
     ("runs", "report_text"),
     ("targets", "reply_excerpt"),
+    # PAC record columns (P1b B0): records of what was written/decided at the
+    # time, not addresses — rewriting them would falsify the v8 era report
+    # that authorization refusals point at (schema_era.report_json), or break
+    # the notifications byte-for-byte resend contract (text / plan_json,
+    # store.py docstring).  Delivery ROUTING lives in
+    # notifications.recipient/sender, which ARE rewritten.  Descriptive
+    # columns (graphs.name, nodes.brief_ref, flag_reason_ref, reason_ref) are
+    # deliberately NOT archived: a stale old-owner spelling there stops the
+    # migration fail-closed like every other database, and a legitimate
+    # residual gets classified rather than skipped.
+    ("schema_era", "report_json"),
+    ("notifications", "text"),
+    ("notifications", "plan_json"),
+    # The PAC journal is append-only BY TRIGGER (migrations.py installs
+    # journal_no_update / journal_no_delete with RAISE(ABORT)); an UPDATE
+    # rewrite is refused by the database itself ("PAC journal is
+    # append-only").  PAC's own v8 era migration took the same stance by
+    # design (§2.3: journal rows stay untouched; B1 appends nothing).  No
+    # authorization surface compares journal rows — flag/close/stop compare
+    # nodes.owner and graphs.created_by — so a stale actor string in the log
+    # is a dated fact, not a lockout.  Flagged as a deviation from the B0
+    # spec text ("journal actor fields participate in the rewrite") in the
+    # PR and the receipt, with this trigger reading as the reason.
+    ("journal", "data_json"),
 )
 
 
@@ -341,10 +490,52 @@ def _hit_context(value: str, old: str, width: int = 70) -> str:
     return window.replace("\n", " / ")
 
 
-def _is_accounted_for(value: str, old: str) -> bool:
+def _is_accounted_for(
+    value: str, old: str, *, residuals: tuple[ResidualForm, ...] = ALLOWED_RESIDUALS
+) -> bool:
     """True when a value still holding ``old`` is a known-legitimate residual."""
 
-    return any(form.matches(value, old) for form in ALLOWED_RESIDUALS)
+    return any(form.matches(value, old) for form in residuals)
+
+
+def _home_root_residual(hyprial_home: Path) -> ResidualForm | None:
+    """The home's own path prefix: a machine-local location, not an address.
+
+    Earned on CI (task 15458, 2026-09-17): P1a's home provisioning stores the
+    agent-home path in ``lifecycle_resources.payload``, and the owner
+    spelling can appear inside that path as a coincidental substring of an
+    unrelated directory segment — measured: pytest-xdist's ``popen-gw<N>``
+    worker directories contain ``op``.  Same class as the ``/Users/{old}``
+    residual above (a filesystem location is not an owner segment); this row
+    is constructed per-run because the home path is machine-specific.
+
+    The anchored rewrite still fires first on any real ``agent:<old>:`` /
+    ``user:<old>`` spelling *inside* such a value — this row only forgives
+    what remains after the rewrite.  Returns ``None`` for a degenerate home
+    path (empty or ``/``), where prefix-matching would forgive everything.
+    """
+
+    text = str(hyprial_home)
+    # Degenerate roots (empty, "/", and Path("")→".") add no row: a
+    # one-character prefix would substring-match almost every value.
+    if len(text) <= 1:
+        return None
+    # ``matches`` formats the template with ``old=`` — escape braces so a
+    # home path containing ``{``/``}`` cannot turn into a format error or a
+    # different string.
+    return ResidualForm(
+        name="hyprial-home path prefix",
+        template=text.replace("{", "{{").replace("}", "}}"),
+        why=(
+            "the hyprial home is a machine-local directory tree; the owner "
+            "spelling can appear inside its path only as a coincidental "
+            "substring of unrelated path segments (measured: pytest-xdist "
+            "popen-gw<N> worker directories contain 'op'), never as an "
+            "owner segment. The anchored rewrite already handled real "
+            "address spellings in the same value; this row forgives only "
+            "the path remainder."
+        ),
+    )
 
 
 def _text_columns(db: sqlite3.Connection, table: str) -> list[str]:
@@ -355,7 +546,14 @@ def _text_columns(db: sqlite3.Connection, table: str) -> list[str]:
     ]
 
 
-def plan_database(path: Path, old: str, new: str, plan: MigrationPlan) -> None:
+def plan_database(
+    path: Path,
+    old: str,
+    new: str,
+    plan: MigrationPlan,
+    *,
+    residuals: tuple[ResidualForm, ...] = ALLOWED_RESIDUALS,
+) -> None:
     """Classify one database.  Reads only — no statement here writes."""
 
     if not path.exists():
@@ -412,7 +610,9 @@ def plan_database(path: Path, old: str, new: str, plan: MigrationPlan) -> None:
                     if not isinstance(value, str):
                         continue
                     rewritten = rewrite_value(value, old, new)
-                    if old in rewritten and not _is_accounted_for(rewritten, old):
+                    if old in rewritten and not _is_accounted_for(
+                        rewritten, old, residuals=residuals
+                    ):
                         plan.unclassified.append(
                             Unclassified(
                                 str(path.name),
@@ -431,7 +631,14 @@ def plan_database(path: Path, old: str, new: str, plan: MigrationPlan) -> None:
         db.close()
 
 
-def plan_text_file(path: Path, old: str, new: str, plan: MigrationPlan) -> None:
+def plan_text_file(
+    path: Path,
+    old: str,
+    new: str,
+    plan: MigrationPlan,
+    *,
+    residuals: tuple[ResidualForm, ...] = ALLOWED_RESIDUALS,
+) -> None:
     """Classify a JSON document by its text.
 
     ⭐ Same rule as the databases, deliberately: ``desired-state.json.v1`` and
@@ -444,7 +651,9 @@ def plan_text_file(path: Path, old: str, new: str, plan: MigrationPlan) -> None:
     original = path.read_text(encoding="utf-8")
     rewritten = rewrite_value(original, old, new)
     if old in rewritten:
-        for location, value in _unaccounted_json_values(rewritten, old):
+        for location, value in _unaccounted_json_values(
+            rewritten, old, residuals=residuals
+        ):
             plan.unclassified.append(
                 Unclassified(str(path.name), location, value[:120])
             )
@@ -455,7 +664,7 @@ def plan_text_file(path: Path, old: str, new: str, plan: MigrationPlan) -> None:
 
 
 def _unaccounted_json_values(
-    text: str, old: str
+    text: str, old: str, *, residuals: tuple[ResidualForm, ...] = ALLOWED_RESIDUALS
 ) -> list[tuple[str, str]]:
     """Every place a rewritten document still holds ``old`` without a reason.
 
@@ -470,7 +679,7 @@ def _unaccounted_json_values(
     except json.JSONDecodeError:
         # Not JSON: fall back to the text rule, reporting the neighbourhood of
         # the first unaccounted occurrence.
-        if _is_accounted_for(text, old):
+        if _is_accounted_for(text, old, residuals=residuals):
             return []
         index = text.index(old)
         return [("<document text>", text[max(0, index - 60) : index + 60])]
@@ -483,7 +692,7 @@ def _unaccounted_json_values(
                 return
             if key in HOST_LOGIN_JSON_KEYS and node == old:
                 return  # the host login, deliberately kept
-            if _is_accounted_for(node, old):
+            if _is_accounted_for(node, old, residuals=residuals):
                 return
             found.append((path or "<root>", node))
         elif isinstance(node, dict):
@@ -500,13 +709,24 @@ def _unaccounted_json_values(
 def build_plan(
     *, state_dir: Path, hyprial_home: Path, old: str, new: str
 ) -> MigrationPlan:
-    """Classify everything.  ⭐ Nothing is written by this function."""
+    """Classify everything.  ⭐ Nothing is written by this function.
 
+    The home's own path prefix is admitted as a per-run residual (see
+    :func:`_home_root_residual`): the owner spelling inside it is a
+    coincidental path substring, not an owner segment.  Fail-closed is
+    untouched for every other shape — a ``None`` from the helper just means
+    the residual table stays at its frozen membership.
+    """
+
+    home_root = _home_root_residual(hyprial_home)
+    residuals = (
+        ALLOWED_RESIDUALS + (home_root,) if home_root is not None else ALLOWED_RESIDUALS
+    )
     plan = MigrationPlan()
     for name in MIGRATION_DATABASES:
-        plan_database(state_dir / name, old, new, plan)
+        plan_database(state_dir / name, old, new, plan, residuals=residuals)
     for name in MIGRATION_TEXT_FILES:
-        plan_text_file(state_dir / name, old, new, plan)
+        plan_text_file(state_dir / name, old, new, plan, residuals=residuals)
     return plan
 
 
@@ -538,6 +758,86 @@ def apply_plan(plan: MigrationPlan) -> int:
     return applied
 
 
+def _table_exists(db: sqlite3.Connection, table: str) -> bool:
+    """Whether ``table`` exists, read from the schema itself.
+
+    The schema read fails under the same conditions as the data read (a
+    locked or corrupt database refuses ``sqlite_master`` too), which is
+    exactly what makes it a sound witness: a ``False`` return can only mean
+    the table is absent, never that we could not look.
+    """
+
+    row = db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
+class OwnerMigrationCustodyUnreadable(RuntimeError):
+    """The custody state could not be read, so the rewrite refuses to guess.
+
+    ``sqlite3.OperationalError`` covers far more than "the table does not
+    exist yet": ``database is locked``, ``disk I/O error``, a file that is
+    not a database at all.  Counting any of those as zero grants would
+    leave the gate silently open while live custody rides the rewrite
+    (h2b-developer, #513 comment 12723: 读不到 ≠ 没有).  Only a table
+    *verified absent* from ``sqlite_master`` counts as zero — that database
+    predates the custody entirely.  Everything else fails closed with the
+    original error attached, and nothing has been written.
+
+    ⭐ Carries ``.code``/``.data``
+    (``OWNER_MIGRATION_CUSTODY_UNREADABLE``) for the same reason as
+    :class:`OwnerMigrationCustodyConflict`: the refused ``daemon run``
+    child emits the code on its startup log so the login orchestration
+    can report the named switch outcome.
+    """
+
+    def __init__(self, *, database: str, table: str, error: Exception) -> None:
+        self.database = database
+        self.table = table
+        self.error = error
+        self.code = ipc_errors.OWNER_MIGRATION_CUSTODY_UNREADABLE
+        self.data = {
+            "database": database,
+            "table": table,
+            "errorType": type(error).__name__,
+        }
+        super().__init__(
+            f"custody state unreadable, refusing to count it as zero "
+            f"(读不到 ≠ 没有): {type(error).__name__} while reading "
+            f"{table!r} in {database}: {error}. Way out: clear the cause — "
+            "a lock that outlasts the read-only connection's busy-timeout "
+            "wait, an I/O failure, or a file that is not a database must "
+            "not silently re-open the owner-migration gate — then retry "
+            "the start. Nothing was written."
+        )
+
+
+def _count_or_zero_if_absent(
+    db: sqlite3.Connection, *, database: str, table: str, sql: str
+) -> int:
+    """Count rows; the only unreadable state that means zero is no table.
+
+    Existence is established from ``sqlite_master`` *before* the count,
+    not parsed from the error text: ``database is locked`` and
+    ``no such table`` are both ``OperationalError``-shaped, so the message
+    string cannot carry the distinction — the schema can.  Any failure
+    besides a verified-absent table raises
+    :class:`OwnerMigrationCustodyUnreadable`, and the rewrite that asked
+    for the count fails closed instead of treating silence as zero.
+    """
+
+    try:
+        if not _table_exists(db, table):
+            return 0  # verified absent: this database predates the table
+        return int(db.execute(sql).fetchone()[0])
+    except sqlite3.Error as exc:
+        raise OwnerMigrationCustodyUnreadable(
+            database=database, table=table, error=exc
+        ) from exc
+
+
 def detect_previous_owner(state_dir: Path, current: str) -> str | None:
     """The owner this node's state was written under, or ``None`` if current.
 
@@ -560,9 +860,16 @@ def detect_previous_owner(state_dir: Path, current: str) -> str | None:
     db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     try:
         try:
+            if not _table_exists(db, "agents"):
+                return None  # verified absent: this state predates agents
             rows = db.execute("SELECT DISTINCT owner FROM agents").fetchall()
-        except sqlite3.OperationalError:
-            return None
+        except sqlite3.Error as exc:
+            # 读不到 ≠ 没有 applies one level up as well: an unreadable
+            # agents table must not masquerade as "no previous owner", or
+            # the custody gate below is never reached at all.
+            raise OwnerMigrationCustodyUnreadable(
+                database=str(path), table="agents", error=exc
+            ) from exc
     finally:
         db.close()
     owners = {
@@ -580,6 +887,43 @@ def detect_previous_owner(state_dir: Path, current: str) -> str | None:
     return owners.pop()
 
 
+def _live_custody_counts(state_dir: Path) -> tuple[int, int]:
+    """Count the P1a custody signals that must not silently change owner.
+
+    Read-only, and tolerant of pre-P1a databases in exactly one way: a
+    table *verified absent* from the schema predates this custody entirely
+    and counts as zero.  Anything unreadable — a lock, an I/O error, a file
+    that is not a database — raises :class:`OwnerMigrationCustodyUnreadable`
+    so the gate fails closed instead of silently opening (读不到 ≠ 没有,
+    #513 comment 12723).  Only *active* home resources count — a revoked
+    residue is already fenced and carries no delivery authority.
+    """
+
+    path = state_dir / "agents.sqlite3"
+    if not path.exists():
+        return (0, 0)
+    db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        grants = _count_or_zero_if_absent(
+            db,
+            database=str(path),
+            table="agent_secret_grants",
+            sql="SELECT count(*) FROM agent_secret_grants",
+        )
+        homes = _count_or_zero_if_absent(
+            db,
+            database=str(path),
+            table="lifecycle_resources",
+            sql=(
+                "SELECT count(*) FROM lifecycle_resources "
+                "WHERE resource_key LIKE 'agent-home:%' AND active = 1"
+            ),
+        )
+    finally:
+        db.close()
+    return (grants, homes)
+
+
 def migrate_owner_if_needed(*, state_dir: Path, hyprial_home: Path, owner: str) -> int:
     """Startup entry point: rewrite the owner segment once, if state predates it.
 
@@ -591,11 +935,31 @@ def migrate_owner_if_needed(*, state_dir: Path, hyprial_home: Path, owner: str) 
     and matches the identity rule it belongs to: a daemon whose state it cannot
     account for should refuse to run rather than serve half-rewritten
     addresses.  The exception names the (db, table, column, sample) to look at.
+
+    ⚠️ Custody fail-closed: a previous owner whose state holds live secret
+    grants raises :class:`OwnerMigrationCustodyConflict` instead of
+    rewriting.  The rewrite cannot distinguish a benign alias change from a
+    real account switch, and the latter must not inherit credential
+    authority by silence; the operator chooses explicitly.  Active agent
+    homes do not gate (see the exception's scope note) but are reported in
+    the refusal when a grant triggered it.
+
+    ⚠️ Unreadable fail-closed: custody state that cannot be *read* — a
+    locked database, an I/O error, a corrupt file — raises
+    :class:`OwnerMigrationCustodyUnreadable` rather than counting as zero
+    grants (读不到 ≠ 没有, #513 comment 12723).  Only tables verified
+    absent from the schema count as zero, so an unreadable database can
+    never silently re-open the gate.
     """
 
     previous = detect_previous_owner(Path(state_dir), owner)
     if previous is None:
         return 0
+    grants, homes = _live_custody_counts(Path(state_dir))
+    if grants:
+        raise OwnerMigrationCustodyConflict(
+            old=previous, new=owner, grants=grants, homes=homes
+        )
     return migrate_owner(
         state_dir=Path(state_dir), hyprial_home=Path(hyprial_home), old=previous, new=owner
     )

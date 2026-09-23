@@ -1,10 +1,10 @@
-# dsh-h2b-talk
+# @hyprial/dsh-hyprial-plugin
 ## Hyprial command entry
 
 The migrated core uses `hyprial`, `HYPRIAL_HOME` and `~/.hyprial`. Use
-`hyprial gui`, `hyprial gui dsh`, `hyprial gui status --json` and
+`hyprial gui`, `hyprial gui status --json` and
 `hyprial gui upgrade`. The Hyprial registry entry must select
-`hyprial-install.json`; `h2b-install.json` remains for older H2B installations.
+`hyprial-install.json`; `h2b-install.json` is a historical receipt-path alias with the same Hyprial schema; it no longer targets the retired H2B installer.
 The launcher translates inherited lifecycle variables and routes the existing
 internal bridge command to Hyprial, retaining stored GUI identities.
 Migration paths, environment settings and verification are documented in
@@ -14,35 +14,28 @@ Migration paths, environment settings and verification are documented in
 
 把 DeepSeek Harness 的 Web UI 改造成「飞书式三人群聊」的 H2B 插件；同时提供可持久加载的静态 DSH 包和便于快速迭代的动态 Cordis 源码。
 
-团队使用请看 [更新与新功能使用指南](docs/team-feature-guide.md)：更新安装、Dashboard / DSH 入口、Codex 全局代理与登录、Agent 驱动 Workflow、飞书接入和会话同步。
+团队使用请看 [更新与新功能使用指南](docs/team-feature-guide.md)：更新安装、DSH 入口、Codex 全局代理与登录、Agent 驱动 Workflow、飞书接入和会话同步。
 
 ## Agent GUI 定制
 
 DSH 工作台新增个人界面设计、试用、发布和恢复入口。Agent 在原生会话内生成声明式界面包，完整业务模块保留原有状态与权限。安装包含启动时使用的布局包；升级后需要重新启动 DSH 才能加载新 Host。使用方式、模块边界、存储位置与恢复步骤见 [GUI 定制说明](docs/gui-customization.md)。
 
-## 独立 H2B Dashboard（展示模式）
+## 释放子 Agent
 
-`dashboard/` 是独立 React 单页与只读服务，展示总览、节点与 Agent、运行与调度、投递、集成和系统状态。
-它不加载 DSH Host、创建 Session 或处理消息；现有 DSH 开发工作台保持原有入口。
+主 Agent 会话的「⚙ 会话配置」在归档上方提供「释放子 Agent…」。确认后停止选定的驻留可继续子级及其持有的下级、取消未处理队列并释放运行资源；保留会话历史，不归档或删除，不停止主 Agent。新消息仍可恢复可继续子会话。详见 [释放子 Agent 的语义与边界](docs/subagent-release.md)。
 
-```bash
-npm ci --prefix dashboard
-npm run build:dashboard
-npm run start:dashboard
-```
+## GUI 指令
 
-打开 `http://127.0.0.1:3081`。需要 Node.js 22.12+（22 LTS）或 24+，以及 PATH 中可用的 `h2b`。
-Dashboard 不自动启动 daemon；未运行时仍可打开页面并查看查询失败/已停止状态。
-支持 `npm run start:dashboard -- --port 4081`；详细边界、环境变量与验证见 [Dashboard 使用说明](docs/dashboard.md)。
-
-安装版使用 `h2b gui` 默认打开 Dashboard，`h2b gui dsh` 打开完整开发工作台，
-`h2b gui all` 启动两者。`h2b gui status` 分别查看状态；`h2b gui stop` 默认只停止 Dashboard，
-停止工作台或两者使用 `h2b gui dsh stop` / `h2b gui all stop`。两个应用共用安装包，升级恢复升级前的运行组合。
-需要先升级至支持 GUI 子命令的 H2B CLI，再升级 GUI 包；旧单进程记录继续作为 DSH 使用。
+`hyprial gui` / `hyprial gui start` 打开 DSH 工作空间。
+`hyprial gui status --json` 查询状态，`hyprial gui stop` 停止，
+`hyprial gui upgrade` 更新 GUI 包并恢复此前运行的 DSH。
+Dashboard 独立页已退役，`gui dashboard`、`gui dsh`、`gui all` 不再支持。
+原有 DSH process.json、会话和个人布局保留；升级前对旧 Dashboard 做进程身份核验后停止，
+不会重新启动 Dashboard，也不删除其历史进程记录。
 
 ## 目录内容
 
-- `dashboard/` —— 独立 React 展示应用、固定只读查询服务与浏览器测试
+- `browser-tests/` —— DSH/GUI 编辑器浏览器验收的独立锁定工具依赖
 
 - `imskin-host-plugin.js` —— 动态插件 Host 源码：受管执行 H2B 通讯录与只读控制面固定命令，并提供包私有 RPC
 - `imskin-plugin.js` —— 动态插件客户端源码
@@ -110,7 +103,7 @@ export HARNESS_SOCKET_PATH='/absolute/path/to/daemon.sock'
 
 # 3)（可选）DSH worker 工作目录；默认 process.cwd()。仅当 DSH 与仓库不同目录、
 #    或 DSH 与 h2b 不在同一台机器时才需要
-export H2B_DSH_DEMO_CWD='/absolute/path/to/dsh-h2b-talk'
+export H2B_DSH_DEMO_CWD='/absolute/path/to/dsh-hyprial-plugin'
 ```
 
 ### 三个变量的作用域与路径归属
@@ -157,10 +150,12 @@ h2b install gui
 
 这是普通用户的推荐入口：h2b 锁定并展示本次 Git commit，确认后调用本仓根目录
 `install.sh`。本仓优先复用兼容的 Node/npm；缺少时把经过 SHA-256 校验的 Node 24 LTS
-安装到 `$H2B_HOME/apps/gui/runtime/node`，并按需安装 pnpm。已有且可执行的 DSH 直接
-复用；没有 DSH 时执行 `npm install -g @deepseek-ai/dsh@latest`。安装器不约束、比较或
-升级已有 DSH；npm 11 下只放行当前已审查的 DSH 原生依赖安装脚本。安装器不会自动
-使用 `sudo` 或修改 shell rc。
+安装到 `$H2B_HOME/apps/gui/runtime/node`，并按需安装 pnpm。实际安装或升级时从官方 npm
+解析 DSH `latest`，在独立候选目录生成本次精确版本和依赖锁，安装并通过真实浏览器
+兼容性验证后再切换。失败保留此前运行时；普通启动不联网更新。GUI 发布版本未变时，
+应用管理器的普通升级仍是空操作；需要刷新 DSH 时使用 `hyprial gui upgrade --force`
+并先核对源码替换计划。详见 [latest 策略与验收](docs/dsh-latest-release-gate.md)。
+安装器不会自动使用 `sudo` 或修改 shell rc。
 
 Node 下载和 npm 安装默认先使用当前/官方源，网络失败时自动回退 npmmirror；只想使用
 国内源时可设置 `H2B_INSTALL_MIRROR=cn`，只想使用官方源时设置为 `official`。也可通过
@@ -213,13 +208,18 @@ cp .env.example .env.local
 维护者可用 `bash scripts/install-local.sh --check` 和
 `bash scripts/start-web.sh --check` 只执行前置验证，不注册插件或启动服务。
 
-永久注册方式是先构建并把本仓库链接到 Web profile，然后直接启动该 profile：
+永久注册方式是把校验过的源码打包成版本化 tgz 并注册到 Web profile，然后直接启动该 profile：
 
 ```bash
 npm run build:static
-dsh plugin --profile web add "$PWD"
+node scripts/hyprial-plugin-package.mjs install
 dsh --profile web --host 127.0.0.1 --port 3080
 ```
+
+`install` 会把包按内容哈希落到 `~/.dsh/hyprial-packages/<sha256>/`，以不可变的
+`file:` 依赖写入 profile，并在 profile 内留下 `hyprial-plugin-install.json`
+记录版本、哈希与来源提交；重复安装不会复用可变目录。开发迭代需要直接指向
+checkout 时改用 `node scripts/hyprial-plugin-package.mjs install --link`。
 
 未执行 profile 注册时，也可以只为当前进程使用仓库 patch：
 
@@ -249,7 +249,7 @@ loader id 拒绝启动。仓库的 `start:web` 已自动处理这两个模式。
 
 把**那台机器上**的 TaskWarrior 看板（[HyprialOS/kanban](https://code.hyprial.com/HyprialOS/kanban)）经 Host RPC 暴露给 Client。
 
-GUI 自动读取已安装 Kanban 的路径配置。DSH 工具栏和 Dashboard「任务看板」均提供本机只读快照；刷新不会执行同步。配置优先级、同步记录、工作台操作入口与验证方式见 [GUI 看板接入](docs/kanban-gui.md)。
+GUI 自动读取已安装 Kanban 的路径配置。DSH 工具栏提供本机只读快照；刷新不会执行同步。配置优先级、同步记录、工作台操作入口与验证方式见 [GUI 看板接入](docs/kanban-gui.md)。
 
 ```
 Host method   h2b-kanban-rpc / h2b-kanban-capabilities
@@ -429,3 +429,12 @@ GUI 安装流程同时安装仓库携带的 `dsh-codex` 兼容构建包。源码
 `vendor/dsh-codex`，版本包和 SHA-256 清单位于 `packages/dsh-codex`；无需发布 npm
 或让团队成员自行编译。Codex 登录、刷新及模型通信使用独立代理进程。
 维护、安装及回退见 [兼容版说明](docs/codex-compatibility.md)。
+
+## GUI PAC v2 自动任务（测试分支）
+
+新增 `h2b_pac_*` 原生工具与 Host 派工，支持协调者、实施者、审核者三个独立 GUI
+会话，以及授权远端的结构化新任务请求。默认不启用，不复用旧 Workflow v1 面板。
+配置、发起任务、返工和故障恢复见 [操作指南](docs/pac/gui-operation-guide.md)。
+
+职责资源及适用边界见 [主仓资源盘点](docs/pac/role-resources.md)，
+迁移验证见 [验证记录](docs/pac/validation-20260917.md)。

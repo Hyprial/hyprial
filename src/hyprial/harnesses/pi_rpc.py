@@ -34,8 +34,14 @@ from hyprial.log import Logger
 
 from .common import summarize_stderr
 from .pi_session import pi_session_id as _pi_session_id
-from .streaming import ProgressObservation, StreamingTurnProcess, TurnClientFactory
+from .streaming import (
+    ProgressObservation,
+    StreamingTurnProcess,
+    TurnClientFactory,
+    TurnFailureSpecObserver,
+)
 from .worker_channel import WorkerChannel
+from hyprial.agents.environment import ChildEnvironmentLaunch
 from .model_provider import pi_model_args
 
 # Pi has no MCP support by design (its README defers MCP to extensions), so a
@@ -44,6 +50,9 @@ from .model_provider import pi_model_args
 # bundled extension: it registers the harness_* toolset and signs daemon IPC
 # with the worker's own canonical actor, read from the injected environment.
 PI_HARNESS_BRIDGE_EXTENSION = Path(__file__).with_name("pi_harness_bridge.ts")
+
+#: Observer seam for turn failures with spec context lives in
+#: ``streaming.py`` (TurnFailureSpecObserver); PiRpcProcess adapts it below.
 
 # RPC lines carry whole assistant messages; the asyncio default of 64 KiB
 # would sever the session mid-turn on a long answer.
@@ -289,9 +298,14 @@ class PiRpcClient:
         log_path: Path | None = None,
         startup_timeout_seconds: float = 30.0,
         settle_grace_seconds: float = 1.5,
+        complete_launch: "ChildEnvironmentLaunch | None" = None,
     ) -> None:
         self.spec = spec
         self.session_ref = session_ref
+        # P1b B1: a complete child environment REPLACES the ambient one
+        # (design §3.1).  It is kept verbatim; the spawn seam never merges
+        # ``os.environ`` into it, and it is never blended with ``env``.
+        self._complete_launch = complete_launch
         launch = [
             *command,
             *pi_model_args(spec),
@@ -318,26 +332,34 @@ class PiRpcClient:
         channel_env = (
             worker_channel.pi_environment() if worker_channel is not None else {}
         )
-        combined_environment = {**(env or {}), **channel_env}
-        if spec.containerized:
-            if worker_channel is None:
+        if self._complete_launch is not None:
+            # Complete-replacement mode (B1): the launch already carries the
+            # channel's generated identity values inside its GENERATED set,
+            # so no second merge happens here either.  Legacy ``env`` inputs
+            # are refused rather than blended — a caller that hands a
+            # complete environment AND a partial one has misunderstood the
+            # contract, and the failure must be loud, not a precedence rule.
+            if env is not None:
                 raise ValueError(
-                    "containerized pi workers require a worker channel"
+                    "complete child environment cannot be combined with a "
+                    "partial env mapping"
                 )
-            self.command = wrap_worker_launch(
-                spec,
-                inner_argv=self.command,
-                env_delta=combined_environment,
-                state_dir=worker_channel.state_dir,
-            )
+            complete = self._complete_launch.environment.for_exec()
+            if spec.containerized:
+                if worker_channel is None:
+                    raise ValueError(
+                        "containerized pi workers require a worker channel"
+                    )
+                self.command = wrap_worker_launch(
+                    spec,
+                    inner_argv=self.command,
+                    env_delta=complete,
+                    state_dir=worker_channel.state_dir,
+                )
             # Bare Docker ``-e KEY`` flags copy from this child environment.
-            self._env = combined_environment or None
+            self._env = complete
         else:
-            self._env = (
-                combined_environment
-                if (env is not None or channel_env)
-                else None
-            )
+            self._apply_legacy_environment(env, channel_env, worker_channel)
         self._startup_timeout_seconds = startup_timeout_seconds
         self._settle_grace_seconds = settle_grace_seconds
         state_dir = worker_channel.state_dir if worker_channel is not None else None
@@ -368,8 +390,49 @@ class PiRpcClient:
         # session ref is retried or abandoned for a cold start.
         self.reached_ready = False
 
+    def _apply_legacy_environment(
+        self,
+        env: Mapping[str, str] | None,
+        channel_env: dict[str, str],
+        worker_channel: "WorkerChannel | None",
+    ) -> None:
+        """Pre-B1 behaviour for callers without a complete environment."""
+
+        combined_environment = {**(env or {}), **channel_env}
+        if self.spec.containerized:
+            if worker_channel is None:
+                raise ValueError(
+                    "containerized pi workers require a worker channel"
+                )
+            self.command = wrap_worker_launch(
+                self.spec,
+                inner_argv=self.command,
+                env_delta=combined_environment,
+                state_dir=worker_channel.state_dir,
+            )
+            self._env = combined_environment or None
+        else:
+            self._env = (
+                combined_environment
+                if (env is not None or channel_env)
+                else None
+            )
+
+    def _spawn_environment(self) -> dict[str, str] | None:
+        """The exact env mapping the exec consumer receives.
+
+        Complete-replacement mode (B1) returns the frozen mapping verbatim —
+        the one place the ambient merge is refused for this carrier.  Legacy
+        callers without a complete environment keep today's behaviour until
+        their sites are collected in B2.
+        """
+
+        if self._complete_launch is not None:
+            return self._complete_launch.environment.for_exec()
+        return None if self._env is None else {**os.environ, **self._env}
+
     async def __aenter__(self) -> Self:
-        environment = None if self._env is None else {**os.environ, **self._env}
+        environment = self._spawn_environment()
         loop = asyncio.get_running_loop()
         transport, protocol = await loop.subprocess_exec(
             lambda: _PiSubprocessProtocol(STREAM_LIMIT_BYTES, loop),
@@ -384,6 +447,19 @@ class PiRpcClient:
         self._process_protocol = protocol
         self._process = asyncio.subprocess.Process(transport, protocol, loop)
         self._spawned.set()
+        if self._complete_launch is not None:
+            # Completion receipt (design §3.1.5): only NOW — the process
+            # exists with the frozen mapping — is the launch complete.  The
+            # receipt names the bound identity and every grant revision;
+            # values never appear.
+            self._write_log(
+                "worker.environment.receipt",
+                actor=self._complete_launch.actor,
+                grants=[
+                    {"grantId": grant_id, "revision": revision}
+                    for grant_id, revision in self._complete_launch.grants
+                ],
+            )
         try:
             self._expected_stop = False
             self._write_log("worker.started", pid=self._process.pid)
@@ -919,10 +995,18 @@ class PiRpcProcess(StreamingTurnProcess):
         env: Mapping[str, str] | None = None,
         worker_channel: WorkerChannel | None = None,
         reconnect_delay_seconds: float = 0.25,
+        complete_launch: "ChildEnvironmentLaunch | None" = None,
+        on_turn_failure_for_spec: TurnFailureSpecObserver | None = None,
     ) -> None:
         if spec.harness != "pi" or not spec.headless:
             raise ValueError("pi RPC requires a managed headless spec")
+        if complete_launch is not None and env is not None:
+            raise ValueError(
+                "complete child environment cannot be combined with a "
+                "partial env mapping"
+            )
         self.spec = spec
+        self._complete_launch = complete_launch
         # One stable session id across client reconnects: pi's --session-id
         # creates the session if missing, so a crashed process resumes the
         # same conversation instead of starting over.  A spec that carries a
@@ -934,6 +1018,11 @@ class PiRpcProcess(StreamingTurnProcess):
         self._last_client: PiRpcClient | None = None
         self._command = command
         self._env = env
+        # The complete environment is resolved ONCE per process (at factory
+        # time) and re-bound verbatim into every reconnected RPC client: a
+        # reconnect must not re-resolve grants behind a rotating credential
+        # revision, and must not drift back toward the ambient environment.
+        
         # One stable worker identity across client reconnects: every
         # reconnected RPC client re-injects the same canonical actor and
         # harness-bridge extension (same contract as ClaudeAgentSdkProcess).
@@ -941,6 +1030,22 @@ class PiRpcProcess(StreamingTurnProcess):
         logger = (
             Logger.worker(worker_channel.state_dir, runtime="pi", name=spec.name)
             if worker_channel is not None
+            else None
+        )
+        # Adapt the generic failure-text observer to the provider_auth
+        # coordinator's signature: the spec carries this worker's provider,
+        # model, and short name, which the failure text alone does not.
+        adapted_observer = (
+            (
+                lambda failure: on_turn_failure_for_spec(
+                    failure,
+                    harness="pi",
+                    provider=spec.model_provider,
+                    model=spec.model,
+                    worker=spec.name,
+                )
+            )
+            if on_turn_failure_for_spec is not None
             else None
         )
         super().__init__(
@@ -952,6 +1057,7 @@ class PiRpcProcess(StreamingTurnProcess):
             reconnect_delay_seconds=reconnect_delay_seconds,
             force_stop=self._force_stop_client,
             force_stopped=self._force_stopped_client,
+            on_turn_failure=adapted_observer,
         )
 
     @property
@@ -1000,6 +1106,7 @@ class PiRpcProcess(StreamingTurnProcess):
             command=self._command,
             env=self._env,
             worker_channel=self.worker_channel,
+            complete_launch=self._complete_launch,
         )
         self._last_client = client
         return client

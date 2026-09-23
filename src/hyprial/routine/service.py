@@ -18,10 +18,13 @@ import yaml
 
 from hyprial.actor_runtime import ActorRuntime
 from hyprial.actor_runtime.contracts import ActorSpec, AdmissionResult
+from hyprial.alarm import AlarmResult
 from hyprial.contracts.ports import PortAdmission, PortCommandRejected
+from hyprial.log import Logger
 
 from .ports import (
     AddRoutineCommand,
+    AddressMigrationProjection,
     PauseRoutineCommand,
     RecoverRoutinesCommand,
     RemoveRoutineCommand,
@@ -33,7 +36,7 @@ from .ports import (
     RoutineSourceQueryCompleted,
     RoutineSourceTaskProjection,
     RoutineTimerElapsedCommand,
-    RoutineWorkflowIoCompleted,
+    RoutinePacIoCompleted,
 )
 from .registry import (
     DEFAULT_TASK_TIMEOUT_SECONDS,
@@ -42,7 +45,7 @@ from .registry import (
     RoutineEffect,
     RoutineRegistry,
     RoutineSourceQueryEffect,
-    RoutineWorkflowEffect,
+    RoutinePacEffect,
 )
 from .schema import RoutineSchemaError, load_routine_text
 from .source import (
@@ -64,17 +67,39 @@ class RoutineServiceError(RuntimeError):
 
 
 class AlarmSink(Protocol):
-    def escalate(self, *, to: str, text: str) -> None: ...
+    def escalate(
+        self,
+        *,
+        to: str,
+        text: str,
+        reason: str | None = None,
+        conversation_id: str = "workflow",
+    ) -> "AlarmResult": ...
 
 
-class WorkflowPort(Protocol):
-    def list(self, *, limit: int = 50) -> dict[str, object]: ...
+class PacPort(Protocol):
+    """PAC dispatch seam (U3).  ``hyprial.routine.pac_dispatch`` implements it.
+
+    ``start_idempotent`` is keyed by routine + task uuid, so a replay returns
+    the same graph instead of dispatching twice; ``status`` projects the task's
+    graph; ``close`` retires a settled graph.
+    """
 
     def start_idempotent(
-        self, *, external_ref: str, yaml_text: str, sender: str
+        self,
+        *,
+        routine_name: str,
+        task_uuid: str,
+        task_text: str,
+        target: str,
+        escalate_to: str,
+        timeout_seconds: float,
+        sender: str,
     ) -> dict[str, object]: ...
 
-    def status(self, *, run_id: str) -> dict[str, object]: ...
+    def status(self, *, graph_id: str) -> dict[str, object]: ...
+
+    def close(self, *, graph_id: str, actor: str) -> None: ...
 
 
 SourceQuery = Callable[[str], list[SourceTask]]
@@ -94,7 +119,7 @@ class RoutineFacade:
     def __init__(
         self,
         *,
-        workflow: WorkflowPort,
+        pac: PacPort,
         alarm: AlarmSink,
         state_dir: Path,
         clock_ms: Callable[[], int] | None = None,
@@ -102,9 +127,13 @@ class RoutineFacade:
         pac_journal: PacJournalV2 | None = None,
         mailbox_capacity: int = 128,
         event_sink: Callable[[object], None] | None = None,
+        migrate_address: Callable[[str], str | None] | None = None,
+        logger: Logger | None = None,
     ) -> None:
-        self._workflow = workflow
+        self._pac = pac
         self._alarm = alarm
+        self._migrate_address = migrate_address
+        self._logger = logger
         self._clock_ms = clock_ms or _wall_ms
         self._source_query = source_query or query_taskwarrior
         if pac_journal is None:
@@ -143,6 +172,8 @@ class RoutineFacade:
                 generation=self._generation,
                 publish=self._publish,
                 clock_ms=self._clock_ms,
+                migrate_address=self._migrate_address,
+                logger=self._logger,
             )
 
         self._handle = self._runtime.start(
@@ -182,6 +213,20 @@ class RoutineFacade:
     def list(self) -> dict[str, object]:
         return {"routines": [item.to_payload() for item in self.read_routines()]}
 
+    def address_migrations(self) -> list[dict[str, object]]:
+        """Ledger of stored-spec address rewrites (doctor/audit visibility)."""
+
+        return [
+            AddressMigrationProjection(
+                routine=row.routine,
+                field=row.field,
+                before=row.before,
+                after=row.after,
+                migrated_at_ms=row.migrated_at_ms,
+            ).to_payload()
+            for row in self._projection.address_migrations()
+        ]
+
     def status(self, *, name: str) -> dict[str, object]:
         projection = self.read_routine(name)
         if projection is None:
@@ -214,6 +259,18 @@ class RoutineFacade:
             RoutineMutationCompleted,
         )
         return event.result.to_payload()
+
+    @property
+    def migrated_u3(self) -> dict[str, tuple[str, ...]]:
+        """What opening the store deleted for U3, so startup can report it.
+
+        Allen, 2026-09-17, on the rows the retired dispatcher left behind:
+        「迁移时直接删除」 -- a deletion, and NOT a silent one.  The store
+        does the deleting and returns the ids; nothing else reads them, so
+        without this the only trace of a dropped task would be its absence.
+        """
+
+        return self._projection.migrated_u3
 
     def recover(self) -> int:
         correlation = self._correlation()
@@ -307,6 +364,7 @@ class RoutineFacade:
             ),
             produces=produces,
             schema_error=schema_error,
+            quarantine_reason=row.quarantine_reason,
         )
 
     def _submit_wait(
@@ -352,7 +410,7 @@ class RoutineFacade:
     def _publish(self, output: RegistryOutput) -> None:
         if isinstance(
             output,
-            (RoutineSourceQueryEffect, RoutineWorkflowEffect, RoutineAlarmEffect),
+            (RoutineSourceQueryEffect, RoutinePacEffect, RoutineAlarmEffect),
         ):
             self._enqueue_effect(output)
             return
@@ -387,7 +445,7 @@ class RoutineFacade:
                     return
                 assert isinstance(
                     effect,
-                    (RoutineSourceQueryEffect, RoutineWorkflowEffect, RoutineAlarmEffect),
+                    (RoutineSourceQueryEffect, RoutinePacEffect, RoutineAlarmEffect),
                 )
                 completion = self._execute_effect(effect)
                 stale_generation = self._submit_completion(effect, completion)
@@ -429,10 +487,18 @@ class RoutineFacade:
             code: str | None = None
             detail: str | None = None
             try:
-                self._alarm.escalate(to=effect.to, text=effect.text)
+                result = self._alarm.escalate(
+                    to=effect.to,
+                    text=effect.text,
+                    reason="ROUTINE_ALARM",
+                    conversation_id=f"routine:{effect.routine_name}",
+                )
+                if getattr(result, "status", "delivered") != "delivered":
+                    code = f"ALARM_{str(getattr(result, 'status', 'failed')).upper()}"
+                    detail = f"escalation {getattr(result, 'status', 'failed')}"
             except Exception as error:
                 code, detail = type(error).__name__, str(error)
-            return RoutineWorkflowIoCompleted(
+            return RoutinePacIoCompleted(
                 effect.effect_id,
                 effect.generation,
                 effect.version,
@@ -442,7 +508,7 @@ class RoutineFacade:
                 code=code,
                 detail=detail,
             )
-        return self._execute_workflow(effect)
+        return self._execute_pac(effect)
 
     def _execute_source(
         self, effect: RoutineSourceQueryEffect
@@ -483,44 +549,56 @@ class RoutineFacade:
             permanent,
         )
 
-    def _execute_workflow(
-        self, effect: RoutineWorkflowEffect
-    ) -> RoutineWorkflowIoCompleted:
-        run_id: str | None = None
+    def _execute_pac(self, effect: RoutinePacEffect) -> RoutinePacIoCompleted:
+        """Run one PAC call for one task and report its settled state.
+
+        A failure here is reported as ``code``/``detail`` and the registry
+        counts it as an escalation: "could not read or build the graph" is a
+        routine-level failure, exactly as the old "status read failed" was
+        (hq-adjutant, 2026-09-14).
+        """
+
+        graph_id: str | None = None
         state: str | None = None
         code: str | None = None
         detail: str | None = None
         try:
-            if effect.operation == "workflow.status":
-                assert effect.run_id is not None
-                result = self._workflow.status(run_id=effect.run_id)
-                run_id = effect.run_id
+            if effect.operation == "pac.status":
+                assert effect.graph_id is not None
+                result = self._pac.status(graph_id=effect.graph_id)
+                graph_id = effect.graph_id
                 state = str(result.get("state"))
-                if state != "running" and any(
-                    isinstance(item, dict) and item.get("state") == "escalated"
-                    for item in result.get("targets", [])
-                ):
-                    state = "escalated"
+                if state in {"done", "escalated"} and effect.sender is not None:
+                    # Settled: retire the graph as its creator.  Closing never
+                    # touches a flag, so the completion fact survives.
+                    self._pac.close(graph_id=effect.graph_id, actor=effect.sender)
             else:
-                assert effect.yaml_text is not None
+                assert effect.task_text is not None
+                assert effect.target is not None
+                assert effect.escalate_to is not None
                 assert effect.sender is not None
-                result = self._workflow.start_idempotent(
-                    external_ref=effect.effect_id,
-                    yaml_text=effect.yaml_text,
+                assert effect.timeout_seconds is not None
+                result = self._pac.start_idempotent(
+                    routine_name=effect.routine_name,
+                    task_uuid=effect.task_uuid,
+                    task_text=effect.task_text,
+                    target=effect.target,
+                    escalate_to=effect.escalate_to,
+                    timeout_seconds=float(effect.timeout_seconds),
                     sender=effect.sender,
                 )
-                run_id = str(result["runId"])
+                graph_id = str(result["graphId"])
                 state = str(result.get("state", "running"))
         except Exception as error:
             code, detail = type(error).__name__, str(error)
-        return RoutineWorkflowIoCompleted(
+        return RoutinePacIoCompleted(
             effect.effect_id,
             effect.generation,
             effect.version,
             effect.routine_name,
             effect.task_uuid,
             effect.operation,
-            run_id,
+            graph_id,
             state,
             code,
             detail,
@@ -554,5 +632,5 @@ __all__ = [
     "RoutineService",
     "RoutineServiceError",
     "SourceQuery",
-    "WorkflowPort",
+    "PacPort",
 ]

@@ -77,7 +77,7 @@ process.stdin.on("end", () => {
   try {
     const profiles = JSON.parse(input);
     const installed = Array.isArray(profiles) && profiles.some((profile) =>
-      profile && profile.dependencies && profile.dependencies["@hyprial/dsh-h2b-talk"]
+      profile && profile.dependencies && (profile.dependencies["@hyprial/dsh-hyprial-plugin"] || profile.dependencies["@hyprial/dsh-h2b-talk"])
     );
     const layoutInstalled = Array.isArray(profiles) && profiles.some((profile) =>
       profile?.dependencies?.["@hyprial/dsh-gui-layout"]
@@ -93,9 +93,9 @@ process.stdin.on("end", () => {
 
 dsh_args=(--profile web)
 if [[ "$plugin_state" == "installed" ]]; then
-  printf 'Using the H2B Talk plugin already registered in the DSH web profile.\n'
+  printf 'Using the Hyprial GUI plugin already registered in the DSH web profile.\n'
 else
-  printf 'Using the repository H2B Talk patch for this launch.\n'
+  printf 'Using the repository Hyprial plugin patch for this launch.\n'
   dsh_args+=(--patch "$repo_root/dsh-web.patch.yml")
 fi
 dsh "${dsh_args[@]}" --dump-config | node "$repo_root/scripts/gui-layout-package.mjs" verify-profile \

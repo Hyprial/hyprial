@@ -28,6 +28,16 @@ CREATE TABLE IF NOT EXISTS routines (
     created_at_ms INTEGER NOT NULL,
     version INTEGER NOT NULL DEFAULT 1
 );
+-- Address migrations performed at load: one row per rewritten field, keyed
+-- so a repeated startup is idempotent (INSERT OR IGNORE).
+CREATE TABLE IF NOT EXISTS routine_address_migrations (
+    routine TEXT NOT NULL,
+    field TEXT NOT NULL,
+    before TEXT NOT NULL,
+    after TEXT NOT NULL,
+    migrated_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (routine, field, before)
+);
 CREATE TABLE IF NOT EXISTS in_flight (
     routine TEXT NOT NULL,
     task_uuid TEXT NOT NULL,
@@ -72,6 +82,16 @@ class RoutineRow:
     outcomes: str
     created_at_ms: int
     version: int = 1
+    quarantine_reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AddressMigrationRow:
+    routine: str
+    field: str
+    before: str
+    after: str
+    migrated_at_ms: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +134,14 @@ class RoutineSnapshot:
 class RoutineStore:
     """One SQLite connection; callers must not share it between actors."""
 
+    #: Effect kinds this build can decode.  A row of any other kind belongs
+    #: to a retired dispatcher and is dropped by :meth:`_migrate_u3`.
+    _KNOWN_EFFECT_KINDS = (
+        "RoutineSourceQueryEffect",
+        "RoutinePacEffect",
+        "RoutineAlarmEffect",
+    )
+
     def __init__(self, database: Path) -> None:
         database.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
@@ -131,6 +159,62 @@ class RoutineStore:
                 self._db.execute(
                     "ALTER TABLE routines ADD COLUMN version INTEGER NOT NULL DEFAULT 1"
                 )
+            if "quarantine_reason" not in columns:
+                # Quarantine is deliberately NOT a reuse of enabled: pausing
+                # and quarantining are opposite operations (resume on a
+                # quarantined routine must fail loud, not reschedule it).
+                # Existing rows default to not quarantined.
+                self._db.execute(
+                    "ALTER TABLE routines ADD COLUMN quarantine_reason TEXT"
+                )
+        self.migrated_u3 = self._migrate_u3()
+
+    def _migrate_u3(self) -> dict[str, tuple[str, ...]]:
+        """Drop what only the retired dispatcher could settle.
+
+        U3 makes ``in_flight.run_id`` a PAC graph id and replaces
+        ``RoutineWorkflowEffect`` with ``RoutinePacEffect``.  Rows left by the
+        old dispatcher cannot be projected by this build: their run ids name
+        workflow runs no code here reads, and their effect payloads decode to
+        a class that no longer exists.  Allen, 2026-09-17, on the in-flight
+        rows: 「迁移时直接删除」.  Nothing is rewritten and no fallback path is
+        kept (no pre-release compatibility code); the dropped rows are
+        returned so the caller can log exactly what was dropped.
+        """
+
+        with self._lock, self._db:
+            legacy_effects = [
+                str(row[0])
+                for row in self._db.execute(
+                    "SELECT effect_id, payload_json FROM routine_effects"
+                )
+                if json.loads(row[1]).get("kind") not in self._KNOWN_EFFECT_KINDS
+            ]
+            legacy_in_flight = [
+                f"{row[0]}:{row[1]}:{row[2]}"
+                for row in self._db.execute(
+                    "SELECT routine, task_uuid, run_id FROM in_flight"
+                )
+                # The old dispatcher minted ``run-<hex>`` (workflow/registry.py);
+                # a PAC graph id for a routine task is ``routine-<name>-<hex>``.
+                # Keying on the retired shape drops only what this build
+                # cannot settle, and never a graph id it could.
+                if str(row[2]).startswith("run-")
+            ]
+            for effect_id in legacy_effects:
+                self._db.execute(
+                    "DELETE FROM routine_effects WHERE effect_id = ?", (effect_id,)
+                )
+            for item in legacy_in_flight:
+                routine, task_uuid, _run = item.split(":", 2)
+                self._db.execute(
+                    "DELETE FROM in_flight WHERE routine = ? AND task_uuid = ?",
+                    (routine, task_uuid),
+                )
+        return {
+            "effects": tuple(legacy_effects),
+            "inFlight": tuple(legacy_in_flight),
+        }
 
     def close(self) -> None:
         with self._lock:
@@ -172,8 +256,9 @@ class RoutineStore:
                 self._db.execute(
                     """INSERT INTO routines
                        (name, yaml_text, owner, enabled, next_due_ms,
-                        source_error_streak, outcomes, created_at_ms, version)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        source_error_streak, outcomes, created_at_ms, version,
+                        quarantine_reason)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                        ON CONFLICT(name) DO UPDATE SET
                            yaml_text = excluded.yaml_text,
                            owner = excluded.owner,
@@ -181,7 +266,8 @@ class RoutineStore:
                            next_due_ms = excluded.next_due_ms,
                            source_error_streak = excluded.source_error_streak,
                            outcomes = excluded.outcomes,
-                           version = excluded.version""",
+                           version = excluded.version,
+                           quarantine_reason = excluded.quarantine_reason""",
                     (
                         routine.name,
                         routine.yaml_text,
@@ -192,6 +278,7 @@ class RoutineStore:
                         routine.outcomes,
                         routine.created_at_ms,
                         routine.version,
+                        routine.quarantine_reason,
                     ),
                 )
             if remove_cycle is not None:
@@ -457,7 +544,61 @@ class RoutineStore:
             outcomes=str(row["outcomes"]),
             created_at_ms=int(row["created_at_ms"]),
             version=int(row["version"]),
+            quarantine_reason=(
+                None if row["quarantine_reason"] is None else str(row["quarantine_reason"])
+            ),
         )
+
+    def set_quarantine(self, name: str, reason: str | None) -> None:
+        """Set or clear the quarantine marker; independent of ``enabled``."""
+
+        with self._lock, self._db:
+            self._db.execute(
+                "UPDATE routines SET quarantine_reason = ? WHERE name = ?",
+                (reason, name),
+            )
+
+    def rewrite_yaml(self, name: str, yaml_text: str) -> None:
+        """Replace one stored spec (address migration rewrites in place)."""
+
+        with self._lock, self._db:
+            self._db.execute(
+                "UPDATE routines SET yaml_text = ? WHERE name = ?",
+                (yaml_text, name),
+            )
+
+    def record_address_migration(self, migration: AddressMigrationRow) -> None:
+        """Ledger one address rewrite; INSERT OR IGNORE keeps it idempotent."""
+
+        with self._lock, self._db:
+            self._db.execute(
+                """INSERT OR IGNORE INTO routine_address_migrations
+                   (routine, field, before, after, migrated_at_ms)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (
+                    migration.routine,
+                    migration.field,
+                    migration.before,
+                    migration.after,
+                    migration.migrated_at_ms,
+                ),
+            )
+
+    def address_migrations(self) -> tuple[AddressMigrationRow, ...]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM routine_address_migrations ORDER BY migrated_at_ms"
+            ).fetchall()
+            return tuple(
+                AddressMigrationRow(
+                    routine=str(row["routine"]),
+                    field=str(row["field"]),
+                    before=str(row["before"]),
+                    after=str(row["after"]),
+                    migrated_at_ms=int(row["migrated_at_ms"]),
+                )
+                for row in rows
+            )
 
     @staticmethod
     def _cycle_row(row: sqlite3.Row) -> RoutineCycleRow:

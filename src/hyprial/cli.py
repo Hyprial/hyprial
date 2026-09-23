@@ -162,6 +162,10 @@ agent_app = typer.Typer(
         "can be started on claude today and pi tomorrow."
     )
 )
+secret_app = typer.Typer(
+    help="Manage explicit per-agent secret grants without exposing values."
+)
+agent_app.add_typer(secret_app, name="secret")
 app.add_typer(adapter_app, name="adapter")
 app.add_typer(daemon_app, name="daemon")
 app.add_typer(mcp_app, name="mcp")
@@ -929,6 +933,224 @@ def _stdin_isatty() -> bool:
     return sys.stdin.isatty()
 
 
+#: ``hyprial init``'s two identity sources for an ownerless home (U6,
+#: 2026-09-18).  The fork lives at init only — ``hyprial login`` stays the
+#: Hyprial-service path (Allen: 「login只在选择使用我们服务的时候需要」).
+_IDENTITY_CHOICE_SERVICE = "hyprial-service"
+_IDENTITY_CHOICE_SELF_HOST = "self-hosted-tailnet"
+
+
+def _choose_identity_source(*, json_output: bool) -> str:
+    """Ask a human where this ownerless home's identity comes from (U6).
+
+    No default is chosen on the machine's behalf: with ``--json`` or a
+    non-TTY stdin nobody can answer, and the command fails
+    ``USER_ACTION_REQUIRED`` naming the exact rerun commands — the same
+    shape ``adapter onboard`` uses for its unattended device flow.
+    """
+
+    if json_output or not _stdin_isatty():
+        raise CliError(
+            "USER_ACTION_REQUIRED",
+            "this home has no user identity, and choosing its source needs a "
+            "human: rerun `hyprial init` interactively to choose between the "
+            "Hyprial service and a self-hosted tailscale, or run "
+            "`hyprial login` directly for the Hyprial service",
+            {
+                "type": "choose_identity_source_interactively",
+                "command": "hyprial init",
+                "environment": ["HYPRIAL_OWNER"],
+                "reason": (
+                    "hyprial init asks whether the identity comes from the "
+                    "Hyprial service or from this machine's own tailscale; "
+                    "--json and non-interactive stdin cannot answer that "
+                    "question"
+                ),
+            },
+        )
+    typer.echo("This home has no user identity yet. Choose where it comes from:")
+    typer.echo(
+        "  1) Hyprial service — log in with a Hyprial account and join the "
+        "Hyprial network"
+    )
+    typer.echo(
+        "  2) Self-hosted tailscale — use this machine's own tailscale "
+        "(official or headscale); the owner is whatever `tailscale whoami` "
+        "reports; no Hyprial login, sidecar, or network join"
+    )
+    while True:
+        try:
+            answer = typer.prompt("Enter 1 or 2", show_default=False)
+        except typer.Abort as error:
+            raise CliError(
+                "INTERRUPTED",
+                "identity source choice was interrupted; rerun `hyprial init` "
+                "to choose again, or run `hyprial login` for the Hyprial "
+                "service",
+                {"nextSteps": ["hyprial login", "hyprial init"]},
+            ) from error
+        value = answer.strip()
+        if value == "1":
+            return _IDENTITY_CHOICE_SERVICE
+        if value == "2":
+            return _IDENTITY_CHOICE_SELF_HOST
+        typer.echo("Enter 1 (Hyprial service) or 2 (self-hosted tailscale).")
+
+
+def _run_selfhost_cli_flow(
+    *,
+    json_output: bool,
+    held_identity_transaction: list[IdentityTransactionLock] | None = None,
+) -> JsonObject:
+    """Commit this home's identity from the host tailnet (U6 self-host branch).
+
+    No Hyprial service is involved: no profile resolution, no OIDC, no
+    sidecar, no join — the node already runs on the host's own tailscale
+    (official or self-hosted headscale).  The owner is what that control
+    plane asserts via ``tailscale whoami``, never manual input; the adopted
+    value is printed (human mode) and recorded (JSON) so the user can see
+    exactly what was adopted — including the tagged-node case where whoami
+    answers with the node's DNS name.
+    """
+
+    from hyprial.daemon.identity import (
+        read_settings_identity,
+        write_settings_identity,
+    )
+    from hyprial.login import LoginError, _check_owner_gates
+    from hyprial.tailnet_identity import (
+        TailnetIdentityError,
+        resolve_host_tailnet_identity,
+    )
+
+    try:
+        identity = resolve_host_tailnet_identity()
+    except TailnetIdentityError as error:
+        raise CliError(
+            error.code,
+            str(error),
+            {
+                **(error.data or {}),
+                "failedPhase": "identity",
+                "identityCommitted": False,
+            },
+        ) from error
+
+    owner = identity.login_name
+    home = _hyprial_home()
+    try:
+        # Same gates as the service login (grammar, D7 override) so the two
+        # entrances can never drift; a differing owner cannot exist on this
+        # path (init only asks when no owner is resolvable), but the gate —
+        # not the caller — is what guarantees that.
+        _check_owner_gates(
+            owner,
+            environ=os.environ,
+            hyprial_home=home,
+            switch_account=False,
+            target_mode="tailscale-selfhost",
+            target_issuer=None,
+        )
+    except LoginError as error:
+        raise CliError(error.code, str(error), data=error.data or None) from error
+
+    def failure(next_step: str) -> JsonObject:
+        return {
+            "failedPhase": "prepare",
+            "identityCommitted": False,
+            "network": {"status": "not-attempted"},
+            "daemon": {"state": "not-attempted"},
+            "nextStep": next_step,
+        }
+
+    transaction: IdentityTransactionLock | None = None
+    try:
+        try:
+            transaction = IdentityTransactionLock.acquire(home)
+        except IdentityTransactionBusy as error:
+            raise CliError(
+                error.code,
+                str(error),
+                failure("wait for the active identity transaction and rerun `hyprial init`"),
+            ) from error
+        except OSError as error:
+            raise CliError(
+                "IDENTITY_TRANSACTION_FAILED",
+                "cannot acquire the home identity transaction: "
+                f"{type(error).__name__}",
+                failure("repair home permissions and rerun `hyprial init`"),
+            ) from error
+        if read_settings_identity(hyprial_home=home) is not None:
+            raise CliError(
+                "IDENTITY_TRANSACTION_STALE",
+                "settings identity appeared while the tailnet identity was "
+                "being resolved",
+                failure("rerun `hyprial init` against the committed identity"),
+            )
+        write_settings_identity(
+            owner,
+            mode="tailscale-selfhost",
+            issuer=None,
+            hyprial_home=home,
+        )
+    except BaseException:
+        if transaction is not None:
+            transaction.close()
+        raise
+    if held_identity_transaction is not None:
+        # Same handoff as the service flow: init's start path launches the
+        # daemon under this lock and closes it.
+        held_identity_transaction.append(transaction)
+    else:
+        transaction.close()
+
+    if not json_output:
+        typer.echo(
+            f"identity: owner {owner!r} adopted from the host tailnet "
+            "(tailscale whoami)"
+        )
+        if identity.tags:
+            typer.echo(
+                "  node tags: "
+                + ", ".join(identity.tags)
+                + " (whoami on a tagged node answers with the node DNS name; "
+                "adopted as-is per U6)"
+            )
+        elif "@" not in owner and "." in owner:
+            typer.echo(
+                "  note: the adopted owner looks like a node DNS name, not a "
+                "user login"
+            )
+    return {
+        "ok": True,
+        "identity": {
+            "status": "authenticated",
+            "owner": owner,
+            "mode": "tailscale-selfhost",
+            "issuer": None,
+            "source": "host-tailnet",
+            "assertedBy": "tailscale whoami",
+            "committed": True,
+            "tags": list(identity.tags),
+            "tailnet": identity.tailnet_name,
+        },
+        "network": {
+            "status": "not-attempted",
+            "kind": "host-tailnet",
+            "controlUrl": None,
+            "join": "host",
+            "hostname": identity.dns_name,
+            "ip4": identity.ip4,
+            "user": owner,
+            "reason": (
+                "self-hosted: this node already runs on the host's own "
+                "tailnet; no Hyprial network join"
+            ),
+            "warnings": [],
+        },
+    }
+
+
 def _login_route_is_first_time_setup() -> bool:
     """Whether ``hyprial login`` takes the first-time setup route.
 
@@ -1602,8 +1824,60 @@ def _run_login_cli_flow(
                     identity_transaction=transaction,
                 )
             except Exception as error:
+                code = getattr(error, "code", ipc_errors.DAEMON_START_FAILED)
+                if code in _CUSTODY_STARTUP_ERROR_SHAPES:
+                    # #513 x #493 cross-acceptance (infra-op / hq-adjutant):
+                    # the switch committed and the old generation is proven
+                    # gone, but the new generation refused to start at the
+                    # owner-migration custody gate.  This is a *named*
+                    # outcome of the switch, not a generic startup failure:
+                    # the identity stays committed (no rewind — same shape
+                    # as "join failure does not rewind"), the daemon state
+                    # is reported as-is, and nextStep names the same real,
+                    # non-destructive first recourse the daemon's refusal
+                    # message gives (charter 5e: every named command exists).
+                    bounded = getattr(error, "data", None)
+                    bounded = bounded if isinstance(bounded, dict) else {}
+                    previous = result.previous_owner or "the previous spelling"
+                    raise CliError(
+                        code,
+                        str(error),
+                        failure_data(
+                            "start",
+                            committed=True,
+                            network=network,
+                            migration={
+                                "status": "refused",
+                                "reason": (
+                                    "owner-migration-custody-conflict"
+                                    if code
+                                    == ipc_errors.OWNER_MIGRATION_CUSTODY_CONFLICT
+                                    else "owner-migration-custody-unreadable"
+                                ),
+                                **{
+                                    name: bounded[name]
+                                    for name, _kind in (
+                                        _CUSTODY_STARTUP_ERROR_SHAPES[code]
+                                    )
+                                    if name in bounded
+                                },
+                            },
+                            next_step=(
+                                "the daemon refused to start at the "
+                                "owner-migration custody gate; the identity "
+                                "stays committed. First recourse "
+                                "(non-destructive): switch the login "
+                                f"identity back to {previous!r} — "
+                                "`hyprial login --switch-account` — then "
+                                "start under that spelling (`hyprial "
+                                "daemon run`); the daemon's refusal message "
+                                "(daemon-launch.log) names the grant-level "
+                                "ways out and #493"
+                            ),
+                        ),
+                    ) from error
                 raise CliError(
-                    getattr(error, "code", ipc_errors.DAEMON_START_FAILED),
+                    code,
                     str(error),
                     failure_data(
                         "start",
@@ -2331,6 +2605,27 @@ _SAFE_DAEMON_STARTUP_EVENTS = frozenset(
 )
 
 
+# Named startup refusals the launch log is allowed to surface (#513): the
+# daemon child's ``--json`` failure line carries these codes with bounded,
+# daemon-minted data; the launcher maps them to CliErrors with the same code
+# so the login orchestration can report the named switch outcome.  Each entry
+# names the fields (and their types) that may cross this boundary — free text
+# from the log never does.
+_CUSTODY_STARTUP_ERROR_SHAPES: dict[str, tuple[tuple[str, type], ...]] = {
+    ipc_errors.OWNER_MIGRATION_CUSTODY_CONFLICT: (
+        ("old", str),
+        ("new", str),
+        ("grants", int),
+        ("homes", int),
+    ),
+    ipc_errors.OWNER_MIGRATION_CUSTODY_UNREADABLE: (
+        ("database", str),
+        ("table", str),
+        ("errorType", str),
+    ),
+}
+
+
 def _daemon_launch_log_summary(
     stream: Any, *, marker: bytes, offset: int
 ) -> JsonObject:
@@ -2391,6 +2686,24 @@ def _daemon_launch_log_summary(
                 startup_error = {
                     "code": ipc_errors.HYPRIAL_HOME_IN_USE,
                     "data": {"path": data["path"], "pid": data["pid"]},
+                }
+        # The startup owner-migration custody gate refuses with a named
+        # code (#513): the daemon child's ``--json`` failure line carries
+        # it, and the launcher / login orchestration branch on it to report
+        # the named switch outcome.  Only the bounded, daemon-minted fields
+        # named in the shape table are copied — never free text from the log.
+        shape = _CUSTODY_STARTUP_ERROR_SHAPES.get(entry.get("code"))
+        if shape is not None:
+            data = entry.get("data")
+            if isinstance(data, dict) and all(
+                isinstance(data.get(name), kind) and not isinstance(
+                    data.get(name), bool
+                )
+                for name, kind in shape
+            ):
+                startup_error = {
+                    "code": entry["code"],
+                    "data": {name: data[name] for name, _kind in shape},
                 }
     summary: JsonObject = {
         "logAvailable": True,
@@ -2629,6 +2942,59 @@ def _launch_daemon_process_locked(
                             raise _launch_process_error(
                                 launch_error, process, process_identity
                             ) from error
+                if (
+                    isinstance(startup_error, dict)
+                    and startup_error.get("code")
+                    in _CUSTODY_STARTUP_ERROR_SHAPES
+                ):
+                    # #513: the daemon refused to start at the owner-migration
+                    # custody gate.  The named code crosses the boundary so the
+                    # login orchestration reports the named switch outcome; the
+                    # operator-facing full way out stays where the daemon wrote
+                    # it — daemon-launch.log, which outlives the capture.
+                    custody_code = str(startup_error["code"])
+                    custody_data = startup_error.get("data")
+                    bounded = (
+                        dict(custody_data) if isinstance(custody_data, dict) else {}
+                    )
+                    if custody_code == ipc_errors.OWNER_MIGRATION_CUSTODY_CONFLICT:
+                        launch_error = CliError(
+                            custody_code,
+                            "daemon refused to start: owner migration custody "
+                            "conflict — state under "
+                            f"{bounded.get('old')!r} holds "
+                            f"{bounded.get('grants')} live secret grant(s); the "
+                            "daemon's refusal message in daemon-launch.log "
+                            "names the full way out",
+                            {
+                                "phase": "startup",
+                                "errorType": "custodyRefusal",
+                                "exitCode": process.returncode,
+                                "logPath": str(log_path),
+                                **bounded,
+                                **diagnostics,
+                            },
+                        )
+                    else:
+                        launch_error = CliError(
+                            custody_code,
+                            "daemon refused to start: owner-migration custody "
+                            "state unreadable "
+                            f"({bounded.get('table')} in {bounded.get('database')}: "
+                            f"{bounded.get('errorType')}); the daemon's refusal "
+                            "message in daemon-launch.log names the way out",
+                            {
+                                "phase": "startup",
+                                "errorType": "custodyRefusal",
+                                "exitCode": process.returncode,
+                                "logPath": str(log_path),
+                                **bounded,
+                                **diagnostics,
+                            },
+                        )
+                    raise _launch_process_error(
+                        launch_error, process, process_identity
+                    ) from error
                 if (
                     error.code == ipc_errors.DAEMON_START_TIMEOUT
                     and process.poll() is None
@@ -3181,6 +3547,9 @@ def _doctor_result() -> JsonObject:
                 {"name": "daemon", "status": "ok", "detail": "daemon IPC is available"}
             )
             checks.append(_zenoh_doctor_check(result))
+            duplicate_check = _duplicate_instance_doctor_check(result)
+            if duplicate_check is not None:
+                checks.append(duplicate_check)
             dsh_check = _dsh_doctor_check(result)
             if dsh_check is not None:
                 checks.append(dsh_check)
@@ -3193,6 +3562,9 @@ def _doctor_result() -> JsonObject:
             historical_inbox_check = _historical_inbox_doctor_check(result)
             if historical_inbox_check is not None:
                 checks.append(historical_inbox_check)
+            routine_check = _routine_health_doctor_check()
+            if routine_check is not None:
+                checks.append(routine_check)
         else:
             checks.append(
                 {
@@ -3227,6 +3599,72 @@ def _doctor_result() -> JsonObject:
         "checks": checks,
         "summary": summary,
     }
+
+
+def _routine_health_doctor_check() -> JsonObject | None:
+    """Surface quarantined routines and address migrations (2026-09-14).
+
+    A routine whose stored spec no longer validates (e.g. a legacy bare-name
+    ``escalate_to`` with no unique roster match) is quarantined: it stops
+    scheduling and refuses resume until the spec is fixed. That must be
+    visible from ``hyprial doctor`` -- the incident this fixes was fifteen
+    days of silence. The address-migration ledger is reported as metrics so
+    automatic rewrites are auditable without paging anyone.
+    """
+
+    try:
+        audit = _daemon_request("routine.audit", {}, timeout=2.0)
+    except (CliError, ipc_errors.TransientDaemonError):
+        return None
+    if not isinstance(audit, dict):
+        return None
+    quarantined = [
+        item
+        for item in audit.get("quarantined", [])
+        if isinstance(item, dict) and isinstance(item.get("name"), str)
+    ]
+    migrations = audit.get("addressMigrations", [])
+    migration_list = (
+        [
+            {
+                "routine": m["routine"],
+                "field": m["field"],
+                "before": m["before"],
+                "after": m["after"],
+            }
+            for m in migrations
+            if isinstance(m, dict)
+        ]
+        if isinstance(migrations, list)
+        else []
+    )
+    if not quarantined and not migration_list:
+        return None
+    check: JsonObject = {
+        "name": "routine-addresses",
+        "status": "warn" if quarantined else "ok",
+        "detail": (
+            f"{len(quarantined)} routine(s) quarantined for schema faults "
+            f"(scheduling stopped, resume refused); {len(migration_list)} stored "
+            "address migration(s) applied automatically, resolved against THIS "
+            "machine's agents roster (confirm each rewrite is the intended "
+            "recipient — a same-name agent on another machine would have been "
+            "redirected silently)"
+        ),
+        "metrics": {
+            "quarantined": [item["name"] for item in quarantined],
+            "addressMigrations": migration_list,
+        },
+    }
+    if quarantined:
+        check["action"] = {
+            "command": "hyprial routine status <name> --json",
+            "description": (
+                "Fix the quarantined spec (full agent URI / route: / user: "
+                "addresses only), then remove and re-add the routine."
+            ),
+        }
+    return check
 
 
 def _zenoh_doctor_check(result: JsonObject) -> JsonObject:
@@ -3279,6 +3717,62 @@ def _zenoh_doctor_check(result: JsonObject) -> JsonObject:
     }
 
 
+def _duplicate_instance_doctor_check(result: JsonObject) -> JsonObject | None:
+    """Surface the daemon's duplicate-instance verdict.
+
+    Returns None against a daemon old enough to not report the field -- the
+    check's absence is then the honest signal, exactly like the other
+    version-gated checks.  The detail repeats the coverage limit from the
+    daemon's payload: mesh detection sees only peers that declare a
+    generation liveliness token, so a green check must never be read as
+    "no duplicate exists anywhere".
+    """
+
+    info = result.get("duplicateInstance")
+    if not isinstance(info, dict):
+        return None
+    coverage = info.get("meshDetectionCoverage")
+    coverage_note = f" Coverage: {coverage}" if isinstance(coverage, str) else ""
+    if info.get("active") is not True:
+        return {
+            "name": "duplicate-instance",
+            "status": "ok",
+            "detail": (
+                "no duplicate daemon instance of this node identity detected."
+                + coverage_note
+            ),
+        }
+    peers = info.get("meshPeerGenerations")
+    startup = info.get("startupRecord")
+    sources: list[str] = []
+    if isinstance(peers, list) and peers:
+        sources.append(f"mesh peer generations: {', '.join(str(p) for p in peers)}")
+    if isinstance(startup, dict):
+        sources.append(
+            "startup copied-home detection: "
+            f"record pid {startup.get('recordPid')} "
+            f"generation {startup.get('recordGeneration')}"
+        )
+    return {
+        "name": "duplicate-instance",
+        "status": "fail",
+        "detail": (
+            "a duplicate live daemon instance of this node identity was "
+            f"detected ({'; '.join(sources)}); detection and alarm only -- "
+            "no process is killed or taken offline automatically."
+            + coverage_note
+        ),
+        "action": {
+            "command": "hyprial ps --json",
+            "description": (
+                "Inspect duplicateInstance, find the second daemon process "
+                "(a copied HYPRIAL_HOME is the known cause), and stop it by "
+                "PID. Automatic remediation is deliberately not performed."
+            ),
+        },
+    }
+
+
 def _dsh_host_describe(endpoint: str, *, timeout_seconds: float = 2.0) -> object:
     """Actively probe one DSH endpoint through its public HTTP API."""
 
@@ -3320,7 +3814,12 @@ def _dsh_endpoint_label(endpoint: str) -> str:
 
 
 def _dsh_doctor_check(result: JsonObject) -> JsonObject | None:
-    """Probe every desired DSH endpoint instead of trusting process liveness."""
+    """Probe every self-launched DSH endpoint reported by status.
+
+    The endpoint is an output of the worker's current generation, so a worker
+    without one has not readied a child yet; liveness alone is not evidence
+    that its ``/api`` works.
+    """
 
     raw_connectors = result.get("connectors")
     if not isinstance(raw_connectors, list):
@@ -3379,7 +3878,9 @@ def _dsh_doctor_check(result: JsonObject) -> JsonObject | None:
     action = {
         "command": "hyprial doctor --json",
         "description": (
-            "Inspect DSH endpoint/model configuration and service logs, then rerun the probe."
+            "Inspect the worker's self-launched DSH child (its status endpoint "
+            "and dshHome, plus the child io log) and model configuration, then "
+            "rerun the probe."
         ),
     }
     if unreachable:
@@ -3408,7 +3909,11 @@ def _dsh_doctor_check(result: JsonObject) -> JsonObject | None:
         return {
             "name": "dsh-endpoint",
             "status": "warn",
-            "detail": "DSH probe incomplete: endpoint unavailable in status or total probe budget exhausted",
+            "detail": (
+                "DSH probe incomplete: a worker has no live self-launched "
+                "generation reporting an endpoint, or the total probe budget "
+                "was exhausted"
+            ),
             "action": action,
             "metrics": metrics,
         }
@@ -4752,6 +5257,29 @@ def delivery_status(
     _execute(operation, json_output=json_output)
 
 
+@app.command("query")
+def query_command(
+    actor: str = typer.Argument(..., help="Local actor name or agent URI."),
+    view: str = typer.Argument(..., help="inbox or outbox."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Read one local actor's inbox or outbox, changing nothing.
+
+    ``inbox`` lists the messages and system notices still waiting for the
+    actor, with their text; ``outbox`` lists what the actor sent that is still
+    queued for delivery.  Read-only: nothing is fetched, acknowledged or
+    drained, so the agent still receives exactly what it would have.
+    """
+
+    if view not in {"inbox", "outbox"}:
+        raise CliError(ipc_errors.INVALID_ARGUMENT, "view must be inbox or outbox")
+
+    def operation() -> Any:
+        return _daemon_request("message.query", {"from": actor, "view": view})
+
+    _execute(operation, json_output=json_output)
+
+
 @app.command("log")
 def log_command(
     component: str | None = typer.Option(
@@ -5001,11 +5529,16 @@ def init(
         ),
     ),
 ) -> None:
-    """Initialize home and daemon, logging in first when owner is absent.
+    """Initialize home and daemon, establishing identity first when owner is absent.
 
     Home creation, owner establishment, and daemon startup are one in-process
-    onboarding flow. An existing owner still takes the pre-onboarding path
-    unchanged; no login implementation is copied or launched through a shell.
+    onboarding flow.  A home with no owner asks where the identity comes
+    from (U6): the Hyprial service — the existing login path, unchanged — or
+    a self-hosted tailscale, whose owner is asserted by the host's own
+    `tailscale whoami` (no Hyprial login, sidecar, or join; fails loudly
+    when no tailscale is installed).  An existing owner still takes the
+    pre-onboarding path unchanged; no login implementation is copied or
+    launched through a shell.
     """
 
     def operation() -> JsonObject:
@@ -5014,16 +5547,24 @@ def init(
         held_identity_transaction: list[IdentityTransactionLock] = []
 
         def login_when_missing() -> JsonObject:
-            return _run_login_cli_flow(
-                no_open=False,
+            if (
+                _choose_identity_source(json_output=json_output)
+                == _IDENTITY_CHOICE_SERVICE
+            ):
+                return _run_login_cli_flow(
+                    no_open=False,
+                    json_output=json_output,
+                    switch_account=False,
+                    preauthkey_file=None,
+                    join_timeout=300.0,
+                    skip_join=False,
+                    install_sidecar_flag=False,
+                    no_daemon=True,
+                    first_time_setup=True,
+                    held_identity_transaction=held_identity_transaction,
+                )
+            return _run_selfhost_cli_flow(
                 json_output=json_output,
-                switch_account=False,
-                preauthkey_file=None,
-                join_timeout=300.0,
-                skip_join=False,
-                install_sidecar_flag=False,
-                no_daemon=True,
-                first_time_setup=True,
                 held_identity_transaction=held_identity_transaction,
             )
 
@@ -5764,6 +6305,99 @@ def agent_destroy(
     _execute(operation, json_output=json_output)
 
 
+@secret_app.command("provider-" + "write")
+def agent_secret_entry_write(
+    entry_id: str = typer.Argument(..., help="Secret entry id."),
+    field_name: str = typer.Option(..., "--field", help="JSON field name."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Write one model-vendor secret from a non-TTY stdin stream."""
+
+    def operation() -> Any:
+        if sys.stdin.isatty():
+            raise CliError(
+                "SECRET_REQUIRED",
+                "secret write refuses a TTY; pipe exactly one secret value on stdin",
+            )
+        value = sys.stdin.read()
+        if value.endswith("\n"):
+            value = value[:-1]
+        if not value or "\n" in value or "\r" in value:
+            raise CliError(
+                ipc_errors.INVALID_ARGUMENT,
+                "secret write requires one non-empty line on stdin",
+            )
+        return _daemon_request(
+            "agent.secret." + "provider-write",
+            {"entryId": entry_id, "fieldName": field_name, "value": value},
+        )
+
+    _execute(operation, json_output=json_output)
+
+
+@secret_app.command("grant")
+def agent_secret_grant(
+    actor: str = typer.Argument(..., help="Agent instance name."),
+    grant_id: str = typer.Option(..., "--grant-id", help="Stable grant id."),
+    source: str = typer.Option(..., "--source", help="user-" + "provider or agent-private"),
+    entry_id: str = typer.Option(..., "--entry-id", help="Secret entry id."),
+    field_name: str = typer.Option(..., "--field-name", help="Model-vendor field name."),
+    environment_name: list[str] = typer.Option(
+        ..., "--environment-name", help="Approved environment variable name; repeatable."
+    ),
+    revision: int = typer.Option(..., "--revision", help="Positive grant revision."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Grant one named secret entry to one current agent incarnation."""
+
+    _execute(
+        lambda: _daemon_request(
+            "agent.secret.grant",
+            {
+                "actor": actor,
+                "grantId": grant_id,
+                "source": source,
+                "entryId": entry_id,
+                "fieldName": field_name,
+                "environmentNames": environment_name,
+                "revision": revision,
+            },
+        ),
+        json_output=json_output,
+    )
+
+
+@secret_app.command("list")
+def agent_secret_list(
+    actor: str | None = typer.Option(None, "--actor", help="Filter by agent instance."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """List non-secret grant metadata."""
+
+    _execute(
+        lambda: _daemon_request(
+            "agent.secret.list", {**({"actor": actor} if actor else {})}
+        ),
+        json_output=json_output,
+    )
+
+
+@secret_app.command("revoke")
+def agent_secret_revoke(
+    actor: str = typer.Argument(..., help="Agent instance name."),
+    grant_id: str = typer.Argument(..., help="Grant id."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Revoke one grant; the underlying secret entry remains intact."""
+
+    _execute(
+        lambda: _daemon_request(
+            "agent.secret.revoke", {"actor": actor, "grantId": grant_id}
+        ),
+        json_output=json_output,
+    )
+
+
 def _create_agent_for_start(
     *,
     name: str,
@@ -5844,7 +6478,11 @@ def _start_interactive_claude(
         model=model,
     )
     provider_environment = claude_provider_environment(provider_spec, os.environ)
-    launch_environment = {**os.environ, **provider_environment}
+    from hyprial.agents.environment import whitelist_replacement_environment
+
+    launch_environment = whitelist_replacement_environment(
+        os.environ, provider_environment
+    )
     native_model_args = (
         ("--model", model)
         if model is not None and model_provider in {None, "anthropic"}
@@ -6256,12 +6894,46 @@ def _launch_detached_tui(
         ) from error
     registered = False
     deadline = time.monotonic() + registration_deadline_seconds
+    next_pane_read = time.monotonic()
     while time.monotonic() < deadline:
         registered = is_session_registered(_daemon_request("ps"))
         # A dead tmux session is this path's process.poll(): the TUI exited
         # before its carrier ever registered.
         if registered or not tmux_mod.has_session(tmux_bin, session_name):
             break
+        if time.monotonic() >= next_pane_read:
+            next_pane_read = time.monotonic() + 1.0
+            prompt = tmux_mod.claude_confirmation_prompt(
+                tmux_mod.pane_text(tmux_bin, session_name)
+            )
+            if prompt is not None:
+                # A Claude Code start-up confirmation (folder trust, or the
+                # development-channels warning).  Both are CC-owned on purpose
+                # and cannot be pre-accepted, so nobody in a detached pane will
+                # ever answer.  Waiting out the deadline and killing the pane
+                # (the old path) reported the wrong failure and destroyed the
+                # one pane a person could confirm in.  Keep it (and its launch
+                # config) and say exactly what to do.
+                hints = tmux_mod.attach_hints(session_name)
+                question = {
+                    "folder-trust": "whether to trust the working folder",
+                    "development-channels": "its 'Loading development channels' warning",
+                }[prompt]
+                raise CliError(
+                    "CLAUDE_CONFIRMATION_REQUIRED",
+                    f"{harness} in tmux session {session_name} is waiting for a "
+                    f"person to confirm {question}; attach with "
+                    f"`{hints['wsl-linux-terminal']}` (iTerm2: "
+                    f"`{hints['macOS-iTerm2']}`), confirm, then detach -- the "
+                    "session registers with the daemon on its own",
+                    {
+                        "prompt": prompt,
+                        "actor": actor,
+                        "sessionRef": session_ref,
+                        "tmuxSession": session_name,
+                        "attach": hints,
+                    },
+                )
         time.sleep(0.1)
     if not registered:
         tmux_mod.kill_session(tmux_bin, session_name)
@@ -6609,11 +7281,13 @@ def _start_interactive_codex(
         "--remote",
         f"unix://{socket_path}",
     ]
-    environment = {
-        **os.environ,
-        **child_state_environment(_hyprial_home(), _state_dir()),
-        **provider_environment,
-    }
+    from hyprial.agents.environment import whitelist_replacement_environment
+
+    environment = whitelist_replacement_environment(
+        os.environ,
+        child_state_environment(_hyprial_home(), _state_dir()),
+        provider_environment,
+    )
     try:
         server.start()
         process = subprocess.Popen(argv, cwd=cwd, env=environment)
@@ -6720,14 +7394,19 @@ def dispatch_matrix(
         None, "--tier", help="fast, strong, or super."
     ),
     probe: bool = typer.Option(
-        False, "--probe", help="Probe candidates in priority order."
+        False, "--probe", help="Diagnose each candidate; never selects."
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
-    """Inspect choices, optionally probing; never launch or update a profile."""
+    """Inspect choices, optionally diagnosing; never launch or update a profile."""
 
     def operation() -> JsonObject:
-        from hyprial.dispatch.matrix import TIERS, candidate_json, resolve
+        from hyprial.dispatch.matrix import (
+            TIERS,
+            candidate_json,
+            diagnose,
+            resolve,
+        )
 
         if tier is not None and tier not in TIERS:
             raise CliError(
@@ -6735,18 +7414,27 @@ def dispatch_matrix(
                 "tier must be fast, strong, or super",
             )
         tiers = (tier,) if tier is not None else tuple(TIERS)
-        return {
+        document: JsonObject = {
             "ok": True,
             "tiers": {
                 name: [candidate_json(candidate) for candidate in TIERS[name]]
                 for name in tiers
             },
-            **(
-                {"resolved": [resolve(name).to_json() for name in tiers]}
-                if probe
-                else {}
-            ),
+            # The static selection, reported so a caller reading this command
+            # sees the same answer dispatch would use.  It is not derived from
+            # the diagnostics below and carries no readings.
+            "selection": {
+                name: candidate_json(resolve(name).selected) for name in tiers
+            },
         }
+        if probe:
+            # Explicit human diagnosis only.  Read-only by construction: the
+            # readings are reported here and consumed nowhere else.
+            document["diagnostics"] = {
+                name: [reading.to_json() for reading in diagnose(name)]
+                for name in tiers
+            }
+        return document
 
     _execute(operation, json_output=json_output)
 
@@ -6756,7 +7444,7 @@ def dispatch_matrix(
 )
 def start(
     ctx: typer.Context,
-    harness_kind: str | None = typer.Argument(None, help="claude, pi, codex, or dsh; optional with --tier."),
+    harness_kind: str | None = typer.Argument(None, help="claude, pi, codex, dsh, or jev; optional with --tier."),
     name: str = typer.Option(..., "--name"),
     tier: str | None = typer.Option(None, "--tier", help="Select fast, strong, or super only when harness/provider/model are not explicit."),
     nickname: str | None = typer.Option(None, "--nickname"),
@@ -6784,7 +7472,7 @@ def start(
     """Start a harness connector through the daemon."""
 
     def operation() -> Any:
-        nonlocal harness_kind, model_provider, model
+        nonlocal harness_kind, model_provider, model, headless
 
         from hyprial.harnesses.model_provider import (
             ModelProviderError,
@@ -6792,7 +7480,6 @@ def start(
         )
 
         from hyprial.dispatch.matrix import TIERS
-        from hyprial.squire.probe import DEFAULT_TIMEOUT_SECONDS
 
         runtime_args = tuple(ctx.args)
         if tier is not None and tier not in TIERS:
@@ -6804,29 +7491,48 @@ def start(
         )
         if tier is not None and not explicit_selection:
             # Resolve inside the daemon so the audit uses its own runtime
-            # profile and probe readings, not caller-supplied evidence. The
-            # read-only `dispatch matrix --probe` never enters this path.
-            # Every candidate may consume its full probe timeout. After the
-            # final probe, retain one ordinary daemon IPC round-trip budget for
-            # dispatch.matrix.resolved audit emission, response encoding, and
-            # the socket response. If either probe or IPC bounds change, this
-            # composed deadline follows the corresponding named constant.
+            # profile, not caller-supplied evidence.  Selection is static
+            # configuration, so this is one ordinary IPC round-trip: the
+            # request no longer waits on any liveness probe (2026-09-21).
+            # The read-only `dispatch matrix --probe` never enters this path.
             resolved = _daemon_request(
                 "dispatch.matrix.resolve", {"tier": tier, "name": name},
-                timeout=(
-                    DEFAULT_TIMEOUT_SECONDS * len(TIERS[tier])
-                    + _DAEMON_IPC_ROUNDTRIP_SECONDS
-                ),
+                timeout=_DAEMON_IPC_ROUNDTRIP_SECONDS,
             )
             choice = resolved["selected"]
             harness_kind, model_provider, model = choice["harness"], choice["provider"], choice["model"]
-        if harness_kind not in {"claude", "pi", "codex", "dsh"}:
+        if harness_kind not in {"claude", "pi", "codex", "dsh", "jev", "user-proxy"}:
             raise CliError(
                 ipc_errors.INVALID_ARGUMENT,
-                "harness kind must be claude, pi, codex, or dsh (or use --tier without explicit model selection)",
+                "harness kind must be claude, pi, codex, dsh, jev, or user-proxy (or use --tier without explicit model selection)",
             )
+        if harness_kind == "user-proxy":
+            raise CliError(
+                "UNSUPPORTED_CAPABILITY",
+                "user-proxy handler contract is not defined",
+            )
+        if harness_kind == "jev":
+            if runtime_args:
+                raise CliError(
+                    ipc_errors.INVALID_ARGUMENT,
+                    "jev does not accept positional runtime arguments after '--'",
+                )
+            if tier is not None or model_provider is not None or model is not None:
+                raise CliError(
+                    ipc_errors.INVALID_ARGUMENT,
+                    "jev model selection belongs to each request; --tier, --provider, and --model are not accepted",
+                )
+            if resume is not None or tmux:
+                raise CliError(
+                    ipc_errors.INVALID_ARGUMENT,
+                    "jev does not support --resume or --tmux",
+                )
+            headless = True
         try:
-            validate_model_selection(harness_kind, model_provider, model)
+            validate_model_selection(
+                harness_kind, model_provider, model,
+                context=f"hyprial start --name {name}",
+            )
         except ModelProviderError as error:
             raise CliError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
         for option, explicit in (("--provider", model_provider), ("--model", model)):
@@ -6921,7 +7627,7 @@ def start(
                 f"{harness_kind} does not support interactive_attach; "
                 "use --headless or start an interactive claude session instead",
             )
-        if harness_kind != "dsh":
+        if harness_kind not in {"dsh", "jev"}:
             # Pin the harness binary by absolute path at registration: the
             # daemon that later spawns it may run under a launchd/cron PATH
             # that lacks user bin dirs.  Older daemons ignore the unknown
@@ -6942,31 +7648,49 @@ def start(
             harness=harness_kind,
             runtime="headless",
             cwd=resolved_cwd,
-            provider=model_provider,
-            model=model,
+            provider=None if harness_kind == "jev" else model_provider,
+            model=None if harness_kind == "jev" else model,
         )
         params: JsonObject = {
             # The IPC key stays "provider" so this CLI can talk to a daemon
             # running an older build (and vice versa).
             "provider": harness_kind,
             "name": name,
-            "headless": headless,
+            "headless": True if harness_kind == "jev" else headless,
             "args": list(runtime_args),
             "cwd": str(resolved_cwd),
         }
-        if harness_kind != "dsh":
+        if harness_kind == "jev":
+            params["command"] = [
+                os.path.abspath(sys.executable),
+                "-m",
+                "hyprial.harnesses._python_worker",
+                "--kind",
+                "jev",
+            ]
+        elif harness_kind != "dsh":
             params["command"] = [os.path.abspath(pinned_binary)]
         if nickname is not None:
             params["nickname"] = nickname
-        if model_provider is not None:
+        if model_provider is not None and harness_kind != "jev":
             params["modelProvider"] = model_provider
-        if model is not None:
+        if model is not None and harness_kind != "jev":
             params["model"] = model
-        # Harness readiness is bounded by the lifecycle manager's 70-second
-        # operation deadline.  The generic 15-second IPC timeout would abandon
-        # a healthy Codex/Claude start while the daemon still owns and settles
-        # it, leaving the operator with a false failure and a live connector.
-        return _daemon_request("lifecycle.start", params, timeout=75.0)
+        # Harness readiness is bounded by the lifecycle manager's operation
+        # deadline, and this wait must OUTLAST the daemon-side wait
+        # (deadline + wait margin): a shorter budget abandoned a healthy
+        # start with IPC_TIMEOUT while the daemon still owned and settled it
+        # (2026-09-14 production).  Same derivation as `down`; the three
+        # waits are composed from one deadline, never chosen independently.
+        return _daemon_request(
+            "lifecycle.start",
+            params,
+            timeout=(
+                LIFECYCLE_OPERATION_DEADLINE_SECONDS
+                + LIFECYCLE_WAIT_MARGIN_SECONDS
+                + LIFECYCLE_IPC_MARGIN_SECONDS
+            ),
+        )
 
     _execute(operation, json_output=json_output)
 
@@ -9130,7 +9854,10 @@ def adapter_onboard(
             },
             "nextStep": (
                 f"Run 'hyprial adapter authorize {name}' to request tenant-admin "
-                "approval for the declared scopes, then restart the daemon."
+                "approval for the declared scopes, then 'hyprial adapter reload' "
+                "so a running daemon picks the adapter up without a daemon "
+                "restart; afterwards 'hyprial adapter pin' and 'hyprial adapter "
+                "start'."
             ),
         }
 
@@ -9145,8 +9872,8 @@ def _confirm_adapter_stopped(name: str, *, force: bool) -> None:
     running (or be restarted by it). Removal may then proceed, and the
     desired-state cleanup additionally prevents the next daemon boot from
     reviving the adapter. An ADAPTER_NOT_FOUND from the daemon means its
-    boot-time gateway snapshot does not know this adapter, so it cannot be
-    running it either.
+    gateway snapshot (taken at boot, refreshed by 'hyprial adapter reload')
+    does not know this adapter, so it cannot be running it either.
     """
 
     try:
@@ -9200,8 +9927,8 @@ def adapter_remove(
     --force to stop it as part of the removal. Removes the channels.json
     gateway entry, the secrets/lark-<name>.json credential, the desired-state
     harness entry, and any adapter pin referencing the gateway. A running
-    daemon forgets the adapter from 'hyprial adapter list' only after a restart
-    (boot-time snapshot).
+    daemon forgets the adapter from 'hyprial adapter list' after 'hyprial
+    adapter reload' (it keeps a snapshot of the gateway list).
     """
 
     def operation() -> JsonObject:
@@ -9298,6 +10025,139 @@ def adapter_list(
     """List external-platform adapters."""
 
     _execute(lambda: _daemon_request("adapter.list", {}), json_output=json_output)
+
+
+route_app = typer.Typer(
+    help="Manage one adapter's outbound routes (route:<adapter>:<route>)."
+)
+adapter_app.add_typer(route_app, name="route")
+
+
+def _parse_one_route(value: str) -> Any:
+    """Parse a single ``name=native_id`` pair, reusing the add-time rules."""
+
+    return _parse_adapter_routes([value])[0]
+
+
+def _route_error_code(error: Exception) -> str:
+    """Map a config error to the same code ``adapter remove`` reports."""
+
+    from hyprial.adapter_registration import AdapterNotFoundError
+
+    if isinstance(error, AdapterNotFoundError):
+        return ipc_errors.ADAPTER_NOT_FOUND
+    return getattr(error, "code", None) or ipc_errors.INVALID_ARGUMENT
+
+
+def _route_operation(call: Any) -> JsonObject:
+    """Run one route mutation, map its error code, then hot-reload.
+
+    A route that exists only in the file is a route the running daemon cannot
+    deliver to, so the reload belongs to the change -- but an unreachable
+    daemon is not a failure: it reads the same config at its next start. This
+    is the same contract as ``adapter add``.
+    """
+
+    from hyprial.persistent_config import PersistentConfigError
+
+    try:
+        result = call()
+    except PersistentConfigError as error:
+        raise CliError(_route_error_code(error), str(error)) from error
+    try:
+        result["daemonReload"] = _daemon_request(
+            "adapter.reload", {}, timeout=5.0, restore_wait=0.0
+        )
+    except (CliError, ipc_errors.TransientDaemonError):
+        result["daemonReload"] = None
+    return result
+
+
+@route_app.command("list")
+def adapter_route_list(
+    name: str | None = typer.Argument(
+        None, help="Configured adapter name; omit to list every adapter."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Show the routes bound on an adapter, read from local config."""
+
+    def operation() -> JsonObject:
+        from hyprial.adapter_registration import list_gateway_routes
+        from hyprial.persistent_config import PersistentConfigError
+
+        try:
+            return list_gateway_routes(hyprial_home=_hyprial_home(), name=name)
+        except PersistentConfigError as error:
+            raise CliError(_route_error_code(error), str(error)) from error
+
+    _execute(operation, json_output=json_output)
+
+
+@route_app.command("add")
+def adapter_route_add(
+    name: str = typer.Argument(..., help="Configured adapter name."),
+    route: str = typer.Argument(
+        ..., help="Route as name=native_chat_id (the chat/user id to send to)."
+    ),
+    make_default: bool = typer.Option(
+        False, "--default", help="Also make this the gateway's default route."
+    ),
+    force: bool = typer.Option(
+        False, "--force", help="Rebind a route name that already exists."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Bind one outbound route on an existing adapter.
+
+    Touches only ``channels.json`` -- never the App credential -- then asks a
+    running daemon to reload. Use this instead of ``adapter add --force``,
+    which replaces the whole gateway entry and rewrites its secret file.
+    """
+
+    def operation() -> JsonObject:
+        from hyprial.adapter_registration import add_gateway_route
+
+        parsed = _parse_one_route(route)
+        return _route_operation(
+            lambda: add_gateway_route(
+                hyprial_home=_hyprial_home(),
+                name=name,
+                route=parsed,
+                make_default=make_default,
+                force=force,
+            )
+        )
+
+    _execute(operation, json_output=json_output)
+
+
+@route_app.command("remove")
+def adapter_route_remove(
+    name: str = typer.Argument(..., help="Configured adapter name."),
+    route_name: str = typer.Argument(..., help="Route name to unbind."),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Remove even when it is the default route (clears the default).",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Unbind one outbound route from an adapter."""
+
+    def operation() -> JsonObject:
+        from hyprial.adapter_registration import remove_gateway_route
+
+        return _route_operation(
+            lambda: remove_gateway_route(
+                hyprial_home=_hyprial_home(),
+                name=name,
+                route_name=route_name,
+                force=force,
+            )
+        )
+
+    _execute(operation, json_output=json_output)
 
 
 @adapter_app.command("doctor")
@@ -9443,8 +10303,9 @@ def _authorize_interactively(name: str, capabilities: Sequence[str]) -> JsonObje
             else {}
         ),
         "nextStep": (
-            f"Run 'hyprial adapter doctor {name}' to confirm the tenant grants, "
-            "then restart the daemon."
+            f"Run 'hyprial adapter doctor {name}' to confirm the tenant grants; "
+            "grants take effect on the Lark side, and 'hyprial adapter reload' "
+            "covers any local config change -- no daemon restart is needed."
         ),
     }
 
@@ -9628,10 +10489,27 @@ def adapter_pins(
 
 @squire_app.command("setup")
 def squire_setup(
-    owner_key: str = typer.Option(..., "--owner-key"),
-    login_name: str = typer.Option(..., "--login-name"),
-    machine: str = typer.Option(..., "--machine"),
-    machine_key: str = typer.Option(..., "--machine-key"),
+    owner_key: str | None = typer.Option(
+        None,
+        "--owner-key",
+        help="Profile owner key; default: slug of the resolved owner.",
+    ),
+    login_name: str | None = typer.Option(
+        None,
+        "--login-name",
+        help="Profile login name; default: this account's platform (OS) login.",
+    ),
+    machine: str | None = typer.Option(
+        None,
+        "--machine",
+        help="Receiver machine id; default: HYPRIAL_NODE_ID, else this host's "
+        "name.",
+    ),
+    machine_key: str | None = typer.Option(
+        None,
+        "--machine-key",
+        help="Receiver machine key; default: slug of the machine id.",
+    ),
     channel: str | None = typer.Option(None, "--channel"),
     owner_open_id: str | None = typer.Option(None, "--owner-open-id"),
     binding_code: str | None = typer.Option(None, "--binding-code"),
@@ -9645,7 +10523,7 @@ def squire_setup(
     adapter: str | None = typer.Option(None, "--adapter"),
     dm_route: str = typer.Option("owner", "--dm-route"),
     provider: str = typer.Option("deepseek", "--provider"),
-    model: str = typer.Option("deepseek-v4-flash", "--model"),
+    model: str = typer.Option("deepseek-flash", "--model"),
     preferred_harness: str = typer.Option("pi", "--preferred-harness"),
     start_worker: bool = typer.Option(False, "--start"),
     step: str | None = typer.Option(None, "--step"),
@@ -9659,8 +10537,12 @@ def squire_setup(
     one fails with the resolver's guidance.  ``--owner-key``/
     ``--login-name``/
     ``--machine``/
-    ``--machine-key`` remain: they are host-side lookup keys for the
-    profile/receiver, not the user identity.
+    ``--machine-key`` remain as optional overrides: they are host-side lookup
+    keys for the profile/receiver, not the user identity.  Omitted, they are
+    derived — ``machine`` from ``HYPRIAL_NODE_ID`` (else the hostname),
+    ``owner_key``/``machine_key`` as slugs of owner/machine, ``login_name``
+    from the platform (OS) login — so ``hyprial squire setup --json`` with no
+    further flags is the normal first run.
     """
 
     def operation() -> JsonObject:
@@ -9672,11 +10554,23 @@ def squire_setup(
             OfflineManagementLease,
             SquireRegistryResult,
         )
-        from hyprial.squire import SetupIdentity, SquireSetup
+        from hyprial.squire import SquireSetup, derive_setup_identity
 
         # The owner segment is the user identity of this home (design §3.3);
         # a missing one raises the resolver's guidance (naming hyprial login).
         owner = resolve_node_owner()
+        # The four host-side lookup keys are derived unless explicitly
+        # overridden (Allen, 2026-09-18): machine from HYPRIAL_NODE_ID else
+        # hostname, owner_key/machine_key as slugs, login_name from the
+        # platform login. An explicit --machine that disagrees with a
+        # configured node id still fails inside SquireSetup's cross-checks.
+        identity = derive_setup_identity(
+            owner,
+            owner_key=owner_key,
+            login_name=login_name,
+            machine=machine,
+            machine_key=machine_key,
+        )
 
         class CliSquireManagement:
             @staticmethod
@@ -9692,7 +10586,10 @@ def squire_setup(
                         raise
                     try:
                         with OfflineManagementLease(
-                            _state_dir(), owner=command.owner, machine=command.machine
+                            _state_dir(),
+                            owner=command.owner,
+                            machine=command.machine,
+                            hyprial_home=_hyprial_home(),
                         ) as management:
                             return management.ensure_squire(command)
                     except DaemonOwnershipBusy as busy:
@@ -9715,7 +10612,7 @@ def squire_setup(
         )
         try:
             return setup.run(
-                SetupIdentity(owner, owner_key, login_name, machine, machine_key),
+                identity,
                 channel=channel,
                 owner_open_id=owner_open_id,
                 binding_code=binding_code,
@@ -10132,8 +11029,7 @@ def _mount_app_commands() -> None:
     def register(name: str, help_text: str, fn: Any) -> None:
         if name == "gui":
             def gui_command(
-                app_or_action: str = typer.Argument("start", help="dashboard, dsh, all; or start, status, stop, upgrade."),
-                action: str | None = typer.Argument(None, help="After an application: start (default), status, or stop."),
+                app_or_action: str = typer.Argument("start", help="start (default), status, stop, or upgrade the DSH GUI."),
                 check: bool = typer.Option(False, "--check", help="Upgrade: report only."),
                 force: bool = typer.Option(False, "--force", help="Upgrade: replace dirty/diverged sources."),
                 yes: bool = typer.Option(False, "--yes", help="Upgrade: skip the confirmation prompt."),
@@ -10142,7 +11038,7 @@ def _mount_app_commands() -> None:
                 def operation() -> Any:
                     from hyprial.gui_apps import resolve_invocation
 
-                    verb, selected = resolve_invocation(app_or_action, action)
+                    verb, selected = resolve_invocation(app_or_action)
                     if verb != "upgrade" and (check or force or yes):
                         raise CliError(ipc_errors.INVALID_ARGUMENT, "--check, --force, and --yes are only valid with: hyprial gui upgrade")
                     options = dict(check=check, force=force, yes=yes, json_output=json_output)
@@ -10153,10 +11049,8 @@ def _mount_app_commands() -> None:
                 _execute(operation, json_output=json_output)
 
             app.command(name, help=(
-                "GUI: hyprial gui [start|stop] defaults to Dashboard; "
-                "hyprial gui dsh [start|stop|status] selects DSH; "
-                "hyprial gui all [start|stop|status] selects both. "
-                "status shows both; upgrade updates the whole package."
+                "DSH GUI: hyprial gui [start|status|stop|upgrade]. "
+                "Starts DSH by default; upgrade updates the GUI package."
             ))(gui_command)
             return
         # ``fn`` validates the action against the manifest; this wrapper only

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://schemas.hyprial.com/mfu/h2b-agent-task/v1/activity-envelope.schema.json",
+  "$id": "https://schemas.hyprial.com/mfu/hyprial-agent-task/v1/activity-envelope.schema.json",
   "type": "object",
   "additionalProperties": false,
   "required": ["schemaVersion", "eventId", "runId", "targetRef", "conversationId", "kind", "at", "payload"],

@@ -41,7 +41,7 @@ from .ports import (
     UnpinAgentAdapterCommand,
     UpdateAgentCommand,
 )
-from .registry import Agent, AgentError, AgentRegistry
+from .registry import Agent, AgentError, AgentHomeError, AgentRegistry
 
 __all__ = ["AgentActor", "AgentRegistryActor", "SenderIdentityError"]
 
@@ -173,7 +173,7 @@ class _AgentGeneration:
                 self._pin(command)
             else:
                 self._unpin(command)
-        except (AgentError, AgentAlreadyRunning) as error:
+        except (AgentError, AgentHomeError, AgentAlreadyRunning) as error:
             self._reject(
                 command, str(getattr(error, "code", "AGENT_ERROR")), str(error)
             )
@@ -267,7 +267,7 @@ class _AgentGeneration:
                     base,
                 )
             )
-        except (AgentError, AgentAlreadyRunning) as error:
+        except (AgentError, AgentHomeError, AgentAlreadyRunning) as error:
             self._reject(
                 request, str(getattr(error, "code", "AGENT_ERROR")), str(error)
             )
@@ -286,6 +286,11 @@ class _AgentGeneration:
                 self.registry.create(name)
                 raise AssertionError("duplicate create unexpectedly succeeded")
             agent = existing
+            # Existing means the same registry incarnation, not merely the
+            # same short name.  Provision/validate its home before any caller
+            # may proceed to a launch phase.
+            if self.registry.home_enabled:
+                self.registry.ensure_home(agent.actor)
             changed = False
             if command.launch_harness is not None:
                 incumbent = self.liveness.live_binding(agent.uri)
@@ -346,6 +351,7 @@ class _AgentGeneration:
                 actor=existing.actor,
                 owner=existing.owner,
                 machine=existing.machine,
+                entity_token=existing.entity_token,
                 cwd=command.cwd,
                 provider=command.provider,
                 model=command.model,
@@ -746,6 +752,7 @@ def _agent_projection(agent: Agent, version: int) -> AgentProjection:
         actor=agent.actor,
         owner=agent.owner,
         machine=agent.machine,
+        entity_token=agent.entity_token,
         cwd=agent.cwd,
         provider=agent.provider,
         model=agent.model,

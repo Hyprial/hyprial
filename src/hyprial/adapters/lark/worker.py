@@ -48,6 +48,7 @@ from .health import (
     DEFAULT_REST_PROBE_TIMEOUT_SECONDS,
     DEFAULT_STALE_AFTER_SECONDS,
     LarkStreamHealthMonitor,
+    report_reconcile_failure,
     required_reconcile_lookback,
 )
 from .reaction_effects import ReactionEffectsRuntime
@@ -129,10 +130,35 @@ def _recovery_timing_from_environment() -> tuple[float, float, float, float]:
 
 
 def _reconcile_health_result(report: ReconcileReport | None) -> int:
-    """Translate a sweep into a fail-closed, detail-free health result."""
+    """Translate a sweep into a fail-closed, detail-free health result.
 
-    if report is None or report.errors:
+    Fail-closed is deliberate and unchanged: a sweep that might have missed
+    messages must not report health.  What changed is *which* failures count.
+
+    ``blocked_chats`` are chats this app is not permitted to read; retrying
+    cannot clear them, so raising here produced a restart loop that ended in
+    quarantine -- the adapter died of a condition no restart could fix, and
+    every other chat died with it.  Those are reported by the sweep and
+    logged, and they do not fail the probe.
+
+    A permanently-refused chat no longer fails the probe by itself -- it is
+    retired out of the scan set (``retired_chats``) -- but a sweep that reached
+    *no* live chat at all is still a total failure and must stay stale.
+
+    A missing history scope is the one exception among the *retryable* errors:
+    a mention-only Feishu app cannot replay messages it was never permitted to
+    read, but its websocket subscription can still receive new @-mentions.
+    Keep that live path up rather than restarting forever; all other incomplete
+    reconciliation outcomes remain terminal.
+    """
+
+    if report is None or any(
+        not error.endswith(": history-permission-unavailable")
+        for error in report.retryable_errors
+    ):
         raise RuntimeError("Lark history reconciliation incomplete")
+    if report.chats_scanned > 0 and len(report.retired_chats) >= report.chats_scanned:
+        raise RuntimeError("Lark history reconciliation reached no live chat")
     return report.forwarded + report.dead_lettered
 
 
@@ -159,11 +185,13 @@ class ReconnectSweepCoordinator:
         reconcile: Callable[[], ReconcileReport | None],
         timeout: float,
         health: LarkStreamHealthMonitor,
+        report: Callable[[dict[str, object]], None] | None = None,
     ) -> None:
         self.name = name
         self._reconcile = reconcile
         self.timeout = timeout
         self._health = health
+        self._report = report
         self._lock = threading.Lock()
         self._active = False
         self._pending = False
@@ -255,8 +283,13 @@ class ReconnectSweepCoordinator:
                 # accidentally settling this sweep as healthy.
                 outcome["failed"] = True
                 raise
-            except BaseException:  # never surface SDK URL/token details
+            except BaseException as error:  # never surface SDK URL/token details
                 outcome["failed"] = True
+                # Exception from the sweep never reaches here (the wrapper
+                # registered as ``reconcile`` folds it into None first), so
+                # this names the non-Exception BaseExceptions that bypass
+                # that wrapper: KeyboardInterrupt, SystemExit, CancelledError.
+                report_reconcile_failure(self._report, error, stage="sweep-call")
             finally:
                 completed.set()
 
@@ -867,13 +900,29 @@ def main(arguments: list[str] | None = None) -> int:
         # Read-only identities lookup (this adapter's namespace) so expanded
         # merge-forward children say who spoke.  Never writes, and never
         # raises: an unanswerable lookup degrades to the raw platform id.
+        # The degradation is not silent though: a warning event lands on the
+        # worker telemetry stream (same practice as lark.pin.query_failed),
+        # because an always-failing lookup -- e.g. an identities schema from
+        # before the h2b_owner -> hyprial_owner rename -- otherwise breaks
+        # display-name resolution forever with no signal anywhere.
         try:
             for identity in state.find_identities(platform_id=platform_id):
                 if identity.display_name:
                     return identity.display_name
         except (NameError, ImportError):
             raise
-        except Exception:  # noqa: BLE001 - identity lookup must never break inbound
+        except Exception as error:  # noqa: BLE001 - identity lookup must never break inbound
+            emit(
+                {
+                    "status": "warning",
+                    "event": "lark.identity.lookup_failed",
+                    "errorType": type(error).__name__,
+                    # Local sqlite diagnostic (e.g. "no such column"), not
+                    # platform-controlled text; it names the failure's cause.
+                    "error": str(error),
+                    "fallback": "raw-platform-id",
+                }
+            )
             return None
         return None
 
@@ -975,6 +1024,7 @@ def main(arguments: list[str] | None = None) -> int:
         report=emit,
         monotonic=time.monotonic,
         utcnow=lambda: datetime.now(UTC),
+        events=emit,
     )
 
     def ready() -> None:
@@ -999,7 +1049,12 @@ def main(arguments: list[str] | None = None) -> int:
             return adapter.reconcile_recent(lookback_seconds=reconcile_lookback)
         except (NameError, ImportError):
             raise
-        except Exception:  # noqa: BLE001 - a failed sweep must never kill the stream
+        except Exception as error:  # noqa: BLE001 - a failed sweep must never kill the stream
+            # ⭐ The load-bearing point: this is where the sweep's exception
+            # leaves the world (`return None` below is unchanged).  Naming it
+            # here is the only way the class reaches the log -- the two
+            # outer discard points never see it.  No text, no locals.
+            report_reconcile_failure(emit, error)
             return None
         finally:
             reconcile_lock.release()
@@ -1013,6 +1068,7 @@ def main(arguments: list[str] | None = None) -> int:
         reconcile=reconcile_once,
         timeout=reconcile_timeout,
         health=health,
+        report=emit,
     )
 
     def reconnect() -> None:

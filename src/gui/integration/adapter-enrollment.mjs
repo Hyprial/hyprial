@@ -1,4 +1,5 @@
 import { createHmac, randomBytes, randomUUID } from 'node:crypto';
+import { hyprialCliEnv } from './hyprial-cli.mjs';
 import { spawn } from 'node:child_process';
 
 const NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
@@ -35,7 +36,7 @@ function normalize(input) {
 // nor environment receives the secret; the child gets a private stdin pipe only.
 export function runAdapterCli(argv, { stdin = '', env = process.env, timeoutMs = 20000 } = {}) {
   return new Promise(resolve => {
-    const child = spawn('h2b', argv, { env, shell: false, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn('hyprial', argv, { env: hyprialCliEnv(env), shell: false, stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '', size = 0, timedOut = false, overflow = false, done = false;
     const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, timeoutMs);
     function finish(result) { if (done) return; done = true; clearTimeout(timer); resolve({ stdout, timedOut, overflow, ...result }); }

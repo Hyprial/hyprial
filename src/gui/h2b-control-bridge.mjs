@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 
+import { hyprialCliEnv } from './integration/hyprial-cli.mjs';
 import { launchAction } from './integration/agent-launch-settings.mjs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawnCli as spawn } from './integration/cli-spawn.mjs';
 import { READONLY_CLI_OPERATIONS, buildReadonlyOpsArgv } from './integration/cli-readonly-ops.mjs';
 
 // JSON escaping can nearly double a 64 KiB YAML document (for example many
@@ -114,9 +115,11 @@ function requireLogWindow(input) {
 }
 
 async function runCli(argv) {
-  const executable = process.env.H2B_CONTROL_BIN || 'h2b';
+  const executable = process.env.HYPRIAL_CONTROL_BIN || 'hyprial';
   return await new Promise((resolve, reject) => {
-    const child = spawn(executable, argv, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env });
+    const child = spawn(executable, argv, { stdio: ['pipe', 'pipe', 'pipe'], env: hyprialCliEnv(), shell: false });
+    // An EOF pipe avoids opening NUL with write access under Windows ACL tokens.
+    child.stdin.end();
     const stdout = [];
     const stderr = [];
     let outputBytes = 0;

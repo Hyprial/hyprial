@@ -4,15 +4,24 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Protocol
 from uuid import NAMESPACE_URL, uuid5
 
+from hyprial.inbox import InboxAuthorityUnavailable
 from hyprial.inbox.api import DeliveryLifecycle, InboxMessage, InboxPruneItem
 from hyprial.inbox.progress import COALESCE_KEPT_PHASES, ProgressEvent
 from hyprial.contracts.readiness import ReadinessReport
+
+from hyprial.availability_loud import (
+    AttemptIdentity,
+    no_progress_budget_seconds,
+    no_progress_notice,
+    unavailable_notice,
+)
 
 from .api import (
     HarnessDelivery,
@@ -45,6 +54,10 @@ class DaemonRecoverySummary:
 @dataclass(frozen=True, slots=True)
 class ReconcileSummary:
     harness_restarts: int
+    #: Retried deliveries SETTLED on this tick.  Always 0 now that retry_due
+    #: runs on the delivery pump thread: settlement is counted on the pump's
+    #: own ``inbox.retry_pump.completed`` event, not claimed by the tick that
+    #: only kicked it.
     inbox_results: int
     harness_deliveries: int = 0
     harness_results: int = 0
@@ -62,12 +75,54 @@ class ReconcileSummary:
     # Per-phase wall time of this tick in milliseconds, for the serve-loop
     # overrun watchdog to name the culprit instead of just the total.
     phase_ms: tuple[tuple[str, int], ...] = ()
+    # Sender-facing "no progress within budget" notices emitted this tick.
+    # These are the loud half of the 2026-09-21 policy: the counterpart of
+    # static selection is that an unproductive attempt must be reported, not
+    # routed around.  Counted separately from harness_results because a
+    # notice is not a settled delivery.
+    availability_notices: int = 0
 
     @property
     def inbox_pruned(self) -> int:
         """Unconsumed inbox rows evicted by the TTL sweep this tick."""
 
         return len(self.inbox_pruned_items)
+
+
+#: Fallback cadence for the inbox retry pump when no tick kick arrives (the
+#: reconcile tick normally nudges it once per second).  Delivery-pump timing,
+#: not supervision: no actor lifecycle capability is re-implemented here.
+_RETRY_PUMP_IDLE_SECONDS = 5.0
+
+#: How long stop() waits for the pump to leave a blocking ``retry_due`` call.
+#: Derived, not chosen: the facade's authority timeout (2 s, the ``timeout``
+#: default of DeliveryCustodyFacade in inbox/authority.py) bounds that call,
+#: and this outlasts it; a pump that still will not leave is a daemon thread
+#: and is reported, never joined forever.
+_RETRY_PUMP_JOIN_SECONDS = 3.0
+
+#: A retry pass slower than this is worth its own log line even when it
+#: settled nothing: head-of-line blocking on one unreachable target is
+#: otherwise invisible until the next incident (2026-09-14).
+_RETRY_PUMP_SLOW_MS = 1000
+
+
+def _stale_fence_rejection(error: BaseException) -> bool:
+    """A ``retry_due`` command whose generation/version fence moved under it.
+
+    The authority client reads the fence, then submits; since retry_due left
+    the tick thread, the tick's own inbox commands can commit a version in
+    that window and the actor rejects the stale fence as
+    ``InboxAuthorityUnavailable("STALE_COMMAND: ...")``.  That is the
+    expected loser of a race the two threads are supposed to run, not a
+    fault: the pass yields and the next kick re-reads the fence.  Only the
+    ``STALE_COMMAND`` raise shape matches here -- the admission-failure
+    shape (``inbox command admission failed: ...``) stays a pump failure.
+    """
+
+    return isinstance(error, InboxAuthorityUnavailable) and str(error).startswith(
+        "STALE_COMMAND"
+    )
 
 
 def _coalesce_progress_events(events: tuple[ProgressEvent, ...]) -> tuple[ProgressEvent, ...]:
@@ -103,9 +158,16 @@ def _coalesce_progress_events(events: tuple[ProgressEvent, ...]) -> tuple[Progre
 class _RunMarker:
     def __init__(self, path: Path) -> None:
         self.path = path
+        #: When the previous marker was written, i.e. when the run that died
+        #: without calling ``finish`` started.  Recovery reads it so it sweeps
+        #: exactly that run's window instead of all history.
+        self.previous_started_ms: int | None = None
 
     def begin(self) -> bool:
         previous_unclean = self.path.exists()
+        self.previous_started_ms = (
+            int(self.path.stat().st_mtime * 1000) if previous_unclean else None
+        )
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         temporary = self.path.with_suffix(f".tmp.{os.getpid()}")
         temporary.write_text(
@@ -138,6 +200,23 @@ class HarnessActorRegistration(Protocol):
     ) -> None: ...
 
 
+@dataclass(slots=True)
+class _InflightAttempt:
+    """One request currently handed to (or waiting for) a worker.
+
+    This is the clock for the no-event path: the deadline runs from the
+    moment the request entered the worker's queue, and the *only* thing that
+    resets it is a progress observation correlated with this delivery.  A
+    process being alive, online, or reconnecting is not progress and does not
+    reset it (see ``_publish_harness_progress``).
+    """
+
+    identity: AttemptIdentity
+    budget_ms: int
+    last_progress_ms: int
+    reported: bool = False
+
+
 class DaemonEventBridge:
     """Bridge actor events and own only run-marker/route resource handles."""
 
@@ -157,6 +236,7 @@ class DaemonEventBridge:
         harness_actor_uri: Callable[[str], str] | None = None,
         logger: Callable[..., None] | None = None,
         clock_ms: Callable[[], int] | None = None,
+        usage_limit_observer: Callable[[str], None] | None = None,
     ) -> None:
         self.state_dir = Path(state_dir)
         self.node_id = node_id
@@ -170,6 +250,10 @@ class DaemonEventBridge:
         self.delivery = delivery
         self.harness_actor_registrar = harness_actor_registrar
         self._logger = logger
+        # The quota watchdog hears each PROVIDER_USAGE_LIMIT turn.  It only
+        # observes: settlement below is unchanged (Allen 09-17: exhausted
+        # agents keep today's handling).
+        self._usage_limit_observer = usage_limit_observer
         self._clock_ms = clock_ms or (lambda: time.time_ns() // 1_000_000)
         # One mapping from a supervisor-local short name to the network
         # identity.  Registration and the delivery pump must share it: keys
@@ -179,6 +263,25 @@ class DaemonEventBridge:
         self._mailbox_registration = None
         self._actor_registrations: dict[str, HarnessActorRegistration] = {}
         self._started = False
+        self._retry_pump_kick = threading.Event()
+        self._retry_pump_halt = threading.Event()
+        self._retry_pump_thread: threading.Thread | None = None
+        # Sender-facing fail-loud state (2026-09-21).  ``_inflight`` is keyed by
+        # delivery id: a delivery belongs to exactly one worker, and the id is
+        # what both progress events and harness results carry back.  Nothing
+        # here influences selection -- it exists so an unproductive attempt is
+        # reported instead of being routed around.
+        self._inflight: dict[str, _InflightAttempt] = {}
+        #: How many times a delivery has been handed to a worker.  A delivery
+        #: id can host more than one real attempt (retry, or a second run),
+        #: so the once-per-notice key must include the generation, not just the
+        #: delivery id.
+        self._attempt_generation: dict[str, int] = {}
+        #: Notices the inbox did not accept (or could not be asked to accept).
+        #: They stay here and are retried on later ticks; a failed submission
+        #: is never reported as delivered.
+        self._pending_notices: dict[str, InboxMessage] = {}
+        self._notice_failures_logged: set[str] = set()
 
     def start(self) -> DaemonRecoverySummary:
         if self._started:
@@ -198,7 +301,20 @@ class DaemonEventBridge:
                 ) from error
             raise
         self._started = True
+        self._retry_pump_halt.clear()
+        self._retry_pump_kick.clear()
+        self._retry_pump_thread = threading.Thread(
+            target=self._retry_pump_run,
+            name="hyprial-inbox-retry-pump",
+            daemon=True,
+        )
+        self._retry_pump_thread.start()
         self._reconcile_harness_actors()
+        if previous_unclean:
+            # A crash may have eaten a sender notice that was only held in
+            # memory.  The terminal settlement rows are durable, so re-derive
+            # from them rather than leaving that failure silent forever.
+            self._recover_owed_notices(self._marker.previous_started_ms)
         return DaemonRecoverySummary(
             attempted=0,
             restored=0,
@@ -245,6 +361,14 @@ class DaemonEventBridge:
         harness_deliveries = _timed(
             "harnesses.dispatch_deliveries", self._dispatch_harness_deliveries
         )
+        # The no-event loud path rides the same tick: a delivery that has
+        # produced no correlated progress within its harness budget is
+        # reported here, and notices the inbox did not accept are retried.
+        # Runs after dispatch so a delivery that just started its first
+        # attempt has its clock registered before it is judged.
+        availability_notices = _timed(
+            "availability.report_stalled", self._report_stalled_deliveries
+        )
         drain_failed = getattr(self.harnesses, "drain_failed_events", None)
         failed = (
             drain_failed() if callable(drain_failed) else ()
@@ -255,12 +379,17 @@ class DaemonEventBridge:
             if callable(drain_readiness)
             else ()
         )
-        inbox_results = len(_timed("inbox.retry_due", self.inbox.retry_due))
+        inbox_results = 0
+        # The retry pump owns the blocking retry_due call (it can sit on an
+        # unreachable peer up to the authority timeout); the tick only kicks.
+        # Completions are counted on the pump's own log event, so this tick's
+        # inbox_results stays 0 rather than claiming work still in flight.
+        _timed("inbox.retry_due", self._kick_retry_pump)
         # Inbox TTL sweep rides the same periodic tick as the delivery pump:
         # unconsumed rows past their deadline are evicted here, once per
         # reconcile, instead of a timer of their own.  Items are surfaced so
         # the daemon can log per-message ``inbox.pruned`` trajectory events.
-        inbox_pruned_items = _timed("inbox.prune", self.inbox.prune_inbox)
+        inbox_pruned_items = _timed("inbox.prune", self._prune_inbox)
         return ReconcileSummary(
             harness_restarts=harness_restarts,
             inbox_results=inbox_results,
@@ -272,7 +401,102 @@ class DaemonEventBridge:
             harness_failed=tuple(failed),
             harness_readiness=tuple(readiness_reports),
             phase_ms=tuple(phases),
+            availability_notices=availability_notices,
         )
+
+    def _prune_inbox(self) -> tuple[InboxPruneItem, ...]:
+        try:
+            return tuple(self.inbox.prune_inbox())
+        except InboxAuthorityUnavailable as error:
+            if not _stale_fence_rejection(error):
+                raise
+            # The retry pump can commit between this tick reading its fence
+            # and the actor handling the prune command. The rejected sweep
+            # changed nothing; the next tick reads a fresh fence and retries.
+            # Mirror the pump's yield without hiding other authority failures.
+            if self._logger is not None:
+                self._logger(
+                    "info", "daemon", "inbox.prune.yielded", detail=str(error)[:200]
+                )
+            return ()
+
+    def _kick_retry_pump(self) -> None:
+        """Nudge the delivery retry pump without waiting for network I/O.
+
+        ``retry_due`` waits on outbound sends up to the facade's authority
+        timeout; an unreachable peer would otherwise charge every reconcile
+        tick that full wait and starve the steps queued behind it
+        (2026-09-14: 62 of 99 tick overruns were this one call).  The tick
+        sets the kick and moves on; the pump thread does the waiting.
+        """
+
+        self._retry_pump_kick.set()
+
+    def _retry_pump_run(self) -> None:
+        while not self._retry_pump_halt.is_set():
+            self._retry_pump_kick.wait(_RETRY_PUMP_IDLE_SECONDS)
+            self._retry_pump_kick.clear()
+            if self._retry_pump_halt.is_set():
+                return
+            started_at = time.monotonic()
+            try:
+                results = self.inbox.retry_due()
+            except Exception as error:  # noqa: BLE001 - pump isolation boundary
+                if _stale_fence_rejection(error):
+                    # Lost a fence race to the tick thread: yield this round
+                    # at info, not error -- the pump and the tick are meant
+                    # to run concurrently now, and a stale round per kick
+                    # would read as a persistent fault it is not.
+                    if self._logger is not None:
+                        self._logger(
+                            "info",
+                            "daemon",
+                            "inbox.retry_pump.yielded",
+                            detail=str(error)[:200],
+                            durationMs=int((time.monotonic() - started_at) * 1000),
+                        )
+                    continue
+                # The pump is the only thing allowed to block on delivery;
+                # its failures are logged and retried on the next kick, never
+                # propagated into the reconcile tick -- and never allowed to
+                # kill the pump itself silently (the lifecycle-thread shape).
+                if self._logger is not None:
+                    self._logger(
+                        "error",
+                        "daemon",
+                        "inbox.retry_pump.failed",
+                        errorType=type(error).__name__,
+                        detail=str(error)[:500],
+                        durationMs=int((time.monotonic() - started_at) * 1000),
+                    )
+                continue
+            duration_ms = int((time.monotonic() - started_at) * 1000)
+            if self._logger is not None and (
+                results or duration_ms >= _RETRY_PUMP_SLOW_MS
+            ):
+                self._logger(
+                    "info",
+                    "daemon",
+                    "inbox.retry_pump.completed",
+                    inboxResults=len(results),
+                    durationMs=duration_ms,
+                )
+
+    def _halt_retry_pump(self) -> None:
+        thread = self._retry_pump_thread
+        self._retry_pump_thread = None
+        if thread is None:
+            return
+        self._retry_pump_halt.set()
+        self._retry_pump_kick.set()
+        thread.join(_RETRY_PUMP_JOIN_SECONDS)
+        if thread.is_alive() and self._logger is not None:
+            self._logger(
+                "warn",
+                "daemon",
+                "inbox.retry_pump.stop_timeout",
+                detail="retry pump did not leave a blocking retry_due call",
+            )
 
     def _sync_harness_session_refs(self) -> None:
         """Ask the Harness actor to reconcile learned refs into desired state.
@@ -346,6 +570,11 @@ class DaemonEventBridge:
                 else self.inbox.pending_messages(recipient)
             )
             for message in messages:
+                # Start (or keep) the no-progress clock for every request this
+                # live worker owes a receipt for, even before it accepts the
+                # enqueue: "queued but never picked up" is one of the silent
+                # shapes this change exists to report.
+                self._note_delivery_seen(actor, message)
                 if self.harnesses.dispatch(
                     actor,
                     HarnessDelivery(
@@ -420,6 +649,12 @@ class DaemonEventBridge:
                 # The request may have been manually acked while the worker
                 # kept running.  Progress is advisory; never invent a route.
                 continue
+            # Concrete progress signal for the fail-loud clock.  This is the
+            # same correlated worker activity that slides the dispatch hold
+            # (#276), and it is the single observable that resets a delivery's
+            # no-progress budget.  A live pid, "online", or a reconnect
+            # attempt is NOT progress and must not reset it.
+            self._note_delivery_progress(event.delivery_id, self._clock_ms())
             if can_refresh_hold:
                 # #276: correlated worker activity mid-turn is the same
                 # "still being worked" signal dispatch acceptance is, so it
@@ -446,6 +681,17 @@ class DaemonEventBridge:
                 None,
             )
             if original is None:
+                # The row can be fetched/consumed (or already carry a terminal
+                # settlement) before this failure lands.  That used to be a
+                # silent drop; the authoritative sender is still durable in
+                # the settlement tombstone, so look it up and report instead.
+                if result.status is HarnessResultStatus.FAILED:
+                    fallback = self._failure_original(result.delivery_id)
+                    if fallback is not None:
+                        self._loud_harness_failure(result, fallback)
+                        self._finish_attempt(result.delivery_id)
+                        continue
+                    self._log_missing_failure_route(result)
                 continue
             if result.status is HarnessResultStatus.FAILED:
                 failure_code = result.failure_code or classify_harness_failure(
@@ -488,8 +734,31 @@ class DaemonEventBridge:
                             else {"nextAttemptMs": failure.next_attempt_ms}
                         ),
                     )
+                if (
+                    failure.failure_code == "PROVIDER_USAGE_LIMIT"
+                    and self._usage_limit_observer is not None
+                ):
+                    try:
+                        self._usage_limit_observer(failure.recipient)
+                    except Exception as error:  # noqa: BLE001 - an observer never breaks settlement
+                        if self._logger is not None:
+                            self._logger(
+                                "error",
+                                "daemon",
+                                "quota_watchdog.observe_failed",
+                                recipient=failure.recipient,
+                                error=type(error).__name__,
+                            )
+                # The sender that is waiting for this receipt is told with
+                # this attempt's own evidence.  The owner's quota watchdog
+                # above is a separate, retained channel and does not stand in
+                # for this one (the 2026-09-21 incident: the owner was told
+                # within a second and the sender was told nothing).
+                self._loud_harness_failure(result, original, failure=failure)
+                self._finish_attempt(result.delivery_id)
                 settled += 1
                 continue
+            self._finish_attempt(result.delivery_id)
             if original.intent == "reply":
                 acknowledged = self.inbox.ack(
                     original.recipient, original.message_id
@@ -499,6 +768,355 @@ class DaemonEventBridge:
             if acknowledged:
                 settled += 1
         return settled
+
+    # ------------------------------------------------ availability fail-loud
+
+    def _harness_kind(self, actor: str) -> str | None:
+        """Connector kind for a supervised worker, used only for its budget."""
+
+        try:
+            state = self.desired_state.load()
+        except Exception:  # noqa: BLE001 - a reporting path never breaks a tick
+            return None
+        for spec in state.harnesses:
+            if spec.name == actor:
+                return spec.harness
+        return None
+
+    def _note_delivery_seen(self, actor: str, message: InboxMessage) -> None:
+        """Start the no-progress clock for a request a live worker owes.
+
+        Registered when the delivery is first offered, not only when the
+        worker accepts it: a connector that never gets ready is one of the
+        silent shapes this reports.  Re-seeing a delivery is a no-op so the
+        clock is not restarted tick over tick.
+        """
+
+        if message.message_id in self._inflight:
+            return
+        harness = self._harness_kind(actor)
+        now = self._clock_ms()
+        # The clock starts when this daemon hands the request over (or finds it
+        # already queued for a live worker).  Deliberately not the request's
+        # ``created_at_ms``: measuring from inbox arrival would fire a burst of
+        # reports for every historical row on daemon start, and a late report
+        # is the safer error than a spurious one.  A restart therefore grants
+        # an in-flight attempt a fresh budget.
+        started = now
+        generation = self._attempt_generation.get(message.message_id, 0) + 1
+        self._inflight[message.message_id] = _InflightAttempt(
+            identity=AttemptIdentity(
+                delivery_id=message.message_id,
+                conversation_id=message.conversation_id,
+                sender=message.sender,
+                worker=self.harness_actor_uri(actor),
+                harness=harness,
+                generation=generation,
+                observed_at_ms=now,
+            ),
+            budget_ms=no_progress_budget_seconds(harness) * 1_000,
+            last_progress_ms=started,
+        )
+
+    def _note_delivery_progress(self, delivery_id: str, now_ms: int) -> None:
+        attempt = self._inflight.get(delivery_id)
+        if attempt is not None:
+            attempt.last_progress_ms = now_ms
+
+    def _finish_attempt(self, delivery_id: str) -> None:
+        attempt = self._inflight.pop(delivery_id, None)
+        if attempt is not None:
+            # Remember the generation so a retry of the same delivery is a
+            # new attempt for the once-per-notice key, not a replay.
+            self._attempt_generation[delivery_id] = attempt.identity.generation
+
+    def _failure_original(self, delivery_id: str) -> InboxMessage | None:
+        """Authoritative sender of a delivery whose row is no longer pending."""
+
+        reader = getattr(self.inbox, "harness_failure_original", None)
+        if not callable(reader):
+            return None
+        try:
+            return reader(delivery_id)
+        except Exception:  # noqa: BLE001 - lookup failure must not hide the report
+            return None
+
+    def _settlement(self, delivery_id: str) -> object | None:
+        reader = getattr(self.inbox, "harness_failure_settlement", None)
+        if not callable(reader):
+            return None
+        try:
+            return reader(delivery_id)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _log_missing_failure_route(self, result: HarnessResult) -> None:
+        if self._logger is None:
+            return
+        self._logger(
+            "error",
+            "daemon",
+            "availability_loud.route_missing",
+            deliveryId=result.delivery_id,
+            recipient=result.recipient,
+            failureCode=result.failure_code
+            or classify_harness_failure(result.error),
+            detail="no pending row and no settlement tombstone for the sender",
+        )
+
+    def _unavailable_notice_for(
+        self,
+        original: InboxMessage,
+        *,
+        recipient: str,
+        failure_code: str,
+        settlement: object | None,
+        observed_at_ms: int,
+    ) -> InboxMessage:
+        """Build the sender notice from durable facts when possible.
+
+        The attempt number comes from the *settlement* (the durable record of
+        how many times this delivery failed), not from in-process state, so
+        the deterministic message id is a pure function of facts that survive
+        a restart.  That is what lets ``_recover_owed_notices`` re-derive the
+        exact same notice after a crash instead of inventing a second one.
+        """
+
+        attempt = self._inflight.get(original.message_id)
+        durable_attempts = int(getattr(settlement, "attempts", 0) or 0)
+        if durable_attempts > 0:
+            generation = durable_attempts
+        elif attempt is not None:
+            generation = attempt.identity.generation
+        else:
+            generation = max(
+                1, self._attempt_generation.get(original.message_id, 0) + 1
+            )
+        identity = AttemptIdentity(
+            delivery_id=original.message_id,
+            conversation_id=original.conversation_id,
+            sender=original.sender,
+            worker=(attempt.identity.worker if attempt is not None else recipient),
+            harness=attempt.identity.harness if attempt is not None else None,
+            generation=generation,
+            observed_at_ms=observed_at_ms,
+        )
+        return unavailable_notice(
+            identity,
+            failure_code=failure_code,
+            terminal=bool(getattr(settlement, "terminal", True)),
+            attempts=int(getattr(settlement, "attempts", generation)),
+            max_attempts=int(
+                getattr(settlement, "max_attempts", HARNESS_FAILURE_MAX_ATTEMPTS)
+            ),
+            # The classifier's code is the evidence; the raw provider text is
+            # not copied here (it can carry credential material).
+            detail=None,
+        )
+
+    def _loud_harness_failure(
+        self,
+        result: HarnessResult,
+        original: InboxMessage,
+        *,
+        failure: object | None = None,
+    ) -> InboxMessage | None:
+        """Tell the waiting sender that *this* attempt failed, with evidence.
+
+        The owner channel (quota watchdog, provider-auth alerts) is a separate
+        retained path; this is the sender's own copy and is never satisfied by
+        it.  The message is a failure report: it does not acknowledge or settle
+        the original delivery and does not pretend to be the result.
+        """
+
+        failure_code = result.failure_code or classify_harness_failure(result.error)
+        settlement = failure if failure is not None else self._settlement(result.delivery_id)
+        message = self._unavailable_notice_for(
+            original,
+            recipient=result.recipient,
+            failure_code=failure_code,
+            settlement=settlement,
+            observed_at_ms=self._clock_ms(),
+        )
+        self._submit_loud(message)
+        return message
+
+    def _notice_already_durable(self, message_id: str) -> bool:
+        """True when the notice is already delivered and acknowledged.
+
+        Delivery without acknowledgement is deliberately not treated as done:
+        re-submitting the same deterministic id is idempotent at the inbox, so
+        re-sending is the safe side of that ambiguity.
+        """
+
+        reader = getattr(self.inbox, "is_acknowledged", None)
+        if not callable(reader):
+            return False
+        try:
+            return bool(reader(message_id))
+        except Exception:  # noqa: BLE001 - an unknown id is simply not durable
+            return False
+
+    def _recover_owed_notices(self, since_ms: int | None) -> int:
+        """Re-derive sender notices the previous (unclean) run may have owed.
+
+        A notice that could not be *submitted* before a crash lived only in
+        this process's ``_pending_notices``, which is exactly the "silence
+        replaced by another silence" shape this unit exists to remove.  The
+        durable half -- the terminal settlement row -- still exists, so the
+        restart reads it and re-emits the same deterministic notice.  Events
+        that only *schedule* a retry need no recovery here: their inbox row is
+        still pending, so the ordinary dispatch path re-derives them.
+        """
+
+        reader = getattr(self.inbox, "terminal_failure_settlements", None)
+        if not callable(reader) or since_ms is None:
+            return 0
+        try:
+            settlements = reader(since_ms=since_ms)
+        except Exception as error:  # noqa: BLE001 - recovery is best-effort, but loud
+            if self._logger is not None:
+                self._logger(
+                    "error",
+                    "daemon",
+                    "availability_loud.recovery_failed",
+                    errorType=type(error).__name__,
+                    sinceMs=since_ms,
+                )
+            return 0
+        recovered = 0
+        for settlement in settlements:
+            original = self._failure_original(settlement.message_id)
+            if original is None:
+                continue
+            message = self._unavailable_notice_for(
+                original,
+                recipient=settlement.recipient,
+                failure_code=settlement.failure_code,
+                settlement=settlement,
+                observed_at_ms=self._clock_ms(),
+            )
+            if self._notice_already_durable(message.message_id):
+                continue
+            if self._submit_loud(message):
+                recovered += 1
+        if self._logger is not None and settlements:
+            self._logger(
+                "warn",
+                "daemon",
+                "availability_loud.recovery",
+                candidates=len(settlements),
+                recovered=recovered,
+                sinceMs=since_ms,
+            )
+        return recovered
+
+    def _flush_pending_notices_on_stop(self) -> None:
+        """Last chance for held notices, and a loud record of any that remain.
+
+        On a clean shutdown there is no next start to recover from, so an
+        undeliverable notice must at least say so -- the identifiers go to the
+        log rather than disappearing with the process.
+        """
+
+        try:
+            self._retry_pending_notices()
+        except Exception:  # noqa: BLE001 - shutdown must not be masked
+            pass
+        if not self._pending_notices or self._logger is None:
+            return
+        for message in self._pending_notices.values():
+            self._logger(
+                "error",
+                "daemon",
+                "availability_loud.delivery_abandoned",
+                messageId=message.message_id,
+                recipient=message.recipient,
+                idempotencyKey=message.idempotency_key,
+                detail="shutdown with the notice still undelivered",
+            )
+
+    def _submit_loud(self, message: InboxMessage) -> bool:
+        """Submit one notice; hold it for retry if the inbox refuses it.
+
+        A notice that was not accepted is never reported as delivered: it is
+        kept (so it is not lost) and retried on a later tick.
+        """
+
+        submit = getattr(self.inbox, "submit", None)
+        if not callable(submit):
+            self._remember_pending_notice(message, code="INBOX_SUBMIT_UNAVAILABLE")
+            return False
+        try:
+            result = submit(message)
+        except Exception as error:  # noqa: BLE001 - the tick owns this boundary
+            self._remember_pending_notice(message, code=type(error).__name__)
+            return False
+        if not result.accepted:
+            self._remember_pending_notice(message, code=result.code or "SUBMIT_REJECTED")
+            return False
+        self._pending_notices.pop(message.message_id, None)
+        self._notice_failures_logged.discard(message.message_id)
+        if self._logger is not None:
+            self._logger(
+                "warn",
+                "daemon",
+                "availability_loud.sent",
+                messageId=result.message_id,
+                recipient=message.recipient,
+                idempotencyKey=message.idempotency_key,
+            )
+        return True
+
+    def _remember_pending_notice(self, message: InboxMessage, *, code: str) -> None:
+        self._pending_notices.setdefault(message.message_id, message)
+        if message.message_id in self._notice_failures_logged:
+            return
+        self._notice_failures_logged.add(message.message_id)
+        if self._logger is not None:
+            self._logger(
+                "error",
+                "daemon",
+                "availability_loud.delivery_failed",
+                messageId=message.message_id,
+                recipient=message.recipient,
+                code=code,
+                detail="notice held for retry; not delivered",
+            )
+
+    def _retry_pending_notices(self) -> int:
+        delivered = 0
+        for message in tuple(self._pending_notices.values()):
+            if self._submit_loud(message):
+                delivered += 1
+        return delivered
+
+    def _report_stalled_deliveries(self) -> int:
+        """Report attempts whose budget elapsed with no correlated progress.
+
+        Clock-driven, not event-driven: the stuck class has no failure event
+        to wait for.  The message says "no observable progress, cause not yet
+        determined" -- it never claims a permission/approval cause, and it
+        never kills or interrupts the turn.  One report per attempt.
+        """
+
+        self._retry_pending_notices()
+        now = self._clock_ms()
+        reported = 0
+        for attempt in tuple(self._inflight.values()):
+            if attempt.reported:
+                continue
+            waited_ms = now - attempt.last_progress_ms
+            if waited_ms < attempt.budget_ms:
+                continue
+            identity = replace(attempt.identity, observed_at_ms=now)
+            message = no_progress_notice(
+                identity, waited_ms=waited_ms, budget_ms=attempt.budget_ms
+            )
+            if self._submit_loud(message):
+                reported += 1
+            attempt.reported = True
+        return reported
 
     def _reply_and_ack(self, original: InboxMessage, result: HarnessResult) -> bool:
         reply = InboxMessage(
@@ -536,6 +1154,12 @@ class DaemonEventBridge:
     def stop(self) -> None:
         if not self._started:
             return
+        # Give held notices their last in-process chance before the port closes,
+        # and make any that still cannot go out explicit in the log.
+        self._flush_pending_notices_on_stop()
+        # Halt the retry pump before owned resources close, so its blocking
+        # facade call cannot race teardown.
+        self._halt_retry_pump()
         errors = self._close_owned_resources()
         try:
             self._marker.finish()

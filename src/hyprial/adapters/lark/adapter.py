@@ -41,8 +41,11 @@ from .api import (
     normalize_lark_message_content,
 )
 from .health import DEFAULT_RECONCILE_LOOKBACK_SECONDS
+from .sdk import LarkApiError
 from .inbound_runtime import LarkInboundRuntime
 from .reaction_effects import ReactionEffectAdmission, ReactionEffectsRuntime
+from .scopes import parse_permission_violation
+from .sdk import LARK_HISTORY_CODES_PERMANENT_CHAT_GONE
 from .state import (
     DeadLetter,
     LarkStateStore,
@@ -53,6 +56,10 @@ from .state import (
 )
 
 ACK_EMOJI = "OnIt"
+# Feishu returns either code when an app without broad group-history access
+# attempts to list a chat's messages. Keep this allowlist specific to that one
+# endpoint: any other Lark API failure must remain reconciliation-fatal.
+_HISTORY_SCOPE_FORBIDDEN_CODES = frozenset({230002, 230027})
 DEFAULT_DEAD_LETTER_ALERT_THRESHOLD = 10
 DEAD_LETTER_ALERT_WINDOW_SECONDS = 60 * 60
 # PR #332 F3: in-place bounded retry for daemon-bound inbound steps during
@@ -64,9 +71,70 @@ DEAD_LETTER_ALERT_WINDOW_SECONDS = 60 * 60
 DEFAULT_TRANSIENT_RETRY_BUDGET_SECONDS = 120.0
 DEFAULT_TRANSIENT_RETRY_BACKOFF_INITIAL_SECONDS = 0.5
 DEFAULT_TRANSIENT_RETRY_BACKOFF_MAX_SECONDS = 5.0
+# Platform codes meaning "this chat is not readable, and no retry changes
+# that".  They complete the criterion a954c161 introduced -- failures split by
+# *whether retrying could ever clear them* -- which until now recognised only
+# one way of being permanent, a missing scope.  A chat the bot was removed
+# from is equally beyond retry, and landed in the retryable bucket by default.
+#
+# Documented by the platform (open.feishu.cn, chat and chat-member endpoints):
+#   232006  the chat_id is invalid
+#   232009  the chat has been dissolved
+#   232011  the operator (this bot) is not in the chat
+#
+# ⚠️ Sourced for the chat endpoints; this sweep calls the message-list
+# endpoint, and its own error table was not found in those docs.  That is why
+# an unrecognised code still fails closed below rather than being assumed
+# permanent: adding a code here may be a no-op, but it can never turn a
+# transient failure into a silent pass.
+#
+# "Permanent" here means "no retry clears it", not "never clears" -- someone
+# re-adding the bot fixes 232011, exactly as granting a scope fixes the
+# missing-scope case that already sits in this bucket.
+_UNREADABLE_CHAT_CODES = frozenset({232006, 232009, 232011})
+
 _FIXED_OFFSET = re.compile(r"UTC([+-])(\d{2}):(\d{2})(?::(\d{2}))?")
 
 OperatorNotifier = Callable[[str, str], bool]
+
+
+def _permanent_chat_failure_code(error: BaseException) -> int | None:
+    """The platform code when a history refusal is permanent, else None.
+
+    Classification is by SDK error code only -- never by error text, which
+    is both unlocalized and credential-bearing.  Anything unrecognized
+    (including a ``LarkApiError`` without a code) stays transient so the
+    health layer keeps failing closed.
+    """
+
+    if (
+        isinstance(error, LarkApiError)
+        and error.code in LARK_HISTORY_CODES_PERMANENT_CHAT_GONE
+    ):
+        return error.code
+    return None
+
+
+def _reconcile_error_category(error: BaseException) -> str:
+    """Name the failure class from *structured* fields only.
+
+    ``history-permission-unavailable`` is the one incomplete outcome that must
+    NOT restart the adapter: a mention-only Feishu app cannot replay messages it
+    was never permitted to read, but its websocket subscription still receives
+    new @-mentions (worker.py's probe predicate keys off this exact suffix).
+    Everything else stays ``history-unavailable`` and keeps failing closed.
+    """
+    permission_denied = parse_permission_violation(error) is not None
+    # Feishu's message-list endpoint can return a history-scope denial without a
+    # structured ``permission_violations`` payload.
+    history_scope_forbidden = (
+        isinstance(error, LarkApiError)
+        and error.operation == "list chat messages"
+        and error.code in _HISTORY_SCOPE_FORBIDDEN_CODES
+    )
+    if permission_denied or history_scope_forbidden:
+        return "history-permission-unavailable"
+    return "history-unavailable"
 
 
 class TransientHarnessRetryExhausted(RuntimeError):
@@ -695,6 +763,25 @@ class LarkAdapter:
             message.message_id
         ):
             return InboundOutcome(status="duplicate")
+        # Retirement is lifted by evidence from OUTSIDE the sweep, never by
+        # the sweep that imposed it.  The invariant covering every upstream
+        # of this function (live SDK events, reconcile replays, and
+        # ``recover_message`` re-drives): any path that reaches here holds a
+        # ``LarkInboundMessage`` the platform served for this chat, and the
+        # platform only serves a chat's messages to a member -- so a served
+        # message IS membership evidence.  ``recover_message`` is covered by
+        # its own early return: when the platform will not serve the body
+        # (bot not in the chat), ``get_inbound_message`` answers None and it
+        # returns ``not-found`` BEFORE reaching here.  That early return
+        # rests on the platform refusing non-member reads of
+        # ``im.v1.message.get``; if a tenant-level scope ever lets a
+        # non-member read through, the worst case is a self-correcting
+        # oscillation (rejoin scan set -> next sweep eats 230002 -> retired
+        # again), never data loss.
+        # The read probe keeps the common case (nothing ever retired, or the
+        # row already gone) free of a write transaction per inbound message.
+        if self._state.retired_chat_code(message.chat_id) is not None:
+            self._unretire_chat(message.chat_id)
         if message.message_type == "merge_forward":
             message = self._expanded_merge_forward(message)
         try:
@@ -1163,6 +1250,57 @@ class LarkAdapter:
             self._with_known_chat_type(message), suppress_guidance=True
         )
 
+    def _unretire_chat(self, chat_id: str) -> None:
+        """Lift a chat's retirement on outside-the-sweep membership evidence.
+
+        Caller has already probed that a retirement row exists; the DELETE
+        itself stays the conditional write.
+        """
+
+        # The DELETE is the side effect; keep it on its own line so no
+        # later "tidy" of the condition can reorder it behind a short
+        # circuit (a logger-less embedded/test adapter must still lift).
+        lifted = self._state.unretire_chat(chat_id)
+        if not lifted or self._logger is None:
+            return
+        try:
+            self._logger.log(
+                "info",
+                "lark.reconcile.chat-unretired",
+                adapter=self._state.adapter,
+                chat_id=chat_id,
+            )
+        except (NameError, ImportError):
+            raise
+        except Exception:  # noqa: BLE001,S110 - visibility is best effort
+            pass
+
+    def _retire_chat(self, chat_id: str, *, code: int) -> None:
+        """Exclude a permanently-refused chat from all future sweeps.
+
+        The chat's correlations and dead letters stay as audit records; the
+        retirement event carries only the adapter, the chat and the platform
+        error code -- never SDK error text (it can contain URLs/tokens).
+        """
+
+        newly_retired = self._state.retire_chat(
+            chat_id, code=code, now=self._utcnow()
+        )
+        if not newly_retired or self._logger is None:
+            return
+        try:
+            self._logger.log(
+                "warn",
+                "lark.reconcile.chat-retired",
+                adapter=self._state.adapter,
+                chat_id=chat_id,
+                code=code,
+            )
+        except (NameError, ImportError):
+            raise
+        except Exception:  # noqa: BLE001,S110 - visibility is best effort
+            pass
+
     def reconcile_recent(
         self,
         *,
@@ -1182,8 +1320,11 @@ class LarkAdapter:
         window_start_ms = now_ms - lookback_seconds * 1000
         start_time = str(window_start_ms // 1000)
         errors: list[str] = []
+        blocked: list[str] = []
+        retired: list[str] = []
         scanned = forwarded = duplicates = dead_lettered = 0
         chats = self._state.recent_chats()
+        self._log_sweep_started(len(chats))
         for chat_id in chats:
             try:
                 batch = self._lark.list_chat_messages(
@@ -1193,11 +1334,62 @@ class LarkAdapter:
                 )
             except (NameError, ImportError):
                 raise
-            except Exception:  # noqa: BLE001 - per-chat isolation
+            except LarkApiError as error:
+                # The platform already told us *why*, in fields: a permission
+                # rejection arrives with the scopes it wants. "Never copy SDK
+                # error text" (below) forbids the free-text message; it never
+                # asked us to discard the structured fields, and discarding
+                # them is what left the caller unable to tell a failure that
+                # will clear from one that never can.
+                if error.missing_scopes:
+                    # A missing scope is the ONE permanent-looking failure a
+                    # human can clear -- by granting it.  So it is named and
+                    # reported, but the chat stays in the scan set: retiring it
+                    # would make the eventual grant invisible forever.
+                    blocked.append(
+                        f"{chat_id}: missing-scope "
+                        + "+".join(sorted(error.missing_scopes))
+                    )
+                    self._log_blocked_chat(chat_id, error)
+                    continue
+                if error.code in _UNREADABLE_CHAT_CODES:
+                    # Same bucket as a missing scope, for the same reason: the
+                    # sweep will fail identically every time until a human acts,
+                    # so failing the probe on it is a restart loop, not a gate.
+                    # "Until a human acts" is also why it stays IN the scan set:
+                    # the code names the permission a human can grant.
+                    blocked.append(f"{chat_id}: unreadable {error.code}")
+                    self._log_blocked_chat(chat_id, error)
+                    continue
+                if error.code in LARK_HISTORY_CODES_PERMANENT_CHAT_GONE:
+                    # The one permanent class: nothing a human does brings this
+                    # chat back (the bot is no longer a member), so it leaves the
+                    # scan set as well as the fail-closed column.
+                    blocked.append(f"{chat_id}: unreadable {error.code}")
+                    self._log_blocked_chat(chat_id, error)
+                    self._retire_chat(chat_id, code=error.code)
+                    retired.append(chat_id)
+                    continue
+                # Still fails closed: an unrecognised code may well be
+                # transient, and a sweep that might have missed messages must
+                # not report health.  But say which code it was, or the only
+                # way to learn that this one is permanent is to watch an
+                # adapter quarantine itself and have nothing name the cause.
+                self._log_unreadable_chat(chat_id, error.code)
+                errors.append(f"{chat_id}: {_reconcile_error_category(error)}")
+                continue
+            except Exception as error:  # noqa: BLE001 - per-chat isolation
                 # A scope/permission/rate failure for one chat must not
                 # starve the others. Never copy SDK error text into state or
                 # telemetry because it can contain URLs or access tokens.
-                errors.append(f"{chat_id}: history-unavailable")
+                #
+                # No retirement here, deliberately: a permanent-chat code is
+                # only ever carried by a ``LarkApiError``, and every one of
+                # those is caught by the handler above -- so a retirement path
+                # in this branch would be unreachable code.  This branch is for
+                # transport and shape failures, which are never permanent.
+                self._log_unreadable_chat(chat_id, None)
+                errors.append(f"{chat_id}: {_reconcile_error_category(error)}")
                 continue
             if not getattr(batch, "complete", True):
                 errors.append(f"{chat_id}: history-incomplete")
@@ -1231,8 +1423,77 @@ class LarkAdapter:
             forwarded=forwarded,
             duplicates=duplicates,
             dead_lettered=dead_lettered,
-            errors=tuple(errors),
+            retryable_errors=tuple(errors),
+            blocked_chats=tuple(blocked),
+            retired_chats=tuple(retired),
         )
+
+    def _log_sweep_started(self, chat_count: int) -> None:
+        """Mark that the sweep reached the loop, and over how many chats.
+
+        This is the phase half of the failure telemetry: the emit that names
+        the exception cannot compute the phase where it fires (the exception
+        has already left ``reconcile_recent``), so the phase is read off this
+        marker's presence instead.  ``chatCount`` also answers the open
+        question of how many chats this adapter's scan set actually holds.
+        """
+
+        if self._logger is None:
+            return
+        try:
+            self._logger.info(
+                "adapter.reconcile.sweep_started",
+                chatCount=chat_count,
+                node="adapter-reconcile",
+            )
+        except Exception:  # noqa: BLE001 - telemetry must not break a sweep
+            pass
+
+    def _log_blocked_chat(self, chat_id: str, error: LarkApiError) -> None:
+        """Say which chat is unreadable and what would make it readable.
+
+        Skipping silently would leave a permanently unreconciled chat looking
+        exactly like a working one: the adapter reports healthy and nothing
+        ever names the gap.  Only structured fields go out -- the scope names
+        and the platform code -- never the SDK message, which can carry URLs
+        or tokens.
+        """
+
+        if self._logger is None:
+            return
+        try:
+            self._logger.warn(
+                "adapter.reconcile.chat_blocked",
+                chatId=chat_id,
+                missingScopes=list(error.missing_scopes),
+                platformCode=error.code,
+                node="adapter-reconcile",
+            )
+        except Exception:  # noqa: BLE001 - telemetry must not break a sweep
+            pass
+
+    def _log_unreadable_chat(self, chat_id: str, code: int | None) -> None:
+        """Name the code behind a failure this sweep could not classify.
+
+        These still fail the probe, so a run of them ends in a supervised
+        rebuild and then quarantine.  Without this line that outcome carries
+        no cause at all: the adapter dies, and the one fact needed to decide
+        whether the code belongs in :data:`_UNREADABLE_CHAT_CODES` is the one
+        fact nothing recorded.  Only the platform code goes out, never the SDK
+        message, which can carry URLs or tokens.
+        """
+
+        if self._logger is None:
+            return
+        try:
+            self._logger.warn(
+                "adapter.reconcile.chat_unreadable",
+                chatId=chat_id,
+                platformCode=code,
+                node="adapter-reconcile",
+            )
+        except Exception:  # noqa: BLE001 - telemetry must not break a sweep
+            pass
 
     def dead_letters(self) -> tuple[DeadLetter, ...]:
         """The preserved bodies of inbound messages that never delivered."""

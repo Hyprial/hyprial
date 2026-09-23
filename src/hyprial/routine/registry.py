@@ -1,7 +1,14 @@
 """Actor-owned routine registry and durable effect coordinator.
 
-Only :class:`RoutineRegistry` mutates routine state. Taskwarrior, Workflow and
+Only :class:`RoutineRegistry` mutates routine state. Taskwarrior, PAC and
 alarm calls are represented as outbox effects and run outside the actor.
+
+U3 (retirement of the old dispatcher): a routine task is dispatched as one
+PAC graph, not a workflow run.  See
+``notes/pac/u3-routine-to-pac-mapping-2026-09-17.md`` and
+:mod:`hyprial.routine.pac_dispatch` for the node shape; the rulings this
+follows are completion-by-flag, no automatic retry, fixed clock deadlines,
+and "report at the deadline, then a human decides".
 """
 
 from __future__ import annotations
@@ -12,7 +19,11 @@ from dataclasses import asdict, dataclass, replace
 from typing import Any, TypeAlias
 from uuid import uuid4
 
+import yaml
+
 from hyprial.contracts.ports import PortCommandRejected
+from hyprial.log import Logger
+from hyprial.uri import delivery_address_error
 
 from .ports import (
     AddRoutineCommand,
@@ -27,11 +38,12 @@ from .ports import (
     RoutineSourceQueryCompleted,
     RoutineTimerCompleted,
     RoutineTimerElapsedCommand,
-    RoutineWorkflowIoCompleted,
+    RoutinePacIoCompleted,
 )
 from .schema import RoutineSchemaError, RoutineSpec, load_routine_text
 from .source import SOURCE_ERROR_CAP, SourceTask, route_decision
 from .store import (
+    AddressMigrationRow,
     InFlightRow,
     RoutineCycleRow,
     RoutineEffectRow,
@@ -58,7 +70,9 @@ class RoutineSourceQueryEffect:
 
 
 @dataclass(frozen=True, slots=True)
-class RoutineWorkflowEffect:
+class RoutinePacEffect:
+    """One PAC call for one task: ``pac.start`` or ``pac.status``."""
+
     effect_id: str
     parent_correlation_id: str
     generation: int
@@ -66,10 +80,11 @@ class RoutineWorkflowEffect:
     routine_name: str
     task_uuid: str
     operation: str
-    run_id: str | None = None
+    graph_id: str | None = None
     target: str | None = None
-    workflow_name: str | None = None
-    yaml_text: str | None = None
+    task_text: str | None = None
+    escalate_to: str | None = None
+    timeout_seconds: float | None = None
     sender: str | None = None
 
 
@@ -86,7 +101,7 @@ class RoutineAlarmEffect:
 
 
 RoutineEffect: TypeAlias = (
-    RoutineSourceQueryEffect | RoutineWorkflowEffect | RoutineAlarmEffect
+    RoutineSourceQueryEffect | RoutinePacEffect | RoutineAlarmEffect
 )
 RegistryOutput: TypeAlias = (
     RoutineEffect
@@ -114,19 +129,45 @@ class RoutineRegistry:
         generation: int,
         publish: Callable[[RegistryOutput], None],
         clock_ms: Callable[[], int],
+        migrate_address: Callable[[str], str | None] | None = None,
+        logger: Logger | None = None,
     ) -> None:
         self._store = store
         self._generation = generation
         self._publish = publish
         self._clock_ms = clock_ms
+        # Resolve one bare agent name to its canonical local URI, or None
+        # when the name is not uniquely known on this node.  Used ONLY for
+        # stored-spec migration; new submissions are rejected at schema load.
+        self._migrate_address = migrate_address
+        self._logger = logger
         self._epoch = store.max_version()
         self._last_timer_sequence = 0
         self._active: dict[str, _ActiveRoutine] = {}
         for row in store.list_routines():
+            spec: RoutineSpec | None = None
+            error: RoutineSchemaError | None = None
             try:
                 spec = load_routine_text(row.yaml_text, label=f"stored routine {row.name}")
-            except RoutineSchemaError:
+            except RoutineSchemaError as first_error:
+                migrated = self._migrate_stored_addresses(row)
+                if migrated is not None:
+                    try:
+                        spec = load_routine_text(migrated, label=f"stored routine {row.name}")
+                        row = replace(row, yaml_text=migrated)
+                    except RoutineSchemaError as second_error:
+                        error = second_error
+                else:
+                    error = first_error
+            if spec is None:
+                assert error is not None
+                self._quarantine(row, str(error))
                 continue
+            if row.quarantine_reason is not None:
+                # A spec that validates again (post-migration rewrite) leaves
+                # quarantine loudly -- never silently.
+                self._store.set_quarantine(row.name, None)
+                self._log("info", "routine.unquarantined", routine=row.name)
             self._active[row.name] = _ActiveRoutine(spec, row.yaml_text, row.owner)
         store.rebase_pending_generation(generation)
         for row in store.pending_effects(limit=10_000):
@@ -147,8 +188,8 @@ class RoutineRegistry:
             self._timer(command)
         elif isinstance(command, RoutineSourceQueryCompleted):
             self._source_completed(command)
-        elif isinstance(command, RoutineWorkflowIoCompleted):
-            self._workflow_completed(command)
+        elif isinstance(command, RoutinePacIoCompleted):
+            self._pac_completed(command)
         else:
             raise TypeError(f"unsupported routine command: {type(command).__name__}")
 
@@ -221,6 +262,16 @@ class RoutineRegistry:
         row = self._require(command.correlation_id, command.name)
         if row is None:
             return
+        if row.quarantine_reason is not None:
+            # Quarantine is not pause: enabling a quarantined routine must
+            # fail loud with the schema fault, not return it to scheduling.
+            self._reject(
+                command.correlation_id,
+                "ROUTINE_QUARANTINED",
+                f"routine {command.name} is quarantined: {row.quarantine_reason}; "
+                "fix the spec and re-add the routine",
+            )
+            return
         updated = replace(
             row,
             enabled=True,
@@ -230,6 +281,7 @@ class RoutineRegistry:
             version=self._next_version(),
         )
         self._store.apply(routine=updated, clear_work_for=row.name)
+        self._log("info", "routine.resumed", routine=row.name)
         self._publish_mutation(command.correlation_id, updated, enabled=True)
 
     def _recover(self, command: RecoverRoutinesCommand) -> None:
@@ -258,7 +310,11 @@ class RoutineRegistry:
         self._last_timer_sequence = command.version
         checked = 0
         for row in self._store.list_routines():
-            if not row.enabled or command.observed_at_ms < row.next_due_ms:
+            if (
+                not row.enabled
+                or row.quarantine_reason is not None
+                or command.observed_at_ms < row.next_due_ms
+            ):
                 continue
             active = self._active.get(row.name)
             if active is None or self._store.cycle_for_routine(row.name) is not None:
@@ -323,16 +379,19 @@ class RoutineRegistry:
             SourceTask(item.uuid, item.description, item.tags) for item in event.tasks
         )
         status_effects = tuple(
-            RoutineWorkflowEffect(
+            RoutinePacEffect(
                 effect_id=f"routine-io-{uuid4().hex}",
                 parent_correlation_id=cycle.correlation_id,
                 generation=self._generation,
                 version=cycle.version,
                 routine_name=row.name,
                 task_uuid=item.task_uuid,
-                operation="workflow.status",
-                run_id=item.run_id,
+                operation="pac.status",
+                graph_id=item.run_id,
                 target=item.target,
+                # The graph's creator: closing a settled graph authorizes
+                # against created_by, so the projection call carries it.
+                sender=active.owner,
             )
             for item in self._store.in_flight(routine=row.name)
         )
@@ -391,7 +450,7 @@ class RoutineRegistry:
         for alarm in alarms:
             self._publish(alarm)
 
-    def _workflow_completed(self, event: RoutineWorkflowIoCompleted) -> None:
+    def _pac_completed(self, event: RoutinePacIoCompleted) -> None:
         effect_row = self._store.effect(event.correlation_id)
         if effect_row is None:
             return
@@ -399,15 +458,15 @@ class RoutineRegistry:
         if isinstance(effect, RoutineAlarmEffect):
             self._store.apply(delete_effects=(effect.effect_id,))
             return
-        if not isinstance(effect, RoutineWorkflowEffect):
+        if not isinstance(effect, RoutinePacEffect):
             return
         row, active, cycle = self._valid_completion(effect)
         if row is None or active is None or cycle is None:
             self._store.apply(delete_effects=(effect.effect_id,))
             return
-        if effect.operation == "workflow.status":
+        if effect.operation == "pac.status":
             self._status_completed(row, active, cycle, effect, event)
-        elif effect.operation == "workflow.start":
+        elif effect.operation == "pac.start":
             self._start_completed(row, active, cycle, effect, event)
 
     def _status_completed(
@@ -415,8 +474,8 @@ class RoutineRegistry:
         row: RoutineRow,
         active: _ActiveRoutine,
         cycle: RoutineCycleRow,
-        effect: RoutineWorkflowEffect,
-        event: RoutineWorkflowIoCompleted,
+        effect: RoutinePacEffect,
+        event: RoutinePacIoCompleted,
     ) -> None:
         outcomes = list(json.loads(cycle.outcomes_json))
         removals: tuple[tuple[str, str], ...] = ()
@@ -467,7 +526,7 @@ class RoutineRegistry:
             in_flight.pop(task_uuid, None)
         reserved = set(in_flight)
         slots = active.spec.limits.max_in_flight - len(in_flight)
-        effects: list[RoutineWorkflowEffect | RoutineAlarmEffect] = []
+        effects: list[RoutinePacEffect | RoutineAlarmEffect] = []
         pending_start = 0
         for task in tasks:
             if task.uuid in reserved:
@@ -476,6 +535,14 @@ class RoutineRegistry:
                 task.tags, active.spec.routes, active.spec.default_route
             )
             if kind == "escalate":
+                escalate_to = value or active.spec.escalate_to
+                self._log(
+                    "warn",
+                    "routine.escalated",
+                    routine=row.name,
+                    to=escalate_to,
+                    task=task.uuid,
+                )
                 effects.append(
                     RoutineAlarmEffect(
                         effect_id=f"routine-io-{uuid4().hex}",
@@ -483,7 +550,7 @@ class RoutineRegistry:
                         generation=self._generation,
                         version=cycle.version,
                         routine_name=row.name,
-                        to=value or active.spec.escalate_to,
+                        to=escalate_to,
                         text=self._render(active.spec, task, nonce=""),
                     )
                 )
@@ -493,21 +560,21 @@ class RoutineRegistry:
                 continue
             target = active.owner if kind == "self" else str(value)
             effect_id = f"routine-io-{uuid4().hex}"
-            workflow_name = self._workflow_name(active.spec, task, effect_id)
             effects.append(
-                RoutineWorkflowEffect(
+                RoutinePacEffect(
                     effect_id=effect_id,
                     parent_correlation_id=cycle.correlation_id,
                     generation=self._generation,
                     version=cycle.version,
                     routine_name=row.name,
                     task_uuid=task.uuid,
-                    operation="workflow.start",
+                    operation="pac.start",
                     target=target,
-                    workflow_name=workflow_name,
-                    yaml_text=self._workflow_yaml_for(
-                        active.spec, active, task, target, workflow_name
-                    ),
+                    # The nonce is gone with the text matcher: completion is
+                    # the owner flagging the node (ruling 1, 2026-09-13).
+                    task_text=self._render(active.spec, task, nonce=""),
+                    escalate_to=active.spec.escalate_to,
+                    timeout_seconds=DEFAULT_TASK_TIMEOUT_SECONDS,
                     sender=active.owner,
                 )
             )
@@ -545,21 +612,33 @@ class RoutineRegistry:
         row: RoutineRow,
         active: _ActiveRoutine,
         cycle: RoutineCycleRow,
-        effect: RoutineWorkflowEffect,
-        event: RoutineWorkflowIoCompleted,
+        effect: RoutinePacEffect,
+        event: RoutinePacIoCompleted,
     ) -> None:
         outcomes = list(json.loads(cycle.outcomes_json))
         puts: tuple[InFlightRow, ...] = ()
-        if event.code is None and event.run_id is not None and effect.target is not None:
-            puts = (
-                InFlightRow(
-                    row.name,
-                    effect.task_uuid,
-                    event.run_id,
-                    effect.target,
-                    self._clock_ms(),
-                ),
-            )
+        if (
+            event.code is None
+            and event.graph_id is not None
+            and effect.target is not None
+        ):
+            if event.state not in {"done", "escalated"}:
+                puts = (
+                    InFlightRow(
+                        row.name,
+                        effect.task_uuid,
+                        event.graph_id,
+                        effect.target,
+                        self._clock_ms(),
+                    ),
+                )
+            # Settled under its durable key: the graph reached done/escalated
+            # in an EARLIER cycle and was counted there.  Tracking it again
+            # would re-report the same settlement every cycle the source
+            # still lists the task, which inflates the breaker's window until
+            # it pauses a routine over one finished task.  Allen, 2026-09-17:
+            # the task is marked failed and 「由被上报的人/agent决定是否重排」
+            # -- so the routine neither re-dispatches it nor re-counts it.
         else:
             outcomes.append("escalated")
         remaining = max(0, cycle.pending_start - 1)
@@ -589,7 +668,7 @@ class RoutineRegistry:
         active: _ActiveRoutine,
         cycle: RoutineCycleRow,
         *,
-        extra_effects: tuple[RoutineWorkflowEffect | RoutineAlarmEffect, ...] = (),
+        extra_effects: tuple[RoutinePacEffect | RoutineAlarmEffect, ...] = (),
         put_in_flight: tuple[InFlightRow, ...] = (),
         remove_in_flight: tuple[tuple[str, str], ...] = (),
         delete_effects: tuple[str, ...] = (),
@@ -650,6 +729,94 @@ class RoutineRegistry:
             return None, None, None
         return row, active, cycle
 
+    def _log(self, level: str, event: str, **fields: object) -> None:
+        if self._logger is None:
+            return
+        try:
+            self._logger.log(level, event, **fields)  # type: ignore[arg-type]
+        except (NameError, ImportError):
+            raise
+        except Exception:  # noqa: BLE001 - logging must never break the state authority
+            pass
+
+    def _quarantine(self, row: RoutineRow, reason: str) -> None:
+        """A stored routine that fails validation stops scheduling, loudly.
+
+        The pre-quarantine code swallowed RoutineSchemaError at load and
+        silently dropped the routine from the active set (the 2026-09-14
+        lark-flycheck class of loss: nobody scheduled it, nobody was told).
+        Quarantine is recorded, logged on every startup, blocks resume, and
+        is visible in list/doctor projections.
+        """
+
+        if row.quarantine_reason != reason:
+            self._store.set_quarantine(row.name, reason)
+        self._log("error", "routine.quarantined", routine=row.name, error=reason)
+
+    def _migrate_stored_addresses(self, row: RoutineRow) -> str | None:
+        """Rewrite bare-name escalate_to addresses in one stored spec.
+
+        All-or-nothing per routine: every undeliverable address must resolve
+        uniquely via ``migrate_address`` (this node's agents registry) or
+        nothing is rewritten and the caller quarantines -- never guess, never
+        half-migrate.  Each rewrite is ledgered with before/after, so a
+        repeated startup is idempotent and the change is auditable.
+        """
+
+        if self._migrate_address is None:
+            return None
+        try:
+            document = yaml.safe_load(row.yaml_text)
+        except yaml.YAMLError:
+            return None
+        if not isinstance(document, dict):
+            return None
+        rewrites: list[tuple[str, str, str]] = []
+        policy = document.get("policy")
+        if isinstance(policy, dict):
+            routes = policy.get("routes")
+            if isinstance(routes, list):
+                for index, item in enumerate(routes):
+                    if not isinstance(item, dict):
+                        continue
+                    value = item.get("escalate_to")
+                    if isinstance(value, str) and delivery_address_error(value) is not None:
+                        resolved = self._migrate_address(value.strip())
+                        if resolved is None:
+                            return None
+                        rewrites.append(
+                            (f"policy.routes[{index}].escalate_to", value.strip(), resolved)
+                        )
+                        item["escalate_to"] = resolved
+        timeout = document.get("on_task_timeout")
+        if isinstance(timeout, dict):
+            value = timeout.get("escalate_to")
+            if isinstance(value, str) and delivery_address_error(value) is not None:
+                resolved = self._migrate_address(value.strip())
+                if resolved is None:
+                    return None
+                rewrites.append(("on_task_timeout.escalate_to", value.strip(), resolved))
+                timeout["escalate_to"] = resolved
+        if not rewrites:
+            return None
+        new_text = yaml.safe_dump(document, sort_keys=False, allow_unicode=True)
+        now = self._clock_ms()
+        for field, before, after in rewrites:
+            self._store.record_address_migration(
+                AddressMigrationRow(row.name, field, before, after, now)
+            )
+            self._log(
+                "info",
+                "routine.address_migrated",
+                routine=row.name,
+                field=field,
+                before=before,
+                after=after,
+                resolvedVia="local-agents-roster",
+            )
+        self._store.rewrite_yaml(row.name, new_text)
+        return new_text
+
     def _pause_alarm(
         self,
         row: RoutineRow,
@@ -657,6 +824,7 @@ class RoutineRegistry:
         correlation_id: str,
         reason: str,
     ) -> RoutineAlarmEffect:
+        self._log("error", "routine.paused", routine=row.name, reason=reason)
         return RoutineAlarmEffect(
             effect_id=f"routine-io-{uuid4().hex}",
             parent_correlation_id=correlation_id,
@@ -721,7 +889,7 @@ class RoutineRegistry:
         kind = str(values.pop("kind"))
         types = {
             "RoutineSourceQueryEffect": RoutineSourceQueryEffect,
-            "RoutineWorkflowEffect": RoutineWorkflowEffect,
+            "RoutinePacEffect": RoutinePacEffect,
             "RoutineAlarmEffect": RoutineAlarmEffect,
         }
         if kind == "RoutineSourceQueryEffect":
@@ -753,42 +921,17 @@ class RoutineRegistry:
         )
 
     @staticmethod
-    def _workflow_name(spec: RoutineSpec, task: SourceTask, effect_id: str) -> str:
-        task_hint = task.uuid.replace("-", "")[:8]
-        effect_hint = effect_id.rsplit("-", 1)[-1][:12]
-        return f"sd-{spec.name}-{task_hint}-{effect_hint}"
-
-    def _workflow_yaml_for(
-        self,
-        spec: RoutineSpec,
-        active: _ActiveRoutine,
-        task: SourceTask,
-        target: str,
-        workflow_name: str,
-    ) -> str:
-        task_text = self._render(spec, task, nonce="{{nonce}}")
-        return (
-            "version: 1\n"
-            f"name: {workflow_name}\n"
-            f"task: {json.dumps(task_text)}\n"
-            f"targets: [{json.dumps(target)}]\n"
-            "await:\n"
-            "  kind: reply\n"
-            f"  timeout: {int(DEFAULT_TASK_TIMEOUT_SECONDS)}s\n"
-            '  match: "DONE {{nonce}}"\n'
-            "on_timeout:\n"
-            "  action: escalate\n"
-            f"  escalate_to: {json.dumps(spec.escalate_to)}\n"
-            f"report_to: {json.dumps(active.owner)}\n"
-        )
-
-    @staticmethod
     def _render(spec: RoutineSpec, task: SourceTask, *, nonce: str) -> str:
         text = spec.task_template
         text = text.replace("{{task.uuid}}", task.uuid)
         text = text.replace("{{task.description}}", task.description)
         text = text.replace("{{task.tags}}", " ".join(task.tags))
         text = text.replace("{{reason}}", task.description)
+        # ``nonce`` is always "" since U3 retired the reply matcher: the
+        # placeholder is still ACCEPTED by the schema so that a routine.yaml
+        # already registered in production does not become a schema_error on
+        # upgrade, and it renders to nothing.  The guard's one remaining job
+        # is the caller that passes the placeholder itself through unchanged.
         if nonce != "{{nonce}}":
             text = text.replace("{{nonce}}", nonce)
         return text
@@ -801,5 +944,5 @@ __all__ = [
     "RoutineEffect",
     "RoutineRegistry",
     "RoutineSourceQueryEffect",
-    "RoutineWorkflowEffect",
+    "RoutinePacEffect",
 ]

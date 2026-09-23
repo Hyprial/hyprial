@@ -1,6 +1,6 @@
 {
-  "name": "@hyprial/dsh-h2b-talk",
-  "version": "0.1.0",
+  "name": "@hyprial/dsh-hyprial-plugin",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "main": "./static/host.js",
@@ -10,20 +10,29 @@
     "./agent-task-client": "./integration/agent-task-client.js",
     "./package.json": "./package.json"
   },
+  "files": [
+    "dsh-web.patch.yml",
+    "*.mjs",
+    "imskin-host-plugin.js",
+    "imskin-plugin.js",
+    "static",
+    "client",
+    "integration",
+    "shared",
+    "contracts"
+  ],
   "dsh": {
-    "bundle": { "patch": "./dsh-web.patch.yml" },
+    "bundle": {
+      "patch": "./dsh-web.patch.yml"
+    },
     "client": {
       "platform": "web",
       "inject": []
     }
   },
   "scripts": {
-    "update:dsh-release": "npm install --prefix packages/dsh-runtime --save-exact @deepseek-ai/dsh@latest pnpm@11.24.0 --registry=https://registry.npmjs.org --no-audit --no-fund",
+    "update:dsh-release": "npm run test:dsh:latest",
     "test:dsh:latest": "node scripts/verify-dsh-latest.mjs",
-    "build:dashboard": "npm --prefix dashboard run build",
-    "start:dashboard": "node dashboard/server.mjs",
-    "dev:dashboard": "npm --prefix dashboard run dev",
-    "test:dashboard:ui": "npm --prefix dashboard run test:ui",
     "build:static": "node scripts/build-static-client.mjs",
     "test": "node --test tests/*.test.mjs",
     "test:cli:real": "node scripts/verify-cli-console.mjs",

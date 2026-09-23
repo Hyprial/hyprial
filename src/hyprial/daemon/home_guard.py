@@ -29,6 +29,16 @@ KEEPALIVE_ENV = "HYPRIAL_DAEMON_KEEPALIVE_DURATION"
 CLAIM_WAIT_ENV = "HYPRIAL_DAEMON_LOCK_WAIT_TIMEOUT"
 DEFAULT_CLAIM_WAIT_TIMEOUT = 15.0
 
+DUPLICATE_OBSERVE_WINDOW_ENV = "HYPRIAL_DAEMON_DUPLICATE_OBSERVE_WINDOW"
+# Window basis (written down so the number is checkable, not lore): the
+# daemon's own teardown budget is TEARDOWN_BUDGETED_SECONDS = 52s in
+# application.py -- _CLOSE_BUDGET_SECONDS (37s, the sum of the eight
+# bounded close steps) + _EXIT_BACKSTOP_SECONDS (15s, after which a stuck
+# process is forced out).  A normal restart's old process is therefore
+# dead well inside 60s; one still alive past the window has exceeded the
+# daemon's own shutdown budget (a stall), where an alert is defensible.
+DEFAULT_DUPLICATE_OBSERVE_WINDOW = 60.0
+
 
 class HYPRIALHomeInUse(RuntimeError):
     """A recent heartbeat proves that another daemon owns this home."""
@@ -133,6 +143,19 @@ def claim_wait_timeout_from_environment() -> float:
     return value
 
 
+def duplicate_observe_window_from_environment() -> float:
+    raw = os.environ.get(DUPLICATE_OBSERVE_WINDOW_ENV)
+    if raw is None:
+        return DEFAULT_DUPLICATE_OBSERVE_WINDOW
+    try:
+        value = float(raw)
+    except ValueError as error:
+        raise ValueError(f"{DUPLICATE_OBSERVE_WINDOW_ENV} must be a positive number") from error
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{DUPLICATE_OBSERVE_WINDOW_ENV} must be a positive number")
+    return value
+
+
 class ActiveDaemonHeartbeat:
     """Claim and refresh ``$HYPRIAL_HOME/.active_daemon``.
 
@@ -154,6 +177,10 @@ class ActiveDaemonHeartbeat:
         identity_reader: Callable[[int], str | None] | None = None,
         process_status: Callable[[int, str], _OwnerProcessStatus] | None = None,
         ownership_lost: Callable[[], None] | None = None,
+        duplicate_detected: Callable[[dict[str, Any]], None] | None = None,
+        duplicate_check_failed: Callable[[str], None] | None = None,
+        duplicate_observe_window: float | None = None,
+        sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
         # Deferred import: hyprial.mcp.channel transitively imports this module
         # (channel -> daemon.desired_state -> daemon.application -> here), so
@@ -181,11 +208,26 @@ class ActiveDaemonHeartbeat:
         self._identity_reader = identity_reader
         self._process_status = process_status
         self._ownership_lost = ownership_lost
+        self._duplicate_detected = duplicate_detected
+        self._duplicate_check_failed = duplicate_check_failed
+        if duplicate_observe_window is None:
+            duplicate_observe_window = duplicate_observe_window_from_environment()
+        if not math.isfinite(duplicate_observe_window) or duplicate_observe_window <= 0:
+            raise ValueError("duplicate_observe_window must be a positive number")
+        self._duplicate_observe_window = duplicate_observe_window
+        self._sleeper = sleeper
         self._identity: str | None = None
         self._generation = uuid4().hex
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._duplicate_thread: threading.Thread | None = None
         self._claimed = False
+
+    @property
+    def generation(self) -> str:
+        """This process's daemon generation (also written into the record)."""
+
+        return self._generation
 
     def claim(self) -> None:
         if not self.home.is_dir():
@@ -202,6 +244,12 @@ class ActiveDaemonHeartbeat:
                 "refusing an unfenced HYPRIAL home claim"
             )
         self._identity = identity
+        # Snapshot a copied-home candidate BEFORE the claim loop overwrites
+        # the record.  This stays off the synchronous path: one record read
+        # plus one process-status probe, milliseconds -- the observation
+        # window itself runs on a background thread after claiming, so the
+        # cli ready budget (15s) never pays it.
+        candidate = self._snapshot_duplicate_candidate()
         # `daemon stop` reports success at socket-absence, before the previous
         # process reaches its own marker cleanup, so a rapid restart routinely
         # observes a fresh-but-final heartbeat (same shape as the state-dir
@@ -233,6 +281,14 @@ class ActiveDaemonHeartbeat:
             daemon=True,
         )
         self._thread.start()
+        if candidate is not None:
+            self._duplicate_thread = threading.Thread(
+                target=self._duplicate_check_entry,
+                args=(candidate,),
+                name="hyprial-home-duplicate-check",
+                daemon=True,
+            )
+            self._duplicate_thread.start()
 
     def close(self) -> None:
         self._stop.set()
@@ -240,6 +296,12 @@ class ActiveDaemonHeartbeat:
         self._thread = None
         if thread is not None:
             thread.join(timeout=max(1.0, min(self.keepalive_duration, 5.0)))
+        duplicate_thread = self._duplicate_thread
+        self._duplicate_thread = None
+        if duplicate_thread is not None:
+            # The check polls the stop event every ~50ms, so this join is
+            # bounded by the poll granularity, never by the window length.
+            duplicate_thread.join(timeout=1.0)
         if not self._claimed:
             return
         try:
@@ -266,6 +328,145 @@ class ActiveDaemonHeartbeat:
         self._stop.set()
         if self._ownership_lost is not None:
             self._ownership_lost()
+
+    def _snapshot_duplicate_candidate(self) -> dict[str, Any] | None:
+        """Snapshot the pre-claim record if it names a *live* foreign process.
+
+        Candidate shape (all four required): the record's pid is not ours,
+        its processIdentity is valid, its heartbeat is already stale, and
+        ``_process_status`` cannot positively reaps it (RUNNING/UNKNOWN --
+        the same fail-safe side ``live_daemon_pid`` takes).  Positive death
+        (PID_MISSING / IDENTITY_MISMATCH) is the common crashed-predecessor
+        case and never becomes a candidate.  A fresh heartbeat is already
+        handled loudly by the claim loop (HYPRIALHomeInUse).
+
+        The snapshot freezes the pre-overwrite facts (pid, processIdentity,
+        generation, heartbeatAt): after claiming, this home's record is our
+        own and the original record can no longer be observed.
+        """
+
+        if self._duplicate_detected is None:
+            return None
+        record = self._read_record()
+        if record is None:
+            return None
+        pid = record.get("pid")
+        identity = record.get("processIdentity")
+        heartbeat = record.get("heartbeatMonotonic")
+        if (
+            not isinstance(pid, int)
+            or isinstance(pid, bool)
+            or pid <= 0
+            or pid == self.pid
+            or not isinstance(identity, str)
+            or not identity
+            or not isinstance(heartbeat, (int, float))
+            or isinstance(heartbeat, bool)
+        ):
+            return None
+        age = self._monotonic_clock() - float(heartbeat)
+        if 0 <= age < 2 * self.keepalive_duration:
+            return None
+        from hyprial.mcp.channel import _OwnerProcessStatus
+
+        status = self._process_status(pid, identity)
+        if status in {
+            _OwnerProcessStatus.PID_MISSING,
+            _OwnerProcessStatus.IDENTITY_MISMATCH,
+        }:
+            return None
+        return {
+            "pid": pid,
+            "processIdentity": identity,
+            "generation": record.get("generation"),
+            "heartbeatAt": record.get("heartbeatAt"),
+        }
+
+    def _duplicate_check_entry(self, snapshot: dict[str, Any]) -> None:
+        """Thread entry: a failed check is an event, never a silent death.
+
+        Same-shape lesson as the lifecycle thread failure: an exception on
+        a daemon thread without a handler vanishes.  The verdict itself is
+        best-effort, but its failure must reach the log.
+        """
+
+        try:
+            self._run_duplicate_check(snapshot)
+        except Exception as error:  # noqa: BLE001 - see docstring
+            if self._duplicate_check_failed is None:
+                return
+            try:
+                self._duplicate_check_failed(f"{type(error).__name__}: {error}")
+            except Exception:  # noqa: BLE001 - telemetry must not break close
+                pass
+
+    def _run_duplicate_check(self, snapshot: dict[str, Any]) -> None:
+        """Windowed verdict for one candidate snapshot.  Also callable
+        synchronously (tests drive it with an injected clock/sleeper).
+
+        Verdict rule, both halves required at window end:
+
+        1. The snapshot's process is still alive with an unchanged
+           identity.  A normal restart's old process exits when its
+           shutdown completes, so it dies inside the window and never
+           alerts; the window (default 60s) exceeds the daemon's own
+           teardown budget (52s, see DEFAULT_DUPLICATE_OBSERVE_WINDOW), so
+           a shutdown slow enough to outlive it is already a stall by the
+           daemon's own definition.
+        2. This home's record generation stayed ours for the whole window.
+           If a third process re-claims the home mid-window, the situation
+           the snapshot described no longer exists and a verdict from it
+           would be a dangling conclusion -- the check aborts silently.
+
+        Both halves true means: a process holding this node identity is
+        alive but has never tended this home -- the copied-home duplicate
+        (or a half-alive predecessor whose heartbeat thread died; that
+        alert is correct, not a false positive).  Alarm only.
+        """
+
+        pid = snapshot["pid"]
+        identity = snapshot["processIdentity"]
+        deadline = self._monotonic_clock() + self._duplicate_observe_window
+        while True:
+            if self._stop.is_set():
+                return
+            remaining = deadline - self._monotonic_clock()
+            if remaining <= 0:
+                break
+            self._sleeper(min(0.05, self.keepalive_duration, remaining))
+            if not self._owns(self._read_record()):
+                return
+        from hyprial.mcp.channel import _OwnerProcessStatus
+
+        status = self._process_status(pid, identity)
+        if status in {
+            _OwnerProcessStatus.PID_MISSING,
+            _OwnerProcessStatus.IDENTITY_MISMATCH,
+        }:
+            return
+        if self._stop.is_set() or not self._owns(self._read_record()):
+            return
+        detail = {
+            "recordPid": pid,
+            "claimantPid": self.pid,
+            "recordGeneration": snapshot.get("generation"),
+            "claimantGeneration": self._generation,
+            "processStatus": status.name.lower(),
+            "home": str(self.home),
+            "snapshotHeartbeatAt": snapshot.get("heartbeatAt"),
+            "windowSeconds": self._duplicate_observe_window,
+            "detail": (
+                "the process from the pre-claim .active_daemon record is "
+                "still alive after the observation window yet never tended "
+                "this home; this home was copied from a live daemon (or "
+                "its predecessor is half-alive). Detection and alarm only, "
+                "no automatic remediation."
+            ),
+        }
+        try:
+            self._duplicate_detected(detail)
+        except Exception:  # noqa: BLE001 - telemetry must not break the check
+            pass
 
     def _blocking_pid(self, record: dict[str, Any] | None) -> int | None:
         if record is None:

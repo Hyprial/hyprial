@@ -20,6 +20,35 @@ from datetime import UTC, datetime
 HealthReport = dict[str, object]
 
 
+def report_reconcile_failure(
+    sink: Callable[[dict[str, object]], None] | None,
+    error: BaseException,
+    **fields: object,
+) -> None:
+    """Name a sweep failure without carrying any of the exception's text.
+
+    The platform/SDK message can hold URLs or access tokens -- the rule
+    ``adapter.py`` states three times over -- so only the class name and the
+    fields the call site knows locally leave this process.  Telemetry is
+    best-effort: a failing sink must never change how a sweep fails.
+    """
+
+    if sink is None:
+        return
+    try:
+        sink(
+            {
+                "event": "adapter.reconcile.sweep_failed",
+                "status": "warning",
+                "exceptionType": type(error).__name__,
+                "node": "adapter-reconcile",
+                **fields,
+            }
+        )
+    except Exception:  # noqa: BLE001 - telemetry must not break a sweep
+        pass
+
+
 @dataclass(frozen=True)
 class _PendingHealthReport:
     epoch: int
@@ -210,6 +239,7 @@ class LarkStreamHealthMonitor:
         report: Callable[[HealthReport], None],
         monotonic: Callable[[], float],
         utcnow: Callable[[], datetime],
+        events: Callable[[dict[str, object]], None] | None = None,
     ) -> None:
         if not math.isfinite(stale_after) or stale_after <= 0:
             raise ValueError("stale_after must be positive")
@@ -227,6 +257,7 @@ class LarkStreamHealthMonitor:
             lambda completed, timeout: completed.wait(timeout)
         )
         self._rebuild = rebuild
+        self._events = events
         self._monotonic = monotonic
         self._utcnow = utcnow
         self._lock = threading.Lock()
@@ -430,8 +461,13 @@ class LarkStreamHealthMonitor:
             try:
                 value = operation()
                 result["value"] = max(0, int(value or 0))
-            except BaseException:  # never retain or report credential-bearing detail
+            except BaseException as error:  # never retain or report credential-bearing detail
                 result["failed"] = True
+                # Only the class name goes out.  For label="history" this is
+                # the constant RuntimeError raised by _reconcile_health_result,
+                # and it never names the sweep's real cause; for label="rest"
+                # it is the probe's own class.
+                report_reconcile_failure(self._events, error, label=label)
             finally:
                 completed.set()
 

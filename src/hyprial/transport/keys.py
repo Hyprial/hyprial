@@ -102,6 +102,26 @@ class KeySpace:
     def mailbox_liveliness_all(self) -> str:
         return f"{self.prefix}/liveliness/mailbox/*"
 
+    def daemon_liveliness(self, node: str, generation: str) -> str:
+        """One daemon process's generation-bearing liveliness token.
+
+        Actor and mailbox tokens name an identity only, so two daemons
+        sharing one node identity declare byte-identical keys and no
+        observer can tell one instance from two.  The generation segment
+        makes each process's token distinct, which is what lets a peer
+        notice a duplicate instance of its own node identity.
+        """
+
+        return (
+            f"{self.prefix}/liveliness/daemon/{self.encode_identity(node)}/"
+            f"{self.encode_identity(generation)}"
+        )
+
+    def daemon_liveliness_for_node(self, node: str) -> str:
+        """Wildcard matching every daemon generation of one node identity."""
+
+        return f"{self.prefix}/liveliness/daemon/{self.encode_identity(node)}/*"
+
     def user_delivery(self, owner: str, message_id: str) -> str:
         return (
             f"{self.prefix}/user/{self.encode_identity(owner)}/"

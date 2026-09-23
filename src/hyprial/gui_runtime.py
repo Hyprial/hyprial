@@ -44,8 +44,8 @@ def _runtime_root(hyprial_home: Path, app: str, component: str | None) -> Path:
     if component not in (None, "dashboard", "dsh") or (component is not None and app != "gui"):
         raise InstallError(ipc_errors.INVALID_ARGUMENT, "GUI app must be dashboard or dsh")
     root = _app_root(hyprial_home, app)
-    # Keep the historical path for DSH: never duplicate or forget a live legacy
-    # process when changing the default entry to Dashboard.
+    # Dashboard path is retained only for ownership-checked retirement.
+    # DSH keeps its existing record path to avoid duplicating a live process.
     return root / "runtimes" / "dashboard" if component == "dashboard" else root
 
 
@@ -157,6 +157,8 @@ def _terminate_if_owned(pid: int, identity: str) -> None:
 def start_gui_background(hyprial_home: Path, app: str = "gui", *, component: str | None = None) -> dict[str, Any]:
     """Start one detached GUI and return only after its HTTP endpoint responds."""
 
+    if component == "dashboard":
+        raise InstallError(ipc_errors.INVALID_ARGUMENT, "Dashboard is retired; use hyprial gui")
     app_root = _runtime_root(hyprial_home, app, component)
     with _lifecycle_lock(app_root):
         existing = _read_record(app_root)
@@ -171,8 +173,6 @@ def start_gui_background(hyprial_home: Path, app: str = "gui", *, component: str
                 )
 
         launch = prepare_application_launch(app, hyprial_home=hyprial_home)
-        if component == "dashboard" and launch.argv != ("bash", "scripts/start-gui.sh"):
-            raise InstallError("GUI_UPGRADE_REQUIRED", "Installed GUI does not include Dashboard; run hyprial gui upgrade")
         log_path = app_root / f"{component or app}.log"
         launch_info = app_root / f".launch-{uuid4().hex}.json"
         environment = dict(launch.env)

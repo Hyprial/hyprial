@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Only repository-owned argv are probed. No daemon operations or caller shell input.
-import { spawn } from 'node:child_process';
+import { hyprialCliEnv } from './integration/hyprial-cli.mjs';
+import { spawnCli as spawn } from './integration/cli-spawn.mjs';
 import { pathToFileURL } from 'node:url';
 
 const queryPaths = {
@@ -37,10 +38,13 @@ export const CLI_SURFACE = Object.freeze([
   ...Object.entries(actionPaths).map(([operation, path]) => ({ operation, kind: 'action', argv: path.split(' '), flags: [...(operation === 'routine-template' ? [] : ['--json']), ...(extraFlags[operation] || [])] }))
 ]);
 
-export function probeHelp(argv, { timeoutMs = 2000, env = process.env } = {}) {
+// Embedded Python can cold-start slowly under Windows scanning / restricted tokens.
+export function probeHelp(argv, { env = process.env, timeoutMs = env.HYPRIAL_DESKTOP_COMPONENTS === '1' ? 10000 : 2000 } = {}) {
   return new Promise((resolve) => {
     let output = '', timedOut = false, overflow = false, finished = false;
-    const child = spawn('h2b', [...argv, '--help'], { env: { ...env, NO_COLOR: '1', TERM: 'dumb', COLUMNS: '200' }, stdio: ['ignore', 'pipe', 'pipe'], shell: false });
+    const child = spawn('hyprial', [...argv, '--help'], { env: { ...hyprialCliEnv(env), NO_COLOR: '1', TERM: 'dumb', COLUMNS: '200' }, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
+    // An EOF pipe avoids opening NUL with write access under Windows ACL tokens.
+    child.stdin.end();
     const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, timeoutMs);
     function finish(result) { if (finished) return; finished = true; clearTimeout(timer); resolve({ output, timedOut, overflow, ...result }); }
     for (const stream of [child.stdout, child.stderr]) stream.on('data', (chunk) => {
@@ -55,12 +59,11 @@ export function probeHelp(argv, { timeoutMs = 2000, env = process.env } = {}) {
 export function classifyHelp(spec, result) {
   const text = String(result.output || '').replace(/\u001b\[[0-9;]*m/g, '');
   if (result.timedOut) return { code: 'CAPABILITY_PROBE_TIMEOUT', message: 'CLI help probe timed out' };
-  if (result.errorCode || result.overflow) return { code: 'CAPABILITY_PROBE_FAILED', message: result.errorCode === 'ENOENT' ? 'H2B executable was not found' : 'CLI help probe could not complete safely' };
+  if (result.errorCode || result.overflow) return { code: 'CAPABILITY_PROBE_FAILED', message: result.errorCode === 'ENOENT' ? 'Hyprial executable was not found' : 'CLI help probe could not complete safely' };
   if (result.status !== 0) return /No such command|invalid choice/i.test(text)
     ? { code: 'UNSUPPORTED_COMMAND', message: 'Installed CLI does not support this command' }
     : { code: 'CAPABILITY_PROBE_FAILED', message: 'CLI help probe exited unsuccessfully' };
   // An unknown child can return its parent help with exit 0; do not accept that.
-  // The internal h2b compatibility launcher preserves Hyprial's help output.
   const usage = text.match(/Usage:\s*(?:hyprial|h2b)\s+([^\n]+)/i)?.[1]?.trim();
   const path = spec.argv.join(' ');
   if (!usage || !(usage === path || usage.startsWith(path + ' '))) return { code: 'CAPABILITY_PROBE_FAILED', message: 'CLI help did not identify the requested command path' };

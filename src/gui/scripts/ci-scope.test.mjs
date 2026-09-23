@@ -7,7 +7,7 @@ import test from 'node:test';
 import { changedPaths, classify, select } from './ci-scope.mjs';
 
 for (const [name, paths, project, expected] of [
-  ['monorepo GUI UI', ['src/gui/dashboard/src/App.jsx'], 'gui', [false, true]],
+  ['monorepo GUI UI', ['src/gui/client/gui-workspace.inc.js'], 'gui', [true, true]],
   ['monorepo GUI documentation', ['src/gui/README.md'], 'gui', [false, false]],
   ['monorepo GUI scope workflow', ['.forgejo/workflows/gui.yml'], 'gui', [true, true]],
   ['shared daemon input', ['src/hyprial/daemon.py'], 'gui', [true, true]],
@@ -23,17 +23,17 @@ for (const [name, paths, project, expected] of [
   ['GUI browser regression', ['tests/gui-contact-layout.browser.mjs'], 'gui', [true, true]],
   ['GUI Studio UI', ['client/gui-studio.inc.js'], 'gui', [true, true]],
   ['GUI layout provider', ['packages/gui-layout/workspace-extension.js'], 'gui', [true, true]],
-  ['Dashboard UI', ['dashboard/src/App.jsx'], 'gui', [false, true]],
-  ['Dashboard server needs Node tests too', ['dashboard/server.mjs'], 'gui', [true, true]],
-  ['Dashboard fixture shared with Node', ['dashboard/tests/fixtures.mjs'], 'gui', [true, true]],
-  ['Dashboard Node test', ['tests/dashboard.test.mjs'], 'gui', [true, true]],
+  ['GUI browser UI', ['client/gui-workspace.inc.js'], 'gui', [true, true]],
+  ['GUI browser server needs Node tests too', ['browser-tests/server.mjs'], 'gui', [true, true]],
+  ['GUI browser fixture shared with Node', ['browser-tests/tests/fixtures.mjs'], 'gui', [true, true]],
+  ['GUI browser Node test', ['tests/gui-contact-layout.browser.mjs'], 'gui', [true, true]],
   ['root lockfile', ['package-lock.json'], 'gui', [true, true]],
-  ['Dashboard lockfile', ['dashboard/package-lock.json'], 'gui', [true, true]],
+  ['GUI browser lockfile', ['browser-tests/package-lock.json'], 'gui', [true, true]],
   ['launcher', ['scripts/start-gui.sh'], 'gui', [true, true]],
   ['workflow', ['.forgejo/workflows/tests.yml'], 'gui', [true, true]],
   ['unknown input', ['new-component/config.json'], 'gui', [true, true]],
-  ['mixed docs and UI', ['README.md', 'dashboard/src/App.jsx'], 'gui', [false, true]],
-  ['both UIs', ['client/workflow.js', 'dashboard/src/App.jsx'], 'gui', [true, true]],
+  ['mixed docs and UI', ['README.md', 'client/gui-workspace.inc.js'], 'gui', [true, true]],
+  ['both UIs', ['client/workflow.js', 'client/gui-workspace.inc.js'], 'gui', [true, true]],
   ['H2B source', ['src/h2b/gui_apps.py'], 'h2b', [true, false]],
   ['runtime Markdown', ['src/h2b/skills/h2b-ops/SKILL.md'], 'h2b', [true, false]],
   ['runtime doc template', ['docs/squire/SKILL-template.md'], 'h2b', [true, false]],
@@ -41,7 +41,7 @@ for (const [name, paths, project, expected] of [
   ['script under docs is not prose', ['docs/example.py'], 'h2b', [true, false]],
 ]) test(name, () => {
   const result = classify(paths, project);
-  assert.deepEqual([result.unit, result.dashboard], expected);
+  assert.deepEqual([result.unit, result.browser], expected);
 });
 
 function repository(t) {
@@ -77,7 +77,7 @@ test('multi-commit push retains earlier code even when final commit only edits d
   const before = r.commit('README.md', 'base');
   r.commit('production.js', 'code');
   const after = r.commit('README.md', 'docs');
-  assert.equal(select({ before, after }, 'push', 'gui', r.cwd, false).dashboard, true);
+  assert.equal(select({ before, after }, 'push', 'gui', r.cwd, false).browser, true);
 });
 
 test('GUI main releases cannot skip full gates on documentation-only changes', t => {
@@ -85,7 +85,7 @@ test('GUI main releases cannot skip full gates on documentation-only changes', t
   const before = r.commit('README.md', 'base');
   const after = r.commit('README.md', 'docs');
   assert.deepEqual(select({ before, after, ref: 'refs/heads/main' }, 'push', 'gui', r.cwd, false),
-    { unit: true, dashboard: true, reason: 'main/dev is a release candidate; run all checks' });
+    { unit: true, browser: true, reason: 'main/dev is a release candidate; run all checks' });
   assert.equal(select({ before, after, ref: 'refs/heads/main' }, 'push', 'h2b', r.cwd, false).unit, false);
 });
 
@@ -115,7 +115,7 @@ for (const [name, event, eventName] of [
   ['invalid revision argument', { before: '--help', after: 'a'.repeat(40) }, 'push'],
 ]) test(`${name} runs all checks`, () => {
   const result = select(event, eventName, 'gui', process.cwd(), false);
-  assert.equal(result.unit, true); assert.equal(result.dashboard, true);
+  assert.equal(result.unit, true); assert.equal(result.browser, true);
 });
 
 test('CLI emits explicit false outputs for documentation-only push', t => {
@@ -125,45 +125,47 @@ test('CLI emits explicit false outputs for documentation-only push', t => {
   r.git('remote', 'add', 'origin', r.cwd);
   const payload = join(r.cwd, 'event.json'), output = join(r.cwd, 'output'), summary = join(r.cwd, 'summary');
   writeFileSync(payload, JSON.stringify({ before, after }));
-  execFileSync(process.execPath, [new URL('./ci-scope.mjs', import.meta.url).pathname, 'gui'], {
+  const stdout = execFileSync(process.execPath, [new URL('./ci-scope.mjs', import.meta.url).pathname, 'gui'], {
     cwd: r.cwd, env: { ...process.env, GITHUB_EVENT_NAME: 'push', GITHUB_EVENT_PATH: payload,
       GITHUB_OUTPUT: output, GITHUB_STEP_SUMMARY: summary },
   });
-  assert.equal(readFileSync(output, 'utf8'), 'unit=false\ndashboard=false\n');
+  assert.deepEqual(scopeLog(stdout), { project: 'gui', event: 'push', unit: false, browser: false,
+    reason: 'documentation-only or empty change' });
+  assert.equal(readFileSync(output, 'utf8'), 'unit=false\nbrowser=false\n');
   assert.match(readFileSync(summary, 'utf8'), /documentation-only/);
 });
 
 test('monorepo dev pushes run full GUI gates', () => {
   assert.deepEqual(select({ ref: 'refs/heads/dev' }, 'push', 'gui', process.cwd(), false),
-    { unit: true, dashboard: true, reason: 'main/dev is a release candidate; run all checks' });
+    { unit: true, browser: true, reason: 'main/dev is a release candidate; run all checks' });
 });
 
 test('GUI subdirectory diff retains backend changes and GUI package paths', t => {
   const r = repository(t);
   const before = r.commit('src/gui/README.md', 'base');
   r.commit('src/hyprial/daemon.py', 'backend');
-  const after = r.commit('src/gui/dashboard/src/App.jsx', 'ui');
+  const after = r.commit('src/gui/client/gui-workspace.inc.js', 'ui');
   const cwd = join(r.cwd, 'src/gui');
   assert.deepEqual(changedPaths({ before, after }, 'push', cwd, false).sort(),
-    ['src/gui/dashboard/src/App.jsx', 'src/hyprial/daemon.py']);
+    ['src/gui/client/gui-workspace.inc.js', 'src/hyprial/daemon.py']);
   assert.equal(select({ before, after }, 'push', 'gui', cwd, false).unit, true);
 });
 
-const scopeKeys = ['python', 'gui_integration', 'unit', 'dashboard', 'codex', 'dsh', 'package'];
+const scopeKeys = ['python', 'gui_integration', 'unit', 'browser', 'codex', 'dsh', 'package'];
 for (const [name, paths, expected] of [
-  ['dashboard UI', ['src/gui/dashboard/src/main.jsx'], [false, true, false, true, false, false, true]],
-  ['dashboard CSS and docs', ['src/gui/dashboard/src/style.css', 'docs/change.md'], [false, true, false, true, false, false, true]],
+  ['browser UI', ['src/gui/client/gui-workspace.inc.js'], [false, true, true, true, true, true, true]],
+  ['browser CSS and docs', ['src/gui/client/gui-theme.css', 'docs/change.md'], [false, true, true, true, true, true, true]],
   ['client module', ['src/gui/client/gui-editor.inc.js'], [false, true, true, true, true, true, true]],
   ['generated client', ['src/gui/static/client.js'], [false, true, true, false, true, true, true]],
   ['ordinary client CSS', ['src/gui/client/workflow.css'], [false, true, true, false, true, true, true]],
   ['GUI prose', ['src/gui/README.md', 'docs/migration.md'], [false, false, false, false, false, false, false]],
   ['installer', ['src/gui/scripts/install-local.sh'], [true, true, true, true, true, true, true]],
-  ['dashboard server', ['src/gui/dashboard/server.mjs'], [true, true, true, true, true, true, true]],
+  ['browser server', ['src/gui/browser-tests/server.mjs'], [true, true, true, true, true, true, true]],
   ['client directory new config', ['src/gui/client/config.json'], [true, true, true, true, true, true, true]],
   ['unknown nested client', ['src/gui/client/new/server.js'], [true, true, true, true, true, true, true]],
   ['GUI provider', ['src/gui/packages/gui-layout/workspace-extension.js'], [true, true, true, true, true, true, true]],
   ['Python shared protocol', ['src/hyprial/protocol.py'], [true, true, true, true, true, true, true]],
-  ['backend mixed with dashboard', ['src/hyprial/daemon.py', 'src/gui/dashboard/src/main.jsx'], [true, true, true, true, true, true, true]],
+  ['backend mixed with browser', ['src/hyprial/daemon.py', 'src/gui/client/gui-workspace.inc.js'], [true, true, true, true, true, true, true]],
   ['workflow changes', ['.forgejo/workflows/gui.yml'], [true, true, true, true, true, true, true]],
   ['scope policy', ['src/gui/scripts/ci-scope.mjs'], [true, true, true, true, true, true, true]],
   ['root scope policy', ['scripts/ci-scope.mjs'], [true, true, true, true, true, true, true]],
@@ -198,12 +200,50 @@ for (const branch of ['main', 'dev']) test(`all ${branch} release checks remain 
 test('unified CLI emits all seven gate outputs for a browser-only PR', t => {
   const r = repository(t);
   const base = r.commit('README.md', 'base');
-  const head = r.commit('src/gui/dashboard/src/main.jsx', 'ui');
+  const head = r.commit('src/gui/client/gui-workspace.inc.js', 'ui');
   r.git('remote', 'add', 'origin', r.cwd);
   const payload = join(r.cwd, 'event.json'), output = join(r.cwd, 'output');
   writeFileSync(payload, JSON.stringify({ pull_request: { base: { sha: base }, head: { sha: head } } }));
-  execFileSync(process.execPath, [new URL('./ci-scope.mjs', import.meta.url).pathname, 'all'], {
+  const stdout = execFileSync(process.execPath, [new URL('./ci-scope.mjs', import.meta.url).pathname, 'all'], {
     cwd: r.cwd, env: { ...process.env, GITHUB_EVENT_NAME: 'pull_request', GITHUB_EVENT_PATH: payload, GITHUB_OUTPUT: output },
   });
-  assert.equal(readFileSync(output, 'utf8'), 'python=false\ngui_integration=true\nunit=false\ndashboard=true\ncodex=false\ndsh=false\npackage=true\n');
+  assert.deepEqual(scopeLog(stdout), { project: 'all', event: 'pull_request',
+    ...classify(['src/gui/client/gui-workspace.inc.js'], 'all') });
+  assert.equal(readFileSync(output, 'utf8'), 'python=false\ngui_integration=true\nunit=true\nbrowser=true\ncodex=true\ndsh=true\npackage=true\n');
 });
+
+function scopeLog(stdout) {
+  const lines = stdout.toString().trimEnd().split('\n');
+  assert.equal(lines.length, 1, 'scope decision must be exactly one log line');
+  assert.ok(lines[0].startsWith('CI_SCOPE '));
+  return JSON.parse(lines[0].slice('CI_SCOPE '.length));
+}
+
+for (const [name, eventName, payload, reason] of [
+  ['manual', 'workflow_dispatch', '{}', 'comparison unavailable; run all checks'],
+  ['schedule', 'schedule', '{}', 'comparison unavailable; run all checks'],
+  ['missing comparison', 'pull_request', '{}', 'comparison unavailable; run all checks'],
+  ['unreadable event', 'push', null, 'event unavailable; run all checks'],
+  ['malformed event', 'push', 'PRIVATE_SENTINEL', 'event unavailable; run all checks'],
+  ['release push', 'push', JSON.stringify({ ref: 'refs/heads/dev' }), 'main/dev is a release candidate; run all checks'],
+]) {
+  for (const project of ['all', 'hyprial', 'gui', 'h2b']) test(`CLI logs ${project} ${name} without changing gates`, t => {
+    const cwd = mkdtempSync(join(tmpdir(), 'ci-scope-log-'));
+    t.after(() => rmSync(cwd, { recursive: true, force: true }));
+    const eventPath = join(cwd, 'event.json'), output = join(cwd, 'output');
+    if (payload !== null) writeFileSync(eventPath, payload);
+    const stdout = execFileSync(process.execPath, [new URL('./ci-scope.mjs', import.meta.url).pathname, project], {
+      cwd, env: { ...process.env, GITHUB_EVENT_NAME: eventName, GITHUB_EVENT_PATH: eventPath,
+        GITHUB_OUTPUT: output, GITHUB_STEP_SUMMARY: '' },
+    });
+    const logged = scopeLog(stdout);
+    const keys = project === 'all' ? scopeKeys : project === 'hyprial'
+      ? ['unit', 'browser', 'gui_integration'] : ['unit', 'browser'];
+    const expected = Object.fromEntries(keys.map(key => [key,
+      key === 'browser' ? ['all', 'gui'].includes(project) : true]));
+    assert.deepEqual(logged, { project, event: eventName, ...expected,
+      reason: name === 'release push' && project === 'h2b' ? 'comparison unavailable; run all checks' : reason });
+    assert.equal(readFileSync(output, 'utf8'), keys.map(key => `${key}=${expected[key]}\n`).join(''));
+    assert.doesNotMatch(stdout.toString(), /PRIVATE_SENTINEL/);
+  });
+}

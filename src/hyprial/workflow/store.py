@@ -29,7 +29,7 @@ from hyprial.contracts.agent_task import (
 )
 
 from .executor import RunState, TargetRuntime, TargetState, WorkflowRun
-from .schema import load_workflow_text
+from .schema import WorkflowSchemaError, load_workflow_text
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +37,22 @@ class PersistedRun:
     run: WorkflowRun
     yaml_text: str
     version: int = 1
+
+
+@dataclass(frozen=True, slots=True)
+class RunSchemaRejection:
+    """A stored run whose spec no longer validates under the current schema.
+
+    Bare-name ``report_to`` / ``escalate_to`` addresses were writable before
+    2026-09-14; after the load-time validation they must not silently resume
+    (the run would keep escalating into unreadable stores) nor crash recovery.
+    The run stays stored and NOT resumed, and every rejection is surfaced so
+    an operator can fix or cancel it.
+    """
+
+    run_id: str
+    state: str
+    error: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -661,19 +677,84 @@ class WorkflowStore(AssignStoreMixin):
                 return None
             return self._materialize(row)
 
+    def cancel_unparseable_run(self, run_id: str) -> bool:
+        """Force-cancel a stored run whose spec no longer validates.
+
+        A schema-broken run cannot be materialized, so there is no
+        ``WorkflowRun`` to hand to ``save_run``; update the raw row directly.
+        Cancel is the operator escape hatch (2026-09-14 S3): cancelled is
+        terminal, so nothing will resume the run, and the operator is no
+        longer trapped with SQL as the only way out.
+        """
+
+        with self._db_lock, self._db:
+            cursor = self._db.execute(
+                "UPDATE runs SET state = ? WHERE run_id = ?",
+                (str(RunState.CANCELLED), run_id),
+            )
+            return cursor.rowcount == 1
+
     def load_open_runs(self) -> tuple[PersistedRun, ...]:
+        runs, _ = self.load_open_runs_report()
+        return runs
+
+    def load_open_runs_report(
+        self,
+    ) -> tuple[tuple[PersistedRun, ...], tuple[RunSchemaRejection, ...]]:
+        """Open runs split into resumable and schema-rejected.
+
+        A rejected row is NEVER silently dropped: the caller must surface it
+        (log + visible status) so unfinished runs with bad addresses do not
+        disappear from recovery the way bare-name notices disappeared from
+        readers.
+        """
+
         with self._db_lock:
             rows = self._db.execute(
                 "SELECT * FROM runs WHERE state = ?", (str(RunState.RUNNING),)
             ).fetchall()
-            return tuple(self._materialize(row) for row in rows)
+            runs: list[PersistedRun] = []
+            rejections: list[RunSchemaRejection] = []
+            for row in rows:
+                try:
+                    runs.append(self._materialize(row))
+                except WorkflowSchemaError as error:
+                    rejections.append(
+                        RunSchemaRejection(
+                            run_id=str(row["run_id"]),
+                            state=str(row["state"]),
+                            error=str(error),
+                        )
+                    )
+            return tuple(runs), tuple(rejections)
 
     def list_runs(self, *, limit: int = 50) -> tuple[PersistedRun, ...]:
+        runs, _ = self.list_runs_report(limit=limit)
+        return runs
+
+    def list_runs_report(
+        self, *, limit: int = 50
+    ) -> tuple[tuple[PersistedRun, ...], tuple[RunSchemaRejection, ...]]:
+        """Newest runs plus schema rejections, so listing cannot hide them."""
+
         with self._db_lock:
             rows = self._db.execute(
                 "SELECT * FROM runs ORDER BY created_at_ms DESC LIMIT ?", (limit,)
             ).fetchall()
-            return tuple(self._materialize(row) for row in rows)
+            runs: list[PersistedRun] = []
+            rejections: list[RunSchemaRejection] = []
+            for row in rows:
+                try:
+                    runs.append(self._materialize(row))
+                except WorkflowSchemaError as error:
+                    rejections.append(
+                        RunSchemaRejection(
+                            run_id=str(row["run_id"]),
+                            state=str(row["state"]),
+                            error=str(error),
+                        )
+                    )
+            return tuple(runs), tuple(rejections)
 
     def max_version(self) -> int:
         with self._db_lock:

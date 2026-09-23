@@ -359,9 +359,10 @@ def _add_lark_gateway_unlocked(
         "secretPath": str(secret_path),
         "overwritten": name in existing_names,
         "note": (
-            "Restart the daemon (hyprial daemon stop, then start) for "
-            "'hyprial adapter start' to see this adapter; a running daemon uses a "
-            "boot-time snapshot of the gateway list."
+            "Run 'hyprial adapter reload' so a running daemon refreshes its "
+            "snapshot of the gateway list and 'hyprial adapter start' sees "
+            "this adapter without a daemon restart ('hyprial adapter add' "
+            "already attempts that reload), then 'hyprial adapter pin'."
         )
         + (
             ""
@@ -404,7 +405,10 @@ def remove_lark_gateway(
 
         machine = os.environ.get("HYPRIAL_NODE_ID", "").strip() or socket.gethostname()
         with OfflineManagementLease(
-            state_dir, owner=resolve_node_owner(), machine=machine
+            state_dir,
+            owner=resolve_node_owner(),
+            machine=machine,
+            hyprial_home=hyprial_home,
         ) as offline:
             return remove_lark_gateway(
                 hyprial_home=hyprial_home,
@@ -549,9 +553,9 @@ def _remove_lark_gateway_unlocked(
         "removed": removed,
         "channelsPath": str(channels_path),
         "note": (
-            "Restart the daemon (hyprial daemon stop, then start) so "
-            "'hyprial adapter list' forgets this adapter; a running daemon uses a "
-            "boot-time snapshot of the gateway list."
+            "Run 'hyprial adapter reload' so a running daemon refreshes its "
+            "snapshot of the gateway list and 'hyprial adapter list' forgets "
+            "this adapter without a daemon restart."
         ),
     }
     if delete_secret:
@@ -560,3 +564,218 @@ def _remove_lark_gateway_unlocked(
         # The credential file did not match lark-<name>; it was NOT deleted.
         result["secretKept"] = str(secret_path)
     return result
+
+
+class RouteExistsError(PersistentConfigError):
+    """Raised when a route name is already bound on the gateway."""
+
+    code = "ROUTE_EXISTS"
+
+
+class RouteNotFoundError(PersistentConfigError):
+    """Raised when the named route is not bound on the gateway."""
+
+    code = "ROUTE_NOT_FOUND"
+
+
+class RouteInUseError(PersistentConfigError):
+    """Raised when removing a route would silently drop the gateway default."""
+
+    code = "ROUTE_IN_USE"
+
+
+def _require_gateway(
+    existing: ChannelConfiguration, name: str
+) -> LarkGatewayConfig:
+    gateway = next((item for item in existing.gateways if item.name == name), None)
+    if gateway is None:
+        configured = ", ".join(item.name for item in existing.gateways) or "(none)"
+        raise AdapterNotFoundError(
+            f"adapter {name!r} is not configured; configured adapters: {configured}"
+        )
+    return gateway
+
+
+def _gateway_summary(gateway: LarkGatewayConfig) -> dict[str, object]:
+    return {
+        "provider": "lark",
+        "name": gateway.name,
+        "appId": gateway.app_id,
+        "credentialRef": gateway.credential_ref,
+        "routes": [route.to_json() for route in gateway.routes],
+        **(
+            {"defaultRoute": gateway.default_route}
+            if gateway.default_route is not None
+            else {}
+        ),
+    }
+
+
+def list_gateway_routes(
+    *, hyprial_home: Path, name: str | None = None
+) -> dict[str, object]:
+    """Read the configured routes. Pure read: takes no lease, writes nothing."""
+
+    channels_path = Path(hyprial_home) / "channels.json"
+    existing = _load_existing(channels_path)
+    if name is None:
+        gateways = existing.gateways
+    else:
+        _validate_name(name)
+        gateways = (_require_gateway(existing, name),)
+    return {
+        "ok": True,
+        "adapters": [_gateway_summary(item) for item in gateways],
+        "channelsPath": str(channels_path),
+    }
+
+
+def _write_gateway_routes(
+    *,
+    hyprial_home: Path,
+    name: str,
+    routes: tuple[ChannelRouteConfig, ...],
+    default_route: str | None,
+) -> dict[str, object]:
+    """Replace one gateway's routes, leaving every other field untouched.
+
+    The credential file is never opened: a route change has nothing to say
+    about the App's secret, and the rollback story stays one file wide.
+    Validation is the same full round trip ``add_lark_gateway`` performs, so a
+    route this loader would reject is rejected before any byte is written.
+    """
+
+    hyprial_home = Path(hyprial_home)
+    channels_path = hyprial_home / "channels.json"
+    existing = _load_existing(channels_path)
+    gateway = _require_gateway(existing, name)
+
+    updated = LarkGatewayConfig(
+        name=gateway.name,
+        app_id=gateway.app_id,
+        credential_ref=gateway.credential_ref,
+        routes=routes,
+        default_route=default_route,
+    )
+    others = tuple(item for item in existing.gateways if item.name != name)
+    validated = ChannelConfiguration.from_json(
+        ChannelConfiguration(gateways=(*others, updated)).to_json()
+    )
+
+    channels_backup = _optional_bytes(channels_path)
+    channels_written = _json_bytes(validated.to_json())
+    try:
+        atomic_json_write(channels_path, validated.to_json())
+        if _optional_bytes(channels_path) != channels_written:
+            raise AdapterConfigConflictError(
+                "adapter channels changed during route update"
+            )
+    except BaseException as operation_error:
+        try:
+            _restore_if_current(
+                channels_path,
+                expected_current=channels_written,
+                prior=channels_backup,
+            )
+        except BaseException as rollback_error:
+            _raise_rollback_failure(
+                "adapter route update and rollback failed",
+                operation_error,
+                [rollback_error],
+            )
+        raise
+
+    written = next(item for item in validated.gateways if item.name == name)
+    return {
+        "ok": True,
+        "adapter": _gateway_summary(written),
+        "channelsPath": str(channels_path),
+    }
+
+
+def add_gateway_route(
+    *,
+    hyprial_home: Path,
+    name: str,
+    route: RouteInput,
+    make_default: bool = False,
+    force: bool = False,
+) -> dict[str, object]:
+    """Bind one named route on an existing gateway.
+
+    ``force`` rebinds a name that is already taken; without it an existing name
+    is an error rather than a silent retarget, because the name is what senders
+    address and the native id is invisible to them.
+    """
+
+    _validate_name(name)
+    if not route.name or not route.native_id:
+        raise PersistentConfigError("route name and native id must be non-empty")
+    with _adapter_config_mutation(Path(hyprial_home)):
+        existing = _load_existing(Path(hyprial_home) / "channels.json")
+        gateway = _require_gateway(existing, name)
+        present = next(
+            (item for item in gateway.routes if item.name == route.name), None
+        )
+        if present is not None and not force:
+            raise RouteExistsError(
+                f"route {route.name!r} already exists on adapter {name!r} "
+                f"(native id {present.native_id!r}); pass --force to rebind it"
+            )
+        replacement = ChannelRouteConfig(
+            name=route.name, type="direct", native_id=route.native_id
+        )
+        routes = tuple(
+            replacement if item.name == route.name else item
+            for item in gateway.routes
+        )
+        if present is None:
+            routes = (*gateway.routes, replacement)
+        default_route = route.name if make_default else gateway.default_route
+        return _write_gateway_routes(
+            hyprial_home=hyprial_home,
+            name=name,
+            routes=routes,
+            default_route=default_route,
+        )
+
+
+def remove_gateway_route(
+    *,
+    hyprial_home: Path,
+    name: str,
+    route_name: str,
+    force: bool = False,
+) -> dict[str, object]:
+    """Unbind one named route.
+
+    Removing the gateway's default route is refused unless ``force`` is given:
+    dropping it silently changes where every un-addressed send lands, which is
+    a routing change disguised as a deletion.
+    """
+
+    _validate_name(name)
+    with _adapter_config_mutation(Path(hyprial_home)):
+        existing = _load_existing(Path(hyprial_home) / "channels.json")
+        gateway = _require_gateway(existing, name)
+        if all(item.name != route_name for item in gateway.routes):
+            bound = ", ".join(item.name for item in gateway.routes) or "(none)"
+            raise RouteNotFoundError(
+                f"route {route_name!r} is not bound on adapter {name!r}; "
+                f"bound routes: {bound}"
+            )
+        if gateway.default_route == route_name and not force:
+            raise RouteInUseError(
+                f"route {route_name!r} is the default route of adapter {name!r}; "
+                "pass --force to remove it and clear the default"
+            )
+        routes = tuple(item for item in gateway.routes if item.name != route_name)
+        default_route = (
+            None if gateway.default_route == route_name else gateway.default_route
+        )
+        return _write_gateway_routes(
+            hyprial_home=hyprial_home,
+            name=name,
+            routes=routes,
+            default_route=default_route,
+        )

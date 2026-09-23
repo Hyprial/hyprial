@@ -76,10 +76,19 @@ def classify_harness_failure(error: str | None) -> str:
         token in detail
         for token in (
             "authentication failed",
+            # Claude's wording (2026-09-17): "Failed to authenticate. API
+            # Error: 403 Request not allowed".  Matched on the leading phrase;
+            # a bare "403" or "not allowed" is too generic to substring-match.
+            "failed to authenticate",
             "unauthorized",
             "invalid api key",
             "invalid_api_key",
             "oauth_org_not_allowed",
+            # Terminal for the turn runtime already; the daemon must agree or
+            # it redelivers a turn the runtime refused to repeat.
+            "oauth",
+            "token refresh",
+            "expired token",
         )
     ):
         return "PROVIDER_AUTHENTICATION_FAILED"

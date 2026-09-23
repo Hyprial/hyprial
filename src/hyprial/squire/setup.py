@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+import pwd
+import re
 import secrets
 import shutil
 import socket
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
@@ -40,6 +42,78 @@ SETUP_STEPS = (
     "claude-plugin",
     "service",
 )
+
+
+def identity_slug(value: str) -> str:
+    """A host-side lookup-key slug for an identity segment (owner/machine).
+
+    ``owner_key``/``machine_key`` are not credentials: they are dict keys for
+    the binding store and components of the squire session reference
+    (``squire:<owner_key>:<machine_key>``), so a deterministic normalization
+    of the identity they label is a sound default for them.
+    """
+
+    slug = re.sub(r"[^a-z0-9._-]+", "-", value.strip().lower()).strip("-")
+    if not slug:
+        raise ValueError(f"cannot derive a lookup key from {value!r}")
+    return slug
+
+
+def node_machine_id(environ: Mapping[str, str] | None = None) -> str:
+    """The daemon node id setup targets: ``HYPRIAL_NODE_ID``, else hostname.
+
+    Same source order ``_cross_checks`` reads, so a derived ``machine`` can
+    never disagree with the node-id check by construction; only an explicit
+    ``--machine`` override can, and that keeps its loud error.
+    """
+
+    source = os.environ if environ is None else environ
+    configured = source.get("HYPRIAL_NODE_ID", "").strip()
+    return configured or socket.gethostname()
+
+
+def platform_login_name() -> str:
+    """This account's OS login: an OS fact, not the owner identity.
+
+    The login *name* is a host-side lookup/display key (``users.json``
+    ``loginName`` has always meant the host login), so unlike
+    ``resolve_node_owner`` there is no "no host-login fallback" rule to
+    violate — but the same discipline applies: read the current UID, not the
+    spoofable ``USER`` env, mirroring ``transfer.orchestrator``.
+    """
+
+    return pwd.getpwuid(os.getuid()).pw_name
+
+
+def derive_setup_identity(
+    owner: str,
+    *,
+    owner_key: str | None = None,
+    login_name: str | None = None,
+    machine: str | None = None,
+    machine_key: str | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> SetupIdentity:
+    """Fill the four host-side lookup fields that were once required flags.
+
+    Derivation (Allen, 2026-09-18): ``owner`` comes from the login identity
+    as before; ``machine`` = ``HYPRIAL_NODE_ID`` else hostname;
+    ``owner_key``/``machine_key`` = slug of owner/machine; ``login_name`` =
+    the platform (OS) login. Explicit values override their derivation one
+    for one — an explicit ``--machine`` that disagrees with a configured node
+    id still fails in ``_cross_checks``.
+    """
+
+    resolved_machine = node_machine_id(environ) if machine is None else machine
+    return SetupIdentity(
+        owner=owner,
+        owner_key=identity_slug(owner) if owner_key is None else owner_key,
+        login_name=platform_login_name() if login_name is None else login_name,
+        machine=resolved_machine,
+        machine_key=(
+            identity_slug(resolved_machine) if machine_key is None else machine_key
+        ),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,7 +302,7 @@ class SquireSetup:
         adapter: str | None = None,
         dm_route: str = "owner",
         provider: str = "deepseek",
-        model: str = "deepseek-v4-flash",
+        model: str = "deepseek-flash",
         preferred_harness: str = "pi",
         start: bool = False,
         step: str | None = None,

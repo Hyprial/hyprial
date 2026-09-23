@@ -618,6 +618,32 @@ def notify_restore_followup(
     )
 
 
+def notify_owner(
+    *,
+    hyprial_home: Path,
+    state_dir: Path,
+    text: str,
+    idempotency_key: str,
+    sender_factory: Callable[[str, str], _OwnerSender] | None = None,
+) -> AlertOutcome:
+    """The shared owner-DM entry point for alerts that are not upgrade news.
+
+    This is the same route ``notify_upgrade_failure`` uses -- owner binding,
+    channel-to-gateway resolution, Lark DM, never raises -- exposed as a
+    public function so other subsystems (provider-auth relogin alerts being
+    the first) reuse the path instead of growing a second copy of the
+    routing.  Callers compose their own text; this module owns the delivery.
+    """
+
+    return _send_owner_message(
+        hyprial_home=hyprial_home,
+        state_dir=state_dir,
+        text=text,
+        idempotency_key=idempotency_key,
+        sender_factory=sender_factory,
+    )
+
+
 def _send_owner_message(
     *,
     hyprial_home: Path,

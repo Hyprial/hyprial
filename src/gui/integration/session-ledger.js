@@ -2,9 +2,12 @@ import { open, readFile, rename, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 
-const maps = ['sessions', 'participants', 'humanChats', 'remoteBindings', 'remoteNames', 'humanChatAliases', 'humanChatArchive'];
+const maps = ['sessions', 'participants', 'receptionPolicies', 'humanChats', 'remoteBindings', 'remoteNames', 'humanChatAliases', 'humanChatArchive', 'sessionBindings'];
 export function validateLedger(document) {
   if (document?.version !== 1 || !document.sessions) throw new Error('unexpected ledger schema');
+  // Reception policy is stored per ledgerKey(identity). The only value this
+  // repository writes is 'whitelist'; readers treat absence (or any other
+  // persisted value) as the default 'open' network Agent reception.
   for (const key of maps) {
     if (document[key] !== undefined && (!document[key] || typeof document[key] !== 'object' || Array.isArray(document[key]))) {
       throw new Error(`unexpected ${key} schema`);
@@ -14,11 +17,18 @@ export function validateLedger(document) {
     if (!binding || typeof binding.sessionId !== 'string' || typeof binding.actor !== 'string') {
       throw new Error(`invalid remote binding for ${adapter}`);
     }
-    const name = document.remoteNames?.[binding.sessionId]
+    const selected = document.sessionBindings?.[binding.sessionId];
+    const name = selected?.actor?.split(':')[3] || document.remoteNames?.[binding.sessionId]
       || 'dsh-session-' + createHash('sha256').update(binding.sessionId).digest('hex').slice(0, 8);
     if (binding.actor.split(':').length !== 4 || binding.actor.split(':')[3] !== name) {
       throw new Error(`remote name/binding mismatch for ${adapter}; explicit recovery required`);
     }
+  }
+  for (const [id, binding] of Object.entries(document.sessionBindings || {})) {
+    const validIdentity = value => value && typeof value.actor === 'string' && value.actor.startsWith('agent:') && value.actor.split(':').length === 4 && value.actor.split(':').every(Boolean) && ['dsh-web:' + id, 'dsh-remote:' + id].includes(value.sessionRef);
+    if (!validIdentity(binding) || typeof binding.enabled !== 'boolean') throw new Error('invalid session binding: ' + id);
+    if (binding.legacyIdentities !== undefined && (!Array.isArray(binding.legacyIdentities) || binding.legacyIdentities.some(alias => !validIdentity(alias) || alias.actor.split(':').slice(0, 3).join(':') !== binding.actor.split(':').slice(0, 3).join(':')))) throw new Error('invalid legacy identities: ' + id);
+    if (document.remoteNames?.[id] && document.remoteNames[id] !== binding.actor.split(':')[3]) throw new Error('session name/binding mismatch: ' + id);
   }
   return { ...document, ...Object.fromEntries(maps.map(key => [key, document[key] || {}])) };
 }

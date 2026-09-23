@@ -43,6 +43,12 @@ class WorkerChannel:
     state_dir: Path
     mcp_server: dict[str, object]
     allowed_tools: tuple[str, ...]
+    # Daemon-authority identity (P1b B1 / L3): the node id and owner THIS
+    # daemon resolved at startup.  They are generated values in the child
+    # env sense — never passed through from a parent process environment,
+    # never derived from the worker-actor URI.
+    node_id: str = ""
+    owner: str = ""
 
     def identity_environment(self) -> dict[str, str]:
         """The worker's daemon-bound identity + daemon pinning as env.
@@ -62,12 +68,20 @@ class WorkerChannel:
         every subprocess of the worker inherits all three.
         """
 
-        return {
+        environment = {
             "HYPRIAL_WORKER_ACTOR": self.actor,
             "HYPRIAL_WORKER_SESSION_REF": self.session_ref,
             "HYPRIAL_MANAGED_WORKER": "1",
             **child_state_environment(self.hyprial_home, self.state_dir),
         }
+        # L3 (B1): daemon-authority node/owner.  Older channels constructed
+        # before the fields existed keep empty strings and omit the vars —
+        # the omission is visible in the frozen env table, not silent.
+        if self.node_id:
+            environment["HYPRIAL_NODE_ID"] = self.node_id
+        if self.owner:
+            environment["HYPRIAL_OWNER"] = self.owner
+        return environment
 
     def pi_environment(self) -> dict[str, str]:
         """The pi carrier for this channel: identity + daemon pinning as env.
@@ -88,6 +102,8 @@ def build_worker_channel(
     hyprial_home: Path,
     state_dir: Path,
     python_executable: str | None = None,
+    node_id: str = "",
+    owner: str = "",
 ) -> WorkerChannel:
     """Compose the worker's harness-bridge stdio server pinned to this daemon.
 
@@ -117,6 +133,8 @@ def build_worker_channel(
     return WorkerChannel(
         actor=actor,
         session_ref=session_ref,
+        node_id=node_id,
+        owner=owner,
         hyprial_home=hyprial_home,
         state_dir=state_dir,
         mcp_server=server,

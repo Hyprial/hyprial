@@ -15,6 +15,7 @@ from typing import Any, Self, TypeVar
 from uuid import NAMESPACE_URL, uuid5
 
 from hyprial.alarm import Alarm, AlarmDelivery, AlarmEmitter, audience_for_sender
+from hyprial.contracts import ipc_errors
 from hyprial.log import Logger
 
 from .api import (
@@ -181,8 +182,9 @@ class InboxService:
             lock=self._lock,
             retention_ms=self.hold_policy.status_retention_ms,
         )
+        self._logger = logger or Logger.daemon(database.parent, name=node_id)
         self._alarm = AlarmEmitter(
-            logger or Logger.daemon(database.parent, name=node_id),
+            self._logger,
             deliver_human=alarm_human_delivery,
             deliver_agent=self._deliver_system_notice,
             claim=self._claim_alarm,
@@ -566,6 +568,12 @@ class InboxService:
                 ),
             )
             self._db.commit()
+            self._log_retry(
+                message,
+                attempts,
+                now_ms + delay * 1000,
+                "receipt not confirmed",
+            )
         return False
 
     def _attempt_custody(self, message: InboxMessage) -> str | None:
@@ -598,6 +606,9 @@ class InboxService:
                     WHERE message_id = ?""",
                     (attempts, now_ms + delay * 1000, "recipient offline", message.message_id),
                 )
+            self._log_retry(
+                message, attempts, now_ms + delay * 1000, "recipient offline"
+            )
             return
         with self._db:
             self._db.execute(
@@ -981,7 +992,33 @@ class InboxService:
                 (recipient, message_id),
             ).fetchone()
             if row is None:
-                return AckResult(message_id, False, "MESSAGE_ACK_UNAVAILABLE")
+                # That SELECT misses three states whose correct handling is
+                # opposite, and returning one code for all of them makes a
+                # successful idempotent retry read as "your ack did not work":
+                #   * no such row            -> real failure, may be data loss
+                #   * row present, settled   -> the caller's goal already holds
+                #   * terminal settlement    -> closed by the failure path
+                # Only the middle one is success. Ask for it specifically
+                # rather than widening the query above, so the other two keep
+                # failing exactly as before.
+                settled = self._db.execute(
+                    """SELECT 1 FROM inbox
+                        WHERE recipient = ? AND message_id = ? AND consumed = 1
+                          AND NOT EXISTS (
+                              SELECT 1 FROM harness_failure_settlements
+                               WHERE harness_failure_settlements.message_id = inbox.message_id
+                                 AND harness_failure_settlements.terminal = 1
+                          )""",
+                    (recipient, message_id),
+                ).fetchone()
+                if settled is not None:
+                    # Acking twice is a no-op that already achieved its goal.
+                    # The code is carried alongside acknowledged=True so a
+                    # caller can still tell "I settled it" from "it was
+                    # already settled" -- they differ for auditing, not for
+                    # control flow.
+                    return AckResult(message_id, True, "MESSAGE_ALREADY_SETTLED")
+                return AckResult(message_id, False, ipc_errors.MESSAGE_ACK_UNAVAILABLE)
             cursor = self._db.execute(
                 """UPDATE inbox
                       SET consumed = 1,
@@ -991,7 +1028,7 @@ class InboxService:
                 (now, now, recipient, message_id),
             )
         if cursor.rowcount != 1:
-            return AckResult(message_id, False, "MESSAGE_ACK_UNAVAILABLE")
+            return AckResult(message_id, False, ipc_errors.MESSAGE_ACK_UNAVAILABLE)
         message = self._row_message(row)
         self.retire_outbox_receipt(message.sender, message_id, now_ms=now)
         return AckResult(message_id, True)
@@ -1202,6 +1239,29 @@ class InboxService:
         return self._harness_failure_row(row)
 
     @_synchronized
+    def terminal_failure_settlements(
+        self, *, since_ms: int
+    ) -> tuple[HarnessFailureSettlement, ...]:
+        """Terminal tombstones recorded at or after ``since_ms``.
+
+        This is the durable half of the fail-loud promise: a settlement is the
+        fact that a request never got a result, and it outlives the process
+        that observed it.  A restarted daemon reads it to re-derive a sender
+        notice it may not have managed to submit (see
+        ``DaemonEventBridge._recover_owed_notices``), so the ``window`` is the
+        previous run, not all history -- replaying years of old failures would
+        be a new kind of wrong.
+        """
+
+        rows = self._db.execute(
+            """SELECT * FROM harness_failure_settlements
+               WHERE terminal = 1 AND updated_at_ms >= ?
+               ORDER BY updated_at_ms""",
+            (since_ms,),
+        ).fetchall()
+        return tuple(self._harness_failure_row(row) for row in rows)
+
+    @_synchronized
     def harness_failure_settlement(
         self, message_id: str
     ) -> HarnessFailureSettlement | None:
@@ -1210,6 +1270,23 @@ class InboxService:
             (message_id,),
         ).fetchone()
         return None if row is None else self._harness_failure_row(row)
+
+    @_synchronized
+    def harness_failure_original(self, message_id: str) -> InboxMessage | None:
+        """The original request row, even when it is consumed or terminal.
+
+        The fail-loud sender notice needs the route (``sender``,
+        ``conversation_id``) of a request that failed *after* its row stopped
+        being pending -- fetched by a pull consumer, acked, or already settled
+        as terminal.  ``pending_messages`` deliberately hides those rows, so
+        the notice would have no route without this read.  The row itself is
+        retained either way; only the visibility window moved.
+        """
+
+        row = self._db.execute(
+            "SELECT * FROM inbox WHERE message_id = ? LIMIT 1", (message_id,)
+        ).fetchone()
+        return None if row is None else self._row_message(row)
 
     @_synchronized
     def harness_failure_attempts(
@@ -1547,8 +1624,57 @@ class InboxService:
             )
             if local_notice is not None:
                 self._persist_system_notice_locked(local_notice)
+        self._log_dlq(message, int(row["attempts"]), reason, now_ms)
         if emit_failure:
             self._emit_failure(message, reason)
+
+    def _log_retry(
+        self,
+        message: InboxMessage,
+        attempts: int,
+        next_attempt_ms: int,
+        reason: str,
+    ) -> None:
+        """Every backoff step is a log event, not just a DB column.
+
+        The retry/DLQ path used to be write-only to SQLite: a message dying in
+        the outbox was invisible in logs until ``harness.delivery.*`` fired
+        (if it ever did), which is how reports retried into the DLQ unnoticed
+        (2026-09-14 observability gap). Identifiers and counters only.
+        """
+
+        try:
+            self._logger.log(
+                "warn",
+                "outbox.retry_scheduled",
+                messageId=message.message_id,
+                recipient=message.recipient,
+                sender=message.sender,
+                attempts=attempts,
+                nextAttemptMs=next_attempt_ms,
+                reason=reason,
+            )
+        except Exception:  # noqa: BLE001 - logging must never break delivery
+            pass
+
+    def _log_dlq(
+        self, message: InboxMessage, attempts: int, reason: str, now_ms: int
+    ) -> None:
+        """The terminal leg: a message that will never be retried again."""
+
+        try:
+            self._logger.log(
+                "error",
+                "outbox.terminal_failed",
+                messageId=message.message_id,
+                recipient=message.recipient,
+                sender=message.sender,
+                attempts=attempts,
+                reason=reason,
+                failedAtMs=now_ms,
+            )
+        except Exception:  # noqa: BLE001 - logging must never break delivery
+            pass
 
     def _emit_failure(self, message: InboxMessage, reason: str) -> None:
         self._alarm.emit(
@@ -1612,7 +1738,21 @@ class InboxService:
             created_at_ms=self._now_ms(),
         )
         sender_node = self._agent_node(alarm.sender)
-        if sender_node is None or sender_node == self.node_id:
+        if alarm.audience == "operator":
+            # Local operator notice keyed by this node's own id (bare): the
+            # operator reads it back via system_notices(node_id).  This is not
+            # a user-typed address and must not be rejected as an unrouteable
+            # bare name (2026-09-14 defect class A is scoped to user-typed
+            # escalate_to / report_to addresses, not the daemon's own operator
+            # notice).
+            return self.receive_system_notice(notice)
+        if sender_node is None:
+            # A bare name is not an address: no reader exists for a notice
+            # keyed by it (2026-09-14 defect class A).  Returning False makes
+            # the emitter record ``alarm.failed`` instead of pretending a
+            # local delivery happened.  No notice row is written.
+            return False
+        if sender_node == self.node_id:
             return self.receive_system_notice(notice)
         return self._transport.deliver_notice(sender_node, notice)
 
@@ -2012,6 +2152,47 @@ class InboxService:
                ORDER BY recipient"""
         ).fetchall()
         return tuple((str(row["recipient"]), int(row["pending"])) for row in rows)
+
+    @_synchronized
+    def unfetched_recipient_stats(self) -> tuple[tuple[str, int, int], ...]:
+        """Per-recipient depth and oldest arrival over mail NOBODY HAS TAKEN.
+
+        "Taken" has TWO spellings, because the two dispatch paths mark
+        responsibility differently and a check that knows only one reports
+        the other as broken:
+
+        * the pull path (``harness_read`` -> ``fetch_pending``) stamps
+          ``fetched_at_ms``;
+        * the streaming path never touches that column -- it calls
+          ``refresh_hold`` when the worker ACCEPTS the delivery into its
+          queue (#276), which pushes ``expires_at_ms`` past
+          ``received_at_ms + hold_ttl_ms``.  That gap is the only trace it
+          leaves, and it is what tells a queued delivery apart from one
+          nobody has looked at.
+
+        Reading ``fetched_at_ms IS NULL`` alone would therefore report every
+        healthy streaming worker with a queued message as "not collecting".
+        """
+
+        rows = self._db.execute(
+            """SELECT recipient, COUNT(*) AS pending, MIN(received_at_ms) AS oldest
+               FROM inbox
+               WHERE consumed = 0
+                 AND fetched_at_ms IS NULL
+                 AND expires_at_ms <= received_at_ms + ?
+                 AND NOT EXISTS (
+                     SELECT 1 FROM harness_failure_settlements
+                      WHERE harness_failure_settlements.message_id = inbox.message_id
+                        AND harness_failure_settlements.terminal = 1
+                 )
+               GROUP BY recipient
+               ORDER BY recipient""",
+            (self.durable_ttl_ms,),
+        ).fetchall()
+        return tuple(
+            (str(row["recipient"]), int(row["pending"]), int(row["oldest"]))
+            for row in rows
+        )
 
     @_synchronized
     def pending_recipient_stats(self) -> tuple[tuple[str, int, int], ...]:

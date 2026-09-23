@@ -16,7 +16,7 @@ H2B_GUI_MANAGED_NODE="$H2B_GUI_RUNTIME_ROOT/node"
 H2B_GUI_MANAGED_DSH="$H2B_GUI_RUNTIME_ROOT/dsh"
 
 # The GUI owns its runtime independently of global dsh wrappers. Activation is
-# offline: explicit install/upgrade installs the GUI release's tested lockfile.
+# offline: explicit install/upgrade resolves npm latest and verifies a fresh candidate.
 h2b_gui_activate_dsh() {
   if [[ -x "$H2B_GUI_MANAGED_DSH/node_modules/.bin/dsh" ]]; then
     export PATH="$H2B_GUI_MANAGED_DSH/node_modules/.bin:$PATH"
@@ -26,7 +26,7 @@ h2b_gui_activate_dsh() {
 }
 
 h2b_gui_release_dsh_version() {
-  node -p 'require(process.argv[1]).dependencies["@deepseek-ai/dsh"]' "$1/package.json"
+  node "$1/../../scripts/dsh-runtime.mjs" resolve
 }
 
 h2b_gui_prepare_dsh_release() {
@@ -36,8 +36,8 @@ h2b_gui_prepare_dsh_release() {
   [[ "$H2B_GUI_DSH_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]] || return 1
   mkdir -p "$H2B_GUI_RUNTIME_ROOT/dsh-releases" || return 1
   H2B_GUI_CANDIDATE_DSH="$(mktemp -d "$H2B_GUI_RUNTIME_ROOT/dsh-releases/$H2B_GUI_DSH_VERSION.XXXXXX")" || return 1
-  cp "$release_directory/package.json" "$release_directory/package-lock.json" "$H2B_GUI_CANDIDATE_DSH/" || return 1
-  printf 'Installing GUI release DSH %s with its tested dependency lock...\n' "$H2B_GUI_DSH_VERSION"
+  node "$release_directory/../../scripts/dsh-runtime.mjs" prepare "$release_directory" "$H2B_GUI_CANDIDATE_DSH" "$H2B_GUI_DSH_VERSION" || return 1
+  printf 'Installing npm latest DSH %s with this candidate dependency lock...\n' "$H2B_GUI_DSH_VERSION"
   local args=(ci --prefix "$H2B_GUI_CANDIDATE_DSH" --no-audit --no-fund)
   # Mirrors can serve the locked artifacts, never choose a different release.
   case "${H2B_INSTALL_MIRROR:-auto}" in

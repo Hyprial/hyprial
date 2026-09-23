@@ -407,7 +407,15 @@ def preview_owner_migration(
             try:
                 plan = build_plan(
                     state_dir=copy_root,
-                    hyprial_home=temporary,
+                    # The classification residuals are string matches on
+                    # VALUES, and the copied databases still spell the REAL
+                    # home's path inside their payloads — so the home-root
+                    # residual must be built from the real home, not from
+                    # this preview's own temporary root, or the preview
+                    # would abort where the real migration classifies
+                    # cleanly (and vice versa).  build_plan never touches
+                    # the home on disk; it only string-matches its path.
+                    hyprial_home=home,
                     old=classification_owner,
                     new=target_owner,
                 )

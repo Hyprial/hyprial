@@ -278,6 +278,12 @@ class ClaudeChannelAdapter:
         self._lease_token = lease_token or secrets.token_urlsafe(32)
         self._message_deliveries: dict[str, str] = {}
         self._daemon_epoch: str | None = None
+        # Check-and-act on the daemon generation is one step, not two: the
+        # poll and heartbeat loops are sibling tasks and both observe the
+        # epoch, so without this two of them can pass the "changed?" test and
+        # issue redundant refreshes -- or, worse, one can consume the change
+        # while the other is mid-flight.
+        self._generation_lock = anyio.Lock()
         self._started = False
 
     async def start(self) -> dict[str, Any]:
@@ -410,7 +416,16 @@ class ClaudeChannelAdapter:
             params={"channelLeaseToken": self._lease_token},
             mutation=False,
         )
-        self._remember_daemon_epoch(result)
+        # ⛔ NOT `_remember_daemon_epoch`: the heartbeat is a SIBLING task of
+        # the poll loop and sees the same epoch.  Silently storing it made the
+        # heartbeat CONSUME the restart signal -- the poll would then compare
+        # the new epoch against the new epoch, find no change, and never
+        # confirm the session against the daemon that replaced the one it
+        # registered with.  Whichever observer reached the new daemon first
+        # decided whether the refresh happened at all, which is why the
+        # failure was intermittent and why no timeout could see it: the event
+        # simply never occurred (CI 16430 / 16581 / 16644).
+        await self._refresh_changed_daemon_generation(result)
         return result
 
     def _remember_daemon_epoch(self, result: dict[str, Any]) -> None:
@@ -425,13 +440,18 @@ class ClaudeChannelAdapter:
         if not self._started:
             return False
         epoch = result.get("daemonEpoch")
-        if not isinstance(epoch, str) or not epoch or epoch == self._daemon_epoch:
+        if not isinstance(epoch, str) or not epoch:
             return False
-        refreshed = await self.refresh_generation()
-        refreshed_epoch = refreshed.get("daemonEpoch")
-        if not isinstance(refreshed_epoch, str) or not refreshed_epoch:
-            raise RuntimeError("session.refresh response omitted daemonEpoch")
-        self._daemon_epoch = refreshed_epoch
+        async with self._generation_lock:
+            # Re-read under the lock: a sibling observer may have refreshed
+            # this same generation while we waited for it.
+            if epoch == self._daemon_epoch:
+                return False
+            refreshed = await self.refresh_generation()
+            refreshed_epoch = refreshed.get("daemonEpoch")
+            if not isinstance(refreshed_epoch, str) or not refreshed_epoch:
+                raise RuntimeError("session.refresh response omitted daemonEpoch")
+            self._daemon_epoch = refreshed_epoch
         return True
 
     def _remember_messages(

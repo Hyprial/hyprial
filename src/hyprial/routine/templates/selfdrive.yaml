@@ -11,11 +11,15 @@ policy:
     - { tag: "route:self", target: "self" }
     - { tag: "route:human", escalate_to: "{{escalate_to}}" }
   default: escalate
+  # U3:完成 = 节点 owner 置 flag,⛔ 不是回复里的文字。派发时 routine 会在
+  # 正文末尾附上这条任务自己的 `hyprial pac flag set <graph> work` 命令,所以
+  # 模板里不写命令(写了就会和真命令里的 graph id 不一致)。
   task_template: |
     你被 routine 唤醒:{{reason}}
-    【自驱任务 {{nonce}}】{{task.description}}
+    【自驱任务】{{task.description}}
     (task {{task.uuid}},标签:{{task.tags}})
-    完成后回复以 "DONE {{nonce}}" 开头;做不了回复 "BLOCKED {{nonce}}" 加原因。
+    完成以下方给出的 `hyprial pac flag set` 为准;⛔ 回复文字不算完成。
+    做不了就直接回复说明原因;到点未完成会自动上报给负责人。
 limits:
   max_in_flight: 3
   circuit_breaker:

@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 // file types are executable inputs until proven otherwise.
 export function isDocumentation(path) {
   if (path === 'docs/squire/SKILL-template.md' || path === 'docs/cutover-runbook.md') return false;
-  if (['.forgejo/workflows/README.md', 'dashboard/README.md',
+  if (['.forgejo/workflows/README.md', 'browser-tests/README.md',
     'sidecar/hyprial-tsnet/README.md', 'sidecar/hyprial-tsnet/e2e/README.md', 'sidecar/h2b-tsnet/README.md', 'sidecar/h2b-tsnet/e2e/README.md'].includes(path)) return true;
   return /^(README(?:\.[\w-]+)?\.(?:md|rst|txt)|README|(?:CHANGELOG|CONTRIBUTING|AUTHORS|LICENSE)(?:\.md|\.rst|\.txt)?)$/.test(path)
     || /^(docs|notes)\/.*\.(md|rst|adoc)$/.test(path);
@@ -17,7 +17,7 @@ export function classify(paths, project) {
   if (project === 'all') return classifyRepository(paths);
   if (project === 'hyprial') {
     const result = classifyRepository(paths);
-    return { unit: result.python, dashboard: false, gui_integration: result.gui_integration, reason: result.reason };
+    return { unit: result.python, browser: false, gui_integration: result.gui_integration, reason: result.reason };
   }
   // git diff reports repository-root paths even when invoked from src/gui.
   // Keep unknown/shared backend inputs conservative; only strip our package prefix.
@@ -25,39 +25,51 @@ export function classify(paths, project) {
     ? paths.map(path => path.startsWith('src/gui/') ? path.slice('src/gui/'.length) : path)
     : paths;
   const code = normalized.filter(path => !isDocumentation(path));
-  if (!code.length) return { unit: false, dashboard: false, reason: 'documentation-only or empty change' };
-  if (project === 'h2b') return { unit: true, dashboard: false, reason: 'H2B code or build input changed' };
-  let unit = false, dashboard = false;
+  if (!code.length) return { unit: false, browser: false, reason: 'documentation-only or empty change' };
+  if (project === 'h2b') return { unit: true, browser: false, reason: 'H2B code or build input changed' };
+  let unit = false, browser = false;
   for (const path of code) {
-    // The Node suite also tests the Dashboard server and fixtures. Shared
-    // launch/install scripts and every unknown path select both gates.
-    if (/^(client\/gui-|packages\/gui-layout\/|scripts\/verify-gui-studio)/.test(path)) { unit = true; dashboard = true; }
-    else if (/^dashboard\/(src\/|index\.html$)/.test(path)) dashboard = true;
-    else if (path.startsWith('dashboard/') || path === 'tests/dashboard.test.mjs') { unit = true; dashboard = true; }
-    else if (/^tests\/gui-.*\.browser\.mjs$/.test(path)) { unit = true; dashboard = true; }
+    if (/^(client\/gui-|packages\/gui-layout\/|scripts\/verify-gui-|tests\/gui-.*\.browser\.mjs$)/.test(path)) { unit = true; browser = true; }
     else if (/^(client\/|static\/|imskin-(?:host-)?plugin\.js$|tests\/)/.test(path)) unit = true;
-    else { unit = true; dashboard = true; }
+    else { unit = true; browser = true; }
   }
-  return { unit, dashboard, reason: 'checks selected from complete change range' };
+  return { unit, browser, reason: 'checks selected from complete change range' };
 }
 
 // Keep this policy in the GUI package so standalone source archives and the
 // monorepo share one classifier without depending on files outside the archive.
-const gates = ['python', 'gui_integration', 'unit', 'dashboard', 'codex', 'dsh', 'package'];
+const gates = ['python', 'gui_integration', 'unit', 'browser', 'codex', 'dsh', 'package'];
 function allChecks(reason) {
   return { ...Object.fromEntries(gates.map(key => [key, true])), reason };
 }
+// Audited Node-only CLI consumers, not a directory-wide GUI exemption.
+// All GUI gates stay enabled; Python CLI/home and GUI integration still run.
+// See docs/ci-gui-native-scope.md before extending this inventory.
+const nativeCliPaths = new Set([
+  'src/gui/h2b-cli-capabilities.mjs',
+  'src/gui/h2b-control-bridge.mjs',
+  'src/gui/integration/adapter-enrollment.mjs',
+  'src/gui/integration/org-cli-runner.mjs',
+  'src/gui/integration/hyprial-cli.mjs',
+  'src/gui/tests/adapter-enrollment.test.mjs',
+  'src/gui/tests/console-management.test.mjs',
+  'src/gui/tests/h2b-cli-capabilities.test.mjs',
+  'src/gui/tests/h2b-control-bridge.test.mjs',
+  'src/gui/tests/hyprial-cli.test.mjs',
+]);
 export function classifyRepository(paths) {
   const code = paths.filter(path => !isDocumentation(path.startsWith('src/gui/') ? path.slice(8) : path));
   if (!code.length) return { ...Object.fromEntries(gates.map(key => [key, false])), reason: 'documentation-only or empty change' };
   // Exempt only known browser source file types, never entire directories.
   // New scripts, providers, dependencies, install code and protocols run all.
-  const browserOnly = path => /^src\/gui\/(?:client\/[^/]+\.(?:js|css)|static\/(?:client|host)\.js|dashboard\/src\/[^/]+\.(?:jsx|js|css)|dashboard\/index\.html)$/.test(path);
+  const browserOnly = path => /^src\/gui\/(?:client\/[^/]+\.(?:js|css)|static\/(?:client|host)\.js)$/.test(path);
+  if (code.some(path => nativeCliPaths.has(path)) && code.every(path => browserOnly(path) || nativeCliPaths.has(path))) {
+    return { ...allChecks('audited GUI native CLI consumers; retain all GUI gates and Python CLI/home integration'), python: false };
+  }
   if (!code.every(browserOnly)) return allChecks('shared, build, runtime or unknown input changed; run all checks');
   const gui = classify(code, 'gui');
-  const dashboardOnly = code.every(path => path.startsWith('src/gui/dashboard/'));
   return { python: false, gui_integration: true, unit: gui.unit,
-    dashboard: gui.dashboard, codex: !dashboardOnly, dsh: !dashboardOnly, package: true,
+    browser: gui.browser, codex: true, dsh: true, package: true,
     reason: 'browser-only change; retain GUI and Python GUI integration checks' };
 }
 
@@ -84,20 +96,49 @@ export function changedPaths(event, eventName, cwd, fetch = true) {
 }
 
 export function select(event, eventName, project, cwd, fetch = true) {
+  // The integration-to-release boundary never inherits a PR subset decision,
+  // including docs-only batches. Keep every existing gate name intact.
+  if (eventName === 'pull_request' && ['dev', 'main'].includes(event.pull_request?.base?.ref)) {
+    const reason = 'PR targets main/dev; full release-boundary validation';
+    if (project === 'all') return allChecks(reason);
+    return { unit: true, browser: project === 'gui',
+      ...(project === 'hyprial' ? { gui_integration: true } : {}), reason };
+  }
   if (project === 'all' && eventName === 'push' && ['refs/heads/main', 'refs/heads/dev'].includes(event.ref)) {
     return allChecks('main/dev is a release candidate; run all checks');
   }
   if (project === 'hyprial' && eventName === 'push' && ['refs/heads/main', 'refs/heads/dev'].includes(event.ref)) {
-    return { unit: true, dashboard: false, gui_integration: true, reason: 'main/dev is a release candidate; run all checks' };
+    return { unit: true, browser: false, gui_integration: true, reason: 'main/dev is a release candidate; run all checks' };
   }
   if (project === 'gui' && eventName === 'push' && ['refs/heads/main', 'refs/heads/dev'].includes(event.ref)) {
-    return { unit: true, dashboard: true, reason: 'main/dev is a release candidate; run all checks' };
+    return { unit: true, browser: true, reason: 'main/dev is a release candidate; run all checks' };
   }
-  try { return classify(changedPaths(event, eventName, cwd, fetch), project); }
+  try {
+    const paths = changedPaths(event, eventName, cwd, fetch);
+    if (paths.some(path => nativeCliPaths.has(path)) && ['all', 'hyprial'].includes(project)) {
+      const head = eventName === 'pull_request' ? event.pull_request.head.sha : event.after;
+      let base = eventName === 'pull_request' ? event.pull_request.base.sha : event.before;
+      if (eventName === 'pull_request') base = git(['merge-base', base, head], cwd).trim();
+      const fields = git(['diff', '--no-renames', '--name-status', '-z', base, head, '--'], cwd).split('\0');
+      for (let i = 0; i < fields.length - 1; i += 2) {
+        if (!nativeCliPaths.has(fields[i + 1])) continue;
+        const tree = git(['ls-tree', '--full-tree', head, '--', fields[i + 1]], cwd);
+        if (!['A', 'M'].includes(fields[i]) || !/^100(?:644|755) blob /.test(tree)) {
+          const result = allChecks('audited GUI CLI structural change; run all checks');
+          return project === 'all' ? result : { unit: true, browser: false, gui_integration: true, reason: result.reason };
+        }
+      }
+    }
+    const result = classify(paths, project);
+    if (eventName === 'pull_request' && event.pull_request?.base?.ref === 'intg/gaga-gui') {
+      result.reason = `gaga integration tier: ${result.reason}`;
+    }
+    return result;
+  }
   catch {
     // Do not print git stderr: it may include credential-bearing diagnostics.
     if (project === 'all') return allChecks('comparison unavailable; run all checks');
-    return { unit: true, dashboard: project === 'gui', ...(project === 'hyprial' ? { gui_integration: true } : {}), reason: 'comparison unavailable; run all checks' };
+    return { unit: true, browser: project === 'gui', ...(project === 'hyprial' ? { gui_integration: true } : {}), reason: 'comparison unavailable; run all checks' };
   }
 }
 
@@ -107,9 +148,10 @@ export function runCli(project = process.argv[2]) {
   try {
     result = select(JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8')),
       process.env.GITHUB_EVENT_NAME, project, process.cwd());
-  } catch { result = project === 'all' ? allChecks('event unavailable; run all checks') : { unit: true, dashboard: project === 'gui', ...(project === 'hyprial' ? { gui_integration: true } : {}), reason: 'event unavailable; run all checks' }; }
-  console.log(`CI_SCOPE ${JSON.stringify(result)}`);
-  for (const key of (project === 'all' ? gates : project === 'hyprial' ? ['unit', 'dashboard', 'gui_integration'] : ['unit', 'dashboard'])) appendFileSync(process.env.GITHUB_OUTPUT, `${key}=${result[key]}\n`);
+  } catch { result = project === 'all' ? allChecks('event unavailable; run all checks') : { unit: true, browser: project === 'gui', ...(project === 'hyprial' ? { gui_integration: true } : {}), reason: 'event unavailable; run all checks' }; }
+  // One self-contained log line; keep gate output keys and fallback policy unchanged.
+  console.log(`CI_SCOPE ${JSON.stringify({ project, event: process.env.GITHUB_EVENT_NAME ?? 'unknown', ...result })}`);
+  for (const key of (project === 'all' ? gates : project === 'hyprial' ? ['unit', 'browser', 'gui_integration'] : ['unit', 'browser'])) appendFileSync(process.env.GITHUB_OUTPUT, `${key}=${result[key]}\n`);
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY,
     `\nCI selection: ${Object.entries(result).filter(([key]) => key !== 'reason').map(([key, value]) => `${key}=${value}`).join(', ')}. ${result.reason}.\n`);
 }

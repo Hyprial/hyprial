@@ -1,5 +1,5 @@
 {
-  "schema": "h2b.install/v2",
+  "schema": "hyprial.install/v2",
   "name": "gui",
   "install": [
     "bash",

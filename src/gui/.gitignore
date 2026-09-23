@@ -1,9 +1,8 @@
 .dsh-h2b-state/
 .env.local
 node_modules/
-dashboard/node_modules/
-dashboard/dist/
-dashboard/test-results/
-dashboard/playwright-report/
 
 .ci-cache/
+
+__pycache__/
+*.pyc

@@ -31,7 +31,9 @@ from .lifecycle_receipts import (
 
 SCHEMA_VERSION = 1
 ROLLBACK_GUARD_PROVIDER = "__hyprial_desired_state_schema_v1__"
-_HARNESSES = frozenset({"codex", "claude", "pi", "dsh", "lark"})
+_HARNESSES = frozenset(
+    {"codex", "claude", "pi", "dsh", "lark", "jev", "user-proxy"}
+)
 _SHA256_HEX = re.compile(r"[0-9a-f]{64}\Z")
 _LOGGER = logging.getLogger("hyprial.daemon.desired_state")
 
@@ -111,7 +113,7 @@ class HarnessLaunchSpec:
         harness = "claude" if raw_harness == "cc" else raw_harness
         if harness not in _HARNESSES:
             raise DesiredStateError(
-                f"{label} has an invalid harness; expected codex, claude, pi, dsh, or lark"
+                f"{label} has an invalid harness; expected codex, claude, pi, dsh, lark, jev, or user-proxy"
             )
         name = _string(record.get("name"), f"{label}.name")
         raw_args = record.get("args", [])

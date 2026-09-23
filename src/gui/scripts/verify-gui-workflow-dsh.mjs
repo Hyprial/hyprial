@@ -10,10 +10,10 @@ const endpoint = process.env.GUI_STUDIO_DSH_URL || 'http://127.0.0.1:3198';
 const target = new URL(endpoint);
 if (!['127.0.0.1', 'localhost'].includes(target.hostname) || target.port === '3080') throw new Error('Use an isolated loopback DSH port, never the production workspace');
 let deps;
-for (const base of [process.env.DSH_GUI_BROWSER_DEPS, join(repo, 'dashboard/package.json'), join(homedir(), '.h2b/apps/gui/source/dashboard/package.json')].filter(Boolean)) {
+for (const base of [process.env.DSH_GUI_BROWSER_DEPS, join(repo, 'browser-tests/package.json'), join(homedir(), '.h2b/apps/gui/source/browser-tests/package.json')].filter(Boolean)) {
   try { const candidate = createRequire(resolve(base)); candidate.resolve('playwright'); deps = candidate; break; } catch {}
 }
-if (!deps) throw new Error('Install Playwright in dashboard or set DSH_GUI_BROWSER_DEPS');
+if (!deps) throw new Error('Install Playwright in browser-tests or set DSH_GUI_BROWSER_DEPS');
 const output = resolve(process.env.GUI_STUDIO_ARTIFACTS || '/tmp/gui-workflow-dsh-smoke');
 await mkdir(output, { recursive: true });
 const { chromium } = deps('playwright');

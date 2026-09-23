@@ -6,12 +6,17 @@ import asyncio
 import json
 import os
 import shutil
+import sys
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Self
 from uuid import uuid4
 
+from hyprial.agents.environment import (
+    ChildEnvironmentLaunch,
+    whitelist_replacement_environment,
+)
 from hyprial.daemon.desired_state import HarnessLaunchSpec
 from hyprial.log import Logger
 from hyprial.transfer.container import (
@@ -23,7 +28,13 @@ from hyprial.transfer.container import (
 from .codex import PROCESS_FORCE_JOIN_SECONDS, _OwnedProcessGroup
 from .common import summarize_stderr
 from .model_provider import claude_provider_environment
-from .streaming import ProgressObservation, StreamingTurnProcess, TurnClient, TurnClientFactory
+from .streaming import (
+    ProgressObservation,
+    StreamingTurnProcess,
+    TurnClient,
+    TurnClientFactory,
+    TurnFailureSpecObserver,
+)
 from .worker_channel import WorkerChannel
 
 # The turn-client seam predates the shared pump under these names; retain
@@ -31,6 +42,14 @@ from .worker_channel import WorkerChannel
 AgentSdkClient = TurnClient
 ClientFactory = TurnClientFactory
 AGENT_SDK_VERSION = "0.2.125"
+
+
+def _sdk_process_group():
+    if os.name == "nt":
+        from hyprial.platform.windows_owned_process import WindowsOwnedProcessGroup
+
+        return WindowsOwnedProcessGroup(label="Claude SDK")
+    return _OwnedProcessGroup()
 
 
 def _option_value(args: tuple[str, ...], option: str) -> str | None:
@@ -70,10 +89,18 @@ def _extra_args(args: tuple[str, ...]) -> dict[str, str | None]:
 
 
 def sdk_worker_command(*, uv_executable: str | None = None) -> tuple[str, ...]:
+    bundled = os.environ.get("HYPRIAL_BUNDLED_SDK_BOOTSTRAP")
+    if bundled is not None:
+        entry = Path(bundled)
+        if not entry.is_absolute() or not entry.is_file():
+            raise RuntimeError(
+                "Bundled SDK bootstrap must be an existing absolute file"
+            )
+        return (sys.executable, "-I", "-S", "-B", str(entry))
     uv = uv_executable or shutil.which("uv")
     if uv is None:
-        user_uv = Path.home() / ".local" / "bin" / (
-            "uv.exe" if os.name == "nt" else "uv"
+        user_uv = (
+            Path.home() / ".local" / "bin" / ("uv.exe" if os.name == "nt" else "uv")
         )
         if user_uv.is_file() and os.access(user_uv, os.X_OK):
             uv = str(user_uv)
@@ -130,6 +157,7 @@ class IsolatedAgentSdkClient:
         resume: str | None = None,
         on_session_established: Callable[[str], None] | None = None,
         process_group: _OwnedProcessGroup | None = None,
+        complete_launch: "ChildEnvironmentLaunch | None" = None,
     ) -> None:
         if session_id is not None and resume is not None:
             raise ValueError("session_id and resume are mutually exclusive")
@@ -138,20 +166,35 @@ class IsolatedAgentSdkClient:
         # harness wrapper so a stop that the graceful protocol cannot complete
         # (a worker still in its ``uv`` install phase never reads "stop") can
         # be forced by PID group instead of hanging the lifecycle effect.
-        self._process_group = process_group
+        self._process_group = (
+            process_group
+            if process_group is not None
+            else (_sdk_process_group() if os.name == "nt" else None)
+        )
         self._on_session_established = on_session_established
         self.command = (
             tuple(worker_command)
             if worker_command
+            # The image carries a persistent SDK venv: no runtime uv
+            # resolve, no startup network (P0 lesson #3).
             else (
-                # The image carries a persistent SDK venv: no runtime uv
-                # resolve, no startup network (P0 lesson #3).
                 (CONTAINER_SDK_PYTHON, CONTAINER_SDK_WORKER)
                 if spec.containerized
                 else sdk_worker_command(uv_executable=uv_executable)
             )
         )
-        base_environment = {**os.environ, **(env or {})}
+        self._complete_launch = complete_launch
+        if complete_launch is not None and env is not None:
+            raise ValueError(
+                "complete child environment cannot be combined with a "
+                "partial env mapping"
+            )
+        if complete_launch is not None:
+            base_environment = complete_launch.environment.for_exec()
+        else:
+            base_environment = whitelist_replacement_environment(
+                os.environ, env or {}
+            )
         provider_environment = claude_provider_environment(spec, base_environment)
         self.options: dict[str, Any] = {
             "cwd": spec.cwd,
@@ -178,9 +221,7 @@ class IsolatedAgentSdkClient:
             # permissions, which for residents ARE the worker's behavior.
             self.options["settingSources"] = ["project"]
             self.options["strictMcpConfig"] = True
-            self.options["mcpServers"] = {
-                "harness-bridge": worker_channel.mcp_server
-            }
+            self.options["mcpServers"] = {"harness-bridge": worker_channel.mcp_server}
             self.options["allowedTools"] = list(worker_channel.allowed_tools)
         identity_environment = (
             worker_channel.identity_environment() if worker_channel is not None else {}
@@ -212,9 +253,7 @@ class IsolatedAgentSdkClient:
                     **(env or {}),
                     **provider_environment,
                     **identity_environment,
-                    "HYPRIAL_AGENT_SDK_OPTIONS": self._env[
-                        "HYPRIAL_AGENT_SDK_OPTIONS"
-                    ],
+                    "HYPRIAL_AGENT_SDK_OPTIONS": self._env["HYPRIAL_AGENT_SDK_OPTIONS"],
                 },
                 state_dir=worker_channel.state_dir,
             )
@@ -250,17 +289,22 @@ class IsolatedAgentSdkClient:
         )
 
     async def __aenter__(self) -> Self:
-        self._process = await asyncio.create_subprocess_exec(
-            *self.command,
+        options = dict(
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=self._env,
-            # Own a distinct process group so a forced stop can drain the whole
-            # ``uv run`` -> python worker tree by PGID without touching the
-            # daemon (the worker otherwise inherits the daemon's group).
-            start_new_session=True,
         )
+        if os.name == "nt":
+            from hyprial.platform.windows_owned_process import WindowsOwnedProcessGroup
+
+            if not isinstance(self._process_group, WindowsOwnedProcessGroup):
+                raise ConnectionError("Windows SDK requires a Job-owned launch")
+            self._process = await self._process_group.spawn(self.command, **options)
+        else:
+            self._process = await asyncio.create_subprocess_exec(
+                *self.command, start_new_session=True, **options
+            )
         if self._process_group is not None:
             # Publishing ownership can raise if the group is already stopping or
             # its birth identity is unreadable; let that fail the client so the
@@ -270,6 +314,15 @@ class IsolatedAgentSdkClient:
         self._exit_logged = False
         if self._logger is not None:
             self._logger.info("worker.started", pid=self._process.pid)
+        if self._complete_launch is not None and self._logger is not None:
+            self._logger.info(
+                "worker.environment.receipt",
+                actor=self._complete_launch.actor,
+                grants=[
+                    {"grantId": grant_id, "revision": revision}
+                    for grant_id, revision in self._complete_launch.grants
+                ],
+            )
         assert self._process.stderr is not None
         self._stderr_task = asyncio.create_task(self._drain_stderr())
         self._exit_task = asyncio.create_task(self._watch_process_exit())
@@ -317,12 +370,20 @@ class IsolatedAgentSdkClient:
                 await self._write_message({"op": "stop"})
                 await asyncio.wait_for(process.wait(), timeout=2.0)
             except (ConnectionError, TimeoutError):
-                process.terminate()
+                if os.name == "nt" and self._process_group is not None:
+                    self._process_group.signal(process.pid, 15)
+                else:
+                    process.terminate()
                 try:
                     await asyncio.wait_for(process.wait(), timeout=1.0)
                 except TimeoutError:
                     process.kill()
                     await process.wait()
+        if os.name == "nt" and self._process_group is not None:
+            # A surviving descendant may still hold the stdio pipe after the
+            # worker has exited; drain the owned Job before joining readers.
+            if self._process_group.exists(process.pid):
+                self._process_group.signal(process.pid, 9)
         if self._stderr_task is not None:
             await self._stderr_task
         if self._exit_task is not None:
@@ -354,7 +415,9 @@ class IsolatedAgentSdkClient:
                 yield ProgressObservation(
                     phase=phase,
                     summary=summary,
-                    tool_call_id=tool_call_id if isinstance(tool_call_id, str) else None,
+                    tool_call_id=tool_call_id
+                    if isinstance(tool_call_id, str)
+                    else None,
                     tool_name=tool_name if isinstance(tool_name, str) else None,
                     detail=detail if isinstance(detail, dict) else None,
                     terminal=message.get("terminal") is True,
@@ -451,6 +514,7 @@ def create_claude_sdk_client(
     resume: str | None = None,
     on_session_established: Callable[[str], None] | None = None,
     process_group: _OwnedProcessGroup | None = None,
+    complete_launch: "ChildEnvironmentLaunch | None" = None,
 ) -> AgentSdkClient:
     logger = (
         Logger.worker(worker_channel.state_dir, runtime="claude", name=spec.name)
@@ -466,6 +530,7 @@ def create_claude_sdk_client(
         resume=resume,
         on_session_established=on_session_established,
         process_group=process_group,
+        complete_launch=complete_launch,
     )
 
 
@@ -479,7 +544,9 @@ class ClaudeAgentSdkProcess(StreamingTurnProcess):
         client_factory: ClientFactory | None = None,
         env: Mapping[str, str] | None = None,
         worker_channel: WorkerChannel | None = None,
+        complete_launch: "ChildEnvironmentLaunch | None" = None,
         reconnect_delay_seconds: float = 0.25,
+        on_turn_failure_for_spec: TurnFailureSpecObserver | None = None,
     ) -> None:
         if spec.harness != "claude" or not spec.headless:
             raise ValueError("Claude Agent SDK requires a managed headless spec")
@@ -494,6 +561,12 @@ class ClaudeAgentSdkProcess(StreamingTurnProcess):
         self._session_id = spec.session_ref or str(uuid4())
         self._established = spec.session_ref is not None
         self._env = env
+        self._complete_launch = complete_launch
+        if complete_launch is not None and env is not None:
+            raise ValueError(
+                "complete child environment cannot be combined with a "
+                "partial env mapping"
+            )
         # One stable worker identity across client reconnects: every reconnected
         # SDK client re-injects the same canonical actor and session ref.
         self.worker_channel = worker_channel
@@ -501,7 +574,7 @@ class ClaudeAgentSdkProcess(StreamingTurnProcess):
         # stop can time out when the worker is still resolving its ``uv``
         # environment; force_stop then drains the group by PID so the lifecycle
         # effect settles instead of leaving the wrapper alive-but-unstoppable.
-        self._process_group = _OwnedProcessGroup()
+        self._process_group = _sdk_process_group()
         logger = (
             Logger.worker(worker_channel.state_dir, runtime="claude", name=spec.name)
             if worker_channel is not None
@@ -518,6 +591,19 @@ class ClaudeAgentSdkProcess(StreamingTurnProcess):
             force_stopped=self._process_group.stopped,
             force_stop_join_seconds=PROCESS_FORCE_JOIN_SECONDS,
             liveness_probe=self._process_group.liveness,
+            on_turn_failure=(
+                (
+                    lambda failure: on_turn_failure_for_spec(
+                        failure,
+                        harness="claude",
+                        provider=spec.model_provider,
+                        model=spec.model,
+                        worker=spec.name,
+                    )
+                )
+                if on_turn_failure_for_spec is not None
+                else None
+            ),
         )
 
     @property
@@ -538,4 +624,5 @@ class ClaudeAgentSdkProcess(StreamingTurnProcess):
             resume=self._session_id if self._established else None,
             on_session_established=self._session_established,
             process_group=self._process_group,
+            complete_launch=self._complete_launch,
         )

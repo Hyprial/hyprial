@@ -67,7 +67,11 @@ from hyprial.contracts.channel import (
     channel_generation,
     safe_channel_build_version,
 )
-from hyprial.contracts.session import SESSION_CARRIER_SOURCES, is_session_fetch
+from hyprial.contracts.session import (
+    SESSION_CARRIER_SOURCES,
+    is_session_fetch,
+    reply_message_id,
+)
 from hyprial.inbox import (
     DeliveryCustodyCoordinator,
     DeliveryCustodyFacade,
@@ -120,7 +124,7 @@ from .discovery import (
     local_tailnet_endpoint,
     merge_endpoints,
 )
-from .forwarding import ForwardingSidecarController
+from .forwarding import ForwardingSidecarSupervisor
 from hyprial.transport import (
     KeySpace,
     LivelinessDirectory,
@@ -128,7 +132,11 @@ from hyprial.transport import (
     ZenohTransport,
     zenoh_environment_flag,
 )
+from hyprial.quota_watchdog import QuotaWatchdog
+from hyprial.inbox.api import InboxPruneItem
+from hyprial.inbox_watchdog import InboxWatchdog
 from hyprial.usage import UsageCache, usage_collection_disabled
+from .duplicate_watch import DUPLICATE_INSTANCE_EVENT, DuplicateInstanceWatch
 from hyprial.contracts.agent_task import (
     AgentTaskError,
     validate_activity as validate_agent_task_activity,
@@ -138,13 +146,16 @@ from hyprial.contracts.agent_task import (
     validate_start as validate_agent_task_start,
     validate_status_request as validate_agent_task_status,
 )
+from hyprial.pac.agent_task import PacAgentTaskError, PacAgentTaskService
 from hyprial.workflow.service import WorkflowService, WorkflowServiceError
 from hyprial.inbox.io import (
     CorrelatedInboxEventRouter,
     InboxDeliveryIoAdapter,
+    InboxIoError,
     InboxProjectionAdapter,
 )
 from hyprial.assign_reconcile import AssignReconcileReport
+from hyprial.routine.pac_dispatch import PacRoutineDispatch
 from hyprial.routine.service import RoutineService, RoutineServiceError
 from hyprial.routine.store import RoutineStore
 
@@ -244,6 +255,12 @@ from .top import build_top_snapshot
 from .harness_actor import HarnessRuntimeActor
 
 JsonObject = dict[str, Any]
+
+#: How often the "nobody has taken this mail" sweep may run.  It is a GROUP BY
+#: over every inbox row, so it rides a timer rather than the 1s reconcile tick;
+#: one minute is far below the alert threshold it feeds (half the hold TTL), so
+#: the gate costs no timeliness.
+_INBOX_WATCH_INTERVAL_MS = 60_000
 
 # _ensure_interactive_route declares an interactive session's zenoh liveliness
 # token on THIS daemon's own transport session (see its docstring), not on the
@@ -698,6 +715,8 @@ class DaemonApplication:
         self._forwarding_discovery = forwarding_discovery
         self._forwarding_effective: tuple[str, ...] = ()
         self._forwarding_start_attempted = forwarding_discovery is not None
+        self._forwarding_supervisor: ForwardingSidecarSupervisor | None = None
+        self._forwarding_dialed: tuple[str, ...] | None = None
         # One shared state database (U0a-2 丙): desired state and the
         # lifecycle journal write through the same serialized connection
         # owner, so in-process contention between the two is gone by
@@ -739,6 +758,10 @@ class DaemonApplication:
         self._user_delivery: ZenohUserDeliveryTransport | None = None
         self._org_endpoint: OrgContextMesh | None = None
         self._actor_token: Any | None = None
+        self._duplicate_watch: DuplicateInstanceWatch | None = None
+        # Set by the home guard's pre-claim copied-home detection: the frozen
+        # record detail when this home was started from a live daemon's copy.
+        self._startup_duplicate: JsonObject | None = None
         self._route_gateway_cache = _RouteGatewayCache()
         self._interactive_route_lock = threading.RLock()
         self._clock: Callable[[], float] = time.monotonic
@@ -778,11 +801,17 @@ class DaemonApplication:
             owner=self.owner,
             node_id=self.node_id,
             daemon_epoch=self.epoch,
+            hyprial_home=self.hyprial_home,
             worker_running=actor_worker_running,
             clock=actor_clock,
         )
         self.agents = self._agent_session_domains.agents
         self._agent_liveness = self._agent_session_domains.liveness
+        # P1b B1: the compose path needs the registry's grant/receipt
+        # surface, which the compatibility facade deliberately does not
+        # expose — mutations go through Agent commands; the daemon-side
+        # environment composition is a read, not a mutation.
+        self._agent_registry = self._agent_session_domains._registry  # noqa: SLF001
         self._agent_domains_finalizer = weakref.finalize(
             self, self._agent_session_domains.close
         )
@@ -806,6 +835,7 @@ class DaemonApplication:
         # restore pending, and gating it would change what those tests cover.
         self._restore_done = threading.Event()
         self._restore_done.set()
+        self._provider_auth: Any = None
         self._restore_thread: threading.Thread | None = None
         self._restore_error: BaseException | None = None
         # One startup-only diagnostic per interactive session whose binding
@@ -844,10 +874,54 @@ class DaemonApplication:
         # by from_environment so directly-constructed test applications never
         # start a network-touching refresher.
         self._usage_cache = usage_cache
+        # Quota watchdog (Allen 09-17): evaluates each cache refresh and each
+        # PROVIDER_USAGE_LIMIT turn, and tells the owner through Squire.  It
+        # exists only with the cache -- no readings, nothing to watch.
+        self._quota_watchdog: QuotaWatchdog | None = None
+        if usage_cache is not None:
+            try:
+                self._quota_watchdog = QuotaWatchdog(
+                    state_dir=self.state_dir,
+                    deliver=self._quota_watchdog_deliver,
+                    readings=usage_cache.snapshots,
+                    clock_ms=lambda: time.time_ns() // 1_000_000,
+                )
+            except (OSError, ValueError) as error:
+                # An unreadable state file disables the watchdog loudly; it
+                # never blocks the daemon from starting.
+                self._log(
+                    "error",
+                    "daemon",
+                    "quota_watchdog.disabled",
+                    error=f"{type(error).__name__}: {error}",
+                )
+            else:
+                usage_cache.set_refresh_observer(self._on_usage_refreshed)
+        # Inbox watchdog (hq-adjutant 2026-09-18, after 11 messages expired
+        # unread while their recipient kept working): says so BEFORE the
+        # deadline, and says so again if the sweep throws mail away while the
+        # recipient is running.  ⛔ It does not change what the sweep reaps.
+        self._inbox_watchdog: InboxWatchdog | None = None
+        self._inbox_watchdog_checked_at_ms = 0
+        try:
+            self._inbox_watchdog = InboxWatchdog(
+                state_dir=self.state_dir,
+                deliver=self._inbox_watchdog_deliver,
+                clock_ms=lambda: time.time_ns() // 1_000_000,
+            )
+        except (OSError, ValueError) as error:
+            self._log(
+                "error",
+                "daemon",
+                "inbox_watchdog.disabled",
+                error=f"{type(error).__name__}: {error}",
+            )
         self._home_guard = ActiveDaemonHeartbeat(
             self.hyprial_home,
             keepalive_duration=keepalive_duration,
             ownership_lost=self.stop_event.set,
+            duplicate_detected=self._on_startup_duplicate_detected,
+            duplicate_check_failed=self._on_duplicate_check_failed,
         )
         self._autoupdate = InProcessAutoUpdateScheduler(
             state_dir=self.state_dir,
@@ -856,6 +930,46 @@ class DaemonApplication:
                 level, "autoupdate", event, **fields
             ),
         )
+
+    def _on_startup_duplicate_detected(self, detail: dict[str, Any]) -> None:
+        """Home guard's copied-home verdict: log it and keep it for ps/doctor."""
+
+        self._startup_duplicate = dict(detail)
+        self._log("error", "daemon", DUPLICATE_INSTANCE_EVENT, **detail)
+
+    def _on_duplicate_check_failed(self, detail: str) -> None:
+        """The background copied-home check died: warn, never silent."""
+
+        self._log("warn", "daemon", "daemon.identity.duplicate_check_failed", detail=detail)
+
+    def _duplicate_instance_payload(self) -> JsonObject:
+        """Duplicate-instance verdict for ps/doctor, from both detectors.
+
+        Two sources: the mesh watch (foreign generations of this node
+        identity seen on liveliness) and the home guard's pre-claim
+        copied-home detection.  The mesh half only sees peers that declare
+        a generation liveliness token -- a pre-generation duplicate is
+        invisible to it and only the startup detection (same machine)
+        covers that case.  That limit ships in the payload so no reader
+        can mistake this for whole-mesh coverage.
+        """
+
+        mesh = (
+            self._duplicate_watch.status_payload()
+            if self._duplicate_watch is not None
+            else {"active": False, "meshPeerGenerations": []}
+        )
+        return {
+            "active": bool(mesh["active"]) or self._startup_duplicate is not None,
+            "meshPeerGenerations": mesh["meshPeerGenerations"],
+            "startupRecord": self._startup_duplicate,
+            "meshDetectionCoverage": (
+                "only peers that declare a generation liveliness token; "
+                "a pre-generation duplicate is invisible to mesh detection "
+                "and is covered only by startup copied-home detection on "
+                "the same machine"
+            ),
+        }
 
     @classmethod
     def from_environment(
@@ -1648,6 +1762,7 @@ class DaemonApplication:
             resolve_target=lambda name: self._resolve_agent_alias(
                 normalize_agent_recipient(name)
             ),
+            deliver_user=self._deliver_report_to_user,
         )
         self._pac_notification_io = shared_inbox_io
         # Deferred import: hyprial.harnesses eagerly imports .agent_sdk, which
@@ -1668,6 +1783,8 @@ class DaemonApplication:
             return build_worker_channel(
                 actor=actor,
                 session_ref=session_ref,
+                node_id=self.node_id,
+                owner=self.owner,
                 hyprial_home=self.hyprial_home,
                 state_dir=self.state_dir,
                 # A containerized worker spawns its MCP channel INSIDE the
@@ -1678,9 +1795,41 @@ class DaemonApplication:
                 ),
             )
 
+        def child_environment(
+            spec: HarnessLaunchSpec, channel: WorkerChannel
+        ) -> "object | None":
+            """P1b B1: the pi worker's complete replacement environment.
+
+            The composition itself is the shared, tested implementation in
+            :func:`hyprial.agents.environment.compose_worker_child_launch`;
+            this closure binds it to THIS daemon's authority (registry,
+            home, channel, environment).
+            """
+
+            from hyprial.agents.environment import compose_worker_child_launch
+
+            return compose_worker_child_launch(
+                registry=self._agent_registry,
+                hyprial_home=self.hyprial_home,
+                channel=channel,
+                environ=os.environ,
+                agent_name=spec.name,
+            )
+
         harness_events = CorrelatedDomainEvents()
+        provider_auth = self._build_provider_auth_coordinator()
+        self._provider_auth = provider_auth
         harness_actor = HarnessRuntimeActor(
-            HarnessLauncher(worker_channel_factory=worker_channel),
+            HarnessLauncher(
+                worker_channel_factory=worker_channel,
+                child_environment_factory=child_environment,
+                state_dir=self.state_dir,
+                turn_failure_observer=(
+                    provider_auth.handle_turn_failure
+                    if provider_auth is not None
+                    else None
+                ),
+            ),
             # A dead child is first exposed as stopped/error and its actor
             # registration is withdrawn.  Desired-state recovery starts a
             # replacement on a later one-second maintenance pass instead of
@@ -1731,7 +1880,10 @@ class DaemonApplication:
             reload_adapters=self._reload_user_adapters,
         )
         user_endpoint = ZenohUserDeliveryEndpoint(transport, user_receiver)
-        user_delivery = ZenohUserDeliveryTransport(transport)
+        user_delivery = ZenohUserDeliveryTransport(
+            transport,
+            logger=self._logger.bind(component="user-delivery"),
+        )
         org_endpoint = OrgContextMesh(
             transport,
             OrgContextStore(self.hyprial_home),
@@ -1758,11 +1910,27 @@ class DaemonApplication:
             logger=lambda level, component, event, **fields: self._log(
                 level, component, event, **fields
             ),
+            usage_limit_observer=(
+                self._on_usage_limit_failure
+                if self._quota_watchdog is not None
+                else None
+            ),
         )
+        duplicate_watch: DuplicateInstanceWatch | None = None
         try:
             recovery = runtime.start()
             actor_token = transport.declare_liveliness(
                 KeySpace().actor_liveliness(self.node_id)
+            )
+            # The watch's own constructor closes its token if observing
+            # fails, so a raised construction leaves nothing behind.
+            duplicate_watch = DuplicateInstanceWatch(
+                transport,
+                self.node_id,
+                self._home_guard.generation,
+                logger=lambda level, event, **fields: self._log(
+                    level, "daemon", event, **fields
+                ),
             )
         except BaseException as startup_error:
             cleanup_errors: list[BaseException] = []
@@ -1776,6 +1944,7 @@ class DaemonApplication:
                 endpoint.close,
                 directory.close,
                 inbox.close,
+                *(() if duplicate_watch is None else (duplicate_watch.close,)),
                 transport.close,
             ):
                 try:
@@ -1803,6 +1972,7 @@ class DaemonApplication:
         self._user_delivery = user_delivery
         self._org_endpoint = org_endpoint
         self._actor_token = actor_token
+        self._duplicate_watch = duplicate_watch
         self._runtime = runtime
         self._start_lifecycle_manager(
             transport=transport,
@@ -1847,22 +2017,47 @@ class DaemonApplication:
             assign_reconcile_sink=self._on_assign_reconcile_report,
             service_actor=self._dispatch_service_actor,
             dispatch_gate=self._pac_dispatch_gate,
+            logger=self._logger,
         )
         adopted = self._workflow_service.recover()
         if adopted:
             self._log("info", "daemon", "workflow.recovered", runs=adopted)
         # Self-drive routines (design-selfdrive-routine): deterministic duty
-        # cycles producing one-shot PAC runs — the routine is the workflow
-        # service's producer, never its peer in model space.
+        # cycles producing one PAC graph per task (U3).  The old dispatcher is
+        # no longer in this path; the alarm sink still comes from it, which is
+        # U2 residue the retirement removes in U6/U7.
         self._routine_service = RoutineService(
-            workflow=self._workflow_service,
+            pac=PacRoutineDispatch(
+                state_dir=self.state_dir,
+                deliver=self._deliver_routine_task,
+                clock_ms=lambda: time.time_ns() // 1_000_000,
+                resolve_principal=self._resolve_send_sender,
+            ),
             alarm=self._workflow_service.alarm_sink,
             state_dir=self.state_dir,
+            # Stored bare-name addresses migrate ONLY via this machine's
+            # agents registry (approved plan Q1): a unique roster match
+            # rewrites the stored spec; anything else quarantines loudly.
+            migrate_address=self._migrate_stored_routine_address,
+            logger=self._logger,
         )
         adopted_routines = self._routine_service.recover()
         self._reconcile_routine_coordinators()
         if adopted_routines:
             self._log("info", "daemon", "routine.recovered", routines=adopted_routines)
+        # U3 deleted the retired dispatcher's rows when the store opened.  The
+        # ruling was 「迁移时直接删除」, and a deletion whose only trace is an
+        # absence cannot be checked afterwards -- so name the rows here, once,
+        # at the startup that dropped them.
+        dropped = self._routine_service.migrated_u3
+        if dropped["effects"] or dropped["inFlight"]:
+            self._log(
+                "info",
+                "routine",
+                "routine.migrated_u3",
+                effects=list(dropped["effects"]),
+                inFlight=list(dropped["inFlight"]),
+            )
         # Every registered agent gets its daemon-backed network presence:
         # remote senders see a deliverable target and deliveries land in
         # this node's durable inbox even with no connector running.
@@ -2032,6 +2227,7 @@ class DaemonApplication:
             self.state_db,
             LifecyclePorts(agent_port, session_port, harness_port, route_port),
             router,
+            event_sink=self._lifecycle_thread_event,
         )
         self._lifecycle_router = router
         self._lifecycle_domain_ports = (agent_port, session_port, harness_port)
@@ -2067,28 +2263,83 @@ class DaemonApplication:
         manager = self._lifecycle_manager
         if manager is None:
             raise DaemonRequestError(
-                ipc_errors.DAEMON_START_FAILED,
+                ipc_errors.LIFECYCLE_MANAGER_UNAVAILABLE,
                 "lifecycle manager is not running",
             )
+        # Instrumentation for a failure that is otherwise unobservable.  The
+        # caller's error carries an operation id but no elapsed and no budget,
+        # so an operator reading logs/daemon.jsonl after the fact cannot tell a
+        # 3-second refusal from a deadline that expired at 80 seconds
+        # (2026-09-22: neither the settle timeout nor the admission refusal
+        # wrote anything at all).
+        operation_id = operation.operation_id
+        kind = operation.kind.value
+        budget_ms = int(timeout * 1000)
+        started = time.monotonic()
+        self._log_lifecycle_operation(
+            "info",
+            "daemon.lifecycle.operation.submitted",
+            operationId=operation_id,
+            kind=kind,
+            budgetMs=budget_ms,
+        )
         admission = manager.submit(operation)
         if admission is not PortAdmission.ACCEPTED:
+            self._log_lifecycle_operation(
+                "error",
+                "daemon.lifecycle.operation.refused",
+                operationId=operation_id,
+                kind=kind,
+                admission=admission.value,
+                elapsedMs=int((time.monotonic() - started) * 1000),
+                budgetMs=budget_ms,
+            )
             raise DaemonRequestError(
-                ipc_errors.DAEMON_START_FAILED,
+                (
+                    ipc_errors.LIFECYCLE_MANAGER_UNAVAILABLE
+                    if manager.crashed
+                    else ipc_errors.DAEMON_START_FAILED
+                ),
                 f"lifecycle operation admission: {admission.value}",
             )
         try:
-            result = manager.wait(operation.operation_id, timeout)
+            result = manager.wait(operation_id, timeout)
         except TimeoutError as error:
+            self._log_lifecycle_operation(
+                "error",
+                "daemon.lifecycle.operation.unsettled",
+                operationId=operation_id,
+                kind=kind,
+                elapsedMs=int((time.monotonic() - started) * 1000),
+                budgetMs=budget_ms,
+            )
             raise DaemonRequestError(
-                ipc_errors.DAEMON_START_FAILED,
-                f"lifecycle operation did not settle: {operation.operation_id}",
+                ipc_errors.LIFECYCLE_OPERATION_UNSETTLED,
+                f"lifecycle operation did not settle: {operation_id}",
             ) from error
         if result.state is not LifecycleState.COMPLETED:
+            self._log_lifecycle_operation(
+                "error",
+                "daemon.lifecycle.operation.failed",
+                operationId=operation_id,
+                kind=kind,
+                state=result.state.value,
+                errorCode=result.error_code,
+                elapsedMs=int((time.monotonic() - started) * 1000),
+                budgetMs=budget_ms,
+            )
             raise DaemonRequestError(
                 result.error_code or ipc_errors.DAEMON_START_FAILED,
                 result.error
                 or f"lifecycle operation ended in {result.state.value}",
             )
+        self._log_lifecycle_operation(
+            "info",
+            "daemon.lifecycle.operation.settled",
+            operationId=operation_id,
+            kind=kind,
+            elapsedMs=int((time.monotonic() - started) * 1000),
+        )
         if operation.kind in {LifecycleKind.CREATE, LifecycleKind.TRANSFER}:
             launch = operation.target.harness
             if launch.harness != "lark":
@@ -2102,6 +2353,55 @@ class DaemonApplication:
                     model=launch.model,
                 )
         return result
+
+    def _lifecycle_thread_event(self, event: str, **fields: Any) -> None:
+        """Surface lifecycle consumer-thread faults on the daemon event log.
+
+        Both names are runtime-thread events, not startup failures.  They
+        sit behind the event-sink seam (a method reference, not a call), so
+        the startup-event scanner never classifies them; if this ever moves
+        onto a directly-called ``self._log`` site on the startup path, add
+        the two names to _STARTUP_EVENT_EXCLUSIONS with that reason.  State
+        (_crashed/_last_error, visible via ps) is written by the manager
+        before this sink is called, so a logging failure here cannot hide
+        the fault.
+        """
+
+        if event == "thread_exited":
+            self._log("error", "daemon", "daemon.lifecycle.thread_exited", **fields)
+        elif event == "thread_recovered":
+            self._log("info", "daemon", "daemon.lifecycle.thread_recovered", **fields)
+        else:
+            self._log("error", "daemon", "daemon.lifecycle.thread_error", **fields)
+
+    def _log_lifecycle_operation(self, level: str, event: str, **fields: Any) -> None:
+        """Best-effort instrumentation for one lifecycle operation's run.
+
+        The calls below sit on the failure paths of ``_run_lifecycle_operation``
+        (a refused admission, a deadline that expired, a terminal non-COMPLETED
+        state).  A log sink that raised here would replace the operation's own
+        error with a logging error -- the same shape
+        ``_mirror_startup_event_to_stderr`` guards against, for the same reason:
+        this line exists to describe a failure, so losing it must never be worse
+        than the failure it describes.
+        """
+
+        try:
+            self._log(level, "daemon", event, **fields)
+        except Exception:  # noqa: BLE001 - must not mask the failure it describes
+            pass
+
+    def _lifecycle_status(self) -> JsonObject:
+        """The ps-visible health of the lifecycle consumer thread."""
+
+        manager = self._lifecycle_manager
+        if manager is None:
+            return {"running": False, "crashed": False, "lastError": None}
+        return {
+            "running": manager.is_running,
+            "crashed": manager.crashed,
+            "lastError": manager.last_error,
+        }
 
     def _route_lark_gateway(self, gateway_config: Any) -> LarkSdkGateway:
         """Return a cached SDK facade for one configured Lark adapter."""
@@ -2204,8 +2504,12 @@ class DaemonApplication:
 
     def _workflow_deliver_user(self, recipient: str, text: str, message_id: str) -> bool:
         """Escalation delivery to a ``user:<owner>`` target via the Squire
-        user-delivery path; False when that path is unavailable (the caller
-        then falls back to the alarm emitter's loud failure)."""
+        user-delivery path.
+
+        True when accepted.  A transient timeout (receipt never arrived) is
+        raised as a non-permanent ``InboxIoError`` so the report path can
+        retry instead of permanently failing; unconfigured / rejected returns
+        False (permanent)."""
 
         if self._user_delivery is None:
             return False
@@ -2223,7 +2527,158 @@ class DaemonApplication:
                 conversation_id="workflow",
             )
         )
+        if outcome.accepted:
+            return True
+        if outcome.code == ipc_errors.USER_DELIVERY_TIMEOUT:
+            raise InboxIoError(
+                f"owner-DM delivery for {recipient} timed out waiting for "
+                "the receiver's squire receipt",
+                permanent=False,
+            )
+        return False
+
+    def _deliver_report_to_user(self, recipient: str, text: str, message_id: str) -> bool:
+        """Delivery-layer ``user:<owner>`` split for run/PAC reports.
+
+        Wired into ``InboxDeliveryIoAdapter`` so every report consumer — run
+        reports, PAC notifications, legacy workflow effects — shares one
+        squire DM path instead of writing inbox messages no transport
+        consumes (2026-09-14 defect class B). Returns False when the owner
+        DM route is unavailable; the adapter then fails the delivery loudly
+        without queueing a doomed retry cycle.
+        """
+
+        return self._workflow_deliver_user(recipient, text, message_id)
+
+    def _migrate_stored_routine_address(self, name: str) -> str | None:
+        """Resolve one bare actor name against THIS machine's agents registry.
+
+        Migration rule (approved Q1): rewrite a stored bare-name address only
+        when the local agents roster answers with exactly one agent; no
+        profile inference, no presence scan, no guessing. Unknown or
+        ambiguous names return None and the routine quarantines loudly
+        instead of being silently resumed or rewritten.
+        """
+
+        if ":" in name or not name.strip():
+            return None
+        try:
+            agent = self.agents.get(name.strip())
+        except Exception:
+            return None
+        if agent is None:
+            return None
+        candidate = agent.uri
+        return candidate if parse_agent_uri(candidate) is not None else None
+
+    def _quota_watchdog_deliver(self, idempotency_key: str, text: str) -> bool:
+        """Watchdog alerts go to this daemon's owner through Squire."""
+
+        if self._user_delivery is None:
+            return False
+        outcome = self._user_delivery.deliver(
+            UserDeliveryRequest(
+                message_id=f"quota-watchdog-{uuid4().hex[:12]}",
+                idempotency_key=idempotency_key,
+                owner=self.owner,
+                sender="quota-watchdog",
+                message=text,
+                conversation_id="quota-watchdog",
+            )
+        )
         return outcome.accepted
+
+    def _inbox_watchdog_deliver(self, idempotency_key: str, text: str) -> bool:
+        """Mail-collection alerts go to this daemon's owner through Squire."""
+
+        if self._user_delivery is None:
+            return False
+        outcome = self._user_delivery.deliver(
+            UserDeliveryRequest(
+                message_id=f"inbox-watchdog-{uuid4().hex[:12]}",
+                idempotency_key=idempotency_key,
+                owner=self.owner,
+                sender="inbox-watchdog",
+                message=text,
+                conversation_id="inbox-watchdog",
+            )
+        )
+        return outcome.accepted
+
+    def _running_actor_uris(self) -> frozenset[str]:
+        """Actors this node currently supervises as running.
+
+        Liveness lives here and ⛔ not in the inbox store: the store knows
+        mail, the daemon knows processes.  The same split `prune_outbox`
+        already uses for its address predicates.
+        """
+
+        try:
+            statuses = self._actor_status_snapshot()
+        except Exception:  # noqa: BLE001 - a watchdog must never break the tick
+            return frozenset()
+        live: set[str] = set()
+        for status in statuses:
+            if status.get("running") is True or status.get("status") == "online":
+                actor = status.get("actor") or status.get("uri")
+                if isinstance(actor, str) and actor:
+                    live.add(actor)
+        return frozenset(live)
+
+    def _on_usage_refreshed(self) -> None:
+        watchdog = self._quota_watchdog
+        if watchdog is None:
+            return
+        alerts = watchdog.observe_readings()
+        held = watchdog.flush_failures()
+        for alert in [*alerts, *([held] if held is not None else [])]:
+            self._log("info", "daemon", "quota_watchdog.alerted", kind=alert.kind, key=alert.key)
+
+    def _on_usage_limit_failure(self, recipient: str) -> None:
+        watchdog = self._quota_watchdog
+        if watchdog is None:
+            return
+        alert = watchdog.observe_usage_limit_failure(recipient)
+        if alert is not None:
+            self._log("info", "daemon", "quota_watchdog.alerted", kind=alert.kind, key=alert.key)
+
+    def _deliver_routine_task(
+        self, *, target: str, conversation_id: str, text: str, sender: str
+    ) -> bool:
+        """Deliver one routine task message through the durable inbox.
+
+        PAC notifications carry a reference, never a body, and activating a
+        graph does not dispatch its root task -- so the task text travels
+        here, on the same inbox IO the PAC notifications use.  The delivery
+        is keyed by the conversation, so a replayed dispatch for the same
+        task reuses the same message id instead of queueing a second copy.
+        """
+
+        io = self._pac_notification_io
+        if io is None:
+            return False
+        try:
+            io.deliver(
+                # Naming debt, not a workflow dependency: the id minted here
+                # still carries the old prefix (inbox/io.py message_id), and
+                # renaming a durable message id belongs with U7.
+                effect_id=f"routine-task:{conversation_id}",
+                sender=sender,
+                target=target,
+                conversation_id=conversation_id,
+                text=text,
+            )
+        except Exception as error:  # noqa: BLE001 - reported as a dispatch failure
+            self._log(
+                "warn",
+                "routine",
+                "routine.task.delivery_failed",
+                target=target,
+                conversationId=conversation_id,
+                error=f"{type(error).__name__}: {error}",
+            )
+            return False
+        return True
 
     def _assign_routine_probe(self, name: str) -> bool:
         """§C.1.1 三态例程探针,供 assign 周期性核对读「这条 routine 还在吗」。
@@ -2625,6 +3080,7 @@ class DaemonApplication:
         try:
             step(self._restore_adapters, "restore-adapters")
             step(self._restore_harnesses, "restore-harnesses")
+            step(self._restore_provider_auth, "restore-provider-auth")
         except BaseException as error:
             self._restore_error = error
             self.stop_event.set()
@@ -2636,6 +3092,18 @@ class DaemonApplication:
         self._restore_done.set()
         self._log("info", "daemon", "daemon.ready", nodeId=self.node_id)
         self._start_maintenance_scheduler()
+
+    def _restore_provider_auth(self) -> None:
+        """Re-open broken provider-auth episodes after a daemon restart.
+
+        追加 1 ①: the dispatch mark blocks the failures that would re-trigger
+        a relogin flow, so restore is the bounded re-trigger point.  The
+        coordinator reconciles first — a credential fixed while the daemon
+        was down is a recovery, not a new flow.
+        """
+
+        if self._provider_auth is not None:
+            self._provider_auth.resume_after_restore()
 
     def _join_restore_thread(self) -> None:
         """Give the restore thread a bounded chance to leave before teardown.
@@ -2772,6 +3240,10 @@ class DaemonApplication:
                 if not (sub_phases and entry[0] == "runtime.timer")
             ] + sub_phases
             item = max(candidates, key=lambda entry: entry[1])[0] if candidates else "unknown"
+            # The whole tick paid the overrun, so name the worst offenders,
+            # not just the single slowest step: the old one-item form read as
+            # "everything timed out" whenever one step did (2026-09-14).
+            top = sorted(candidates, key=lambda entry: entry[1], reverse=True)[:3]
             self._log(
                 "error",
                 "daemon",
@@ -2779,6 +3251,7 @@ class DaemonApplication:
                 durationMs=duration_ms,
                 budgetMs=int(budget * 1000),
                 item=item,
+                items=[{"item": name, "ms": ms} for name, ms in top],
             )
         for failed in getattr(outcome, "harness_failed", ()):
             self._log(
@@ -2796,7 +3269,10 @@ class DaemonApplication:
             level = (
                 "error"
                 if event in {"lark.inbound.stale", "lark.adapter.lifecycle.timeout"}
-                else "warn" if event == "lark.pin.query_failed" else "info"
+                else "warn"
+                if event
+                in {"lark.pin.query_failed", "lark.identity.lookup_failed"}
+                else "info"
             )
             self._log(level, "lark-adapter", event, **fields)
         if outcome.harness_restarts or outcome.inbox_results or adapter_restarts:
@@ -2821,6 +3297,56 @@ class DaemonApplication:
                 reason=item.reason,
                 createdAtMs=item.created_at_ms,
                 receivedAtMs=item.received_at_ms,
+            )
+        self._watch_inbox_collection(outcome.inbox_pruned_items)
+
+    def _watch_inbox_collection(
+        self, pruned: tuple[InboxPruneItem, ...] = ()
+    ) -> None:
+        """Report mail nobody is collecting -- before and after the deadline.
+
+        Both readings need the same liveness answer, so they share one
+        snapshot: the periodic "nobody has taken this" check runs at most
+        once per ``_INBOX_WATCH_INTERVAL_MS`` because it is a GROUP BY over
+        the whole inbox (129 MB on the production node), while the
+        prune-time check rides the sweep that just produced its input.
+        """
+
+        watchdog = self._inbox_watchdog
+        if watchdog is None:
+            return
+        now_ms = time.time_ns() // 1_000_000
+        due = now_ms - self._inbox_watchdog_checked_at_ms >= _INBOX_WATCH_INTERVAL_MS
+        lost = tuple(
+            (item.recipient, item.message_id)
+            for item in pruned
+            if item.reason == "INBOX_TTL_EXPIRED"
+        )
+        if not due and not lost:
+            return
+        live = self._running_actor_uris()
+        alerts = []
+        try:
+            if lost:
+                alerts += watchdog.observe_pruned(lost, is_running=live.__contains__)
+            if due:
+                self._inbox_watchdog_checked_at_ms = now_ms
+                stats = getattr(self._inbox, "unfetched_recipient_stats", None)
+                if callable(stats):
+                    alerts += watchdog.observe_unfetched(
+                        stats(), is_running=live.__contains__
+                    )
+        except Exception as error:  # noqa: BLE001 - a watchdog never breaks the tick
+            self._log(
+                "error",
+                "daemon",
+                "inbox_watchdog.failed",
+                error=f"{type(error).__name__}: {error}",
+            )
+            return
+        for alert in alerts:
+            self._log(
+                "warn", "daemon", "inbox_watchdog.alerted", kind=alert.kind, key=alert.key
             )
 
     def _aggregate_readiness_reports(
@@ -3294,7 +3820,7 @@ class DaemonApplication:
             return {"actor": produced, "restored": recovering, "changed": False}
         from hyprial.dispatch.matrix import resolve
         try:
-            choice = resolve("fast", probe=False)
+            choice = resolve("fast")
         except (RuntimeError, ValueError) as error:
             raise DaemonRequestError("ROUTINE_COORDINATOR_UNAVAILABLE", str(error)) from error
         launched = self.handle("lifecycle.start", {
@@ -3396,6 +3922,7 @@ class DaemonApplication:
                     "listen": list(self.zenoh_listen),
                     "connect": list(self.zenoh_connect),
                 },
+                "forwarding": self._forwarding_status_json(),
             }
         # The restore gate lives at dispatch, not inside each method: while
         # restore is running, half-initialised collaborators must not be
@@ -3494,6 +4021,29 @@ class DaemonApplication:
             # agents[] verdict read the same tables instead of each verdict
             # paying its own supervisor round trip and per-connector loads.
             with self._worker_status_snapshot() as worker_status:
+                connector_statuses = [dict(item) for item in worker_status.statuses]
+                desired_by_key = {
+                    (spec.harness, spec.name): spec
+                    for spec in (worker_status.desired.harnesses if worker_status.desired else ())
+                }
+                for row in connector_statuses:
+                    if row.get("runtime") not in {"jev", "user-proxy"}:
+                        continue
+                    spec = desired_by_key.get((row.get("runtime"), row.get("name")))
+                    actor = (
+                        self._canonical_harness_uri(str(row["name"]), spec)
+                        if spec is not None
+                        else str(row.get("name"))
+                    )
+                    pending_count = sum(
+                        1 for message in pending
+                        if getattr(message, "recipient", None) in {actor, row.get("name")}
+                    )
+                    in_flight = row.get("inFlight")
+                    row["queueDepth"] = max(
+                        0,
+                        pending_count - (in_flight if isinstance(in_flight, int) else 0),
+                    )
                 return {
                     "daemon": {
                         "running": True,
@@ -3502,6 +4052,7 @@ class DaemonApplication:
                         "nodeId": self.node_id,
                         "owner": self.owner,
                         "socket": str(self.socket_path),
+                        "lifecycle": self._lifecycle_status(),
                         "dispatchWithoutPacCount": self._dispatch_without_pac_snapshot(),
                         "dispatchConversationCount": self._dispatch_conversation_snapshot(),
                     },
@@ -3509,7 +4060,9 @@ class DaemonApplication:
                         "listen": list(self.zenoh_listen),
                         "connect": list(self.zenoh_connect),
                     },
-                    "connectors": list(worker_status.statuses),
+                    "duplicateInstance": self._duplicate_instance_payload(),
+                    "forwarding": self._forwarding_status_json(),
+                    "connectors": connector_statuses,
                     "orphanProcesses": list(self._orphan_process_status()),
                     "adapters": (
                         [item.to_payload() for item in self._lark_client.read_adapters()]
@@ -3553,7 +4106,14 @@ class DaemonApplication:
                 }
         if method == "top.snapshot":
             now_ms = int(time.time() * 1000)
-            actor_statuses = self._actor_status_snapshot()
+            # A batch path like ps: without the request snapshot every online
+            # actor's liveness probe falls back to one supervisor round trip
+            # plus one full desired-state load per connector
+            # (_managed_worker_running).  In production that was ~475 SQLite
+            # reads for 77 actors and `hyprial top` timed out at 15 s every
+            # time while `ps`, which installs the snapshot, answered.
+            with self._worker_status_snapshot():
+                actor_statuses = self._actor_status_snapshot()
             result = build_top_snapshot(
                 state_dir=self.state_dir,
                 owner=self.owner,
@@ -3996,6 +4556,8 @@ class DaemonApplication:
                 if completed.result.unregistered:
                     self._close_interactive_route(actor, session_ref)
             return completed.result.to_payload()
+        if method == "message.query":
+            return self._message_query(params)
         if method == "message.pending.list":
             actor = self._message_consumer_actor(params)
             if is_session_fetch(params) and "sessionRef" not in params:
@@ -4041,17 +4603,23 @@ class DaemonApplication:
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     body = {}
                 text = body.get("message", "") if isinstance(body, dict) else ""
-                messages.append(
-                    {
-                        "messageId": message.message_id,
-                        # Stable across daemon restart/resume; never use queue index.
-                        "deliveryId": message.message_id,
-                        "conversationId": message.conversation_id,
-                        "from": message.sender,
-                        "intent": message.intent,
-                        "message": text if isinstance(text, str) else str(text),
-                    }
-                )
+                row: JsonObject = {
+                    "messageId": message.message_id,
+                    # Stable across daemon restart/resume; never use queue index.
+                    "deliveryId": message.message_id,
+                    "conversationId": message.conversation_id,
+                    "from": message.sender,
+                    "intent": message.intent,
+                    "message": text if isinstance(text, str) else str(text),
+                }
+                origin = body.get("origin") if isinstance(body, dict) else None
+                if isinstance(origin, dict) and origin:
+                    # Present only when the reporting adapter sent one.  A
+                    # reader must treat the absent key as "unknown", not as a
+                    # direct message -- those are different answers and only one
+                    # of them is safe to act on.
+                    row["origin"] = origin
+                messages.append(row)
             return {"ok": True, "messages": messages, "daemonEpoch": self.epoch}
         if method == "routine.add":
             if self._routine_service is None:
@@ -4098,6 +4666,20 @@ class DaemonApplication:
                 return self._routine_service.status(name=name)
             except RoutineServiceError as error:
                 raise DaemonRequestError(error.code, str(error)) from error
+        if method == "routine.audit":
+            if self._routine_service is None:
+                raise DaemonRequestError(ipc_errors.ROUTINE_UNAVAILABLE, "routine service is not running")
+            # Doctor surface (approved Q1): quarantined routines and the
+            # stored-spec address-migration ledger, both machine-readable.
+            quarantined = [
+                item
+                for item in self._routine_service.list()["routines"]
+                if isinstance(item, dict) and item.get("quarantined") is True
+            ]
+            return {
+                "quarantined": quarantined,
+                "addressMigrations": self._routine_service.address_migrations(),
+            }
         if method == "routine.remove":
             if self._routine_service is None:
                 raise DaemonRequestError(ipc_errors.ROUTINE_UNAVAILABLE, "routine service is not running")
@@ -4129,18 +4711,16 @@ class DaemonApplication:
             except RoutineServiceError as error:
                 raise DaemonRequestError(error.code, str(error)) from error
         if method == "dispatch.matrix.resolve":
-            from hyprial.dispatch.matrix import TIERS, NoCapableHarness, resolve
+            from hyprial.dispatch.matrix import TIERS, resolve
 
             tier = _required_string(params.get("tier"), "tier")
             if tier not in TIERS:
                 raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, "tier must be fast, strong, or super")
             name = _required_string(params.get("name"), "name")
-            try:
-                choice = resolve(tier, profile=self.user_profiles.get_by_owner(self.owner))
-            except NoCapableHarness as error:
-                self._log("warn", "daemon", "dispatch.matrix.resolved", agentName=name,
-                          ok=False, code=error.code, **error.data)
-                raise DaemonRequestError(error.code, str(error), error.data) from error
+            # Static selection: no profile mark is read and no liveness probe
+            # runs, so this cannot fail on availability and no longer needs a
+            # composed probe deadline on the caller side (2026-09-21).
+            choice = resolve(tier)
             payload = choice.to_json()
             self._log("info", "daemon", "dispatch.matrix.resolved", agentName=name, ok=True, **payload)
             return {"ok": True, **payload}
@@ -4176,20 +4756,16 @@ class DaemonApplication:
             try:
                 request = validate_agent_task_start(_agent_task_body(params))
                 return service.agent_task_start(request=request, caller=caller)
-            except AgentTaskError as error:
+            except (AgentTaskError, PacAgentTaskError) as error:
                 raise DaemonRequestError(error.code, str(error), error.data) from error
-            except WorkflowServiceError as error:
-                raise DaemonRequestError(error.code, str(error)) from error
         if method == "agent.task.status":
             service = self._require_agent_task_service()
             self._agent_task_bound_caller(params)
             try:
                 run_id = validate_agent_task_status(_agent_task_body(params))
                 return service.agent_task_status(run_id=run_id)
-            except AgentTaskError as error:
+            except (AgentTaskError, PacAgentTaskError) as error:
                 raise DaemonRequestError(error.code, str(error), error.data) from error
-            except WorkflowServiceError as error:
-                raise DaemonRequestError(error.code, str(error)) from error
         if method == "agent.task.result":
             service = self._require_agent_task_service()
             self._agent_task_bound_caller(params)
@@ -4200,10 +4776,8 @@ class DaemonApplication:
                 return service.agent_task_result(
                     run_id=run_id, target_ref=target_ref
                 )
-            except AgentTaskError as error:
+            except (AgentTaskError, PacAgentTaskError) as error:
                 raise DaemonRequestError(error.code, str(error), error.data) from error
-            except WorkflowServiceError as error:
-                raise DaemonRequestError(error.code, str(error)) from error
         if method == "agent.task.cancel":
             service = self._require_agent_task_service()
             caller = self._agent_task_bound_caller(params)
@@ -4212,10 +4786,8 @@ class DaemonApplication:
                 return service.agent_task_cancel(
                     run_id=run_id, caller=caller, reason=reason
                 )
-            except AgentTaskError as error:
+            except (AgentTaskError, PacAgentTaskError) as error:
                 raise DaemonRequestError(error.code, str(error), error.data) from error
-            except WorkflowServiceError as error:
-                raise DaemonRequestError(error.code, str(error)) from error
         if method == "agent.task.observe":
             service = self._require_agent_task_service()
             submitter = self._agent_task_bound_caller(params)
@@ -4226,10 +4798,8 @@ class DaemonApplication:
                     submitter=submitter,
                     message_id=activity.event_id,
                 )
-            except AgentTaskError as error:
+            except (AgentTaskError, PacAgentTaskError) as error:
                 raise DaemonRequestError(error.code, str(error), error.data) from error
-            except WorkflowServiceError as error:
-                raise DaemonRequestError(error.code, str(error)) from error
         if method == "workflow.node.inspect":
             if self._workflow_service is None:
                 raise DaemonRequestError(ipc_errors.WORKFLOW_UNAVAILABLE, "workflow service is not running")
@@ -4366,6 +4936,14 @@ class DaemonApplication:
                 and isinstance(metadata.get("senderId"), str)
                 else None
             )
+            # Where this message came from, in the reporting adapter's words.  The
+            # adapter already knows and says so -- Lark parses ``chat_type``
+            # off the event and sends it in "providerMetadata" -- but only
+            # ``senderId`` was ever read, so the value arrived and was dropped
+            # before storage.  A reader could not then tell a group from a
+            # direct message: Feishu uses the same ``oc_`` prefix for both, so
+            # nothing else in the row distinguishes them.
+            origin = _message_origin(metadata)
             conversation = str(params.get("conversationId") or uuid4())
             operation_id = str(params.get("idempotencyKey") or uuid4())
             # Gate condition (a) (spec-dispatch-gate-classifier-2026-09-04):
@@ -4505,7 +5083,14 @@ class DaemonApplication:
                     sender=source,
                     recipient=target,
                     payload=json.dumps(
-                        {"message": text, "topic": params.get("topic")},
+                        {
+                            "message": text,
+                            "topic": params.get("topic"),
+                            # Absent when the adapter reports no origin: rows
+                            # written before this change and messages from an
+                            # adapter with no such concept simply lack the key.
+                            **({"origin": origin} if origin is not None else {}),
+                        },
                         separators=(",", ":"),
                     ).encode(),
                     intent="reply" if params.get("replyTo") else "request",
@@ -4694,9 +5279,7 @@ class DaemonApplication:
                 # Retrying the same harness_reply must address the same outbox
                 # row.  Old rows use the same reply:<inbound-id> key but had a
                 # random message id; the transport accepts both shapes.
-                message_id=str(
-                    uuid5(NAMESPACE_URL, f"hyprial:reply:{message_id}")
-                ),
+                message_id=reply_message_id(message_id),
                 conversation_id=original.conversation_id,
                 sender=actor,
                 recipient=recipient,
@@ -5139,6 +5722,102 @@ class DaemonApplication:
         raise DaemonRequestError(ipc_errors.METHOD_NOT_FOUND, f"unknown daemon method {method}")
 
     def _handle_agent(self, method: str, params: JsonObject) -> Any:
+        if method == "agent.secret." + "provider-write":
+            from hyprial.agents.secrets import SecretResolver
+
+            entry_id = _required_string(params.get("entryId"), "entryId")
+            field_name = _required_string(params.get("fieldName"), "fieldName")
+            value = params.get("value")
+            if not isinstance(value, str) or not value:
+                raise DaemonRequestError(
+                    ipc_errors.INVALID_ARGUMENT,
+                    "secret model-vendor value must be non-empty",
+                )
+            if "\n" in value or "\r" in value:
+                raise DaemonRequestError(
+                    ipc_errors.INVALID_ARGUMENT,
+                    "secret model-vendor value must contain one line",
+                )
+            try:
+                resolver = SecretResolver(self.hyprial_home, self._agent_registry)
+                getattr(resolver, "write_user_" + "provider")(
+                    entry_id, {field_name: value}
+                )
+            except (ValueError, TypeError, OSError) as error:
+                raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
+            return {"ok": True, "entryId": entry_id, "fieldNames": [field_name]}
+        if method == "agent.secret.grant":
+            from hyprial.agents.secrets import SecretSource
+
+            actor = _required_string(params.get("actor"), "actor")
+            grant_id = _required_string(params.get("grantId"), "grantId")
+            source_raw = _required_string(params.get("source"), "source")
+            entry_id = _required_string(params.get("entryId"), "entryId")
+            field_name = _required_string(params.get("fieldName"), "fieldName")
+            raw_names = params.get("environmentNames")
+            if not isinstance(raw_names, list) or not raw_names or any(
+                not isinstance(item, str) or not item for item in raw_names
+            ):
+                raise DaemonRequestError(
+                    ipc_errors.INVALID_ARGUMENT,
+                    "environmentNames must be a non-empty string array",
+                )
+            revision = _optional_positive_integer(params.get("revision"), "revision")
+            if revision is None:
+                raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, "revision is required")
+            try:
+                source = SecretSource(source_raw)
+                grant = self._agent_registry.grant_secret(
+                    actor,
+                    grant_id=grant_id,
+                    source=source,
+                    entry_id=entry_id,
+                    field_name=field_name,
+                    environment_names=tuple(raw_names),
+                    revision=revision,
+                )
+            except (ValueError, TypeError, AgentError) as error:
+                raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
+            return {
+                "ok": True,
+                "grant": {
+                    "actor": grant.actor,
+                    "grantId": grant.grant_id,
+                    "source": grant.source.value,
+                    "entryId": grant.entry_id,
+                    "fieldName": grant.field_name,
+                    "environmentNames": list(grant.environment_names),
+                    "revision": grant.revision,
+                },
+            }
+        if method == "agent.secret.list":
+            actor = params.get("actor")
+            if actor is not None and (not isinstance(actor, str) or not actor):
+                raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, "actor must be a non-empty string")
+            grants = self._agent_registry.secret_inventory(actor)
+            return {
+                "ok": True,
+                "grants": [
+                    {
+                        "actor": grant.actor,
+                        "grantId": grant.grant_id,
+                        "source": grant.source.value,
+                        "entryId": grant.entry_id,
+                        "fieldName": grant.field_name,
+                        "environmentNames": list(grant.environment_names),
+                        "revision": grant.revision,
+                    }
+                    for grant in grants
+                ],
+            }
+        if method == "agent.secret.revoke":
+            actor = _required_string(params.get("actor"), "actor")
+            grant_id = _required_string(params.get("grantId"), "grantId")
+            try:
+                revoked = self._agent_registry.revoke_secret_grant(actor, grant_id)
+            except AgentError as error:
+                raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
+            return {"ok": True, "revoked": revoked}
         if method == "agent.create":
             # Decision A5: the one creation path. `hyprial agent create` calls it
             # directly; `hyprial start` calls it first and only then launches a
@@ -5806,6 +6485,52 @@ class DaemonApplication:
             else actor
         )
 
+    def _message_query(self, params: JsonObject) -> JsonObject:
+        """Read one local actor's inbox or outbox for a person, changing nothing.
+
+        ``message.pending.list`` is the CONSUMER surface: even without the
+        explicit fetch marker it drains the actor's system notices
+        (``drain_system_notices`` deletes them), so a person "just looking"
+        through it would eat notices meant for the agent.  This method reads
+        the same rows through the non-draining readers only -- no fence, no
+        fetch stamp, no receipt, no notice drain -- so the agent's next
+        ``harness_read`` sees exactly what it would have seen.
+        """
+
+        view = _required_string(params.get("view"), "view")
+        if view not in {"inbox", "outbox"}:
+            raise DaemonRequestError(
+                ipc_errors.INVALID_ARGUMENT, "view must be inbox or outbox"
+            )
+        # A person's query never speaks for a session: resolve the name the
+        # same way a CLI send/read does, never through a session fence.
+        lookup = {key: value for key, value in params.items() if key != "sessionRef"}
+        keys = self._message_consumer_keys(lookup)
+        actor = keys[0]
+        entries: list[JsonObject] = []
+        if view == "inbox":
+            seen: set[str] = set()
+            notices_reader = getattr(self._inbox, "system_notices", None)
+            for key in keys:
+                for notice in notices_reader(key) if callable(notices_reader) else ():
+                    if notice.message_id not in seen:
+                        seen.add(notice.message_id)
+                        entries.append(_query_entry(notice, kind="notice"))
+            for key in keys:
+                for message in self._inbox.pending_messages(key):
+                    if message.message_id not in seen:
+                        seen.add(message.message_id)
+                        entries.append(_query_entry(message, kind="message"))
+        else:
+            senders = set(keys)
+            for item in self._inbox.outbox_items():
+                if item.message.sender in senders:
+                    entry = _query_entry(item.message, kind="outbox")
+                    entry["attempts"] = item.attempts
+                    entry["expiresAtMs"] = item.expires_at_ms
+                    entries.append(entry)
+        return {"ok": True, "actor": actor, "view": view, "entries": entries}
+
     def _message_consumer_actor(self, params: JsonObject) -> str:
         """Resolve an inbox consumer with the same rule as ``message.send``.
 
@@ -6319,13 +7044,17 @@ class DaemonApplication:
         # channel online accidentally.
         return actor
 
-    def _require_agent_task_service(self) -> WorkflowService:
-        if self._workflow_service is None:
-            raise DaemonRequestError(
-                ipc_errors.SERVICE_BINDING_NOT_FOUND,
-                "agent.task service is not running",
+    def _require_agent_task_service(self) -> PacAgentTaskService:
+        """Bind the frozen facade to the PAC graph store, never workflow."""
+
+        try:
+            return PacAgentTaskService(
+                state_dir=self.state_dir,
+                service_actor=self._dispatch_service_actor,
+                delivery_io=self._pac_notification_io,
             )
-        return self._workflow_service
+        except PacAgentTaskError as error:
+            raise DaemonRequestError(error.code, str(error), error.data) from error
 
     def _pac_bound_caller(self, params: JsonObject) -> str:
         """Authenticate the acting PAC principal via the daemon session binding.
@@ -7052,7 +7781,15 @@ class DaemonApplication:
             agent.uri
         ) or self._agent_recovery_cleanups.get(agent.actor)
         return {
-            **agent.to_json(),
+            # ``Agent.to_json`` is also the durable/lifecycle round-trip form,
+            # so it carries the internal ``entityToken`` incarnation fence;
+            # that is authority state, not a public ``ps`` field, and the frozen
+            # snapshot contract omits it.
+            **{
+                key: value
+                for key, value in agent.to_json().items()
+                if key != "entityToken"
+            },
             **self._agent_liveness.snapshot(spelling),
             "status": self._registered_agent_status(agent),
             **(
@@ -7116,27 +7853,34 @@ class DaemonApplication:
             return None
 
     def _discover_peer_endpoints(self) -> tuple[str, ...]:
-        """Endpoints from the peer directory, or none when it has nothing.
+        """Endpoints from forwarding and the peer directory, combined.
 
-        On by default, and `HYPRIAL_PEER_DISCOVERY=0` turns it off.
-
-        The default was off in the first draft, on the reasoning that dialing
-        new nodes is an operator's decision rather than an upgrade's side
-        effect.  That was miscalibrated for this particular switch: discovery
-        is additive (configured endpoints are all kept, so no working node can
-        be cut off) and bounded by the tailnet ACL (it only reaches machines
-        already permitted).  It does not create reachability; it acts on
-        reachability that already existed.
-
-        And off-by-default had a failure mode worse than its risk: shipping a
-        release where the fix is present but dormant means everyone tests,
-        sees no change, and concludes the fix does not work -- rather than
-        that nobody enabled it.
-
-        Failure is silence by construction (see `discovery.py`).  Nothing here
-        may raise: the node's configured endpoints are already sufficient, and
-        a directory having a bad day must not be able to stop a daemon from
+        Both sources are on by default and their union is the dial set:
+        forwarding endpoints first, directory ones after, no duplicates.
+        Either half failing leaves the other intact -- forwarding failures log
+        `zenoh.forwarding.*` events and a directory that cannot answer is
+        silence by construction (see `discovery.py`).  Nothing here may raise:
+        the node's configured endpoints are already sufficient, and a sidecar
+        or directory having a bad day must not be able to stop a daemon from
         starting.
+
+        Two switches cut halves away, on purpose:
+
+        * `HYPRIAL_PEER_DISCOVERY=0` turns off the system tailnet directory
+          (leaving forwarding endpoints, if configured).  The default is on
+          for the same reason it always was: discovery is additive (configured
+          endpoints are all kept, so no working node can be cut off) and
+          bounded by the tailnet ACL.  It does not create reachability; it
+          acts on reachability that already existed.
+        * `HYPRIAL_FORWARDING_EXCLUSIVE=1` restores the pre-coexist behaviour
+          where configured forwarding is the *only* source: the S5 acceptance
+          and the isolated negative controls depend on "sidecar stopped means
+          traffic stopped", which a silent host-tailnet fallback would falsify.
+
+        The forwarding sidecar is owned by `ForwardingSidecarSupervisor`,
+        which relaunches it under the registered process-lifecycle budget;
+        while it is down the forwarding half is simply empty rather than
+        fatal.
         """
 
         forwarding_configured = bool(
@@ -7146,48 +7890,44 @@ class DaemonApplication:
         if (
             forwarding_configured
             and self._forwarding_discovery is None
+            and self._forwarding_supervisor is None
             and not self._forwarding_start_attempted
         ):
             self._forwarding_start_attempted = True
-            try:
-                controller = ForwardingSidecarController.from_environment(
-                    os.environ,
-                    on_exit=lambda status: self._log(
-                        "error",
-                        "zenoh",
-                        "zenoh.forwarding.exited",
-                        exitStatus=status,
-                    ),
-                )
-            except Exception as error:  # noqa: BLE001 - visible no-fallback path
-                self._log(
-                    "error",
-                    "zenoh",
-                    "zenoh.forwarding.start_failed",
-                    errorType=type(error).__name__,
-                    detail=str(error)[:500],
-                )
-            else:
-                self._forwarding_discovery = ForwardingEndpoints(
-                    controller,
-                    on_failure=lambda detail: self._log(
-                        "error",
-                        "zenoh",
-                        "zenoh.forwarding.failed",
-                        detail=detail[:500],
-                    ),
-                )
-        if self._forwarding_discovery is not None:
-            endpoints = self._forwarding_discovery.list_reachable_endpoints()
-            self._forwarding_effective = endpoints
-            return endpoints
-        if forwarding_configured:
-            # Explicitly configured forwarding never falls back to the host's
-            # system tailnet. Otherwise stopping the sidecar could leave the
-            # same Zenoh traffic working and make the negative control false.
-            return ()
+            supervisor = ForwardingSidecarSupervisor(
+                os.environ,
+                event_log=lambda level, event, **fields: self._log(
+                    level, "zenoh", event, **fields
+                ),
+                scheduler=self._maintenance_scheduler,
+            )
+            self._forwarding_supervisor = supervisor
+            # Synchronous on purpose: Zenoh fixes its connect set when the
+            # session opens, so the first attempt belongs on this startup
+            # path; every relaunch after a failure rides the scheduler.
+            supervisor.ensure_started()
+        forwarding: tuple[str, ...] = ()
+        backend = self._forwarding_backend()
+        if backend is not None:
+            forwarding = backend.list_reachable_endpoints()
+            self._forwarding_effective = forwarding
+        if self._forwarding_dialed is None:
+            # What the Zenoh session actually dials is fixed by the FIRST
+            # pass -- including the empty answer of a first-start failure,
+            # which is exactly the "recovered later, dialed never" gap that
+            # must stay visible. Later passes cannot retroactively change it.
+            self._forwarding_dialed = forwarding
+        if forwarding_configured and zenoh_environment_flag(
+            "HYPRIAL_FORWARDING_EXCLUSIVE", default=False
+        ):
+            # Negative-control mode: explicitly configured forwarding never
+            # falls back to the host's system tailnet.  Otherwise stopping
+            # the sidecar could leave the same Zenoh traffic working and
+            # make the negative control false.  Coexistence is the default;
+            # exclusivity is now an explicit operator choice.
+            return forwarding
         if not zenoh_environment_flag("HYPRIAL_PEER_DISCOVERY", default=True):
-            return ()
+            return forwarding
         # HYPRIAL_PEER_DISCOVERY_COMMAND selects the escape-hatch backend: any
         # command printing one endpoint per line.  It is what makes a
         # multi-node mesh testable on a single host (the well-known port
@@ -7201,7 +7941,7 @@ class DaemonApplication:
         else:
             backend = TailscaleEndpoints()
         try:
-            return backend.list_reachable_endpoints()  # type: ignore[attr-defined]
+            discovered = backend.list_reachable_endpoints()  # type: ignore[attr-defined]
         except Exception as error:  # noqa: BLE001 - startup must not depend on it
             self._log(
                 "warn",
@@ -7209,10 +7949,63 @@ class DaemonApplication:
                 "zenoh.discovery.failed",
                 detail=str(error),
             )
-            return ()
+            discovered = ()
+        # Forwarding first, directory after: a deliberately pinned peer
+        # behaves predictably instead of racing the directory, and a daemon
+        # that configured forwarding keeps its sidecar ports dialled first.
+        return merge_endpoints(forwarding, discovered)
+
+    def _forwarding_backend(self) -> ForwardingEndpoints | None:
+        """The live forwarding backend, supervisor-owned or test-injected."""
+
+        if self._forwarding_supervisor is not None:
+            return self._forwarding_supervisor.endpoints()
+        return self._forwarding_discovery
+
+    def _forwarding_status_json(self) -> dict[str, object]:
+        """The forwarding half's verdict for status/ps -- never silently absent.
+
+        A forwarding daemon used to have no state surface at all: a dead
+        sidecar looked exactly like a healthy one with no peers. The state
+        words are the supervisor's (running / degraded / restarting /
+        failed); "off" is the not-configured answer, which is a fact about
+        this node rather than a missing field.
+
+        ``endpoints`` vs ``dialed`` answers the restart-required question the
+        process state cannot: Zenoh fixes its connect set when the session
+        opens, so a relaunch that changed the local-port set leaves the
+        session dialing ports the new child no longer owns. Reporting
+        ``running`` alone would masquerade as connected; the gap is reported
+        instead (review finding D).
+        """
+
+        supervisor = self._forwarding_supervisor
+        if supervisor is not None:
+            status: dict[str, object] = {
+                "state": supervisor.state,
+                "failures": supervisor.failures,
+                "pid": supervisor.current_pid,
+            }
+        elif self._forwarding_discovery is not None:
+            status = {"state": "running", "failures": 0, "pid": None}
+        else:
+            return {"state": "off", "failures": 0, "pid": None}
+        effective = self._forwarding_effective
+        # The session-open capture; before the first discovery pass it is
+        # whatever the first pass returned -- including (), which is exactly
+        # the "recovered later, dialed never" gap that must stay visible.
+        dialed = (
+            self._forwarding_dialed
+            if self._forwarding_dialed is not None
+            else effective
+        )
+        status["endpoints"] = list(effective)
+        status["dialed"] = list(dialed)
+        status["restartRequired"] = effective != dialed
+        return status
 
     def _reconcile_forwarding_endpoints(self) -> None:
-        backend = self._forwarding_discovery
+        backend = self._forwarding_backend()
         if backend is None:
             return
         previous = self._forwarding_effective
@@ -7340,7 +8133,20 @@ class DaemonApplication:
             "actor": actor_uri,
             "nodeId": self.node_id,
             "owner": self.owner,
-            "agent": agent.to_json() if agent is not None else None,
+            # Same strip as ``_agent_status_json``: ``Agent.to_json`` carries
+            # the internal ``entityToken`` incarnation fence, which is
+            # authority state, not a public IPC field.  The receiving side
+            # never consumes it — ``transfer.receive`` mints a fresh hosted
+            # incarnation — so removing it leaks nothing and breaks nothing.
+            "agent": (
+                {
+                    key: value
+                    for key, value in agent.to_json().items()
+                    if key != "entityToken"
+                }
+                if agent is not None
+                else None
+            ),
             "unreadInbox": self._actor_pending_count(actor_uri, spec.name),
         }
 
@@ -8086,6 +8892,35 @@ class DaemonApplication:
                 "message.status.holders_missing",
                 **missing_fields,
             )
+        if duplicates := mesh.duplicate_holders:
+            # One name answered several times: the wire-side signature of two
+            # daemons sharing one node identity.  Name-keyed diagnostics
+            # (meshHolders, responded_holders) collapse these answers, so the
+            # pull counts them while it still has the replies apart.  The
+            # liveliness watch raises daemon.identity.duplicate_instance from
+            # its own vantage; this is the same condition seen through a
+            # status query, which only nodes holding records for this sender
+            # can observe.
+            duplicate_fields: JsonObject = {
+                "sender": sender,
+                "key": mesh.key,
+                "holders": [
+                    {
+                        "holder": entry.holder,
+                        "replies": entry.replies,
+                        "records": entry.records,
+                    }
+                    for entry in duplicates
+                ],
+            }
+            if message_id is not None:
+                duplicate_fields["messageId"] = message_id
+            self._log(
+                "warn",
+                "daemon",
+                "message.status.duplicate_holder",
+                **duplicate_fields,
+            )
         result: JsonObject = {
             "ok": True,
             "from": sender,
@@ -8111,6 +8946,14 @@ class DaemonApplication:
                 "holders": sorted({record.holder for record in records}),
                 "missingRecipientHolders": missing_holders,
                 "conflictingMessageIds": list(conflicts),
+                "duplicateHolderRecords": [
+                    {
+                        "holder": entry.holder,
+                        "replies": entry.replies,
+                        "records": entry.records,
+                    }
+                    for entry in mesh.duplicate_holders
+                ],
                 "noKnownLoss": mesh_error is None and mesh.no_known_loss,
             },
         }
@@ -8377,6 +9220,7 @@ class DaemonApplication:
             attempt(usage_cache.stop, "usage-cache")
         for resource_name in (
             "_actor_token",
+            "_duplicate_watch",
             "_org_endpoint",
             "_user_endpoint",
             "_status_endpoint",
@@ -8397,6 +9241,10 @@ class DaemonApplication:
             transport = self._transport
             self._transport = None
             attempt(transport.close, "zenoh-transport")
+        if self._forwarding_supervisor is not None:
+            supervisor = self._forwarding_supervisor
+            self._forwarding_supervisor = None
+            attempt(supervisor.close, "forwarding-sidecar")
         if self._forwarding_discovery is not None:
             forwarding_discovery = self._forwarding_discovery
             self._forwarding_discovery = None
@@ -8429,6 +9277,66 @@ class DaemonApplication:
 
     def _log(self, level: str, component: str, event: str, **fields: Any) -> None:
         self._logger.bind(component=component).log(level, event, **fields)
+
+    def _build_provider_auth_coordinator(self) -> Any:
+        """Wire provider-auth relogin/alert coordination (spec 2026-09-14).
+
+        Returns None when the feature cannot be wired: a daemon that starts
+        without it is degraded (no auth-failure alerts), while a daemon that
+        cannot start because its *alerting* feature failed is the worse
+        object -- the same call autoupdate.alert makes.  The degradation is
+        logged, not silent.
+        """
+
+        try:
+            import shutil
+            import socket
+
+            from hyprial.autoupdate.alert import notify_owner
+            from hyprial.provider_auth import (
+                DeviceLoginRunner,
+                ProviderAuthCoordinator,
+            )
+            from hyprial.squire.profile import UserProfileStore
+
+            store = UserProfileStore(self.state_dir / "users.json")
+            profile = (
+                store.get_by_owner(self.owner) if store.path.exists() else None
+            )
+            agent_dir = os.environ.get("PI_CODING_AGENT_DIR")
+            auth_path = (
+                Path(agent_dir).expanduser() / "auth.json"
+                if agent_dir
+                else Path.home() / ".pi" / "agent" / "auth.json"
+            )
+            pi_binary = shutil.which("pi")
+            return ProviderAuthCoordinator(
+                profile_store=store,
+                owner_key=profile.owner_key if profile is not None else None,
+                notifier=lambda text, *, idempotency_key: notify_owner(
+                    hyprial_home=self.hyprial_home,
+                    state_dir=self.state_dir,
+                    text=text,
+                    idempotency_key=idempotency_key,
+                ),
+                helper_runner=DeviceLoginRunner(
+                    pi_command=(pi_binary,) if pi_binary else ("pi",)
+                ),
+                auth_path=auth_path,
+                host=socket.gethostname(),
+                stop=self.stop_event,
+                logger=lambda event, **fields: self._log(
+                    "info", "daemon", event, **fields
+                ),
+            )
+        except Exception as error:  # noqa: BLE001 -- see docstring
+            self._log(
+                "warn",
+                "daemon",
+                "provider.auth.init.failed",
+                errorType=type(error).__name__,
+            )
+            return None
 
     def _log_trace(self, level: str, event: str, **fields: Any) -> None:
         """Log a step marker, accepting that the write itself may fail.
@@ -8651,6 +9559,26 @@ def _undeliverable_outbox_recipient(recipient: str) -> bool:
     )
 
 
+def _query_entry(message: InboxMessage, *, kind: str) -> JsonObject:
+    """One row of ``message.query``: the fields a person reads, text included."""
+
+    try:
+        body = json.loads(message.payload)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        body = {}
+    text = body.get("message", "") if isinstance(body, dict) else ""
+    return {
+        "kind": kind,
+        "messageId": message.message_id,
+        "conversationId": message.conversation_id,
+        "from": message.sender,
+        "to": message.recipient,
+        "intent": message.intent,
+        "createdAtMs": message.created_at_ms,
+        "message": text if isinstance(text, str) else str(text),
+    }
+
+
 def _outbox_entry_json(item: OutboxItem) -> JsonObject:
     return {
         "messageId": item.message.message_id,
@@ -8674,6 +9602,28 @@ def _required_string(value: object, label: str) -> str:
             ipc_errors.INVALID_ARGUMENT, f"{label} must be a non-empty string"
         )
     return value
+
+
+def _message_origin(metadata: object) -> JsonObject | None:
+    """Carry a message's reported origin through to its reader.
+
+    ``None`` means the adapter said nothing, which a reader must keep distinct
+    from any particular answer: "unknown" and "a direct message" are different
+    facts, and only one of them is safe to act on.  The block stays
+    adapter-scoped rather than flattened into a generic key, because a bare
+    ``chatType`` would claim a meaning that the other adapters never agreed to.
+    """
+
+    if not isinstance(metadata, dict):
+        return None
+    chat_type = metadata.get("chatType")
+    if not isinstance(chat_type, str) or not chat_type:
+        return None
+    origin: JsonObject = {"chatType": chat_type}
+    reported_by = metadata.get("provider")
+    if isinstance(reported_by, str) and reported_by:
+        origin["provider"] = reported_by
+    return origin
 
 
 def _optional_channel_build_version(value: object, label: str) -> str | None:

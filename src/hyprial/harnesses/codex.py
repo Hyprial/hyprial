@@ -23,7 +23,12 @@ from typing import Any, Self
 from hyprial import __version__
 from hyprial.backoff import capped_exponential
 from hyprial.contracts.ports import PortAdmission
+from hyprial.contracts.session import reply_message_id
 from hyprial.daemon.api import HarnessDelivery, HarnessResultStatus
+from hyprial.agents.environment import (
+    ChildEnvironmentLaunch,
+    whitelist_replacement_environment,
+)
 from hyprial.daemon.desired_state import HarnessLaunchSpec
 from hyprial.transfer.container import wrap_worker_launch
 from hyprial.log import Logger
@@ -374,7 +379,11 @@ class CodexInteractiveAppServer:
 
     def start(self) -> None:
         self.socket_path.unlink(missing_ok=True)
-        environment = None if self.env is None else {**os.environ, **self.env}
+        environment = (
+            None
+            if self.env is None
+            else whitelist_replacement_environment(os.environ, self.env)
+        )
         self._process = subprocess.Popen(
             (
                 *self.command,
@@ -959,9 +968,21 @@ class CodexAppServerClient:
         turn_idle_timeout_seconds: float | None = None,
         process_group: _OwnedProcessGroup | None = None,
         logger: Logger | None = None,
+        complete_launch: ChildEnvironmentLaunch | None = None,
     ) -> None:
         self.spec = spec
-        base_environment = {**os.environ, **(env or {})}
+        self._complete_launch = complete_launch
+        if complete_launch is not None and env is not None:
+            raise ValueError(
+                "complete child environment cannot be combined with a "
+                "partial env mapping"
+            )
+        if complete_launch is not None:
+            base_environment = complete_launch.environment.for_exec()
+        else:
+            base_environment = whitelist_replacement_environment(
+                os.environ, env or {}
+            )
         provider_args, provider_environment = codex_provider_configuration(
             spec, base_environment
         )
@@ -1062,8 +1083,22 @@ class CodexAppServerClient:
             f": {detail}" if detail else ""
         )
 
+    def _spawn_environment(self) -> dict[str, str] | None:
+        """The exact env mapping the exec consumer receives (B2).
+
+        Complete-replacement mode returns the frozen mapping verbatim;
+        legacy callers keep the whitelist-filtered form.  Wholesale
+        ``os.environ`` merging is gone from this carrier either way.
+        """
+
+        if self._complete_launch is not None:
+            return self._complete_launch.environment.for_exec()
+        return None if self._env is None else whitelist_replacement_environment(
+            os.environ, self._env
+        )
+
     async def __aenter__(self) -> Self:
-        environment = None if self._env is None else {**os.environ, **self._env}
+        environment = self._spawn_environment()
         self._process = await asyncio.create_subprocess_exec(
             *self.command,
             stdin=asyncio.subprocess.PIPE,
@@ -1074,6 +1109,15 @@ class CodexAppServerClient:
             limit=STREAM_LIMIT_BYTES,
             start_new_session=True,
         )
+        if self._complete_launch is not None and self._logger is not None:
+            self._logger.info(
+                "worker.environment.receipt",
+                actor=self._complete_launch.actor,
+                grants=[
+                    {"grantId": grant_id, "revision": revision}
+                    for grant_id, revision in self._complete_launch.grants
+                ],
+            )
         self._expected_stop = False
         self._exit_logged = False
         if self._logger is not None:
@@ -2125,6 +2169,14 @@ class CodexInteractiveCarrier:
                 text = item.get("message")
                 if not isinstance(message_id, str) or not isinstance(text, str):
                     continue
+                if message_id in known:
+                    # The fetched listing keeps returning a row until it is
+                    # settled, so a delivery that already progressed past
+                    # FETCHED reappears here on every poll that admits a new
+                    # message.  Re-staging it trips the store's
+                    # already-correlated guard, and that exception used to
+                    # abort the whole poll iteration.
+                    continue
                 delivery = HarnessDelivery(
                     delivery_id=message_id,
                     conversation_id=str(item.get("conversationId") or message_id),
@@ -2132,10 +2184,20 @@ class CodexInteractiveCarrier:
                     recipient=self.actor,
                     message=text,
                 )
-                accepted = self._stage_carrier_fetched(
-                    delivery,
-                    str(item.get("intent") or "request"),
-                )
+                try:
+                    accepted = self._stage_carrier_fetched(
+                        delivery,
+                        str(item.get("intent") or "request"),
+                    )
+                except Exception as error:  # noqa: BLE001 - isolate one poisoned row
+                    self._log(
+                        "error",
+                        "worker.carrier.error",
+                        stage="carrier-admission",
+                        messageId=message_id,
+                        error=str(error) or type(error).__name__,
+                    )
+                    continue
                 if not accepted:
                     self._log(
                         "error",
@@ -2341,7 +2403,19 @@ class CodexInteractiveCarrier:
             and state.delivery.delivery_id not in self._carrier_settled_pending
         )
         for state in ready:
-            self._settle_final(state)
+            try:
+                self._settle_final(state)
+            except Exception as error:  # noqa: BLE001 - isolate one row's settlement
+                # One row's settlement or journalling failure must not starve
+                # the other deliveries on this carrier; the row itself stays
+                # FINAL_OBSERVED and is retried on the next poll.
+                self._log(
+                    "error",
+                    "worker.carrier.error",
+                    state=state,
+                    stage="settlement",
+                    error=str(error) or type(error).__name__,
+                )
 
     def _settle_final(self, state: CarrierDeliverySnapshot) -> None:
         message_id = state.delivery.delivery_id
@@ -2355,11 +2429,42 @@ class CodexInteractiveCarrier:
             )
         try:
             result = self.daemon_request(method, params)
+        except ipc_errors.TransientDaemonError as error:
+            # Daemon down / restoring / timed out: the target's fate is
+            # unknown, so this must stay a retry and never a terminal call.
+            self._defer_settlement(state, method=method, error=str(error))
+            return
         except Exception as error:  # noqa: BLE001 - settlement is retried
+            if getattr(error, "code", None) == ipc_errors.MESSAGE_REPLY_UNAVAILABLE:
+                self._settle_reply_unavailable(state, error=error)
+                return
             self._defer_settlement(state, method=method, error=str(error))
             return
         acknowledged = result.get("acknowledged") is True
         replied = method == "message.ack" or result.get("replied") is True
+        if (
+            method == "message.ack"
+            and not acknowledged
+            and result.get("code") == ipc_errors.MESSAGE_ACK_UNAVAILABLE
+        ):
+            self._settle_ack_unavailable(state)
+            return
+        if (
+            method == "message.reply"
+            and replied
+            and not acknowledged
+            and result.get("code") == ipc_errors.MESSAGE_ACK_UNAVAILABLE
+        ):
+            # The reply was durably queued but another path consumed the
+            # inbound row between the reply and its ack: settled.
+            self._settle_elsewhere(
+                state,
+                method=method,
+                event="worker.carrier.settlement.superseded",
+                code=ipc_errors.MESSAGE_ACK_UNAVAILABLE,
+                replied=True,
+            )
+            return
         if not (replied and acknowledged):
             self._defer_settlement(
                 state,
@@ -2368,6 +2473,149 @@ class CodexInteractiveCarrier:
                 result=result,
             )
             return
+        self._settle_confirmed(state)
+
+    def _settle_ack_unavailable(self, state: CarrierDeliverySnapshot) -> None:
+        """Require durable delivery evidence before terminalising an ack miss."""
+
+        message_id = state.delivery.delivery_id
+        try:
+            status = self.daemon_request(
+                "message.status", self._signed({"messageId": message_id})
+            )
+        except Exception as status_error:  # noqa: BLE001 - unknown fate retries
+            self._defer_settlement(
+                state,
+                method="message.ack",
+                error=f"MESSAGE_ACK_UNAVAILABLE; status unavailable: {status_error}",
+            )
+            return
+        status_state = str(status.get("state") or "unknown")
+        if status_state not in {"fetched", "expired"}:
+            self._defer_settlement(
+                state,
+                method="message.ack",
+                error=f"MESSAGE_ACK_UNAVAILABLE; delivery status={status_state}",
+            )
+            return
+        self._settle_elsewhere(
+            state,
+            method="message.ack",
+            event="worker.carrier.settlement.superseded",
+            code=ipc_errors.MESSAGE_ACK_UNAVAILABLE,
+            deliveryStatus=status_state,
+        )
+
+    def _settle_reply_unavailable(
+        self, state: CarrierDeliverySnapshot, *, error: Exception
+    ) -> None:
+        """Classify MESSAGE_REPLY_UNAVAILABLE with wire facts, not text.
+
+        The code alone cannot tell "the pending row is gone" from "the row
+        exists but its reply path is unavailable", so the judgment reads two
+        further facts: whether a reply with the deterministic reply id was
+        delivered, and whether the original row is still pending.
+        """
+
+        message_id = state.delivery.delivery_id
+        reply_id = reply_message_id(message_id)
+        try:
+            status = self.daemon_request(
+                "message.status", self._signed({"messageId": reply_id})
+            )
+        except Exception as status_error:  # noqa: BLE001 - classify only with a reading
+            self._defer_settlement(
+                state,
+                method="message.reply",
+                error=f"{error}; reply status unavailable: {status_error}",
+            )
+            return
+        reply_state = str(status.get("state") or "unknown")
+        if reply_state == "fetched":
+            # A reply to this message was durably delivered -- the model
+            # answered it inside its own turn.  Verified settled elsewhere.
+            self._settle_elsewhere(
+                state,
+                method="message.reply",
+                event="worker.carrier.settlement.superseded",
+                code=ipc_errors.MESSAGE_REPLY_UNAVAILABLE,
+                replyMessageId=reply_id,
+                replyStatus=reply_state,
+            )
+            return
+        if reply_state == "pending":
+            self._defer_settlement(
+                state,
+                method="message.reply",
+                error=f"{error}; reply delivery still pending",
+            )
+            return
+        try:
+            # Observation-only listing (no fetched flag: that would commit
+            # custody).  Consumed=0 rows appear here whether fetched or not.
+            pending = self.daemon_request(
+                "message.pending.list", self._signed()
+            ).get("messages", [])
+        except Exception as pending_error:  # noqa: BLE001 - classify only with a reading
+            self._defer_settlement(
+                state,
+                method="message.reply",
+                error=f"{error}; pending probe unavailable: {pending_error}",
+            )
+            return
+        still_pending = any(
+            isinstance(item, dict) and item.get("messageId") == message_id
+            for item in (pending if isinstance(pending, list) else [])
+        )
+        if still_pending:
+            # The row exists; the refusal is about the reply path (a channel
+            # sender without a reply bridge, an unconfigured adapter).  Keep
+            # the final and keep retrying.
+            self._defer_settlement(
+                state,
+                method="message.reply",
+                error=str(error),
+            )
+            return
+        # The request is gone and no delivery record exists for any reply to
+        # it: the final has no reachable target left.  Terminal, but loudly
+        # -- the requester, as far as this node can see, never got an answer.
+        self._settle_elsewhere(
+            state,
+            method="message.reply",
+            event="worker.carrier.settlement.reply_lost",
+            level="error",
+            code=ipc_errors.MESSAGE_REPLY_UNAVAILABLE,
+            replyMessageId=reply_id,
+            replyStatus=reply_state,
+        )
+
+    def _settle_elsewhere(
+        self,
+        state: CarrierDeliverySnapshot,
+        *,
+        method: str,
+        event: str,
+        code: str,
+        level: str = "warn",
+        **fields: object,
+    ) -> None:
+        # Uniform schema on every terminal settlement event: reply facts
+        # default to None on the ack path, where no reply is owed.
+        merged = {"replyMessageId": None, "replyStatus": None, **fields}
+        self._log(
+            level,
+            event,
+            state=state,
+            stage=method,
+            daemonCode=code,
+            attempts=state.settlement_attempts,
+            **merged,
+        )
+        self._settle_confirmed(state)
+
+    def _settle_confirmed(self, state: CarrierDeliverySnapshot) -> None:
+        message_id = state.delivery.delivery_id
         store = self._store
         if store is None:
             raise RuntimeError("carrier store closed before remote settlement journal")
@@ -2620,6 +2868,7 @@ class CodexAppServerProcess(StreamingTurnProcess):
         reconnect_delay_seconds: float = 0.25,
         reconnect_delay_max_seconds: float = 30.0,
         max_delivery_attempts: int = 5,
+        complete_launch: ChildEnvironmentLaunch | None = None,
     ) -> None:
         if spec.harness != "codex" or not spec.headless:
             raise ValueError("Codex app-server requires a managed headless spec")
@@ -2629,6 +2878,12 @@ class CodexAppServerProcess(StreamingTurnProcess):
         self._session = _CodexSession(spec.session_ref)
         self._process_group = _OwnedProcessGroup()
         self.worker_channel = worker_channel
+        self._complete_launch = complete_launch
+        if complete_launch is not None and env is not None:
+            raise ValueError(
+                "complete child environment cannot be combined with a "
+                "partial env mapping"
+            )
         logger = (
             Logger.worker(worker_channel.state_dir, runtime="codex", name=spec.name)
             if worker_channel is not None
@@ -2647,6 +2902,7 @@ class CodexAppServerProcess(StreamingTurnProcess):
                     worker_channel=worker_channel,
                     process_group=self._process_group,
                     logger=logger,
+                    complete_launch=self._complete_launch,
                 )
             ),
             thread_name=f"hyprial-codex-app-server-{spec.name}",
@@ -2678,7 +2934,10 @@ class CodexConnector:
         if spec.harness != "codex":
             raise HarnessStartError(spec.harness, (), "Codex connector mismatch")
         provider_args, _provider_environment = codex_provider_configuration(
-            spec, {**os.environ, **(self.options.env or {})}
+            spec,
+            whitelist_replacement_environment(
+                os.environ, self.options.env or {}
+            ),
         )
         model_args = ("--model", spec.model) if spec.model is not None else ()
         return (
@@ -2691,9 +2950,14 @@ class CodexConnector:
     def launch(self, spec: HarnessLaunchSpec) -> PtyHarnessProcess:
         argv = self.build_argv(spec)
         _provider_args, provider_environment = codex_provider_configuration(
-            spec, {**os.environ, **(self.options.env or {})}
+            spec,
+            whitelist_replacement_environment(
+                os.environ, self.options.env or {}
+            ),
         )
-        environment = {**(self.options.env or {}), **provider_environment}
+        environment = whitelist_replacement_environment(
+            os.environ, self.options.env or {}, provider_environment
+        )
         return PtyHarnessProcess.spawn(
             "codex",
             argv,

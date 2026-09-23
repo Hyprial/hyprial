@@ -17,7 +17,7 @@ import yaml
 
 from hyprial.dispatch.admission import DISPATCH_ROLES
 from hyprial.duration import DurationParseError, parse_duration as _parse_duration
-from hyprial.uri import parse_agent_uri
+from hyprial.uri import delivery_address_error, parse_agent_uri
 
 SCHEMA_VERSION = 1
 DEFAULT_TIMEOUT_SECONDS = 600.0
@@ -349,6 +349,10 @@ def load_workflow_text(text: str, *, label: str = "workflow") -> WorkflowSpec:
         escalate_to = timeout_map.get("escalate_to")
         if escalate_to is not None and (not isinstance(escalate_to, str) or not escalate_to.strip()):
             raise WorkflowSchemaError(f"{label}.on_timeout.escalate_to must be a non-empty string")
+        if escalate_to is not None:
+            address_error = delivery_address_error(escalate_to)
+            if address_error is not None:
+                raise WorkflowSchemaError(f"{label}.on_timeout.escalate_to {address_error}")
         if action == "escalate" and escalate_to is None:
             raise WorkflowSchemaError(
                 f"{label}.on_timeout.action=escalate requires escalate_to"
@@ -363,6 +367,10 @@ def load_workflow_text(text: str, *, label: str = "workflow") -> WorkflowSpec:
     report_to = root.get("report_to")
     if report_to is not None and (not isinstance(report_to, str) or not report_to.strip()):
         raise WorkflowSchemaError(f"{label}.report_to must be a non-empty string")
+    if report_to is not None:
+        address_error = delivery_address_error(report_to)
+        if address_error is not None:
+            raise WorkflowSchemaError(f"{label}.report_to {address_error}")
 
     # ── hooks (v2 extension slot; v1 accepts only an empty mapping) ───────
     hooks_raw = root.get("hooks")

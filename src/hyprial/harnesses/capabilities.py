@@ -6,7 +6,7 @@ actually do tonight.  Consumers query this table instead of scattering
 phase means changing this table and its tests in the same PR, so capability
 changes are explicit and reviewable.
 
-Terminology: a *harness* is the agent runtime (claude=cc, pi, codex); a
+Terminology: a *harness* is the agent runtime (claude=cc, pi, codex, jev); a
 *provider* is a model vendor and never appears here.
 """
 
@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Literal
 
 
 class Capability(StrEnum):
@@ -54,8 +55,33 @@ class CapabilitySupport:
             raise ValueError(f"unknown plugin kinds {self.plugin_kinds - PLUGIN_KINDS}")
 
 
+@dataclass(frozen=True, slots=True)
+class HarnessConcurrency:
+    """The bounded admission contract for a managed harness kind."""
+
+    mode: Literal["sequential", "pool"]
+    concurrency: int
+
+    def __post_init__(self) -> None:
+        if self.mode not in {"sequential", "pool"}:
+            raise ValueError(f"unknown concurrency mode {self.mode!r}")
+        if self.concurrency < 1:
+            raise ValueError("harness concurrency must be positive")
+        if self.mode == "sequential" and self.concurrency != 1:
+            raise ValueError("sequential harnesses must have concurrency=1")
+
+
 _KNOWN_MECHANISMS = frozenset(
-    {"channel", "agent_sdk", "rpc", "app_server", "dsh_api", "pty", "extension"}
+    {
+        "channel",
+        "agent_sdk",
+        "rpc",
+        "app_server",
+        "dsh_api",
+        "pty",
+        "extension",
+        "python_worker",
+    }
 )
 
 
@@ -201,6 +227,61 @@ _DECLARATIONS: dict[tuple[str, bool], dict[Capability, CapabilitySupport]] = {
         Capability.EVENT_STREAM: _unsupported(),
         Capability.MODEL_SELECT: _unsupported(),
     },
+    ("jev", True): {
+        Capability.HEADLESS_EXEC: _native("python_worker"),
+        Capability.WAKE_PUSH: _native("python_worker"),
+        Capability.PROACTIVE_SEND: _unsupported(),
+        Capability.SESSION_LIFECYCLE: _unsupported("stateless calls"),
+        Capability.TOOL_INJECTION: _unsupported(),
+        Capability.PLUGIN_INJECTION: _unsupported(),
+        Capability.TURN_CONTROL: _unsupported(),
+        Capability.EVENT_STREAM: _native("python_worker"),
+        Capability.MODEL_SELECT: _native("python_worker"),
+    },
+    ("jev", False): {
+        Capability.INTERACTIVE_ATTACH: _unsupported(),
+        Capability.WAKE_PUSH: _unsupported(),
+        Capability.PROACTIVE_SEND: _unsupported(),
+        Capability.SESSION_LIFECYCLE: _unsupported(),
+        Capability.TOOL_INJECTION: _unsupported(),
+        Capability.PLUGIN_INJECTION: _unsupported(),
+        Capability.TURN_CONTROL: _unsupported(),
+        Capability.EVENT_STREAM: _unsupported(),
+        Capability.MODEL_SELECT: _unsupported(),
+    },
+    ("user-proxy", True): {
+        Capability.HEADLESS_EXEC: _unsupported(
+            "user-proxy handler contract is not defined"
+        ),
+        Capability.WAKE_PUSH: _unsupported(
+            "user-proxy handler contract is not defined"
+        ),
+        Capability.PROACTIVE_SEND: _unsupported(),
+        Capability.SESSION_LIFECYCLE: _unsupported(),
+        Capability.TOOL_INJECTION: _unsupported(),
+        Capability.PLUGIN_INJECTION: _unsupported(),
+        Capability.TURN_CONTROL: _unsupported(),
+        Capability.EVENT_STREAM: _unsupported(),
+        Capability.MODEL_SELECT: _unsupported(),
+    },
+    ("user-proxy", False): {
+        Capability.INTERACTIVE_ATTACH: _unsupported(),
+        Capability.WAKE_PUSH: _unsupported(),
+        Capability.PROACTIVE_SEND: _unsupported(),
+        Capability.SESSION_LIFECYCLE: _unsupported(),
+        Capability.TOOL_INJECTION: _unsupported(),
+        Capability.PLUGIN_INJECTION: _unsupported(),
+        Capability.TURN_CONTROL: _unsupported(),
+        Capability.EVENT_STREAM: _unsupported(),
+        Capability.MODEL_SELECT: _unsupported(),
+    },
+}
+
+_CONCURRENCY: dict[tuple[str, bool], HarnessConcurrency] = {
+    ("jev", True): HarnessConcurrency("pool", 10),
+    ("jev", False): HarnessConcurrency("pool", 10),
+    ("user-proxy", True): HarnessConcurrency("sequential", 1),
+    ("user-proxy", False): HarnessConcurrency("sequential", 1),
 }
 
 DECLARED_HARNESSES = frozenset({harness for harness, _ in _DECLARATIONS})
@@ -222,3 +303,15 @@ def support(
     """One capability's support, or None when the mode does not apply."""
 
     return _DECLARATIONS[(harness, headless)].get(capability)
+
+
+def concurrency(harness: str, *, headless: bool) -> HarnessConcurrency:
+    """Return the fixed admission declaration for one harness kind."""
+
+    try:
+        return _CONCURRENCY[(harness, headless)]
+    except KeyError:
+        # Existing runtimes have the serial ``StreamingTurnProcess`` contract;
+        # keeping them out of this table avoids inventing a second concurrency
+        # declaration for legacy workers.
+        raise KeyError((harness, headless)) from None

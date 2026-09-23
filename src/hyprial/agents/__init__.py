@@ -14,6 +14,23 @@ from .liveness import (
     AgentLiveness,
 )
 from .actor import AgentActor, AgentRegistryActor, SenderIdentityError
+from .environment import (
+    BASE_CHILD_ENVIRONMENT_NAMES,
+    GENERATED_CHILD_ENVIRONMENT_NAMES,
+    CompleteChildEnvironment,
+    build_complete_child_environment,
+)
+from .home import AgentHomeError, AgentHomeProvisioner, HomeReceipt
+from .secrets import (
+    ResolvedSecret,
+    SECRET_ENVIRONMENT_NAMES,
+    SecretCatalogEntry,
+    SecretCustody,
+    SecretGrant,
+    SecretResolver,
+    SecretResolutionError,
+    SecretSource,
+)
 from .registry import (
     ACTOR_NAME_PATTERN,
     Agent,
@@ -44,14 +61,29 @@ __all__ = [
     "AgentBinding",
     "AgentError",
     "AgentExistsError",
+    "AgentHomeError",
+    "AgentHomeProvisioner",
     "AgentLiveness",
     "AgentNotFoundError",
     "AgentRegistry",
     "AgentRegistryActor",
+    "BASE_CHILD_ENVIRONMENT_NAMES",
+    "CompleteChildEnvironment",
+    "GENERATED_CHILD_ENVIRONMENT_NAMES",
     "HandoverNotice",
+    "HomeReceipt",
     "InvalidAgentNameError",
     "PinConflictError",
+    "ResolvedSecret",
+    "SECRET_ENVIRONMENT_NAMES",
+    "SecretCatalogEntry",
+    "SecretCustody",
+    "SecretGrant",
+    "SecretResolutionError",
+    "SecretResolver",
+    "SecretSource",
     "SenderIdentityError",
+    "build_complete_child_environment",
     "default_registry",
     "local_actors",
     "normalize_capabilities",

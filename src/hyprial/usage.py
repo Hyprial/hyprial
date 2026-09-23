@@ -43,9 +43,14 @@ from hyprial.backoff import capped_exponential
 
 JsonObject = dict[str, Any]
 
-REFRESH_INTERVAL_SECONDS = 120.0
+# Allen, 2026-09-17: 「额度缓存每1800秒（30分钟）刷新一次即可」.  The quota
+# watchdog (hyprial.quota_watchdog) evaluates after each refresh.
+REFRESH_INTERVAL_SECONDS = 1800.0
 HTTP_TIMEOUT_SECONDS = 10.0
-STALE_MS = 10 * 60_000
+# Two refresh intervals: a reading is stale only once a refresh was missed.
+# (Tied to the interval -- at 10 minutes with a 30-minute refresh, top would
+# mark every quota row stale for two thirds of the time.)
+STALE_MS = int(2 * REFRESH_INTERVAL_SECONDS * 1000)
 
 CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
@@ -626,6 +631,10 @@ class UsageCache:
     ) -> None:
         if refresh_interval_seconds <= 0:
             raise ValueError("refresh interval must be positive")
+        # Called on the refresh thread after each completed refresh (the
+        # quota watchdog).  Its failure is contained: the refresher keeps
+        # running and top keeps its readings.
+        self._on_refresh: Callable[[], None] | None = None
         self._home = Path.home() if home is None else Path(home)
         self._refresh_interval_seconds = refresh_interval_seconds
         self._fetcher = fetcher
@@ -645,6 +654,11 @@ class UsageCache:
 
     def _now_ms(self) -> int:
         return int(self._clock() * 1000)
+
+    def set_refresh_observer(self, callback: Callable[[], None] | None) -> None:
+        """Install the callback run after every background refresh."""
+
+        self._on_refresh = callback
 
     def start(self) -> None:
         with self._lock:
@@ -666,6 +680,11 @@ class UsageCache:
     def _run(self) -> None:
         while not self._stop.is_set():
             self.refresh_once()
+            if self._on_refresh is not None:
+                try:
+                    self._on_refresh()
+                except Exception:  # noqa: BLE001 - an observer bug must not kill the refresher
+                    pass
             self._stop.wait(self._refresh_interval_seconds)
 
     def refresh_once(self) -> None:
@@ -750,6 +769,13 @@ class UsageCache:
                 self._retry_after_ms.pop(source, None)
         with self._lock:
             self._snapshots = results
+
+    def snapshots(self) -> tuple[SourceSnapshot, ...]:
+        """The cached readings in ``SOURCES`` order; never triggers a fetch."""
+
+        with self._lock:
+            snapshots = dict(self._snapshots)
+        return tuple(snapshots[source] for source in SOURCES if source in snapshots)
 
     def snapshot_payload(self, now_ms: int | None = None) -> JsonObject:
         """Cache-only view for ``top.snapshot``; never triggers a fetch."""

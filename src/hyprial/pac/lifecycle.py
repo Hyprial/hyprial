@@ -134,15 +134,17 @@ class FileLaunchResolver:
                 raise ValueError(f"launch {key} must be a string")
         probes: tuple[dict[str, Any], ...] = ()
         if required_tier is not None:
-            # #425 defines requires.tier as a minimum: keep matrix ordering,
-            # but accept a live candidate from a higher tier.
+            # #425 defines requires.tier as a minimum: keep declared matrix
+            # ordering, but accept a higher-tier candidate.  Selection is
+            # static (2026-09-21): neither the diagnostic mark nor a liveness
+            # probe can reorder or skip the pool, so ``probes`` stays empty
+            # and a marked provider is still launched.
             from hyprial.dispatch.matrix import resolve_minimum_tier
 
             choice = resolve_minimum_tier(required_tier)
             harness = choice.harness
             provider = choice.provider
             model = choice.model
-            probes = tuple(reading.to_json() for reading in choice.readings)
         else:
             provider = value.get("provider")
             model = value.get("model")

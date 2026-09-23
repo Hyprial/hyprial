@@ -404,12 +404,24 @@ class ZenohUserDeliveryTransport:
         *,
         keys: KeySpace | None = None,
         receipt_timeout: float = 3.0,
+        logger: Any | None = None,
     ) -> None:
         self._session = session
         self._keys = keys or KeySpace()
         self._receipt_timeout = receipt_timeout
+        self._logger = logger
 
     def deliver(self, request: UserDeliveryRequest) -> UserDeliveryResult:
+        # Events carry identifiers and outcomes only: never the message body
+        # (it may quote privileged content) and never any credential material.
+        self._safe_log(
+            "info",
+            "user-delivery.attempted",
+            messageId=request.message_id,
+            owner=request.owner,
+            sender=request.sender,
+            conversationId=request.conversation_id,
+        )
         attempt_id = uuid4().hex
         outgoing = replace(request, attempt_id=attempt_id)
         self._session.put(
@@ -421,13 +433,47 @@ class ZenohUserDeliveryTransport:
         while time.monotonic() < deadline:
             timeout = min(0.2, max(0.01, deadline - time.monotonic()))
             for sample in self._session.get(receipt_key, timeout=timeout):
-                return decode_user_result(sample.payload)
-        return UserDeliveryResult(
+                result = decode_user_result(sample.payload)
+                self._safe_log(
+                    "info" if result.accepted else "error",
+                    "user-delivery.settled",
+                    messageId=request.message_id,
+                    owner=request.owner,
+                    sender=request.sender,
+                    accepted=result.accepted,
+                    code=result.code,
+                )
+                return result
+        result = UserDeliveryResult(
             message_id=request.message_id,
             accepted=False,
-            code=ipc_errors.TARGET_SQUIRE_UNCONFIGURED,
-            message=UNCONFIGURED_SQUIRE_MESSAGE,
+            code=ipc_errors.USER_DELIVERY_TIMEOUT,
+            message="timeout waiting for the receiver's squire receipt",
         )
+        self._safe_log(
+            "error",
+            "user-delivery.settled",
+            messageId=request.message_id,
+            owner=request.owner,
+            sender=request.sender,
+            accepted=False,
+            code=result.code,
+        )
+        return result
+
+    def _safe_log(self, level: str, event: str, **fields: object) -> None:
+        if self._logger is None:
+            return
+        try:
+            log = getattr(self._logger, "log", None)
+            if callable(log):
+                log(level, event, **fields)
+            else:
+                self._logger(level, event, **fields)
+        except (NameError, ImportError):
+            raise
+        except Exception:  # noqa: BLE001 - logging must never break delivery
+            pass
 
 
 def _string(value: object, label: str) -> str:

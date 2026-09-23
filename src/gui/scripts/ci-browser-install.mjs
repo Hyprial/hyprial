@@ -36,7 +36,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const host = `http://127.0.0.1:${server.address().port}`;
   const bypass = [process.env.NO_PROXY || process.env.no_proxy, '127.0.0.1', 'localhost', '.npmmirror.com', 'npmmirror.com'].filter(Boolean).join(',');
-  const child = spawn(process.execPath, [fileURLToPath(new URL('../dashboard/node_modules/playwright/cli.js', import.meta.url)), 'install', '--only-shell', 'chromium', ...process.argv.slice(2)], {
+  const child = spawn(process.execPath, [fileURLToPath(new URL('../browser-tests/node_modules/playwright/cli.js', import.meta.url)), 'install', '--only-shell', 'chromium', ...process.argv.slice(2)], {
     stdio: 'inherit',
     env: { ...process.env, PLAYWRIGHT_DOWNLOAD_HOST: host, PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST: host, NO_PROXY: bypass, no_proxy: bypass },
   });

@@ -39,8 +39,22 @@ _URL = re.compile(r"\b(?:https?|wss?)://[^\s<>'\"]+", re.IGNORECASE)
 _AUTHORIZATION = re.compile(
     r"(\bauthorization\s*[:=]\s*)[^\r\n,;]+", re.IGNORECASE
 )
+#: Diagnostic words that legitimately follow "token"/"bearer" in vendor
+#: error text ("token refresh unauthorized", "token expired").  Redacting
+#: them would destroy the verbatim cause alerts must carry (追加 2).  Closed
+#: set, matched whole-word via the trailing lookahead.
+_TOKEN_DIAGNOSTIC = (
+    r"refresh|refreshed|refresh[_-]?token|expired|expires|invalid|"
+    r"unauthorized|revoked|missing|required|failed|error"
+)
 _BEARER_OR_TOKEN = re.compile(
-    r"\b(bearer|token)\s+[^\s,;]+", re.IGNORECASE
+    r"\b(bearer|token)\s+(?!" + _TOKEN_DIAGNOSTIC + r"(?=[\s,;]|$))[^\s,;]+",
+    re.IGNORECASE,
+)
+#: Bare API keys that reach error text without a "key=…" wrapper: Anthropic
+#: (sk-ant-api03-…), OpenAI project keys (sk-proj-…), and the generic sk- form.
+_BARE_API_KEY = re.compile(
+    r"(?<![A-Za-z0-9_-])sk-[A-Za-z0-9_-]{16,}(?![A-Za-z0-9_-])"
 )
 _NAMED_CREDENTIAL = re.compile(
     r"((?:[\"']?)[a-z0-9_-]*(?:api[_-]?key|access[_-]?key|token|secret|"
@@ -101,6 +115,7 @@ def _redact_text(value: str) -> str:
     value = _AUTHORIZATION.sub(r"\1[REDACTED]", value)
     value = _BEARER_OR_TOKEN.sub(r"\1 [REDACTED]", value)
     value = _NAMED_CREDENTIAL.sub(r"\1[REDACTED]", value)
+    value = _BARE_API_KEY.sub("[REDACTED]", value)
     return _JWT.sub("[REDACTED_TOKEN]", value)
 
 

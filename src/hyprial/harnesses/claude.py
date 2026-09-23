@@ -49,12 +49,20 @@ class ClaudeConnector:
 
     def launch(self, spec: HarnessLaunchSpec) -> PtyHarnessProcess:
         argv = self.build_argv(spec)
-        environment = {
-            **(self.options.env or {}),
-            **claude_provider_environment(
-                spec, {**os.environ, **(self.options.env or {})}
+        from hyprial.agents.environment import (
+            whitelist_replacement_environment,
+        )
+
+        environment = whitelist_replacement_environment(
+            os.environ,
+            self.options.env or {},
+            claude_provider_environment(
+                spec,
+                whitelist_replacement_environment(
+                    os.environ, self.options.env or {}
+                ),
             ),
-        }
+        )
         return PtyHarnessProcess.spawn(
             "claude",
             argv,

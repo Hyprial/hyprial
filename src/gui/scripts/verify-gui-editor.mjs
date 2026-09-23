@@ -8,10 +8,10 @@ import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 let deps;
-for (const base of [process.env.DSH_GUI_BROWSER_DEPS, join(repo, 'dashboard/package.json'), join(homedir(), '.h2b/apps/gui/source/dashboard/package.json')].filter(Boolean)) {
+for (const base of [process.env.DSH_GUI_BROWSER_DEPS, join(repo, 'browser-tests/package.json'), join(homedir(), '.h2b/apps/gui/source/browser-tests/package.json')].filter(Boolean)) {
   try { const candidate = createRequire(resolve(base)); for (const name of ['react', 'react-dom/client', 'rolldown', 'playwright']) candidate.resolve(name); deps = candidate; break; } catch {}
 }
-if (!deps) throw new Error('Install dashboard browser dependencies or set DSH_GUI_BROWSER_DEPS');
+if (!deps) throw new Error('Install GUI browser-test dependencies or set DSH_GUI_BROWSER_DEPS');
 const { build } = await import(pathToFileURL(deps.resolve('rolldown')));
 const { chromium } = deps('playwright');
 const temp = await mkdtemp(join(tmpdir(), 'gui-editor-browser-'));

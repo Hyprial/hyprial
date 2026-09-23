@@ -102,6 +102,7 @@ class AgentProjection:
     actor: str
     owner: str
     machine: str
+    entity_token: str
     cwd: str | None = None
     provider: str | None = None
     model: str | None = None
@@ -120,6 +121,9 @@ class AgentProjection:
             "actor": self.actor,
             "owner": self.owner,
             "machine": self.machine,
+            # entity_token is internal incarnation authority: home/grant fences
+            # bind to it, but it is not part of the public ``ps`` wire.  The
+            # field survives on the projection for the composition round-trip.
             "cwd": self.cwd,
             "provider": self.provider,
             "model": self.model,

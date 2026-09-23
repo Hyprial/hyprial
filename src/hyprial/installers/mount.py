@@ -32,6 +32,7 @@ from typing import Any
 from hyprial.contracts import ipc_errors
 
 from .core import InstallError, MountedCommand, _read_manifest
+from .error_codes import INSTALL_STATE_INVALID
 
 #: Actions the generic runner knows how to perform, in the order ``--help``
 #: lists them.  A manifest may only ask for a subset (enforced at parse time).
@@ -130,12 +131,12 @@ def _declared_commands(app_root: Path, app: str) -> tuple[MountedCommand, ...]:
         # (a half-finished install, or something an operator put there).
         return ()
     except (OSError, json.JSONDecodeError) as error:
-        raise InstallError("INSTALL_STATE_INVALID", f"cannot read install receipt: {error}") from error
+        raise InstallError(INSTALL_STATE_INVALID, f"cannot read install receipt: {error}") from error
     if not isinstance(receipt, dict):
-        raise InstallError("INSTALL_STATE_INVALID", "install receipt must be an object")
+        raise InstallError(INSTALL_STATE_INVALID, "install receipt must be an object")
     manifest_rel = receipt.get("manifest", "hyprial-install.json")
     if not isinstance(manifest_rel, str) or not manifest_rel:
-        raise InstallError("INSTALL_STATE_INVALID", "install receipt manifest must be a non-empty string")
+        raise InstallError(INSTALL_STATE_INVALID, "install receipt manifest must be a non-empty string")
     # Schema-agnostic on purpose: the receipt's ``manifest`` key is present in
     # both v1 and v2 receipts, so a v2 install mounts its commands exactly like
     # a v1 one -- mount never reads the install-state schema (design §10 row 17).

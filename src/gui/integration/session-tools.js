@@ -6,7 +6,7 @@ export function installSessionTools(ctx, rpc) {
     targets: { description: 'List H2B network targets using this DSH session.', properties: {} },
     send: { description: 'Send an asynchronous message as this DSH session to an exact four-part Agent URI. Replies return to this session. Does not wait for completion.', properties: { target: { type: 'string' }, message: { type: 'string' } } },
     inbox: { description: 'Read authorized pending Agent messages for this session; this does not acknowledge messages.', properties: {} },
-    reply: { description: 'Reply to an H2B message as this session. Use the original messageId.', properties: { messageId: { type: 'string' }, message: { type: 'string' } } },
+    reply: { description: 'Return one requested result using the original messageId. Host does not automatically send final text to Agent peers. Do not reply to receipts, status-only results or PAC notifications; acknowledge them after processing. PAC completion requires its node flag, not a reply.', properties: { messageId: { type: 'string' }, message: { type: 'string' } } },
     ack: { description: 'Acknowledge a pending H2B message after processing it.', properties: { messageId: { type: 'string' } } }
   };
   const disposers = [];

@@ -18,7 +18,7 @@ from .errors import PAC_MIGRATION_SOURCE_UNREADABLE, PacError
 from .journal import JOURNAL_SCHEMA, append_event
 from .principal import principal_kind
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 def _create_v1(db: sqlite3.Connection, schema: str) -> None:
@@ -309,13 +309,132 @@ def _upgrade_v7_to_v8(db: sqlite3.Connection, state_dir: Path) -> None:
         "graphs_total, owners_rewritten, owners_kept, report_json) "
         "VALUES (1, ?, ?, ?, ?, ?, ?)",
         (
-            SCHEMA_VERSION,
+            # The era report belongs to THIS step; a later bump must not
+            # relabel it (a v7 database migrated straight to v9 was still
+            # rewritten by the schema-8 step).
+            8,
             time_ns() // 1_000_000,
             graphs_total,
             owners_rewritten,
             owners_kept,
             json.dumps(report, ensure_ascii=False),
         ),
+    )
+
+
+def _upgrade_v8_to_v9(db: sqlite3.Connection) -> None:
+    """Add the graph-linked projection/outbox for frozen ``agent.task``.
+
+    These rows live with their PAC graph, never in the legacy workflow
+    database.  The opaque request/activity/result bodies stay outside graph
+    references while foreign keys make it impossible to retain a task without
+    its authoritative graph.
+    """
+
+    db.execute(
+        """
+        CREATE TABLE pac_agent_task_runs (
+            graph_id         TEXT PRIMARY KEY REFERENCES graphs(graph_id),
+            service_actor    TEXT NOT NULL,
+            namespace        TEXT NOT NULL,
+            external_ref     TEXT NOT NULL,
+            request_digest   TEXT NOT NULL,
+            caller           TEXT NOT NULL,
+            metadata_json    TEXT NOT NULL,
+            payload_json     TEXT NOT NULL,
+            completion_json  TEXT NOT NULL,
+            state            TEXT NOT NULL
+                             CHECK(state IN ('reserved','running','waiting','completed','failed','cancelled')),
+            last_event_id    TEXT,
+            cancel_reason    TEXT,
+            created_at_ms    INTEGER NOT NULL,
+            finished_at_ms   INTEGER,
+            UNIQUE(service_actor, namespace, external_ref)
+        )
+        """
+    )
+    db.execute(
+        """
+        CREATE TABLE pac_agent_task_targets (
+            graph_id        TEXT NOT NULL REFERENCES pac_agent_task_runs(graph_id),
+            ordinal         INTEGER NOT NULL,
+            target_ref      TEXT NOT NULL,
+            node_id         TEXT NOT NULL,
+            target          TEXT NOT NULL,
+            role            TEXT NOT NULL CHECK(role IN ('owner','participant')),
+            delegates_json  TEXT NOT NULL,
+            conversation_id TEXT NOT NULL,
+            attempts        INTEGER NOT NULL DEFAULT 0,
+            state           TEXT NOT NULL
+                            CHECK(state IN ('reserved','dispatching','running','waiting','completed','failed','cancelled')),
+            result_ref      TEXT,
+            PRIMARY KEY(graph_id, target_ref),
+            UNIQUE(graph_id, ordinal),
+            UNIQUE(graph_id, node_id),
+            UNIQUE(graph_id, target),
+            UNIQUE(graph_id, conversation_id),
+            FOREIGN KEY(graph_id, node_id) REFERENCES nodes(graph_id, node_id)
+        )
+        """
+    )
+    db.execute(
+        """
+        CREATE TABLE pac_agent_task_dispatches (
+            graph_id        TEXT NOT NULL,
+            target_ref      TEXT NOT NULL,
+            effect_id       TEXT NOT NULL UNIQUE,
+            text            TEXT NOT NULL,
+            message_id      TEXT,
+            delivered_at_ms INTEGER,
+            PRIMARY KEY(graph_id, target_ref),
+            FOREIGN KEY(graph_id, target_ref)
+                REFERENCES pac_agent_task_targets(graph_id, target_ref)
+        )
+        """
+    )
+    db.execute(
+        """
+        CREATE TABLE pac_agent_task_events (
+            seq             INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id        TEXT NOT NULL UNIQUE,
+            event_digest    TEXT NOT NULL,
+            graph_id        TEXT NOT NULL,
+            target_ref      TEXT NOT NULL,
+            conversation_id TEXT NOT NULL,
+            kind            TEXT NOT NULL,
+            submitter       TEXT NOT NULL,
+            at              TEXT NOT NULL,
+            payload_json    TEXT NOT NULL,
+            message_id      TEXT NOT NULL,
+            FOREIGN KEY(graph_id, target_ref)
+                REFERENCES pac_agent_task_targets(graph_id, target_ref)
+        )
+        """
+    )
+    db.execute(
+        "CREATE INDEX pac_agent_task_events_graph_order "
+        "ON pac_agent_task_events(graph_id, seq)"
+    )
+    db.execute(
+        """
+        CREATE TABLE pac_agent_task_results (
+            graph_id          TEXT NOT NULL,
+            target_ref        TEXT NOT NULL,
+            result_ref        TEXT NOT NULL,
+            result_digest     TEXT NOT NULL,
+            message_id        TEXT NOT NULL,
+            payload_json      TEXT NOT NULL,
+            artifact_refs_json TEXT NOT NULL,
+            submitted_at      TEXT NOT NULL,
+            activity_event_id TEXT NOT NULL UNIQUE,
+            flag_event_id     TEXT NOT NULL UNIQUE,
+            PRIMARY KEY(graph_id, target_ref),
+            UNIQUE(graph_id, target_ref, result_ref),
+            FOREIGN KEY(graph_id, target_ref)
+                REFERENCES pac_agent_task_targets(graph_id, target_ref),
+            FOREIGN KEY(flag_event_id) REFERENCES flag_events(event_id)
+        )
+        """
     )
 
 
@@ -441,6 +560,10 @@ def migrate(db: sqlite3.Connection, legacy_schema: str, state_dir: Path | None =
         if version == 7:
             _upgrade_v7_to_v8(db, state_dir or Path("."))
             db.execute("PRAGMA user_version = 8")
+            version = 8
+        if version == 8:
+            _upgrade_v8_to_v9(db)
+            db.execute("PRAGMA user_version = 9")
         db.commit()
     except BaseException:
         db.rollback()

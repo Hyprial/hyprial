@@ -37,6 +37,22 @@ from .turn_ports import (
 from .turn_runtime import TurnRuntime, provider_failure_is_terminal
 
 
+#: Observer seam for turn failures, with the worker's spec context attached
+#: (provider/model/name are not recoverable from the failure text alone).
+#: Implemented by ``provider_auth.ProviderAuthCoordinator.handle_turn_failure``;
+#: its contract is never-raises, so the pump does not defend against it.
+class TurnFailureSpecObserver(Protocol):
+    def __call__(
+        self,
+        failure: str,
+        *,
+        harness: str,
+        provider: str | None,
+        model: str | None,
+        worker: str,
+    ) -> None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class ProgressObservation:
     """A harness-side progress signal before the pump stamps delivery context.
@@ -83,6 +99,15 @@ _STOP = object()
 #: Per-actor bound on queued progress events (route C backpressure layer 1).
 _PROGRESS_QUEUE_MAX = 256
 _TURN_DELIVERY_MAX = 128
+
+#: Bound on the fire-and-forget turn-failure observer queue.  The pump only
+#: enqueues (never awaits) so a slow/hung owner notifier cannot stall the
+#: turn's completion; when the observer drains slower than failures arrive,
+#: the oldest excess is dropped and counted (review r2 final).
+_TURN_FAILURE_OBSERVER_QUEUE_MAX = 16
+
+#: Sentinel that asks the observer drain thread to exit.
+_OBSERVER_STOP = object()
 
 #: Retired wall-clock cap override (#277: no timeout kills a turn).  Still
 #: read where old code paths resolve the legacy value, but nothing
@@ -135,7 +160,30 @@ def resolve_turn_timeout_seconds(
     return math.inf if parsed == 0 else parsed
 
 
-class StreamingTurnProcess:
+class BaseTurnProcess:
+    """Common process-family marker for shared turn lifecycle implementations.
+
+    The sequential implementation below retains the established pump and all
+    of its public behavior.  Concurrent implementations use this same family
+    marker while owning a correlated multi-in-flight adapter.
+    """
+
+
+class ConcurrentTurnProcess(BaseTurnProcess):
+    """Bounded concurrent turn-process family seam.
+
+    Concrete adapters own their child wire, while this family-level contract
+    validates the declared execution bound.  The Jev adapter supplies the
+    complete process implementation and calls this initializer exactly once.
+    """
+
+    def __init__(self, *, concurrency: int) -> None:
+        if concurrency < 1:
+            raise ValueError("concurrent turn-process capacity must be positive")
+        self.concurrency = concurrency
+
+
+class SequentialTurnProcess(BaseTurnProcess):
     """Serialize daemon deliveries through one persistent harness conversation.
 
     Every managed streaming runtime shares this pump; a concrete harness
@@ -160,6 +208,7 @@ class StreamingTurnProcess:
         force_stop_join_seconds: float = 1.0,
         liveness_probe: Callable[[], ProcessLiveness] | None = None,
         on_turn_started: TurnStartedObserver | None = None,
+        on_turn_failure: Callable[[str], None] | None = None,
     ) -> None:
         if reconnect_delay_seconds < 0:
             raise ValueError("reconnect delay must not be negative")
@@ -186,6 +235,30 @@ class StreamingTurnProcess:
         self._force_stop_join_seconds = force_stop_join_seconds
         self._liveness_probe = liveness_probe
         self._on_turn_started = on_turn_started
+        # Every turn failure is reported to this observer with the verbatim
+        # failure text; classification (terminal/auth/entitlement/transient)
+        # lives in provider_auth, whose tables are the single closed list —
+        # gating here on provider_failure_is_terminal would silently drop the
+        # entitlement class, which matches none of those markers.  The
+        # observer's contract is never-raises, same as the alarm delivery
+        # path; the pump does not defend against it.
+        self._on_turn_failure = on_turn_failure
+        # Fire-and-forget dispatch for the observer: the pump enqueues and
+        # never awaits, so the observer's own latency (Lark HTTP + file writes
+        # on the B path) cannot stall the turn's completion.  Bounded queue +
+        # one dedicated drain thread; excess is dropped and counted.
+        self._observer_queue: queue.Queue[object] | None = None
+        self._observer_thread: threading.Thread | None = None
+        if on_turn_failure is not None:
+            self._observer_queue = queue.Queue(
+                maxsize=_TURN_FAILURE_OBSERVER_QUEUE_MAX
+            )
+            self._observer_thread = threading.Thread(
+                target=self._observer_drain,
+                name=f"{thread_name}-observer",
+                daemon=True,
+            )
+            self._observer_thread.start()
         # The actor owns FIFO, admission, in-flight identity, and result
         # publication.  This one-slot queue is only the handoff to blocking
         # harness I/O; it can never become a second unbounded work owner.
@@ -516,6 +589,64 @@ class StreamingTurnProcess:
             outcome.append(False)
             completed.set()
         self._turn_runtime.drain(self._stop_timeout_seconds)
+        observer_queue = self._observer_queue
+        if observer_queue is not None:
+            try:
+                observer_queue.put_nowait(_OBSERVER_STOP)
+            except queue.Full:
+                # A full queue is actively draining; the daemon thread exits
+                # with the process.
+                pass
+
+    def _dispatch_turn_failure(self, failure: str) -> None:
+        """Enqueue a turn failure for the observer; never blocks, never raises.
+
+        The observer (provider_auth coordinator) runs on its own thread, so
+        its latency (Lark HTTP + file writes on the B path) cannot stall the
+        turn's completion.  A full queue is backpressure: the drop is logged
+        and the pump keeps going (review r2 final).
+        """
+
+        observer_queue = self._observer_queue
+        if observer_queue is None:
+            return
+        try:
+            observer_queue.put_nowait(failure)
+        except queue.Full:
+            self._log_observer_event(
+                "turn-failure-observer.dropped", reason="queue full"
+            )
+
+    def _observer_drain(self) -> None:
+        """The observer's single dedicated thread; swallows every raise."""
+
+        observer_queue = self._observer_queue
+        assert observer_queue is not None
+        while True:
+            item = observer_queue.get()
+            if item is _OBSERVER_STOP:
+                return
+            observer = self._on_turn_failure
+            if observer is None or not isinstance(item, str):
+                continue
+            try:
+                observer(item)
+            except Exception as error:  # noqa: BLE001 -- never-raises contract
+                self._log_observer_event(
+                    "turn-failure-observer.error",
+                    errorType=type(error).__name__,
+                )
+
+    def _log_observer_event(self, event: str, **fields: object) -> None:
+        logger = self._logger
+        if logger is None:
+            return
+        try:
+            logger.info(event, **fields)
+        except (NameError, ImportError):
+            raise
+        except OSError:
+            return
 
     def _submit_turn_io(
         self,
@@ -821,6 +952,18 @@ class StreamingTurnProcess:
                                 else {}
                             ),
                         )
+                        if (
+                            result.status is not HarnessResultStatus.COMPLETED
+                            and self._on_turn_failure is not None
+                            and result.error
+                        ):
+                            # the turn-failure observer: the FAILED result path is
+                            # where pi's stopReason=error and claude's isError
+                            # surface -- a normal error result, not an
+                            # exception.  Fire-and-forget: the observer's own
+                            # thread drains a bounded queue, so its latency
+                            # never stalls the turn's completion (review r2).
+                            self._dispatch_turn_failure(result.error)
                         turn_started = False
                         assert current_fence is not None
                         completion_admission = self._turn_runtime.complete_io(
@@ -931,6 +1074,10 @@ class StreamingTurnProcess:
                             else {}
                         ),
                     )
+                    if self._on_turn_failure is not None:
+                        # turn-failure observer on the crash/断连 path;
+                        # fire-and-forget like the result path (review r2).
+                        self._dispatch_turn_failure(failure)
                     if not retry:
                         self._log_turn(
                             "worker.turn.abandoned",
@@ -1048,3 +1195,19 @@ class StreamingTurnProcess:
             HarnessResultStatus.COMPLETED,
             output=output,
         )
+
+
+# Compatibility name retained for every existing Pi/Claude/Codex/DSH caller.
+# It intentionally resolves to the sequential family implementation.
+StreamingTurnProcess = SequentialTurnProcess
+
+
+__all__ = [
+    "BaseTurnProcess",
+    "ConcurrentTurnProcess",
+    "ProgressObservation",
+    "SequentialTurnProcess",
+    "StreamingTurnProcess",
+    "TurnClient",
+    "TurnClientFactory",
+]

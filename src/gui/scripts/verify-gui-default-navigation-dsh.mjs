@@ -8,7 +8,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const endpoint = new URL(process.env.GUI_NAV_DSH_URL || 'http://127.0.0.1:3198');
 assert.ok(['127.0.0.1', 'localhost'].includes(endpoint.hostname));
 if (endpoint.port === '3080') assert.equal(process.env.GUI_NAV_LOCAL_AUTHORIZED, '1');
-const { chromium } = createRequire(resolve(process.env.DSH_GUI_BROWSER_DEPS || root + '/dashboard/package.json'))('playwright');
+const { chromium } = createRequire(resolve(process.env.DSH_GUI_BROWSER_DEPS || root + '/browser-tests/package.json'))('playwright');
 const browser = await chromium.launch();
 const results = [], errors = [];
 let candidateLoads = 0;
@@ -16,7 +16,7 @@ try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   page.on('pageerror', error => errors.push(error.message));
   if (process.env.GUI_NAV_CANDIDATE === '1') {
-    await page.route(url => url.pathname === '/plugins/@hyprial/dsh-h2b-talk/client.js', route => {
+    await page.route(url => url.pathname === '/plugins/@hyprial/dsh-hyprial-plugin/client.js', route => {
       candidateLoads++;
       return route.fulfill({ contentType: 'text/javascript', path: root + '/static/client.js' });
     });

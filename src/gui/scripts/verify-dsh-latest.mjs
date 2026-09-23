@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // A real browser/DSH gate. Never reuse an operator's DSH installation or profile.
 import { inspectGuiSource } from './gui-source.mjs';
+import { resolveLatest, prepareCandidate, inspectCandidate, createNpmRunner } from './dsh-runtime.mjs';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
@@ -25,7 +26,7 @@ await mkdir(artifacts, { recursive: true });
 const registry = 'https://registry.npmjs.org';
 const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
   ['PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TMPDIR', 'PNPM_HOME', 'XDG_RUNTIME_DIR',
-    'PLAYWRIGHT_BROWSERS_PATH', 'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'SSL_CERT_DIR'].includes(key) ||
+    'DSH_NPM_MIRROR_FIRST', 'PLAYWRIGHT_BROWSERS_PATH', 'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'SSL_CERT_DIR'].includes(key) ||
   /^(https?|all|no)_proxy$/i.test(key)));
 const env = { ...inherited, DSH_HOME: join(stage, 'dsh'), H2B_HOME: join(stage, 'h2b'),
   HARNESS_STATE_DIR: join(stage, 'h2b/state'), HARNESS_SOCKET_PATH: join(stage, 'offline.sock'),
@@ -35,6 +36,7 @@ const env = { ...inherited, DSH_HOME: join(stage, 'dsh'), H2B_HOME: join(stage, 
   XDG_CONFIG_HOME: join(stage, 'config'), XDG_CACHE_HOME: join(stage, 'cache'), XDG_DATA_HOME: join(stage, 'data'),
   npm_config_cache: join(stage, 'npm-cache'), npm_config_userconfig: join(stage, 'empty-npmrc'),
   npm_config_registry: registry };
+const npm = createNpmRunner(env);
 await writeFile(env.npm_config_userconfig, '');
 await mkdir(env.HARNESS_STATE_DIR, { recursive: true });
 const report = { schema: 'h2b.dsh-latest-check/v1', status: 'failed', tag: released ? 'release' : 'latest', registry,
@@ -46,7 +48,7 @@ function run(command, args, timeout = 600000) {
   return result.stdout.trim();
 }
 function latest() {
-  return JSON.parse(run('npm', ['view', '@deepseek-ai/dsh', 'dist-tags.latest', '--json', '--registry=' + registry], 60000));
+  return resolveLatest(npm);
 }
 const sanitize = text => String(text).replace(/([?&]token=)[^\s"&]+/g, '$1[redacted]');
 try {
@@ -55,19 +57,22 @@ try {
   report.sourceKind = source.kind;
   report.sourceVersion = source.version;
   report.workingTreeClean = source.workingTreeClean;
-  report.dshVersion = JSON.parse(await readFile(join(releaseDirectory, 'package.json'), 'utf8')).dependencies['@deepseek-ai/dsh'];
-  assert.match(report.dshVersion, /^\d+\.\d+\.\d+(?:-[\w.]+)?$/);
-  if (!released) assert.equal(latest(), report.dshVersion, 'Release pin is not npm latest; update packages/dsh-runtime and retest before publishing');
-  console.log(`DSH_LATEST resolved=${report.dshVersion}; isolated profile; no model requests`);
   const runtime = args.length ? resolve(args[1]) : join(stage, 'runtime');
+  report.dshVersion = released ? inspectCandidate(runtime) : resolveLatest(npm);
+  console.log(`DSH_LATEST resolved=${report.dshVersion}; isolated profile; no model requests`);
   if (!released) {
-    await mkdir(runtime, { recursive: true });
-    for (const file of ['package.json', 'package-lock.json']) await copyFile(join(releaseDirectory, file), join(runtime, file));
-    run('npm', ['ci', '--prefix', runtime, '--registry=' + registry, '--no-audit', '--no-fund']);
+    prepareCandidate(releaseDirectory, runtime, report.dshVersion, npm);
+    npm(['ci', '--prefix', runtime, '--no-audit', '--no-fund']);
   }
-  const locked = await readFile(join(releaseDirectory, 'package-lock.json'), 'utf8');
-  assert.equal(await readFile(join(runtime, 'package-lock.json'), 'utf8'), locked, 'Candidate runtime differs from the GUI release dependency lock');
+  assert.equal(inspectCandidate(runtime), report.dshVersion);
+  const locked = await readFile(join(runtime, 'package-lock.json'), 'utf8');
   report.runtimeLockSha256 = createHash('sha256').update(locked).digest('hex');
+  await copyFile(join(runtime, 'package.json'), join(artifacts, 'runtime-package.json'));
+  await copyFile(join(runtime, 'package-lock.json'), join(artifacts, 'runtime-package-lock.json'));
+  env.DSH_HISTORY_TEST_RUNTIME = runtime;
+  console.log(run(process.execPath, ['--test', 'tests/remote-history-api.test.mjs']));
+  report.checks.push('host-public-session-history-api');
+  delete env.DSH_HISTORY_TEST_RUNTIME;
   const { applyDshHistoryCompatibility } = await import('./dsh-history-compat.mjs');
   const { verifyDshHistoryCompatibility } = await import('./verify-dsh-history.mjs');
   report.historyCompatibility = applyDshHistoryCompatibility(runtime);
@@ -77,6 +82,8 @@ try {
   const { verifyDshGuiFocusCompatibility } = await import('./verify-dsh-gui-focus.mjs');
   report.guiFocusCompatibility = applyDshGuiFocusCompatibility(runtime);
   report.guiFocusRegression = await verifyDshGuiFocusCompatibility(runtime);
+  const { verifyDshCarrierRestore } = await import('./verify-dsh-carrier-restore.mjs');
+  report.carrierRestoreRegression = await verifyDshCarrierRestore(runtime);
   report.checks.push('audited-native-gui-focus-context');
   env.PATH = join(runtime, 'node_modules/.bin') + ':' + env.PATH;
   assert.equal(run('dsh', ['--version']), report.dshVersion);
@@ -135,7 +142,7 @@ try {
   report.checks.push('managed-authenticated-launch-readiness');
   run(process.execPath, ['scripts/verify-codex-models.mjs', join(env.DSH_HOME, 'profiles/web')]);
   report.checks.push('codex-model-catalog-and-resolution');
-  const { chromium } = createRequire(join(root, 'dashboard/package.json'))('playwright');
+  const { chromium } = createRequire(join(root, 'browser-tests/package.json'))('playwright');
   browser = await chromium.launch({ env });
   const responses = [];
   async function openPage() {
@@ -257,7 +264,7 @@ try {
   assert.deepEqual(report.failedRequests, []);
   assert.deepEqual(report.browserErrors, []);
   await page.screenshot({ path: join(artifacts, 'gui.png'), fullPage: true });
-  if (!released) assert.equal(latest(), report.dshVersion, 'npm latest moved during testing; update the release pin and rerun');
+  if (!released) assert.equal(latest(), report.dshVersion, 'npm latest moved during testing; rerun to resolve and verify the new latest');
   report.status = 'passed';
 } catch (error) {
   const failedPage = browser?.contexts().flatMap(context => context.pages())[0];

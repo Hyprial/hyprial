@@ -58,13 +58,13 @@ hyprial <域> <子命令> --help   # 参数面
 - 本机设了 `HTTP(S)_PROXY` 时,确认 `NO_PROXY` 包含 `code.hyprial.com`。
 - 超时与认证失败的报错里会直接带上上面这些提示;其它非零退出的 git 失败逐字不变。
 
-### GUI 展示与开发工作台（安装 GUI 包后动态挂载）
-- `hyprial gui` / `hyprial gui start` — 启动只读 Dashboard；`hyprial gui stop` 只停止 Dashboard。
-- `hyprial gui dsh [start|stop|status]` — 完整 DSH 工作台；省略动作默认为 start。
-- `hyprial gui all [start|stop|status]` — 两个独立应用；`hyprial gui status` 默认汇总两者。
-- `hyprial gui dashboard [start|stop|status]` — 显式选择 Dashboard。应用选择使用位置子命令。
-- `hyprial gui upgrade [--check|--yes|--force]` — 更新整个 GUI 安装包，恢复升级前运行的应用。
-- 配套发布先更新 HYPRIAL，再更新 GUI 包；旧 CLI 不支持应用子命令。状态、PID、URL 按应用返回，DSH 保留旧进程记录路径。
+### GUI 工作空间（安装 GUI 包后动态挂载）
+- `hyprial gui` / `hyprial gui start` — 启动 DSH 工作空间。
+- `hyprial gui status --json` — 查询 DSH 状态；`hyprial gui stop` — 停止 DSH。
+- `hyprial gui upgrade [--check|--yes|--force]` — 更新 GUI 包，恢复此前运行的 DSH。
+- Dashboard 已退役；`gui dashboard`、`gui dsh`、`gui all` 均不再支持，不派发这些旧指令。
+- 先更新 Hyprial CLI 再更新 GUI 包。原 DSH 进程记录与会话保留；有旧 Dashboard 时，
+  启动/停止/升级先核对进程身份后停止它，不再重启。身份未知时停止操作，禁止直接杀 PID。
 
 ### adapter(飞书网关)生命周期 —— 全部自动化,无需人工建应用
 - `hyprial adapter onboard <name> [--new|--app-id <id>]` — **自动创建或收养飞书 App**
@@ -132,11 +132,29 @@ hyprial <域> <子命令> --help   # 参数面
   clock/restate 仅在隐藏的 `pac debug` 内供诊断,不属于公开命令面或常驻 v2 tick 实现。
 
 ### agent / worker / 消息
-- `hyprial start claude|codex|pi --name ... [--headless] --cwd ... -- <harness args>`
+- `hyprial start claude|codex|pi|jev --name ... [--headless] --cwd ... -- <harness args>`
+  `jev` is a packaged, headless TypeSafe worker: it accepts no script or model-vendor selector,
+  model, or positional runtime arguments. It finds `TYPESAFE_API_KEY` the same
+  way the user-side `jev` command does: if you can already run `jev` because the
+  key is in `~/.config/typesafe/env` (`export TYPESAFE_API_KEY='...'`), nothing
+  else is needed. An explicitly granted `hyprial agent secret` still wins over
+  the file (write the entry, grant the current actor incarnation, then `hyprial
+  start jev`; grants are bound to one agent instance). The ready frame reports
+  `credentialSource` as `environment`, `file` or null; with neither, the first
+  call fails `PROVIDER_AUTHENTICATION_FAILED` with a message starting
+  `TYPESAFE_CREDENTIAL_FILE_ABSENT` / `_KEY_ABSENT` / `_ENV_ABSENT`.
   (headless claude 必带 --dangerously-skip-permissions)
+- `hyprial start claude --tmux ...`(交互式 TUI 放进 detached tmux)可能返回 `CLAUDE_CONFIRMATION_REQUIRED`:
+  Claude Code 自己的启动确认在等人按(`data.prompt` = `folder-trust` 信任工作目录,或 `development-channels`
+  开发通道警告)。这两个确认是 CC 故意留给人的,没有受支持的预先同意 ⇒ 会话**保留**,按 `data.attach`
+  里的命令 attach、确认、detach,之后它自己注册。⛔ 不要当作失败重起(重起还是停在同一处)。
   (headless codex 带 `-- -a on-request -s workspace-write`;hyprial 客户端只批准 worker 自己的 harness-bridge MCP 工具调用,其它 elicitation 与命令/文件审批一律拒;reviewer 在 worker 线程级为 user,任何提供方下一致。批准≠授权,授权仍在 daemon 侧)
 - `hyprial agent create` — 注册 agent 记录;`hyprial send --from <四段canonical URI>`
   (裸名派单=回报全丢);`hyprial ack <mid> --from <注册身份URI>`
+- `hyprial query <actor> inbox|outbox [--json]` — 人查看某个本机 actor 的收件箱(待处理消息 +
+  系统通知,含正文)或发件箱(它发出、仍在排队的消息)。**只读**:不取走、不 ack、不清通知,
+  agent 之后照样收到。⛔ 不要拿 MCP 的 harness_read 或 daemon 的 message.pending.list 来"看一眼":
+  后者每次调用都会清掉该 actor 的系统通知。
 - MCP 会话内:harness_whoami/read/reply/ack/send/targets;
   **回入站消息用 harness_reply(回复+消费一步),新话题才用 hyprial send**
 - 会话的 harness-bridge MCP/技能面由 `hyprial start` 启动时从 HYPRIAL_HOME 统一注入,

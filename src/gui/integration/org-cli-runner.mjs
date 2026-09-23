@@ -1,3 +1,4 @@
+import { hyprialCliEnv } from './hyprial-cli.mjs';
 import { spawn } from 'node:child_process';
 import { realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -5,16 +6,16 @@ import { isAbsolute, join, resolve } from 'node:path';
 
 function fail(message) { throw Object.assign(new Error(message), { code: 'INVALID_ARGUMENT' }); }
 
-// Matches h2b.home.configured_h2b_home(): H2B_HOME (when present), otherwise
-// Path.home() / '.h2b'; org.store.OrgContextStore uses home / 'org-context.md'.
+// Matches hyprial.home.configured_hyprial_home() after normalizing the Host environment.
+// org.store.OrgContextStore uses home / org-context.md.
 // HARNESS_STATE_DIR is deliberately NOT used for the accepted document.
 export async function orgAcceptedPath(env = process.env) {
   const userHome = env.HOME || homedir();
-  let home = Object.hasOwn(env, 'H2B_HOME') ? env.H2B_HOME : join(userHome, '.h2b');
-  if (typeof home !== 'string') fail('Host H2B_HOME must be a string');
+  let home = hyprialCliEnv(env).HYPRIAL_HOME;
+  if (typeof home !== 'string') fail('Host HYPRIAL_HOME must be a string');
   if (home === '~') home = userHome;
   else if (home.startsWith('~/')) home = join(userHome, home.slice(2));
-  else if (home.startsWith('~')) fail('Host H2B_HOME must not use another user home shorthand');
+  else if (home.startsWith('~')) fail('Host HYPRIAL_HOME must not use another user home shorthand');
   // Resolve symlinks like Python Path.resolve; never create a missing home.
   return join(await realpath(resolve(home)), 'org-context.md');
 }
@@ -34,11 +35,11 @@ export function validateOrgCliArgv(argv) {
 // Instantiated by the Host, not a browser-supplied executable/env/path. Capture
 // its environment once so a preview and its write share the same execution home.
 export function createOrgCliRunner({ env = process.env, timeoutMs = 25000, maxOutputBytes = 524288 } = {}) {
-  const capturedEnv = { ...env };
+  const capturedEnv = hyprialCliEnv(env);
   return async function runOrgCli(argv) {
     validateOrgCliArgv(argv);
     return await new Promise(resolveResult => {
-      const child = spawn('h2b', argv, { env: capturedEnv, shell: false, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn('hyprial', argv, { env: capturedEnv, shell: false, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
       let bytes = 0, stdout = '', stderr = '', timedOut = false, overflow = false, settled = false;
       function kill() {
         if (!child.pid) return;
@@ -60,7 +61,7 @@ export function createOrgCliRunner({ env = process.env, timeoutMs = 25000, maxOu
       child.stderr.on('data', chunk => collect('stderr', chunk));
       child.on('error', error => {
         // No command/env dump. Preserve an actionable structured launch error.
-        stdout = JSON.stringify({ ok: false, code: error.code || 'COMMAND_FAILED', error: 'H2B organization CLI could not be launched' });
+        stdout = JSON.stringify({ ok: false, code: error.code || 'COMMAND_FAILED', error: 'Hyprial organization CLI could not be launched' });
         finish(null);
       });
       child.on('close', status => finish(status));

@@ -7,7 +7,7 @@ module reaches them through the names below — a grep for any of the
 literals must find exactly this file.
 
 Where the numbers come from (measured 2026-09-10 by fetching each release
-asset with the same ``git archive --remote`` command used by install,
+asset with the ``git archive --remote`` transport used by install at the time,
 extracting its bytes, and computing sha256 locally; the release's
 ``SHA256SUMS`` was consulted only afterward for reconciliation — hyprial does
 **not** recompute or re-derive the pins at runtime):
@@ -19,27 +19,45 @@ extracting its bytes, and computing sha256 locally; the release's
   Close-first build (kept in the bin repo by retention); ``tsnet-v0.1.0``
   was never published and ``tsnet-v0.1.1`` misreported ``0.1.0`` in
   hello — none of those may be pinned.
-- **Download transport (Allen's ruling E, 2026-09-05): no HTTP.**  The
-  binary comes over the same git+ssh the user already installed hyprial with:
-  ``git archive --remote=<SIDECAR_BIN_REPO> tsnet-v<version> <asset>`` —
-  one file, no clone — from the dedicated binary repo
-  ``HyprialOS/hyprial-tsnet-bin`` (tag ``tsnet-v<version>``, remote asset
-  names ``hyprial-tsnet-<platform>``).  The local installed filename is
-  ``hyprial-tsnet`` as well (they are separate constants that happen to
-  share a value; ⛔ do not collapse them).  The trust root is **still the
-  pinned sha256**; the repo's
+- **Download transport: anonymous HTTPS from the public GitHub release.**
+  ``GET <SIDECAR_RELEASE_BASE_URL>/tsnet-v<version>/<asset>`` — one file,
+  no clone, **no credentials** — from ``Hyprial/hyprial-tsnet-bin``
+  (release ``tsnet-v<version>``, asset names ``hyprial-tsnet-<platform>``).
+  The local installed filename is ``hyprial-tsnet`` as well (they are
+  separate constants that happen to share a value; ⛔ do not collapse
+  them).  The trust root is **still the pinned sha256**; the release's
   ``SHA256SUMS`` is for reconciliation only and is deliberately not
-  consulted.  The repo can be overridden with ``HYPRIAL_SIDECAR_BIN_REPO``
-  (tests/E2E point it at a local bare repo with the same tag shape).
-  ⛔ No credentials are invented: ssh uses the operator's existing
-  key/agent (``git_env()`` enforces BatchMode so it can never hang on a
-  prompt), and a missing ``git`` or a failed fetch is a loud error code,
-  never a silent fallback.
+  consulted.  The base URL can be overridden with
+  ``HYPRIAL_SIDECAR_RELEASE_BASE_URL`` (tests/E2E point it at a
+  ``file://`` tree with the same ``<tag>/<asset>`` shape).
+
+  ⭐ **This supersedes Allen's ruling E (2026-09-05, "git archive
+  --remote, no HTTP").**  Superseded knowingly, by Allen on 2026-09-17,
+  after being shown ruling E's text and this measurement — ⛔ not
+  overlooked.  His words: 「可以,既然如此,走Https 取release资产」.
+
+  ⚠️ **Ruling E could not be carried over by pointing the same command at
+  GitHub**, which is how it reads at first (it names transport and address
+  in one breath).  Measured 2026-09-17:
+
+  - HTTPS → ``RPC failed; HTTP 422`` then
+    ``fatal: git archive: expected ACK/NAK, got a flush packet``
+  - SSH → ``Invalid command: git-upload-archive
+    '/Hyprial/hyprial-tsnet-bin.git'``
+  - positive control, same command shape against the internal repo →
+    ``exit=0`` and a real 10240-byte tar holding the four pinned digests,
+    so the failures above are GitHub's refusal, ⛔ not a malformed command.
+
+  🔑 And the deeper reason, which no amount of GitHub support would fix:
+  anonymous public download is **HTTPS-only** (``git://`` was withdrawn in
+  2022; SSH requires an account and key).  "No HTTP" and "a customer with
+  no credentials can download it" are mechanically incompatible — so the
+  question was never *whether* to leave ruling E, only *how*.
 
 Two consumers share this module:
 
 - ``hyprial login`` — the consent-shaped download step (:func:`install_sidecar`):
-  show the source (repo + tag), version, and expected sha256, interactive
+  show the source (URL + tag), version, and expected sha256, interactive
   y/N (``--install-sidecar`` to bypass y/N), stream to a temporary file,
   verify sha256,
   ``chmod 0755``, and atomically rename into ``$HYPRIAL_HOME/bin/hyprial-tsnet``.
@@ -62,27 +80,26 @@ failure cleanup — is transport-agnostic and pinned by tests.
 from __future__ import annotations
 
 import hashlib
+import http.client
 import os
 import platform
-import posixpath
-import shutil
-import subprocess
-import tarfile
-import threading
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from hyprial.updates import git_env
 
 __all__ = [
     "SIDECAR_ASSET_BASENAME",
     "SIDECAR_BIN_DIRNAME",
     "SIDECAR_BIN_FILENAME",
-    "SIDECAR_BIN_REPO",
-    "SIDECAR_BIN_REPO_ENV",
+    "SIDECAR_RELEASE_BASE_URL",
+    "SIDECAR_RELEASE_BASE_URL_ENV",
+    "SIDECAR_RETIRED_OVERRIDE_ENV",
     "SIDECAR_SHA256",
     "SIDECAR_VERSION",
     "SidecarError",
@@ -91,7 +108,8 @@ __all__ = [
     "fetch_sidecar_asset",
     "install_sidecar",
     "sha256_file",
-    "sidecar_bin_repo",
+    "sidecar_asset_url",
+    "sidecar_release_base_url",
     "sidecar_tag",
     "sidecar_binary_path",
     "verify_installed_sidecar",
@@ -112,21 +130,49 @@ SIDECAR_SHA256: dict[str, str] = {
     "linux-arm64": "1b499cb0d2d66b1cff27a70c42cd44a08369ef18ab37b09b9a8475672ce1afd9",
 }
 """Per-platform sha256 measured from assets fetched on 2026-09-10 with
-acquisition's ``git archive --remote`` transport and computed locally; the
-release's ``SHA256SUMS`` was checked only afterward for reconciliation.
-hyprial never recomputes these at runtime."""
+acquisition's then-current ``git archive --remote`` transport and computed
+locally; the release's ``SHA256SUMS`` was checked only afterward for
+reconciliation.  hyprial never recomputes these at runtime.
 
-SIDECAR_BIN_REPO = "ssh://git@git.internal.hyprial.com/HyprialOS/hyprial-tsnet-bin.git"
-"""The sidecar binary repository (ruling E: git archive --remote, no HTTP).
+⭐ The 2026-09-17 move to HTTPS release assets changed **how the bytes
+travel**, ⛔ not what they must hash to: these values are unchanged and
+remain the sole trust root."""
 
-Tag ``tsnet-v<SIDECAR_VERSION>`` carries the four platform assets plus
+SIDECAR_RELEASE_BASE_URL = (
+    "https://github.com/Hyprial/hyprial-tsnet-bin/releases/download"
+)
+"""Base URL for the public release assets; the full URL is
+``<base>/tsnet-v<SIDECAR_VERSION>/<asset>``.
+
+Release ``tsnet-v<SIDECAR_VERSION>`` carries the four platform assets plus
 ``SHA256SUMS`` (reconciliation only — the pinned :data:`SIDECAR_SHA256` is
-the trust root).  Overridable via :data:`SIDECAR_BIN_REPO_ENV` so tests and
-E2E can point at a local bare repo with the same tag shape."""
+the trust root).  Overridable via :data:`SIDECAR_RELEASE_BASE_URL_ENV`.
 
-SIDECAR_BIN_REPO_ENV = "HYPRIAL_SIDECAR_BIN_REPO"
-"""Environment override for :data:`SIDECAR_BIN_REPO` (any git repo URL or
-local path; ``git archive --remote`` accepts both)."""
+⚠️ The binaries exist **only as release assets**: the public repository's
+git history holds nothing but a README, so any "clone it and take the
+file" approach returns an empty tree."""
+
+SIDECAR_RELEASE_BASE_URL_ENV = "HYPRIAL_SIDECAR_RELEASE_BASE_URL"
+"""Environment override for :data:`SIDECAR_RELEASE_BASE_URL`.
+
+⭐ Accepts ``https://`` **and** ``file://`` — deliberately, because that is
+the property the old override relied on.  The previous seam worked for
+tests only because ``git archive --remote`` happened to accept local
+paths; when the transport moved to HTTPS that sentence stopped being true,
+so the replacement seam has to carry the local-path property explicitly
+rather than inherit it from the transport."""
+
+SIDECAR_RETIRED_OVERRIDE_ENV = "HYPRIAL_SIDECAR_BIN_REPO"
+"""The pre-2026-09-17 override (a git repo URL or local path).
+
+⛔ Deliberately **not** honored and **not** silently ignored.  Its values
+were git remotes, which mean nothing to an HTTPS release download, so it
+cannot be reinterpreted.  And ignoring it would be worse than failing: an
+operator who pointed it at the internal repository would be sent to the
+public release without being told.  Setting it is therefore a loud
+``SIDECAR_OVERRIDE_RETIRED`` error naming the replacement — which also
+means any harness this migration missed fails visibly instead of quietly
+downloading from the internet."""
 
 SIDECAR_BIN_DIRNAME = "bin"
 # ⛔ These two constants hold the same string today.  That is a *result* of
@@ -152,9 +198,14 @@ which of the two it is talking about."""
 
 SIDECAR_BIN_FILENAME = "hyprial-tsnet"
 
-_GIT_ARCHIVE_TIMEOUT_S = 600.0
-"""Wall-clock budget for one ``git archive --remote`` — tens of MB over
-ssh; BatchMode (git_env) already prevents prompt hangs."""
+_DOWNLOAD_TIMEOUT_S = 600.0
+"""Per-read socket timeout for one asset download (urllib semantics).
+
+It bounds how long a single read may wait for data, **not** the whole
+transfer, so a slow but live connection is never cut off."""
+
+_PROBE_TIMEOUT_S = 30.0
+"""Budget for the one extra request that splits a 404 into its two causes."""
 
 Plan = dict[str, Any]
 
@@ -194,13 +245,25 @@ def current_platform() -> str:
             f"no hyprial-tsnet asset for machine architecture {machine!r}",
         )
     key = f"{system}-{architecture}"
-    if key not in SIDECAR_SHA256:
+    if key not in SIDECAR_SHA256 and not (
+        os.environ.get("HYPRIAL_BUNDLED_TSNET_BINARY") and key in BUNDLED_SIDECAR_SHA256
+    ):
         raise SidecarError(
             "SIDECAR_PLATFORM_UNSUPPORTED",
             f"no hyprial-tsnet asset for platform {key!r}; "
             f"available: {sorted(SIDECAR_SHA256)}",
         )
     return key
+
+
+# Internal desktop overrides never change the public release acquisition pins.
+BUNDLED_SIDECAR_SHA256 = {
+    "darwin-arm64": "e3850c0ec5535dd2f4fc6a69a3caf08745a8ee58a3fdd1067aea26b8f67a2c8b",
+    "windows-amd64": "0653bc44093578acb02936df12f0417e20a74a87aedb2582e2c58328bd85b2c2",
+}
+
+def expected_bundled_sha256(platform_key: str) -> str:
+    return BUNDLED_SIDECAR_SHA256.get(platform_key) or expected_sha256(platform_key)
 
 
 def expected_sha256(platform_key: str) -> str:
@@ -216,17 +279,52 @@ def expected_sha256(platform_key: str) -> str:
         ) from None
 
 
-def sidecar_bin_repo(
-    environ: Mapping[str, str] | None = None,
-) -> str:
-    """The binary repo this install fetches from (env override honored)."""
+def _reject_retired_override(environ: Mapping[str, str] | None) -> None:
+    """Refuse loudly when the retired git-remote override is still set."""
 
     env = os.environ if environ is None else environ
-    return env.get(SIDECAR_BIN_REPO_ENV, "").strip() or SIDECAR_BIN_REPO
+    value = env.get(SIDECAR_RETIRED_OVERRIDE_ENV, "").strip()
+    if value:
+        raise SidecarError(
+            "SIDECAR_OVERRIDE_RETIRED",
+            f"{SIDECAR_RETIRED_OVERRIDE_ENV} is no longer read: the sidecar is "
+            "now downloaded over HTTPS from a release, so a git remote cannot "
+            f"be used.  Set {SIDECAR_RELEASE_BASE_URL_ENV} to a base URL "
+            "(https:// or file://) serving <tag>/<asset> instead, and unset "
+            f"{SIDECAR_RETIRED_OVERRIDE_ENV}",
+            {
+                "retired": SIDECAR_RETIRED_OVERRIDE_ENV,
+                "value": value,
+                "replacement": SIDECAR_RELEASE_BASE_URL_ENV,
+            },
+        )
+
+
+def sidecar_release_base_url(
+    environ: Mapping[str, str] | None = None,
+) -> str:
+    """The release base URL this install fetches from (env override honored)."""
+
+    env = os.environ if environ is None else environ
+    value = env.get(SIDECAR_RELEASE_BASE_URL_ENV, "").strip()
+    return (value or SIDECAR_RELEASE_BASE_URL).rstrip("/")
+
+
+def sidecar_asset_url(
+    version: str | None = None,
+    asset: str | None = None,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> str:
+    """The full download URL for one platform asset."""
+
+    name = asset or f"{SIDECAR_ASSET_BASENAME}-{current_platform()}"
+    base = sidecar_release_base_url(environ)
+    return f"{base}/{sidecar_tag(version)}/{name}"
 
 
 def sidecar_tag(version: str | None = None) -> str:
-    """The repo tag carrying one sidecar version: ``tsnet-v<version>``."""
+    """The release tag carrying one sidecar version: ``tsnet-v<version>``."""
 
     return f"tsnet-v{version or SIDECAR_VERSION}"
 
@@ -255,14 +353,18 @@ def verify_installed_sidecar(hyprial_home: Path) -> tuple[Path | None, str | Non
     start, in the join stage; this is the cheap gate before spawning.
     """
 
-    path = sidecar_binary_path(hyprial_home)
+    bundled = os.environ.get("HYPRIAL_BUNDLED_TSNET_BINARY")
+    path = Path(bundled) if bundled is not None else sidecar_binary_path(hyprial_home)
+    if bundled is not None and not path.is_absolute():
+        return None, "SIDECAR_MISMATCH"
     try:
         platform_key = current_platform()
     except SidecarError as error:
         return None, error.code
     if not path.is_file():
         return None, "SIDECAR_MISSING"
-    if sha256_file(path) != expected_sha256(platform_key):
+    expected = expected_bundled_sha256(platform_key) if bundled is not None else expected_sha256(platform_key)
+    if sha256_file(path) != expected:
         return None, "SIDECAR_MISMATCH"
     return path, None
 
@@ -279,7 +381,7 @@ def install_sidecar(
 ) -> Plan:
     """Fetch, verify, and atomically place the pinned sidecar binary.
 
-    Consent shape mirrors ``install_application``: the plan (source repo +
+    Consent shape mirrors ``install_application``: the plan (source URL +
     tag, version, expected sha256, destination) is shown first and
     ``confirm`` decides;
     ⛔ no silent download (spec T10).  ``confirm`` returning False is a
@@ -296,7 +398,7 @@ def install_sidecar(
     asset = f"{SIDECAR_ASSET_BASENAME}-{platform_key}"
     expected = expected_sha256(platform_key)
     destination = sidecar_binary_path(hyprial_home)
-    repo = sidecar_bin_repo(env)
+    source = sidecar_asset_url(SIDECAR_VERSION, asset, environ=env)
     tag = sidecar_tag()
 
     if destination.is_file() and sha256_file(destination) == expected:
@@ -309,12 +411,15 @@ def install_sidecar(
             "destination": str(destination),
         }
 
+    # After the already-current return: a lingering retired variable must
+    # not break a login that has nothing to download.
+    _reject_retired_override(env)
     plan: Plan = {
         "ok": True,
         "name": SIDECAR_BIN_FILENAME,
         "version": SIDECAR_VERSION,
         "platform": platform_key,
-        "source": repo,
+        "source": source,
         "tag": tag,
         "sha256": expected,
         "destination": str(destination),
@@ -342,11 +447,11 @@ def install_sidecar(
         if actual != expected:
             raise SidecarError(
                 "SIDECAR_SHA_MISMATCH",
-                f"fetched {asset}@{tag} from {repo} does not match the "
+                f"fetched {asset}@{tag} from {source} does not match the "
                 f"pinned sha256 for {platform_key}; expected {expected}, "
                 f"got {actual}; nothing was installed",
                 {
-                    "source": repo,
+                    "source": source,
                     "tag": tag,
                     "expected": expected,
                     "actual": actual,
@@ -368,7 +473,7 @@ def install_sidecar(
         "name": SIDECAR_BIN_FILENAME,
         "version": SIDECAR_VERSION,
         "platform": platform_key,
-        "source": repo,
+        "source": source,
         "tag": tag,
         "sha256": expected,
         "destination": str(destination),
@@ -387,133 +492,223 @@ def fetch_sidecar_asset(
 
     ⭐ **The one transport seam**: inputs are the version, the platform
     asset name, and a temporary destination path — how the bytes travel is
-    decided *here and only here*.  Ruling E (Allen, 2026-09-05): **no
-    HTTP** — ``git archive --remote=<repo> tsnet-v<version> <asset>``,
-    a single file over the same git+ssh used to install hyprial, no clone.
-    The repo is :data:`SIDECAR_BIN_REPO` (overridable via
-    :data:`SIDECAR_BIN_REPO_ENV` — tests and E2E point it at a local bare
-    repo with the same tag shape; ``git archive --remote`` accepts local
-    paths too).
+    decided *here and only here*.  The transport is an anonymous HTTPS
+    ``GET <base>/tsnet-v<version>/<asset>`` against the public release
+    (see the module docstring for why ruling E's ``git archive --remote``
+    could not be carried over).  The base is :data:`SIDECAR_RELEASE_BASE_URL`,
+    overridable via :data:`SIDECAR_RELEASE_BASE_URL_ENV` (``file://`` too, so
+    tests and E2E can serve a local tree with the same shape).
 
-    ⛔ No invented credentials: ssh uses the operator's existing
-    key/agent; ``git_env()`` forces BatchMode so a missing key fails fast
-    instead of hanging on a prompt.  Failures are loud:
-    ``SIDECAR_GIT_UNAVAILABLE`` (no git on PATH), ``SIDECAR_ARCHIVE_FAILED``
-    (git archive non-zero: ssh/auth/repo/tag/asset problems — the stderr
-    tail travels in ``data``), ``SIDECAR_ARCHIVE_MALFORMED`` (the archive
-    did not contain exactly the requested asset).  Whatever arrives is
-    only ever trusted after the caller's sha256 check — the pinned digest
-    is the trust root, the repo's ``SHA256SUMS`` is reconciliation only.
+    ⛔ No credentials, ever: a customer's machine has none, so the only path
+    that proves a customer can install is the anonymous one.  Failures are
+    loud and **split by cause**, because the same HTTP status can mean
+    opposite things:
+
+    - ``SIDECAR_RELEASE_NOT_FOUND`` — 404, and the release tag itself is
+      absent: this version was never published.
+    - ``SIDECAR_ASSET_NOT_FOUND`` — 404, but the release exists: the asset
+      name is wrong or that platform's build is missing.
+    - ``SIDECAR_DOWNLOAD_NOT_FOUND`` — 404 where the follow-up probe could
+      not tell the two apart; the message names both causes.
+    - ``SIDECAR_DOWNLOAD_FORBIDDEN`` — 403 (visibility, rate limit, or a
+      draft release).
+    - ``SIDECAR_DOWNLOAD_FAILED`` — any other HTTP status.
+    - ``SIDECAR_DOWNLOAD_UNREACHABLE`` — no HTTP response at all: DNS,
+      proxy, TLS, or connection failure.
+    - ``SIDECAR_DOWNLOAD_INCOMPLETE`` — the body ended early (fewer bytes
+      than Content-Length, or the connection dropped mid-transfer).  Named
+      apart from ``SIDECAR_SHA_MISMATCH`` on purpose: a truncated file is a
+      network problem, and must not be reported as a content mismatch.
+    - ``SIDECAR_DOWNLOAD_TIMEOUT`` — no data within the per-read timeout.
+      The timeout bounds each read, not the total: a slow link that keeps
+      delivering bytes is never cut off (a 30 MB asset was measured at
+      3.2 MB per 180 s on a direct connection).
+    - ``SIDECAR_OVERRIDE_RETIRED`` — the pre-HTTPS git-remote override is
+      still set (see :data:`SIDECAR_RETIRED_OVERRIDE_ENV`).
+
+    Whatever arrives is only ever trusted after the caller's sha256 check —
+    the pinned digest is the trust root, the release's ``SHA256SUMS`` is
+    reconciliation only.
     """
 
-    repo = sidecar_bin_repo(environ)
+    _reject_retired_override(environ)
     tag = sidecar_tag(version)
-    argv = ["git", "archive", f"--remote={repo}", tag, asset]
+    base = sidecar_release_base_url(environ)
+    url = f"{base}/{tag}/{asset}"
+    context = {"source": url, "tag": tag, "asset": asset}
+    request = urllib.request.Request(url, headers={"User-Agent": "hyprial"})
+    written = 0
+    expected_size: int | None = None
     try:
-        process = subprocess.Popen(
-            argv,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=git_env(),
-        )
-    except FileNotFoundError as error:
+        with urllib.request.urlopen(request, timeout=_DOWNLOAD_TIMEOUT_S) as response:
+            expected_size = _content_length(response)
+            with open(destination, "wb") as target:
+                while chunk := response.read(_DOWNLOAD_CHUNK):
+                    target.write(chunk)
+                    written += len(chunk)
+    except urllib.error.HTTPError as error:
+        destination.unlink(missing_ok=True)
+        raise _http_failure(error.code, base, tag, asset, context) from error
+    except urllib.error.URLError as error:
+        destination.unlink(missing_ok=True)
+        if isinstance(error.reason, FileNotFoundError):
+            # A ``file://`` base reports a missing file this way rather than
+            # as an HTTPError; it is the same fact as an HTTP 404 and must
+            # take the same cause-splitting path, or the local seam would
+            # tell tests "unreachable" where production says "not found".
+            raise _http_failure(404, base, tag, asset, context) from error
+        if isinstance(error.reason, TimeoutError):
+            raise _timeout_failure(context, written) from error
         raise SidecarError(
-            "SIDECAR_GIT_UNAVAILABLE",
-            "git is required to fetch the hyprial-tsnet sidecar (the same "
-            "git+ssh hyprial was installed with) but was not found on PATH; "
-            "install git, or place the sidecar binary at the destination "
-            "by hand",
-            {"source": repo, "tag": tag, "asset": asset},
+            "SIDECAR_DOWNLOAD_UNREACHABLE",
+            f"could not reach {url} to fetch the hyprial-tsnet sidecar "
+            f"({error.reason}); check network or proxy settings, or place "
+            "the sidecar binary at the destination by hand",
+            {**context, "detail": str(error.reason)},
         ) from error
-    stderr_chunks: list[bytes] = []
-    drain = threading.Thread(
-        target=lambda: stderr_chunks.append(
-            process.stderr.read() if process.stderr is not None else b""
-        ),
-        daemon=True,
-        name="sidecar-archive-stderr",
-    )
-    drain.start()
-    shape_error: SidecarError | None = None
-    try:
-        _write_member_from_archive(process.stdout, asset, destination)
-    except SidecarError as error:
-        # A non-zero git exit explains an empty/truncated stream better
-        # than the tar shape ever could — hold the shape error and let the
-        # returncode check below decide which one the operator sees.
-        shape_error = error
-    finally:
-        try:
-            process.wait(timeout=_GIT_ARCHIVE_TIMEOUT_S)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait()
-        drain.join(timeout=5.0)
-        for stream in (process.stdout, process.stderr):
-            if stream is not None:
-                try:
-                    stream.close()
-                except OSError:
-                    pass
-    detail = b"".join(stderr_chunks).decode("utf-8", "replace").strip()
-    if process.returncode != 0:
-        raise SidecarError(
-            "SIDECAR_ARCHIVE_FAILED",
-            f"git archive could not fetch {asset}@{tag} from {repo}"
-            + (f": {detail[-500:]}" if detail else ""),
-            {"source": repo, "tag": tag, "asset": asset, "detail": detail[-500:]},
+    except TimeoutError as error:
+        destination.unlink(missing_ok=True)
+        raise _timeout_failure(context, written) from error
+    except (http.client.IncompleteRead, ConnectionError) as error:
+        destination.unlink(missing_ok=True)
+        raise _incomplete_failure(
+            context, written, expected_size, str(error)
+        ) from error
+    if expected_size is not None and written != expected_size:
+        destination.unlink(missing_ok=True)
+        raise _incomplete_failure(
+            context, written, expected_size, "fewer bytes than Content-Length"
         )
-    if shape_error is not None:
-        raise shape_error
     return destination
 
 
-def _write_member_from_archive(
-    stream: Any,
-    asset: str,
-    destination: Path,
-) -> None:
-    """Extract the one ``asset`` member from a streaming tar to ``destination``.
+def _content_length(response: Any) -> int | None:
+    """The declared body size, or None when the server did not declare one."""
 
-    ``git archive`` prefixes member names with the tree-ish basename
-    (``tsnet-v0.1.4/<asset>``), so members are matched by basename.  The
-    archive must yield exactly one matching regular file — anything else
-    is ``SIDECAR_ARCHIVE_MALFORMED`` rather than a guessed extraction.
+    raw = response.headers.get("Content-Length")
+    try:
+        value = int(raw) if raw is not None else None
+    except ValueError:
+        return None
+    return value if value is not None and value >= 0 else None
+
+
+def _incomplete_failure(
+    context: dict[str, Any], written: int, expected: int | None, detail: str
+) -> SidecarError:
+    """A download that ended early: a network problem, never a content verdict.
+
+    Size is used here only to *name* the failure.  Whether the bytes are
+    trusted is decided by the pinned sha256 alone; a truncated file must not
+    reach that check, or it would be reported as SIDECAR_SHA_MISMATCH -- which
+    reads as tampering to whoever sees it.
     """
 
-    names: list[str] = []
-    written = False
-    try:
-        with tarfile.open(fileobj=stream, mode="r|") as archive:
-            for member in archive:
-                names.append(member.name)
-                if posixpath.basename(member.name) != asset or not member.isfile():
-                    continue
-                if written:
-                    raise SidecarError(
-                        "SIDECAR_ARCHIVE_MALFORMED",
-                        f"the archive contains more than one {asset!r} member",
-                        {"members": names},
-                    )
-                source = archive.extractfile(member)
-                if source is None:
-                    raise SidecarError(
-                        "SIDECAR_ARCHIVE_MALFORMED",
-                        f"archive member {member.name!r} has no content",
-                        {"members": names},
-                    )
-                with open(destination, "wb") as target:
-                    shutil.copyfileobj(source, target, _DOWNLOAD_CHUNK)
-                written = True
-    except tarfile.TarError as error:
-        raise SidecarError(
-            "SIDECAR_ARCHIVE_MALFORMED",
-            f"git archive output is not a usable tar stream: {error}",
-            {"members": names},
-        ) from error
-    if not written:
-        raise SidecarError(
-            "SIDECAR_ARCHIVE_MALFORMED",
-            f"the archive contains no {asset!r} member (got {names})",
-            {"members": names},
+    of = f" of {expected}" if expected is not None else ""
+    return SidecarError(
+        "SIDECAR_DOWNLOAD_INCOMPLETE",
+        f"the download of {context['source']} was cut short ({written}{of} "
+        "bytes); this is a network interruption, not a content mismatch -- "
+        "retry, ideally on a faster or proxied connection",
+        {
+            **context,
+            "bytesWritten": written,
+            "expectedBytes": expected,
+            "detail": detail,
+        },
+    )
+
+
+def _timeout_failure(context: dict[str, Any], written: int) -> SidecarError:
+    """No data within the per-read timeout (not a total-duration cap)."""
+
+    return SidecarError(
+        "SIDECAR_DOWNLOAD_TIMEOUT",
+        f"the download of {context['source']} stalled: no data for "
+        f"{_DOWNLOAD_TIMEOUT_S:g}s after {written} bytes; this is a network "
+        "problem, not a content mismatch -- retry, ideally on a faster or "
+        "proxied connection",
+        {**context, "bytesWritten": written, "timeoutSeconds": _DOWNLOAD_TIMEOUT_S},
+    )
+
+
+def _http_failure(
+    status: int,
+    base: str,
+    tag: str,
+    asset: str,
+    context: dict[str, Any],
+) -> SidecarError:
+    """Turn one HTTP status into the error code that names its cause."""
+
+    url = context["source"]
+    data = {**context, "status": status}
+    if status == 403:
+        return SidecarError(
+            "SIDECAR_DOWNLOAD_FORBIDDEN",
+            f"{url} refused the download (HTTP 403); the release may be "
+            "private or still a draft, or the host is rate limiting",
+            data,
         )
+    if status != 404:
+        return SidecarError(
+            "SIDECAR_DOWNLOAD_FAILED",
+            f"downloading {url} failed with HTTP {status}",
+            data,
+        )
+    exists = _release_exists(base, tag)
+    if exists is False:
+        return SidecarError(
+            "SIDECAR_RELEASE_NOT_FOUND",
+            f"release {tag} is not published (HTTP 404 for {url}, and the "
+            f"release {tag} itself does not exist); this hyprial pins a "
+            "sidecar version that has not been released yet",
+            {**data, "releaseExists": False},
+        )
+    if exists is True:
+        return SidecarError(
+            "SIDECAR_ASSET_NOT_FOUND",
+            f"release {tag} exists but has no asset {asset!r} (HTTP 404 for "
+            f"{url}); the asset name is wrong or this platform's build is "
+            "missing from the release",
+            {**data, "releaseExists": True},
+        )
+    return SidecarError(
+        "SIDECAR_DOWNLOAD_NOT_FOUND",
+        f"HTTP 404 for {url}: either release {tag} is not published, or it "
+        f"has no asset {asset!r} (these have opposite fixes, and the "
+        "release could not be probed to tell them apart)",
+        {**data, "releaseExists": None},
+    )
+
+
+def _release_exists(base: str, tag: str) -> bool | None:
+    """Probe whether release ``tag`` exists, to split a 404 by cause.
+
+    For a ``file://`` base the release is its ``<tag>/`` directory.  Returns
+    ``None`` whenever the answer is not actually known — an HTTP(S) base that
+    is not GitHub-shaped ``…/releases/download``, or a probe that itself
+    fails.  ⛔ An unknown is never coerced into a yes or a
+    no: the caller reports both causes instead of guessing one.
+    """
+
+    if base.startswith("file://"):
+        # The local seam answers the same question the same way: a release
+        # is its ``<tag>/`` directory.
+        root = urllib.request.url2pathname(urllib.parse.urlparse(base).path)
+        return Path(root, tag).is_dir()
+    if not base.startswith(("https://", "http://")):
+        return None
+    head, _, last = base.rpartition("/")
+    if last != "download":
+        return None
+    probe = urllib.request.Request(
+        f"{head}/tag/{tag}", headers={"User-Agent": "hyprial"}
+    )
+    try:
+        with urllib.request.urlopen(probe, timeout=_PROBE_TIMEOUT_S):
+            return True
+    except urllib.error.HTTPError as error:
+        return False if error.code == 404 else None
+    except (urllib.error.URLError, OSError):
+        return None

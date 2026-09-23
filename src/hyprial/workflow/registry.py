@@ -28,6 +28,7 @@ from hyprial.contracts.agent_task import (
     sha256_digest,
 )
 from hyprial.contracts.ports import PortCommandRejected
+from hyprial.log import Logger
 
 from .executor import (
     REPORT_MAX_ATTEMPTS,
@@ -299,6 +300,7 @@ class WorkflowRegistry:
         routine_probe: RoutineExistsProbe | None = None,
         assign_reconcile_sink: Callable[[AssignReconcileReport], None] | None = None,
         dispatch_gate: Callable[[WorkflowSpec, str | None, str], tuple[str, ...]] | None = None,
+        logger: Logger | None = None,
     ) -> None:
         self._dispatch_gate = dispatch_gate
         self._store = store
@@ -324,12 +326,26 @@ class WorkflowRegistry:
         # disagree about what "give up" means.
         self._report_attempts: dict[str, int] = {}
         self._last_timer_version = 0
-        for persisted in store.load_open_runs():
+        self._logger = logger
+        resumed, rejected = store.load_open_runs_report()
+        for persisted in resumed:
             self._active[persisted.run.run_id] = _ActiveRun(
                 run=persisted.run,
                 yaml_text=persisted.yaml_text,
                 created_at_ms=self._clock_ms(),
                 version=persisted.version,
+            )
+        for rejection in rejected:
+            # Loud by design: an unfinished run whose stored addresses no
+            # longer validate must not resume (it would keep escalating to
+            # nobody) and must not vanish. Every restart re-reports it until
+            # an operator fixes or cancels the run.
+            self._safe_log(
+                "error",
+                "workflow.recovery_rejected",
+                runId=rejection.run_id,
+                state=rejection.state,
+                error=rejection.error,
             )
         for batch in store.load_effect_batches():
             final = self._decode_final(batch.final_kind, batch.final_payload)
@@ -743,7 +759,37 @@ class WorkflowRegistry:
     def _cancel(self, command: CancelWorkflowCommand) -> None:
         active = self._active.get(command.run_id)
         if active is None:
-            persisted = self._store.load_run(command.run_id)
+            try:
+                persisted = self._store.load_run(command.run_id)
+            except WorkflowSchemaError as error:
+                # A schema-broken run cannot be materialized.  Cancel it anyway
+                # (cancelled is terminal) instead of trapping the operator with
+                # SQL as the only escape (2026-09-14 S3).
+                if self._store.cancel_unparseable_run(command.run_id):
+                    self._safe_log(
+                        "warn",
+                        "workflow.cancelled_schema_error",
+                        runId=command.run_id,
+                        error=str(error),
+                    )
+                    self._publish(
+                        WorkflowCancelled(
+                            correlation_id=command.correlation_id,
+                            generation=self._generation,
+                            version=self._epoch,
+                            result=WorkflowMutationProjection(
+                                run_id=command.run_id,
+                                state=str(RunState.CANCELLED),
+                            ),
+                        )
+                    )
+                else:
+                    self._reject(
+                        command.correlation_id,
+                        "WORKFLOW_RUN_NOT_FOUND",
+                        f"no such run: {command.run_id}",
+                    )
+                return
             code = "WORKFLOW_RUN_NOT_FOUND" if persisted is None else "WORKFLOW_RUN_NOT_ACTIVE"
             detail = (
                 f"no such run: {command.run_id}"
@@ -808,7 +854,8 @@ class WorkflowRegistry:
             active.run.dispatch_warnings = tuple(dict.fromkeys((*active.run.dispatch_warnings, *warnings)))
         effects: list[WorkflowEffect] = []
         executor = self._executor(active, command.correlation_id, command, effects)
-        executor.tick()
+        if not self._report_in_flight(command.run_id):
+            executor.tick()
         if self._has_report_effect(effects, command.run_id):
             executor.run.state = RunState.RUNNING
         if (
@@ -993,7 +1040,13 @@ class WorkflowRegistry:
         )
 
     def _assign_run_state(self, run_id: str) -> str | None:
-        persisted = self._store.load_run(run_id)
+        try:
+            persisted = self._store.load_run(run_id)
+        except WorkflowSchemaError:
+            # A run that cannot validate reads as unknown to reconcile: the
+            # safe side is "do not release on a broken read", and the
+            # rejection is already logged loudly at recovery.
+            return None
         return None if persisted is None else str(persisted.run.state)
 
     def _timer(self, command: WorkflowTimerElapsedCommand) -> None:
@@ -1029,6 +1082,13 @@ class WorkflowRegistry:
         for active in list(self._active.values()):
             retry_at = self._report_retry_at.get(active.run.run_id)
             if retry_at is not None and command.observed_at_ms < retry_at:
+                continue
+            if self._report_in_flight(active.run.run_id):
+                # Every target is terminal and the report effect is still
+                # awaiting its WorkflowIoCompleted: ticking would re-enter
+                # _maybe_finish and record a SECOND report effect under a new
+                # id -- a second message to report_to (hq-adjutant 09-17:
+                # squire got each run's report twice).
                 continue
             executor = self._executor(active, command.correlation_id, None, effects)
             executor.tick()
@@ -1311,7 +1371,18 @@ class WorkflowRegistry:
                 f"externalRef already reserved with different input: {external_ref}",
             )
             return True
-        persisted = self._store.load_run(reserved.run_id)
+        try:
+            persisted = self._store.load_run(reserved.run_id)
+        except WorkflowSchemaError as error:
+            # externalRef replay must not crash the actor on a schema-broken
+            # stored run (2026-09-14 S3); reject loudly instead.
+            self._reject(
+                correlation_id,
+                ipc_errors.WORKFLOW_EXTERNAL_REF_CORRUPT,
+                f"externalRef points to a run that no longer validates: "
+                f"{external_ref}: {error}",
+            )
+            return True
         if persisted is None:
             self._reject(
                 correlation_id,
@@ -1508,6 +1579,16 @@ class WorkflowRegistry:
             None,
         )
 
+    def _report_in_flight(self, run_id: str) -> bool:
+        """True while this run's report effect awaits its completion event."""
+
+        return any(
+            item.run_id == run_id
+            and isinstance(item.effect, WorkflowDeliveryEffect)
+            and item.effect.operation == "deliver:report"
+            for item in self._pending.values()
+        )
+
     @staticmethod
     def _has_report_effect(effects: list[WorkflowEffect], run_id: str) -> bool:
         return any(
@@ -1529,3 +1610,13 @@ class WorkflowRegistry:
                 admission=None,
             )
         )
+
+    def _safe_log(self, level: str, event: str, **fields: object) -> None:
+        if self._logger is None:
+            return
+        try:
+            self._logger.log(level, event, **fields)  # type: ignore[arg-type]
+        except (NameError, ImportError):
+            raise
+        except Exception:  # noqa: BLE001 - logging must never break the actor
+            pass

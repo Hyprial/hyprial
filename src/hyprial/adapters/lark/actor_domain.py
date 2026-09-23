@@ -1112,8 +1112,14 @@ class _AdapterHandler:
         policy: SupervisionPolicy,
         retry_delay_override: float | None,
         start_deadline: float = START_DEADLINE_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.generation = generation
+        # The restart back-off is the one decision here a test must be able to
+        # drive: it asks "has the delay elapsed", and a test that answers by
+        # sleeping is asserting how fast this machine is.  Injected so the
+        # window can be crossed deliberately instead of waited for.
+        self._clock = clock
         self._authority = authority
         self._gateways = authority.gateways
         self._desired = authority.desired
@@ -1664,7 +1670,7 @@ class _AdapterHandler:
     def _begin_reconcile_spawns(
         self, correlation_id: str, aggregate: _Aggregate
     ) -> None:
-        now = time.monotonic()
+        now = self._clock()
         restart: set[str] = set()
         for name in sorted(self._desired):
             observation = self._observations.get(name)
@@ -1837,6 +1843,7 @@ class AdapterRuntime:
         start_confirm_timeout: float = 2.0,
         restore_confirm_timeout: float | None = None,
         retry_interval: float | None = None,
+        clock: Callable[[], float] = time.monotonic,
         mailbox_capacity: int = 128,
         actor_runtime: ActorRuntime | None = None,
         effect_capacity: int = 64,
@@ -1903,6 +1910,7 @@ class AdapterRuntime:
                 policy=self._policy,
                 retry_delay_override=retry_interval,
                 start_deadline=start_deadline_seconds,
+                clock=clock,
             )
 
         self._handle = self._runtime.start(

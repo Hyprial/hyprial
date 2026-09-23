@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 import threading
 import time
 from dataclasses import asdict, dataclass
@@ -215,6 +216,24 @@ class _Step:
 
 class _InjectedManagerCrash(BaseException):
     pass
+
+
+#: Recover-fault event throttle: the FIRST fault is always emitted, then one
+#: every N consecutive faults, each carrying the running count; a "recovered"
+#: event closes the episode.  A count, not a clock -- a locked database under
+#: contention must not turn into a log flood of one event per retry.
+_RECOVER_FAULT_EVENT_EVERY = 50
+
+#: ...and a clock floor on top of the count, because the count alone
+#: mis-prices the fast-fault mode: an OSError that returns immediately
+#: completes a loop turn in ~0.07 s (queue poll 0.05 s + backoff <= 0.02 s),
+#: so every 50th fault lands every ~3.5 s -- roughly 1000 error lines per
+#: hour.  Count-triggered events closer than this to the previous one are
+#: held back; the running count (consecutiveFaults) and the recovered line
+#: still carry the exact total, and slow faults (each waiting out the busy
+#: timeout before returning) never notice the floor: 50 of them take over
+#: 100 s.
+_RECOVER_FAULT_EVENT_MIN_INTERVAL_S = 30.0
 
 
 def backfill_domain_attested_effects(
@@ -743,6 +762,7 @@ class LifecycleProcessManager:
         admission_backoff: tuple[float, ...] = (0.005, 0.01, 0.02),
         fault_after_effect: Callable[[str, str], None] | None = None,
         fault_after_receipt_retire: Callable[[str, str], None] | None = None,
+        event_sink: Callable[..., None] | None = None,
     ) -> None:
         if capacity < 1:
             raise ValueError("capacity must be at least 1")
@@ -782,11 +802,41 @@ class LifecycleProcessManager:
         self._closed = False
         self._crashed = False
         self._store_closed = False
+        #: Optional observability sink (the daemon's event log in production).
+        #: Thread faults are state first (``_crashed``/``_last_error``) and
+        #: events second, so a failing sink can never mask or cause a death.
+        self._event_sink = event_sink
+        self._last_error: str | None = None
+        self._recover_faults = 0
+        # Consumer-thread-only bookkeeping for the event throttle's clock
+        # floor (see _RECOVER_FAULT_EVENT_MIN_INTERVAL_S); monotonic, reset
+        # per manager generation together with the fault count.
+        self._last_recover_event_at = 0.0
         self._thread = threading.Thread(
             target=self._run, name="hyprial-lifecycle-process-manager", daemon=True
         )
         self._thread.start()
         self.recover()
+
+    @property
+    def crashed(self) -> bool:
+        """Whether the consumer thread died; ``submit`` refuses in this state."""
+
+        with self._condition:
+            return self._crashed
+
+    @property
+    def last_error(self) -> str | None:
+        """The fault that killed (or most recently stung) the consumer thread."""
+
+        with self._condition:
+            return self._last_error
+
+    @property
+    def is_running(self) -> bool:
+        """Whether the consumer thread is alive (drained or crashed ⇒ False)."""
+
+        return self._thread.is_alive()
 
     @property
     def state_db(self) -> StateDatabase:
@@ -839,6 +889,14 @@ class LifecycleProcessManager:
             if remaining <= 0:
                 raise TimeoutError(f"lifecycle operation still running: {operation_id}")
             with self._condition:
+                if self._crashed:
+                    # Nobody will drive this operation in the current manager
+                    # generation; saying so now beats waiting out the full
+                    # timeout for a settlement that cannot arrive.
+                    raise TimeoutError(
+                        "lifecycle manager thread is dead; "
+                        f"{operation_id} will not settle in this generation"
+                    )
                 self._condition.wait(min(0.02, remaining))
 
     def drain(self, timeout: float) -> bool:
@@ -877,10 +935,10 @@ class LifecycleProcessManager:
             try:
                 operation_id = self._queue.get(timeout=0.05)
             except Empty:
-                self.recover()
-                with self._condition:
-                    if self._closed and not self._store.pending():
-                        return
+                if not self._guarded_recover():
+                    return
+                if self._close_requested_and_drained():
+                    return
                 continue
             if operation_id is None:
                 self._queue.task_done()
@@ -891,20 +949,28 @@ class LifecycleProcessManager:
             self._operation_started_at.setdefault(operation_id, time.monotonic())
             try:
                 self._execute(operation_id)
-            except _InjectedManagerCrash:
-                with self._condition:
-                    self._crashed = True
+            except _InjectedManagerCrash as error:
+                self._mark_crashed(
+                    f"injected manager crash: {error.__cause__ or 'fault hook'}"
+                )
                 return
-            except BaseException:
+            except BaseException as error:
                 # Preserve RUNNING/COMPENSATING journal state for a new
                 # process-manager generation; unexpected faults are not
-                # translated into a business rejection.
-                with self._condition:
-                    self._crashed = True
+                # translated into a business rejection.  The exit is loud:
+                # ``_mark_crashed`` records state, wakes waiters and emits
+                # the thread_exited event, and ``submit`` refuses from here.
+                self._mark_crashed(f"{type(error).__name__}: {error}")
                 return
             finally:
                 self._queue.task_done()
-                if self._store.state(operation_id) not in {
+                try:
+                    state = self._store.state(operation_id)
+                except (OSError, sqlite3.OperationalError):
+                    # An unreadable journal is not a terminal state; keep the
+                    # re-drive marker so the operation deadline still bounds it.
+                    state = None
+                if state is not None and state not in {
                     LifecycleState.RUNNING,
                     LifecycleState.COMPENSATING,
                 }:
@@ -912,7 +978,95 @@ class LifecycleProcessManager:
                 with self._condition:
                     self._active = None
                     self._condition.notify_all()
+            if not self._guarded_recover():
+                return
+
+    def _guarded_recover(self) -> bool:
+        """One recovery scan that cannot silently kill the consumer thread.
+
+        Retryable store faults -- a locked database under write contention
+        (the 2026-09-14 production thread death) or a transient I/O error --
+        are journaled, backed off and retried on the next pass; the consumer
+        thread only leaves via drain/close, so ``submit`` never returns
+        ACCEPTED into a queue nobody drains.  Any other exception is a real
+        crash: recorded, emitted, and exited loudly (``_crashed`` set).
+
+        Returns False when the thread must exit.
+        """
+
+        try:
             self.recover()
+        except (OSError, sqlite3.OperationalError) as error:
+            self._note_recover_fault(error)
+            return True
+        except BaseException as error:
+            self._mark_crashed(f"recover: {type(error).__name__}: {error}")
+            return False
+        if self._recover_faults:
+            # Close the episode loudly too: a recovered line with the total
+            # fault count, so a log read can tell a blip from a storm.
+            self._emit("thread_recovered", consecutiveFaults=self._recover_faults)
+        self._recover_faults = 0
+        return True
+
+    def _close_requested_and_drained(self) -> bool:
+        """The Empty-branch exit check, with the same fault discipline."""
+
+        with self._condition:
+            if not self._closed:
+                return False
+        try:
+            pending = bool(self._store.pending())
+        except (OSError, sqlite3.OperationalError) as error:
+            self._note_recover_fault(error)
+            return False
+        except BaseException as error:
+            self._mark_crashed(f"close-drain check: {type(error).__name__}: {error}")
+            return True
+        return not pending
+
+    def _note_recover_fault(self, error: BaseException) -> None:
+        self._recover_faults += 1
+        detail = f"{type(error).__name__}: {error}"
+        with self._condition:
+            self._last_error = detail
+        now = time.monotonic()
+        if (
+            self._recover_faults == 1
+            or (
+                self._recover_faults % _RECOVER_FAULT_EVENT_EVERY == 0
+                and now - self._last_recover_event_at
+                >= _RECOVER_FAULT_EVENT_MIN_INTERVAL_S
+            )
+        ):
+            self._last_recover_event_at = now
+            self._emit(
+                "thread_error",
+                detail=detail,
+                consecutiveFaults=self._recover_faults,
+            )
+        # Reuse the admission backoff cadence (bounded, already tuned); the
+        # queue poll above keeps the loop responsive to real work meanwhile.
+        time.sleep(self._backoff[min(self._recover_faults - 1, len(self._backoff) - 1)])
+
+    def _mark_crashed(self, detail: str) -> None:
+        with self._condition:
+            self._crashed = True
+            self._last_error = detail
+            self._condition.notify_all()
+        self._emit("thread_exited", detail=detail)
+
+    def _emit(self, event: str, **fields: object) -> None:
+        sink = self._event_sink
+        if sink is None:
+            return
+        try:
+            sink(event, **fields)
+        except Exception:
+            # The sink failing must never take the consumer thread down; the
+            # state half (_crashed / _last_error) is already recorded, so the
+            # fault stays visible through ps even when the log write fails.
+            pass
 
     def _execute(self, operation_id: str) -> None:
         operation = self._store.load(operation_id)

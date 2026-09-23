@@ -80,6 +80,13 @@ DAEMON_START_TIMEOUT = "DAEMON_START_TIMEOUT"
 # Minted by the daemon into its startup log; the CLI parses the JSON and
 # branches on it to explain a refused start (docs/proto.md §3.7 exemplar).
 HYPRIAL_HOME_IN_USE = "HYPRIAL_HOME_IN_USE"
+# Minted by the daemon's startup owner-migration custody gate (owner_migration)
+# into the same startup-log JSON channel; the CLI launcher passes the code
+# through and the login S3 start phase branches on it to report the named
+# switch outcome instead of a generic startup failure (#513 x #493
+# cross-acceptance).  Same membership line as HYPRIAL_HOME_IN_USE above.
+OWNER_MIGRATION_CUSTODY_CONFLICT = "OWNER_MIGRATION_CUSTODY_CONFLICT"
+OWNER_MIGRATION_CUSTODY_UNREADABLE = "OWNER_MIGRATION_CUSTODY_UNREADABLE"
 # Minted by the local install/upgrade migration boundary.  It reaches the
 # machine-readable CLI error surface and therefore belongs in this registry
 # even though no daemon sends it.
@@ -92,6 +99,12 @@ TARGET_IS_NODE = "TARGET_IS_NODE"
 SENDER_UNRESOLVED = "SENDER_UNRESOLVED"
 MESSAGE_REPLY_UNAVAILABLE = "MESSAGE_REPLY_UNAVAILABLE"
 MESSAGE_REPLY_RESOURCES_UNSUPPORTED = "MESSAGE_REPLY_RESOURCES_UNSUPPORTED"
+# Minted by the inbox ack path (row missing / already consumed / TTL-pruned
+# all fold into this one result code) and returned through message.ack's
+# IPC result field.  Entered the registry when the codex interactive
+# carrier began branching on it to classify a settlement target as already
+# settled elsewhere.
+MESSAGE_ACK_UNAVAILABLE = "MESSAGE_ACK_UNAVAILABLE"
 USER_DELIVERY_UNAVAILABLE = "USER_DELIVERY_UNAVAILABLE"
 USER_DELIVERY_FAILED = "USER_DELIVERY_FAILED"
 ROUTE_ADAPTER_UNCONFIGURED = "ROUTE_ADAPTER_UNCONFIGURED"
@@ -102,6 +115,9 @@ ROUTE_RESOURCE_REPLY_UNSUPPORTED = "ROUTE_RESOURCE_REPLY_UNSUPPORTED"
 # and pass through the daemon IPC error channel (docs/proto.md §2.2 ⑤).
 TARGET_SQUIRE_UNCONFIGURED = "TARGET_SQUIRE_UNCONFIGURED"
 TARGET_SQUIRE_ADAPTER_UNAVAILABLE = "TARGET_SQUIRE_ADAPTER_UNAVAILABLE"
+# Receiver never answered within the receipt window: transient (retryable),
+# deliberately distinct from UNCONFIGURED/ADAPTER_UNAVAILABLE (permanent).
+USER_DELIVERY_TIMEOUT = "USER_DELIVERY_TIMEOUT"
 
 # -- sessions / channel leases ------------------------------------------
 SESSION_SUPERSEDED = "SESSION_SUPERSEDED"
@@ -121,6 +137,16 @@ USE_ADAPTER_COMMAND = "USE_ADAPTER_COMMAND"
 # -- dispatch ------------------------------------------------------------
 DISPATCH_NO_CAPABLE_HARNESS = "DISPATCH_NO_CAPABLE_HARNESS"
 DISPATCH_ROLE_MISMATCH = "DISPATCH_ROLE_MISMATCH"
+
+# -- lifecycle -------------------------------------------------------------
+# Minted by the daemon's lifecycle boundary (application.py
+# ``_run_lifecycle_operation``): the manager's consumer thread is dead or
+# absent, so admitting an operation would queue work nobody drives.
+LIFECYCLE_MANAGER_UNAVAILABLE = "LIFECYCLE_MANAGER_UNAVAILABLE"
+# The daemon-side wait for an operation to settle elapsed.  Named for what
+# happened instead of overloading DAEMON_START_FAILED (2026-09-14: a dead
+# lifecycle thread surfaced as "start failed" on every `hyprial down`).
+LIFECYCLE_OPERATION_UNSETTLED = "LIFECYCLE_OPERATION_UNSETTLED"
 
 # -- services ------------------------------------------------------------
 ROUTINE_UNAVAILABLE = "ROUTINE_UNAVAILABLE"

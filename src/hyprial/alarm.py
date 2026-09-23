@@ -23,7 +23,13 @@ AlarmClaim = Callable[[str, str, int, int], bool]
 
 @dataclass(frozen=True, slots=True)
 class Alarm:
-    """One failure notification, correlated to the original message."""
+    """One failure notification, correlated to the original message.
+
+    ``text`` is the human-authored body (routine escalation text, breaker
+    reason).  When set it IS the notice; without it the renderer degrades to
+    the generic "delivery failed" string and the actual cause is lost -- the
+    2026-09-14 routine-alarm defect.
+    """
 
     correlation_id: str
     message_id: str
@@ -32,12 +38,33 @@ class Alarm:
     recipient: str
     reason: str
     audience: AlarmAudience
+    text: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class AlarmResult:
     status: Literal["delivered", "failed", "throttled"]
     audience: AlarmAudience
+
+
+#: Reasons that mean "this side stopped asking", never "the recipient said no".
+#:
+#: Both are minted by the sender's own give-up path -- ``inbox/actor.py``
+#: calls that outcome ``FETCH_UNCONFIRMED``, which is precisely the right
+#: word -- and the sender cannot tell a message that never arrived from one
+#: that arrived and whose receipt was lost.  Measured on the production node
+#: (2026-09-18, notes/delivery-failed-notice-is-unconfirmed-2026-09-18.md):
+#: all 144 such rows carry no second status row of any kind, so nothing on
+#: this side could ever decide it.
+#:
+#: Anything not listed here keeps the old "失败" wording: a reason that names
+#: a refusal (TARGET_NOT_FOUND, PROVIDER_BLOCKED, ...) IS evidence about the
+#: recipient.  ⚠️ A new give-up reason added elsewhere will default to the
+#: wrong side of this line, which is why the acceptance test drives the real
+#: retry-exhaustion path instead of only calling :meth:`AlarmEmitter.render`.
+UNCONFIRMED_REASONS: frozenset[str] = frozenset(
+    {"DELIVERY_RETRY_EXHAUSTED", "DELIVERY_EXPIRED"}
+)
 
 
 class AlarmEmitter:
@@ -82,8 +109,14 @@ class AlarmEmitter:
             "conversationId": alarm.conversation_id,
             "sender": alarm.sender,
             "recipient": alarm.recipient,
+            # Two different receivers used to share the word "recipient": the
+            # notice goes to alarm.sender, while alarm.recipient is the
+            # original message's addressee.  Split them explicitly.
+            "noticeRecipient": alarm.sender,
+            "originalRecipient": alarm.recipient,
             "reason": alarm.reason,
             "audience": alarm.audience,
+            **({"textLength": len(alarm.text)} if alarm.text is not None else {}),
         }
         if terminal:
             self._safe_log("error", "terminal.failure", **fields)
@@ -128,10 +161,36 @@ class AlarmEmitter:
 
     @staticmethod
     def render(alarm: Alarm) -> str:
+        """The text the sender reads -- which must not outrun what we know.
+
+        ``UNCONFIRMED_REASONS`` are the outcomes where nobody refused the
+        message: the sender ran out of attempts, or the message reached its
+        deadline.  Calling those 「失败」 asserts something about the
+        RECIPIENT that this side has no evidence for, and the sender acts on
+        it -- re-dispatching work that may already be running, or writing
+        someone off as unreachable.
+        """
+
+        unconfirmed = alarm.reason in UNCONFIRMED_REASONS
+        if alarm.text is not None:
+            return alarm.text
         if alarm.audience == "human":
+            if unconfirmed:
+                return (
+                    f"消息投递未确认：{alarm.reason}（消息 {alarm.message_id}）。"
+                    "没有人拒收,是本端不再等回执了 —— 对方可能已经收到,"
+                    "⛔ 不要当成没送到来处理。"
+                )
             return f"消息投递失败：{alarm.reason}（消息 {alarm.message_id}）。"
         if alarm.audience == "operator":
             return alarm.reason
+        if unconfirmed:
+            return (
+                f"System notice: delivery UNCONFIRMED for message "
+                f"{alarm.message_id}; reason={alarm.reason}. Nothing refused "
+                "it -- this side stopped waiting for a receipt, so the "
+                "recipient may well have it."
+            )
         return (
             f"System notice: delivery failed for message {alarm.message_id}; "
             f"reason={alarm.reason}."
@@ -174,5 +233,6 @@ __all__ = [
     "Alarm",
     "AlarmEmitter",
     "AlarmResult",
+    "UNCONFIRMED_REASONS",
     "audience_for_sender",
 ]

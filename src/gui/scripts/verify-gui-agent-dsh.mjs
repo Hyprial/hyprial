@@ -96,10 +96,10 @@ export async function verifyGuiAgent(env = process.env) {
   if (!dshHome) throw new Error('Set GUI_AGENT_DSH_HOME to the isolated server home, so fresh session identity can be checked before sending.');
   const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
   let deps;
-  for (const base of [env.DSH_GUI_BROWSER_DEPS, join(repo, 'dashboard/package.json'), join(homedir(), '.h2b/apps/gui/source/dashboard/package.json')].filter(Boolean)) {
+  for (const base of [env.DSH_GUI_BROWSER_DEPS, join(repo, 'browser-tests/package.json'), join(homedir(), '.h2b/apps/gui/source/browser-tests/package.json')].filter(Boolean)) {
     try { const candidate = createRequire(resolve(base)); candidate.resolve('playwright'); deps = candidate; break; } catch {}
   }
-  if (!deps) throw new Error('Install dashboard Playwright dependencies before this explicit model test.');
+  if (!deps) throw new Error('Install GUI browser-test dependencies before this explicit model test.');
   const workspace = await mkdtemp(join(tmpdir(), 'dsh-gui-agent-'));
   await writeFile(join(workspace, 'AGENTS.md'), 'This is an isolated GUI verification workspace. Only use h2b_gui_context, h2b_gui_update, h2b_gui_validate, h2b_gui_preview for the explicitly named draft. Do not run commands, modify files, execute workflows, use network or messaging tools, publish, apply, or delegate. Stop after the requested preview.\n', { mode: 0o600 });
   const output = resolve(env.GUI_AGENT_ARTIFACTS || join(workspace, 'evidence'));

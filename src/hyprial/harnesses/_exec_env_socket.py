@@ -83,7 +83,9 @@ def main() -> int:
     ):
         raise RuntimeError("environment handoff must be a string map")
     argv = sys.argv[separator + 1 :]
-    environment = {**os.environ, **value}
+    from hyprial.agents.environment import whitelist_replacement_environment
+
+    environment = whitelist_replacement_environment(os.environ, value)
     if cleanup_config is None:
         os.execvpe(argv[0], argv, environment)
         return 1

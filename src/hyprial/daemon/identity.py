@@ -78,10 +78,13 @@ def resolve_node_owner(
 ) -> str:
     """The **user identity** this daemon mints into agent/adapter URIs.
 
-    Source order: ``HYPRIAL_OWNER`` > ``settings.json`` ``owner`` > loud failure.
-    ``settings.json`` is the one landing spot: ``hyprial login`` writes it
-    (login U2); the manual pre-login owner flags were removed with it (U5,
-    D-U2-5) — login and ``HYPRIAL_OWNER`` are the only ways in.
+    Source order: ``HYPRIAL_OWNER`` > ``settings.json`` ``owner`` > loud
+    failure.  ``settings.json`` is the one landing spot.  The manual
+    pre-login owner flags were removed with U5 (D-U2-5); the ways in are
+    exactly three: ``hyprial login`` (the Hyprial service, login U2), the
+    self-host branch of ``hyprial init`` (U6, 2026-09-18: the owner is
+    asserted by the host's own tailnet via ``tailscale whoami`` — no manual
+    entry), and the ``HYPRIAL_OWNER`` override below.
 
     ⭐ D7, pinned by U5: ``HYPRIAL_OWNER`` is an **override for tests and
     managed deployments only**.  It outranks settings for the daemon, so a
@@ -115,7 +118,8 @@ def resolve_node_owner(
         path = _settings_path(env, hyprial_home)
         raise ValueError(
             "user identity is not set: HYPRIAL_OWNER is unset or empty, and "
-            f"{path} has no 'owner'. Run: hyprial login (or set HYPRIAL_OWNER)"
+            f"{path} has no 'owner'. Run: hyprial login, or hyprial init to "
+            "choose a self-hosted tailscale identity (or set HYPRIAL_OWNER)"
         )
     return owner
 
@@ -223,12 +227,15 @@ def write_settings_identity(
     value = owner.strip()
     if not value or ":" in value:
         raise ValueError(f"owner must be non-empty and contain no ':'; got {owner!r}")
-    if mode not in {"casdoor", "local-usage"}:
+    if mode not in {"casdoor", "local-usage", "tailscale-selfhost"}:
         raise ValueError(f"unsupported identity mode {mode!r}")
     if mode == "casdoor" and (not isinstance(issuer, str) or not issuer.strip()):
         raise ValueError("casdoor identity requires a non-empty issuer")
-    if mode == "local-usage" and issuer not in {None, ""}:
-        raise ValueError("local-usage identity must not retain an issuer")
+    if mode in {"local-usage", "tailscale-selfhost"} and issuer not in {None, ""}:
+        # local-usage keeps no issuer because it is authenticated by nobody;
+        # tailscale-selfhost (U6) is asserted by the host's own tailnet
+        # control plane, which has no OIDC issuer to name.
+        raise ValueError(f"{mode} identity must not retain an issuer")
     env = os.environ if environ is None else environ
     path = _settings_path(env, hyprial_home)
     try:

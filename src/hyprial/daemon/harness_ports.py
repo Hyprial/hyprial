@@ -233,6 +233,13 @@ class HarnessStatusProjection:
     state: str | None = None
     error: str | None = None
     endpoint: str | None = None
+    # DSH-only: the private per-worker DSH_HOME the current generation spawned
+    # against.  Reported so an operator (and E2E-014) can locate the real home
+    # instead of the retired shared ``~/.dsh`` default.
+    dsh_home: str | None = None
+    max_in_flight: int | None = None
+    in_flight: int | None = None
+    queue_depth: int | None = None
 
     @property
     def quarantined(self) -> bool:
@@ -256,6 +263,10 @@ class HarnessStatusProjection:
             **({"quarantined": True} if self.quarantined else {}),
             **({"error": self.error} if self.error is not None else {}),
             **({"endpoint": self.endpoint} if self.endpoint is not None else {}),
+            **({"dshHome": self.dsh_home} if self.dsh_home is not None else {}),
+            **({"maxInFlight": self.max_in_flight} if self.max_in_flight is not None else {}),
+            **({"inFlight": self.in_flight} if self.in_flight is not None else {}),
+            **({"queueDepth": self.queue_depth} if self.queue_depth is not None else {}),
         }
 
 

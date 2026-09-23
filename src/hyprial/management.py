@@ -321,8 +321,16 @@ class _NeverLaunch:
 class OfflineManagementLease:
     """Fail-fast offline actor authority held under the daemon ownership flock."""
 
-    def __init__(self, state_dir: Path, *, owner: str, machine: str) -> None:
+    def __init__(
+        self,
+        state_dir: Path,
+        *,
+        owner: str,
+        machine: str,
+        hyprial_home: Path,
+    ) -> None:
         self.state_dir = Path(state_dir)
+        self.hyprial_home = Path(hyprial_home)
         self.owner = owner
         self.machine = machine
         self._fence: DaemonStateOwnershipFence | None = None
@@ -343,6 +351,7 @@ class OfflineManagementLease:
                 owner=self.owner,
                 node_id=self.machine,
                 daemon_epoch=f"offline-management:{uuid4().hex}",
+                hyprial_home=self.hyprial_home,
                 worker_running=lambda _actor: None,
                 clock=time.monotonic,
             )

@@ -7,6 +7,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { PLUGIN_PACKAGE, LEGACY_PLUGIN_PACKAGE, PLUGIN_ROW_ID, LEGACY_PLUGIN_ROW_ID } from './hyprial-plugin-package.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const layoutPackage = join(root, 'packages/gui-layout');
@@ -38,7 +39,7 @@ export function verifyGuiLayoutProfile(source) {
   catch { throw new Error('Cannot parse DSH composed profile'); }
   if (!Array.isArray(rows)) throw new Error('Invalid DSH composed profile');
   const providers = [];
-  const talks = [];
+  const plugins = [];
   function visit(entries) {
     const ids = new Set();
     for (const row of entries) {
@@ -50,7 +51,7 @@ export function verifyGuiLayoutProfile(source) {
       }
       if (!row || row.disabled === true) continue;
       if (['@hyprial/dsh-gui-layout', '@deepseek-ai/dsh-client-ui-layout'].includes(row.name)) providers.push(row);
-      if (row.name === '@hyprial/dsh-h2b-talk') talks.push(row);
+      if (row.name === PLUGIN_PACKAGE) plugins.push(row);
       if (row.group && Array.isArray(row.config)) visit(row.config);
     }
   }
@@ -58,14 +59,14 @@ export function verifyGuiLayoutProfile(source) {
   if (providers.length !== 1 || providers[0].name !== '@hyprial/dsh-gui-layout') {
     throw new Error('DSH profile must have exactly one active GUI layout provider; check user layout overrides');
   }
-  if (talks.length !== 1 || talks[0].id !== 'h2b-talk') throw new Error('DSH profile must have exactly one active h2b-talk entry');
+  if (plugins.length !== 1 || plugins[0].id !== PLUGIN_ROW_ID) throw new Error('DSH profile must have exactly one active ' + PLUGIN_ROW_ID + ' entry');
   return true;
 }
 
-/** Move a legacy user-layer insertion to the new bundle without dropping overrides. */
+/** Move legacy plugin rows to the current identifiers without dropping overrides. */
 export function migrateLegacyGuiProfile({ profileDirectory = join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'profiles', 'web') } = {}) {
   const manifest = JSON.parse(readFileSync(join(profileDirectory, 'package.json'), 'utf8'));
-  if (!manifest.dsh?.profile?.bundles?.includes('@hyprial/dsh-h2b-talk')) throw new Error('Register the H2B Talk bundle before migrating its legacy insertion');
+  if (!manifest.dsh?.profile?.bundles?.includes(PLUGIN_PACKAGE)) throw new Error('Register the Hyprial plugin bundle before migrating its legacy insertion');
   const patchPath = join(profileDirectory, 'cordis.patch.yml');
   if (!existsSync(patchPath)) return { changed: false };
   const lockPath = join(profileDirectory, '.h2b-gui-profile-migration.lock');
@@ -82,22 +83,52 @@ export function migrateLegacyGuiProfile({ profileDirectory = join(process.env.DS
     if (document.errors.length || !isSeq(document.contents)) throw new Error('Cannot safely migrate GUI profile patch: expected a valid YAML patch list');
     const output = [];
     let changed = false;
+    const pluginRow = row => isMap(row) && [LEGACY_PLUGIN_ROW_ID, PLUGIN_ROW_ID].includes(row.get('id'));
+    // Rows still naming the retired plugin package, or still on the retired
+    // row id, are migrated; everything else stays byte-for-byte untouched.
+    const legacyPluginRow = row => pluginRow(row) &&
+      (row.get('id') === LEGACY_PLUGIN_ROW_ID || row.get('name') === LEGACY_PLUGIN_PACKAGE);
+    // Only rows the migration rewrites are validated; unrelated user rows are
+    // never inspected beyond the id/name match above.
+    const assertRewritable = row => {
+      const name = row.get('name');
+      if (name !== undefined && name !== null && ![LEGACY_PLUGIN_PACKAGE, PLUGIN_PACKAGE].includes(name)) {
+        throw new Error('Legacy plugin row id belongs to another plugin; resolve the profile conflict explicitly');
+      }
+      const keys = row.items.map(pair => pair.key.value);
+      if (keys.some(key => !['id', 'name', 'config', 'disabled'].includes(key))) {
+        throw new Error('Legacy plugin row has unsupported loader fields; migrate it explicitly without discarding configuration');
+      }
+      let complex = false;
+      visit(row, (_, node) => { if (isAlias(node) || node?.anchor) complex = true; });
+      if (complex) throw new Error('Legacy plugin row contains YAML aliases or anchors; migrate it explicitly');
+    };
+    const rewritePluginRow = row => {
+      if (row.get('id') === LEGACY_PLUGIN_ROW_ID) row.set('id', PLUGIN_ROW_ID);
+      if (row.has('name')) row.set('name', PLUGIN_PACKAGE);
+    };
     for (const operation of document.contents.items) {
-      if (!isMap(operation) || !operation.has('insert')) { output.push(operation); continue; }
+      if (!isMap(operation) || !operation.has('insert')) {
+        if (legacyPluginRow(operation)) {
+          assertRewritable(operation);
+          rewritePluginRow(operation);
+          changed = true;
+        }
+        output.push(operation);
+        continue;
+      }
       const inserted = operation.get('insert', true);
       if (!isSeq(inserted)) throw new Error('Cannot safely migrate GUI profile patch: insert must be a list');
-      const matches = inserted.items.filter(row => isMap(row) && row.get('id') === 'h2b-talk');
+      const matches = inserted.items.filter(row => pluginRow(row));
       if (!matches.length) { output.push(operation); continue; }
-      if (operation.items.length !== 1) throw new Error('Legacy h2b-talk insertion has positioning or conditional fields; migrate it explicitly');
+      if (operation.items.length !== 1) throw new Error('Legacy plugin insertion has positioning or conditional fields; migrate it explicitly');
       const overrides = [];
       for (const row of matches) {
-        if (row.get('name') !== '@hyprial/dsh-h2b-talk') throw new Error('Legacy h2b-talk id belongs to another plugin; resolve the profile conflict explicitly');
-        const keys = row.items.map(pair => pair.key.value);
-        if (keys.some(key => !['id', 'name', 'config', 'disabled'].includes(key))) throw new Error('Legacy h2b-talk insertion has unsupported loader fields; migrate it explicitly without discarding configuration');
-        let complex = false;
-        visit(row, (_, node) => { if (isAlias(node) || node?.anchor) complex = true; });
-        if (complex) throw new Error('Legacy h2b-talk insertion contains YAML aliases or anchors; migrate it explicitly');
-        if (row.has('config') || row.has('disabled')) overrides.push(row);
+        assertRewritable(row);
+        if (row.has('config') || row.has('disabled')) {
+          rewritePluginRow(row);
+          overrides.push(row);
+        }
       }
       inserted.items = inserted.items.filter(row => !matches.includes(row));
       if (inserted.items.length) output.push(operation);
@@ -107,6 +138,9 @@ export function migrateLegacyGuiProfile({ profileDirectory = join(process.env.DS
       changed = true;
     }
     if (!changed) return { changed: false };
+    // Multiple override rows may legitimately target the same id (patch entries
+    // apply in sequence); only the composed tree's own duplicate-id fence
+    // rejects real duplicates at verification time.
     document.contents.items = output;
     const updated = document.toString();
     const token = randomUUID();

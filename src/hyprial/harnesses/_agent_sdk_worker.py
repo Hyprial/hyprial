@@ -103,6 +103,13 @@ def _options_kwargs() -> dict[str, Any]:
         "setting_sources": setting_sources,
         "extra_args": extra_args,
     }
+    cli_path = os.environ.get("HYPRIAL_CLAUDE_EXECUTABLE")
+    if os.environ.get("HYPRIAL_DESKTOP_COMPONENTS") == "1" and not cli_path:
+        raise ValueError("Claude Code is not enabled; configure it in desktop setup")
+    if cli_path:
+        if not os.path.isabs(cli_path) or not os.path.isfile(cli_path):
+            raise ValueError("Desktop Claude Code executable must be an existing absolute file")
+        kwargs["cli_path"] = cli_path
     if resume is not None:
         kwargs["resume"] = resume
     elif session_id is not None:

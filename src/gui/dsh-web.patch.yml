@@ -5,5 +5,5 @@
 - insert:
     - id: h2b-ui-layout
       name: '@hyprial/dsh-gui-layout'
-    - id: h2b-talk
-      name: '@hyprial/dsh-h2b-talk'
+    - id: hyprial-plugin
+      name: '@hyprial/dsh-hyprial-plugin'

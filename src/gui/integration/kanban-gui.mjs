@@ -4,7 +4,6 @@ import { constants } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { spawn } from 'node:child_process';
 
 export const KANBAN_MAX_BYTES = 4 * 1024 * 1024;
 const KEYS = ['H2B_KANBAN_BRIDGE', 'H2B_KANBAN_DATA_DIR', 'H2B_KANBAN_TASK_BIN', 'KANBAN_STAGE_RC'];
@@ -85,55 +84,6 @@ export async function kanbanStatus(env = process.env) {
   } catch { return { ...base, state: 'unavailable', message: '本机 Kanban 配置指向不可用的文件或目录，请检查安装。' }; }
   // Configuration availability is not a successful board read or sync probe.
   return { ...base, state: 'configured', message: '已配置本机看板' };
-}
-
-export function runBoard(env = process.env) {
-  return new Promise((resolve, reject) => {
-    const child = spawn('python3', [env.H2B_KANBAN_BRIDGE, 'rpc'], { env, shell: false, stdio: ['pipe', 'pipe', 'pipe'] });
-    const chunks = [];
-    let bytes = 0, error;
-    const stop = (code, message) => { error ||= failure(code, message); child.kill('SIGKILL'); };
-    const timer = setTimeout(() => stop('KANBAN_TIMEOUT', '读取看板超时，请重试。'), 20000);
-    child.stdout.on('data', chunk => {
-      bytes += chunk.length;
-      if (bytes > KANBAN_MAX_BYTES) stop('KANBAN_TOO_LARGE', '看板超过 4 MiB，请在 Kanban 中缩小报表范围。');
-      else chunks.push(chunk);
-    });
-    // Drain diagnostics without returning paths, environment or task payloads.
-    child.stderr.on('data', chunk => { bytes += chunk.length; if (bytes > KANBAN_MAX_BYTES) stop('KANBAN_TOO_LARGE', '看板响应超过大小限制。'); });
-    child.stdin.on('error', () => {});
-    child.on('error', () => { clearTimeout(timer); reject(failure('KANBAN_UNAVAILABLE', '无法启动看板读取，请检查 Python 和 Kanban 安装。')); });
-    child.on('close', code => {
-      clearTimeout(timer);
-      if (error) return reject(error);
-      let value;
-      try { value = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch {}
-      if (code !== 0 || value?.ok !== true) return reject(failure('KANBAN_READ_FAILED', '读取本机看板失败，请检查 Kanban 安装、任务库和报表配置。'));
-      if (typeof value.html !== 'string' || typeof value.requiresScripts !== 'boolean' || !Number.isSafeInteger(value.taskCount) || value.taskCount < 0) return reject(failure('KANBAN_INCOMPATIBLE', 'Kanban 看板响应不兼容，请更新 Kanban。'));
-      resolve({ html: value.html, requiresScripts: value.requiresScripts, taskCount: value.taskCount });
-    });
-    child.stdin.end(JSON.stringify({ operation: 'board-html', sessionId: 'h2b-dashboard-readonly' }));
-  });
-}
-
-export function createKanbanReader({ env = process.env, run = runBoard, now = Date.now } = {}) {
-  let pending, cached, expires = 0;
-  return {
-    status: () => kanbanStatus(env),
-    async board() {
-      if (pending) return pending;
-      if (cached && now() < expires) return cached;
-      pending = (async () => {
-        const status = await kanbanStatus(env);
-        if (status.state !== 'configured') throw failure('KANBAN_UNAVAILABLE', status.message);
-        const value = await run(env);
-        cached = { ...value, status, updatedAt: new Date(now()).toISOString() };
-        expires = now() + 1000;
-        return cached;
-      })();
-      try { return await pending; } finally { pending = null; }
-    },
-  };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

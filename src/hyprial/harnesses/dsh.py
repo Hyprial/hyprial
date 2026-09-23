@@ -15,9 +15,13 @@ import ipaddress
 import json
 import multiprocessing
 import os
+import re
+import shutil
 import socket
+import subprocess
 import threading
-from collections.abc import AsyncIterator
+import time
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, Self
@@ -29,6 +33,7 @@ import yaml
 from hyprial._dsh_resolver import resolve_hostname
 from hyprial.daemon.desired_state import HarnessLaunchSpec
 
+from .owned_process import OwnedProcessGroup
 from .streaming import (
     StreamingTurnProcess,
     TurnClientFactory,
@@ -37,8 +42,177 @@ from .streaming import (
 from .worker_channel import WorkerChannel
 from .model_provider import dsh_provider_id, validate_model_selection
 
-DEFAULT_DSH_ENDPOINT = "http://127.0.0.1:3080"
+# The single DSH HTTP request timeout.  It is also the banner read budget:
+# the banner is how the OS-assigned port comes back and is one request's worth
+# of waiting, not a second policy.
+DSH_REQUEST_TIMEOUT_SECONDS = 15.0
+
+# Declared start budget for the launcher's readiness wait.  ``wait_ready``
+# resolves only after ``DshApiClient.__aenter__`` returns, whose readiness path
+# is a sequence of request-bounded steps: the banner read, ``host.describe``,
+# ``agentPreset.copy`` (worker channel), ``session.create``/``session.history``,
+# ``session.models`` and ``session.selectModel``.  Six sequential
+# ``DSH_REQUEST_TIMEOUT_SECONDS`` waits plus a margin is therefore the real
+# composition; ``actor_runtime`` exposes stop/drain/shutdown timeouts and
+# restart budgets but no request-level deadline primitive (the same reason
+# codex's ``APP_SERVER_STARTUP_TIMEOUT_SECONDS_DEFAULT`` is declared here).
+# Registered in ``tests/supervision_exemptions.json``.
+DSH_STARTUP_TIMEOUT_SECONDS_DEFAULT = DSH_REQUEST_TIMEOUT_SECONDS * 6 + 15.0
+
+# Granularity of the banner wait: a poll slice, not a budget.
+DSH_BANNER_POLL_SECONDS = 0.1
+
+# Bounded wait for a closed or rejected generation's process group to be
+# reaped.  Part of the start/stop handshake, so it is registered in
+# ``tests/supervision_exemptions.json`` alongside the declared start budget.
+DSH_STARTUP_REAP_SECONDS = 2.0
+
+_DSH_WEB_BANNER = re.compile(r"^dsh web: http://127\.0\.0\.1:(\d+)\s*$")
 _MCP_PLUGIN_PACKAGE = "@deepseek-ai/dsh-mcp-client"
+_DSH_IO_TAIL_BYTES = 64 * 1024
+#: An unterminated line cannot buffer without bound; ``readline(size)`` caps it.
+_DSH_MAX_LINE_BYTES = 64 * 1024
+_DSH_UNSAFE_NAME = re.compile(r"[^A-Za-z0-9_.-]")
+# Old substring set (kept verbatim) UNION the boundary-limited ``key``/``auth``
+# set.  The union is deliberate: the substring set catches names like
+# ``DEEPSEEKAPIKEY`` / ``ACCESSTOKEN`` / ``BEARERTOKEN`` / ``API-KEY`` /
+# ``DB_PASSWORDS``, the boundary set catches ``MY_KEY`` / ``SERVICE_AUTH``.
+_SECRET_ENV_NAME = re.compile(
+    r"(?i)(?:api[_-]?key|token|secret|password|passwd|credential"
+    r"|(?:^|_)(?:key|auth)(?:$|_))"
+)
+
+
+def _environment_secrets(environment: Mapping[str, str]) -> tuple[str, ...]:
+    """The env values that must never appear in output, longest first."""
+
+    values = {
+        value
+        for name, value in environment.items()
+        if value and len(value) >= 8 and _SECRET_ENV_NAME.search(name)
+    }
+    return tuple(sorted(values, key=len, reverse=True))
+
+
+def dsh_worker_home(state_dir: Path, name: str) -> Path:
+    """The fixed private ``DSH_HOME`` for one managed dsh worker.
+
+    ``DSH_HOME`` holds the session ``storages/``, the copied agent preset,
+    and any user patch, so it must never be shared between workers.  The
+    daemon already owns the only state root (``worker_channel.state_dir`` /
+    ``DaemonApplication.state_dir``); this names the per-worker directory
+    under it.  The name is sanitized because a DSH profile directory is a
+    path component.
+    """
+
+    safe = _DSH_UNSAFE_NAME.sub("-", name)
+    if not safe or safe in {".", ".."}:
+        raise ValueError("DSH worker name cannot form a directory component")
+    return Path(state_dir) / "dsh" / safe / "home"
+
+
+def _validate_client_arguments(spec: HarnessLaunchSpec) -> None:
+    """Parse the DSH client's own budgets before any child exists.
+
+    A malformed ``--poll-interval`` / ``--turn-timeout`` (or malformed
+    ``HYPRIAL_TURN_TIMEOUT_SECONDS``) is deterministic: it must fail once at
+    construction instead of being re-parsed on every retry while the pump
+    spawns a fresh child each time.
+    """
+
+    _positive_float(
+        _option_value(spec.args, "--poll-interval"),
+        default=0.25,
+        label="--poll-interval",
+    )
+    _positive_float(
+        _option_value(spec.args, "--turn-timeout"),
+        default=resolve_turn_timeout_seconds(
+            spec.turn_timeout_seconds,
+            default=MANAGED_TURN_TIMEOUT_SECONDS,
+        ),
+        label="--turn-timeout",
+    )
+
+
+def _iter_pipe_lines(stream: Any) -> Iterator[bytes]:
+    """Bounded line reader for a child pipe.
+
+    ``iter(stream.readline, b"")`` waits for a newline and buffers the whole
+    line first, so one newline-free megabyte would sit in memory; the sized
+    ``readline`` returns partial chunks instead.
+    """
+
+    while True:
+        line = stream.readline(_DSH_MAX_LINE_BYTES)
+        if not line:
+            return
+        yield line
+
+
+def _close_stream(stream: Any) -> None:
+    try:
+        stream.close()
+    except (OSError, ValueError):
+        pass
+
+
+def _close_stream_async(stream: Any) -> None:
+    """Close a pipe without waiting on a drain thread's read lock.
+
+    A drain thread blocked in ``readline`` holds the buffered reader's lock,
+    so a synchronous ``close()`` waits until the last writer closes the pipe.
+    A grandchild that outlived the child outside its process group can hold
+    that write end far longer than any stop budget (measured 29.3s against a
+    30s surviving grandchild), so close on a daemon thread: stop stays
+    bounded and the fd is released when the write end actually closes.
+    """
+
+    threading.Thread(target=_close_stream, args=(stream,), daemon=True).start()
+
+
+def _worker_web_patch() -> str:
+    """The managed user patch that turns off the Web GUI surface context.
+
+    A patch replaces the targeted row's whole ``config``, so all three
+    ``web-runtime`` keys are restated.  ``printUrl`` must stay true: the
+    banner it prints is the only machine-readable port channel.
+    """
+
+    rows = [
+        {
+            "id": "web-runtime",
+            "config": {
+                "printUrl": True,
+                "surfaceContext": False,
+                "trustedHosts": [],
+            },
+        }
+    ]
+    return yaml.safe_dump(rows, allow_unicode=True, default_flow_style=False, sort_keys=False)
+
+
+def prepare_worker_home(home: Path) -> None:
+    """Create the worker home and pin its managed Web-profile patch."""
+
+    home = Path(home)
+    home.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(home, 0o700)
+    patch = home / "profiles" / "web" / "cordis.patch.yml"
+    patch.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    content = _worker_web_patch()
+    try:
+        if patch.read_text(encoding="utf-8") == content:
+            return
+    except (OSError, UnicodeError):
+        pass
+    temporary = patch.with_name(f".{patch.name}.{uuid4().hex}.tmp")
+    try:
+        temporary.write_text(content, encoding="utf-8")
+        temporary.chmod(0o600)
+        temporary.replace(patch)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 # Retired wall-clock cap (#277: no timeout kills a turn).  The value is
 # still resolved so the pre-existing ``--turn-timeout`` argument and the
@@ -53,33 +227,6 @@ class DshApiError(RuntimeError):
 
 class DshApi(Protocol):
     async def call(self, method: str, payload: dict[str, object]) -> object: ...
-
-
-def resolve_dsh_endpoint(spec: HarnessLaunchSpec) -> str:
-    """One endpoint precedence rule for the runtime and diagnostic projection."""
-
-    return _option_value(spec.args, "--endpoint") or spec.endpoint or DEFAULT_DSH_ENDPOINT
-
-
-def dsh_status_endpoint(spec: HarnessLaunchSpec) -> str | None:
-    """Project only the URL components actually used by DshHttpApi.
-
-    HTTP userinfo, query and fragment are not used by this transport and must
-    not leak into daemon status. Invalid launch configuration stays diagnosable
-    without crashing the lifecycle actor's publication.
-    """
-
-    try:
-        parsed = urlparse(resolve_dsh_endpoint(spec))
-        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-            return None
-        host = parsed.hostname
-        if ":" in host:
-            host = f"[{host}]"
-        port = f":{parsed.port}" if parsed.port is not None else ""
-        return f"{parsed.scheme}://{host}{port}{parsed.path.rstrip('/')}"
-    except ValueError:
-        return None
 
 
 class _ResolverRequest:
@@ -162,9 +309,16 @@ class DshHttpApi:
     DSH process gets a new instance.
     """
 
-    def __init__(self, endpoint: str, *, timeout_seconds: float = 15.0) -> None:
+    def __init__(
+        self,
+        endpoint: str,
+        *,
+        timeout_seconds: float = DSH_REQUEST_TIMEOUT_SECONDS,
+        redact: Callable[[str], str] | None = None,
+    ) -> None:
         self.endpoint = endpoint.rstrip("/")
         self.timeout_seconds = timeout_seconds
+        self._redact = redact
         self._lock = threading.Lock()
         self._active: set[http.client.HTTPConnection] = set()
         self._connecting: set[socket.socket] = set()
@@ -244,17 +398,26 @@ class DshHttpApi:
             response_body = response.read()
             if not 200 <= response.status < 300:
                 detail = response_body.decode("utf-8", errors="replace")[:1000]
+                if self._redact is not None:
+                    detail = self._redact(detail)
                 raise DshApiError(
                     f"DSH {method} returned HTTP {response.status}: {detail}"
                 )
             envelope = json.loads(response_body.decode("utf-8"))
         except DshApiError:
             raise
-        except (OSError, TimeoutError, json.JSONDecodeError) as error:
+        except (
+            OSError,
+            TimeoutError,
+            json.JSONDecodeError,
+            http.client.HTTPException,
+        ) as error:
             if isinstance(error, OSError):
                 with self._lock:
                     self._resolved.pop((endpoint.hostname, port), None)
-            raise DshApiError(f"DSH {method} failed: {error}") from error
+            raise DshApiError(
+                self._transport_error_message(method, error, cancel_generation)
+            ) from error
         finally:
             with self._lock:
                 self._active.discard(connection)
@@ -271,8 +434,37 @@ class DshHttpApi:
             raise DshApiError(f"DSH {method} response has no result")
         if result.get("ok") is not True:
             detail = result.get("error", result)
-            raise DshApiError(f"DSH {method} failed: {detail}")
+            rendered = str(detail)
+            if self._redact is not None:
+                rendered = self._redact(rendered)
+            raise DshApiError(f"DSH {method} failed: {rendered}")
         return result.get("value")
+
+    def _transport_error_message(
+        self, method: str, error: BaseException, cancel_generation: int
+    ) -> str:
+        """Describe one failed call while keeping our own shutdown fence visible.
+
+        ``close``/``cancel_active`` shut the socket down under a thread parked
+        in ``http.client`` I/O.  Depending on where that thread sits, the fence
+        surfaces either as a socket ``OSError`` or as an ``http.client`` state
+        error (``ResponseNotReady``/``CannotSendRequest``/``IncompleteRead`` and
+        the rest of ``HTTPException``).  Both are this fence winning a race
+        rather than a remote failure, so a fenced call says so; every other
+        failure keeps its own message, and the original exception is still
+        chained as ``__cause__`` either way.
+        """
+
+        with self._lock:
+            closed = self._closed
+            cancelled = cancel_generation != self._cancel_generation
+        if closed or cancelled:
+            reason = "closed" if closed else "cancelled"
+            return (
+                f"DSH {method} aborted: HTTP transport was {reason} "
+                f"during the call ({error})"
+            )
+        return f"DSH {method} failed: {error}"
 
     def cancel_active(self) -> None:
         """Abort currently blocked local I/O while allowing later calls."""
@@ -384,16 +576,6 @@ class DshHttpApi:
         if last_error is not None:
             raise last_error
         raise DshApiError("DSH hostname resolved to no usable addresses")
-
-
-def _dsh_home(args: tuple[str, ...]) -> Path:
-    configured = _option_value(args, "--dsh-home") or os.environ.get("DSH_HOME")
-    return Path(configured).expanduser() if configured else Path.home() / ".dsh"
-
-
-def _loopback_endpoint(endpoint: str) -> bool:
-    host = urlparse(endpoint).hostname
-    return host in {"127.0.0.1", "localhost", "::1"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -579,9 +761,12 @@ class DshApiClient:
         poll_interval_seconds: float | None = None,
         turn_timeout_seconds: float | None = None,
         worker_channel: WorkerChannel | None = None,
+        dsh_home: Path | None = None,
     ) -> None:
         self.spec = spec
-        self.api = api or DshHttpApi(resolve_dsh_endpoint(spec))
+        # The transport always belongs to the managed process generation that
+        # spawned this DSH; only that generation knows the OS-assigned port.
+        self.api = api or DshHttpApi("http://127.0.0.1:0")
         self._session = session or _DshSession(_option_value(spec.args, "--session-id"))
         self.agent_preset = _option_value(spec.args, "--agent-preset") or "standard"
         self.poll_interval_seconds = poll_interval_seconds or _positive_float(
@@ -603,7 +788,7 @@ class DshApiClient:
         self._turn_pending = False
         self.worker_channel = worker_channel
         self.worker_preset: DshWorkerPreset | None = None
-        self.dsh_home = _dsh_home(spec.args)
+        self.dsh_home = Path(dsh_home) if dsh_home is not None else None
 
     @property
     def session_id(self) -> str | None:
@@ -613,12 +798,14 @@ class DshApiClient:
         validate_model_selection(
             self.spec.harness, self.spec.model_provider, self.spec.model
         )
+        # Readiness has two parts: the banner proves the OS port is bound and
+        # the Loader settled, this call proves /api is registered behind the
+        # trust fence.  A banner alone is human-facing text, not a contract.
         await self.api.call("host.describe", {})
         if self.worker_channel is not None:
-            if not _loopback_endpoint(resolve_dsh_endpoint(self.spec)):
+            if self.dsh_home is None:
                 raise DshApiError(
-                    "per-worker DSH MCP injection requires a loopback DSH endpoint "
-                    "whose DSH_HOME is on this machine"
+                    "per-worker DSH MCP injection requires the worker's DSH_HOME"
                 )
             if self._session.session_id is not None:
                 raise DshApiError(
@@ -764,8 +951,31 @@ class DshApiClient:
         return self._session.session_id
 
 
+@dataclass(frozen=True, slots=True)
+class _DshGeneration:
+    """One spawned ``dsh`` process and the transport bound to its port."""
+
+    process: subprocess.Popen[bytes]
+    group: OwnedProcessGroup
+    api: DshHttpApi
+    endpoint: str
+    argv: tuple[str, ...]
+    #: This generation's own output buffers: a late line from a replaced child
+    #: must never land in the next generation's tail or ``exit_error``.
+    stdout_tail: bytearray
+    stderr_tail: bytearray
+
+
 class DshHarnessProcess(StreamingTurnProcess):
-    """Daemon-managed DSH session driven through the shared turn pump."""
+    """Daemon-managed DSH session driven through the shared turn pump.
+
+    Each (re)connect spawns one private ``dsh --profile web --host 127.0.0.1
+    --port 0`` in its own session (process group), reads the OS-assigned port
+    out of the child's banner, and hands that endpoint to a fresh
+    ``DshHttpApi``.  Ownership mirrors the codex app-server: an
+    ``OwnedProcessGroup`` fenced by PID and birth identity, so stop/``hyprial
+    down`` signals only a generation this daemon actually started.
+    """
 
     def __init__(
         self,
@@ -773,29 +983,69 @@ class DshHarnessProcess(StreamingTurnProcess):
         *,
         client_factory: TurnClientFactory | None = None,
         worker_channel: WorkerChannel | None = None,
+        env: Mapping[str, str] | None = None,
+        state_dir: Path | None = None,
+        dsh_home: Path | None = None,
     ) -> None:
         if spec.harness != "dsh" or not spec.headless:
             raise ValueError("DSH API process requires a headless dsh spec")
+        self.spec = spec
         self._session = _DshSession(_option_value(spec.args, "--session-id"))
         self.worker_channel = worker_channel
-        self._owned_api = (
-            DshHttpApi(resolve_dsh_endpoint(spec))
-            if client_factory is None
-            else None
-        )
-        factory = client_factory or (
-            lambda: DshApiClient(
-                spec,
-                api=self._owned_api,
-                session=self._session,
-                worker_channel=worker_channel,
+        if dsh_home is not None:
+            self.dsh_home: Path | None = Path(dsh_home)
+        elif worker_channel is not None:
+            self.dsh_home = dsh_worker_home(worker_channel.state_dir, spec.name)
+        elif state_dir is not None:
+            self.dsh_home = dsh_worker_home(Path(state_dir), spec.name)
+        else:
+            # Only reachable for injected client factories (tests) and direct
+            # embedding; a real spawn fails loudly below instead of guessing a
+            # shared home.
+            self.dsh_home = None
+        # Deterministic configuration errors fail once, before the pump (and
+        # therefore before any child) exists; they must not be rediscovered on
+        # every retry.  An injected client factory owns its own arguments.
+        if client_factory is None:
+            if self.dsh_home is None:
+                raise ValueError(
+                    "managed DSH requires a worker channel or a state directory"
+                )
+            _validate_client_arguments(spec)
+            # The same deterministic checks ``DshApiClient.__aenter__`` makes;
+            # re-running them there is fine, but they must not be discovered
+            # only after the first child already exists (that would respawn
+            # one process per retry in the reconnect window).
+            validate_model_selection(
+                spec.harness, spec.model_provider, spec.model
             )
+            if worker_channel is not None and self._session.session_id is not None:
+                raise DshApiError(
+                    "a fresh worker MCP identity cannot resume an existing DSH "
+                    "session; omit --session-id"
+                )
+            if shutil.which("dsh") is None:
+                raise DshApiError("dsh not on PATH")
+        self._base_env: dict[str, str] | None = (
+            dict(env) if env is not None else None
         )
+        self._dsh_lock = threading.Lock()
+        self._io_log_lock = threading.Lock()
+        self._generation: _DshGeneration | None = None
+        self._exit_error: str | None = None
+        self._secret_values: tuple[str, ...] = ()
+        self._stdout_tail = bytearray()
+        self._stderr_tail = bytearray()
+        self._io_log_path = (
+            self.dsh_home.parent / "io.log" if self.dsh_home is not None else None
+        )
+        factory = client_factory or self._connect_generation
         super().__init__(
             harness="dsh",
             label="DSH API",
             client_factory=factory,
             thread_name=f"hyprial-dsh-{spec.name}",
+            reconnect_delay_max_seconds=1.0,
             force_stop=self._force_stop_client,
             force_stopped=self._force_stopped_client,
         )
@@ -804,23 +1054,307 @@ class DshHarnessProcess(StreamingTurnProcess):
     def session_ref(self) -> str | None:
         return self._session.session_id
 
-    def _force_stop_client(self) -> None:
-        if self._owned_api is not None:
-            if self._stopping.is_set():
-                self._owned_api.close()
-            else:
-                self._owned_api.cancel_active()
+    @property
+    def endpoint(self) -> str | None:
+        """The current generation's real endpoint, or ``None`` before spawn."""
+
+        generation = self._generation
+        return generation.endpoint if generation is not None else None
+
+    @property
+    def pid(self) -> int | None:
+        """The live DSH child PID of the current generation, if any."""
+
+        generation = self._generation
+        if generation is None:
+            return None
+        process = generation.process
+        return process.pid if process.poll() is None else None
+
+    @property
+    def argv(self) -> tuple[str, ...] | None:
+        generation = self._generation
+        return generation.argv if generation is not None else None
+
+    @property
+    def exit_error(self) -> str | None:
+        """The current or most recent child's exit, with its status code."""
+
+        return self._exit_error
+
+    def io_log(self) -> bytes:
+        """The bounded tail of the child's drained stdout/stderr."""
+
+        if self._io_log_path is None:
+            return b""
+        try:
+            return self._io_log_path.read_bytes()
+        except OSError:
+            return b""
+
+    def stderr_tail(self) -> bytes:
+        return bytes(self._stderr_tail)
+
+    def _connect_generation(self) -> DshApiClient:
+        self._terminate_generation()
+        if self.dsh_home is None:
+            raise DshApiError(
+                "managed DSH requires a worker channel or a state directory"
+            )
+        binary = shutil.which("dsh")
+        if binary is None:
+            raise DshApiError("dsh not on PATH")
+        prepare_worker_home(self.dsh_home)
+        # A partial env is an overlay on the daemon's own environment, never a
+        # replacement: DSH needs PATH (and whatever else the daemon has).
+        environment = {**os.environ, **(self._base_env or {})}
+        environment.pop("DSH_HOME", None)
+        environment["DSH_HOME"] = str(self.dsh_home)
+        self._secret_values = _environment_secrets(environment)
+        argv = (
+            binary,
+            "--profile",
+            "web",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "0",
+        )
+        process = subprocess.Popen(
+            argv,
+            cwd=str(self.dsh_home),
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        group = OwnedProcessGroup(label="DSH")
+        # Every failure after spawn -- identity registration, the banner and its
+        # drain setup, the client's own argument parsing -- must reap this
+        # fresh process group.  Otherwise the pump's next retry leaves the
+        # previous child running and every generation leaks one DSH.
+        try:
+            group.register(process.pid)
+            endpoint, stdout_tail, stderr_tail = self._read_banner(process, group)
+            api = DshHttpApi(
+                endpoint,
+                timeout_seconds=DSH_REQUEST_TIMEOUT_SECONDS,
+                redact=self._redact_text,
+            )
+            generation = _DshGeneration(
+                process, group, api, endpoint, argv, stdout_tail, stderr_tail
+            )
+            client = DshApiClient(
+                self.spec,
+                api=api,
+                session=self._session,
+                worker_channel=self.worker_channel,
+                dsh_home=self.dsh_home,
+            )
+            with self._dsh_lock:
+                self._exit_error = None
+                self._generation = generation
+            threading.Thread(
+                target=self._watch_generation,
+                args=(generation, client),
+                name=f"hyprial-dsh-exit-{self.spec.name}",
+                daemon=True,
+            ).start()
+            return client
+        except BaseException:
+            group.force_close()
+            self._reap(process)
+            raise
+
+    def _watch_generation(
+        self, generation: _DshGeneration, client: DshApiClient
+    ) -> None:
+        """Publish the child's real exit status to the client and this process."""
+
+        returncode = generation.process.wait()
+        if self._generation is not generation:
             return
+        detail = bytes(generation.stderr_tail).decode(
+            "utf-8", errors="replace"
+        ).strip()
+        message = f"DSH process exited with status {returncode}"
+        if detail:
+            message = f"{message}: {detail[-500:]}"
+        self._exit_error = message
+        client.exit_error = message
+        client.running = False
+
+    def _read_banner(
+        self, process: subprocess.Popen[bytes], group: OwnedProcessGroup
+    ) -> tuple[str, bytearray, bytearray]:
+        """Read the first ``dsh web:`` banner, then keep draining both pipes.
+
+        Returns the endpoint plus this generation's own output buffers.
+        """
+
+        stdout = process.stdout
+        stderr = process.stderr
+        assert stdout is not None and stderr is not None
+        stdout_tail = bytearray()
+        stderr_tail = bytearray()
+        with self._dsh_lock:
+            self._stdout_tail = stdout_tail
+            self._stderr_tail = stderr_tail
+        self._io_log_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            self._io_log_path.write_bytes(b"")
+            os.chmod(self._io_log_path, 0o600)
+        except OSError:
+            pass
+        banner_event = threading.Event()
+        endpoint: list[str] = []
+
+        def drain_stdout() -> None:
+            try:
+                for raw in _iter_pipe_lines(stdout):
+                    redacted = self._redact_output(raw)
+                    with self._dsh_lock:
+                        self._extend_tail(stdout_tail, redacted)
+                    self._append_io_log(b"STDOUT " + redacted)
+                    if not endpoint:
+                        line = redacted.decode("utf-8", errors="replace").strip()
+                        match = _DSH_WEB_BANNER.match(line)
+                        if match:
+                            endpoint.append(f"http://127.0.0.1:{match.group(1)}")
+            except (OSError, ValueError):
+                pass
+            finally:
+                banner_event.set()
+                _close_stream(stdout)
+
+        def drain_stderr() -> None:
+            try:
+                for raw in _iter_pipe_lines(stderr):
+                    redacted = self._redact_output(raw)
+                    with self._dsh_lock:
+                        self._extend_tail(stderr_tail, redacted)
+                    self._append_io_log(b"STDERR " + redacted)
+            except (OSError, ValueError):
+                pass
+            finally:
+                _close_stream(stderr)
+
+        threading.Thread(
+            target=drain_stdout, name=f"hyprial-dsh-stdout-{self.spec.name}", daemon=True
+        ).start()
+        threading.Thread(
+            target=drain_stderr, name=f"hyprial-dsh-stderr-{self.spec.name}", daemon=True
+        ).start()
+
+        deadline = time.monotonic() + DSH_REQUEST_TIMEOUT_SECONDS
+        while not endpoint:
+            if self._stopping.is_set():
+                break
+            # stdout reached EOF without a banner: no later line can carry one,
+            # so do not spin on a set event until the deadline.
+            if banner_event.is_set():
+                break
+            if process.poll() is not None:
+                banner_event.wait(DSH_BANNER_POLL_SECONDS)
+                break
+            if time.monotonic() >= deadline:
+                break
+            banner_event.wait(
+                min(DSH_BANNER_POLL_SECONDS, max(0.0, deadline - time.monotonic()))
+            )
+        if endpoint:
+            return endpoint[0], stdout_tail, stderr_tail
+
+        group.force_close()
+        self._reap(process)
+        detail = bytes(stderr_tail).decode("utf-8", errors="replace").strip()
+        message = (
+            "DSH web banner was not printed within "
+            f"{DSH_REQUEST_TIMEOUT_SECONDS:g}s (child exit status "
+            f"{process.returncode})"
+        )
+        if detail:
+            message = f"{message}: {detail[-2000:]}"
+        raise DshApiError(message)
+
+    @staticmethod
+    def _extend_tail(buffer: bytearray, chunk: bytes) -> None:
+        buffer.extend(chunk)
+        if len(buffer) > _DSH_IO_TAIL_BYTES:
+            del buffer[: len(buffer) - _DSH_IO_TAIL_BYTES]
+
+    def _redact_text(self, text: str) -> str:
+        for secret in self._secret_values:
+            text = text.replace(secret, "[REDACTED]")
+        return text
+
+    def _redact_output(self, chunk: bytes) -> bytes:
+        """Scrub the child's env secret values before anything keeps them.
+
+        stderr tails become ``exit_error`` -> status ``error`` and the worker
+        turn event, and the drain log is on disk; a child that echoes its own
+        environment must not leak it into any of them.
+        """
+
+        if not self._secret_values:
+            return chunk
+        return self._redact_text(chunk.decode("utf-8", errors="replace")).encode(
+            "utf-8"
+        )
+
+    def _append_io_log(self, chunk: bytes) -> None:
+        path = self._io_log_path
+        if path is None:
+            return
+        with self._io_log_lock:
+            try:
+                with open(path, "ab") as handle:
+                    handle.write(chunk)
+                    handle.flush()
+                if path.stat().st_size > _DSH_IO_TAIL_BYTES:
+                    path.write_bytes(path.read_bytes()[-_DSH_IO_TAIL_BYTES:])
+            except OSError:
+                pass
+
+    def _terminate_generation(self) -> None:
+        generation = self._generation
+        if generation is None:
+            return
+        if self._stopping.is_set():
+            generation.api.close()
+        else:
+            generation.api.cancel_active()
+        generation.group.force_close()
+        self._reap(generation.process)
+
+    @staticmethod
+    def _reap(process: subprocess.Popen[bytes]) -> None:
+        try:
+            process.wait(timeout=DSH_STARTUP_REAP_SECONDS)
+        except (subprocess.TimeoutExpired, OSError, ValueError):
+            pass
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                _close_stream_async(stream)
+
+    def _force_stop_client(self) -> None:
+        self._terminate_generation()
         with self._lock:
-            client = self._client
+            # During __aenter__ the pump has published only _connecting_client;
+            # reaching it is what unblocks a pre-socket / pre-connection call.
+            client = self._client or self._connecting_client
         force_stop = getattr(client, "force_stop", None)
         if callable(force_stop):
             force_stop()
 
     def _force_stopped_client(self) -> bool:
-        if self._owned_api is not None:
-            return self._owned_api.stopped()
+        generation = self._generation
+        if generation is not None:
+            if not generation.api.stopped():
+                return False
+            return generation.group.stopped()
         with self._lock:
-            client = self._client
+            client = self._client or self._connecting_client
         force_stopped = getattr(client, "force_stopped", None)
         return bool(force_stopped()) if callable(force_stopped) else True

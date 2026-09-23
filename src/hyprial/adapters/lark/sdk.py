@@ -113,6 +113,20 @@ _LARK_FILE_TYPES = {
 }
 
 
+#: ``im.v1.message.list`` refusals that are permanent for one chat: the
+#: platform error-code table of the official "Get chat history" document
+#: (https://open.feishu.cn/document/server-docs/im-v1/message/list, mirrored
+#: at open.larksuite.com) lists 230002 as "The bot can not be outside the
+#: group" -- the app is not a member of the chat, which is also what a
+#: disbanded group (or one the bot was removed from) surfaces, since the
+#: membership no longer exists.  The same code is live-confirmed for sends
+#: in ``hyprial.daemon.route_delivery`` (``LARK_CODE_APP_NOT_IN_CHAT``).
+#: Deliberately excluded: 230027 (missing scope -- recoverable by
+#: re-authorization), 230001 (ambiguous invalid-parameter), and everything
+#: else; any unrecognized code stays fail-closed as transient.
+LARK_HISTORY_CODES_PERMANENT_CHAT_GONE = frozenset({230002})
+
+
 def lark_file_type(path: Path) -> str:
     """Map documented native formats; every other attachment is a stream."""
 

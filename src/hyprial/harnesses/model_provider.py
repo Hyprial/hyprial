@@ -21,7 +21,17 @@ from pathlib import Path
 from hyprial.daemon.desired_state import HarnessLaunchSpec
 
 DEEPSEEK_PROVIDER = "deepseek"
-DEEPSEEK_MODEL = "deepseek-v4-flash"
+DEEPSEEK_MODEL = "deepseek-flash"
+
+# Retired model names, mapped to what replaces them.  The old name is refused
+# loudly rather than aliased: an alias keeps every out-of-tree caller working
+# until the vendor drops the name, and on that day they all fail at once with
+# no list of who they are.  A refusal costs one broken launch per caller, and
+# buys the list -- each one names itself the first time it runs.
+RETIRED_MODEL_NAMES: Mapping[str, str] = {
+    "deepseek-v4-flash": DEEPSEEK_MODEL,
+    "deepseek-v4-pro": DEEPSEEK_MODEL,
+}
 DEEPSEEK_API_KEY_ENV = "DEEPSEEK_API_KEY"
 DSH_DEEPSEEK_PROVIDER = "deepseek-official"
 DEEPSEEK_OPENAI_BASE_URL = "https://api.deepseek.com/"
@@ -62,13 +72,34 @@ def validate_model_selection(
     harness: str,
     provider: str | None,
     model: str | None,
+    *,
+    context: str | None = None,
 ) -> None:
-    """Validate the public provider/model vocabulary for one harness."""
+    """Validate the public provider/model vocabulary for one harness.
+
+    ``context`` names whoever asked, when the caller knows.  It is optional
+    because the useful half of a refusal is the part the caller cannot supply:
+    the old name still arrives from places this repository cannot enumerate --
+    a hand-written shell line, a tmux recipe, a saved command.  The message
+    below therefore names the three producers we do know about, so a reader
+    who has no context line still knows where to look.
+    """
 
     if provider is not None and not provider.strip():
         raise ModelProviderError("--provider must not be empty")
     if model is not None and not model.strip():
         raise ModelProviderError("--model must not be empty")
+    replacement = RETIRED_MODEL_NAMES.get(model or "")
+    if replacement is not None:
+        raise ModelProviderError(
+            f"model {model!r} is retired; use {replacement!r}. "
+            "This is a deliberate refusal, not a transient failure: the old "
+            "name is not aliased, so whatever still sends it has to be found "
+            "and changed. "
+            f"Asked by: {context or 'caller did not identify itself'}. "
+            "Look for the old name in the launch command (after '--'), in "
+            "the agent's stored harnessArgs, or in a saved script or recipe."
+        )
     if provider is None:
         return
     if harness == "claude" and provider not in {"anthropic", DEEPSEEK_PROVIDER}:

@@ -40,6 +40,26 @@ from packaging.version import InvalidVersion, Version
 from hyprial.persistent_config import atomic_json_write
 from hyprial.updates import git_env
 
+from .error_codes import (
+    INSTALL_ARTIFACT_CHANGED,
+    INSTALL_ARTIFACT_DIGEST_MISMATCH,
+    INSTALL_ARTIFACT_MALFORMED,
+    INSTALL_ARTIFACT_UNAVAILABLE,
+    INSTALL_CATALOG_BEHIND,
+    INSTALL_CATALOG_INVALID,
+    INSTALL_DECLINED,
+    INSTALL_GIT_FAILED,
+    INSTALL_MANIFEST_INVALID,
+    INSTALL_REGISTRY_INVALID,
+    INSTALL_REGISTRY_UNAVAILABLE,
+    INSTALL_SCRIPT_FAILED,
+    INSTALL_SOURCE_CONFLICT,
+    INSTALL_SOURCE_DIRTY,
+    INSTALL_SOURCE_MISSING,
+    INSTALL_STATE_INVALID,
+    INSTALL_UPDATE_UNSUPPORTED,
+)
+
 
 _SCHEMA = "hyprial.install/v1"
 #: v2 adds ``commands`` (H3) and reserves ``subscriptions`` (H2).  v1 keeps
@@ -250,7 +270,7 @@ def load_catalog() -> dict[str, CatalogEntry]:
     registry = _registry_ref()
     if not registry:
         raise InstallError(
-            "INSTALL_REGISTRY_INVALID",
+            INSTALL_REGISTRY_INVALID,
             f"{_REGISTRY_ENV} must name a catalog document address",
         )
     is_local = _registry_is_local(registry)
@@ -259,18 +279,18 @@ def load_catalog() -> dict[str, CatalogEntry]:
         raw = json.loads(raw_text)
     except json.JSONDecodeError as error:
         raise InstallError(
-            "INSTALL_CATALOG_INVALID", f"cannot parse catalog {registry!r}: {error}"
+            INSTALL_CATALOG_INVALID, f"cannot parse catalog {registry!r}: {error}"
         ) from error
     if not isinstance(raw, dict):
-        raise InstallError("INSTALL_CATALOG_INVALID", "installer catalog must be an object")
+        raise InstallError(INSTALL_CATALOG_INVALID, "installer catalog must be an object")
     if raw.get("schema") != _CATALOG_SCHEMA:
         raise InstallError(
-            "INSTALL_CATALOG_INVALID",
+            INSTALL_CATALOG_INVALID,
             f"installer catalog schema must be {_CATALOG_SCHEMA!r}",
         )
     apps = raw.get("apps")
     if not isinstance(apps, dict):
-        raise InstallError("INSTALL_CATALOG_INVALID", "installer catalog apps must be an object")
+        raise InstallError(INSTALL_CATALOG_INVALID, "installer catalog apps must be an object")
     catalog: dict[str, CatalogEntry] = {}
     for name, value in apps.items():
         catalog[name] = _parse_catalog_entry(name, value, registry_is_local=is_local)
@@ -283,7 +303,7 @@ def _read_catalog_document(registry: str, *, is_local: bool) -> str:
             return _local_path(registry).read_text(encoding="utf-8")
         except OSError as error:
             raise InstallError(
-                "INSTALL_REGISTRY_UNAVAILABLE",
+                INSTALL_REGISTRY_UNAVAILABLE,
                 f"cannot read socialware catalog {registry!r}: {error}",
             ) from error
     # The catalog is the trust root: a network catalog must be https (owner audit
@@ -292,7 +312,7 @@ def _read_catalog_document(registry: str, *, is_local: bool) -> str:
     scheme_error = _artifact_url_error(registry, allow_local_file=False, allow_loopback_http=False)
     if scheme_error is not None:
         raise InstallError(
-            "INSTALL_REGISTRY_INVALID",
+            INSTALL_REGISTRY_INVALID,
             f"{_REGISTRY_ENV} names a catalog at {_redact_url(registry)!r} that {scheme_error}",
         )
     try:
@@ -300,19 +320,19 @@ def _read_catalog_document(registry: str, *, is_local: bool) -> str:
             return response.read().decode("utf-8")
     except (urllib.error.URLError, OSError, ValueError) as error:
         raise InstallError(
-            "INSTALL_REGISTRY_UNAVAILABLE",
+            INSTALL_REGISTRY_UNAVAILABLE,
             f"cannot load socialware catalog {_redact_url(registry)!r}: {error}",
         ) from error
 
 
 def _parse_catalog_entry(name: object, value: object, *, registry_is_local: bool) -> CatalogEntry:
     if not isinstance(name, str) or not isinstance(value, dict):
-        raise InstallError("INSTALL_CATALOG_INVALID", "installer catalog entries must be objects")
+        raise InstallError(INSTALL_CATALOG_INVALID, "installer catalog entries must be objects")
     # release-only: a git/ref entry belongs to the developer path, not the
     # installer.  Loud, not silently ignored -- same principle as _V2_KEYS.
     if "git" in value or "ref" in value:
         raise InstallError(
-            "INSTALL_CATALOG_INVALID",
+            INSTALL_CATALOG_INVALID,
             f"catalog entry {name!r} carries a git/ref source; git is a developer-only "
             f"path now ({_DEVELOPER_DOCS}), the catalog is release-only",
         )
@@ -323,19 +343,19 @@ def _parse_catalog_entry(name: object, value: object, *, registry_is_local: bool
     manifest = value.get("manifest")
     if not all(isinstance(item, str) and item for item in (release, sha256, version, commit, manifest)):
         raise InstallError(
-            "INSTALL_CATALOG_INVALID",
+            INSTALL_CATALOG_INVALID,
             f"catalog entry {name!r} requires release, sha256, version, commit, and manifest",
         )
     assert isinstance(sha256, str) and isinstance(commit, str)  # narrowed by the check above
     if not _SHA256.fullmatch(sha256.lower()):
         raise InstallError(
-            "INSTALL_CATALOG_INVALID", f"catalog entry {name!r} sha256 must be 64 hex characters"
+            INSTALL_CATALOG_INVALID, f"catalog entry {name!r} sha256 must be 64 hex characters"
         )
     if not _COMMIT.fullmatch(commit.lower()):
         raise InstallError(
-            "INSTALL_CATALOG_INVALID", f"catalog entry {name!r} commit must be a 40-hex git commit"
+            INSTALL_CATALOG_INVALID, f"catalog entry {name!r} commit must be a 40-hex git commit"
         )
-    _parse_version(str(version), label=f"catalog entry {name!r} version", code="INSTALL_CATALOG_INVALID")
+    _parse_version(str(version), label=f"catalog entry {name!r} version", code=INSTALL_CATALOG_INVALID)
     _safe_relative_path(str(manifest), label=f"catalog entry {name!r} manifest")
     _reject_release_scheme(name, str(release), registry_is_local=registry_is_local)
     return CatalogEntry(
@@ -425,7 +445,7 @@ def _reject_release_scheme(name: object, release: str, *, registry_is_local: boo
         release, allow_local_file=registry_is_local, allow_loopback_http=registry_is_local
     )
     if error is not None:
-        raise InstallError("INSTALL_CATALOG_INVALID", f"catalog entry {name!r} {error}")
+        raise InstallError(INSTALL_CATALOG_INVALID, f"catalog entry {name!r} {error}")
 
 
 class _PolicyRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -480,11 +500,11 @@ def _checked_urlopen(url: str, *, allow_local: bool):
 def _safe_relative_path(value: str, *, label: str) -> PurePosixPath:
     path = PurePosixPath(value)
     if path.is_absolute() or not path.parts or any(part in {"", ".", ".."} for part in path.parts):
-        raise InstallError("INSTALL_MANIFEST_INVALID", f"{label} must stay inside the repository")
+        raise InstallError(INSTALL_MANIFEST_INVALID, f"{label} must stay inside the repository")
     return path
 
 
-def _parse_version(value: str, *, label: str, code: str = "INSTALL_STATE_INVALID") -> Version:
+def _parse_version(value: str, *, label: str, code: str = INSTALL_STATE_INVALID) -> Version:
     try:
         return Version(value)
     except InvalidVersion as error:
@@ -514,7 +534,7 @@ def _fetch_artifact(url: str, destination: Path, *, allow_local: bool) -> str:
                 shutil.copyfileobj(response, handle)
     except (urllib.error.URLError, OSError, ValueError) as error:
         raise InstallError(
-            "INSTALL_ARTIFACT_UNAVAILABLE", f"cannot fetch artifact {_redact_url(url)!r}: {error}"
+            INSTALL_ARTIFACT_UNAVAILABLE, f"cannot fetch artifact {_redact_url(url)!r}: {error}"
         ) from error
     return final_url
 
@@ -531,7 +551,7 @@ def _verify_artifact_digest(artifact: Path, expected: str, url: str) -> None:
     actual = _digest(artifact)
     if actual != expected:
         raise InstallError(
-            "INSTALL_ARTIFACT_DIGEST_MISMATCH",
+            INSTALL_ARTIFACT_DIGEST_MISMATCH,
             f"artifact {url!r} sha256 {actual} does not match catalog pin {expected}",
             {"expected": expected, "actual": actual, "url": url},
         )
@@ -552,12 +572,12 @@ def _extract_source_tree(artifact: Path, destination: Path, *, name: str, versio
             tar.extractall(destination, filter="data")
     except tarfile.TarError as error:
         raise InstallError(
-            "INSTALL_ARTIFACT_MALFORMED", f"cannot read release artifact: {error}"
+            INSTALL_ARTIFACT_MALFORMED, f"cannot read release artifact: {error}"
         ) from error
     root = destination / prefix_dir
     if not root.is_dir():
         raise InstallError(
-            "INSTALL_ARTIFACT_MALFORMED",
+            INSTALL_ARTIFACT_MALFORMED,
             f"release artifact has no single top-level {prefix!r} directory",
         )
     return root
@@ -566,23 +586,23 @@ def _extract_source_tree(artifact: Path, destination: Path, *, name: str, versio
 def _reject_unsafe_member(member: tarfile.TarInfo, *, prefix: str, prefix_dir: str) -> None:
     if member.issym() or member.islnk():
         raise InstallError(
-            "INSTALL_ARTIFACT_MALFORMED",
+            INSTALL_ARTIFACT_MALFORMED,
             f"release artifact member {member.name!r} is a symlink or hardlink",
         )
     if member.ischr() or member.isblk() or member.isfifo() or member.isdev():
         raise InstallError(
-            "INSTALL_ARTIFACT_MALFORMED",
+            INSTALL_ARTIFACT_MALFORMED,
             f"release artifact member {member.name!r} is a device or special file",
         )
     posix = PurePosixPath(member.name)
     if posix.is_absolute() or any(part == ".." for part in posix.parts):
         raise InstallError(
-            "INSTALL_ARTIFACT_MALFORMED",
+            INSTALL_ARTIFACT_MALFORMED,
             f"release artifact member {member.name!r} escapes the archive root",
         )
     if member.name != prefix_dir and not member.name.startswith(prefix):
         raise InstallError(
-            "INSTALL_ARTIFACT_MALFORMED",
+            INSTALL_ARTIFACT_MALFORMED,
             f"release artifact member {member.name!r} is outside the single {prefix!r} prefix",
         )
 
@@ -601,7 +621,7 @@ def _build_source_manifest(source: Path) -> dict[str, Any]:
             # Extraction already rejected link members; a link here means the
             # tree was tampered with after extraction -- refuse, do not record.
             raise InstallError(
-                "INSTALL_ARTIFACT_MALFORMED",
+                INSTALL_ARTIFACT_MALFORMED,
                 f"source tree contains a symlink at {path.relative_to(source).as_posix()!r}",
             )
         if not path.is_file():
@@ -622,30 +642,30 @@ def _read_source_manifest(app_root: Path, receipt: dict[str, Any]) -> dict[str, 
     reference = receipt.get("sourceManifest")
     if not isinstance(reference, dict) or not isinstance(reference.get("path"), str):
         raise InstallError(
-            "INSTALL_STATE_INVALID", "v2 receipt sourceManifest must record a path and sha256"
+            INSTALL_STATE_INVALID, "v2 receipt sourceManifest must record a path and sha256"
         )
     _safe_relative_path(reference["path"], label="receipt sourceManifest path")
     manifest_path = app_root.joinpath(*PurePosixPath(reference["path"]).parts)
     expected_sha = reference.get("sha256")
     if not isinstance(expected_sha, str) or _SHA256.fullmatch(expected_sha.lower()) is None:
         raise InstallError(
-            "INSTALL_STATE_INVALID", "v2 receipt sourceManifest sha256 must be 64 hex characters"
+            INSTALL_STATE_INVALID, "v2 receipt sourceManifest sha256 must be 64 hex characters"
         )
     if not manifest_path.is_file() or _digest(manifest_path) != expected_sha.lower():
         # The manifest is the integrity anchor: if it is missing or altered the
         # tree cannot be judged, so treat it as dirty (loud) rather than clean.
         raise InstallError(
-            "INSTALL_SOURCE_DIRTY",
+            INSTALL_SOURCE_DIRTY,
             "the recorded source manifest is missing or altered; refusing to trust the tree",
         )
     try:
         raw = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise InstallError(
-            "INSTALL_STATE_INVALID", f"cannot read source manifest: {error}"
+            INSTALL_STATE_INVALID, f"cannot read source manifest: {error}"
         ) from error
     if not isinstance(raw, dict) or raw.get("schema") != _SOURCE_MANIFEST_SCHEMA:
-        raise InstallError("INSTALL_STATE_INVALID", "source manifest schema is not recognised")
+        raise InstallError(INSTALL_STATE_INVALID, "source manifest schema is not recognised")
     return raw
 
 
@@ -690,18 +710,18 @@ def _run_git(args: list[str], *, cwd: Path | None = None, timeout: float = _GIT_
         )
     except subprocess.TimeoutExpired as error:
         raise InstallError(
-            "INSTALL_GIT_FAILED",
+            INSTALL_GIT_FAILED,
             f"cannot run git {' '.join(args)}: {error}\n{_GIT_TIMEOUT_HINT}",
         ) from error
     except OSError as error:
         # No hint here: a missing git binary is not a slow tunnel, and the
         # non-zero-exit path below must stay byte-identical to what shipped.
-        raise InstallError("INSTALL_GIT_FAILED", f"cannot run git {' '.join(args)}: {error}") from error
+        raise InstallError(INSTALL_GIT_FAILED, f"cannot run git {' '.join(args)}: {error}") from error
     if completed.returncode != 0:
         detail = completed.stderr.strip() or completed.stdout.strip() or "git failed"
         if _is_git_auth_failure(detail):
             detail = f"{detail}\n{_GIT_AUTH_HINT}"
-        raise InstallError("INSTALL_GIT_FAILED", detail)
+        raise InstallError(INSTALL_GIT_FAILED, detail)
     return completed.stdout.strip()
 
 
@@ -722,17 +742,17 @@ def _existing_git_source(name: str, git_url: str, commit: str, source: Path) -> 
     if not source.exists():
         return False
     if not (source / ".git").is_dir():
-        raise InstallError("INSTALL_SOURCE_CONFLICT", f"{source} is not a hyprial-managed Git checkout")
+        raise InstallError(INSTALL_SOURCE_CONFLICT, f"{source} is not a hyprial-managed Git checkout")
     remote = _run_git(["config", "--get", "remote.origin.url"], cwd=source)
     actual = _run_git(["rev-parse", "HEAD"], cwd=source).lower()
     if remote != git_url:
         raise InstallError(
-            "INSTALL_SOURCE_CONFLICT",
+            INSTALL_SOURCE_CONFLICT,
             f"{source} belongs to {remote!r}, not {git_url!r}",
         )
     if actual != commit:
         raise InstallError(
-            "INSTALL_UPDATE_UNSUPPORTED",
+            INSTALL_UPDATE_UNSUPPORTED,
             f"{name} is at {actual}; MVP install will not move it to {commit}",
             {"installedCommit": actual, "resolvedCommit": commit},
         )
@@ -750,39 +770,46 @@ def _read_manifest(source: Path, *, name: str, manifest_rel: str) -> Manifest:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as error:
-        raise InstallError("INSTALL_MANIFEST_INVALID", f"missing {manifest_rel}") from error
+        raise InstallError(INSTALL_MANIFEST_INVALID, f"missing {manifest_rel}") from error
     except (OSError, json.JSONDecodeError) as error:
-        raise InstallError("INSTALL_MANIFEST_INVALID", f"cannot read {manifest_rel}: {error}") from error
+        raise InstallError(INSTALL_MANIFEST_INVALID, f"cannot read {manifest_rel}: {error}") from error
     if not isinstance(raw, dict):
-        raise InstallError("INSTALL_MANIFEST_INVALID", "install manifest must be an object")
+        raise InstallError(INSTALL_MANIFEST_INVALID, "install manifest must be an object")
     schema = raw.get("schema")
     if schema not in _SCHEMAS:
+        hint = ""
+        if name == "gui" and schema in ("h2b.install/v1", "h2b.install/v2"):
+            hint = (
+                "; installed GUI manifest uses a retired schema; "
+                "upgrade to a corrected Hyprial GUI package with hyprial gui upgrade; "
+                "do not edit verified installed source files"
+            )
         raise InstallError(
-            "INSTALL_MANIFEST_INVALID",
-            f"install manifest schema must be one of {list(_SCHEMAS)!r}",
+            INSTALL_MANIFEST_INVALID,
+            f"install manifest schema must be one of {list(_SCHEMAS)!r}" + hint,
         )
     if schema == _SCHEMA_V2:
         unknown = sorted(set(raw) - _V2_KEYS)
         if unknown:
             raise InstallError(
-                "INSTALL_MANIFEST_INVALID",
+                INSTALL_MANIFEST_INVALID,
                 f"{_SCHEMA_V2} does not accept keys {unknown!r}",
             )
     if raw.get("name") != name:
         raise InstallError(
-            "INSTALL_MANIFEST_INVALID",
+            INSTALL_MANIFEST_INVALID,
             f"install manifest name must be {name!r}",
         )
     install = raw.get("install")
     if install != list(_INSTALL_ARGV):
         raise InstallError(
-            "INSTALL_MANIFEST_INVALID",
+            INSTALL_MANIFEST_INVALID,
             f"{_SCHEMA} install must be {list(_INSTALL_ARGV)!r}",
         )
     script = source / _INSTALL_ARGV[1]
     if not script.is_file() or script.is_symlink():
         raise InstallError(
-            "INSTALL_MANIFEST_INVALID",
+            INSTALL_MANIFEST_INVALID,
             "install.sh must be a regular file at the repository root",
         )
     start_raw = raw.get("start")
@@ -795,14 +822,14 @@ def _read_manifest(source: Path, *, name: str, manifest_rel: str) -> Manifest:
             or not isinstance(start_raw[1], str)
         ):
             raise InstallError(
-                "INSTALL_MANIFEST_INVALID",
+                INSTALL_MANIFEST_INVALID,
                 f"{_SCHEMA} start must be ['bash', '<repository script>']",
             )
         start_path = _safe_relative_path(start_raw[1], label="start script")
         start_script = source.joinpath(*start_path.parts)
         if not start_script.is_file() or start_script.is_symlink():
             raise InstallError(
-                "INSTALL_MANIFEST_INVALID",
+                INSTALL_MANIFEST_INVALID,
                 "start script must be a regular file inside the repository",
             )
         start = ("bash", start_raw[1])
@@ -819,25 +846,25 @@ def _parse_commands(raw: Any, *, app_name: str) -> tuple[MountedCommand, ...]:
     if raw is None:
         return ()
     if not isinstance(raw, list):
-        raise InstallError("INSTALL_MANIFEST_INVALID", "manifest commands must be a list")
+        raise InstallError(INSTALL_MANIFEST_INVALID, "manifest commands must be a list")
     seen: set[str] = set()
     parsed: list[MountedCommand] = []
     for index, item in enumerate(raw):
         label = f"commands[{index}]"
         if not isinstance(item, dict):
-            raise InstallError("INSTALL_MANIFEST_INVALID", f"{label} must be an object")
+            raise InstallError(INSTALL_MANIFEST_INVALID, f"{label} must be an object")
         name = item.get("name")
         if not isinstance(name, str) or not _COMMAND_NAME.match(name):
             raise InstallError(
-                "INSTALL_MANIFEST_INVALID",
+                INSTALL_MANIFEST_INVALID,
                 f"{label}.name must match {_COMMAND_NAME.pattern!r}; got {name!r}",
             )
         if name in seen:
-            raise InstallError("INSTALL_MANIFEST_INVALID", f"{label}.name {name!r} is declared twice")
+            raise InstallError(INSTALL_MANIFEST_INVALID, f"{label}.name {name!r} is declared twice")
         seen.add(name)
         summary = item.get("summary", "")
         if not isinstance(summary, str):
-            raise InstallError("INSTALL_MANIFEST_INVALID", f"{label}.summary must be a string")
+            raise InstallError(INSTALL_MANIFEST_INVALID, f"{label}.summary must be a string")
         actions_raw = item.get("actions", ["start"])
         if (
             not isinstance(actions_raw, list)
@@ -845,13 +872,13 @@ def _parse_commands(raw: Any, *, app_name: str) -> tuple[MountedCommand, ...]:
             or not all(isinstance(action, str) for action in actions_raw)
         ):
             raise InstallError(
-                "INSTALL_MANIFEST_INVALID",
+                INSTALL_MANIFEST_INVALID,
                 f"{label}.actions must be a non-empty list of strings",
             )
         unknown_actions = sorted(set(actions_raw) - _COMMAND_ACTIONS)
         if unknown_actions:
             raise InstallError(
-                "INSTALL_MANIFEST_INVALID",
+                INSTALL_MANIFEST_INVALID,
                 f"{label}.actions {unknown_actions!r} not in {sorted(_COMMAND_ACTIONS)!r}",
             )
         parsed.append(
@@ -866,10 +893,10 @@ def _reject_subscriptions(raw: Any) -> None:
     if raw is None:
         return
     if not isinstance(raw, list):
-        raise InstallError("INSTALL_MANIFEST_INVALID", "manifest subscriptions must be a list")
+        raise InstallError(INSTALL_MANIFEST_INVALID, "manifest subscriptions must be a list")
     if raw:
         raise InstallError(
-            "INSTALL_MANIFEST_INVALID",
+            INSTALL_MANIFEST_INVALID,
             f"manifest subscriptions names {len(raw)} entries but this release ships no "
             "event subscriptions -- this is the H2 slot (design-app-manifest-commands §1)",
         )
@@ -904,13 +931,13 @@ def _run_install(
             timeout=_INSTALL_TIMEOUT,
         )
     except (OSError, subprocess.TimeoutExpired) as error:
-        raise InstallError("INSTALL_SCRIPT_FAILED", f"cannot run install.sh: {error}", plan) from error
+        raise InstallError(INSTALL_SCRIPT_FAILED, f"cannot run install.sh: {error}", plan) from error
     if completed.returncode != 0:
         failure = {**plan, "exitCode": completed.returncode}
         if json_output:
             failure.update(stdout=completed.stdout, stderr=completed.stderr)
         raise InstallError(
-            "INSTALL_SCRIPT_FAILED",
+            INSTALL_SCRIPT_FAILED,
             f"{manifest.name} install.sh exited with {completed.returncode}",
             failure,
         )
@@ -962,7 +989,7 @@ def install_application(
     source = app_root / "source"
     if source.exists():
         raise InstallError(
-            "INSTALL_SOURCE_CONFLICT",
+            INSTALL_SOURCE_CONFLICT,
             f"{name} already has a source tree at {source}; upgrade it instead",
         )
     app_root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -986,7 +1013,7 @@ def install_application(
             "install": list(manifest.install),
         }
         if not confirm(plan):
-            raise InstallError("INSTALL_DECLINED", f"installation of {name!r} was declined", plan)
+            raise InstallError(INSTALL_DECLINED, f"installation of {name!r} was declined", plan)
 
         os.replace(tree, source)
         try:
@@ -1136,7 +1163,7 @@ def upgrade_application(
 
 
 def _release_relation(entry: CatalogEntry, source: dict[str, Any]) -> str:
-    catalog_version = _parse_version(entry.version, label="catalog version", code="INSTALL_CATALOG_INVALID")
+    catalog_version = _parse_version(entry.version, label="catalog version", code=INSTALL_CATALOG_INVALID)
     installed_version = _parse_version(str(source["version"]), label="receipt version")
     if catalog_version == installed_version:
         return "current" if entry.sha256 == str(source["sha256"]).lower() else "artifact-changed"
@@ -1168,7 +1195,7 @@ def _upgrade_v2(
     try:
         dirty = _v2_source_dirty(app_root, source, receipt)
     except InstallError as error:
-        if error.code == "INSTALL_SOURCE_DIRTY" and (force or check_only):
+        if error.code == INSTALL_SOURCE_DIRTY and (force or check_only):
             dirty = True
         else:
             raise
@@ -1199,7 +1226,7 @@ def _upgrade_v2(
         # ⛔ Not forceable: the publisher broke immutability; the fix is a new
         # version, not a local overwrite (design §5, test row 10).
         raise InstallError(
-            "INSTALL_ARTIFACT_CHANGED",
+            INSTALL_ARTIFACT_CHANGED,
             f"{name} catalog version {entry.version} kept its number but changed sha256; "
             "publish a new version instead of reinstalling",
             plan,
@@ -1208,13 +1235,13 @@ def _upgrade_v2(
         return {**plan, "checked": True, "upgraded": False, "alreadyCurrent": True}
     if dirty and not force:
         raise InstallError(
-            "INSTALL_SOURCE_DIRTY",
+            INSTALL_SOURCE_DIRTY,
             f"the installed {name} source has local changes; rerun with --force to replace it",
             plan,
         )
     if relation == "downgrade" and not force:
         raise InstallError(
-            "INSTALL_CATALOG_BEHIND",
+            INSTALL_CATALOG_BEHIND,
             f"{name} catalog version {entry.version} is older than installed {installed['version']}",
             plan,
         )
@@ -1326,7 +1353,7 @@ def _apply_release_over_existing(
     # message must name only that.
     if not source_present and not force:
         raise InstallError(
-            "INSTALL_SOURCE_MISSING",
+            INSTALL_SOURCE_MISSING,
             f"the recorded {name} source is missing at {source}; "
             "rerun with --force to reinstall it",
         )
@@ -1341,7 +1368,7 @@ def _apply_release_over_existing(
         source_doc = _build_source_manifest(tree)
         plan["install"] = list(manifest.install)
         if not confirm(plan):
-            raise InstallError("INSTALL_DECLINED", f"upgrade of {name!r} was declined", plan)
+            raise InstallError(INSTALL_DECLINED, f"upgrade of {name!r} was declined", plan)
         if before_apply is not None:
             before_apply()
 
@@ -1446,12 +1473,12 @@ def _read_install_receipt(app_root: Path, name: str) -> dict[str, Any]:
         ) from error
     except (OSError, json.JSONDecodeError) as error:
         raise InstallError(
-            "INSTALL_STATE_INVALID", f"cannot read {name} install receipt: {error}"
+            INSTALL_STATE_INVALID, f"cannot read {name} install receipt: {error}"
         ) from error
     if not isinstance(raw, dict):
-        raise InstallError("INSTALL_STATE_INVALID", "install receipt must be an object")
+        raise InstallError(INSTALL_STATE_INVALID, "install receipt must be an object")
     if raw.get("name") != name:
-        raise InstallError("INSTALL_STATE_INVALID", f"install receipt name must be {name!r}")
+        raise InstallError(INSTALL_STATE_INVALID, f"install receipt name must be {name!r}")
     schema = raw.get("schema")
     if schema == _RECEIPT_SCHEMA_V1:
         _validate_v1_receipt(raw)
@@ -1459,7 +1486,7 @@ def _read_install_receipt(app_root: Path, name: str) -> dict[str, Any]:
         _validate_v2_receipt(raw)
     else:
         raise InstallError(
-            "INSTALL_STATE_INVALID",
+            INSTALL_STATE_INVALID,
             f"install receipt schema must be {_RECEIPT_SCHEMA_V1!r} or {_RECEIPT_SCHEMA_V2!r}",
         )
     return raw
@@ -1469,18 +1496,18 @@ def _validate_v1_receipt(raw: dict[str, Any]) -> None:
     commit = raw.get("sourceCommit")
     if not isinstance(commit, str) or _COMMIT.fullmatch(commit.lower()) is None:
         raise InstallError(
-            "INSTALL_STATE_INVALID", "install receipt sourceCommit must be a Git commit"
+            INSTALL_STATE_INVALID, "install receipt sourceCommit must be a Git commit"
         )
     for field in ("sourceUrl", "sourceRef"):
         if not isinstance(raw.get(field), str) or not raw[field]:
             raise InstallError(
-                "INSTALL_STATE_INVALID",
+                INSTALL_STATE_INVALID,
                 f"install receipt {field} must be a non-empty string",
             )
     manifest = raw.get("manifest", "hyprial-install.json")
     if not isinstance(manifest, str) or not manifest:
         raise InstallError(
-            "INSTALL_STATE_INVALID",
+            INSTALL_STATE_INVALID,
             "install receipt manifest must be a non-empty string",
         )
     _safe_relative_path(manifest, label="install receipt manifest")
@@ -1490,9 +1517,9 @@ def _validate_v1_receipt(raw: dict[str, Any]) -> None:
 def _validate_v2_receipt(raw: dict[str, Any]) -> None:
     source = raw.get("source")
     if not isinstance(source, dict):
-        raise InstallError("INSTALL_STATE_INVALID", "v2 install receipt source must be an object")
+        raise InstallError(INSTALL_STATE_INVALID, "v2 install receipt source must be an object")
     if source.get("type") != "release":
-        raise InstallError("INSTALL_STATE_INVALID", "v2 install receipt source type must be 'release'")
+        raise InstallError(INSTALL_STATE_INVALID, "v2 install receipt source type must be 'release'")
     url = source.get("url")
     # The receipt is local trusted state, so a file:// url (dev install) or a
     # loopback-http url (the local static-http fixture) written at install time
@@ -1501,23 +1528,23 @@ def _validate_v2_receipt(raw: dict[str, Any]) -> None:
         url, allow_local_file=True, allow_loopback_http=True
     ) is not None:
         raise InstallError(
-            "INSTALL_STATE_INVALID", "v2 install receipt source url must be an https or file URL"
+            INSTALL_STATE_INVALID, "v2 install receipt source url must be an https or file URL"
         )
     sha256 = source.get("sha256")
     if not isinstance(sha256, str) or _SHA256.fullmatch(sha256.lower()) is None:
         raise InstallError(
-            "INSTALL_STATE_INVALID", "v2 install receipt source sha256 must be 64 hex characters"
+            INSTALL_STATE_INVALID, "v2 install receipt source sha256 must be 64 hex characters"
         )
     commit = source.get("commit")
     if not isinstance(commit, str) or _COMMIT.fullmatch(commit.lower()) is None:
         raise InstallError(
-            "INSTALL_STATE_INVALID", "v2 install receipt source commit must be a Git commit"
+            INSTALL_STATE_INVALID, "v2 install receipt source commit must be a Git commit"
         )
     _parse_version(str(source.get("version")), label="v2 receipt source version")
     manifest = raw.get("manifest", "hyprial-install.json")
     if not isinstance(manifest, str) or not manifest:
         raise InstallError(
-            "INSTALL_STATE_INVALID", "install receipt manifest must be a non-empty string"
+            INSTALL_STATE_INVALID, "install receipt manifest must be a non-empty string"
         )
     _safe_relative_path(manifest, label="install receipt manifest")
     raw["manifest"] = manifest
@@ -1560,13 +1587,13 @@ def _prepare_v1_launch(
     manifest_rel = str(receipt["manifest"])
     if not _existing_git_source(name, git_url, commit, source):
         raise InstallError(
-            "INSTALL_SOURCE_MISSING",
+            INSTALL_SOURCE_MISSING,
             f"the recorded {name} source is missing; "
             f"reinstall it: hyprial install {name} --force",
         )
     if _run_git(["status", "--porcelain", "--untracked-files=no"], cwd=source):
         raise InstallError(
-            "INSTALL_SOURCE_DIRTY",
+            INSTALL_SOURCE_DIRTY,
             f"the installed {name} source has tracked changes; refusing to launch it",
         )
     manifest = _read_manifest(source, name=name, manifest_rel=manifest_rel)
@@ -1595,13 +1622,13 @@ def _prepare_v2_launch(
     manifest_rel = str(receipt["manifest"])
     if not source.is_dir():
         raise InstallError(
-            "INSTALL_SOURCE_MISSING",
+            INSTALL_SOURCE_MISSING,
             f"the recorded {name} source is missing; "
             f"reinstall it: hyprial install {name} --force",
         )
     if _v2_source_dirty(app_root, source, receipt):
         raise InstallError(
-            "INSTALL_SOURCE_DIRTY",
+            INSTALL_SOURCE_DIRTY,
             f"the installed {name} source has local changes; refusing to launch it",
         )
     manifest = _read_manifest(source, name=name, manifest_rel=manifest_rel)

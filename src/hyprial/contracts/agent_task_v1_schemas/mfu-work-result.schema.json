@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://schemas.hyprial.com/mfu/h2b-agent-task/v1/mfu-work-result.schema.json",
+  "$id": "https://schemas.hyprial.com/mfu/hyprial-agent-task/v1/mfu-work-result.schema.json",
   "type": "object",
   "additionalProperties": false,
   "required": ["schemaVersion", "attemptId", "status", "summary", "repository", "branch", "commits", "pullRequests", "artifacts", "checks", "blockers"],

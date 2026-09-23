@@ -5,7 +5,8 @@ description: 在 harness-bridge/src/gui 中构建、测试、验证与提交 GUI
 
 # GUI 子工程工作方式
 
-源码由 dsh-h2b-talk 迁入 harness-bridge/src/gui。下列 GUI 相对路径和 npm
+源码由 `dsh-h2b-talk` 迁入 harness-bridge/src/gui，并已更名为
+`@hyprial/dsh-hyprial-plugin`（历史名仅作迁移线索）。下列 GUI 相对路径和 npm
 命令均以 src/gui 为工作目录；daemon 代码位于同仓库 src/hyprial。
 仓库根 `.forgejo/workflows/gui.yml` 保留四项 GUI 检查；release 包的安装
 目录仍为 `~/.hyprial/apps/gui/source`，不带源码仓库的 `src/gui` 前缀。
@@ -153,3 +154,19 @@ H2B 版本的投递实测。人工测试和发单时,`--from` 使用
 socket 与 h2b daemon 通信(`daemonRequest`,含 `message.ack` 等操作),
 把 DSH Session 注册为 h2b actor(见上文第 2 条),实现跨 Agent 的入站注入
 与出站回复。h2b 协议与 daemon 本身不在这个仓里。
+
+## PAC GUI 任务状态读取
+
+新 PAC 任务通过 `h2b_pac_list` 查找，再用 `h2b_pac_inspect({graphId})` 读取
+同一事务的整图快照。调用身份来自 DSH 执行会话，不能传入 actor/sessionId 覆盖。
+节点状态、请求和证据以 PAC snapshot 为准，不从聊天或唤醒记录推断完成。
+inspect 是只读查询；实施/审核前仍须 context/begin，完成使用工作开始时的 token。
+GUI 面板迁移与真实模型验收状态见 `docs/pac/gui-workflow-migration-backlog.md`。
+
+### 9. 后台恢复会话必须经过 SessionController
+
+Hyprial 工作会话冷恢复使用 `ctx.get('sessionController').resolveAgent(sessionId)`，
+检查 `{ agent } / { error }` 和返回 Session 身份。禁止直接调用无 setup 的
+`ctx.agents.resume`：它跳过持久化 preset 的挂载，会造成原生 shell/文件工具消失。
+共享 Agent 归 SessionController 管理，GUI 插件卸载不得销毁；只缓存未完成的
+查询。回归验证和真实验收边界见 `docs/carrier-preset-restoration.md`。

@@ -62,10 +62,19 @@ from .ports import (
     SubmitProgressCommand,
 )
 from .progress import ProgressEvent
-from .pull import DeliveryStatus, TerminalState
+from .pull import DEFAULT_HOLD_TTL_MS, DeliveryStatus, TerminalState
 from .service import ConsumptionState
 
 _REPLY_COMPLETION_HANDOFF_GRACE_SECONDS = 0.5
+
+#: The synchronous settle bound every ``DeliveryCustodyFacade`` mutation
+#: waits inside (``coordinator.call`` timeout). Production constructs the
+#: facade exactly once (``daemon/application.py``) and never overrides it,
+#: so this default IS the budget the product runs with; naming it at module
+#: level only moves an existing declaration to somewhere importable — it
+#: does not choose a new number. Tests derive wait budgets from this path
+#: (``tests/waiting_support.py``) instead of hand-copying the literal.
+DELIVERY_CUSTODY_CALL_TIMEOUT_SECONDS = 2.0
 
 
 class InboxReadProjection:
@@ -174,8 +183,29 @@ class InboxReadProjection:
                 "SELECT * FROM harness_failure_settlements WHERE message_id = ?",
                 (message_id,),
             ).fetchone()
-        if row is None:
-            return None
+        return None if row is None else self._settlement_row(row)
+
+    def terminal_failure_settlements(
+        self, *, since_ms: int
+    ) -> tuple[HarnessFailureSettlement, ...]:
+        """Durable terminal tombstones from ``since_ms`` onward.
+
+        Read by the daemon's restart recovery: a sender notice that could not
+        be submitted before a crash is re-derived from these rows, so the owed
+        fact outlives the process instead of dying with an in-memory retry.
+        """
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM harness_failure_settlements
+                   WHERE terminal = 1 AND updated_at_ms >= ?
+                   ORDER BY updated_at_ms""",
+                (since_ms,),
+            ).fetchall()
+        return tuple(self._settlement_row(row) for row in rows)
+
+    @staticmethod
+    def _settlement_row(row: sqlite3.Row) -> HarnessFailureSettlement:
         return HarnessFailureSettlement(
             message_id=str(row["message_id"]),
             recipient=str(row["recipient"]),
@@ -349,6 +379,64 @@ class InboxReadProjection:
                    GROUP BY recipient ORDER BY recipient"""
             ).fetchall()
         return tuple((str(row["recipient"]), int(row["count"])) for row in rows)
+
+    def unfetched_recipient_stats(
+        self, *, hold_ttl_ms: int = DEFAULT_HOLD_TTL_MS
+    ) -> tuple[tuple[str, int, int], ...]:
+        """Per-recipient depth and oldest arrival over mail NOBODY HAS TAKEN.
+
+        "Taken" has TWO spellings, because the two dispatch paths mark
+        responsibility differently and a check that knows only one reports
+        the other as broken:
+
+        * the pull path (``harness_read`` -> ``fetch_pending``) stamps
+          ``fetched_at_ms``;
+        * the streaming path never touches that column -- it calls
+          ``refresh_hold`` when the worker ACCEPTS the delivery into its
+          queue (#276), which pushes ``expires_at_ms`` past
+          ``received_at_ms + hold_ttl_ms``.  That gap is the only trace it
+          leaves, and it is what tells a queued delivery apart from one
+          nobody has looked at.
+
+        Reading ``fetched_at_ms IS NULL`` alone would therefore report every
+        healthy streaming worker with a queued message as "not collecting".
+
+        ⛔ And a MANAGED worker never carries ``fetched_at_ms`` at all -- not
+        "usually not", never.  Its mail arrives by the daemon pushing it
+        (``dispatchable_messages`` is a pure SELECT, authority.py:150), and
+        nothing schedules ``harness_read`` on its behalf: ``serve_worker_stdio``
+        states that "a managed worker does NOT register an interactive session
+        or run a wake loop", so that call happens when the worker's agent
+        decides to make it, or not at all.  Managed workers therefore enter
+        this reading only through the ``refresh_hold`` fingerprint above.
+
+        ⇒ ``fetched_at_ms`` is evidence about ONE dispatch path.  It says
+        nothing about whether a managed worker is alive, listening, or
+        reachable -- and on 2026-09-18 it misled two readers in one night,
+        first as "is anybody collecting their mail", then as "has this worker
+        gone deaf".
+        """
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT recipient, COUNT(*) AS count,
+                          MIN(received_at_ms) AS oldest
+                     FROM inbox
+                    WHERE consumed = 0
+                      AND fetched_at_ms IS NULL
+                      AND expires_at_ms <= received_at_ms + ?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM harness_failure_settlements
+                           WHERE harness_failure_settlements.message_id = inbox.message_id
+                             AND harness_failure_settlements.terminal = 1
+                      )
+                    GROUP BY recipient ORDER BY recipient""",
+                (hold_ttl_ms,),
+            ).fetchall()
+        return tuple(
+            (str(row["recipient"]), int(row["count"]), int(row["oldest"]))
+            for row in rows
+        )
 
     def pending_recipient_stats(self) -> tuple[tuple[str, int, int], ...]:
         with self._connect() as connection:
@@ -544,7 +632,7 @@ class DeliveryCustodyFacade:
         coordinator: DeliveryCustodyCoordinator,
         database: Path,
         *,
-        timeout: float = 2.0,
+        timeout: float = DELIVERY_CUSTODY_CALL_TIMEOUT_SECONDS,
     ) -> None:
         self._coordinator = coordinator
         self._reads = InboxReadProjection(database)
@@ -714,6 +802,11 @@ class DeliveryCustodyFacade:
 
     def harness_failure_original(self, message_id: str) -> InboxMessage | None:
         return self._reads.harness_failure_original(message_id)
+
+    def terminal_failure_settlements(
+        self, *, since_ms: int
+    ) -> tuple[HarnessFailureSettlement, ...]:
+        return self._reads.terminal_failure_settlements(since_ms=since_ms)
 
     def accept_custody(
         self,
@@ -971,6 +1064,9 @@ class DeliveryCustodyFacade:
 
     def pending_recipient_stats(self) -> tuple[tuple[str, int, int], ...]:
         return self._reads.pending_recipient_stats()
+
+    def unfetched_recipient_stats(self) -> tuple[tuple[str, int, int], ...]:
+        return self._reads.unfetched_recipient_stats()
 
     def has_fetched(self, message_id: str) -> bool:
         return self._reads.has_fetched(message_id)

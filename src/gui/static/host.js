@@ -1,4 +1,7 @@
+import { installPacTools } from '../integration/pac-tools.js';
+import { installPacCarrier } from '../integration/pac-carrier.js';
 import { createGuiStudioHost, installGuiStudioTools } from '../integration/gui-studio-host.mjs';
+import { subagentRelease } from '../integration/subagent-release.mjs';
 import { kanbanStatus } from '../integration/kanban-gui.mjs';
 import { createWorkflowWorkbench } from '../integration/workflow-workbench.mjs';
 import { installWorkflowTools } from '../integration/workflow-tools.js';
@@ -33,6 +36,22 @@ const OPERATIONS = new Set([
   'participant-authorize',
   'participant-revoke',
   'participant-list',
+  'contact-add',
+  'contact-remove',
+  'contact-list',
+  'remote-contact-add',
+  'remote-contact-remove',
+  'remote-contact-list',
+  'reception-policy-get',
+  'reception-policy-set',
+  'whitelist-list',
+  'whitelist-add',
+  'whitelist-remove',
+  'remote-reception-policy-get',
+  'remote-reception-policy-set',
+  'remote-whitelist-list',
+  'remote-whitelist-add',
+  'remote-whitelist-remove',
   'chat-list',
   'chat-bind',
   'chat-binding',
@@ -45,6 +64,7 @@ const OPERATIONS = new Set([
       'remote-connect',
       'remote-pending',
       'remote-mark-injected',
+      'remote-complete',
       'remote-reply',
       'remote-ack',
       'remote-bind',
@@ -132,10 +152,10 @@ async function controlCapabilities(ctx) {
   let capabilityCache = capabilityCaches.get(ctx);
   if (!capabilityCache || capabilityCache.expiresAt <= Date.now()) {
     capabilityCache = { expiresAt: Date.now() + 60000, promise: (async () => {
-      const result = await ctx.shell.run(ctx.shell.resolve({
+      const result = await ctx.shell.run(resolveGuiCommand(ctx, {
         command: 'node "$H2B_CLI_CAPABILITIES_PATH"',
         env: { H2B_CLI_CAPABILITIES_PATH: fileURLToPath(new URL('../h2b-cli-capabilities.mjs', import.meta.url)) },
-        workdir: PACKAGE_ROOT, timeoutMs: 30000, stdoutMaxBytes: 262144
+        workdir: PACKAGE_ROOT, timeoutMs: process.env.HYPRIAL_DESKTOP_COMPONENTS === '1' ? 60000 : 30000, stdoutMaxBytes: 262144
       }));
       let doc;
       try { doc = JSON.parse(result.stdout?.text || ''); } catch {}
@@ -185,7 +205,7 @@ async function controlQuery(ctx, input) {
   const query = CONTROL_QUERIES[input.operation];
   if (!query) throw new Error('unsupported h2b control query');
   await requireControlCapability(ctx, 'query', input.operation);
-  const spec = ctx.shell.resolve({ command: query.command, timeoutMs: 10000, stdoutMaxBytes: MAX_BODY_BYTES });
+  const spec = resolveGuiCommand(ctx, { command: query.command, timeoutMs: 10000, stdoutMaxBytes: MAX_BODY_BYTES });
   const result = await ctx.shell.run(spec);
   if (result.timedOut) throw controlFailure(null, query.label + ' query timed out', 'COMMAND_TIMEOUT');
   if (result.aborted) throw controlFailure(null, query.label + ' query was aborted', 'COMMAND_ABORTED');
@@ -222,7 +242,7 @@ async function controlAction(ctx, input) {
   }
   validateControlWrite(input);
   await requireControlCapability(ctx, 'action', input.operation);
-  const spec = ctx.shell.resolve({
+  const spec = resolveGuiCommand(ctx, {
     command: 'node "$H2B_CONTROL_BRIDGE_PATH"',
     stdin: JSON.stringify(input),
     env: { H2B_CONTROL_BRIDGE_PATH: CONTROL_BRIDGE_PATH },
@@ -301,7 +321,7 @@ async function kanbanRpc(ctx, input) {
       'data directory on this machine (kanban\'s installer prints the value; it comes ' +
       'from `task _get rc.data.location`), before DSH starts');
   }
-  const spec = ctx.shell.resolve({
+  const spec = resolveGuiCommand(ctx, {
     command: 'python3 "$H2B_KANBAN_BRIDGE" rpc',
     stdin: JSON.stringify(input),
     env: process.env.H2B_KANBAN_TASK_BIN
@@ -339,18 +359,6 @@ async function kanbanRpc(ctx, input) {
   return document;
 }
 
-async function guiLinks(ctx) {
-  const result = await ctx.shell.run(ctx.shell.resolve({ command: 'h2b gui status --json', timeoutMs: 10000, stdoutMaxBytes: 16384 }));
-  if (result.exitCode !== 0 || result.timedOut || result.stdout?.truncated) return { ok: true, apps: {} };
-  let doc; try { doc = JSON.parse(result.stdout?.text || ''); } catch { return { ok: true, apps: {} }; }
-  const record = doc.apps?.dashboard;
-  if (record?.ok !== true || record.state !== 'running') return { ok: true, apps: {} };
-  try {
-    const url = new URL(record.url);
-    if (url.protocol !== 'http:' || url.username || url.password || url.pathname !== '/' || url.search || url.hash) return { ok: true, apps: {} };
-    return { ok: true, apps: { dashboard: { state: 'running', url: url.href } } };
-  } catch { return { ok: true, apps: {} }; }
-}
 
 function capabilities() {
   return {
@@ -407,10 +415,10 @@ function writeJson(res, status, value) {
 
 async function bridgeRpc(ctx, input, trustedTool = false) {
   if (!input || typeof input !== 'object' || Array.isArray(input) ||
-      (!OPERATIONS.has(input.operation) && !AGENT_TASK_OPERATIONS.has(input.operation) && !(trustedTool && input.operation === 'session-tool'))) {
+      (!OPERATIONS.has(input.operation) && !AGENT_TASK_OPERATIONS.has(input.operation) && !(trustedTool && ['pac-tool', 'pac-poll', 'pac-reserve', 'pac-received', 'session-tool', 'carrier-list', 'carrier-heartbeat', 'carrier-pending', 'carrier-mark-injected'].includes(input.operation)))) {
     throw new Error('unsupported h2b demo operation');
   }
-  const spec = ctx.shell.resolve({
+  const spec = resolveGuiCommand(ctx, {
     // The active DSH Session may use any workspace. Resolve package-owned
     // files from this Host module instead of inheriting that workspace.
     command: 'node "$H2B_DSH_BRIDGE_PATH" rpc',
@@ -426,7 +434,7 @@ async function bridgeRpc(ctx, input, trustedTool = false) {
       mode: 'workspace-write',
       workspaceRoot: LEDGER_ROOT
     },
-    timeoutMs: 10000,
+    timeoutMs: input.operation.startsWith('pac-') ? 30000 : 10000,
     stdoutMaxBytes: trustedTool && input.tool === 'workflow-node' ? 1048576 : MAX_BODY_BYTES
   });
   const result = await ctx.shell.run(spec);
@@ -445,8 +453,17 @@ async function bridgeRpc(ctx, input, trustedTool = false) {
   return document;
 }
 
+// Desktop GUI commands own application state, separate from Agent workspaces.
+// Keep the ACL sandbox enabled and grant only this private state directory.
+function resolveGuiCommand(ctx, request) {
+  if (process.env.HYPRIAL_DESKTOP_COMPONENTS === '1' && !request.sandboxPolicy) {
+    request = { ...request, sandboxPolicy: { mode: 'workspace-write', workspaceRoot: H2B_STATE_ROOT } };
+  }
+  return ctx.shell.resolve(request);
+}
+
 async function targets(ctx) {
-  const spec = ctx.shell.resolve({
+  const spec = resolveGuiCommand(ctx, {
     command: 'h2b targets --json',
     timeoutMs: 5000,
     stdoutMaxBytes: MAX_BODY_BYTES
@@ -454,7 +471,11 @@ async function targets(ctx) {
   const result = await ctx.shell.run(spec);
   if (result.timedOut) throw new Error('h2b targets timed out');
   if (result.aborted) throw new Error('h2b targets was aborted');
-  if (result.exitCode !== 0) throw new Error('h2b targets failed: ' + (diagnostic(result.stderr?.text) || 'unknown error'));
+  if (result.exitCode !== 0) {
+    let failure;
+    try { failure = JSON.parse(result.stdout?.text || ''); } catch {}
+    throw controlFailure(failure, diagnostic(result.stderr?.text) || `Hyprial targets exited with code ${result.exitCode}`);
+  }
   if (result.stdout?.truncated) throw new Error('h2b targets output exceeded the safety limit');
   const document = JSON.parse(result.stdout?.text || '');
   if (!document || document.ok !== true || !Array.isArray(document.targets)) throw new Error('h2b targets returned an invalid document');
@@ -488,7 +509,7 @@ function installRemoteCarrier(ctx) {
     const now = Date.now();
     if (now - (remoteWarnings.get(key) || 0) < 30000) return;
     remoteWarnings.set(key, now);
-    console.warn('[dsh-h2b-talk] remote entry unavailable for ' + key + ':', diagnostic(error?.message));
+    console.warn('[dsh-hyprial-plugin] remote entry unavailable for ' + key + ':', diagnostic(error?.message));
   }
 
   function messageText(message) {
@@ -500,18 +521,42 @@ function installRemoteCarrier(ctx) {
       .trim();
   }
 
-  async function agentFor(sessionId) {
+  const restoredAgents = new Map();
+  let carrierDisposed = false;
+  ctx.on?.('dispose', () => {
+    carrierDisposed = true;
+    // SessionController owns restored agents and their preset scopes.
+    restoredAgents.clear();
+  });
+  async function carrierAgent(sessionId) {
+    if (carrierDisposed) return undefined;
     const live = ctx.agents.get(sessionId);
     if (live) return live;
-    throw new Error('bound DSH Agent is not live; open the work session once after restarting DSH');
+    const controller = ctx.get?.('sessionController');
+    if (typeof controller?.resolveAgent !== 'function') {
+      throw new Error('Hyprial carrier requires SessionController.resolveAgent to restore a session');
+    }
+    if (!restoredAgents.has(sessionId)) {
+      // Raw agents.resume bypasses persisted preset/model composition and loses native tools.
+      const loading = Promise.resolve().then(() => controller.resolveAgent(sessionId)).then(result => {
+        if (result?.error || result?.agent?.session?.id !== sessionId) {
+          throw new Error('Hyprial carrier could not resolve the requested session');
+        }
+        return result.agent;
+      }).finally(() => {
+        if (restoredAgents.get(sessionId) === loading) restoredAgents.delete(sessionId);
+      });
+      restoredAgents.set(sessionId, loading);
+    }
+    const agent = await restoredAgents.get(sessionId);
+    return carrierDisposed ? undefined : agent;
   }
 
   function deliver(remote) {
     const key = remote.sessionId + ':' + remote.messageId;
     if (deliveryInFlight.has(key)) return deliveryInFlight.get(key);
     const promise = (async () => {
-      if (remote.text) await bridgeRpc(ctx, { operation: 'remote-reply', sessionId: remote.sessionId, messageId: remote.messageId, message: remote.text });
-      else await bridgeRpc(ctx, { operation: 'remote-ack', sessionId: remote.sessionId, messageId: remote.messageId });
+      await bridgeRpc(ctx, { operation: 'remote-complete', sessionId: remote.sessionId, messageId: remote.messageId, message: remote.text || '' });
       remoteCompleted.delete(key);
     })().finally(() => deliveryInFlight.delete(key));
     deliveryInFlight.set(key, promise);
@@ -528,18 +573,59 @@ function installRemoteCarrier(ctx) {
     }
   }
 
+  function queuedRemoteMessage(agent, messageId) {
+    const inbox = agent.inbox;
+    return Boolean(inbox && [inbox.nextTurn, inbox.nextStep].some(messages =>
+      Array.isArray(messages) && messages.some(message => message && message.id === messageId)));
+  }
+
+  // Session exposes snapshotEvents(), not the API controller's `events` DTO.
+  // Keep one append-only index per Session; ordinary polls read only new events.
+  const recoveredHistories = new WeakMap();
   function recoveredTurn(agent, messageId) {
-    let turn = null;
-    let matchedTurn = null;
-    let text = '';
-    let done = false;
-    for (const event of Array.isArray(agent.session.events) ? agent.session.events : []) {
-      if (event.type === 'turn/start' && matchedTurn === null) turn = event.data.turn;
-      if (event.type === 'user/message' && event.data?.id === messageId) matchedTurn = turn;
-      if (matchedTurn !== null && event.type === 'assistant/message' && event.data.turn === matchedTurn) text = messageText(event.data.message) || text;
-      if (matchedTurn !== null && event.type === 'turn/end' && event.data.turn === matchedTurn) { done = true; break; }
+    const session = agent.session;
+    const modern = typeof session?.snapshotEvents === 'function';
+    const legacy = !modern && Array.isArray(session?.events) ? session.events : null;
+    if (!modern && !legacy) throw new Error('Remote recovery requires a readable Session history');
+    const end = modern ? session.seq : legacy.length;
+    const start = modern ? (session.inheritedEventCount ?? 0) : 0;
+    if (!Number.isSafeInteger(end) || !Number.isSafeInteger(start) || start < 0 || end < start) throw new Error('Invalid Session history cursor');
+    let index = recoveredHistories.get(session);
+    const last = index?.cursor ? (modern && typeof session.eventAt === 'function' ? session.eventAt(index.cursor - 1) : legacy?.[index.cursor - 1]) : undefined;
+    if (!index || index.start !== start || end < index.cursor || (last !== undefined && last !== index.last)) {
+      index = { start, cursor: start, last: undefined, currentTurn: null, messages: new Map(), turns: new Map() };
     }
-    return matchedTurn !== null ? { turn: matchedTurn, text, done } : null;
+    if (end > index.cursor) {
+      const events = modern ? session.snapshotEvents(index.cursor, end) : legacy.slice(index.cursor, end);
+      // Fail closed on read/shape errors; missing history is not permission to resubmit.
+      if (!Array.isArray(events) || events.length !== end - index.cursor || events.some((event, offset) =>
+        !event || typeof event.type !== 'string' || !event.data || (modern && event.seq !== index.cursor + offset))) {
+        throw new Error('Incomplete Session history snapshot');
+      }
+      for (const event of events) {
+        const data = event.data;
+        if (event.type === 'turn/start') {
+          index.currentTurn = data.turn;
+          index.turns.set(data.turn, { turn: data.turn, text: '', done: false });
+        } else if (event.type === 'user/message' && typeof data.id === 'string' && !index.messages.has(data.id)) {
+          index.messages.set(data.id, index.turns.get(index.currentTurn) || { turn: null, text: '', done: false });
+        } else if (event.type === 'assistant/message') {
+          const record = index.turns.get(data.turn);
+          if (record) record.text = messageText(data.message) || record.text;
+        } else if (event.type === 'turn/end') {
+          const record = index.turns.get(data.turn);
+          if (record) record.done = true;
+          index.turns.delete(data.turn);
+          if (index.currentTurn === data.turn) index.currentTurn = null;
+        }
+      }
+      index.cursor = end;
+      index.last = events.at(-1);
+    }
+    recoveredHistories.set(session, index);
+    const record = index.messages.get(messageId);
+    if (record && !Number.isInteger(record.turn)) throw new Error('Remote message has no recoverable turn');
+    return record ? { ...record } : null;
   }
 
   async function poll() {
@@ -552,6 +638,8 @@ function installRemoteCarrier(ctx) {
       }
       const listed = await bridgeRpc(ctx, { operation: 'remote-bindings' });
       const bindings = Array.isArray(listed.bindings) ? listed.bindings : [];
+      const carriers = await bridgeRpc(ctx, { operation: 'carrier-list' }, true);
+      const managed = new Map((carriers.sessions || []).map(item => [item.sessionId, item]));
       bindingsBySession.clear();
       for (const binding of bindings) {
         if (!binding || typeof binding.sessionId !== 'string') continue;
@@ -559,12 +647,19 @@ function installRemoteCarrier(ctx) {
         current.push(binding);
         bindingsBySession.set(binding.sessionId, current);
       }
-      for (const binding of bindings) {
+      for (const binding of [...new Map([...bindings, ...(carriers.sessions || []).filter(item => !bindings.some(b => b.sessionId === item.sessionId))].map(item => [item.sessionId, item])).values()]) {
         if (!binding || typeof binding.sessionId !== 'string') continue;
         const sessionId = binding.sessionId;
         try {
-          await bridgeRpc(ctx, { operation: 'remote-connect', sessionId });
-          const pending = await bridgeRpc(ctx, { operation: 'remote-pending', sessionId, adapter: binding.adapter });
+          const selected = managed.get(sessionId);
+          if (selected?.enabled === false) continue;
+          const agent = selected?.humanChat ? undefined : await carrierAgent(sessionId);
+          if (!agent && !selected?.humanChat) continue;
+          // Legacy bound entries are adopted once; then renew, never register each tick.
+          if (!selected || selected.legacy) await bridgeRpc(ctx, { operation: 'remote-connect', sessionId }, true);
+          const heartbeat = await bridgeRpc(ctx, { operation: 'carrier-heartbeat', sessionId }, true);
+          if (heartbeat.disabled || selected?.humanChat) continue;
+          const pending = await bridgeRpc(ctx, { operation: 'carrier-pending', sessionId }, true);
           // An injected delivery may still be awaiting its correlated reply. Revisit it so
           // a restarted Host can recover the completed DSH turn from the durable session log.
           const candidate = Array.isArray(pending.messages)
@@ -574,37 +669,43 @@ function installRemoteCarrier(ctx) {
           const deliveryId = String(candidate.deliveryId || candidate.messageId || '');
           const messageId = String(candidate.messageId || '');
           if (!deliveryId || !messageId) continue;
-          const agent = await agentFor(sessionId);
+          if (!agent) continue;
           const recovered = recoveredTurn(agent, messageId);
           if (recovered?.done) {
             const completed = { sessionId, messageId, deliveryId, text: recovered.text };
             remoteCompleted.set(sessionId + ':' + messageId, completed);
-            await bridgeRpc(ctx, { operation: 'remote-mark-injected', sessionId, adapter: binding.adapter, deliveryId, messageId });
+            await bridgeRpc(ctx, { operation: 'carrier-mark-injected', sessionId, deliveryId, messageId }, true);
             await deliver(completed);
             continue;
           }
           if (recovered) {
             remoteTurns.set(sessionId + ':' + recovered.turn, { sessionId, messageId, deliveryId, text: recovered.text });
           } else if (!remoteInbox.has(sessionId + ':' + messageId)) {
+            // Queue projection is committed before synchronous followup returns.
+            // No await between checking it and admission on the shared Agent.
+            if (!queuedRemoteMessage(agent, messageId)) {
+              // Report any throw without a memory marker; the next poll checks
+              // the queue first, including an append committed before the error.
+              agent.followup(Object.freeze({
+                  id: messageId,
+                  role: 'user',
+                  content: [Object.freeze({
+                    type: 'text',
+                    text: (String(candidate.from || '').startsWith('agent:') ? '【H2B Agent · ' : '【飞书 · ') + String(candidate.from || 'unknown') + '】\n' + '[messageId=' + messageId + '; intent=' + String(candidate.intent || 'unknown') + ']\n' + (String(candidate.from || '').startsWith('agent:') ? 'Host 仅确认消费，不自动发送本轮最终文字。需要返回工作结果时用 h2b_session_reply 一次；收到结果或确认只消费，不回复待命/无动作。PAC 通知先读当前 context，以节点状态推进。\n' : '') + String(candidate.message || '')
+                  })],
+                  source: Object.freeze({ kind: 'user' })
+              }));
+            }
             remoteInbox.set(sessionId + ':' + messageId, { sessionId, messageId, deliveryId });
-            agent.followup(Object.freeze({
-              id: messageId,
-              role: 'user',
-              content: [Object.freeze({
-                type: 'text',
-                text: (String(candidate.from || '').startsWith('agent:') ? '【H2B Agent · ' : '【飞书 · ') + String(candidate.from || 'unknown') + '】\n' + String(candidate.message || '')
-              })],
-              source: Object.freeze({ kind: 'user' })
-            }));
           }
-          await bridgeRpc(ctx, { operation: 'remote-mark-injected', sessionId, adapter: binding.adapter, deliveryId, messageId });
+          await bridgeRpc(ctx, { operation: 'carrier-mark-injected', sessionId, deliveryId, messageId }, true);
           remoteWarnings.delete(sessionId);
         } catch (error) {
           warnRemote(sessionId, error);
         }
       }
     } catch (error) {
-      console.warn('[dsh-h2b-talk] remote entry poll failed:', diagnostic(error?.message));
+      console.warn('[dsh-hyprial-plugin] remote entry poll failed:', diagnostic(error?.message));
     } finally {
       polling = false;
     }
@@ -651,6 +752,19 @@ function installRemoteCarrier(ctx) {
       }
     }
   });
+  let renewing = false;
+  ctx.interval(async () => {
+    if (renewing) return;
+    renewing = true;
+    try {
+      const listed = await bridgeRpc(ctx, { operation: 'carrier-list' }, true);
+      await Promise.all((listed.sessions || []).filter(item => item.enabled && (item.humanChat || ctx.agents.get(item.sessionId))).map(async item => {
+        try { await bridgeRpc(ctx, { operation: 'carrier-heartbeat', sessionId: item.sessionId }, true); }
+        catch (error) { warnRemote(item.sessionId, error); }
+      }));
+    } catch (error) { warnRemote('heartbeat', error); }
+    finally { renewing = false; }
+  }, 3000);
   ctx.interval(poll, 1000);
   void poll();
 }
@@ -685,6 +799,8 @@ export function apply(ctx) {
   installGuiStudioTools(ctx, (input, context) => guiStudio(ctx, input, context));
   installWorkflowTools(ctx, (input, context) => workflowWorkbench(ctx, input, context));
   installSessionTools(ctx, input => bridgeRpc(ctx, input, true));
+  installPacTools(ctx, input => bridgeRpc(ctx, input, true));
+  installPacCarrier(ctx, input => bridgeRpc(ctx, input, true));
   if (ctx.agents && typeof ctx.on === 'function' && typeof ctx.interval === 'function') installRemoteCarrier(ctx);
   return ctx.webServer.register({
       kind: 'exact',
@@ -696,13 +812,13 @@ export function apply(ctx) {
         }
         try {
           const request = await readJson(req);
-          if (['h2b-console-management', 'h2b-workflow-workbench', 'h2b-gui-studio'].includes(request.method)) assertManagementRequest(req);
-          const value = request.method === 'h2b-gui-studio'
+          if (['h2b-console-management', 'h2b-workflow-workbench', 'h2b-gui-studio', 'h2b-subagent-release'].includes(request.method)) assertManagementRequest(req);
+          const value = request.method === 'h2b-subagent-release'
+            ? await subagentRelease(ctx, request.args)
+            : request.method === 'h2b-gui-studio'
             ? await guiStudio(ctx, request.args)
             : request.method === 'h2b-workflow-workbench'
             ? await workflowWorkbench(ctx, request.args)
-            : request.method === 'h2b-gui-apps'
-            ? await guiLinks(ctx)
             : request.method === 'h2b-demo-rpc'
             ? await bridgeRpc(ctx, request.args)
             : request.method === 'h2b-agent-task-rpc'

@@ -5,7 +5,7 @@ import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const dependencies = resolve(process.env.H2B_BROWSER_DEPS || new URL('../dashboard/', import.meta.url).pathname);
+const dependencies = resolve(process.env.H2B_BROWSER_DEPS || new URL('../browser-tests/', import.meta.url).pathname);
 const require = createRequire(resolve(dependencies, 'package.json'));
 const { build } = await import(pathToFileURL(require.resolve('vite')).href);
 const { chromium } = require('playwright');

@@ -249,10 +249,16 @@ class AgentSessionDomains:
         owner: str,
         node_id: str,
         daemon_epoch: str,
+        hyprial_home: Path,
         worker_running: Callable[..., bool | None],
         clock: Callable[[], float],
     ) -> None:
-        registry = AgentRegistry(database, owner=owner, machine=node_id)
+        registry = AgentRegistry(
+            database,
+            owner=owner,
+            machine=node_id,
+            hyprial_home=hyprial_home,
+        )
         imported_sessions = _import_legacy_session_agents(registry, desired_state)
         self.imported_legacy = (*registry.imported_legacy, *imported_sessions)
         self._registry = registry
@@ -1148,6 +1154,7 @@ def _agent(value: AgentProjection) -> Agent:
         actor=value.actor,
         owner=value.owner,
         machine=value.machine,
+        entity_token=value.entity_token,
         cwd=value.cwd,
         provider=value.provider,
         model=value.model,

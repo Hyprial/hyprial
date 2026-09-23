@@ -22,7 +22,7 @@ adapter 再把 Lark 等外部平台接到相同的消息面。
 [`Hyprial/hyprial`](https://github.com/Hyprial/hyprial)，安装不需要内网访问权限。
 
 ```sh
-uv tool install git+https://github.com/Hyprial/hyprial.git@<version-tag>
+uv tool install git+https://github.com/Hyprial/hyprial.git@internal
 hyprial version --json
 hyprial init
 hyprial doctor
@@ -33,7 +33,7 @@ hyprial doctor
 机器仍可单独运行 `hyprial login` 重新登录。也可以从 login 开始：
 
 ```sh
-uv tool install git+https://github.com/Hyprial/hyprial.git@<version-tag>
+uv tool install git+https://github.com/Hyprial/hyprial.git@internal
 hyprial login
 hyprial doctor
 ```
@@ -46,8 +46,9 @@ hyprial doctor
 
 ## 安装
 
-正式安装必须钉[公网发布仓](https://github.com/Hyprial/hyprial/releases)上的版本 tag；
-不要把 `dev` 当作版本来源。可执行文件 `hyprial` 默认安装到 `~/.local/bin`，
+正式安装钉[公网发布仓](https://github.com/Hyprial/hyprial/releases)上的 `internal` ——
+它是一个**会随发布移动**的轨道 tag，所以这条命令不会过期；⛔ 不要把 `dev` 当作来源
+（`dev` 在本仓同时是分支和标签，裸名解析会命中标签）。可执行文件 `hyprial` 默认安装到 `~/.local/bin`，
 请确保该目录在 `PATH` 中。
 
 当前没有需要迁移的旧 TypeScript 主机，也不再提供旧状态迁移。若意外发现仍装有
@@ -55,10 +56,11 @@ hyprial doctor
 可复制的安全步骤见[退役 TS 安装处理](docs/cutover-runbook.md)。
 
 从已消失的旧 `harness-bridge-py` 来源安装过 v0.4.0 时，先用同版本刷新来源，
-不会切换到 `dev`：
+不会切换到 `dev`。⚠️ **这一条只对内网机器适用**：`v0.4.0` 是历史版本，
+**只存在于内部 Forgejo，公网发布仓上没有这个 tag**，所以这里仍用内网地址：
 
 ```sh
-uv tool install --force git+https://github.com/Hyprial/hyprial.git@v0.4.0
+uv tool install --force git+ssh://git@git.internal.hyprial.com/HyprialOS/harness-bridge.git@v0.4.0
 ```
 
 ### 取源慢／认证失败的诊断与应急 ssh 改写（内网开发者适用）

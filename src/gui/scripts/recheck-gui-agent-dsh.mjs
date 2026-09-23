@@ -37,7 +37,7 @@ walk(records, value => {
 });
 assert.ok(original, 'Authoritative pre-update document missing from the actual context tool result');
 const expected = structuredClone(original); expected.pages[0].layout.text = prior.marker;
-const deps = createRequire(process.env.DSH_GUI_BROWSER_DEPS || join(homedir(), '.h2b/apps/gui/source/dashboard/package.json'));
+const deps = createRequire(process.env.DSH_GUI_BROWSER_DEPS || join(homedir(), '.h2b/apps/gui/source/browser-tests/package.json'));
 const browser = await deps('playwright').chromium.launch({ headless: true });
 const report = { mode: 'read-only-recheck', promptsSubmitted: 0, originalPromptCount: 1, sessionId: prior.sessionId, draftId: prior.draftId, marker: prior.marker, tools };
 try {

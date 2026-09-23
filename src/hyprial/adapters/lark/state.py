@@ -22,6 +22,7 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -351,6 +352,16 @@ class LarkStateStore:
             isolation_level=None,
             check_same_thread=False,
         )
+        try:
+            self._initialize()
+        except BaseException:
+            # Constructor failures retain self via their traceback. Closing
+            # here rolls back any unfinished schema transaction and avoids
+            # pinning WAL handles until the exception is eventually collected.
+            self._db.close()
+            raise
+
+    def _initialize(self) -> None:
         self._db.row_factory = sqlite3.Row
         self._db.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
         self._switch_to_wal()
@@ -359,6 +370,7 @@ class LarkStateStore:
         # databases (agents.sqlite3, adapters.sqlite3) run one convention.
         self._db.execute("PRAGMA foreign_keys=ON")
         self._create_schema()
+        self._migrate_identities_owner_column()
         self._check_schema_version()
         # Fail closed at open exactly like the JSON loader did: corrupt
         # pending rows raise ``ValueError``; an over-capacity backlog raises
@@ -411,8 +423,14 @@ class LarkStateStore:
 
     def _create_schema(self) -> None:
         with self._lock:
+            # executescript implicitly commits a pre-existing transaction, so
+            # BEGIN belongs INSIDE the script. Acquire the writer lock before
+            # inspecting/changing the schema, then commit the DDL as one unit.
+            # Autocommit per CREATE previously invited interleaving and paid a
+            # separate FULL-sync commit for every table/index on a shared disk.
             self._db.executescript(
                 """
+                BEGIN IMMEDIATE;
                 CREATE TABLE IF NOT EXISTS meta (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -507,6 +525,20 @@ class LarkStateStore:
                     PRIMARY KEY (adapter, chat_id)
                 );
 
+                -- Chats the platform permanently refuses history for (the
+                -- group was disbanded or the bot is no longer a member).
+                -- Retirement only excludes the chat from the reconciliation
+                -- scan set; correlations and dead letters are audit records
+                -- and are deliberately kept.  Purely additive to schema v2
+                -- for the same reason as ``dead_letter_alerts``.
+                CREATE TABLE IF NOT EXISTS retired_chats (
+                    adapter TEXT NOT NULL,
+                    chat_id TEXT NOT NULL,
+                    code INTEGER NOT NULL,
+                    retired_at TEXT NOT NULL,
+                    PRIMARY KEY (adapter, chat_id)
+                );
+
                 CREATE TABLE IF NOT EXISTS conversation_timezones (
                     adapter TEXT NOT NULL,
                     conversation_id TEXT NOT NULL,
@@ -545,8 +577,47 @@ class LarkStateStore:
                 );
                 CREATE INDEX IF NOT EXISTS identities_by_name
                     ON identities(adapter, display_name);
+                COMMIT;
                 """
             )
+
+    def _migrate_identities_owner_column(self) -> None:
+        """Rename the pre-rename ``h2b_owner`` column to ``hyprial_owner``.
+
+        The 2026-09-09 product code rename changed the column name in
+        ``_create_schema`` but shipped no migration, so a database created
+        before the rename still carries ``h2b_owner`` -- and because
+        ``CREATE TABLE IF NOT EXISTS`` is a no-op there, every identity
+        read fails with ``no such column: hyprial_owner`` forever.
+        Detection is column-based rather than stamp-based because
+        pre-rename databases already carry ``identitiesSchemaVersion = 1``.
+        Rename is in-place (SQLite ≥ 3.25): no rebuild, no data movement.
+        Both columns present means an interrupted or hand-edited state;
+        fail closed and name it instead of silently picking one.
+        """
+
+        with self._transaction() as db:
+            columns = {
+                row["name"]
+                for row in db.execute("PRAGMA table_info(identities)")
+            }
+            has_old = "h2b_owner" in columns
+            has_new = "hyprial_owner" in columns
+            if has_old and has_new:
+                raise ValueError(
+                    "identities table carries both h2b_owner and"
+                    " hyprial_owner; refusing to guess which one is live"
+                )
+            if not has_old and not has_new:
+                raise ValueError(
+                    "identities table carries neither h2b_owner nor"
+                    " hyprial_owner; unknown schema shape"
+                )
+            if has_old:
+                db.execute(
+                    "ALTER TABLE identities RENAME COLUMN h2b_owner"
+                    " TO hyprial_owner"
+                )
 
     def _check_schema_version(self) -> None:
         with self._transaction() as db:
@@ -708,17 +779,65 @@ class LarkStateStore:
             self._prune(db, "chat_types", MAX_CORRELATIONS)
 
     def recent_chats(self) -> tuple[str, ...]:
-        """Chats with prior inbound activity — the reconciliation scan set."""
+        """Chats with prior inbound activity — the reconciliation scan set.
+
+        Retired chats (permanently refused by the platform) are excluded;
+        their rows in the contributing tables are kept as audit records.
+        """
 
         with self._lock:
             rows = self._db.execute(
                 """SELECT chat_id FROM request_correlations WHERE adapter = ?
                    UNION
                    SELECT chat_id FROM dead_letters WHERE adapter = ?
+                   EXCEPT
+                   SELECT chat_id FROM retired_chats WHERE adapter = ?
                    ORDER BY chat_id""",
-                (self.adapter, self.adapter),
+                (self.adapter, self.adapter, self.adapter),
             ).fetchall()
         return tuple(row["chat_id"] for row in rows)
+
+    def retire_chat(self, chat_id: str, *, code: int, now: datetime) -> bool:
+        """Mark a chat permanently unavailable; report if newly retired.
+
+        Idempotent: re-retiring the same chat keeps the first observation.
+        """
+
+        with self._transaction() as db:
+            cursor = db.execute(
+                """INSERT OR IGNORE INTO retired_chats(
+                       adapter, chat_id, code, retired_at
+                   ) VALUES (?, ?, ?, ?)""",
+                (self.adapter, chat_id, code, now.isoformat()),
+            )
+            return cursor.rowcount > 0
+
+    def retired_chat_code(self, chat_id: str) -> int | None:
+        """The platform code a chat was retired with, or None if active."""
+
+        with self._lock:
+            row = self._db.execute(
+                "SELECT code FROM retired_chats"
+                " WHERE adapter = ? AND chat_id = ?",
+                (self.adapter, chat_id),
+            ).fetchone()
+        return None if row is None else int(row["code"])
+
+    def unretire_chat(self, chat_id: str) -> bool:
+        """Lift a chat's retirement; report whether one was lifted.
+
+        Live inbound traffic from the chat is direct evidence the bot is a
+        member again (e.g. re-added after removal), so the chat rejoins the
+        reconciliation scan set.  Retirement is only ever lifted by this
+        out-of-band fact, never by the sweep that imposed it.
+        """
+
+        with self._transaction() as db:
+            cursor = db.execute(
+                "DELETE FROM retired_chats WHERE adapter = ? AND chat_id = ?",
+                (self.adapter, chat_id),
+            )
+            return cursor.rowcount > 0
 
     def record_dead_letter(self, letter: DeadLetter) -> bool:
         """Persist an audit record and report whether it was newly discovered."""

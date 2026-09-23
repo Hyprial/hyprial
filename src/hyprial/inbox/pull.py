@@ -491,6 +491,22 @@ class UndecodableReply:
 
 
 @dataclass(frozen=True, slots=True)
+class HolderReplyCount:
+    """How many separate replies arrived under one holder name in one pull.
+
+    A count above one is the wire-side signature of a duplicated node
+    identity: each daemon instance answers the status query under the same
+    name, and name-keyed sets (``responded_holders``) collapse them back into
+    one.  ``records`` counts the records those replies carried (0 for an
+    undecodable reply whose envelope still named its holder).
+    """
+
+    holder: str
+    replies: int
+    records: int
+
+
+@dataclass(frozen=True, slots=True)
 class StatusQueryServed:
     """One status query as seen by the node answering it."""
 
@@ -532,6 +548,7 @@ class StatusQueryReport:
     replies: int = 0
     decoded: int = 0
     responded_holders: tuple[str, ...] = ()
+    holder_reply_counts: tuple[HolderReplyCount, ...] = ()
     undecodable: tuple[UndecodableReply, ...] = ()
     errors: tuple[str, ...] = ()
 
@@ -547,6 +564,20 @@ class StatusQueryReport:
 
         return tuple(
             sorted({reply.holder for reply in self.undecodable if reply.holder})
+        )
+
+    @property
+    def duplicate_holders(self) -> tuple[HolderReplyCount, ...]:
+        """Holder names that answered this pull more than once.
+
+        Legacy frames without envelope metadata are attributed per record
+        holder (one reply per sample that mentions the name), so a relayed or
+        merged legacy frame can under- or over-count; new frames name their
+        answering node and count exactly.
+        """
+
+        return tuple(
+            entry for entry in self.holder_reply_counts if entry.replies > 1
         )
 
     @property
@@ -646,6 +677,8 @@ def query_delivery_status(
     )
     records: list[DeliveryStatus] = []
     responded_holders: set[str] = set()
+    holder_replies: dict[str, int] = {}
+    holder_record_counts: dict[str, int] = {}
     undecodable: list[UndecodableReply] = []
     errors: list[str] = []
     # `all_replies` is load-bearing, not a tuning knob.  Every holder answers
@@ -670,6 +703,10 @@ def query_delivery_status(
                     holder=holder,
                 )
             )
+            # An undecodable reply still proves the name answered; a count
+            # above one is what makes a duplicated identity visible here.
+            if holder is not None:
+                holder_replies[holder] = holder_replies.get(holder, 0) + 1
             continue
         records.extend(decoded_records)
         # New frames identify their answering node even when records is empty.
@@ -677,8 +714,20 @@ def query_delivery_status(
         # old empty frames cannot establish which node answered.
         if holder is not None:
             responded_holders.add(holder)
+            holder_replies[holder] = holder_replies.get(holder, 0) + 1
+            holder_record_counts[holder] = (
+                holder_record_counts.get(holder, 0) + len(decoded_records)
+            )
         else:
             responded_holders.update(record.holder for record in decoded_records)
+            # Legacy attribution is per record holder: one reply per sample
+            # that mentions the name, records counted to their own holder.
+            for name in sorted({r.holder for r in decoded_records}):
+                holder_replies[name] = holder_replies.get(name, 0) + 1
+            for record in decoded_records:
+                holder_record_counts[record.holder] = (
+                    holder_record_counts.get(record.holder, 0) + 1
+                )
         decoded += 1
     return StatusQueryReport(
         key=key,
@@ -686,6 +735,14 @@ def query_delivery_status(
         replies=len(samples) + len(errors),
         decoded=decoded,
         responded_holders=tuple(sorted(responded_holders)),
+        holder_reply_counts=tuple(
+            HolderReplyCount(
+                holder=name,
+                replies=holder_replies[name],
+                records=holder_record_counts.get(name, 0),
+            )
+            for name in sorted(holder_replies)
+        ),
         undecodable=tuple(undecodable),
         errors=tuple(errors),
     )

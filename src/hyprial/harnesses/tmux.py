@@ -249,6 +249,42 @@ def pane_pid(tmux_bin: str, name: str) -> int | None:
     return pid if pid > 0 else None
 
 
+def pane_text(tmux_bin: str, name: str) -> str:
+    """The visible text of the session's pane; empty when it cannot be read."""
+
+    try:
+        result = _run(tmux_bin, ["capture-pane", "-p", "-t", name], check=False)
+    except OSError:
+        return ""
+    return result.stdout if result.returncode == 0 else ""
+
+
+#: Claude Code's own start-up confirmations.  Both are CC-owned on purpose and
+#: have no supported pre-accept, so a TUI in a detached pane waits on them
+#: forever.  Observed live on claude 2.1.280 (2026-09-23), in this order:
+#:   folder-trust          -- "Quick safety check: Is this a project you created
+#:                            or one you trust? ... Yes, I trust this folder"
+#:                            (any cwd Claude Code has not been told to trust)
+#:   development-channels  -- "WARNING: Loading development channels ...
+#:                            1. I am using this for local development / 2. Exit"
+#: Matched loosely and case-insensitively; if CC rewords a prompt, detection
+#: falls back to the ordinary registration timeout.
+CLAUDE_CONFIRMATION_MARKERS: tuple[tuple[str, str], ...] = (
+    ("folder-trust", "trust this folder"),
+    ("development-channels", "loading development channels"),
+)
+
+
+def claude_confirmation_prompt(text: str) -> str | None:
+    """Which Claude Code confirmation the pane is waiting on, if any."""
+
+    lowered = text.lower()
+    for kind, marker in CLAUDE_CONFIRMATION_MARKERS:
+        if marker in lowered:
+            return kind
+    return None
+
+
 def attach_hints(name: str) -> dict[str, str]:
     """The two supported attach commands for one detached session name."""
 

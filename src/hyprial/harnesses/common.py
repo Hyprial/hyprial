@@ -17,6 +17,9 @@ from pathlib import Path
 from types import MappingProxyType
 from uuid import uuid4
 
+from hyprial.agents.environment import (
+    whitelist_replacement_environment,
+)
 from hyprial.daemon.api import (
     ProcessLiveness,
     ProcessLivenessProbeError,
@@ -206,7 +209,11 @@ class PtyHarnessProcess:
                     stdout=slave_fd,
                     stderr=subprocess.PIPE,
                     cwd=cwd,
-                    env=None if env is None else {**os.environ, **env},
+                    env=(
+                        None
+                        if env is None
+                        else whitelist_replacement_environment(os.environ, env)
+                    ),
                     start_new_session=True,
                     close_fds=True,
                 )

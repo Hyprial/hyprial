@@ -8,7 +8,7 @@ import {join,resolve,dirname} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {createRequire} from 'node:module';
 const repo=resolve(dirname(fileURLToPath(import.meta.url)),'..');let deps;
-for(const base of [process.env.DSH_GUI_BROWSER_DEPS,join(repo,'dashboard/package.json'),join(homedir(),'.h2b/apps/gui/source/dashboard/package.json')].filter(Boolean)){try{const candidate=createRequire(resolve(base));for(const name of ['react','react-dom/client','rolldown','playwright'])candidate.resolve(name);deps=candidate;break;}catch{}}
+for(const base of [process.env.DSH_GUI_BROWSER_DEPS,join(repo,'browser-tests/package.json'),join(homedir(),'.h2b/apps/gui/source/browser-tests/package.json')].filter(Boolean)){try{const candidate=createRequire(resolve(base));for(const name of ['react','react-dom/client','rolldown','playwright'])candidate.resolve(name);deps=candidate;break;}catch{}}
 if(!deps)throw new Error('Set DSH_GUI_BROWSER_DEPS to package.json resolving React, React DOM, rolldown and Playwright.');
 const {build}=await import(pathToFileURL(deps.resolve('rolldown')).href),{chromium}=deps('playwright');
 const temp=await mkdtemp(join(tmpdir(),'gui-module-views-'));const output=process.env.GUI_MODULE_ARTIFACTS?resolve(process.env.GUI_MODULE_ARTIFACTS):null;if(output)await mkdir(output,{recursive:true});

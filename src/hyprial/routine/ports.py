@@ -76,6 +76,7 @@ class RoutineProjection:
     in_flight: tuple[RoutineInFlightProjection, ...]
     produces: str | None = None
     schema_error: str | None = None
+    quarantine_reason: str | None = None
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -92,6 +93,29 @@ class RoutineProjection:
                 if self.schema_error is not None
                 else {}
             ),
+            **(
+                {"quarantined": True, "quarantineReason": self.quarantine_reason}
+                if self.quarantine_reason is not None
+                else {}
+            ),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class AddressMigrationProjection:
+    routine: str
+    field: str
+    before: str
+    after: str
+    migrated_at_ms: int
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "routine": self.routine,
+            "field": self.field,
+            "before": self.before,
+            "after": self.after,
+            "migratedAtMs": self.migrated_at_ms,
         }
 
 
@@ -169,14 +193,20 @@ class RoutineSourceQueryCompleted:
 
 
 @dataclass(frozen=True, slots=True)
-class RoutineWorkflowIoCompleted:
+class RoutinePacIoCompleted:
+    """One PAC dispatch/projection call settled (U3: no workflow run)."""
+
     correlation_id: str
     generation: int
     version: int
     routine_name: str
     task_uuid: str
     operation: str
-    run_id: str | None = None
+    #: The task's graph id.  ``RoutineInFlightProjection.run_id`` keeps its
+    #: published name and now carries this value: the field is part of the
+    #: ``routine.status`` payload, so renaming it is a contract change and
+    #: belongs with the rest of the retirement (U7), not here.
+    graph_id: str | None = None
     state: str | None = None
     code: str | None = None
     detail: str | None = None
@@ -194,7 +224,7 @@ RoutineEvent: TypeAlias = (
     RoutineMutationCompleted
     | RoutinesRecovered
     | RoutineSourceQueryCompleted
-    | RoutineWorkflowIoCompleted
+    | RoutinePacIoCompleted
     | RoutineTimerCompleted
     | PortCommandRejected
 )

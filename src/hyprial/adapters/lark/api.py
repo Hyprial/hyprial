@@ -863,14 +863,28 @@ class DeliveryOutcome:
 
 @dataclass(frozen=True, slots=True)
 class ReconcileReport:
-    """Outcome of one post-reconnect history reconciliation sweep."""
+    """Outcome of one post-reconnect history reconciliation sweep.
+
+    Failures are split by *whether retrying could ever clear them*, because
+    the caller fails closed on them and a fail-closed gate whose condition can
+    never clear is not a gate -- it is a restart loop.
+
+    ``retryable_errors`` is everything a later sweep might get past: a
+    timeout, a rate limit, a truncated page run.  ``blocked_chats`` is the
+    other kind: this app is not permitted to read that chat, so every sweep
+    from now until someone grants a scope will fail identically.
+    """
 
     chats_scanned: int
     messages_scanned: int
     forwarded: int
     duplicates: int
     dead_lettered: int
-    errors: tuple[str, ...] = field(default_factory=tuple)
+    retryable_errors: tuple[str, ...] = field(default_factory=tuple)
+    blocked_chats: tuple[str, ...] = field(default_factory=tuple)
+    #: Chats the platform permanently refused this sweep (e.g. disbanded
+    #: group): retired out of the scan set, not counted as sweep errors.
+    retired_chats: tuple[str, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True, slots=True)

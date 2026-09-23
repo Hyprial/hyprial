@@ -8,9 +8,9 @@ tags.  Two resolution modes share one probe:
   ordering, including development and release-candidate tags.  This is the
   exact pre-track behavior; an installation without an explicit track keeps
   it byte-for-byte.
-- Track (opt-in): ``settings.json`` ``updateTrack`` set to ``dev``,
+- Track (opt-in): ``settings.json`` ``updateTrack`` set to ``internal``,
   ``nightly``, or ``stable`` resolves the movable tag of the same name —
-  ``dev`` follows the dev branch after a green unit run, ``nightly`` the
+  ``internal`` follows the dev branch after a green unit run, ``nightly`` the
   last dual-gate-green nightly, ``stable`` the last manual release.  A
   missing track tag is a loud error and NEVER falls back to the latest
   version tag: a fallback would silently change which code a machine
@@ -62,7 +62,42 @@ _TAG_REF = re.compile(r"^refs/tags/(.+?)(\^\{\})?$")
 
 #: The only values ``settings.json`` ``updateTrack`` accepts; each names the
 #: movable remote tag that track resolves.  Absent key = legacy latest-tag.
-TRACK_TAGS = ("dev", "nightly", "stable")
+#:
+#: ``dev`` was renamed to ``internal`` on 2026-09-18 (Allen): the internal tag
+#: shared its name with the ``dev`` BRANCH, and Forgejo resolves a bare ``dev``
+#: to the tag when computing a merge base -- which silently based two merges on
+#: a stale commit. The rename removes the collision at its source.
+TRACK_TAGS = ("internal", "nightly", "stable")
+
+#: Retired track names that are still ACCEPTED, mapped to their replacement.
+#:
+#: Why accept them at all, when a missing track tag is deliberately a loud
+#: error: the loudness is there to stop a machine silently following different
+#: code. That reasoning does not apply to a machine whose settings still say
+#: ``dev`` -- it wants exactly the track it always wanted, under the name it was
+#: told to use. Refusing it would punish the one group that did nothing, and it
+#: would do so at the worst moment: right after an upgrade, on a machine whose
+#: operator is not watching.
+#:
+#: ⚠️ This is a migration alias, not a second name. It resolves to the CURRENT
+#: tag, so the retired tag can be deleted the moment every node runs a client
+#: that has this table. Remove the entry once no node reports ``updateTrack:
+#: dev`` -- and the removal is the point: an alias with no removal condition is
+#: how the previous rename ended up half-applied for two days.
+DEPRECATED_TRACK_ALIASES = {"dev": "internal"}
+
+
+def canonical_track(value: str) -> str | None:
+    """Map a configured track name to its current tag, or None if unknown.
+
+    Returns the value itself when it is current, the replacement when it is a
+    retired-but-accepted alias, and None when it is neither -- callers decide
+    whether that is an error (resolution) or a finding (doctor).
+    """
+
+    if value in TRACK_TAGS:
+        return value
+    return DEPRECATED_TRACK_ALIASES.get(value)
 
 
 class UpdateProbeError(RuntimeError):
@@ -240,12 +275,23 @@ def read_update_track(hyprial_home: Path) -> str | None:
     track = record.get("updateTrack")
     if track is None:
         return None
-    if track not in TRACK_TAGS:
+    resolved = canonical_track(str(track))
+    if resolved is None:
         raise UpdateProbeError(
             f"{path} updateTrack must be one of "
             f"{', '.join(TRACK_TAGS)}; got {track!r}"
         )
-    return str(track)
+    if resolved != track:
+        # stderr, not a logger: this module deliberately has no logging
+        # dependency (it is a probe), and stderr is where a CLI's warnings go.
+        # Loud enough to be seen, quiet enough not to fail a run that is doing
+        # exactly what it was configured to do.
+        print(
+            f"warning: updateTrack {track!r} was renamed to {resolved!r}; "
+            f"update {path} -- the alias will be removed",
+            file=sys.stderr,
+        )
+    return resolved
 
 
 def retired_track_warning(hyprial_home: Path) -> str | None:
@@ -282,11 +328,20 @@ def retired_track_warning(hyprial_home: Path) -> str | None:
                 "update_track in settings.json is retired; use updateTrack"
             )
         value = record.get("updateTrack")
-        if value is not None and value not in TRACK_TAGS:
-            findings.append(
-                f"updateTrack {value!r} is not one of {', '.join(TRACK_TAGS)}; "
-                "hyprial upgrade will refuse until it is fixed"
-            )
+        if value is not None:
+            resolved = canonical_track(str(value))
+            if resolved is None:
+                findings.append(
+                    f"updateTrack {value!r} is not one of "
+                    f"{', '.join(TRACK_TAGS)}; "
+                    "hyprial upgrade will refuse until it is fixed"
+                )
+            elif resolved != value:
+                findings.append(
+                    f"updateTrack {value!r} was renamed to {resolved!r}; "
+                    "upgrade still works through a deprecation alias, but set "
+                    "the new name -- the alias will be removed"
+                )
     if not findings:
         return None
     return "; ".join(findings)

@@ -20,7 +20,33 @@ _YAML_FENCE = re.compile(
     r"^```ya?ml[ \t]*\n(?P<yaml>.*?)^```[ \t]*(?:\n|$)",
     re.MULTILINE | re.DOTALL | re.IGNORECASE,
 )
-_PUBLISHER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+#: The one person-name predicate for the org-context format.  A publisher
+#: is a person named by their login: the legacy bare short name
+#: (``allenwoods``) or the tailnet login shape (``lin.yilun@hyprial.com``,
+#: ``jjkysy@github``) -- the same owner spelling a PAC ``user:<owner>``
+#: principal stores verbatim.  There is deliberately no second copy of this
+#: judgment: the repo's other owner boundaries either accept more than a
+#: curated document should (the login/URI owner grammar is only "non-empty,
+#: no ':'"), or less (OWNER_NAME_PATTERN / ACTOR_NAME_PATTERN reject ``@``).
+#: Hygiene is unchanged from the pre-``@`` publisher grammar: no whitespace,
+#: ``':'``, ``'/'``, control characters or leading punctuation, ``@`` at most
+#: once, and the 128-character cap still bounds the whole name -- local part
+#: and domain together, so the old ceiling is not widened by the domain.
+_PERSON_NAME = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._-]*(?:@[A-Za-z0-9][A-Za-z0-9._-]*)?$"
+)
+_PERSON_NAME_MAX_LENGTH = 128
+
+
+def is_person_name(value: object) -> bool:
+    """Judge one candidate as a person name (a login-shaped owner)."""
+
+    return (
+        isinstance(value, str)
+        and len(value) <= _PERSON_NAME_MAX_LENGTH
+        and _PERSON_NAME.fullmatch(value) is not None
+    )
+
 _REQUIRED_TOP_LEVEL = {
     "meta": dict,
     "lines": list,
@@ -125,9 +151,11 @@ def _validate_meta(value: object) -> OrgMeta:
         raise OrgDocumentError("meta.issued_at must be a YYYY-MM-DD date")
 
     publisher = meta.get("publisher")
-    if not isinstance(publisher, str) or not _PUBLISHER.fullmatch(publisher):
+    if not is_person_name(publisher):
         raise OrgDocumentError(
-            "meta.publisher must be a safe non-empty username"
+            "meta.publisher must be a person name: a short login or an "
+            "owner@domain tailnet login (no whitespace, ':', '/', or control "
+            "characters; at most 128 characters)"
         )
     # meta.signature is a retired field: pre-unsigning documents carry it,
     # so parse tolerates and ignores it; new documents never write it.  No

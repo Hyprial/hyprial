@@ -37,6 +37,10 @@ def parse_agent_uri(value: str) -> tuple[str, str, str] | None:
     parts = value.split(":")
     if len(parts) != _AGENT_URI_SEGMENTS or not all(parts[1:]):
         return None
+    if any(part.strip() != part for part in parts[1:]):
+        # Whitespace-padded segments are not identities: ``agent:a: :c`` must
+        # not parse as a valid machine (2026-09-14 S4).
+        return None
     return parts[1], parts[2], parts[3]
 
 
@@ -80,6 +84,61 @@ def parse_channel_uri(value: str) -> tuple[str, str, str] | None:
     if len(parts) != 4 or not all(parts[1:]):
         return None
     return parts[1], parts[2], parts[3]
+
+
+#: The ``route:<adapter>:<route>`` outbound channel-route prefix.  Grammar
+#: mirror of ``hyprial.daemon.route_delivery.RouteTarget.parse`` — that
+#: module belongs to the daemon package, so schema validators use this leaf
+#: copy instead of importing the daemon.
+ROUTE_URI_PREFIX = "route:"
+
+#: The ``user:<owner>`` human-recipient prefix.  Grammar mirror of
+#: ``hyprial.squire.addressing.UserDeliveryTarget.parse`` — same leaf-module
+#: reasoning as ``route:`` above.
+USER_URI_PREFIX = "user:"
+
+
+def parse_route_uri(value: str) -> tuple[str, str] | None:
+    """Decompose ``route:<adapter>:<route>``; ``None`` for any other shape."""
+
+    if not value.startswith(ROUTE_URI_PREFIX):
+        return None
+    parts = value.split(":")
+    if len(parts) != 3 or not parts[1] or not parts[2]:
+        return None
+    return parts[1], parts[2]
+
+
+def delivery_address_error(value: str) -> str | None:
+    """``None`` when ``value`` is a deliverable address shape, else the reason.
+
+    Deliverable shapes today: a canonical agent URI or ``user:<owner>``.
+    ``route:<adapter>:<route>`` is parsed but deliberately NOT accepted yet:
+    the alarm/report delivery path has no route: transport wired, so a route:
+    escalate_to / report_to would pass schema and then fail at delivery
+    (2026-09-14 B4).  It is rejected loud until route: delivery exists.
+    Bare names are NOT addresses either — they parse as nothing and land in
+    stores nobody reads.
+    """
+
+    if not isinstance(value, str) or not value.strip():
+        return "address must be a non-empty string"
+    candidate = value.strip()
+    if parse_agent_uri(candidate) is not None:
+        return None
+    if parse_user_uri(candidate) is not None:
+        return None
+    if parse_route_uri(candidate) is not None:
+        return (
+            f"{candidate!r} uses route:<adapter>:<route>, which is not yet "
+            "supported for escalate_to/report_to delivery; use a full agent "
+            "URI (agent:<owner>:<machine>:<actor>) or user:<owner>"
+        )
+    return (
+        f"{candidate!r} is not a deliverable address; write a full agent URI "
+        "(agent:<owner>:<machine>:<actor>) or user:<owner> — bare names are "
+        "undeliverable"
+    )
 
 
 def short_actor_name(value: str) -> str:
@@ -134,6 +193,11 @@ def parse_user_uri(value: str) -> str | None:
     Returns the owner segment for exactly the strict two-segment shape,
     ``None`` for every other shape.  This is the ONLY user-URI deconstructor
     -- the same one-reader rule as :func:`parse_agent_uri`.
+
+    Mirrors ``hyprial.squire.addressing.UserDeliveryTarget.parse``: an empty
+    owner, an embedded ``:``, or leading/trailing whitespace (``user: x``) is
+    not a user target, so schema must reject it exactly where the transport
+    would (2026-09-14 S4).
     """
 
     if not value.startswith(USER_URI_PREFIX):

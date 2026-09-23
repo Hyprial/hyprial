@@ -14,7 +14,7 @@ from typing import Any, Literal
 import yaml
 
 from hyprial.duration import DurationParseError, parse_duration
-from hyprial.uri import parse_agent_uri
+from hyprial.uri import delivery_address_error, parse_agent_uri
 
 SCHEMA_VERSION = 1
 MIN_INTERVAL_SECONDS = 60.0
@@ -205,6 +205,9 @@ def load_routine_text(text: str, *, label: str = "routine") -> RoutineSpec:
         else:
             if not isinstance(escalate_to, str) or not escalate_to.strip():
                 raise RoutineSchemaError(f"{item_label}.escalate_to must be a non-empty string")
+            address_error = delivery_address_error(escalate_to)
+            if address_error is not None:
+                raise RoutineSchemaError(f"{item_label}.escalate_to {address_error}")
             routes.append(RouteRule(tag=tag, kind="escalate", value=escalate_to.strip()))
 
     default_route = policy.get("default", "escalate")
@@ -263,6 +266,9 @@ def load_routine_text(text: str, *, label: str = "routine") -> RoutineSpec:
     escalate_to = timeout_map.get("escalate_to")
     if not isinstance(escalate_to, str) or not escalate_to.strip():
         raise RoutineSchemaError(f"{label}.on_task_timeout.escalate_to is required")
+    address_error = delivery_address_error(escalate_to)
+    if address_error is not None:
+        raise RoutineSchemaError(f"{label}.on_task_timeout.escalate_to {address_error}")
 
     return RoutineSpec(
         name=name,

@@ -40,6 +40,7 @@ from .setup import (
     SetupIdentity,
     SquireManagementPort,
     SquireSetup,
+    derive_setup_identity,
 )
 
 __all__ = [
@@ -74,6 +75,7 @@ __all__ = [
     "ZenohUserDeliveryTransport",
     "build_probe_command",
     "classify_run",
+    "derive_setup_identity",
     "is_user_target",
     "probe_combinations",
 ]

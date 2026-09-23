@@ -266,6 +266,15 @@ class PacActorService:
             graph_id = self._clock_queue.get()
             if graph_id is None:
                 return
+            if self._closed:
+                # close() has begun: drop the remaining backlog instead of
+                # draining it.  Queued ticks are a replayable view of the
+                # graphs table -- the next service instance's submit_tick
+                # re-derives every clock job, and tick side effects are
+                # SQL-idempotent across restarts -- so discarding them here
+                # loses nothing, while draining them would tie close()
+                # latency to the backlog size.
+                return
             try:
                 store = PacGraphStore(self.database)
                 try:
@@ -289,6 +298,17 @@ class PacActorService:
         while True:
             job = self._actor_queue.get()
             if job is None:
+                return
+            if self._closed:
+                # close() has begun: defer the remaining backlog rather than
+                # drain it.  The queue is not the system of record --
+                # submit_tick re-derives every actor job from the nodes
+                # table on the next daemon epoch, and reconcile() converges
+                # the durable actor_activations rows idempotently -- so a
+                # dropped job is reconciled by the next service instance,
+                # not lost.  Draining here would also *start* new actors
+                # while the daemon is tearing down, which is the opposite
+                # of what close() is for.
                 return
             try:
                 store = PacGraphStore(self.database)

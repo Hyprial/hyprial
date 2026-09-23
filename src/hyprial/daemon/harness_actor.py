@@ -362,10 +362,18 @@ class HarnessProjection:
             error = record.last_error or (str(runtime_error) if runtime_error else None)
             pid = record.identity.pid if running and record.identity is not None else None
             endpoint = None
+            dsh_home = None
             if record.spec.harness == "dsh":
-                from hyprial.harnesses.dsh import dsh_status_endpoint
-
-                endpoint = dsh_status_endpoint(record.spec)
+                # The endpoint is an OUTPUT of the generation that is alive now,
+                # never an input: it comes from the port the child's banner
+                # named.  A stale or absent process reports neither value.
+                endpoint = getattr(process, "endpoint", None)
+                home = getattr(process, "dsh_home", None)
+                if isinstance(home, Path):
+                    dsh_home = str(home)
+            max_in_flight = getattr(process, "max_in_flight", None) if process else None
+            in_flight = getattr(process, "in_flight", None) if process else None
+            queue_depth = getattr(process, "queue_depth", None) if process else None
             rows.append(
                 HarnessStatusProjection(
                     version=version,
@@ -378,6 +386,12 @@ class HarnessProjection:
                     state=_state(record),
                     error=error,
                     endpoint=endpoint,
+                    dsh_home=dsh_home,
+                    max_in_flight=(
+                        max_in_flight if isinstance(max_in_flight, int) else None
+                    ),
+                    in_flight=in_flight if isinstance(in_flight, int) else None,
+                    queue_depth=queue_depth if isinstance(queue_depth, int) else None,
                 )
             )
             if error is not None:
@@ -779,6 +793,39 @@ class ProcessIoPort:
         marker = self._identity_reader(pid) if isinstance(pid, int) else None
         return ProcessIdentity(pid if isinstance(pid, int) else None, marker)
 
+    def _recorded_identity_verdict(self, identity: ProcessIdentity) -> str:
+        """Classify a recorded identity before stop signals anything.
+
+        ``"reused"`` -- a live PID whose marker disagrees -- is the only
+        refusal; ``"dead"`` (PID missing) must proceed, because a harness may
+        have replaced its own child generation and a missing PID is not reuse.
+        The component-wise owner fence is shared with ``mcp.channel`` so a
+        marker-format skew is not read as reuse.
+
+        ⚠️ Stop-path exception: the fence's own fail-safe for ``UNKNOWN``
+        (PID alive but its marker cannot be read: EPERM, a vanished ps/procfs
+        source, or no shared scheme) is *do not act*.  Here ``UNKNOWN`` maps to
+        ``"alive"`` and stop proceeds.  That is safe ONLY because the actual
+        signal gate is :meth:`OwnedProcessGroup.signal`, which re-reads the
+        generation's PID + birth identity immediately before ``killpg`` and
+        refuses a mismatch; ``_stop_checked`` is bookkeeping around that gate,
+        not the gate itself.  If stop ever stops routing through
+        ``OwnedProcessGroup``, UNKNOWN must become a refusal again.
+        """
+
+        from hyprial.mcp.channel import _OwnerProcessStatus, _owner_process_status
+
+        status = _owner_process_status(
+            identity.pid,
+            identity.marker,
+            read_identity=self._identity_reader,
+        )
+        if status is _OwnerProcessStatus.IDENTITY_MISMATCH:
+            return "reused"
+        if status is _OwnerProcessStatus.PID_MISSING:
+            return "dead"
+        return "alive"
+
     def _stop_checked(
         self,
         process: ManagedHarnessProcess,
@@ -786,16 +833,32 @@ class ProcessIoPort:
         *,
         harness_id: str,
     ) -> tuple[bool, str | None]:
+        if (
+            identity is not None
+            and identity.pid is not None
+            and identity.marker is not None
+        ):
+            verdict = self._recorded_identity_verdict(identity)
+            if verdict == "reused":
+                return False, "PID_REUSED: refusing to stop a different process identity"
+            if verdict == "dead":
+                # The recorded generation is gone (it may have been replaced by
+                # a respawn inside the same harness process).  A missing PID is
+                # not PID reuse: stop whatever this process owns now.  The
+                # generation's own PID+birth-identity fence remains the
+                # authority on which PID it may signal.
+                identity = self._capture_identity(process)
+            # "alive" AND the UNKNOWN case both fall through to process.stop().
+            # UNKNOWN means "the marker could not be read", which the shared
+            # fence treats as fail-safe-do-not-act; proceeding is safe only
+            # because OwnedProcessGroup.signal() re-checks the birth identity
+            # before killpg (see _recorded_identity_verdict).
         self._orphan_processes.observe_stop(
             harness_id,
             process,
             pid=None if identity is None else identity.pid,
             marker=None if identity is None else identity.marker,
         )
-        if identity is not None and identity.pid is not None and identity.marker is not None:
-            current = self._identity_reader(identity.pid)
-            if current != identity.marker:
-                return False, "PID_REUSED: refusing to stop a different process identity"
         try:
             process.stop()
         except BaseException as error:

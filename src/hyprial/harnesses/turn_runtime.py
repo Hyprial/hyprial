@@ -25,6 +25,7 @@ from hyprial.actor_runtime import (
     ExpectedActorError,
 )
 from hyprial.contracts.ports import PortAdmission, PortCommandRejected
+from hyprial.daemon.api import classify_harness_failure
 
 from .turn_ports import (
     CloseTurnPumpCommand,
@@ -84,6 +85,7 @@ _TERMINAL_PROVIDER_ERROR_MARKERS: frozenset[str] = frozenset(
         # authentication / authorization
         "unauthorized",
         "authentication failed",
+        "failed to authenticate",
         "invalid api key",
         "invalid_api_key",
         "oauth",
@@ -441,9 +443,8 @@ class _TurnShard:
         # how much budget remains; everything else -- including all
         # network-class wording -- retries by count exactly as before
         # (card 260, review round 2 B1).
-        retry = attempt < self._max_delivery_attempts and not (
-            provider_failure_is_terminal(command.error)
-        )
+        terminal = provider_failure_is_terminal(command.error)
+        retry = attempt < self._max_delivery_attempts and not terminal
         self._event_sink(
             TurnProgressObserved(
                 correlation_id=current.correlation_id,
@@ -464,7 +465,15 @@ class _TurnShard:
                     f"delivery abandoned after {attempt} turn attempts; "
                     f"last failure: {command.error}"
                 ),
-                failure_code="HARNESS_TRANSIENT_FAILURE",
+                # A credential failure stopped this turn on purpose; hand the
+                # daemon that verdict.  A fixed transient code here made the
+                # daemon redeliver the turn up to its own attempt limit, so a
+                # rejected key still re-ran every side effect several times.
+                failure_code=(
+                    classify_harness_failure(command.error)
+                    if terminal
+                    else "HARNESS_TRANSIENT_FAILURE"
+                ),
             )
             with self._projection.lock:
                 self._projection.results.append(result)
