@@ -378,20 +378,6 @@ def add_node(
         )
     _validate_brief_ref(brief_ref)
     _validate_requires(requires)
-    _require_graph(store, graph_id)
-    if guarded_by_node_id is not None:
-        guarded = store.node(graph_id, guarded_by_node_id)
-        if guarded is None or guarded.kind != "task":
-            raise PacError(
-                PAC_NODE_SHAPE_INVALID,
-                "guarded_by_node_id must name an existing task node on this graph",
-                {"guardedByNodeId": guarded_by_node_id},
-            )
-    if store.node(graph_id, node_id) is not None:
-        raise PacError(
-            PAC_NODE_EXISTS, f"node {node_id!r} already exists on {graph_id!r}"
-        )
-    _validate_owner(store, state_dir, graph_id, owner)
     if actor_name is not None and actor_name in known_agent_names(state_dir):
         raise PacError(
             PAC_NODE_SHAPE_INVALID,
@@ -403,6 +389,19 @@ def add_node(
     db = store.write()
     try:
         _require_version(store, graph_id, expect_version)
+        if guarded_by_node_id is not None:
+            guarded = store.node(graph_id, guarded_by_node_id)
+            if guarded is None or guarded.kind != "task":
+                raise PacError(
+                    PAC_NODE_SHAPE_INVALID,
+                    "guarded_by_node_id must name an existing task node on this graph",
+                    {"guardedByNodeId": guarded_by_node_id},
+                )
+        if store.node(graph_id, node_id) is not None:
+            raise PacError(
+                PAC_NODE_EXISTS, f"node {node_id!r} already exists on {graph_id!r}"
+            )
+        _validate_owner(store, state_dir, graph_id, owner)
         if actor_name is not None and db.execute(
             "SELECT 1 FROM nodes WHERE actor_name = ?", (actor_name,)
         ).fetchone() is not None:
@@ -477,41 +476,39 @@ def add_edge(
         raise PacError(
             PAC_EDGE_INVALID, f"edge kind must be 'forward' or 'back', not {kind!r}"
         )
-    _require_graph(store, graph_id)
-    for node_id in (from_node, to_node):
-        if store.node(graph_id, node_id) is None:
-            raise PacError(
-                PAC_NODE_NOT_FOUND,
-                f"node {node_id!r} not found on graph {graph_id!r}",
-            )
     if from_node == to_node:
         raise PacError(
             PAC_EDGE_INVALID,
             f"self-edge {from_node!r} -> {to_node!r} is not a step; loops "
             "are declared as back edges between distinct nodes",
         )
-    if any(
-        edge.from_node == from_node and edge.to_node == to_node
-        for edge in store.edges(graph_id)
-    ):
-        raise PacError(
-            PAC_EDGE_EXISTS,
-            f"edge {canonical_edge(from_node, to_node)} already exists",
-        )
-    if kind == FORWARD:
-        cycle = _forward_cycle_path(store, graph_id, (from_node, to_node))
-        if cycle is not None:
-            raise PacError(
-                PAC_GRAPH_FORWARD_CYCLE,
-                "forward edges must not close an implicit cycle "
-                f"({' -> '.join(cycle)}); declare this edge --kind back "
-                "if it is a loop",
-                {"path": cycle},
-            )
-
     db = store.write()
     try:
         _require_version(store, graph_id, expect_version)
+        for node_id in (from_node, to_node):
+            if store.node(graph_id, node_id) is None:
+                raise PacError(
+                    PAC_NODE_NOT_FOUND,
+                    f"node {node_id!r} not found on graph {graph_id!r}",
+                )
+        if any(
+            edge.from_node == from_node and edge.to_node == to_node
+            for edge in store.edges(graph_id)
+        ):
+            raise PacError(
+                PAC_EDGE_EXISTS,
+                f"edge {canonical_edge(from_node, to_node)} already exists",
+            )
+        if kind == FORWARD:
+            cycle = _forward_cycle_path(store, graph_id, (from_node, to_node))
+            if cycle is not None:
+                raise PacError(
+                    PAC_GRAPH_FORWARD_CYCLE,
+                    "forward edges must not close an implicit cycle "
+                    f"({' -> '.join(cycle)}); declare this edge --kind back "
+                    "if it is a loop",
+                    {"path": cycle},
+                )
         db.execute(
             "INSERT INTO edges (graph_id, from_node, to_node, kind) VALUES (?, ?, ?, ?)",
             (graph_id, from_node, to_node, kind),

@@ -85,6 +85,10 @@ UPGRADE_DECLINED_DOWNGRADE = "declined-downgrade"
 # records unconfirmed whenever restore has not settled (phase != reconciled)
 # -- and the follow-up poll closes the state from the same CLI process.
 UPGRADE_UNCONFIRMED = "unconfirmed"
+#: Installed by the timer and deliberately NOT restarted: the owner restarts
+#: with ``hyprial autoupdate restart`` (Allen 2026-09-23: "改为用户手动回复重启
+#: 才重启"; the reply path is a command he or an agent runs).
+UPGRADE_AWAITING_RESTART = "awaiting-restart"
 UPGRADE_FAILED = "failed"
 
 # ⛔⛔ A PLACEHOLDER, NOT A MEASUREMENT. The only timing anyone has measured is
@@ -837,6 +841,18 @@ def notify_upgrade_outcome(
         detail = (
             f"主机: {host}\n"
             f"未安装: {upgrade_detail}\n"
+            f"自检: {'通过' if check.ok else '未通过'} — {check.detail}"
+        )
+    elif action == UPGRADE_AWAITING_RESTART:
+        # Installed; the running daemon is still the old code until a person
+        # (or an agent on their behalf) confirms.  Not "完成": nothing new is
+        # running yet.  Not "失败": nothing went wrong.
+        summary = f"hyprial 新版本已安装,等待确认后重启 · {upgrade_detail}"
+        detail = (
+            f"主机: {host}\n"
+            "daemon 仍在旧版本上运行,没有重启。\n"
+            "确认切换:运行 `hyprial autoupdate restart`(可自己运行,或让任一 agent 代为运行)。"
+            "重启期间消息会中断,恢复完成会再通知。\n"
             f"自检: {'通过' if check.ok else '未通过'} — {check.detail}"
         )
     elif check.ok and action == UPGRADE_INSTALLED:

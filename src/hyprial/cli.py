@@ -82,6 +82,7 @@ from hyprial.autoupdate.alert import (
     UPGRADE_DECLINED_DOWNGRADE,
     UPGRADE_FAILED,
     UPGRADE_INSTALLED,
+    UPGRADE_AWAITING_RESTART,
     UPGRADE_UNCONFIRMED,
     RestartProcessObservation,
     RestartProcessState,
@@ -8189,6 +8190,9 @@ def _perform_upgrade_and_report(*args: object, **kwargs: object) -> JsonObject:
         """
 
         restart = result.get("restart")
+        if isinstance(restart, dict) and restart.get("awaitingConfirmation") is True:
+            # Installed on purpose without a restart; the owner confirms.
+            return UPGRADE_AWAITING_RESTART
         if isinstance(restart, dict) and restart.get("confirmed") is False:
             # ⭐ Installed, daemon not yet confirmed ready. Checked before
             # `upgraded`, because this run *did* install -- so asking "did
@@ -8242,8 +8246,13 @@ def _perform_upgrade(
     *,
     restart: bool = True,
     before_restart: Callable[[JsonObject, str, str, str], JsonObject] | None = None,
+    awaiting_confirmation: bool = False,
 ) -> JsonObject:
-    """Install one exact tag and restart an existing daemon when it changes."""
+    """Install one exact tag and restart an existing daemon when it changes.
+
+    ``awaiting_confirmation`` (the timer's mode): install, never restart, and
+    record a pending restart that ``hyprial autoupdate restart`` applies.
+    """
 
     from hyprial import updates
     from hyprial.home_migration import migrate_legacy_default_home
@@ -8427,6 +8436,39 @@ def _perform_upgrade(
             }
         )
         return result
+    if awaiting_confirmation:
+        # Allen 2026-09-23: the timer no longer restarts on its own.  The old
+        # gate (restart only after a 3s squire receipt) failed on a slow
+        # receipt while the notice itself arrived, and a blocked restart was
+        # then forgotten: the next run saw "already current" and never
+        # restarted.  Now the install is recorded as a pending restart that
+        # survives until someone runs `hyprial autoupdate restart`.
+        pending = {
+            "tag": resolution.tag,
+            "commit": resolution.commit,
+            "version": installed_version,
+            "before": before,
+            "resolved": resolved,
+            "installedAt": _utc_now(),
+        }
+        _write_pending_restart(pending)
+        result.update(
+            {
+                "restartRequired": True,
+                "restart": {
+                    "attempted": False,
+                    "restarted": False,
+                    "awaitingConfirmation": True,
+                    "reason": (
+                        "installed; restart waits for confirmation: "
+                        "hyprial autoupdate restart"
+                    ),
+                    "before": before,
+                },
+                "pendingRestart": pending,
+            }
+        )
+        return result
     if not restart:
         result.update(
             {
@@ -8483,6 +8525,30 @@ def _perform_upgrade(
                 failure,
             ) from error
         result["notification"] = notification
+
+    return _restart_daemon_onto_install(
+        result,
+        before=before,
+        installed_version=installed_version,
+        resolution=resolution,
+        resolved=resolved,
+    )
+
+
+def _restart_daemon_onto_install(
+    result: JsonObject,
+    *,
+    before: JsonObject,
+    installed_version: str,
+    resolution: Any,
+    resolved: JsonObject,
+) -> JsonObject:
+    """Restart the running daemon onto the version already installed.
+
+    Shared by the upgrade path and ``hyprial autoupdate restart`` (the
+    person-confirmed restart of an upgrade that was installed without one).
+    ``resolution`` needs only ``tag`` and ``commit``.
+    """
 
     restart_result: JsonObject = {
         "attempted": True,
@@ -8610,8 +8676,8 @@ def _perform_upgrade(
             **resolved,
             "restart": restart_result,
         }
-        if notification is not None:
-            failure["notification"] = notification
+        if result.get("notification") is not None:
+            failure["notification"] = result["notification"]
         # ⭐ Write the fact down, *then* try to tell someone -- in that order,
         # never the reverse. The send can fail with nobody left to notice: there
         # is no daemon at this point, and the network is one of the things that
@@ -8894,40 +8960,6 @@ def _follow_up_restore_confirmation(
     restart["followUp"] = follow_up
 
 
-def _notify_autoupdate_restart(
-    before: JsonObject,
-    new_version: str,
-    resolved_tag: str,
-    resolved_commit: str,
-) -> JsonObject:
-    """Ask the live daemon to deliver and receipt-confirm the bus notice."""
-
-    response = _daemon_request(
-        "autoupdate.notify",
-        {
-            "oldVersion": str(before.get("version") or "unknown"),
-            "newVersion": new_version,
-            "resolvedTag": resolved_tag,
-            "resolvedCommit": resolved_commit,
-            "expectedInterruptionSeconds": _expected_interruption_seconds(),
-        },
-        timeout=15.0,
-    )
-    if not isinstance(response, dict):
-        raise CliError(
-            "INVALID_RESPONSE", "autoupdate notification result must be an object"
-        )
-    if (
-        response.get("delivered") is not True
-        or response.get("deliveryConfirmed") is not True
-    ):
-        raise CliError(
-            "AUTOUPDATE_NOTIFICATION_UNDELIVERED",
-            "daemon did not confirm restart-notification delivery",
-        )
-    return response
-
-
 @app.command()
 def upgrade(
     tag: str | None = typer.Option(
@@ -9116,6 +9148,8 @@ def autoupdate_status(
                 "pending": False,
                 "nextRunAt": None,
                 "lastRun": read_last_run(_state_dir()),
+                # Installed but not yet running; `hyprial autoupdate restart` applies it.
+                "pendingRestart": _read_pending_restart(),
             }
         else:
             if not isinstance(scheduler_result, dict):
@@ -9144,6 +9178,8 @@ def autoupdate_status(
                     {"hour": hour, "minute": minute} for hour, minute in SCHEDULE
                 ],
                 "lastRun": read_last_run(_state_dir()),
+                # Installed but not yet running; `hyprial autoupdate restart` applies it.
+                "pendingRestart": _read_pending_restart(),
                 "scheduler": scheduler,
                 "pendingAppMigrations": list(scan.pending),
                 "pendingAppMigrationsUnreadable": list(scan.unreadable),
@@ -9277,6 +9313,97 @@ def config_set(
     _execute(operation, json_output=json_output)
 
 
+PENDING_RESTART_FILE = "autoupdate-pending-restart.json"
+
+
+def _pending_restart_path() -> Path:
+    return _state_dir() / PENDING_RESTART_FILE
+
+
+def _read_pending_restart() -> JsonObject | None:
+    try:
+        value = json.loads(_pending_restart_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _write_pending_restart(record: JsonObject) -> None:
+    path = _pending_restart_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def _clear_pending_restart() -> None:
+    try:
+        _pending_restart_path().unlink()
+    except FileNotFoundError:
+        pass
+
+
+@autoupdate_app.command("restart")
+def autoupdate_restart(
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Restart the daemon onto the version the timer installed (your confirmation).
+
+    The timer installs new versions but never restarts on its own; this is the
+    confirmation.  Run it yourself or have any agent run it.  With nothing
+    pending it does nothing.
+    """
+
+    def operation() -> JsonObject:
+        from types import SimpleNamespace
+
+        from hyprial import updates
+
+        pending = _read_pending_restart()
+        if pending is None:
+            return {"ok": True, "restarted": False, "reason": "no pending restart"}
+        recorded = pending.get("before")
+        before = _running_daemon_before_upgrade(
+            str(recorded.get("version") if isinstance(recorded, dict) else "unknown")
+        )
+        if before is None:
+            # No daemon: the next start runs the installed code anyway.
+            _clear_pending_restart()
+            return {
+                "ok": True,
+                "restarted": False,
+                "reason": "daemon is not running; the next start uses the installed version",
+                "pendingRestart": pending,
+            }
+        if isinstance(recorded, dict) and recorded.get("pid") != before.get("pid"):
+            # Something already restarted it after the install; that daemon
+            # runs the installed code.
+            _clear_pending_restart()
+            return {
+                "ok": True,
+                "restarted": False,
+                "reason": "daemon was already restarted after the install",
+                "before": before,
+                "pendingRestart": pending,
+            }
+        installed = updates.read_installation()
+        installed_version = str(installed.version or pending.get("version") or "unknown")
+        resolved = pending.get("resolved") if isinstance(pending.get("resolved"), dict) else {}
+        result = _restart_daemon_onto_install(
+            {"ok": True, "confirmedRestart": True, "pendingRestart": pending},
+            before=before,
+            installed_version=installed_version,
+            resolution=SimpleNamespace(
+                tag=str(pending.get("tag") or ""), commit=str(pending.get("commit") or "")
+            ),
+            resolved=resolved,
+        )
+        _clear_pending_restart()
+        return result
+
+    _execute(operation, json_output=json_output)
+
+
 @autoupdate_app.command("run", hidden=True)
 def autoupdate_run(
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
@@ -9348,7 +9475,8 @@ def autoupdate_run(
         try:
             result = _perform_upgrade_and_report(
                 force=False,
-                before_restart=_notify_autoupdate_restart,
+                restart=False,
+                awaiting_confirmation=True,
             )
         except (CliError, ipc_errors.TransientDaemonError) as error:
             failure_record: JsonObject = attach({

@@ -144,6 +144,9 @@ hyprial <域> <子命令> --help   # 参数面
   call fails `PROVIDER_AUTHENTICATION_FAILED` with a message starting
   `TYPESAFE_CREDENTIAL_FILE_ABSENT` / `_KEY_ABSENT` / `_ENV_ABSENT`.
   (headless claude 必带 --dangerously-skip-permissions)
+- 自动升级(03:17/15:17)只安装、**不重启**:装好后 daemon 仍跑旧代码,主人会收到"新版本已安装,等待确认后重启"。
+  确认切换:`hyprial autoupdate restart [--json]`(主人自己运行,或让任一 agent 代为运行);没有待重启时它什么都不做。
+  `hyprial autoupdate status --json` 的 `pendingRestart` 显示是否有待重启。手动 `hyprial upgrade` 仍会直接重启。
 - `hyprial start --tier fast|strong|super --name ... --headless` —— 由 tier 选定 harness、模型厂商与模型
   (daemon 解析并审计)。⛔ 不要再同时写 harness 名或厂商/模型参数:`start pi --tier super` 以前会
   **静默丢掉 --tier**,起一个没有模型的 pi(落到全局默认);现在直接 `INVALID_ARGUMENT`,什么都不创建。
