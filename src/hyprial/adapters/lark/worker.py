@@ -531,18 +531,30 @@ def _run_reply_bridge(
     *,
     exit_process: Callable[[int], object] = os._exit,
 ) -> None:
-    """Make programming/import defects fatal to the supervised worker.
+    """Make the end of the daemon link fatal to the worker.
 
     The bridge runs on a background thread because the SDK owns the main
     thread.  Merely re-raising there would leave an apparently-online worker
-    whose reply consumer had died, so these defects request the same
-    supervised rebuild used by terminal stream failures.
+    whose reply consumer had died, so programming/import defects request the
+    same supervised rebuild used by terminal stream failures.
+
+    The same holds when the bridge simply ENDS: EOF, or a reset/broken pipe,
+    means the daemon end of the private socket is gone -- the daemon exited,
+    crashed, or was replaced.  Returning quietly used to leave the main thread
+    in ``stream.start()`` holding the Feishu connection forever as an orphan
+    (PPID 1), beside the replacement daemon's own worker: every adapter ran
+    twice (production 2026-09-20, and again 2026-09-23: 10 routes x 2).  A
+    live daemon rebuilds the worker on exit; a dead one needs nothing to.
     """
 
     try:
         _serve_reply_bridge(adapter, control_fd)
     except (NameError, ImportError):
         exit_process(STALE_REBUILD_EXIT_CODE)
+        return
+    except OSError:
+        pass
+    exit_process(STALE_REBUILD_EXIT_CODE)
 
 
 class _Routes:

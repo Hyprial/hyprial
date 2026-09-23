@@ -459,10 +459,12 @@ class RoutineFacade:
     def _refill_effects(self) -> None:
         if self._effect_stop.is_set():
             return
+        with self._effect_ids_lock:
+            known_ids = set(self._effect_ids)
         rows = self._projection.pending_effects(limit=10_000)
         pending_ids = {row.effect_id for row in rows}
         with self._effect_ids_lock:
-            self._effect_ids.intersection_update(pending_ids)
+            self._effect_ids.difference_update(known_ids - pending_ids)
         for row in rows:
             self._enqueue_effect(RoutineRegistry.decode_effect(row.payload))
 
