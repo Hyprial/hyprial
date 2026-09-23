@@ -144,6 +144,13 @@ hyprial <域> <子命令> --help   # 参数面
   call fails `PROVIDER_AUTHENTICATION_FAILED` with a message starting
   `TYPESAFE_CREDENTIAL_FILE_ABSENT` / `_KEY_ABSENT` / `_ENV_ABSENT`.
   (headless claude 必带 --dangerously-skip-permissions)
+- `hyprial start user-proxy --name <person>-proxy -- --route route:<adapter>:<dm-route>`
+  —— 一人一个的消息中转 agent(打包的转发程序,无模型、无凭据、串行保序)。别人发给它的消息
+  转进该人的飞书 DM(帖子标明"转述自 <原发送者>");该人在 DM 里回复时**必须以 `@收件人` 开头**
+  (agent 名、agent URI 或 `route:<adapter>:<route>`),转发时去掉标记、以 user-proxy 身份发出;
+  不写收件人 ⇒ 不转,回一条格式说明,⛔ 不猜。收件人解析不到 ⇒ `FORWARD_TARGET_UNKNOWN`(不重投,
+  原发送者收到失败通知);发送故障照常重投。`--route` 的 adapter 必须是**该人专用**的 adapter
+  (它发来的消息才算"本人")。不开飞书时用 `hyprial query <user-proxy> inbox` 看。
 - 自动升级(03:17/15:17)只安装、**不重启**:装好后 daemon 仍跑旧代码,主人会收到"新版本已安装,等待确认后重启"。
   确认切换:`hyprial autoupdate restart [--json]`(主人自己运行,或让任一 agent 代为运行);没有待重启时它什么都不做。
   `hyprial autoupdate status --json` 的 `pendingRestart` 显示是否有待重启。手动 `hyprial upgrade` 仍会直接重启。

@@ -249,20 +249,23 @@ _DECLARATIONS: dict[tuple[str, bool], dict[Capability, CapabilitySupport]] = {
         Capability.EVENT_STREAM: _unsupported(),
         Capability.MODEL_SELECT: _unsupported(),
     },
+    # docs/design-user-proxy-harness.md §8: a packaged relay, no model.
     ("user-proxy", True): {
-        Capability.HEADLESS_EXEC: _unsupported(
-            "user-proxy handler contract is not defined"
+        Capability.HEADLESS_EXEC: _native("python_worker"),
+        Capability.WAKE_PUSH: _native("python_worker"),
+        Capability.PROACTIVE_SEND: _degraded(
+            "python_worker",
+            "sends only while handling a delivery (the forward frame); "
+            "cannot send without one",
         ),
-        Capability.WAKE_PUSH: _unsupported(
-            "user-proxy handler contract is not defined"
-        ),
-        Capability.PROACTIVE_SEND: _unsupported(),
-        Capability.SESSION_LIFECYCLE: _unsupported(),
+        Capability.SESSION_LIFECYCLE: _unsupported("stateless relay"),
         Capability.TOOL_INJECTION: _unsupported(),
         Capability.PLUGIN_INJECTION: _unsupported(),
         Capability.TURN_CONTROL: _unsupported(),
-        Capability.EVENT_STREAM: _unsupported(),
-        Capability.MODEL_SELECT: _unsupported(),
+        Capability.EVENT_STREAM: _degraded(
+            "python_worker", "decode/call/send metrics only"
+        ),
+        Capability.MODEL_SELECT: _unsupported("no model"),
     },
     ("user-proxy", False): {
         Capability.INTERACTIVE_ATTACH: _unsupported(),

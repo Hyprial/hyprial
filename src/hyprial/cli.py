@@ -7445,7 +7445,7 @@ def dispatch_matrix(
 )
 def start(
     ctx: typer.Context,
-    harness_kind: str | None = typer.Argument(None, help="claude, pi, codex, dsh, or jev; optional with --tier."),
+    harness_kind: str | None = typer.Argument(None, help="claude, pi, codex, dsh, jev, or user-proxy; optional with --tier."),
     name: str = typer.Option(..., "--name"),
     tier: str | None = typer.Option(None, "--tier", help="Select fast, strong, or super; it chooses harness/provider/model, so it cannot be combined with any of them."),
     nickname: str | None = typer.Option(None, "--nickname"),
@@ -7543,11 +7543,37 @@ def start(
                 ipc_errors.INVALID_ARGUMENT,
                 "harness kind must be claude, pi, codex, dsh, jev, or user-proxy (or use --tier without explicit model selection)",
             )
+        proxy_route: str | None = None
         if harness_kind == "user-proxy":
-            raise CliError(
-                "UNSUPPORTED_CAPABILITY",
-                "user-proxy handler contract is not defined",
-            )
+            # One person's relay (docs/design-user-proxy-harness.md): the only
+            # runtime argument is the person's DM route, which is where
+            # everyone else's messages are forwarded to.
+            if len(runtime_args) != 2 or runtime_args[0] != "--route":
+                raise CliError(
+                    ipc_errors.INVALID_ARGUMENT,
+                    "user-proxy needs exactly: -- --route route:<adapter>:<route> "
+                    "(the person's DM route)",
+                )
+            from hyprial.uri import parse_route_uri
+
+            proxy_route = runtime_args[1]
+            if parse_route_uri(proxy_route) is None:
+                raise CliError(
+                    ipc_errors.INVALID_ARGUMENT,
+                    f"--route must be route:<adapter>:<route>, got {proxy_route!r}",
+                )
+            if tier is not None or model_provider is not None or model is not None:
+                raise CliError(
+                    ipc_errors.INVALID_ARGUMENT,
+                    "user-proxy relays and has no model; --tier, --provider, and --model are not accepted",
+                )
+            if resume is not None or tmux:
+                raise CliError(
+                    ipc_errors.INVALID_ARGUMENT,
+                    "user-proxy does not support --resume or --tmux",
+                )
+            runtime_args = ()
+            headless = True
         if harness_kind == "jev":
             if runtime_args:
                 raise CliError(
@@ -7668,7 +7694,7 @@ def start(
                 f"{harness_kind} does not support interactive_attach; "
                 "use --headless or start an interactive claude session instead",
             )
-        if harness_kind not in {"dsh", "jev"}:
+        if harness_kind not in {"dsh", "jev", "user-proxy"}:
             # Pin the harness binary by absolute path at registration: the
             # daemon that later spawns it may run under a launchd/cron PATH
             # that lacks user bin dirs.  Older daemons ignore the unknown
@@ -7689,19 +7715,30 @@ def start(
             harness=harness_kind,
             runtime="headless",
             cwd=resolved_cwd,
-            provider=None if harness_kind == "jev" else model_provider,
-            model=None if harness_kind == "jev" else model,
+            provider=None if harness_kind in {"jev", "user-proxy"} else model_provider,
+            model=None if harness_kind in {"jev", "user-proxy"} else model,
         )
         params: JsonObject = {
             # The IPC key stays "provider" so this CLI can talk to a daemon
             # running an older build (and vice versa).
             "provider": harness_kind,
             "name": name,
-            "headless": True if harness_kind == "jev" else headless,
+            "headless": True if harness_kind in {"jev", "user-proxy"} else headless,
             "args": list(runtime_args),
             "cwd": str(resolved_cwd),
         }
-        if harness_kind == "jev":
+        if harness_kind == "user-proxy":
+            assert proxy_route is not None
+            params["command"] = [
+                os.path.abspath(sys.executable),
+                "-m",
+                "hyprial.harnesses._user_proxy_worker",
+                "--kind",
+                "user-proxy",
+                "--route",
+                proxy_route,
+            ]
+        elif harness_kind == "jev":
             params["command"] = [
                 os.path.abspath(sys.executable),
                 "-m",
@@ -7713,9 +7750,9 @@ def start(
             params["command"] = [os.path.abspath(pinned_binary)]
         if nickname is not None:
             params["nickname"] = nickname
-        if model_provider is not None and harness_kind != "jev":
+        if model_provider is not None and harness_kind not in {"jev", "user-proxy"}:
             params["modelProvider"] = model_provider
-        if model is not None and harness_kind != "jev":
+        if model is not None and harness_kind not in {"jev", "user-proxy"}:
             params["model"] = model
         if resume is not None:
             # Headless resume: the daemon refuses a session it cannot find

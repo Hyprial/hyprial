@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import threading
 import time
 from dataclasses import dataclass, replace
@@ -40,6 +41,30 @@ if TYPE_CHECKING:
 
 HARNESS_FAILURE_MAX_ATTEMPTS = 3
 HARNESS_FAILURE_BACKOFF_MS = (1_000, 5_000)
+#: Settlement code when a harness asks for a forward on a daemon that was
+#: composed without a forwarder.  Not permanent: it is a wiring fault that a
+#: restart fixes, and the sender hears about every attempt.
+FORWARD_UNAVAILABLE = "FORWARD_UNAVAILABLE"
+
+
+@dataclass(frozen=True, slots=True)
+class ForwardOutcome:
+    """What sending one forward AS the worker produced.
+
+    ``accepted`` means the send boundary took the message (queued for an
+    agent, or posted for a route).  Otherwise ``failure_code`` is the stable
+    code the delivery is settled with.
+    """
+
+    accepted: bool
+    failure_code: str | None = None
+    error: str | None = None
+
+
+#: ``(original inbox row, to, text) -> outcome``.  Supplied by the
+#: application, which owns the one send boundary (agent/route/user targets);
+#: the runtime only decides WHEN and settles the original row afterwards.
+Forwarder = Callable[[InboxMessage, str, str], ForwardOutcome]
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,6 +262,7 @@ class DaemonEventBridge:
         logger: Callable[..., None] | None = None,
         clock_ms: Callable[[], int] | None = None,
         usage_limit_observer: Callable[[str], None] | None = None,
+        forwarder: Forwarder | None = None,
     ) -> None:
         self.state_dir = Path(state_dir)
         self.node_id = node_id
@@ -282,6 +308,19 @@ class DaemonEventBridge:
         #: is never reported as delivered.
         self._pending_notices: dict[str, InboxMessage] = {}
         self._notice_failures_logged: set[str] = set()
+        # Forwards (user-proxy).  The send can post to Lark and has no bound
+        # of its own, so it runs on one FIFO thread instead of the tick; one
+        # thread keeps the order in which the worker finished its turns.
+        # Outcomes come back through a queue and are settled on the tick, the
+        # only thread that touches the fail-loud state above.
+        self._forwarder = forwarder
+        self._forward_jobs: queue.Queue[
+            tuple[InboxMessage, HarnessResult] | None
+        ] = queue.Queue()
+        self._forward_outcomes: queue.Queue[
+            tuple[InboxMessage, HarnessResult, ForwardOutcome]
+        ] = queue.Queue()
+        self._forward_thread: threading.Thread | None = None
 
     def start(self) -> DaemonRecoverySummary:
         if self._started:
@@ -669,6 +708,27 @@ class DaemonEventBridge:
 
     def _complete_harness_results(self) -> int:
         settled = 0
+        # Forwards the pump finished since the last tick settle first, here,
+        # under the same settlement owner as every other harness result.
+        while True:
+            try:
+                original, result, outcome = self._forward_outcomes.get_nowait()
+            except queue.Empty:
+                break
+            if outcome.accepted:
+                self._finish_attempt(result.delivery_id)
+                if self.inbox.ack(original.recipient, original.message_id).acknowledged:
+                    settled += 1
+                continue
+            failed = replace(
+                result,
+                status=HarnessResultStatus.FAILED,
+                output="",
+                error=outcome.error or outcome.failure_code,
+                failure_code=outcome.failure_code or "HARNESS_TRANSIENT_FAILURE",
+            )
+            if self._settle_failed_result(failed, original):
+                settled += 1
         for result in self.harnesses.drain_results():
             if result.status is HarnessResultStatus.INTERRUPTED:
                 continue
@@ -694,69 +754,28 @@ class DaemonEventBridge:
                     self._log_missing_failure_route(result)
                 continue
             if result.status is HarnessResultStatus.FAILED:
-                failure_code = result.failure_code or classify_harness_failure(
-                    result.error
-                )
-                try:
-                    failure = self.inbox.settle_harness_failure(
-                        original.recipient,
-                        original.message_id,
-                        failure_code,
-                        permanent=harness_failure_is_permanent(failure_code),
-                        max_attempts=HARNESS_FAILURE_MAX_ATTEMPTS,
-                        backoff_ms=HARNESS_FAILURE_BACKOFF_MS,
-                        now_ms=self._clock_ms(),
-                    )
-                except KeyError:
-                    # A concurrent public ack can retire the row after the
-                    # read above.  That is a completed ownership decision,
-                    # not a reason to crash/restart the inbox authority.
+                if self._settle_failed_result(result, original):
+                    settled += 1
+                continue
+            if result.forward_to is not None:
+                # Before the reply-intent short-circuit below: a person
+                # answering in-thread arrives as a reply, and acking it
+                # without sending would drop the forward silently.  The
+                # attempt stays open until the send settles.
+                if self._forwarder is None:
+                    if self._settle_failed_result(
+                        replace(
+                            result,
+                            status=HarnessResultStatus.FAILED,
+                            error="this daemon cannot forward",
+                            failure_code=FORWARD_UNAVAILABLE,
+                        ),
+                        original,
+                    ):
+                        settled += 1
                     continue
-                if self._logger is not None:
-                    self._logger(
-                        "error" if failure.terminal else "warn",
-                        "daemon",
-                        (
-                            "harness.delivery.terminal_failed"
-                            if failure.terminal
-                            else "harness.delivery.retry_scheduled"
-                        ),
-                        messageId=failure.message_id,
-                        recipient=failure.recipient,
-                        failureCode=failure.failure_code,
-                        attempts=failure.attempts,
-                        maxAttempts=failure.max_attempts,
-                        permanent=failure.permanent,
-                        terminal=failure.terminal,
-                        **(
-                            {"terminalReason": failure.terminal_reason}
-                            if failure.terminal_reason is not None
-                            else {"nextAttemptMs": failure.next_attempt_ms}
-                        ),
-                    )
-                if (
-                    failure.failure_code == "PROVIDER_USAGE_LIMIT"
-                    and self._usage_limit_observer is not None
-                ):
-                    try:
-                        self._usage_limit_observer(failure.recipient)
-                    except Exception as error:  # noqa: BLE001 - an observer never breaks settlement
-                        if self._logger is not None:
-                            self._logger(
-                                "error",
-                                "daemon",
-                                "quota_watchdog.observe_failed",
-                                recipient=failure.recipient,
-                                error=type(error).__name__,
-                            )
-                # The sender that is waiting for this receipt is told with
-                # this attempt's own evidence.  The owner's quota watchdog
-                # above is a separate, retained channel and does not stand in
-                # for this one (the 2026-09-21 incident: the owner was told
-                # within a second and the sender was told nothing).
-                self._loud_harness_failure(result, original, failure=failure)
-                self._finish_attempt(result.delivery_id)
-                settled += 1
+                self._start_forward_thread()
+                self._forward_jobs.put((original, result))
                 continue
             self._finish_attempt(result.delivery_id)
             if original.intent == "reply":
@@ -768,6 +787,112 @@ class DaemonEventBridge:
             if acknowledged:
                 settled += 1
         return settled
+
+    def _settle_failed_result(
+        self, result: HarnessResult, original: InboxMessage
+    ) -> bool:
+        """Settle one FAILED turn against its still-pending inbox row."""
+
+        failure_code = result.failure_code or classify_harness_failure(
+            result.error
+        )
+        try:
+            failure = self.inbox.settle_harness_failure(
+                original.recipient,
+                original.message_id,
+                failure_code,
+                permanent=harness_failure_is_permanent(failure_code),
+                max_attempts=HARNESS_FAILURE_MAX_ATTEMPTS,
+                backoff_ms=HARNESS_FAILURE_BACKOFF_MS,
+                now_ms=self._clock_ms(),
+            )
+        except KeyError:
+            # A concurrent public ack can retire the row after the
+            # read above.  That is a completed ownership decision,
+            # not a reason to crash/restart the inbox authority.
+            return False
+        if self._logger is not None:
+            self._logger(
+                "error" if failure.terminal else "warn",
+                "daemon",
+                (
+                    "harness.delivery.terminal_failed"
+                    if failure.terminal
+                    else "harness.delivery.retry_scheduled"
+                ),
+                messageId=failure.message_id,
+                recipient=failure.recipient,
+                failureCode=failure.failure_code,
+                attempts=failure.attempts,
+                maxAttempts=failure.max_attempts,
+                permanent=failure.permanent,
+                terminal=failure.terminal,
+                **(
+                    {"terminalReason": failure.terminal_reason}
+                    if failure.terminal_reason is not None
+                    else {"nextAttemptMs": failure.next_attempt_ms}
+                ),
+            )
+        if (
+            failure.failure_code == "PROVIDER_USAGE_LIMIT"
+            and self._usage_limit_observer is not None
+        ):
+            try:
+                self._usage_limit_observer(failure.recipient)
+            except Exception as error:  # noqa: BLE001 - an observer never breaks settlement
+                if self._logger is not None:
+                    self._logger(
+                        "error",
+                        "daemon",
+                        "quota_watchdog.observe_failed",
+                        recipient=failure.recipient,
+                        error=type(error).__name__,
+                    )
+        # The sender that is waiting for this receipt is told with
+        # this attempt's own evidence.  The owner's quota watchdog
+        # above is a separate, retained channel and does not stand in
+        # for this one (the 2026-09-21 incident: the owner was told
+        # within a second and the sender was told nothing).
+        self._loud_harness_failure(result, original, failure=failure)
+        self._finish_attempt(result.delivery_id)
+        return True
+
+    # ------------------------------------------------------------- forwards
+
+    def _start_forward_thread(self) -> None:
+        if self._forward_thread is not None:
+            return
+        self._forward_thread = threading.Thread(
+            target=self._run_forwards, name="hyprial-forward-pump", daemon=True
+        )
+        self._forward_thread.start()
+
+    def _run_forwards(self) -> None:
+        forwarder = self._forwarder
+        assert forwarder is not None
+        while True:
+            job = self._forward_jobs.get()
+            if job is None:
+                return
+            original, result = job
+            assert result.forward_to is not None
+            try:
+                outcome = forwarder(original, result.forward_to, result.output)
+            except Exception as error:  # noqa: BLE001 - a send fault is a failed forward, never a dead pump
+                outcome = ForwardOutcome(
+                    False,
+                    "HARNESS_TRANSIENT_FAILURE",
+                    f"forward raised {type(error).__name__}",
+                )
+            self._forward_outcomes.put((original, result, outcome))
+
+    def _halt_forward_thread(self) -> None:
+        thread = self._forward_thread
+        self._forward_thread = None
+        if thread is None:
+            return
+        self._forward_jobs.put(None)
+        thread.join(timeout=5.0)
 
     # ------------------------------------------------ availability fail-loud
 
@@ -1160,6 +1285,7 @@ class DaemonEventBridge:
         # Halt the retry pump before owned resources close, so its blocking
         # facade call cannot race teardown.
         self._halt_retry_pump()
+        self._halt_forward_thread()
         errors = self._close_owned_resources()
         try:
             self._marker.finish()

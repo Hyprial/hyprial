@@ -297,6 +297,6 @@ class HarnessLauncher:
             raise HarnessStartError(
                 spec.harness,
                 (),
-                "unsupported harness; expected claude, pi, codex, dsh, or jev",
+                "unsupported harness; expected claude, pi, codex, dsh, jev, or user-proxy",
             ) from error
         return connector.launch(spec)

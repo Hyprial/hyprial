@@ -256,7 +256,7 @@ from .route_delivery import (
     parse_route_resources,
     resolve_gateway_routes,
 )
-from .runtime import DaemonEventBridge
+from .runtime import DaemonEventBridge, ForwardOutcome
 from .top import build_top_snapshot
 from .harness_actor import HarnessRuntimeActor
 
@@ -661,6 +661,24 @@ class _WorkerStatusSnapshot:
         # loading a second time.  None when the store had nothing to give.
         self.desired = desired
 
+
+
+#: A forward (user-proxy) whose recipient can never resolve by retrying.
+FORWARD_TARGET_UNKNOWN = "FORWARD_TARGET_UNKNOWN"
+#: Send-boundary refusals that are about the ADDRESS, not the moment: the
+#: name matches nothing / matches twice / is malformed, or the route or its
+#: adapter is not configured.  Anything else (a Lark send fault) is retried.
+_FORWARD_UNKNOWN_TARGET_CODES = frozenset(
+    {
+        ipc_errors.TARGET_IS_NODE,
+        ipc_errors.UNSUPPORTED_TARGET,
+        ipc_errors.AMBIGUOUS_TARGET,
+        ipc_errors.INVALID_ARGUMENT,
+        ipc_errors.ROUTE_ADAPTER_UNCONFIGURED,
+        "ROUTE_NOT_CONFIGURED",
+        "ROUTE_FANOUT_MEMBER_INVALID",
+    }
+)
 
 class DaemonApplication:
     """Own the real runtime graph and expose it through newline-delimited IPC."""
@@ -1921,6 +1939,7 @@ class DaemonApplication:
                 if self._quota_watchdog is not None
                 else None
             ),
+            forwarder=self._forward_as_actor,
         )
         duplicate_watch: DuplicateInstanceWatch | None = None
         try:
@@ -2766,6 +2785,62 @@ class DaemonApplication:
         if self._presence is not None and self._presence.actor_online(recipient):
             return False
         return True
+
+    def _forward_as_actor(
+        self, original: InboxMessage, to: str, text: str
+    ) -> ForwardOutcome:
+        """Send one relayed turn AS the worker that received ``original``.
+
+        The worker (user-proxy) only names the recipient; this is the same
+        send boundary ``message.send`` uses, so aliases, ``user:`` and
+        ``route:`` targets resolve exactly as they do for any agent.  The
+        operation id is derived from the original row, so a redelivered
+        turn resends idempotently instead of posting twice.
+        """
+
+        operation_id = f"forward:{original.message_id}"
+        try:
+            if is_route_target(to):
+                # A route post can only speak as the bot, so it is attributed
+                # in the text.  Attribute it to whoever the proxy is relaying
+                # (the original sender), not to the proxy itself.
+                self._deliver_route_target(
+                    to,
+                    text=text,
+                    sender=original.sender,
+                    conversation=original.conversation_id,
+                    operation_id=operation_id,
+                    index=0,
+                    resources=(),
+                )
+                return ForwardOutcome(True)
+            reply = self.handle(
+                "message.send",
+                {
+                    "from": original.recipient,
+                    "to": [to],
+                    "message": text,
+                    "conversationId": original.conversation_id,
+                    "idempotencyKey": operation_id,
+                },
+            )
+        except DaemonRequestError as error:
+            code = (
+                FORWARD_TARGET_UNKNOWN
+                if error.code in _FORWARD_UNKNOWN_TARGET_CODES
+                else error.code
+            )
+            return ForwardOutcome(False, code, f"{error.code}: {error}"[:500])
+        deliveries = reply.get("deliveries") if isinstance(reply, dict) else None
+        first = deliveries[0] if isinstance(deliveries, list) and deliveries else {}
+        if isinstance(first, dict) and first.get("accepted") is True:
+            return ForwardOutcome(True)
+        code = first.get("code") if isinstance(first, dict) else None
+        return ForwardOutcome(
+            False,
+            "HARNESS_TRANSIENT_FAILURE",
+            f"forward to {to} was not accepted ({code or 'no code'})",
+        )
 
     def _deliver_route_target(
         self,

@@ -52,6 +52,9 @@ _PERMANENT_FAILURE_CODES = frozenset(
         "PROVIDER_BILLING_ERROR",
         "PROVIDER_PERMISSION_DENIED",
         "PROVIDER_INVALID_REQUEST",
+        # A forward whose recipient cannot be resolved will never resolve on
+        # redelivery; the sender is told once (docs/design-user-proxy-harness.md §5).
+        "FORWARD_TARGET_UNKNOWN",
     }
 )
 
@@ -132,6 +135,10 @@ class HarnessResult:
     output: str = ""
     error: str | None = None
     failure_code: str | None = None
+    #: Set only by a harness that relays (user-proxy): the completed turn is
+    #: sent AS the worker to this address instead of replied to the sender.
+    #: The daemon performs the send; the harness never holds a send path.
+    forward_to: str | None = None
 
 
 @runtime_checkable
