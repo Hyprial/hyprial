@@ -42,7 +42,13 @@ from hyprial.agents import (
 )
 from hyprial.adapters.lark.sdk import LarkApiError
 from hyprial.transfer.container import CONTAINER_PYTHON as _CONTAINER_PYTHON
-from hyprial.transfer.session_files import TRANSFERABLE_HARNESSES
+from hyprial.transfer.session_files import (
+    TRANSFERABLE_HARNESSES,
+    SessionFileError,
+    SessionFileNotFound,
+    locate_session_file,
+    pi_session_file,
+)
 from hyprial.adapters.lark.scopes import (
     LarkScopeClient,
     LarkScopeRecovery,
@@ -5435,6 +5441,14 @@ class DaemonApplication:
                     ipc_errors.INVALID_ARGUMENT,
                     "start cannot create a foreign-owner entity; use transfer receive",
                 )
+            # An explicit resume request: only when the CALLER sent a ref.
+            # A spec that merely carries one (every running spec does after
+            # sync_harness_session_refs) keeps #190's quiet fallback on the
+            # daemon-restart path; a person who asked for a conversation must
+            # get that conversation or a refusal, never a fresh session.
+            resume_ref = spec.session_ref if "sessionRef" in params else None
+            if resume_ref is not None:
+                self._require_resumable_session(spec, resume_ref)
             actor_uri = self._canonical_harness_uri(spec.name, spec)
             prior_agent = self.agents.get(actor_uri)
             operation_id = str(
@@ -5447,6 +5461,13 @@ class DaemonApplication:
                     self._lifecycle_spec(spec),
                 )
             )
+            if resume_ref is not None:
+                # The create operation has settled; readiness is expected to
+                # be there already, so the check waits one margin, not a
+                # budget of its own.
+                self._verify_started_resume(
+                    spec, resume_ref, timeout=LIFECYCLE_WAIT_MARGIN_SECONDS
+                )
             handover = (
                 HandoverNotice(
                     actor=prior_agent.actor,
@@ -5465,6 +5486,7 @@ class DaemonApplication:
                 "operationId": operation_id,
                 "changed": bool(result.completed_effects),
                 "actor": actor_uri,
+                **({"sessionRef": resume_ref} if resume_ref is not None else {}),
                 **(
                     {"harnessHandover": handover.to_json()}
                     if handover is not None
@@ -8393,6 +8415,95 @@ class DaemonApplication:
             "sessionRef": spec.session_ref,
             "operationId": operation_id,
         }
+
+    def _require_resumable_session(self, spec: HarnessLaunchSpec, session_ref: str) -> None:
+        """Refuse a resume whose transcript the harness would not find.
+
+        Checked BEFORE anything starts, in the same HOME the daemon hands its
+        children: pi given an unknown ``--session-id`` warns and begins a
+        fresh session under that very id, so the post-start id comparison in
+        :meth:`_verify_started_resume` passes on a cold start.  For pi this
+        file check is the gate that holds.
+        """
+
+        if spec.harness not in TRANSFERABLE_HARNESSES or not spec.headless:
+            raise DaemonRequestError(
+                ipc_errors.INVALID_ARGUMENT,
+                f"resuming a session is supported for headless "
+                f"{', '.join(sorted(TRANSFERABLE_HARNESSES))} only, not "
+                f"{spec.harness}{'' if spec.headless else ' (interactive)'}",
+            )
+        cwd = spec.cwd or os.getcwd()
+        try:
+            agent_dir = os.environ.get("PI_CODING_AGENT_DIR")
+            if spec.harness == "pi" and agent_dir:
+                located = pi_session_file(Path(agent_dir).expanduser(), cwd, session_ref)
+            else:
+                located = locate_session_file(
+                    spec.harness, cwd, session_ref, home=Path.home()
+                )
+            if not located.is_file():
+                raise SessionFileNotFound(f"not a regular session file: {located}")
+        except SessionFileError as error:
+            raise DaemonRequestError(
+                ipc_errors.RESUME_SESSION_NOT_FOUND,
+                f"cannot resume {spec.harness} session {session_ref!r} for "
+                f"{spec.name}: {error}; nothing was started",
+                {
+                    "harness": spec.harness,
+                    "name": spec.name,
+                    "sessionRef": session_ref,
+                    "cwd": cwd,
+                    "reason": (
+                        "not-found"
+                        if isinstance(error, SessionFileNotFound)
+                        else "unusable"
+                    ),
+                },
+            ) from error
+
+    def _verify_started_resume(
+        self, spec: HarnessLaunchSpec, session_ref: str, *, timeout: float
+    ) -> None:
+        """The started worker must be ON the requested session, or not run.
+
+        Same check as transfer.receive's strict resume.  On failure the worker
+        is deactivated: an error with a fresh-session worker still running
+        behind it under the same name is the one outcome worse than either.
+        """
+
+        assert self._harnesses is not None
+        ready = self._harnesses.wait_ready(spec.harness, spec.name, timeout)
+        resumed = (
+            self._harnesses.session_refs().get((spec.harness, spec.name))
+            if ready
+            else None
+        )
+        if ready and resumed == session_ref:
+            return
+        self._run_lifecycle_operation(
+            LifecycleOperation.deactivate(
+                f"lifecycle-start-resume-undo:{uuid4().hex}",
+                self._lifecycle_spec(spec),
+            )
+        )
+        detail = (
+            f"did not become ready within {timeout}s"
+            if not ready
+            else f"established session {resumed!r} instead"
+        )
+        raise DaemonRequestError(
+            ipc_errors.STRICT_RESUME_FAILED,
+            f"resume of {spec.harness} session {session_ref!r} for {spec.name} "
+            f"did not hold: the worker {detail}; it was stopped rather than "
+            "left running on a fresh session",
+            {
+                "harness": spec.harness,
+                "name": spec.name,
+                "sessionRef": session_ref,
+                "established": resumed,
+            },
+        )
 
     def _transfer_undo_receive(self, spec: HarnessLaunchSpec, actor_uri: str) -> None:
         """Compensate a failed receive through the same durable saga owner.

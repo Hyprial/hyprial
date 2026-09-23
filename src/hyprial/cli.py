@@ -7446,7 +7446,7 @@ def start(
     ctx: typer.Context,
     harness_kind: str | None = typer.Argument(None, help="claude, pi, codex, dsh, or jev; optional with --tier."),
     name: str = typer.Option(..., "--name"),
-    tier: str | None = typer.Option(None, "--tier", help="Select fast, strong, or super only when harness/provider/model are not explicit."),
+    tier: str | None = typer.Option(None, "--tier", help="Select fast, strong, or super; it chooses harness/provider/model, so it cannot be combined with any of them."),
     nickname: str | None = typer.Option(None, "--nickname"),
     cwd: Path | None = typer.Option(None, "--cwd"),
     headless: bool = typer.Option(False, "--headless"),
@@ -7459,7 +7459,13 @@ def start(
         ),
     ),
     resume: str | None = typer.Option(
-        None, "--resume", help="Resume an existing interactive Claude session."
+        None,
+        "--resume",
+        help=(
+            "Resume an existing session by id: interactive claude, or headless "
+            "claude, pi, and codex (refused, never a fresh session, when the "
+            "session cannot be found or does not hold)."
+        ),
     ),
     model_provider: str | None = typer.Option(
         None,
@@ -7489,6 +7495,36 @@ def start(
             or any(arg in {"--provider", "--model"} or arg.startswith(("--provider=", "--model="))
                    for arg in runtime_args)
         )
+        if tier is not None and explicit_selection:
+            # --tier CHOOSES harness/provider/model.  Combined with an explicit
+            # one it used to be dropped without a word, starting e.g. a pi with
+            # no model vendor or model, silently running the harness's global default
+            # (2026-09-21: `start pi --tier super` -> kimi-coding/k3 -> 403).
+            # Refuse here, before any daemon call: no agent, no desired state.
+            given = [
+                label
+                for label, present in (
+                    (f"harness {harness_kind!r}", harness_kind is not None),
+                    ("--provider", model_provider is not None),
+                    ("--model", model is not None),
+                    (
+                        "--provider/--model after '--'",
+                        any(
+                            arg in {"--provider", "--model"}
+                            or arg.startswith(("--provider=", "--model="))
+                            for arg in runtime_args
+                        ),
+                    ),
+                )
+                if present
+            ]
+            raise CliError(
+                ipc_errors.INVALID_ARGUMENT,
+                f"--tier {tier} chooses harness/provider/model itself; it "
+                f"cannot be combined with {', '.join(given)}. Use either "
+                f"`hyprial start --tier {tier} --name ...` or an explicit harness "
+                "with --provider/--model",
+            )
         if tier is not None and not explicit_selection:
             # Resolve inside the daemon so the audit uses its own runtime
             # profile, not caller-supplied evidence.  Selection is static
@@ -7546,10 +7582,14 @@ def start(
                 )
         resolved_cwd = (cwd or Path.cwd()).expanduser().resolve()
         if resume is not None:
-            if harness_kind != "claude" or headless:
+            if not (
+                (harness_kind == "claude" and not headless)
+                or (headless and harness_kind in {"claude", "pi", "codex"})
+            ):
                 raise CliError(
                     ipc_errors.INVALID_ARGUMENT,
-                    "--resume is only supported for interactive claude sessions",
+                    "--resume is supported for interactive claude and for headless "
+                    "claude, pi, and codex",
                 )
             if not resume.strip():
                 raise CliError(
@@ -7676,6 +7716,12 @@ def start(
             params["modelProvider"] = model_provider
         if model is not None and harness_kind != "jev":
             params["model"] = model
+        if resume is not None:
+            # Headless resume: the daemon refuses a session it cannot find
+            # (RESUME_SESSION_NOT_FOUND, before anything starts) and one that
+            # does not hold (STRICT_RESUME_FAILED, worker stopped).  Without
+            # this key the daemon keeps today's default: a fresh session.
+            params["sessionRef"] = resume.strip()
         # Harness readiness is bounded by the lifecycle manager's operation
         # deadline, and this wait must OUTLAST the daemon-side wait
         # (deadline + wait margin): a shorter budget abandoned a healthy
@@ -7689,6 +7735,15 @@ def start(
                 LIFECYCLE_OPERATION_DEADLINE_SECONDS
                 + LIFECYCLE_WAIT_MARGIN_SECONDS
                 + LIFECYCLE_IPC_MARGIN_SECONDS
+                # A resume adds the daemon's readiness check (one margin) and,
+                # when it fails, one undo operation (a full operation wait).
+                + (
+                    LIFECYCLE_WAIT_MARGIN_SECONDS
+                    + LIFECYCLE_OPERATION_DEADLINE_SECONDS
+                    + LIFECYCLE_WAIT_MARGIN_SECONDS
+                    if "sessionRef" in params
+                    else 0.0
+                )
             ),
         )
 

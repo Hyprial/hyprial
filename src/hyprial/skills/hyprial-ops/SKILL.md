@@ -144,6 +144,15 @@ hyprial <域> <子命令> --help   # 参数面
   call fails `PROVIDER_AUTHENTICATION_FAILED` with a message starting
   `TYPESAFE_CREDENTIAL_FILE_ABSENT` / `_KEY_ABSENT` / `_ENV_ABSENT`.
   (headless claude 必带 --dangerously-skip-permissions)
+- `hyprial start --tier fast|strong|super --name ... --headless` —— 由 tier 选定 harness、模型厂商与模型
+  (daemon 解析并审计)。⛔ 不要再同时写 harness 名或厂商/模型参数:`start pi --tier super` 以前会
+  **静默丢掉 --tier**,起一个没有模型的 pi(落到全局默认);现在直接 `INVALID_ARGUMENT`,什么都不创建。
+  要指定模型就用显式写法:`hyprial start pi` 加厂商与模型两个选项(见 `hyprial start --help`)。
+- `hyprial start claude|pi|codex --headless --resume <session-id> --name ... --cwd ...` —— 恢复一个既有会话
+  (不加 `--resume` 仍是新会话)。id 取自 start/transfer 返回的 `sessionRef`,或 transcript 文件名
+  (claude `~/.claude/projects/<编码cwd>/<id>.jsonl`)。要么续上那个会话,要么拒绝,⛔ 不会悄悄换新会话:
+  找不到 transcript ⇒ `RESUME_SESSION_NOT_FOUND`(什么都不起);起了却没续上 ⇒ `STRICT_RESUME_FAILED`(worker 已停)。
+  `--cwd` 要与原会话一致(pi 只在当前 cwd 的会话目录里找)。
 - `hyprial start claude --tmux ...`(交互式 TUI 放进 detached tmux)可能返回 `CLAUDE_CONFIRMATION_REQUIRED`:
   Claude Code 自己的启动确认在等人按(`data.prompt` = `folder-trust` 信任工作目录,或 `development-channels`
   开发通道警告)。这两个确认是 CC 故意留给人的,没有受支持的预先同意 ⇒ 会话**保留**,按 `data.attach`

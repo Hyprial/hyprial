@@ -179,6 +179,11 @@ TRANSFER_CONFLICT = "TRANSFER_CONFLICT"
 TRANSFER_PIN_CONFLICT = "TRANSFER_PIN_CONFLICT"
 TRANSFER_START_FAILED = "TRANSFER_START_FAILED"
 STRICT_RESUME_FAILED = "STRICT_RESUME_FAILED"
+# Minted by lifecycle.start when a start asks to resume a session
+# (``sessionRef``) whose transcript the harness cannot find.  Refused BEFORE
+# anything starts: pi given an unknown --session-id silently begins a fresh
+# session under that very id, so an after-the-fact id comparison cannot tell.
+RESUME_SESSION_NOT_FOUND = "RESUME_SESSION_NOT_FOUND"
 # Minted by the daemon's transfer.receive container path (missing docker,
 # missing image) and passed through its IPC error channel; the CLI-side
 # orchestrator raises the same code for its own preflight so the operator
