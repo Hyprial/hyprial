@@ -133,7 +133,7 @@ class _ReactionEffectStore:
         self.connection.row_factory = sqlite3.Row
         self.connection.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
         self.connection.execute("PRAGMA journal_mode = WAL")
-        self.connection.execute("PRAGMA synchronous = FULL")
+        self.connection.execute("PRAGMA synchronous = NORMAL")
         self._create_schema()
         try:
             path.chmod(0o600)

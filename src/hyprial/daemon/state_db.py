@@ -162,7 +162,7 @@ class StateDatabase:
                 ).lower()
                 if mode != "wal":
                     cursor.execute("PRAGMA journal_mode=WAL")
-                cursor.execute("PRAGMA synchronous=FULL")
+                cursor.execute("PRAGMA synchronous=NORMAL")
                 # The shrinking timeout belongs only to initialization. Keep
                 # the caller's subsequent SQL/BEGIN busy-handler budget intact.
                 cursor.execute(f"PRAGMA busy_timeout={int(_BUSY_TIMEOUT_SECONDS * 1000)}")

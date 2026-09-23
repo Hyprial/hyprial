@@ -162,7 +162,7 @@ class InboxService:
         self._db = sqlite3.connect(database, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
-        self._db.execute("PRAGMA synchronous=FULL")
+        self._db.execute("PRAGMA synchronous=NORMAL")
         self._transport = transport
         self.retry_policy = retry_policy or RetryPolicy()
         self.max_inbox_items = max_inbox_items

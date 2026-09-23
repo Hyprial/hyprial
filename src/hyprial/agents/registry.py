@@ -11,7 +11,7 @@ and ``pi:foo`` minted the *same* four-segment URI and silently fought over it.
 This module owns the identity.  Storage is one real SQLite database
 (``~/.hyprial/state/agents.sqlite3`` — the name says sqlite because it is
 sqlite), following the conventions ``inbox.sqlite3`` established
-(WAL journal, ``synchronous=FULL``, a busy timeout for cross-process
+(WAL journal, ``synchronous=NORMAL``, a busy timeout for cross-process
 writers, one ``RLock`` in-process).  The invariants live in the schema
 instead of in code:
 
@@ -587,7 +587,7 @@ def _connect(database: Path) -> sqlite3.Connection:
     """Open the agents database with the repo's established sqlite settings.
 
     Mirrors ``inbox.sqlite3`` (`hyprial.inbox.service`): WAL journal and
-    ``synchronous=FULL``; adds a busy timeout because two processes legally
+    ``synchronous=NORMAL``; adds a busy timeout because two processes legally
     write this database — the daemon, and offline CLI tooling such as
     ``hyprial adapter remove``.  ``foreign_keys=ON`` is what arms the pin
     cascade; SQLite leaves it off per-connection by default.
@@ -597,7 +597,7 @@ def _connect(database: Path) -> sqlite3.Connection:
     connection = sqlite3.connect(database, check_same_thread=False)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA journal_mode=WAL")
-    connection.execute("PRAGMA synchronous=FULL")
+    connection.execute("PRAGMA synchronous=NORMAL")
     connection.execute("PRAGMA busy_timeout=5000")
     connection.execute("PRAGMA foreign_keys=ON")
     connection.executescript(_SCHEMA)

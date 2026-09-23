@@ -169,7 +169,7 @@ class AssignStore(AssignStoreMixin):
         self._db = sqlite3.connect(database, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
-        self._db.execute("PRAGMA synchronous=FULL")
+        self._db.execute("PRAGMA synchronous=NORMAL")
         self._install_assign_schema()
 
     def close(self) -> None:

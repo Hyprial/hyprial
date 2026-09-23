@@ -254,7 +254,7 @@ class WorkflowStore(AssignStoreMixin):
         self._db = sqlite3.connect(database, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
-        self._db.execute("PRAGMA synchronous=FULL")
+        self._db.execute("PRAGMA synchronous=NORMAL")
         with self._db:
             self._db.executescript(_SCHEMA)
             self._migrate()

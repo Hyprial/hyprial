@@ -15,7 +15,7 @@ deliberate divergence: the model-vendor column is ``model_vendor`` (JSON
 key ``modelProvider``) because the repo-wide terminology lint reserves the
 lower-case wire word for the harness-valued key.
 
-Conventions follow ``daemon._LifecycleStore``: WAL, ``synchronous=FULL``,
+Conventions follow ``daemon._LifecycleStore``: WAL, ``synchronous=NORMAL``,
 and a 0600 database file, all owned by the shared ``StateDatabase`` (which
 also serializes in-process writers and carries the 2s busy timeout for
 cross-process contention).  Connections are opened per transaction/read and

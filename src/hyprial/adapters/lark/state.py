@@ -365,7 +365,7 @@ class LarkStateStore:
         self._db.row_factory = sqlite3.Row
         self._db.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
         self._switch_to_wal()
-        self._db.execute("PRAGMA synchronous=FULL")
+        self._db.execute("PRAGMA synchronous=NORMAL")
         # No foreign keys in this schema today; enabled anyway so both host
         # databases (agents.sqlite3, adapters.sqlite3) run one convention.
         self._db.execute("PRAGMA foreign_keys=ON")

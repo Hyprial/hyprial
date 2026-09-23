@@ -270,6 +270,7 @@ def connect(path: Path, *, read_only: bool = False) -> sqlite3.Connection:
     connection = sqlite3.connect(path)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA journal_mode=WAL")
+    connection.execute("PRAGMA synchronous=NORMAL")
     connection.execute("PRAGMA foreign_keys=ON")
     try:
         migrate(connection, SCHEMA, state_dir=Path(path).parent)
