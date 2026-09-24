@@ -8508,7 +8508,14 @@ def _perform_upgrade(
         )
     try:
         completed = subprocess.run(
-            ["uv", "tool", "install", "--force", requirement],
+            # --compile-bytecode: pay the ~11.5k-file compile here, inside
+            # UV_INSTALL_TIMEOUT, not in the restarted daemon's first import.
+            # Without it the new daemon spent ~15 s compiling before it could
+            # serve, the fixed 15 s readiness wait below expired, and a
+            # healthy upgrade was reported UPGRADE_RESTART_FAILED with a false
+            # owner alert (hyprial-hq, 2026-09-24 07:08Z: 11,447 .pyc written
+            # 07:08:00-07:08:19, ipc-server up at 07:08:18.859).
+            ["uv", "tool", "install", "--force", "--compile-bytecode", requirement],
             text=True,
             capture_output=True,
             check=False,
