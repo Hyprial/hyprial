@@ -63,6 +63,7 @@ from .home import (
     AgentHomeProvisioner,
     HomeProvisioningAttempt,
     HomeReceipt,
+    WorkspaceSummary,
 )
 
 #: This module's single logging seam, deliberately narrow: filesystem
@@ -1369,6 +1370,10 @@ class AgentRegistry:
 
     def _create_record(self, agent: Agent) -> Agent:
         self._validate_config_location(agent)
+        # A daemon may have crashed after committing destroy's durable revoke
+        # but before finishing filesystem retirement.  The revoked receipt,
+        # not the requested name, authorizes this retry cleanup.
+        self.cleanup_revoked_home(agent.actor)
         home_attempt: HomeProvisioningAttempt | None = None
         with self._lock:
             try:
@@ -1463,27 +1468,93 @@ class AgentRegistry:
             self._home.validate(receipt)
         return receipt
 
+    def workspace_path(self, actor: str) -> Path:
+        """Return the private default workspace path without creating it."""
+
+        if self._home is None:
+            raise AgentHomeError("not-configured", actor, "workspace")
+        name = self.native_actor(actor)
+        return self._home.agents_root / name / "workspace"
+
+    def ensure_workspace(self, actor: str) -> Path:
+        """Create the current incarnation's workspace under its home receipt."""
+
+        if self._home is None:
+            raise AgentHomeError("not-configured", actor, "workspace")
+        with self._lock:
+            receipt = self.home_receipt(actor)
+            return self._home.ensure_workspace(receipt)
+
+    def workspace_summary(self, actor: str) -> WorkspaceSummary:
+        """Inventory the current incarnation's workspace without following links."""
+
+        if self._home is None:
+            raise AgentHomeError("not-configured", actor, "workspace-summary")
+        with self._lock:
+            receipt = self.home_receipt(actor)
+            return self._home.workspace_summary(receipt)
+
     def cleanup_home(self, actor: str, *, expected_token: str) -> HomeReceipt:
         """Clean a destroyed/revoked home only under its durable token fence."""
 
         if self._home is None:
             raise AgentHomeError("not-configured", actor, "cleanup")
-        name = self.normalize_actor(actor)
+        name = self.local_actor(actor)
+        if name is None:
+            raise AgentHomeError("cleanup-fenced", actor, "cleanup-registry")
         with self._lock, self._db:
             self._db.execute("BEGIN IMMEDIATE")
             row = self._db.execute(
                 "SELECT active, payload FROM lifecycle_resources WHERE resource_key = ?",
                 (f"agent-home:{name}",),
             ).fetchone()
-            if row is None or bool(row["active"]):
+            incumbent = self._db.execute(
+                "SELECT 1 FROM agents WHERE actor = ?", (name,)
+            ).fetchone()
+            if row is None or bool(row["active"]) or incumbent is not None:
                 raise AgentHomeError("cleanup-fenced", name, "cleanup-registry")
             try:
                 receipt = HomeReceipt.from_json(json.loads(str(row["payload"])))
             except (ValueError, json.JSONDecodeError) as error:
                 raise AgentHomeError("invalid-registry-receipt", name, "cleanup-registry") from error
+            if receipt.actor != name:
+                raise AgentHomeError("receipt-mismatch", name, "cleanup-registry")
             cleaned = self._home.cleanup(receipt, expected_token=expected_token)
             self._record_home_resource_locked(cleaned, False)
             return cleaned
+
+    def cleanup_revoked_home(self, actor: str) -> HomeReceipt | None:
+        """Resume destroy cleanup only when a durable revoked receipt exists.
+
+        This is the crash-convergence entry point used by both a subsequent
+        create and a repeated destroy.  Merely knowing the actor name never
+        authorizes deletion: a missing, active, cleaned, malformed, or
+        still-owned lifecycle row is either a no-op or a loud refusal.
+        """
+
+        if self._home is None:
+            return None
+        name = self.local_actor(actor)
+        if name is None:
+            return None
+        with self._lock:
+            row = self._db.execute(
+                "SELECT active, payload FROM lifecycle_resources WHERE resource_key = ?",
+                (f"agent-home:{name}",),
+            ).fetchone()
+            if row is None or bool(row["active"]):
+                return None
+            try:
+                receipt = HomeReceipt.from_json(json.loads(str(row["payload"])))
+            except (ValueError, json.JSONDecodeError) as error:
+                raise AgentHomeError(
+                    "invalid-registry-receipt", name, "cleanup-registry"
+                ) from error
+            if receipt.actor != name:
+                raise AgentHomeError("receipt-mismatch", name, "cleanup-registry")
+            if receipt.status != "revoked":
+                return None
+        return self.cleanup_home(name, expected_token=receipt.resource_token)
 
     @contextmanager
     def _home_transaction(self) -> Iterator[list[HomeProvisioningAttempt]]:
@@ -1734,6 +1805,7 @@ class AgentRegistry:
         name = self.local_actor(actor)
         if name is None:
             return False
+        revoked: HomeReceipt | None = None
         with self._lock, self._db:
             previous = self._db.execute(
                 "SELECT * FROM agents WHERE actor = ?", (name,)
@@ -1744,11 +1816,17 @@ class AgentRegistry:
             )
             if previous is not None:
                 prior_agent = self._row_agent(previous, previous_pins)
-                self._revoke_home_locked(prior_agent)
+                revoked = self._revoke_home_locked(prior_agent)
                 self._record_external_resource_locked(
                     f"agent-record:{name}", False, prior_agent.to_json()
                 )
-            return cursor.rowcount > 0
+            removed = cursor.rowcount > 0
+        if revoked is not None:
+            # The revoke/delete transaction is the crash fence.  Cleanup is
+            # synchronous for the successful API contract, while a crash in
+            # this gap remains resumable by cleanup_revoked_home().
+            self.cleanup_home(name, expected_token=revoked.resource_token)
+        return removed
 
     def record_external_binding(
         self,

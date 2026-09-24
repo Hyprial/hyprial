@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import stat
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -22,11 +23,14 @@ __all__ = [
     "AgentHomeProvisioner",
     "HomeProvisioningAttempt",
     "HomeReceipt",
+    "WorkspaceSummary",
 ]
 
 _RECEIPT_SCHEMA = 1
 _RECEIPT_RELATIVE = Path("state") / "home-receipt.json"
 _AGENT_SUBDIRECTORIES = (Path("state"), Path("config"), Path("secrets"))
+_WORKSPACE_RELATIVE = Path("workspace")
+_CLEANUP_DIRECTORIES = (*_AGENT_SUBDIRECTORIES, _WORKSPACE_RELATIVE)
 
 
 class AgentHomeError(RuntimeError):
@@ -92,6 +96,26 @@ class HomeReceipt:
 class HomeProvisioningAttempt:
     receipt: HomeReceipt
     created: bool
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceSummary:
+    """Visible, no-follow inventory of one agent workspace."""
+
+    path: str
+    exists: bool
+    files: int
+    bytes: int
+    unreadable_entries: int = 0
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "path": self.path,
+            "exists": self.exists,
+            "files": self.files,
+            "bytes": self.bytes,
+            "unreadableEntries": self.unreadable_entries,
+        }
 
 
 class AgentHomeProvisioner:
@@ -180,10 +204,80 @@ class AgentHomeProvisioner:
                 f"validate-{relative.name}",
                 mode=0o700,
             )
+        workspace = path / _WORKSPACE_RELATIVE
+        if workspace.exists() or workspace.is_symlink():
+            self._safe_directory(
+                workspace,
+                receipt.actor,
+                "validate-workspace",
+                mode=0o700,
+            )
         mirrored = self._read_receipt(path / _RECEIPT_RELATIVE, receipt.actor)
         if mirrored != receipt or receipt.status != "ready":
             raise AgentHomeError("receipt-mismatch", receipt.actor, "validate-receipt")
         return path
+
+    def ensure_workspace(self, receipt: HomeReceipt) -> Path:
+        """Create the optional private workspace after validating home custody."""
+
+        root = self.validate(receipt)
+        workspace = root / _WORKSPACE_RELATIVE
+        try:
+            workspace.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        except OSError as error:
+            raise AgentHomeError("io", receipt.actor, "workspace-create") from error
+        self._safe_directory(
+            workspace,
+            receipt.actor,
+            "validate-workspace",
+            mode=0o700,
+        )
+        return workspace
+
+    def workspace_summary(self, receipt: HomeReceipt) -> WorkspaceSummary:
+        """Count visible workspace files and bytes without following symlinks."""
+
+        root = self.validate(receipt)
+        workspace = root / _WORKSPACE_RELATIVE
+        if not workspace.exists() and not workspace.is_symlink():
+            return WorkspaceSummary(str(workspace), False, 0, 0)
+        self._safe_directory(
+            workspace,
+            receipt.actor,
+            "validate-workspace",
+            mode=0o700,
+        )
+        files = 0
+        total_bytes = 0
+        unreadable_entries = 0
+        pending = [workspace]
+        while pending:
+            directory = pending.pop()
+            try:
+                entries = tuple(os.scandir(directory))
+            except OSError:
+                unreadable_entries += 1
+                continue
+            for entry in entries:
+                try:
+                    metadata = entry.stat(follow_symlinks=False)
+                except OSError:
+                    # The directory entry itself was visible even though its
+                    # metadata was not. Count it, but do not invent a size or
+                    # descend through an object whose type is unknown.
+                    files += 1
+                    unreadable_entries += 1
+                    continue
+                if stat.S_ISDIR(metadata.st_mode):
+                    pending.append(Path(entry.path))
+                    continue
+                files += 1
+                total_bytes += metadata.st_size
+        return WorkspaceSummary(
+            str(workspace), True, files, total_bytes, unreadable_entries
+        )
 
     def compensate(self, attempt: HomeProvisioningAttempt) -> bool:
         """Remove only this attempt's still-matching, otherwise-empty home."""
@@ -202,41 +296,161 @@ class AgentHomeProvisioner:
             return False
         try:
             (root / _RECEIPT_RELATIVE).unlink()
-            for relative in reversed(_AGENT_SUBDIRECTORIES):
-                (root / relative).rmdir()
+            for relative in reversed(_CLEANUP_DIRECTORIES):
+                directory = root / relative
+                if directory.exists():
+                    directory.rmdir()
             root.rmdir()
         except OSError:
             return False
         return True
 
     def cleanup(self, receipt: HomeReceipt, *, expected_token: str) -> HomeReceipt:
-        """Remove a revoked residue iff registry and file tokens still agree."""
+        """Remove a revoked home iff its durable and mirrored tokens agree.
+
+        Credential-bearing content is the thing this operation exists to
+        retire, so requiring an empty tree would leave the sensitive half of
+        destroy to an operator.  The receipt is removed last: an interrupted
+        traversal therefore remains retryable under the same durable token.
+        If interruption lands after that last unlink, only an empty scaffold
+        may be resumed without the mirror.
+        """
 
         if receipt.status != "revoked" or receipt.resource_token != expected_token:
             raise AgentHomeError("cleanup-fenced", receipt.actor, "cleanup")
         root = Path(receipt.path)
-        mirrored = self._read_receipt(root / _RECEIPT_RELATIVE, receipt.actor)
-        if mirrored.resource_token != expected_token:
-            raise AgentHomeError("cleanup-fenced", receipt.actor, "cleanup-receipt")
-        if not self._removable(root):
-            raise AgentHomeError("cleanup-not-empty", receipt.actor, "cleanup")
+        if root != self.agents_root / receipt.actor:
+            raise AgentHomeError("receipt-mismatch", receipt.actor, "cleanup-path")
+        if not root.exists() and not root.is_symlink():
+            return replace(receipt, resource_token=uuid4().hex, status="cleaned")
+
+        # Both recovery shapes delete directory entries below ``root``.  Fence
+        # every ancestor before deciding whether a missing mirror represents
+        # the receipt-last crash window; otherwise a symlinked ``agents``
+        # directory can redirect the empty-scaffold branch outside H.
+        self._safe_directory(self.hyprial_home, receipt.actor, "cleanup-home-root")
+        self._safe_directory(self.agents_root, receipt.actor, "cleanup-agents-root")
+        self._safe_directory(root, receipt.actor, "cleanup-agent-root", mode=0o700)
+
+        receipt_path = root / _RECEIPT_RELATIVE
         try:
-            (root / _RECEIPT_RELATIVE).unlink()
-            for relative in reversed(_AGENT_SUBDIRECTORIES):
-                (root / relative).rmdir()
+            receipt_path.lstat()
+        except FileNotFoundError:
+            if not self._empty_cleanup_scaffold(root, receipt.actor):
+                raise AgentHomeError(
+                    "cleanup-fenced", receipt.actor, "cleanup-receipt"
+                ) from None
+        except OSError as error:
+            raise AgentHomeError(
+                "cleanup-fenced", receipt.actor, "cleanup-receipt"
+            ) from error
+        else:
+            self._validate_cleanup_topology(root, receipt.actor)
+            try:
+                mirrored = self._read_receipt(receipt_path, receipt.actor)
+            except AgentHomeError:
+                raise AgentHomeError(
+                    "cleanup-fenced", receipt.actor, "cleanup-receipt"
+                ) from None
+            if (
+                mirrored.actor != receipt.actor
+                or mirrored.entity_token != receipt.entity_token
+                or mirrored.resource_token != expected_token
+                or mirrored.path != receipt.path
+                or mirrored.owner_uid != receipt.owner_uid
+                or mirrored.status not in {"ready", "revoked"}
+            ):
+                raise AgentHomeError(
+                    "cleanup-fenced", receipt.actor, "cleanup-receipt"
+                )
+            try:
+                for relative in _CLEANUP_DIRECTORIES:
+                    directory = root / relative
+                    if not directory.exists():
+                        continue
+                    for child in tuple(directory.iterdir()):
+                        if child == receipt_path:
+                            continue
+                        self._remove_tree_entry(child)
+                receipt_path.unlink()
+            except OSError as error:
+                raise AgentHomeError(
+                    "cleanup-not-empty", receipt.actor, "cleanup"
+                ) from error
+
+        try:
+            for relative in reversed(_CLEANUP_DIRECTORIES):
+                directory = root / relative
+                if directory.exists():
+                    directory.rmdir()
             root.rmdir()
         except OSError as error:
             raise AgentHomeError("cleanup-not-empty", receipt.actor, "cleanup") from error
         return replace(receipt, resource_token=uuid4().hex, status="cleaned")
 
+    def _validate_cleanup_topology(self, root: Path, actor: str) -> None:
+        try:
+            names = {item.name for item in root.iterdir()}
+            required = {item.name for item in _AGENT_SUBDIRECTORIES}
+            allowed = {item.name for item in _CLEANUP_DIRECTORIES}
+            if not required.issubset(names) or not names.issubset(allowed):
+                raise AgentHomeError("cleanup-fenced", actor, "cleanup-topology")
+            for relative in _AGENT_SUBDIRECTORIES:
+                self._safe_directory(
+                    root / relative,
+                    actor,
+                    f"cleanup-{relative.name}",
+                    mode=0o700,
+                )
+            if _WORKSPACE_RELATIVE.name in names:
+                self._safe_directory(
+                    root / _WORKSPACE_RELATIVE,
+                    actor,
+                    "cleanup-workspace",
+                    mode=0o700,
+                )
+        except OSError as error:
+            raise AgentHomeError("cleanup-fenced", actor, "cleanup-topology") from error
+
+    @staticmethod
+    def _remove_tree_entry(path: Path) -> None:
+        metadata = path.lstat()
+        if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+
+    def _empty_cleanup_scaffold(self, root: Path, actor: str) -> bool:
+        """Finish only the exact empty shape left after receipt-last cleanup."""
+
+        try:
+            self._safe_directory(root, actor, "cleanup-agent-root", mode=0o700)
+            allowed = {item.name for item in _CLEANUP_DIRECTORIES}
+            children = tuple(root.iterdir())
+            if any(child.name not in allowed for child in children):
+                return False
+            for child in children:
+                metadata = child.lstat()
+                if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+                    return False
+                if any(child.iterdir()):
+                    return False
+            return True
+        except (AgentHomeError, OSError):
+            return False
+
     @staticmethod
     def _removable(root: Path) -> bool:
         try:
             root_names = {item.name for item in root.iterdir()}
-            if root_names != {item.name for item in _AGENT_SUBDIRECTORIES}:
+            required = {item.name for item in _AGENT_SUBDIRECTORIES}
+            allowed = {item.name for item in _CLEANUP_DIRECTORIES}
+            if not required.issubset(root_names) or not root_names.issubset(allowed):
                 return False
-            for relative in _AGENT_SUBDIRECTORIES:
+            for relative in _CLEANUP_DIRECTORIES:
                 path = root / relative
+                if relative == _WORKSPACE_RELATIVE and relative.name not in root_names:
+                    continue
                 metadata = path.lstat()
                 if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
                     return False

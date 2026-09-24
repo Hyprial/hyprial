@@ -36,6 +36,7 @@ from hyprial.agents import (
     Agent,
     AgentAlreadyRunning,
     AgentError,
+    AgentHomeError as RegistryHomeError,
     HandoverNotice,
     PinConflictError,
     normalize_capabilities,
@@ -6161,6 +6162,8 @@ class DaemonApplication:
                 return self._handle_agent(method, params)
             except (AgentError, DomainCommandError) as error:
                 raise DaemonRequestError(error.code, str(error)) from error
+            except RegistryHomeError as error:
+                raise DaemonRequestError(AgentError.code, str(error)) from error
         if method == "shutdown":
             self.stop_event.set()
             return {
@@ -6294,10 +6297,14 @@ class DaemonApplication:
                 )
             harness = params.get("harness")
             harness_name = harness if isinstance(harness, str) and harness else None
+            requested_cwd = _optional_string_param(params.get("cwd"), "cwd")
+            effective_cwd = requested_cwd
+            if harness_name is not None and effective_cwd is None:
+                effective_cwd = str(self._agent_registry.workspace_path(name))
             if existing is None:
                 agent = self.agents.create(
                     name,
-                    cwd=_optional_string_param(params.get("cwd"), "cwd"),
+                    cwd=effective_cwd,
                     config=params.get("config"),
                     # Model vendor, the same word squire uses.
                     provider=_optional_string_param(
@@ -6331,11 +6338,15 @@ class DaemonApplication:
                 agent = self._ensure_agent(
                     agent.uri, harness=harness_name,
                     interactive=params.get("runtime") == RUNTIME_INTERACTIVE,
-                    cwd=_optional_string_param(params.get("cwd"), "cwd"),
+                    cwd=effective_cwd,
                     provider=_optional_string_param(params.get("provider"), "provider"),
                     model=_optional_string_param(params.get("model"), "model"),
                 )
                 assert agent is not None
+                if effective_cwd == str(
+                    self._agent_registry.workspace_path(agent.actor)
+                ):
+                    self._agent_registry.ensure_workspace(agent.actor)
             if (
                 harness_name is not None
                 and agent.last_harness is not None
@@ -6444,10 +6455,52 @@ class DaemonApplication:
                 "known": reason != "unknown",
                 "reason": reason,
             }
+        if method == "agent.destroy.preview":
+            requested = _required_string(params.get("name"), "name")
+            agent = self.agents.require(requested)
+            return {
+                "ok": True,
+                "actor": agent.uri,
+                "agent": agent.actor,
+                "workspace": self._agent_registry.workspace_summary(
+                    agent.actor
+                ).to_json(),
+            }
         if method == "agent.destroy":
             # Resolve the exact identity before dropping URI ownership. Hosted
             # URIs are valid; unrelated same-name foreign URIs are not.
-            agent = self.agents.require(_required_string(params.get("name"), "name"))
+            requested = _required_string(params.get("name"), "name")
+            agent = self.agents.get(requested)
+            if agent is None:
+                try:
+                    cleaned = self._agent_registry.cleanup_revoked_home(requested)
+                except RegistryHomeError as error:
+                    raise DaemonRequestError(AgentError.code, str(error)) from error
+                if cleaned is None:
+                    self.agents.require(requested)
+                    raise AssertionError("require() returned for a missing agent")
+                actor = canonical_agent_uri(self.owner, self.node_id, cleaned.actor)
+                self._log(
+                    "warn",
+                    "agents",
+                    "agent.destroyed",
+                    actor=actor,
+                    stopped=[],
+                    destroyedMessages=0,
+                    unpinnedAdapters=[],
+                    cleanupResumed=True,
+                )
+                return {
+                    "ok": True,
+                    "destroyed": False,
+                    "cleanupResumed": True,
+                    "actor": actor,
+                    "agent": cleaned.actor,
+                    "stopped": [],
+                    "destroyedMessages": 0,
+                    "unpinnedAdapters": [],
+                    "irreversible": True,
+                }
             return self._destroy_agent(agent.actor)
         raise DaemonRequestError(ipc_errors.METHOD_NOT_FOUND, f"unknown daemon method {method}")
 
@@ -8999,7 +9052,16 @@ class DaemonApplication:
                 f"{', '.join(sorted(TRANSFERABLE_HARNESSES))} only, not "
                 f"{spec.harness}{'' if spec.headless else ' (interactive)'}",
             )
-        cwd = spec.cwd or os.getcwd()
+        if spec.cwd is not None:
+            cwd = spec.cwd
+        else:
+            try:
+                cwd = str(self._agent_registry.ensure_workspace(spec.name))
+            except RegistryHomeError as error:
+                raise DaemonRequestError(
+                    ipc_errors.INVALID_ARGUMENT,
+                    f"cannot resolve default workspace for {spec.name}: {error}",
+                ) from error
         runtime_context = None
         agent = self.agents.get(spec.name)
         if agent is not None and agent.config is not None:
@@ -9285,6 +9347,7 @@ class DaemonApplication:
 
         agent = self.agents.require(name)
         actor = agent.uri
+        workspace = self._agent_registry.workspace_summary(name)
         stopped = self._stop_agent_runtime(actor, keep=None)
         self._drop_persona_route(actor)
         self._release_agent_binding(actor)
@@ -9294,6 +9357,7 @@ class DaemonApplication:
         # transaction that removes the agent row.
         unpinned = sorted(agent.pinned_adapters)
         removed = self.agents.destroy(name)
+        workspace_deleted = workspace.exists and not Path(workspace.path).exists()
         self._log(
             "warn",
             "agents",
@@ -9312,6 +9376,10 @@ class DaemonApplication:
             "destroyedMessages": destroyed_messages,
             "unpinnedAdapters": unpinned,
             "irreversible": True,
+            "workspace": {
+                **workspace.to_json(),
+                "deleted": workspace_deleted,
+            },
         }
 
     def _destroy_agent_messages(self, agent: Agent) -> int:

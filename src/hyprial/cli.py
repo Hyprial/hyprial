@@ -836,6 +836,19 @@ def _hyprial_home() -> Path:
     return configured_hyprial_home()[0]
 
 
+def _agent_workspace(actor: str) -> Path:
+    """Return one validated local actor's default private workspace path."""
+
+    from hyprial.agents.registry import AgentRegistry
+
+    name = AgentRegistry.normalize_actor(actor)
+    return _hyprial_home() / "agents" / name / "workspace"
+
+
+def _resolved_agent_cwd(actor: str, cwd: Path | None) -> Path:
+    return cwd.expanduser().resolve() if cwd is not None else _agent_workspace(actor)
+
+
 def _stdin_isatty() -> bool:
     """Whether a CLI confirmation can be answered (a narrow test seam)."""
 
@@ -5956,7 +5969,7 @@ def mcp_claude_channel(
             proxy,
             actor=actor,
             session_ref=session_ref,
-            cwd=str((cwd or Path.cwd()).expanduser().resolve()),
+            cwd=str(_resolved_agent_cwd(actor, cwd)),
             command=tuple(command or ("claude",)),
             logger=Logger.worker(_state_dir(), runtime="claude", name=actor),
             poll_interval=poll_interval,
@@ -6218,18 +6231,38 @@ def agent_destroy(
     its undelivered messages. There is no tombstone and no revival: messages
     already sent to this agent lose a resolvable recipient, and recreating the
     same name later gives you a new, empty agent -- not this one back.
-    Requires --yes.
+    Interactive terminals may confirm after seeing the workspace inventory;
+    non-interactive callers must pass --yes.
     """
 
     def operation() -> Any:
         if not yes:
-            raise CliError(
-                "CONFIRMATION_REQUIRED",
-                f"destroying agent {name!r} is irreversible: its record, its "
-                "connectors and its undelivered messages are discarded with no "
-                "tombstone and no way to restore them. Re-run with --yes to "
-                "confirm.",
+            if json_output or not _stdin_isatty():
+                raise CliError(
+                    "CONFIRMATION_REQUIRED",
+                    f"destroying agent {name!r} from a non-interactive command "
+                    "requires --yes",
+                )
+            preview = _daemon_request("agent.destroy.preview", {"name": name})
+            workspace = preview.get("workspace")
+            if not isinstance(workspace, dict):
+                raise CliError(
+                    "INVALID_RESPONSE",
+                    "agent.destroy.preview must return a workspace inventory",
+                )
+            files = workspace.get("files")
+            size = workspace.get("bytes")
+            if not isinstance(files, int) or not isinstance(size, int):
+                raise CliError(
+                    "INVALID_RESPONSE",
+                    "agent.destroy.preview returned an invalid workspace inventory",
+                )
+            prompt = (
+                f"将删除 workspace({files} 个文件、{size} 字节)，以及 agent "
+                f"{name!r} 的记录、连接器和未送达消息。继续？"
             )
+            if not typer.confirm(prompt):
+                raise CliError("CANCELLED", "agent destroy cancelled")
         return _daemon_request("agent.destroy", {"name": name})
 
     _execute(operation, json_output=json_output)
@@ -7710,7 +7743,7 @@ def start(
                     ipc_errors.INVALID_ARGUMENT,
                     f"{option} was supplied both as a hyprial option and after '--'",
                 )
-        resolved_cwd = (cwd or Path.cwd()).expanduser().resolve()
+        resolved_cwd = _resolved_agent_cwd(name, cwd)
         if resume is not None:
             if not (
                 (harness_kind == "claude" and not headless)
