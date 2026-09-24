@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Protocol
 from uuid import NAMESPACE_URL, uuid5
 
-from hyprial.inbox import InboxAuthorityUnavailable
+from hyprial.inbox import InboxAuthorityTimeout, InboxAuthorityUnavailable
 from hyprial.inbox.api import DeliveryLifecycle, InboxMessage, InboxPruneItem
 from hyprial.inbox.progress import COALESCE_KEPT_PHASES, ProgressEvent
 from hyprial.contracts.readiness import ReadinessReport
@@ -150,6 +150,21 @@ def _stale_fence_rejection(error: BaseException) -> bool:
     )
 
 
+def _reply_already_answered(error: BaseException) -> bool:
+    """A reply submit refused because this delivery's reply is already durable.
+
+    ``_reply_and_ack`` derives the reply id from the delivery it answers, so
+    the authority's ``SUBMISSION_RECEIPT_CONFLICT`` on it means a reply with
+    different text already committed (typically: the first submit timed out
+    after the reply was sent, and a re-run turn answered again).  Same raise
+    shape as ``_stale_fence_rejection``.
+    """
+
+    return isinstance(error, InboxAuthorityUnavailable) and str(error).startswith(
+        "SUBMISSION_RECEIPT_CONFLICT"
+    )
+
+
 def _coalesce_progress_events(events: tuple[ProgressEvent, ...]) -> tuple[ProgressEvent, ...]:
     """Keep the newest tool-call, tool-result, and other event per delivery.
 
@@ -283,6 +298,11 @@ class DaemonEventBridge:
         self._usage_limit_observer = usage_limit_observer
         self._workflow_outcome = workflow_outcome
         self._pending_workflow_results: dict[str, HarnessResult] = {}
+        # Answers whose reply did not confirm on their tick, keyed by the
+        # delivery they answer.  Retried as the SAME reply (idempotent) and
+        # never re-dispatched meanwhile: the answer exists, asking the model
+        # again is what looped wangshuo-sprite on 2026-09-24.
+        self._pending_reply_results: dict[str, HarnessResult] = {}
         self._clock_ms = clock_ms or (lambda: time.time_ns() // 1_000_000)
         # One mapping from a supervisor-local short name to the network
         # identity.  Registration and the delivery pump must share it: keys
@@ -612,6 +632,11 @@ class DaemonEventBridge:
                 else self.inbox.pending_messages(recipient)
             )
             for message in messages:
+                if message.message_id in self._pending_reply_results:
+                    # Already answered; only its reply is still settling.
+                    # drain_results() released the worker's dedup, so a
+                    # dispatch here would run the whole turn again.
+                    continue
                 # Start (or keep) the no-progress clock for every request this
                 # live worker owes a receipt for, even before it accepts the
                 # enqueue: "queued but never picked up" is one of the silent
@@ -732,8 +757,14 @@ class DaemonEventBridge:
             )
             if self._settle_failed_result(failed, original):
                 settled += 1
-        results = [*self._pending_workflow_results.values(), *self.harnesses.drain_results()]
+        results = [
+            *self._pending_workflow_results.values(),
+            *self._pending_reply_results.values(),
+            *self.harnesses.drain_results(),
+        ]
         for result in results:
+            # Re-added below only if its reply fails to confirm again.
+            self._pending_reply_results.pop(result.delivery_id, None)
             if self._workflow_outcome is not None:
                 try:
                     handled = self._workflow_outcome(result)
@@ -805,15 +836,65 @@ class DaemonEventBridge:
                 self._forward_jobs.put((original, result))
                 continue
             self._finish_attempt(result.delivery_id)
-            if original.intent == "reply":
-                acknowledged = self.inbox.ack(
-                    original.recipient, original.message_id
-                ).acknowledged
-            else:
-                acknowledged = self._reply_and_ack(original, result)
+            try:
+                if original.intent == "reply":
+                    acknowledged = self.inbox.ack(
+                        original.recipient, original.message_id
+                    ).acknowledged
+                else:
+                    acknowledged = self._reply_and_ack(original, result)
+            except (InboxAuthorityTimeout, InboxAuthorityUnavailable) as error:
+                # Settled per result: raising here used to abort the whole
+                # tick after drain_results() had already released every
+                # result in the batch, so the rest of the batch was lost.
+                acknowledged = (
+                    self.inbox.ack(original.recipient, original.message_id).acknowledged
+                    if self._reply_already_settled(original, result, error)
+                    else False
+                )
             if acknowledged:
                 settled += 1
         return settled
+
+    def _reply_already_settled(
+        self,
+        original: InboxMessage,
+        result: HarnessResult,
+        error: InboxAuthorityTimeout | InboxAuthorityUnavailable,
+    ) -> bool:
+        """Classify an answer whose reply or ack did not confirm on this tick.
+
+        True: the delivery is already durably answered -- the reply id is
+        derived from the delivery, so a receipt conflict means a reply
+        committed (after its submit timed out) and a re-run turn produced
+        different text; the caller acks it, nothing is answered again.
+        False: any other authority error; the answer is kept and the SAME
+        reply is retried next tick.
+        """
+
+        if _reply_already_answered(error):
+            if self._logger is not None:
+                self._logger(
+                    "warn",
+                    "daemon",
+                    "harness.reply.already_answered",
+                    messageId=original.message_id,
+                    recipient=original.recipient,
+                )
+            return True
+        first_deferral = result.delivery_id not in self._pending_reply_results
+        self._pending_reply_results[result.delivery_id] = result
+        if first_deferral and self._logger is not None:
+            self._logger(
+                "warn",
+                "daemon",
+                "harness.reply.deferred",
+                messageId=original.message_id,
+                recipient=original.recipient,
+                errorType=type(error).__name__,
+                detail=str(error)[:300],
+            )
+        return False
 
     def _settle_failed_result(
         self, result: HarnessResult, original: InboxMessage
