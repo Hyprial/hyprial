@@ -89,47 +89,60 @@ hyprial <域> <子命令> --help   # 参数面
 - `hyprial adapter identities` — 平台身份 ↔ hyprial owner 映射(白名单校验源)
 - 路由前提:机器人必须先被发过消息才有 chat id;新 App 让对方先 DM 一句
 
-### PAC workflow(声明式派单+跟踪,不执行任务)
-- `hyprial workflow plan/run/status/list/cancel`;run 需 `--from <canonical-uri> --yes`
-- yaml 骨架:version/name/task/targets[{name,task}]/await{kind,timeout,match}/
-  on_timeout{action,max_attempts,backoff,escalate_to}/report_to/limits
-- target 一律用逻辑名(nickname),不用含 node 的全 URI
-- ⚠️ tick 负载:每个 running run 的未决 target 会进 daemon reconcile 周期;
-  大量挂着的 running run 会拖垮 IPC。派发后确认 daemon.jsonl 无
-  `reconcile_overrun`;完结的 run 别让它挂在 running。
+### PAC workflow 与 routine
+- workflow plan/run/status/list/inspect/cancel 是图的高级入口；complete/fail 携带当前 request-id 与 reason-ref。
+- 工作流 YAML format 2 使用 name/nodes/edges/workers/defaults/on_failure。旧 targets/await/retry/report_to 执行格式已退役。
+- 节点默认独立临时 worker，显式 worker 键共享上下文，owner 全 URI 显式借用已有 actor。
+- 图结束回收所属 worker；借用对象不被接管或停止。完成是显式 flag，不解释回复文本。
+- on_failure 为 terminate（默认整图失败回收）、continue（独立分支继续）或 hold（等待负责人处理）。
+- 相对 timeout 在派图时确定固定截止，等待依赖计入预算；不自动顺延或重试。报告需显式节点。
+- routine format 2 显式选择 mode: scheduled/source。定时模式串行、跳过重叠与错过周期，source 模式按任务 UUID 去重。
+- routine 默认创建并持有常驻协调 agent，也可执行工作；rm 回收自己拥有的 actor，pause 不回收。
+- workflow history list/status 只读查询旧任务。切换会终止并归档未结束旧任务；空 home 也有旧写入屏障，不代表存在历史任务。
 
-### PAC v2 图与公共订阅(集成分支增量,不退役 v1)
-- `hyprial pac graph create/add-node/add-edge/show` — 先编辑 draft 图;
-  `hyprial pac graph activate <graph>` 由本机 graph owner 激活,此后结构冻结,改结构需建新图。
-  owner 优先 HYPRIAL_OWNER,否则读取统一 home(HYPRIAL_HOME 或默认 HOME/.hyprial)的 settings.json;
-  activate/close 不要求额外设置 HYPRIAL_HOME。
-  `hyprial pac graph close <graph>` 由本机 owner 单调关闭 task/clock run;不改 flag、不造 completion,
-  不再派发/重发剩余通知。已经在途的真实回执仍会记录,但不会重新打开任务。
-- `hyprial pac flag set/reset <graph> <node> [--actor <principal URI>]` — 激活后显式改 flag;
-  `--actor` 只可回声已验证身份(本机人为 `user:<owner>`,受管 worker 由载体注入绑定,
-  省略即以已验证身份行事);owner 段精确相等,不以短名或 owner 段放行。
-  通知送达不等于任务完成。`hyprial pac notify resend <graph>` 重试未确认的通知。
-  升级报告:`hyprial pac migration status` 列出 schema-8 改写/保留的 owner。
-- 外部消费者唯一受支持的增量合同:
-  `hyprial pac events <graph> --snapshot --json` 取同一读事务的 snapshot@cursor;
-  `hyprial pac events <graph> --after <cursor> --journal-id <journalId> [--follow] --json`
-  取严格 `seq > cursor` 的 typed journal JSON lines。`--snapshot --follow` 可无缝交接。
-  事件 version 可是历史决策版本,迟到回执不得降低 snapshot 的结构 version;
-  结构失效时重取快照,低于真实迁移 floor 的游标必须 resync。
-  follow 可用 SIGINT/SIGTERM 或关闭输出管道结束(含 idle/父进程忽略 SIGINT 的环境);
-  stdin=/dev/null 不影响订阅,不靠发送假事件/心跳来检测退出。
-- 游标是 seq,允许跨图跳号;消费端忽略重复 seq。`PAC_EVENTS_RESYNC` 及结构失效事件
-  要重新取快照;流式错误只在 stderr。不要 import 内部 PAC 类或直接读 SQLite。
-- 快照保留 flags/refs、当前 assignments 与通知投递状态。无实际通知的根节点不伪造 assignment;
-  back 的下一轮请求即使旧 flag 仍为 true 也可处于待办状态。
-- `hyprial pac context <graph> <node> --json` 读取工作 briefRef 和前驱 flag/reasonRef/setBy/setAt,
-  所有字段来自同一 cursor。`completedCount` 是已完成 set 次数,`currentActivation` 是当前请求,
-  back 请求可为 round=2 而 count=1。不会读引用正文或 inbox。
-- deadlineMs 仅出现在 clock 自身的 context,不借给下游 task。无 actor 节点时 `actor` 字段缺席,
-  不输出 null/空对象/伪造 actor 信息。actor 起停/对账、end 自动 close 和 v1 真派单迁移仍待第二波。
-- `contract/pac-events/README.md`、`contract/pac-context/README.md` 是公共合同;
-  `client.py` 是独立 CLI JSON 消费样例。旧 graph-only/--for context 及旧诊断命令路径已移除。
-  clock/restate 仅在隐藏的 `pac debug` 内供诊断,不属于公开命令面或常驻 v2 tick 实现。
+最小任务书示例（先替换工作目录与任务，再 plan/run）：
+
+```yaml
+version: 2
+name: example
+on_failure: terminate
+defaults:
+  launch: {tier: strong, cwd: /absolute/worktree}
+  timeout: 1h
+nodes:
+  - {id: work, task: Complete the approved work and record verifiable evidence.}
+```
+
+定时协调示例：
+
+```yaml
+version: 2
+mode: scheduled
+name: coordinate
+role: dispatch
+schedule: {interval: 15m}
+launch: {tier: fast}
+task: Check current work and dispatch necessary child workflows without duplicating accepted tasks.
+on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
+```
+
+### Workflow 图与公共订阅
+- `hyprial workflow plan FILE` validates a draft and `workflow run FILE` publishes
+  one managed graph with frozen structure. `workflow status/list` are the read surface.
+- `hyprial workflow cancel GRAPH` closes a graph and reclaims only its owned workers;
+  borrowed actors remain externally owned.
+- `hyprial workflow complete/reset GRAPH NODE` uses the current request and evidence;
+  reset is explicit rework and never an automatic retry.
+- `hyprial workflow worker stop|restart GRAPH ACTOR` controls only graph-owned workers.
+  Stop fails unfinished work immediately; restart keeps it and creates a new incarnation.
+- `hyprial workflow notify resend GRAPH` retries only undelivered notifications, and
+  `workflow migration status` reports schema-8 owner migration.
+- `hyprial workflow events GRAPH --snapshot --json` reads one snapshot cursor;
+  `workflow events GRAPH --after CURSOR --journal-id ID [--follow] --json` provides
+  strict cursor-based resumption. `workflow context GRAPH NODE --json` is read-only,
+  uses one cursor, and never reads reference bodies or inbox messages.
+- Cursor resync, immutable refs, assignment projection, follow termination, and
+  stderr-only stream errors retain the public contract in the contract documents.
 
 ### agent / worker / 消息
 - `hyprial start claude|codex|pi|jev --name ... [--headless] --cwd ... -- <harness args>`

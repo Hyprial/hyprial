@@ -6619,7 +6619,7 @@ function guiThemeControls(React, theme, onChange) {
       workflowDefaultListeners.forEach(function (notify) { notify(); });
     }
     function workflowChangeLabel(path) {
-      const labels={summary:'方案摘要',task:'任务描述',name:'名称',targets:'目标',role:'角色',await:'等待条件',kind:'等待方式',timeout:'超时时间',match:'匹配条件',on_timeout:'超时处理',action:'处理方式',max_attempts:'最多尝试次数',backoff:'重试间隔',escalate_to:'升级通知对象',report_to:'汇总对象',first_output_eta:'首个输出预期',human_gates:'人工关卡',source:'方案源码',version:'格式版本'};
+      const labels={nodes:'节点',edges:'依赖关系',defaults:'默认配置',on_failure:'失败策略',worker:'共享 worker',owner:'借用主体',launch:'启动配置',summary:'方案摘要',task:'任务描述',name:'名称',targets:'目标',role:'角色',await:'等待条件',kind:'等待方式',timeout:'超时时间',match:'匹配条件',on_timeout:'超时处理',action:'处理方式',max_attempts:'最多尝试次数',backoff:'重试间隔',escalate_to:'升级通知对象',report_to:'汇总对象',first_output_eta:'首个输出预期',human_gates:'人工关卡',source:'方案源码',version:'格式版本'};
       const parts=path.split('/').slice(1).map(function(part){return part.replace(/~1/g,'/').replace(/~0/g,'~');});
       return parts.map(function(part,index){return /^\d+$/.test(part)?String(Number(part)+1):labels[part] || part;}).join(' · ') || '完整方案';
     }
@@ -6920,10 +6920,10 @@ function guiThemeControls(React, theme, onChange) {
       const def=rev && rev.definition;
       const choices=listedSessions().filter(function(s){return !persistedHumanChats[s.id] && !isSystemSession(s) && currentAppSurface(s.id)==='messages' && !['H2B · 控制台','H2B · 通讯录'].includes(s.displayTitle) && !(snapshotOf(workspaces).archivedSessionIds || []).includes(s.id);});
       const status=observation && observation.status;
-      const bindingBusy=doc && (doc.runs.some(function(r){return r.outcome==='unknown' || r.outcome==='submitting';}) || status && status.state==='running');
+      const bindingBusy=doc && (doc.runs.some(function(r){return r.outcome==='unknown' || r.outcome==='submitting';}) || status && ['running','held'].includes(status.state));
       const canRebind=doc && Number.isInteger(doc.bindingVersion);
 
-      const labels={running:'追踪中',completed:'已完成',cancelled:'已取消追踪',pending:'等待派发',dispatched:'已派发 · 等待回复或 ACK',backoff:'等待重试',done:'已完成',timed_out:'等待超时',escalated:'已升级通知'};
+      const labels={running:'运行中',held:'等待负责人处理',stale:'输入已变化，需重新确认',completed:'已完成',cancelled:'已取消',pending:'等待依赖或 worker',requested:'已生成请求 · 等待完成 flag',done:'已完成',failed:'失败',blocked:'前置失败',timed_out:'超时',escalated:'已上报'};
       function renderNode(){
         const base=status.targets.find(t=>t.target===nodeTarget);if(!base)return null;
         const evidence=nodeData && nodeData.target===nodeTarget && nodeData.runId===runId?nodeData:null;
@@ -6931,13 +6931,13 @@ function guiThemeControls(React, theme, onChange) {
         const actual=node?.state==='available'?node:null;
         const target=actual?.tracking || base;
         const snapshot=observation?.snapshot?.definition || (()=>{try{return doc.revisions.find(r=>r.number===observation.revision)?.definition;}catch(_){return null;}})();
-        const spec=snapshot?.targets?.find(t=>(typeof t==='string'?t:t.name)===nodeTarget);
+        const spec=(snapshot?.nodes || snapshot?.targets)?.find(t=>(typeof t==='string'?t:t.id || t.name)===nodeTarget);
         const task=spec?.task || snapshot?.task || '';
         const events=actual?.progress?.events || [],replies=actual?.results?.replies || [];
         const state=e('span',{className:'wb-node-state '+target.state},labels[target.state] || target.state);
         const note=(text)=>e('p',{className:'wb-node-note'},text);
         const stale=nodeError?e('div',{className:'h2bcontrol-action-error',role:'status'},'数据未更新：'+nodeError+'；保留上次成功读取的记录。',button('重试读取',()=>setNodeRefresh(n=>n+1),false)):null;
-        const unavailable=node && node.state!=='available'?note(node.message || '节点信息暂不可读取'):null;
+        const unavailable=node?.progressError?note('进度读取未更新：'+node.progressError):node && node.state!=='available'?note(node.message || '节点信息暂不可读取'):null;
         const body=nodeTab==='discussion'?e(React.Fragment,null,
           e('h4',null,'本次任务 · v'+observation.revision),e('pre',{className:'wb-node-output'},task || '运行快照暂无任务正文'),
           note('执行证据 · node-inspect 只读摘要；沟通与正式结果分开。'),unavailable,
@@ -6950,8 +6950,11 @@ function guiThemeControls(React, theme, onChange) {
           e(WorkflowTaskDiscussion,{key:JSON.stringify([selected,runId,nodeTarget]),instanceId:props.instanceId,workflowId:selected,runId:runId,target:nodeTarget,task:task,focusRequest:discussionFocus})):
         nodeTab==='status'?e(React.Fragment,null,
           e('h4',null,'本次任务 · v'+observation.revision),e('p',{className:'wb-node-task'},task || '任务内容见本次运行定义快照'),
-          e('dl',{className:'wb-node-facts'},e('dt',null,'追踪状态'),e('dd',null,state),e('dt',null,'执行观察'),e('dd',null,events.at(-1)?.summary || '尚未收到可读取的执行活动'),e('dt',null,'等待条件'),e('dd',null,snapshot?.await?.kind==='ack'?'投递 ACK':snapshot?.await?.match || '任意回复'),e('dt',null,'尝试次数'),e('dd',null,String(target.attempts)),e('dt',null,'超时策略'),e('dd',null,display(snapshot?.on_timeout || 'report'))),
-          note('追踪状态不等于执行结果。满足 ACK 或回复条件不代表业务验收通过。'),unavailable,
+          e('dl',{className:'wb-node-facts'},e('dt',null,'追踪状态'),e('dd',null,state),e('dt',null,'执行观察'),e('dd',null,events.at(-1)?.summary || '尚未收到可读取的执行活动'),e('dt',null,'完成条件'),e('dd',null,status.backend==='pac'?'负责人对当前请求显式置 flag':'只读旧记录'),e('dt',null,'负责人'),e('dd',null,target.owner || target.recipient || '历史未记录'),e('dt',null,'通知状态'),e('dd',null,target.deliveryState || '未记录'),e('dt',null,'固定截止'),e('dd',null,target.deadlineMs?new Date(target.deadlineMs).toLocaleString():'未记录'),e('dt',null,'失败策略'),e('dd',null,status.onFailure || '旧记录'),e('dt',null,'证据引用'),e('dd',null,target.reasonRef || '尚未提交')),
+          note(status.backend==='pac'?'完成由当前请求的显式 flag 和证据引用确认。普通回复不会完成节点。':'旧任务只读归档，保留原追踪结果。'),unavailable,
+          status.backend==='pac' && target.localHumanCanComplete?e('div',{className:'h2bcontrol-actions'},
+            button('完成此节点',()=>action('提交完成',async()=>{const reason=window.prompt('完成证据引用');if(!reason)return;await workbenchCall('complete',{id:selected,runId:runId,target:nodeTarget,requestId:target.requestId,reasonRef:reason});setNodeRefresh(n=>n+1);}),false),
+            button('报告节点失败',()=>action('提交失败',async()=>{const reason=window.prompt('失败证据引用');if(!reason)return;await workbenchCall('fail',{id:selected,runId:runId,target:nodeTarget,requestId:target.requestId,reasonRef:reason});setNodeRefresh(n=>n+1);}),false)):null,
           e('details',null,e('summary',null,'身份与派发记录'),e('pre',{className:'wb-source'},JSON.stringify({sender:observation.sender,conversationId:target.conversationId,deliveries:actual?.deliveries || [],identityAvailable:actual?.identityAvailable || false},null,2)))):
         nodeTab==='process'?e(React.Fragment,null,
           note('已收到的执行摘要，不保证包含全部步骤；时间按上报时间排列。'),unavailable,
@@ -6960,7 +6963,7 @@ function guiThemeControls(React, theme, onChange) {
           !followProgress?button('恢复跟随',()=>setFollowProgress(true),false):button('暂停跟随',()=>setFollowProgress(false),false),
           !events.length?note(actual?.identityAvailable?'尚未收到执行进度。已派发不代表已开始执行。':'历史派发缺少可靠关联，暂无法读取过程。'):null,
           events.map(ev=>e('article',{className:'wb-node-event',key:ev.deliveryId+':'+ev.seq},e('small',null,new Date(ev.emittedAtMs).toLocaleString()+' · '+(ev.toolName || ev.phase)),e('p',null,ev.summary),ev.detail?e('details',null,e('summary',null,'查看事件详情'),e('pre',{className:'wb-source'},JSON.stringify(ev.detail,null,2))):null,e('small',null,'派发 '+ev.deliveryId)))):
-        nodeTab==='result'?e(React.Fragment,null,unavailable,
+        nodeTab==='result' && status.backend==='pac'?e(React.Fragment,null,e('h4',null,'完成证据'),e('p',null,'当前 flag：'+(target.flag?'已置':'未置')),e('pre',{className:'wb-node-output'},target.reasonRef || '尚未提交证据引用'),note('回复文字不构成完成。结果正文由证据引用定位。')):nodeTab==='result'?e(React.Fragment,null,unavailable,
           replies.length?replies.map(reply=>e('article',{className:'wb-node-result',key:reply.messageId},e('h4',null,'关联正式回复'),e('small',null,reply.actor+' · '+new Date(reply.createdAtMs).toLocaleString()),e('p',null,reply.matchesAwait?'回复内容匹配等待条件（不代表业务验收）':'本回复未匹配完成等待条件'),e('pre',{className:'wb-node-output'},reply.text),reply.truncated?note('回复较长，仅展示前一部分；并非完整结果。'):null,e('small',null,reply.deliveryId?'关联派发 '+reply.deliveryId:'按节点会话关联，未指认具体重试'))):
             target.replyExcerpt?e(React.Fragment,null,note('只有回复摘要，完整结果暂不可读取。'),e('pre',{className:'wb-node-output'},target.replyExcerpt)):note('尚无可读取的关联正式回复。'),
           actual?.results?.truncated?note('回复记录超过展示上限，部分内容未展示。'):null,
@@ -7009,7 +7012,7 @@ function guiThemeControls(React, theme, onChange) {
                   e('details',null,e('summary',null,'查看变更明细'),changes.slice(0,100).map(function(change,index){return e('article',{className:'wb-change',key:index},e('strong',null,workflowChangeLabel(change.path)),e('div',{className:'wb-change-values'},['before','after'].map(side=>e('section',{className:'wb-change-value wb-change-'+side,key:side},e('span',{className:'wb-change-label'},side==='before'?'修改前':'修改后'),e('pre',null,workflowChangeValue(change[side]))))));}),changes.length>100?e('p',null,'仅展示前 100 项；完整方案见下方。'):null),
                   e('details',null,e('summary',null,'查看此版本 YAML'),e('pre',{className:'wb-source'},entry.yaml)));
               }):e('p',null,'尚未保存方案修订。')):null,
-            activeTab==='plan'?e(React.Fragment,null,
+            activeTab==='plan' && doc.readOnly?e('section',null,e('p',{role:'status'},'旧 Workflow 只读归档。新任务请创建 PAC Workflow。'),e('pre',{className:'wb-source'},rev?.yaml || '')):activeTab==='plan'?e(React.Fragment,null,
             e('label',{className:'h2bcontrol-field'},'对 Agent 提要求',e('textarea',{className:'h2bcontrol-textarea',value:instruction,disabled:!!busy,placeholder:'例如：让三个 Agent 分别评审兼容性、性能和安全；完成后汇总给我。',onChange:function(event){setInstruction(event.target.value);}})),
             e('div',{className:'h2bcontrol-actions'},e('select',{'aria-label':'本次请求范围',className:'h2bcontrol-select',value:mode,disabled:!!busy,onChange:function(event){setMode(event.target.value);}},e('option',{value:'draft'},'只生成或修改方案'),e('option',{value:'run'},'生成方案，校验后运行一次')),button('交给 Agent',ask,!doc.sessionId || !instruction.trim())),
             doc.authorizationError?e('p',{className:'h2bcontrol-action-error'},doc.authorizationError+'；方案已保存，请先完成会话身份绑定。'):null,
@@ -7017,12 +7020,24 @@ function guiThemeControls(React, theme, onChange) {
             !rev?e('p',{className:'h2bcontrol-empty'},'尚无方案。描述目标后交给 Agent，或导入 YAML。'):null,
             rev?e('div',null,
               rev.parseError?e('div',{className:'h2bcontrol-action-error'},rev.parseError):null,
-              def?e('div',{className:'wb-facts'},e('p',null,display(def.summary || def.name)),e('p',null,'等待：'+(def.await && def.await.kind || 'reply')+' · 超时：'+(def.await && def.await.timeout || '600s')),e('p',null,'结束条件：'+(def.await && def.await.match || (def.await && def.await.kind==='ack'?'投递 ACK，不代表交付完成':'任意回复；进展回复也可能结束追踪'))),e('p',null,'超时处理：'+(def.on_timeout && def.on_timeout.action || 'report')+' · 汇总给：'+(def.report_to || '发起者')),e('p',null,'最多尝试：'+(def.on_timeout && def.on_timeout.max_attempts || 1)+' · 重试间隔：'+display(def.on_timeout && def.on_timeout.backoff || [])+(def.on_timeout && def.on_timeout.escalate_to?' · 升级给：'+display(def.on_timeout.escalate_to):'')),
-                (Array.isArray(def.targets)?def.targets:[]).map(function(t,index){const target=typeof t==='string'?{name:t}:t && typeof t==='object'?t:{};return e('details',{key:index},e('summary',null,(target.name || '未知目标')+' · '+(target.role || 'execute')),e('pre',{className:'wb-source'},display(target.task || def.task)),e('small',null,target.task?'此任务覆盖通用任务':'继承通用任务'),e('p',null,'首个输出预期：'+display(target.first_output_eta || def.first_output_eta || '未声明')),e('p',null,'人工关卡声明：'+display(target.human_gates || def.human_gates || '未声明')+'（用于派发说明，不是自动审批执行器）'));})):null,
+              def?e('div',{className:'wb-facts'},
+                e('p',null,display(def.summary || def.name)),
+                e('p',null,'完成：负责人显式置 flag · 固定截止：'+(def.defaults?.timeout || '1h')),
+                e('p',null,'失败策略：'+(def.on_failure || 'terminate')+' · 图结束时回收所属 worker'),
+                e('p',null,'普通回复不表示完成；报告和审核以显式节点表达。'),
+                (Array.isArray(def.nodes)?def.nodes:[]).map(function(node,index){return e('details',{key:index},
+                  e('summary',null,node.id+' · '+(node.kind || 'task')+' · '+(node.role || 'execute')),
+                  e('pre',{className:'wb-source'},display(node.task)),
+                  e('p',null,'执行者：'+(node.owner?'借用 '+node.owner:node.worker?'共享 worker '+node.worker:'专属临时 worker')),
+                  e('p',null,'依赖：'+display(node.after || [])),
+                  e('p',null,'启动配置：'+display(node.launch || def.workers?.[node.worker] || def.defaults?.launch || {tier:'fast'})),
+                  e('p',null,'首个输出预期：'+display(node.first_output_eta || def.defaults?.first_output_eta || '未声明')),
+                  e('p',null,'人工关卡声明：'+display(node.human_gates || def.defaults?.human_gates || '未声明')));
+                }),e('details',null,e('summary',null,'图关系'),e('pre',{className:'wb-source'},display(def.edges || [])))):null,
               e('div',{className:'h2bcontrol-actions'},button('校验当前方案',validate,!doc.sessionId || !!rev.parseError),button('确认运行此版本',start,!doc.sessionId || !!rev.parseError || !rev.validation || !rev.validation.ok || yamlDirty || doc.runs.some(function(r){return r.outcome==='unknown' || r.outcome==='submitting';})),button('复制为新流程',function(){return cloneRevision(doc.revision);},!doc.sessionId)),
               e('details',null,e('summary',null,'快速修改'),
                 field('新名称',editName,setEditName,{placeholder:doc.name,maxLength:120}),button('保存名称',function(){return inlineEdit('name',editName);},!editName.trim() || yamlDirty),
-                field('超时（秒）',editTimeout,setEditTimeout,{type:'number',min:1,max:86400,step:1,placeholder:'例如 1800'}),button('保存超时',function(){return inlineEdit('timeout',editTimeout);},!editTimeout || yamlDirty)),
+                field('默认截止时长（秒）',editTimeout,setEditTimeout,{type:'number',min:1,max:86400,step:1,placeholder:'例如 1800'}),button('保存超时',function(){return inlineEdit('timeout',editTimeout);},!editTimeout || yamlDirty)),
               e('details',{open:rev.number>1},e('summary',null,'版本变化 · '+rev.changes.length+' 项'),rev.changes.length?null:e('p',{className:'h2bcontrol-empty'},'此版本没有字段变化。'),rev.changes.slice(0,100).map(function(change,index){return e('article',{className:'wb-change',key:index},
                 e('strong',{title:change.path},workflowChangeLabel(change.path)),
                 e('div',{className:'wb-change-values'},['before','after'].map(function(side){return e('section',{className:'wb-change-value wb-change-'+side,key:side},
@@ -7037,10 +7052,10 @@ function guiThemeControls(React, theme, onChange) {
               button('导出已保存 YAML',function(){const url=URL.createObjectURL(new Blob([rev.yaml],{type:'text/yaml'}));const a=document.createElement('a');a.href=url;a.download='workflow.yaml';a.click();URL.revokeObjectURL(url);},!rev)),
             ):null,
             activeTab==='runs'?e(React.Fragment,null,e('h3',null,'关联运行'),doc.runs.length?null:e('p',{className:'h2bcontrol-empty'},'这个流程尚未运行。'),doc.runs.map(function(r){return e('div',{key:r.requestId,className:'wb-run'},r.runId?button(r.runId+' · v'+r.revision,function(){selectRun(r.runId);},false):e('p',{className:'h2bcontrol-action-error'},(r.outcome==='rejected'?'启动已被拒绝，未创建 Run；修复原因后可重新运行。请求 ':r.outcome==='submitting'?'启动请求处理中，请等待结果。请求 ':'启动结果未知：请在下方「Workflow 运行中心」按时间与发起者核对；该流程暂不能重发。请求 ')+r.requestId),r.error?e('small',null,r.error.message):null);}),
-            status?e('section',{className:'wb-facts'},e('h3',null,runId+' · '+(labels[status.state] || status.state)),e('p',null,'当前草稿 v'+doc.revision+'；本次运行使用方案 v'+observation.revision+'。追踪结束不代表业务验收通过。'),e('p',null,'原发起者：'+(observation.sender || '未记录')+' · 原工作会话：'+(observation.sessionId || '未记录')),
+            status?e('section',{className:'wb-facts'},e('h3',null,runId+' · '+(labels[status.state] || status.state)),e('p',null,'当前草稿 v'+doc.revision+'；本次运行使用方案 v'+observation.revision+'。完成依据为显式 flag 与证据引用。'),e('p',null,'原发起者：'+(observation.sender || '未记录')+' · 原工作会话：'+(observation.sessionId || '未记录')),
               e('div',{className:'wb-node-toolbar'},e('strong',null,'节点 · '+status.targets.length),e('div',null,button('全部',()=>setNodeFilter('all'),nodeFilter==='all'),button('需关注',()=>setNodeFilter('attention'),nodeFilter==='attention'))),
               e('div',{className:'wb-node-list'},status.targets.filter(t=>nodeFilter==='all' || ['timed_out','escalated','backoff'].includes(t.state)).map(t=>e('button',{className:'wb-node-row'+(nodeTarget===t.target?' selected':''),key:t.target,onClick:event=>selectNode(t.target,event),'aria-label':'查看节点 '+t.target},
-                e('span',null,e('strong',null,t.target),e('small',null,'尝试 '+t.attempts)),e('span',{className:'wb-node-state '+t.state},labels[t.state] || t.state),e('span',null,'›')))),
+                e('span',null,e('strong',null,t.target),e('small',null,status.backend==='pac'?(t.owner || ''):'历史尝试 '+t.attempts)),e('span',{className:'wb-node-state '+t.state},labels[t.state] || t.state),e('span',null,'›')))),
               nodeFilter==='attention' && !status.targets.some(t=>['timed_out','escalated','backoff'].includes(t.state))?e('p',{className:'h2bcontrol-empty'},'当前没有需关注的节点。'):null,
               e('p',{className:'h2bcontrol-action-note'},'点击节点查看状态、过程与结果 · 状态读取于 '+new Date(observation.observedAt).toLocaleTimeString()),
               button('让协助 Agent 分析本次运行',()=>analyze(),!doc.sessionId),
@@ -7048,7 +7063,7 @@ function guiThemeControls(React, theme, onChange) {
               nodeTarget?renderNode():null,
               e('details',null,e('summary',null,'本次运行定义快照'),e('pre',{className:'wb-source'},observation.snapshot.yaml)),
               button('从此 Run 复制新方案',function(){return cloneRevision(observation.revision);},!doc.sessionId),
-              status.state==='running'?e('div',null,e('label',null,e('input',{type:'checkbox',checked:cancelConfirmed,onChange:function(event){setCancelConfirmed(event.target.checked);}}),'取消后续追踪与重试，不会停止远端 Agent'),button('取消此 Run 的追踪',function(){return action('取消',async function(){await workbenchCall('cancel',{id:doc.id,runId:runId,confirmed:true});setObservation(await workbenchCall('inspect',{id:doc.id,runId:runId}));setCancelConfirmed(false);});},!cancelConfirmed)):null):null):null
+              ['running','held'].includes(status.state) && !status.readOnly?e('div',null,e('label',null,e('input',{type:'checkbox',checked:cancelConfirmed,onChange:function(event){setCancelConfirmed(event.target.checked);}}),'终止此图并回收所属 worker；借用的已有 actor 保持不变'),button('终止此图',function(){return action('取消',async function(){await workbenchCall('cancel',{id:doc.id,runId:runId,confirmed:true});setObservation(await workbenchCall('inspect',{id:doc.id,runId:runId}));setCancelConfirmed(false);});},!cancelConfirmed)):null):null):null
           ):e('p',{className:'h2bcontrol-empty'},'选择或新建一个流程，从对话开始。'))));
     }
     // END WORKFLOW WORKBENCH
@@ -7130,7 +7145,7 @@ function guiThemeControls(React, theme, onChange) {
         const runScope = isolated ? localRunScope : h2bControlState.runScope || 'all';
         function setRunScope(scope) { if (isolated) setLocalRunScope(scope); else selectH2bControlSection('workflows', scope); }
         const [routineControl, setRoutineControl] = React.useState({ name: selectionPreference('routine'), busy: false, error: '', result: null, confirmed: false });
-        const [routineDraft, setRoutineDraft] = React.useState({ from: '', yaml: 'version: 1\nname: dsh-self-drive\nschedule: {interval: 5m}\nsource: {kind: taskwarrior, filter: "+selfdrive -blocked"}\npolicy:\n  routes:\n    - {tag: "route:self", target: self}\n  default: self\n  task_template: "【自驱任务 {{nonce}}】{{task.description}}"\nlimits:\n  max_in_flight: 3\n  circuit_breaker: {window_runs: 5, escalate_ratio: 1.0, action: "pause+alarm"}\non_task_timeout: {action: escalate, escalate_to: "user:owner"}\n', busy: false, error: '', result: null, confirmed: false });
+        const [routineDraft, setRoutineDraft] = React.useState({ from: '', yaml: 'version: 2\nmode: source\nname: dsh-self-drive\nschedule: {interval: 5m}\nsource: {kind: taskwarrior, filter: "+selfdrive -blocked"}\npolicy:\n  routes:\n    - {tag: "route:self", target: self}\n  default: self\n  task_template: "【自驱任务】{{task.description}}"\nlimits:\n  max_in_flight: 3\n  circuit_breaker: {window_runs: 5, escalate_ratio: 1.0, action: "pause+alarm"}\non_task_timeout: {action: escalate, escalate_to: "user:owner"}\n', busy: false, error: '', result: null, confirmed: false });
         const [deliveryControl, setDeliveryControl] = React.useState({ from: '', messageId: '', busy: false, error: '', document: null, selectedId: '', trajectory: null });
         const [logView, setLogView] = React.useState({ keyword: '', node: '', errorsOnly: false, merge: true });
         const [logControl, setLogControl] = React.useState({ windowMinutes: '15', level: '', component: '', name: '', actor: '', conversation: '', correlationId: '', busy: false, error: '', document: null });
@@ -7211,11 +7226,11 @@ function guiThemeControls(React, theme, onChange) {
             if (!active) return;
             setAgentChoices({ senders: senders, targets: targets });
             setWorkflow(function (old) {
-              const from = senders.includes(old.from) ? old.from : senders[0] || '';
-              const target = targets.includes(old.target) ? old.target : targets.find(function (uri) { return uri !== from; }) || targets[0] || '';
+              const from = /^user:[^:\s]+$/.test(old.from) ? old.from : senders[0] ? 'user:'+senders[0].split(':')[1] : '';
+              const target = targets.includes(old.target) ? old.target : '';
               return Object.assign({}, old, { from: from, target: target });
             });
-            setRoutineDraft(function (old) { return Object.assign({}, old, { from: senders.includes(old.from) ? old.from : senders[0] || '' }); });
+            setRoutineDraft(function (old) { return Object.assign({}, old, { from: /^user:[^:\s]+$/.test(old.from)?old.from:senders[0]?'user:'+senders[0].split(':')[1]:'' }); });
             setDeliveryControl(function (old) { return Object.assign({}, old, { from: senders.includes(old.from) ? old.from : senders[0] || '' }); });
             setChannelControl(function (old) { return Object.assign({}, old, { as: senders.includes(old.as) ? old.as : senders[0] || '' }); });
           }).catch(function () { if (active) setAgentChoices({ senders: [], targets: [] }); });
@@ -7238,22 +7253,14 @@ function guiThemeControls(React, theme, onChange) {
         function workflowYaml() {
           if (advancedWorkflow.enabled) return advancedWorkflow.yaml;
           const targets = [{ name: workflow.target, task: workflow.targetTask }].concat(workflow.extraTargets);
-          const wait = { kind: workflow.awaitKind, timeout: workflow.timeout + 's' };
-          if (workflow.match.trim()) wait.match = workflow.match.trim();
-          const timeout = { action: workflow.timeoutAction };
-          if (workflow.timeoutAction === 'retry') {
-            timeout.max_attempts = Number(workflow.maxAttempts);
-            timeout.backoff = workflow.backoff.split(',').map(function (value) { return value.trim(); }).filter(Boolean);
-          }
-          if (workflow.timeoutAction === 'escalate' || workflow.timeoutAction === 'retry' && workflow.escalateTo.trim()) timeout.escalate_to = workflow.escalateTo.trim();
           return [
-            'version: 1',
+            'version: 2',
             'name: ' + JSON.stringify(workflow.name.trim()),
-            'task: ' + JSON.stringify(workflowTask()),
-            'targets:',
-            ...targets.map(function (target) { return '  - ' + JSON.stringify(Object.assign({ name: target.name }, target.task.trim() ? { task: target.task.trim() } : {})); }),
-            'await: ' + JSON.stringify(wait),
-            'on_timeout: ' + JSON.stringify(timeout)
+            'defaults: ' + JSON.stringify({timeout:workflow.timeout+'s',launch:{tier:'fast',...(workflow.syncMode==='git-pr' && /^(\/|[A-Za-z]:[\\/])/.test(workflow.workspace.trim())?{cwd:workflow.workspace.trim()}:{})}}),
+            'on_failure: ' + (workflow.failurePolicy || 'terminate'),
+            ...(workflow.escalateTo.trim()?['escalate_to: '+JSON.stringify(workflow.escalateTo.trim())]:[]),
+            'nodes:',
+            ...targets.map(function (target,index) { return '  - ' + JSON.stringify({id:'task'+(index+1),task:target.task.trim() || workflowTask(),...(target.name?{owner:target.name}:{})}); })
           ].join('\n') + '\n';
         }
 
@@ -7449,7 +7456,7 @@ function guiThemeControls(React, theme, onChange) {
         }, [state.loading, section.id, revision]);
 
         async function addRoutine() {
-          if (!routineDraft.previewToken || routineDraft.previewKey !== JSON.stringify([routineDraft.yaml, routineDraft.from]) || !routineDraft.confirmed || !routineDraft.yaml.trim() || !isCanonicalAgentTarget(routineDraft.from)) return;
+          if (!routineDraft.previewToken || routineDraft.previewKey !== JSON.stringify([routineDraft.yaml, routineDraft.from]) || !routineDraft.confirmed || !routineDraft.yaml.trim() || !/^user:[^:\s]+$/.test(routineDraft.from)) return;
           setRoutineDraft(function (old) { return Object.assign({}, old, { busy: true, error: '', result: null }); });
           try {
             const response = await invokeControl('routine-add', { yaml: routineDraft.yaml, from: routineDraft.from, previewToken: routineDraft.previewToken, confirmed: true });
@@ -7766,11 +7773,9 @@ function guiThemeControls(React, theme, onChange) {
           const packageReady = workflow.objective.trim() && workflow.deliverables.trim() && workflow.acceptance.trim()
             && (workflow.syncMode !== 'git-pr' || workflow.workspace.trim());
           const targets = [{ name: workflow.target, task: workflow.targetTask }].concat(workflow.extraTargets);
-          const targetsReady = targets.every(function (target) { return isCanonicalAgentTarget(target.name) && agentChoices.targets.includes(target.name); }) && new Set(targets.map(function (target) { return target.name; })).size === targets.length;
-          const timingReady = Number.isInteger(Number(workflow.timeout)) && Number(workflow.timeout) >= 1 && Number(workflow.timeout) <= 86400
-            && (workflow.timeoutAction !== 'retry' || Number.isInteger(Number(workflow.maxAttempts)) && Number(workflow.maxAttempts) >= 1 && Number(workflow.maxAttempts) <= 10 && workflow.backoff.split(',').filter(function (value) { return value.trim(); }).every(function (value) { return /^\d+(?:\.\d+)?(?:ms|s|m|h)$/.test(value.trim()); }))
-            && (workflow.timeoutAction !== 'escalate' || workflow.escalateTo.trim());
-          const valid = (advancedWorkflow.enabled ? advancedWorkflow.yaml.trim() : workflow.name.trim() && packageReady && targetsReady && timingReady) && isCanonicalAgentTarget(workflow.from);
+          const targetsReady = targets.every(function (target) { return !target.name || isCanonicalAgentTarget(target.name) && agentChoices.targets.includes(target.name); }) && new Set(targets.filter(t=>t.name).map(t=>t.name)).size === targets.filter(t=>t.name).length;
+          const timingReady = Number.isInteger(Number(workflow.timeout)) && Number(workflow.timeout) >= 1 && Number(workflow.timeout) <= 86400;
+          const valid = (advancedWorkflow.enabled ? advancedWorkflow.yaml.trim() : workflow.name.trim() && packageReady && targetsReady && timingReady) && /^user:[^:\s]+$/.test(workflow.from);
           const previewCurrent = workflowAction.preview && workflowAction.previewKey === workflowKey();
           const started = workflowAction.result && workflowAction.result.runId;
           return React.createElement('section', { className: 'h2bcontrol-action' },
@@ -7790,32 +7795,26 @@ function guiThemeControls(React, theme, onChange) {
               ),
               React.createElement('aside', { className: 'h2bworkflow-package-side' },
                 React.createElement('label', { className: 'h2bcontrol-field' }, 'Workflow 名称', React.createElement('input', { className: 'h2bcontrol-input', value: workflow.name, onChange: function (event) { updateWorkflow('name', event.target.value); } })),
-                React.createElement('label', { className: 'h2bcontrol-field' }, '派发身份', React.createElement('select', { className: 'h2bcontrol-select', value: workflow.from, onChange: function (event) { updateWorkflow('from', event.target.value); } }, React.createElement('option', { value: '' }, '选择在线稳定身份…'), agentChoices.senders.map(function (uri) { return React.createElement('option', { key: uri, value: uri }, uri); }))),
-                React.createElement('label', { className: 'h2bcontrol-field' }, '执行 Agent', React.createElement('select', { className: 'h2bcontrol-select', value: workflow.target, onChange: function (event) { updateWorkflow('target', event.target.value); } }, React.createElement('option', { value: '' }, '选择网络可投递 Agent…'), agentChoices.targets.map(function (uri) { return React.createElement('option', { key: uri, value: uri }, uri); }))),
+                React.createElement('label',{className:'h2bcontrol-field'},'操作人',React.createElement('input',{className:'h2bcontrol-input',value:workflow.from,placeholder:'user:owner',onChange:event=>updateWorkflow('from',event.target.value)})),
+                React.createElement('label', { className: 'h2bcontrol-field' }, '执行 Agent', React.createElement('select', { className: 'h2bcontrol-select', value: workflow.target, onChange: function (event) { updateWorkflow('target', event.target.value); } }, React.createElement('option', { value: '' }, '默认创建专属临时 worker'), agentChoices.targets.map(function (uri) { return React.createElement('option', { key: uri, value: uri }, uri); }))),
                 React.createElement('label', { className: 'h2bcontrol-field' }, '目标 1 专属任务（可选）', React.createElement('textarea', { className: 'h2bcontrol-textarea', value: workflow.targetTask, placeholder: '留空使用公共工作包；填写则替代完整公共任务文本', onChange: function (event) { updateWorkflow('targetTask', event.target.value); } })),
                 workflow.extraTargets.map(function (target, index) {
                   function updateTarget(field, value) { updateWorkflow('extraTargets', workflow.extraTargets.map(function (old, itemIndex) { return itemIndex === index ? Object.assign({}, old, { [field]: value }) : old; })); }
                   return React.createElement('div', { className: 'h2bworkflow-target', key: index },
-                    React.createElement('label', { className: 'h2bcontrol-field' }, '执行 Agent ' + (index + 2), React.createElement('select', { className: 'h2bcontrol-select', value: target.name, onChange: function (event) { updateTarget('name', event.target.value); } }, React.createElement('option', { value: '' }, '选择网络可投递 Agent…'), agentChoices.targets.map(function (uri) { return React.createElement('option', { key: uri, value: uri, disabled: targets.some(function (other, otherIndex) { return otherIndex !== index + 1 && other.name === uri; }) }, uri); }))),
+                    React.createElement('label', { className: 'h2bcontrol-field' }, '执行 Agent ' + (index + 2), React.createElement('select', { className: 'h2bcontrol-select', value: target.name, onChange: function (event) { updateTarget('name', event.target.value); } }, React.createElement('option', { value: '' }, '默认创建专属临时 worker'), agentChoices.targets.map(function (uri) { return React.createElement('option', { key: uri, value: uri, disabled: targets.some(function (other, otherIndex) { return otherIndex !== index + 1 && other.name === uri; }) }, uri); }))),
                     React.createElement('label', { className: 'h2bcontrol-field' }, '目标 ' + (index + 2) + ' 专属任务（可选）', React.createElement('textarea', { className: 'h2bcontrol-textarea', value: target.task, placeholder: '留空使用公共工作包；填写则替代完整公共任务文本', onChange: function (event) { updateTarget('task', event.target.value); } })),
                     React.createElement('button', { className: 'h2bcontrol-action-btn', onClick: function () { updateWorkflow('extraTargets', workflow.extraTargets.filter(function (_, itemIndex) { return itemIndex !== index; })); } }, '移除目标 ' + (index + 2))
                   );
                 }),
                 React.createElement('button', { className: 'h2bcontrol-action-btn', disabled: targets.length >= 50, onClick: function () { updateWorkflow('extraTargets', workflow.extraTargets.concat([{ name: '', task: '' }])); } }, '添加执行目标'),
-                !targetsReady ? React.createElement('div', { className: 'h2bcontrol-action-note' }, '请选择每个目标的在线可投递 Agent，目标不能重复。表单最多 50 个目标；更高限制请使用高级 YAML。') : null,
-                React.createElement('div', { className: 'h2bcontrol-action-note wide' }, '派发身份来自本机在线稳定 Agent；执行目标来自 H2B 当前 online + deliverable 目录。临时 dsh-web Session 与离线历史记录不会进入操作下拉框。'),
+                !targetsReady ? React.createElement('div', { className: 'h2bcontrol-action-note' }, '留空创建临时 worker；显式选择才借用已有 Agent。表单最多 50 个节点。') : null,
+                React.createElement('div', { className: 'h2bcontrol-action-note wide' }, '操作人须匹配本机登录用户；工作台内的 Agent 派单使用其已绑定会话身份。'),
                 React.createElement('label', { className: 'h2bcontrol-field' }, '交付方式', React.createElement('select', { className: 'h2bcontrol-select', value: workflow.syncMode, onChange: function (event) { updateWorkflow('syncMode', event.target.value); } }, React.createElement('option', { value: 'git-pr' }, 'Git 分支 + PR'), React.createElement('option', { value: 'message-only' }, '仅消息回报'))),
                 workflow.syncMode === 'git-pr' ? React.createElement('label', { className: 'h2bcontrol-field' }, '仓库 / 工作区 *', React.createElement('input', { className: 'h2bcontrol-input', value: workflow.workspace, placeholder: 'https://code.hyprial.com/org/repo 或已知路径', onChange: function (event) { updateWorkflow('workspace', event.target.value); } })) : null,
-                React.createElement('label', { className: 'h2bcontrol-field' }, '等待条件', React.createElement('select', { className: 'h2bcontrol-select', value: workflow.awaitKind, onChange: function (event) { updateWorkflow('awaitKind', event.target.value); } }, React.createElement('option', { value: 'reply' }, '收到匹配回复（reply）'), React.createElement('option', { value: 'ack' }, '收到投递确认（ack，不代表任务交付）'))),
-                React.createElement('label', { className: 'h2bcontrol-field' }, '回复匹配表达式（可选）', React.createElement('input', { className: 'h2bcontrol-input', value: workflow.match, placeholder: '例：DONE {{nonce}}，具体匹配语义由 H2B 决定', onChange: function (event) { updateWorkflow('match', event.target.value); } })),
-                React.createElement('label', { className: 'h2bcontrol-field' }, '超时（秒）', React.createElement('input', { className: 'h2bcontrol-input', type: 'number', min: 1, max: 86400, value: workflow.timeout, onChange: function (event) { updateWorkflow('timeout', event.target.value); } })),
-                React.createElement('label', { className: 'h2bcontrol-field' }, '超时处理', React.createElement('select', { className: 'h2bcontrol-select', value: workflow.timeoutAction, onChange: function (event) { updateWorkflow('timeoutAction', event.target.value); } }, React.createElement('option', { value: 'report' }, '报告超时（report）'), React.createElement('option', { value: 'retry' }, '重试（retry）'), React.createElement('option', { value: 'escalate' }, '升级处理（escalate）'))),
-                workflow.timeoutAction === 'retry' ? React.createElement('div', null,
-                  React.createElement('label', { className: 'h2bcontrol-field' }, '最多尝试次数（含首次，1–10）', React.createElement('input', { className: 'h2bcontrol-input', type: 'number', min: 1, max: 10, value: workflow.maxAttempts, onChange: function (event) { updateWorkflow('maxAttempts', event.target.value); } })),
-                  React.createElement('label', { className: 'h2bcontrol-field' }, '重试退避间隔（逗号分隔，可留空）', React.createElement('input', { className: 'h2bcontrol-input', value: workflow.backoff, placeholder: '例：5s, 30s；支持 ms / s / m / h', onChange: function (event) { updateWorkflow('backoff', event.target.value); } }))
-                ) : null,
-                workflow.timeoutAction !== 'report' ? React.createElement('label', { className: 'h2bcontrol-field' }, '升级通知对象' + (workflow.timeoutAction === 'escalate' ? ' *' : '（可选）'), React.createElement('input', { className: 'h2bcontrol-input', value: workflow.escalateTo, placeholder: 'user:owner 或 H2B 可解析的目标', onChange: function (event) { updateWorkflow('escalateTo', event.target.value); } })) : null,
-                !timingReady ? React.createElement('div', { className: 'h2bcontrol-action-note' }, '请核对超时、尝试次数、退避间隔以及升级对象。最终合法性由 CLI plan 校验。') : null,
+                React.createElement('label', {className:'h2bcontrol-field'}, '固定截止时长（秒）', React.createElement('input',{className:'h2bcontrol-input',type:'number',min:1,max:86400,value:workflow.timeout,onChange:event=>updateWorkflow('timeout',event.target.value)})),
+                React.createElement('label', {className:'h2bcontrol-field'}, '节点失败策略', React.createElement('select',{className:'h2bcontrol-select',value:workflow.failurePolicy || 'terminate',onChange:event=>updateWorkflow('failurePolicy',event.target.value)},React.createElement('option',{value:'terminate'},'终止整图并回收'),React.createElement('option',{value:'continue'},'继续独立分支'),React.createElement('option',{value:'hold'},'保持图打开'))),
+                React.createElement('label', {className:'h2bcontrol-field'}, '失败通知接收人（可选）', React.createElement('input',{className:'h2bcontrol-input',value:workflow.escalateTo,placeholder:'user:owner',onChange:event=>updateWorkflow('escalateTo',event.target.value)})),
+                React.createElement('p',{className:'h2bcontrol-action-note'},'完成依赖当前请求的显式 flag。任务不自动重试，截止时间不顺延。'),
                 React.createElement('label', { className: 'h2bcontrol-field' }, '约束与风险', React.createElement('textarea', { className: 'h2bcontrol-textarea', value: workflow.constraints, placeholder: '例：不改公共契约、不重启正在工作的服务', onChange: function (event) { updateWorkflow('constraints', event.target.value); } }))
               )
             ),
@@ -7824,7 +7823,7 @@ function guiThemeControls(React, theme, onChange) {
               setAdvancedWorkflow({ enabled: event.target.checked, yaml: yaml });
               setWorkflowAction({ busy: false, error: '', preview: null, previewKey: '', previewToken: '', result: null, confirmed: false });
             } }), '高级 YAML 模式（替代表单生成内容；派发身份仍使用上方选择）'),
-            React.createElement('div', { className: 'h2bcontrol-action-note' }, '多目标 targets[]、await.match、on_timeout 的 retry / max_attempts / backoff / escalate_to 可在 YAML 配置。以本机 workflow plan 展开结果为准；Console 不另行解释执行规则。'),
+            React.createElement('div', { className: 'h2bcontrol-action-note' }, '使用 nodes/edges 声明依赖、审核、返工和报告；workers 声明共享执行者，owner 显式借用已有主体。以 workflow plan 展开结果为准。'),
             advancedWorkflow.enabled ? React.createElement('textarea', { className: 'h2bcontrol-textarea', 'aria-label': 'PAC YAML', placeholder: '完整 PAC Workflow YAML', value: advancedWorkflow.yaml, onChange: function (event) {
               taskRequests.current.preview++;
               setAdvancedWorkflow({ enabled: true, yaml: event.target.value });
@@ -7994,14 +7993,14 @@ function guiThemeControls(React, theme, onChange) {
                 ) : null,
                 routineTemplates.error ? React.createElement('div', { className: 'h2bcontrol-action-error' }, routineTemplates.error) : null,
                 React.createElement('div', { className: 'h2bcontrol-form-grid' },
-                  React.createElement('label', { className: 'h2bcontrol-field' }, 'Owner / 派发身份', React.createElement('select', { className: 'h2bcontrol-select', value: routineDraft.from, onChange: function (event) { setRoutineDraft(function (old) { return Object.assign({}, old, { from: event.target.value, busy: false, preview: null, previewToken: '', confirmed: false, error: '', result: null }); }); } }, React.createElement('option', { value: '' }, '选择在线稳定身份…'), agentChoices.senders.map(function (uri) { return React.createElement('option', { key: uri, value: uri }, uri); }))),
+            React.createElement('label',{className:'h2bcontrol-field'},'操作人',React.createElement('input',{className:'h2bcontrol-input',value:routineDraft.from,placeholder:'user:owner',onChange:event=>setRoutineDraft(old=>({...old,from:event.target.value}))})),
                   React.createElement('label', { className: 'h2bcontrol-field wide' }, 'Routine YAML', React.createElement('textarea', { className: 'h2bcontrol-textarea', value: routineDraft.yaml, onChange: function (event) { setRoutineDraft(function (old) { return Object.assign({}, old, { yaml: event.target.value, busy: false, preview: null, previewToken: '', confirmed: false, error: '', result: null }); }); } }))
                 ),
                 React.createElement('div', { className: 'h2bcontrol-action-note' }, '先执行 h2b routine plan 预览，再确认注册。修改 YAML 或 Owner 后必须重新预览。'),
-                React.createElement('button', { className: 'h2bcontrol-action-btn', disabled: routineDraft.busy || !state.actions.includes('routine-plan') || !isCanonicalAgentTarget(routineDraft.from), onClick: previewRoutine }, '预览 Routine 计划'),
+                React.createElement('button', { className: 'h2bcontrol-action-btn', disabled: routineDraft.busy || !state.actions.includes('routine-plan') || !/^user:[^:\s]+$/.test(routineDraft.from), onClick: previewRoutine }, '预览 Routine 计划'),
                 routineDraft.preview ? React.createElement('pre', { className: 'h2bcontrol-json' }, JSON.stringify(routineDraft.preview, null, 2)) : null,
                 React.createElement('label', { className: 'h2bcontrol-confirm' }, React.createElement('input', { type: 'checkbox', checked: routineDraft.confirmed, onChange: function (event) { setRoutineDraft(function (old) { return Object.assign({}, old, { confirmed: event.target.checked }); }); } }), '我确认注册此 Routine，并允许 daemon 按其计划持续派发任务。'),
-                React.createElement('div', { className: 'h2bcontrol-actions' }, React.createElement('button', { className: 'h2bcontrol-action-btn primary', disabled: routineDraft.busy || !routineDraft.previewToken || routineDraft.previewKey !== JSON.stringify([routineDraft.yaml, routineDraft.from]) || !routineDraft.confirmed || !routineDraft.yaml.trim() || !isCanonicalAgentTarget(routineDraft.from) || !state.actions.includes('routine-add'), onClick: addRoutine }, routineDraft.busy ? '注册中…' : '注册 Routine')),
+                React.createElement('div', { className: 'h2bcontrol-actions' }, React.createElement('button', { className: 'h2bcontrol-action-btn primary', disabled: routineDraft.busy || !routineDraft.previewToken || routineDraft.previewKey !== JSON.stringify([routineDraft.yaml, routineDraft.from]) || !routineDraft.confirmed || !routineDraft.yaml.trim() || !/^user:[^:\s]+$/.test(routineDraft.from) || !state.actions.includes('routine-add'), onClick: addRoutine }, routineDraft.busy ? '注册中…' : '注册 Routine')),
                 routineDraft.error ? React.createElement('div', { className: 'h2bcontrol-action-error' }, routineDraft.error) : null,
                 routineDraft.result ? React.createElement('div', { className: 'h2bworkflow-reply' }, '已注册：' + String(routineDraft.result.name || 'Routine')) : null
               )

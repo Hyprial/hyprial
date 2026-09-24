@@ -11,6 +11,7 @@ class AddRoutineCommand:
     correlation_id: str
     yaml_text: str
     owner: str
+    enabled: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +30,7 @@ class PauseRoutineCommand:
 class ResumeRoutineCommand:
     correlation_id: str
     name: str
+    align_schedule: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +79,11 @@ class RoutineProjection:
     produces: str | None = None
     schema_error: str | None = None
     quarantine_reason: str | None = None
+    registration_id: str | None = None
+    role: str = "dispatch"
+    mode: str = "source"
+    actor: str | None = None
+    launch: dict | None = None
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -86,6 +93,14 @@ class RoutineProjection:
             "nextDueMs": self.next_due_ms,
             "sourceErrorStreak": self.source_error_streak,
             "outcomes": list(self.outcomes),
+            "registrationId": self.registration_id,
+            "mode": self.mode,
+            "role": self.role,
+            "actor": self.actor or self.produces or self.owner,
+            "actorOwnership": "borrowed" if self.actor else ("routine" if self.produces else "external"),
+            "launch": self.launch,
+            "overlap": "skip" if self.mode == "scheduled" else None,
+            "missedPeriods": "skip" if self.mode == "scheduled" else None,
             "inFlight": [item.to_payload() for item in self.in_flight],
             **({"produces": self.produces} if self.produces is not None else {}),
             **(

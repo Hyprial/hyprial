@@ -95,6 +95,7 @@ class PacPort(Protocol):
         escalate_to: str,
         timeout_seconds: float,
         sender: str,
+        role: str = "dispatch",
     ) -> dict[str, object]: ...
 
     def status(self, *, graph_id: str) -> dict[str, object]: ...
@@ -201,10 +202,10 @@ class RoutineFacade:
             AdmissionResult.CLOSED: PortAdmission.CLOSING,
         }[admission]
 
-    def add(self, *, yaml_text: str, owner: str) -> dict[str, object]:
+    def add(self, *, yaml_text: str, owner: str, enabled: bool = True) -> dict[str, object]:
         correlation = self._correlation()
         event = self._submit_wait(
-            AddRoutineCommand(correlation, yaml_text, owner),
+            AddRoutineCommand(correlation, yaml_text, owner, enabled),
             correlation,
             RoutineMutationCompleted,
         )
@@ -231,7 +232,7 @@ class RoutineFacade:
         projection = self.read_routine(name)
         if projection is None:
             raise RoutineServiceError("ROUTINE_NOT_FOUND", f"no such routine: {name}")
-        return projection.to_payload()
+        return {**projection.to_payload(), "scheduleEvents": self._projection.schedule_events(name)}
 
     def remove(self, *, name: str) -> dict[str, object]:
         correlation = self._correlation()
@@ -251,10 +252,10 @@ class RoutineFacade:
         )
         return event.result.to_payload()
 
-    def resume(self, *, name: str) -> dict[str, object]:
+    def resume(self, *, name: str, align_schedule: bool = False) -> dict[str, object]:
         correlation = self._correlation()
         event = self._submit_wait(
-            ResumeRoutineCommand(correlation, name),
+            ResumeRoutineCommand(correlation, name, align_schedule),
             correlation,
             RoutineMutationCompleted,
         )
@@ -334,10 +335,12 @@ class RoutineFacade:
     def _projection_of(self, snapshot: RoutineSnapshot) -> RoutineProjection:
         row = snapshot.routine
         schema_error: str | None = None
+        spec = None
         try:
-            produces = load_routine_text(
+            spec = load_routine_text(
                 row.yaml_text, label=f"stored routine {row.name}"
-            ).produces
+            )
+            produces = spec.produces
         except RoutineSchemaError as error:
             # Persisted schema faults are data, not a reason to make every
             # routine unreadable. Preserve the raw ownership marker when it
@@ -365,6 +368,11 @@ class RoutineFacade:
             produces=produces,
             schema_error=schema_error,
             quarantine_reason=row.quarantine_reason,
+            registration_id=row.registration_id,
+            mode=spec.mode if spec is not None else "source",
+            role=spec.role if spec is not None else "dispatch",
+            actor=spec.actor if spec is not None else None,
+            launch=spec.launch if spec is not None else None,
         )
 
     def _submit_wait(
@@ -520,16 +528,26 @@ class RoutineFacade:
         detail: str | None = None
         permanent = False
         try:
-            source_tasks = (
-                query_pac_journal(
-                    self._pac_journal,
-                    coordinator=effect.coordinator,
-                    now_ms=self._clock_ms(),
-                    idle_threshold_seconds=effect.source_idle_threshold_seconds,
+            if effect.source_kind == "scheduled":
+                from .source import SourceTask
+                if effect.scheduled_slot_ms is None:
+                    raise ValueError("scheduled source requires a durable slot")
+                source_tasks = () if effect.skip_dispatch else (
+                    SourceTask(f"scheduled:{effect.scheduled_slot_ms}",
+                               f"Routine {effect.routine_name} scheduled at {effect.scheduled_slot_ms}",
+                               ("route:self",)),
                 )
-                if effect.source_kind == "pac-journal"
-                else self._source_query(effect.source_filter)
-            )
+            else:
+                source_tasks = (
+                    query_pac_journal(
+                        self._pac_journal,
+                        coordinator=effect.coordinator,
+                        now_ms=self._clock_ms(),
+                        idle_threshold_seconds=effect.source_idle_threshold_seconds,
+                    )
+                    if effect.source_kind == "pac-journal"
+                    else self._source_query(effect.source_filter)
+                )
             tasks = tuple(
                 RoutineSourceTaskProjection(item.uuid, item.description, item.tags)
                 for item in source_tasks
@@ -588,6 +606,7 @@ class RoutineFacade:
                     escalate_to=effect.escalate_to,
                     timeout_seconds=float(effect.timeout_seconds),
                     sender=effect.sender,
+                    role=effect.role,
                 )
                 graph_id = str(result["graphId"])
                 state = str(result.get("state", "running"))

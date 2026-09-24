@@ -57,6 +57,13 @@ def template_show(name: str = typer.Argument(..., help="Built-in template name."
 def _plan_document(spec: RoutineSpec) -> dict[str, object]:
     return {
         "name": spec.name,
+        "mode": spec.mode,
+        "role": spec.role,
+        "actor": spec.actor or spec.produces,
+        "actorOwnership": "borrowed" if spec.actor else "routine",
+        "launch": spec.launch,
+        "overlap": "skip" if spec.mode == "scheduled" else None,
+        "missedPeriods": "skip" if spec.mode == "scheduled" else None,
         "intervalSeconds": spec.interval_seconds,
         "source": {
             "kind": spec.source_kind,

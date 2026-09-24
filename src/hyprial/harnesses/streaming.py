@@ -814,6 +814,16 @@ class SequentialTurnProcess(BaseTurnProcess):
         delivery_id: str,
         failure: str,
     ) -> tuple[bool, int]:
+        allow_retry = True
+        channel = getattr(self, "worker_channel", None)
+        if channel is not None and delivery_id.startswith("workflow-"):
+            import sqlite3
+            from hyprial.pac.delivery_guard import is_workflow_delivery
+            try:
+                allow_retry = not is_workflow_delivery(channel.state_dir, delivery_id)
+            except (OSError, sqlite3.Error):
+                # An unavailable authority is not permission to repeat work.
+                allow_retry = False
         completed = threading.Event()
         outcome: list[tuple[bool, int]] = []
         with self._lock:
@@ -823,6 +833,7 @@ class SequentialTurnProcess(BaseTurnProcess):
             version=version,
             delivery_id=delivery_id,
             error=failure,
+            allow_retry=allow_retry,
         )
         if admission is not PortAdmission.ACCEPTED:
             with self._lock:
@@ -888,6 +899,35 @@ class SequentialTurnProcess(BaseTurnProcess):
                                 recipient=projection.recipient,
                                 message=projection.message,
                             )
+                        channel = getattr(self, "worker_channel", None)
+                        if channel is not None:
+                            from hyprial.pac.delivery_guard import WITHDRAWN, delivery_current
+                            from hyprial.pac.remote_binding import RemoteWorkflowUnavailable
+                            try:
+                                authorized = delivery_current(channel.state_dir, current.delivery_id)
+                            except RemoteWorkflowUnavailable:
+                                await asyncio.sleep(0.2)
+                                continue
+                            if not authorized:
+                                assert current_fence is not None
+                                admission = self._turn_runtime.complete_io(
+                                    generation=current_fence[0], version=current_fence[1],
+                                    result=TurnResultProjection(delivery_id=current.delivery_id,
+                                        recipient=current.recipient, status="interrupted",
+                                        failure_code=WITHDRAWN),
+                                )
+                                if admission is not PortAdmission.ACCEPTED:
+                                    self.last_error = "withdrawn turn completion relay was refused"
+                                    self._stopping.set()
+                                    return
+                                self._log_turn("worker.turn.withdrawn", current)
+                                with self._lock:
+                                    self._active_delivery_id = None
+                                    self._active_generation = None
+                                    self._aborted_generations.discard(current_fence[0])
+                                current = None
+                                current_fence = None
+                                continue
                         self._log_turn("worker.turn.started", current)
                         turn_started = True
                         await client.query(current.message)

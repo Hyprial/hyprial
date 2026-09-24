@@ -415,6 +415,14 @@ ARCHIVAL_COLUMNS = (
     # spec text ("journal actor fields participate in the rewrite") in the
     # PR and the receipt, with this trigger reading as the reason.
     ("journal", "data_json"),
+    # Workflow definitions and request identities are immutable references,
+    # not principals. Routing uses graphs.created_by and nodes.owner.
+    ("workflow_graphs", "specification_ref"),
+    ("workflow_graphs", "specification_digest"),
+    ("workflow_nodes", "input_token"),
+    ("workflow_nodes", "request_id"),
+    ("workflow_deliveries", "message_id"),
+    ("workflow_deliveries", "request_id"),
 )
 
 
@@ -569,6 +577,14 @@ def plan_database(
             )
         ]
         plan.scanned_tables += len(tables)
+        if path.name == "workflows.sqlite3" and "pac_cutover" in tables and db.execute("SELECT 1 FROM pac_cutover WHERE id=1").fetchone():
+            # A sealed legacy archive records historical identities. Rewriting
+            # it would both falsify history and violate its write barrier.
+            for table in tables:
+                plan.skipped_archival_columns.extend(
+                    f"{path.name}:{table}.{column}" for column in _text_columns(db, table)
+                )
+            return
         for table in tables:
             columns = _text_columns(db, table)
             plan.scanned_columns += len(columns)

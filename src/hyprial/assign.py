@@ -49,9 +49,9 @@ class AssignProducer:
 ASSIGN_PRODUCERS: dict[str, AssignProducer] = {
     "workflow": AssignProducer(
         kind="workflow",
-        writer="hyprial.workflow.registry",
+        writer=None,
         note=(
-            "Written when a deliver:target effect reports success, from the "
+            "Historical workflow assigns are sealed at cutover. Previously written from the "
             "recipient the delivery actually resolved to. The row therefore "
             "appears when the work reached the actor, not when the run "
             "intended to send it -- a target that was never successfully "

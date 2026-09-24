@@ -131,7 +131,7 @@
       workflowDefaultListeners.forEach(function (notify) { notify(); });
     }
     function workflowChangeLabel(path) {
-      const labels={summary:'方案摘要',task:'任务描述',name:'名称',targets:'目标',role:'角色',await:'等待条件',kind:'等待方式',timeout:'超时时间',match:'匹配条件',on_timeout:'超时处理',action:'处理方式',max_attempts:'最多尝试次数',backoff:'重试间隔',escalate_to:'升级通知对象',report_to:'汇总对象',first_output_eta:'首个输出预期',human_gates:'人工关卡',source:'方案源码',version:'格式版本'};
+      const labels={nodes:'节点',edges:'依赖关系',defaults:'默认配置',on_failure:'失败策略',worker:'共享 worker',owner:'借用主体',launch:'启动配置',summary:'方案摘要',task:'任务描述',name:'名称',targets:'目标',role:'角色',await:'等待条件',kind:'等待方式',timeout:'超时时间',match:'匹配条件',on_timeout:'超时处理',action:'处理方式',max_attempts:'最多尝试次数',backoff:'重试间隔',escalate_to:'升级通知对象',report_to:'汇总对象',first_output_eta:'首个输出预期',human_gates:'人工关卡',source:'方案源码',version:'格式版本'};
       const parts=path.split('/').slice(1).map(function(part){return part.replace(/~1/g,'/').replace(/~0/g,'~');});
       return parts.map(function(part,index){return /^\d+$/.test(part)?String(Number(part)+1):labels[part] || part;}).join(' · ') || '完整方案';
     }
@@ -432,10 +432,10 @@
       const def=rev && rev.definition;
       const choices=listedSessions().filter(function(s){return !persistedHumanChats[s.id] && !isSystemSession(s) && currentAppSurface(s.id)==='messages' && !['H2B · 控制台','H2B · 通讯录'].includes(s.displayTitle) && !(snapshotOf(workspaces).archivedSessionIds || []).includes(s.id);});
       const status=observation && observation.status;
-      const bindingBusy=doc && (doc.runs.some(function(r){return r.outcome==='unknown' || r.outcome==='submitting';}) || status && status.state==='running');
+      const bindingBusy=doc && (doc.runs.some(function(r){return r.outcome==='unknown' || r.outcome==='submitting';}) || status && ['running','held'].includes(status.state));
       const canRebind=doc && Number.isInteger(doc.bindingVersion);
 
-      const labels={running:'追踪中',completed:'已完成',cancelled:'已取消追踪',pending:'等待派发',dispatched:'已派发 · 等待回复或 ACK',backoff:'等待重试',done:'已完成',timed_out:'等待超时',escalated:'已升级通知'};
+      const labels={running:'运行中',held:'等待负责人处理',stale:'输入已变化，需重新确认',completed:'已完成',cancelled:'已取消',pending:'等待依赖或 worker',requested:'已生成请求 · 等待完成 flag',done:'已完成',failed:'失败',blocked:'前置失败',timed_out:'超时',escalated:'已上报'};
       function renderNode(){
         const base=status.targets.find(t=>t.target===nodeTarget);if(!base)return null;
         const evidence=nodeData && nodeData.target===nodeTarget && nodeData.runId===runId?nodeData:null;
@@ -443,13 +443,13 @@
         const actual=node?.state==='available'?node:null;
         const target=actual?.tracking || base;
         const snapshot=observation?.snapshot?.definition || (()=>{try{return doc.revisions.find(r=>r.number===observation.revision)?.definition;}catch(_){return null;}})();
-        const spec=snapshot?.targets?.find(t=>(typeof t==='string'?t:t.name)===nodeTarget);
+        const spec=(snapshot?.nodes || snapshot?.targets)?.find(t=>(typeof t==='string'?t:t.id || t.name)===nodeTarget);
         const task=spec?.task || snapshot?.task || '';
         const events=actual?.progress?.events || [],replies=actual?.results?.replies || [];
         const state=e('span',{className:'wb-node-state '+target.state},labels[target.state] || target.state);
         const note=(text)=>e('p',{className:'wb-node-note'},text);
         const stale=nodeError?e('div',{className:'h2bcontrol-action-error',role:'status'},'数据未更新：'+nodeError+'；保留上次成功读取的记录。',button('重试读取',()=>setNodeRefresh(n=>n+1),false)):null;
-        const unavailable=node && node.state!=='available'?note(node.message || '节点信息暂不可读取'):null;
+        const unavailable=node?.progressError?note('进度读取未更新：'+node.progressError):node && node.state!=='available'?note(node.message || '节点信息暂不可读取'):null;
         const body=nodeTab==='discussion'?e(React.Fragment,null,
           e('h4',null,'本次任务 · v'+observation.revision),e('pre',{className:'wb-node-output'},task || '运行快照暂无任务正文'),
           note('执行证据 · node-inspect 只读摘要；沟通与正式结果分开。'),unavailable,
@@ -462,8 +462,11 @@
           e(WorkflowTaskDiscussion,{key:JSON.stringify([selected,runId,nodeTarget]),instanceId:props.instanceId,workflowId:selected,runId:runId,target:nodeTarget,task:task,focusRequest:discussionFocus})):
         nodeTab==='status'?e(React.Fragment,null,
           e('h4',null,'本次任务 · v'+observation.revision),e('p',{className:'wb-node-task'},task || '任务内容见本次运行定义快照'),
-          e('dl',{className:'wb-node-facts'},e('dt',null,'追踪状态'),e('dd',null,state),e('dt',null,'执行观察'),e('dd',null,events.at(-1)?.summary || '尚未收到可读取的执行活动'),e('dt',null,'等待条件'),e('dd',null,snapshot?.await?.kind==='ack'?'投递 ACK':snapshot?.await?.match || '任意回复'),e('dt',null,'尝试次数'),e('dd',null,String(target.attempts)),e('dt',null,'超时策略'),e('dd',null,display(snapshot?.on_timeout || 'report'))),
-          note('追踪状态不等于执行结果。满足 ACK 或回复条件不代表业务验收通过。'),unavailable,
+          e('dl',{className:'wb-node-facts'},e('dt',null,'追踪状态'),e('dd',null,state),e('dt',null,'执行观察'),e('dd',null,events.at(-1)?.summary || '尚未收到可读取的执行活动'),e('dt',null,'完成条件'),e('dd',null,status.backend==='pac'?'负责人对当前请求显式置 flag':'只读旧记录'),e('dt',null,'负责人'),e('dd',null,target.owner || target.recipient || '历史未记录'),e('dt',null,'通知状态'),e('dd',null,target.deliveryState || '未记录'),e('dt',null,'固定截止'),e('dd',null,target.deadlineMs?new Date(target.deadlineMs).toLocaleString():'未记录'),e('dt',null,'失败策略'),e('dd',null,status.onFailure || '旧记录'),e('dt',null,'证据引用'),e('dd',null,target.reasonRef || '尚未提交')),
+          note(status.backend==='pac'?'完成由当前请求的显式 flag 和证据引用确认。普通回复不会完成节点。':'旧任务只读归档，保留原追踪结果。'),unavailable,
+          status.backend==='pac' && target.localHumanCanComplete?e('div',{className:'h2bcontrol-actions'},
+            button('完成此节点',()=>action('提交完成',async()=>{const reason=window.prompt('完成证据引用');if(!reason)return;await workbenchCall('complete',{id:selected,runId:runId,target:nodeTarget,requestId:target.requestId,reasonRef:reason});setNodeRefresh(n=>n+1);}),false),
+            button('报告节点失败',()=>action('提交失败',async()=>{const reason=window.prompt('失败证据引用');if(!reason)return;await workbenchCall('fail',{id:selected,runId:runId,target:nodeTarget,requestId:target.requestId,reasonRef:reason});setNodeRefresh(n=>n+1);}),false)):null,
           e('details',null,e('summary',null,'身份与派发记录'),e('pre',{className:'wb-source'},JSON.stringify({sender:observation.sender,conversationId:target.conversationId,deliveries:actual?.deliveries || [],identityAvailable:actual?.identityAvailable || false},null,2)))):
         nodeTab==='process'?e(React.Fragment,null,
           note('已收到的执行摘要，不保证包含全部步骤；时间按上报时间排列。'),unavailable,
@@ -472,7 +475,7 @@
           !followProgress?button('恢复跟随',()=>setFollowProgress(true),false):button('暂停跟随',()=>setFollowProgress(false),false),
           !events.length?note(actual?.identityAvailable?'尚未收到执行进度。已派发不代表已开始执行。':'历史派发缺少可靠关联，暂无法读取过程。'):null,
           events.map(ev=>e('article',{className:'wb-node-event',key:ev.deliveryId+':'+ev.seq},e('small',null,new Date(ev.emittedAtMs).toLocaleString()+' · '+(ev.toolName || ev.phase)),e('p',null,ev.summary),ev.detail?e('details',null,e('summary',null,'查看事件详情'),e('pre',{className:'wb-source'},JSON.stringify(ev.detail,null,2))):null,e('small',null,'派发 '+ev.deliveryId)))):
-        nodeTab==='result'?e(React.Fragment,null,unavailable,
+        nodeTab==='result' && status.backend==='pac'?e(React.Fragment,null,e('h4',null,'完成证据'),e('p',null,'当前 flag：'+(target.flag?'已置':'未置')),e('pre',{className:'wb-node-output'},target.reasonRef || '尚未提交证据引用'),note('回复文字不构成完成。结果正文由证据引用定位。')):nodeTab==='result'?e(React.Fragment,null,unavailable,
           replies.length?replies.map(reply=>e('article',{className:'wb-node-result',key:reply.messageId},e('h4',null,'关联正式回复'),e('small',null,reply.actor+' · '+new Date(reply.createdAtMs).toLocaleString()),e('p',null,reply.matchesAwait?'回复内容匹配等待条件（不代表业务验收）':'本回复未匹配完成等待条件'),e('pre',{className:'wb-node-output'},reply.text),reply.truncated?note('回复较长，仅展示前一部分；并非完整结果。'):null,e('small',null,reply.deliveryId?'关联派发 '+reply.deliveryId:'按节点会话关联，未指认具体重试'))):
             target.replyExcerpt?e(React.Fragment,null,note('只有回复摘要，完整结果暂不可读取。'),e('pre',{className:'wb-node-output'},target.replyExcerpt)):note('尚无可读取的关联正式回复。'),
           actual?.results?.truncated?note('回复记录超过展示上限，部分内容未展示。'):null,
@@ -521,7 +524,7 @@
                   e('details',null,e('summary',null,'查看变更明细'),changes.slice(0,100).map(function(change,index){return e('article',{className:'wb-change',key:index},e('strong',null,workflowChangeLabel(change.path)),e('div',{className:'wb-change-values'},['before','after'].map(side=>e('section',{className:'wb-change-value wb-change-'+side,key:side},e('span',{className:'wb-change-label'},side==='before'?'修改前':'修改后'),e('pre',null,workflowChangeValue(change[side]))))));}),changes.length>100?e('p',null,'仅展示前 100 项；完整方案见下方。'):null),
                   e('details',null,e('summary',null,'查看此版本 YAML'),e('pre',{className:'wb-source'},entry.yaml)));
               }):e('p',null,'尚未保存方案修订。')):null,
-            activeTab==='plan'?e(React.Fragment,null,
+            activeTab==='plan' && doc.readOnly?e('section',null,e('p',{role:'status'},'旧 Workflow 只读归档。新任务请创建 PAC Workflow。'),e('pre',{className:'wb-source'},rev?.yaml || '')):activeTab==='plan'?e(React.Fragment,null,
             e('label',{className:'h2bcontrol-field'},'对 Agent 提要求',e('textarea',{className:'h2bcontrol-textarea',value:instruction,disabled:!!busy,placeholder:'例如：让三个 Agent 分别评审兼容性、性能和安全；完成后汇总给我。',onChange:function(event){setInstruction(event.target.value);}})),
             e('div',{className:'h2bcontrol-actions'},e('select',{'aria-label':'本次请求范围',className:'h2bcontrol-select',value:mode,disabled:!!busy,onChange:function(event){setMode(event.target.value);}},e('option',{value:'draft'},'只生成或修改方案'),e('option',{value:'run'},'生成方案，校验后运行一次')),button('交给 Agent',ask,!doc.sessionId || !instruction.trim())),
             doc.authorizationError?e('p',{className:'h2bcontrol-action-error'},doc.authorizationError+'；方案已保存，请先完成会话身份绑定。'):null,
@@ -529,12 +532,24 @@
             !rev?e('p',{className:'h2bcontrol-empty'},'尚无方案。描述目标后交给 Agent，或导入 YAML。'):null,
             rev?e('div',null,
               rev.parseError?e('div',{className:'h2bcontrol-action-error'},rev.parseError):null,
-              def?e('div',{className:'wb-facts'},e('p',null,display(def.summary || def.name)),e('p',null,'等待：'+(def.await && def.await.kind || 'reply')+' · 超时：'+(def.await && def.await.timeout || '600s')),e('p',null,'结束条件：'+(def.await && def.await.match || (def.await && def.await.kind==='ack'?'投递 ACK，不代表交付完成':'任意回复；进展回复也可能结束追踪'))),e('p',null,'超时处理：'+(def.on_timeout && def.on_timeout.action || 'report')+' · 汇总给：'+(def.report_to || '发起者')),e('p',null,'最多尝试：'+(def.on_timeout && def.on_timeout.max_attempts || 1)+' · 重试间隔：'+display(def.on_timeout && def.on_timeout.backoff || [])+(def.on_timeout && def.on_timeout.escalate_to?' · 升级给：'+display(def.on_timeout.escalate_to):'')),
-                (Array.isArray(def.targets)?def.targets:[]).map(function(t,index){const target=typeof t==='string'?{name:t}:t && typeof t==='object'?t:{};return e('details',{key:index},e('summary',null,(target.name || '未知目标')+' · '+(target.role || 'execute')),e('pre',{className:'wb-source'},display(target.task || def.task)),e('small',null,target.task?'此任务覆盖通用任务':'继承通用任务'),e('p',null,'首个输出预期：'+display(target.first_output_eta || def.first_output_eta || '未声明')),e('p',null,'人工关卡声明：'+display(target.human_gates || def.human_gates || '未声明')+'（用于派发说明，不是自动审批执行器）'));})):null,
+              def?e('div',{className:'wb-facts'},
+                e('p',null,display(def.summary || def.name)),
+                e('p',null,'完成：负责人显式置 flag · 固定截止：'+(def.defaults?.timeout || '1h')),
+                e('p',null,'失败策略：'+(def.on_failure || 'terminate')+' · 图结束时回收所属 worker'),
+                e('p',null,'普通回复不表示完成；报告和审核以显式节点表达。'),
+                (Array.isArray(def.nodes)?def.nodes:[]).map(function(node,index){return e('details',{key:index},
+                  e('summary',null,node.id+' · '+(node.kind || 'task')+' · '+(node.role || 'execute')),
+                  e('pre',{className:'wb-source'},display(node.task)),
+                  e('p',null,'执行者：'+(node.owner?'借用 '+node.owner:node.worker?'共享 worker '+node.worker:'专属临时 worker')),
+                  e('p',null,'依赖：'+display(node.after || [])),
+                  e('p',null,'启动配置：'+display(node.launch || def.workers?.[node.worker] || def.defaults?.launch || {tier:'fast'})),
+                  e('p',null,'首个输出预期：'+display(node.first_output_eta || def.defaults?.first_output_eta || '未声明')),
+                  e('p',null,'人工关卡声明：'+display(node.human_gates || def.defaults?.human_gates || '未声明')));
+                }),e('details',null,e('summary',null,'图关系'),e('pre',{className:'wb-source'},display(def.edges || [])))):null,
               e('div',{className:'h2bcontrol-actions'},button('校验当前方案',validate,!doc.sessionId || !!rev.parseError),button('确认运行此版本',start,!doc.sessionId || !!rev.parseError || !rev.validation || !rev.validation.ok || yamlDirty || doc.runs.some(function(r){return r.outcome==='unknown' || r.outcome==='submitting';})),button('复制为新流程',function(){return cloneRevision(doc.revision);},!doc.sessionId)),
               e('details',null,e('summary',null,'快速修改'),
                 field('新名称',editName,setEditName,{placeholder:doc.name,maxLength:120}),button('保存名称',function(){return inlineEdit('name',editName);},!editName.trim() || yamlDirty),
-                field('超时（秒）',editTimeout,setEditTimeout,{type:'number',min:1,max:86400,step:1,placeholder:'例如 1800'}),button('保存超时',function(){return inlineEdit('timeout',editTimeout);},!editTimeout || yamlDirty)),
+                field('默认截止时长（秒）',editTimeout,setEditTimeout,{type:'number',min:1,max:86400,step:1,placeholder:'例如 1800'}),button('保存超时',function(){return inlineEdit('timeout',editTimeout);},!editTimeout || yamlDirty)),
               e('details',{open:rev.number>1},e('summary',null,'版本变化 · '+rev.changes.length+' 项'),rev.changes.length?null:e('p',{className:'h2bcontrol-empty'},'此版本没有字段变化。'),rev.changes.slice(0,100).map(function(change,index){return e('article',{className:'wb-change',key:index},
                 e('strong',{title:change.path},workflowChangeLabel(change.path)),
                 e('div',{className:'wb-change-values'},['before','after'].map(function(side){return e('section',{className:'wb-change-value wb-change-'+side,key:side},
@@ -549,10 +564,10 @@
               button('导出已保存 YAML',function(){const url=URL.createObjectURL(new Blob([rev.yaml],{type:'text/yaml'}));const a=document.createElement('a');a.href=url;a.download='workflow.yaml';a.click();URL.revokeObjectURL(url);},!rev)),
             ):null,
             activeTab==='runs'?e(React.Fragment,null,e('h3',null,'关联运行'),doc.runs.length?null:e('p',{className:'h2bcontrol-empty'},'这个流程尚未运行。'),doc.runs.map(function(r){return e('div',{key:r.requestId,className:'wb-run'},r.runId?button(r.runId+' · v'+r.revision,function(){selectRun(r.runId);},false):e('p',{className:'h2bcontrol-action-error'},(r.outcome==='rejected'?'启动已被拒绝，未创建 Run；修复原因后可重新运行。请求 ':r.outcome==='submitting'?'启动请求处理中，请等待结果。请求 ':'启动结果未知：请在下方「Workflow 运行中心」按时间与发起者核对；该流程暂不能重发。请求 ')+r.requestId),r.error?e('small',null,r.error.message):null);}),
-            status?e('section',{className:'wb-facts'},e('h3',null,runId+' · '+(labels[status.state] || status.state)),e('p',null,'当前草稿 v'+doc.revision+'；本次运行使用方案 v'+observation.revision+'。追踪结束不代表业务验收通过。'),e('p',null,'原发起者：'+(observation.sender || '未记录')+' · 原工作会话：'+(observation.sessionId || '未记录')),
+            status?e('section',{className:'wb-facts'},e('h3',null,runId+' · '+(labels[status.state] || status.state)),e('p',null,'当前草稿 v'+doc.revision+'；本次运行使用方案 v'+observation.revision+'。完成依据为显式 flag 与证据引用。'),e('p',null,'原发起者：'+(observation.sender || '未记录')+' · 原工作会话：'+(observation.sessionId || '未记录')),
               e('div',{className:'wb-node-toolbar'},e('strong',null,'节点 · '+status.targets.length),e('div',null,button('全部',()=>setNodeFilter('all'),nodeFilter==='all'),button('需关注',()=>setNodeFilter('attention'),nodeFilter==='attention'))),
               e('div',{className:'wb-node-list'},status.targets.filter(t=>nodeFilter==='all' || ['timed_out','escalated','backoff'].includes(t.state)).map(t=>e('button',{className:'wb-node-row'+(nodeTarget===t.target?' selected':''),key:t.target,onClick:event=>selectNode(t.target,event),'aria-label':'查看节点 '+t.target},
-                e('span',null,e('strong',null,t.target),e('small',null,'尝试 '+t.attempts)),e('span',{className:'wb-node-state '+t.state},labels[t.state] || t.state),e('span',null,'›')))),
+                e('span',null,e('strong',null,t.target),e('small',null,status.backend==='pac'?(t.owner || ''):'历史尝试 '+t.attempts)),e('span',{className:'wb-node-state '+t.state},labels[t.state] || t.state),e('span',null,'›')))),
               nodeFilter==='attention' && !status.targets.some(t=>['timed_out','escalated','backoff'].includes(t.state))?e('p',{className:'h2bcontrol-empty'},'当前没有需关注的节点。'):null,
               e('p',{className:'h2bcontrol-action-note'},'点击节点查看状态、过程与结果 · 状态读取于 '+new Date(observation.observedAt).toLocaleTimeString()),
               button('让协助 Agent 分析本次运行',()=>analyze(),!doc.sessionId),
@@ -560,6 +575,6 @@
               nodeTarget?renderNode():null,
               e('details',null,e('summary',null,'本次运行定义快照'),e('pre',{className:'wb-source'},observation.snapshot.yaml)),
               button('从此 Run 复制新方案',function(){return cloneRevision(observation.revision);},!doc.sessionId),
-              status.state==='running'?e('div',null,e('label',null,e('input',{type:'checkbox',checked:cancelConfirmed,onChange:function(event){setCancelConfirmed(event.target.checked);}}),'取消后续追踪与重试，不会停止远端 Agent'),button('取消此 Run 的追踪',function(){return action('取消',async function(){await workbenchCall('cancel',{id:doc.id,runId:runId,confirmed:true});setObservation(await workbenchCall('inspect',{id:doc.id,runId:runId}));setCancelConfirmed(false);});},!cancelConfirmed)):null):null):null
+              ['running','held'].includes(status.state) && !status.readOnly?e('div',null,e('label',null,e('input',{type:'checkbox',checked:cancelConfirmed,onChange:function(event){setCancelConfirmed(event.target.checked);}}),'终止此图并回收所属 worker；借用的已有 actor 保持不变'),button('终止此图',function(){return action('取消',async function(){await workbenchCall('cancel',{id:doc.id,runId:runId,confirmed:true});setObservation(await workbenchCall('inspect',{id:doc.id,runId:runId}));setCancelConfirmed(false);});},!cancelConfirmed)):null):null):null
           ):e('p',{className:'h2bcontrol-empty'},'选择或新建一个流程，从对话开始。'))));
     }

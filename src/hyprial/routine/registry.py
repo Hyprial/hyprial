@@ -66,6 +66,8 @@ class RoutineSourceQueryEffect:
     source_filter: str
     source_idle_threshold_seconds: float
     coordinator: str
+    scheduled_slot_ms: int | None = None
+    skip_dispatch: bool = False
     operation: str = "source.query"
 
 
@@ -86,6 +88,7 @@ class RoutinePacEffect:
     escalate_to: str | None = None
     timeout_seconds: float | None = None
     sender: str | None = None
+    role: str = "dispatch"
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,6 +172,14 @@ class RoutineRegistry:
                 self._store.set_quarantine(row.name, None)
                 self._log("info", "routine.unquarantined", routine=row.name)
             self._active[row.name] = _ActiveRoutine(spec, row.yaml_text, row.owner)
+            if spec.mode == "scheduled" and row.next_due_ms <= self._clock_ms():
+                at = self._clock_ms()
+                interval_ms = int(spec.interval_seconds * 1000)
+                missed = (at - row.next_due_ms) // interval_ms + 1
+                self._store.apply(
+                    routine=replace(row, next_due_ms=row.next_due_ms + missed * interval_ms),
+                    schedule_events=((row.name, row.next_due_ms, "skipped", missed, "daemon-downtime", at),),
+                )
         store.rebase_pending_generation(generation)
         for row in store.pending_effects(limit=10_000):
             self._publish(self.decode_effect(row.payload))
@@ -208,12 +219,13 @@ class RoutineRegistry:
             name=spec.name,
             yaml_text=command.yaml_text,
             owner=command.owner,
-            enabled=True,
+            enabled=command.enabled,
             next_due_ms=now + int(spec.interval_seconds * 1000),
             source_error_streak=0,
             outcomes="[]",
             created_at_ms=now,
             version=self._next_version(),
+            registration_id=uuid4().hex,
         )
         self._store.apply(routine=row, clear_work_for=spec.name)
         self._active[spec.name] = _ActiveRoutine(spec, command.yaml_text, command.owner)
@@ -223,7 +235,7 @@ class RoutineRegistry:
                 self._generation,
                 row.version,
                 RoutineAddedProjection(
-                    spec.name, True, spec.interval_seconds, row.next_due_ms
+                    spec.name, command.enabled, spec.interval_seconds, row.next_due_ms
                 ),
             )
         )
@@ -272,10 +284,15 @@ class RoutineRegistry:
                 "fix the spec and re-add the routine",
             )
             return
+        active = self._active[row.name]
+        next_due = self._clock_ms() + 1000
+        if active.spec.mode == "scheduled" or command.align_schedule:
+            interval = int(active.spec.interval_seconds * 1000)
+            next_due = row.created_at_ms + ((self._clock_ms() - row.created_at_ms) // interval + 1) * interval
         updated = replace(
             row,
             enabled=True,
-            next_due_ms=self._clock_ms() + 1000,
+            next_due_ms=next_due,
             source_error_streak=0,
             outcomes="[]",
             version=self._next_version(),
@@ -317,7 +334,30 @@ class RoutineRegistry:
             ):
                 continue
             active = self._active.get(row.name)
-            if active is None or self._store.cycle_for_routine(row.name) is not None:
+            if active is None:
+                continue
+            interval_ms = int(active.spec.interval_seconds * 1000)
+            slot = None
+            skip_dispatch = False
+            schedule_events = []
+            next_due = command.observed_at_ms + interval_ms
+            if active.spec.mode == "scheduled":
+                missed = (command.observed_at_ms - row.next_due_ms) // interval_ms
+                if missed:
+                    schedule_events.append((row.name, row.next_due_ms, "skipped", missed,
+                                            "missed-period", command.observed_at_ms))
+                slot = row.next_due_ms + missed * interval_ms
+                next_due = slot + interval_ms
+                # Status effects settle earlier work before deciding whether this slot is busy.
+                skip_dispatch = False
+                if self._store.cycle_for_routine(row.name) is not None:
+                    skip_dispatch = True
+                    schedule_events.append((row.name, slot, "skipped", 1, "cycle-busy", command.observed_at_ms))
+                    self._store.apply(routine=replace(row, next_due_ms=next_due, version=self._next_version()),
+                                      schedule_events=tuple(schedule_events))
+                    continue
+                schedule_events.append((row.name, slot, "admitted", 1, "scheduled", command.observed_at_ms))
+            elif self._store.cycle_for_routine(row.name) is not None:
                 continue
             checked += 1
             version = self._next_version()
@@ -331,12 +371,12 @@ class RoutineRegistry:
                 source_kind=active.spec.source_kind,
                 source_filter=active.spec.source_filter,
                 source_idle_threshold_seconds=active.spec.source_idle_threshold_seconds,
-                coordinator=active.spec.produces or active.owner,
+                coordinator=active.spec.actor or active.spec.produces or active.owner,
+                scheduled_slot_ms=slot, skip_dispatch=skip_dispatch,
             )
             updated = replace(
                 row,
-                next_due_ms=command.observed_at_ms
-                + int(active.spec.interval_seconds * 1000),
+                next_due_ms=next_due,
                 version=version,
             )
             cycle = RoutineCycleRow(
@@ -348,6 +388,7 @@ class RoutineRegistry:
             )
             self._store.apply(
                 routine=updated,
+                schedule_events=tuple(schedule_events),
                 cycle=cycle,
                 add_effects=(self.effect_row(effect),),
             )
@@ -557,8 +598,11 @@ class RoutineRegistry:
                 outcomes.append("escalated")
                 continue
             if slots <= 0:
+                if active.spec.mode == "scheduled":
+                    slot = int(task.uuid.split(":", 1)[1])
+                    self._store.apply(schedule_events=((row.name, slot, "skipped", 1, "previous-occurrence-active", self._clock_ms()),))
                 continue
-            target = active.owner if kind == "self" else str(value)
+            target = (active.spec.actor or active.spec.produces or active.owner) if kind == "self" else str(value)
             effect_id = f"routine-io-{uuid4().hex}"
             effects.append(
                 RoutinePacEffect(
@@ -573,6 +617,7 @@ class RoutineRegistry:
                     # The nonce is gone with the text matcher: completion is
                     # the owner flagging the node (ruling 1, 2026-09-13).
                     task_text=self._render(active.spec, task, nonce=""),
+                    role=active.spec.role,
                     escalate_to=active.spec.escalate_to,
                     timeout_seconds=DEFAULT_TASK_TIMEOUT_SECONDS,
                     sender=active.owner,

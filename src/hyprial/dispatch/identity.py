@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from uuid import UUID, uuid5
+
 from hyprial.uri import canonical_agent_uri
 
 # This value predates PAC v2 and is already present in durable sender fields.
@@ -18,3 +20,13 @@ def dispatch_service_actor_uri(owner: str, node_id: str) -> str:
 
 
 __all__ = ["DISPATCH_SERVICE_ACTOR_NAME", "dispatch_service_actor_uri"]
+
+
+MESSAGE_NAMESPACE = UUID("1329686b-1adf-5e69-b835-4e05b214cdd6")
+
+
+def dispatch_message_id(effect_id: str) -> str:
+    """Stable outbound identity; shared without importing an inbox read plane."""
+    if not effect_id:
+        raise ValueError("effect_id must not be empty")
+    return f"workflow-{uuid5(MESSAGE_NAMESPACE, effect_id)}"

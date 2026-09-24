@@ -37,11 +37,24 @@ const FIELDS = {
   authorize: ['id', 'revision'], run: ['id', 'revision'], inspect: ['id', 'runId', 'target'], 'node-inspect': ['id', 'runId', 'target'],
   cancel: ['id', 'runId', 'confirmed'], clone: ['id', 'revision', 'sessionId', 'name'],
   analyze: ['id', 'runId', 'target'], discussion: ['id', 'runId', 'target'],
-  rebind: ['id', 'baseRevision', 'baseBindingVersion', 'sessionId']
+  rebind: ['id', 'baseRevision', 'baseBindingVersion', 'sessionId'],
+  complete: ['id', 'runId', 'target', 'requestId', 'reasonRef'],
+  fail: ['id', 'runId', 'target', 'requestId', 'reasonRef']
 };
 
+const legacyRun = run => run.snapshot?.definition?.version === 1 || run.backend === 'legacy-archive';
+const definitionNodes = definition => definition?.version === 2
+  ? (definition.nodes || []).map(n => ({...n, name:n.id}))
+  : definition?.targets;
+function normalizeStatus(value) {
+  if (!Array.isArray(value?.nodes)) return value;
+  return {...value, targets:value.nodes.map(n => ({
+    ...n, target:n.nodeId, recipient:n.owner, conversationId:'pac-' + value.graphId
+  }))};
+}
+
 // One fixed private directory per Host. Definitions are documents, not an execution engine.
-export function createWorkflowWorkbench({ root, control, identity, prepare, resolveSession, observeNode, now = Date.now }) {
+export function createWorkflowWorkbench({ root, control, identity, prepare, resolveSession, observeNode, native, now = Date.now }) {
   const liveRequests = new Set();
   const previews = new Map();
   let lease;
@@ -110,7 +123,7 @@ export function createWorkflowWorkbench({ root, control, identity, prepare, reso
     return doc.revisions.at(-1);
   }
   function visible(doc) {
-    return { ...doc, bindingVersion: doc.bindingVersion || 0, grant: doc.grant ? { revision: doc.grant.revision, expiresAt: doc.grant.expiresAt } : null,
+    return { ...doc, readOnly:doc.revisions.at(-1)?.definition?.version === 1, bindingVersion: doc.bindingVersion || 0, grant: doc.grant ? { revision: doc.grant.revision, expiresAt: doc.grant.expiresAt } : null,
       runs: doc.runs.map(run => ({ ...run, outcome: run.outcome === 'submitting' && !liveRequests.has(run.requestId) ? 'unknown' : run.outcome })) };
   }
   async function actor(doc) {
@@ -122,7 +135,11 @@ export function createWorkflowWorkbench({ root, control, identity, prepare, reso
   }
   async function add(sessionId, name, yaml) {
     text(sessionId, 'sessionId', 4096); text(name, 'name', 120);
-    if (yaml !== undefined) text(yaml, 'yaml');
+    if (yaml !== undefined) {
+      text(yaml, 'yaml');
+      try { if (parseWorkflow(yaml).version === 1) fail('WORKFLOW_RETIRED', 'Create a PAC graph with version: 2; legacy workflows are read-only history'); }
+      catch (error) { if (error.code === 'WORKFLOW_RETIRED') throw error; }
+    }
     const doc = { schema: 1, id: 'wf-' + randomUUID(), sessionId, name, revision: 0, revisions: [], runs: [], grant: null, instruction: null, createdAt: now() };
     if (yaml) { doc.revision = 1; doc.revisions.push(makeRevision(1, yaml, '')); }
     await save(doc); return visible(doc);
@@ -130,9 +147,17 @@ export function createWorkflowWorkbench({ root, control, identity, prepare, reso
   function makeRevision(number, yaml, previous) {
     let definition = null, previousDefinition = null, parseError = '';
     try { definition = parseWorkflow(yaml); } catch (e) { parseError = e.message; }
+    if (definition?.version === 1) fail('WORKFLOW_RETIRED', 'Legacy execution syntax is retired; use version: 2 nodes and explicit flags');
     try { if (previous) previousDefinition = parseWorkflow(previous); } catch {}
     return { number, yaml, digest: digest(yaml), createdAt: now(), definition, parseError,
       changes: definition && (!previous || previousDefinition) ? workflowDiff(previousDefinition || {}, definition) : [{ path: '/source', before: previous, after: yaml }], validation: null };
+  }
+  async function readRun(doc, run, context = {}) {
+    const operation = legacyRun(run) ? 'history-status' : 'status';
+    const result = native && (!legacyRun(run) || context.sessionId)
+      ? {document:{ok:true,...await native(run.sessionId || doc.sessionId, operation, {runId:run.runId})}}
+      : await control({operation:'workflow-' + operation,runId:run.runId});
+    return {...result,document:normalizeStatus(result.document)};
   }
   return async function handle(input, context = {}) {
     if (!object(input) || !Object.hasOwn(FIELDS, input.operation) || Object.keys(input).some(k => !['operation', ...FIELDS[input.operation]].includes(k))) fail('INVALID_ARGUMENT', 'Unsupported workflow request fields');
@@ -148,6 +173,7 @@ export function createWorkflowWorkbench({ root, control, identity, prepare, reso
     if (op === 'create') return locked(() => add(context.sessionId || input.sessionId, input.name || '新 Workflow', input.yaml));
     const doc = await read(input.id); access(doc, context);
     if (op === 'get') return visible(doc);
+    if (doc.revisions.at(-1)?.definition?.version === 1 && !['inspect','node-inspect','analyze','discussion'].includes(op)) fail('WORKFLOW_LEGACY_READ_ONLY','Legacy workflow history is read-only; create a new PAC workflow');
     if (op === 'discussion') return locked(async () => {
       // Re-read under the shared disk lock: concurrent hosts/restarts must never
       // mint two conversations for one immutable execution node.
@@ -155,13 +181,13 @@ export function createWorkflowWorkbench({ root, control, identity, prepare, reso
       text(input.runId, 'runId', 128); text(input.target, 'target', 2048);
       const run = current.runs.find(r => r.runId === input.runId && r.outcome === 'started');
       if (!run) fail('WORKFLOW_RUN_NOT_FOUND', 'Run is not associated with this workflow');
-      const targets = run.snapshot?.definition?.targets;
+      const targets = definitionNodes(run.snapshot?.definition);
       if (!Array.isArray(targets) || !targets.some(t => (typeof t === 'string' ? t : t?.name) === input.target)) {
         fail('INVALID_ARGUMENT', 'Target does not belong to the immutable run snapshot');
       }
       const existing = (current.discussions || []).find(d => d.runId === run.runId && d.target === input.target);
       if (existing) return existing;
-      const result = await control({ operation: 'workflow-status', runId: run.runId });
+      const result = await readRun(current, run, context);
       const status = result?.document;
       if (status?.ok !== true || status.runId !== run.runId || !Array.isArray(status.targets)) fail('INVALID_RESPONSE', 'CLI returned no matching run evidence');
       const matches = status.targets.filter(t => t.target === input.target);
@@ -170,7 +196,9 @@ export function createWorkflowWorkbench({ root, control, identity, prepare, reso
       const sessionId = run.sessionId === undefined ? current.sessionId : run.sessionId;
       text(sessionId, 'original work session', 4096);
       const canonical = value => typeof value === 'string' && value.length <= 2048 && /^agent:[^:\s\x00]+:[^:\s\x00]+:[^:\s\x00]+$/.test(value);
-      let actor = input.target;
+      const recorded = status.backend === 'legacy-archive' ? [...new Set((status.deliveries || []).filter(d=>d.targetRef===input.target).map(d=>d.actor))] : [];
+      let actor = status.backend === 'pac' ? matches[0].owner : recorded.length===1 ? recorded[0] : input.target;
+      if (status.backend === 'pac' && !canonical(actor)) fail('WORKFLOW_DISCUSSION_NOT_AGENT','This node is not owned by an Agent');
       if (!canonical(actor)) {
         if (!observeNode) fail('WORKFLOW_NODE_UNSUPPORTED', 'Node observation is required to resolve an alias');
         if (!run.sender || (await identity(sessionId))?.actor !== run.sender) fail('WORKFLOW_NODE_FORBIDDEN', 'Original workflow sender is unavailable');
@@ -202,11 +230,11 @@ export function createWorkflowWorkbench({ root, control, identity, prepare, reso
       const runs = current.runs.filter(run => run.outcome !== 'rejected');
       const results = await Promise.all(runs.map(run => {
         if (!run.runId) fail('WORKFLOW_BINDING_BUSY', '运行结果不完整，无法变更关联');
-        return control({ operation: 'workflow-status', runId: run.runId });
+        return readRun(current, run, context);
       }));
       for (let i = 0; i < results.length; i++) {
         const status = results[i]?.document;
-        if (status?.ok !== true || status.runId !== runs[i].runId || !['completed', 'cancelled'].includes(status.state)) {
+        if (status?.ok !== true || status.runId !== runs[i].runId || !['completed', 'cancelled', 'failed'].includes(status.state)) {
           fail('WORKFLOW_BINDING_BUSY', '仍有运行在追踪中或状态无法确认，请结束追踪后重试');
         }
       }
@@ -233,33 +261,45 @@ export function createWorkflowWorkbench({ root, control, identity, prepare, reso
     if (op === 'inspect' || op === 'analyze' || op === 'node-inspect') {
       const run = doc.runs.find(r => r.runId === input.runId);
       if (!run) fail('WORKFLOW_RUN_NOT_FOUND', 'Run is not associated with this workflow');
-      const result = await control({ operation:'workflow-status', runId:run.runId });
+      const result = await readRun(doc, run, context);
       if (result.document?.ok !== true || result.document.runId !== run.runId || !Array.isArray(result.document.targets)) fail('INVALID_RESPONSE', 'CLI returned no matching run evidence');
       if (input.target && !result.document?.targets?.some(t => t.target === input.target)) fail('INVALID_ARGUMENT', 'Target does not belong to this run');
       const evidence = { workflowId:doc.id, runId:run.runId, revision:run.revision, sessionId:run.sessionId === undefined ? doc.sessionId : run.sessionId, sender:run.sender, snapshot:run.snapshot, observedAt:now(), status:result.document, target:input.target || null };
       if (op === 'node-inspect' && !input.target) fail('INVALID_ARGUMENT', 'target is required');
       if (input.target) {
-        let observation;
-        try {
-          if (!observeNode) fail('WORKFLOW_NODE_UNSUPPORTED', '当前 H2B 尚未提供节点观察接口');
-          if (!evidence.sessionId || !run.sender || (await identity(evidence.sessionId))?.actor !== run.sender) {
-            fail('WORKFLOW_NODE_FORBIDDEN', '本次运行的派发身份已不可用，无法读取进度与完整回复');
+        const node = result.document.targets.find(n => n.target === input.target);
+        evidence.node = result.document.backend === 'pac'
+          ? {schemaVersion:2,state:'available',runId:run.runId,target:input.target,
+             sender:run.sender,conversationId:node.conversationId,tracking:node,
+             owner:node.owner,flag:node.flag,requestId:node.requestId,reasonRef:node.reasonRef,
+             observedAt:now(),progress:{events:[]},results:{replies:[],evidenceRef:node.reasonRef},
+             deliveries:[],identityAvailable:!!node.owner}
+          : {state:'archived',message:'Read-only legacy tracking history; no live execution observation',tracking:node};
+        if (result.document.backend === 'pac' && observeNode && evidence.sessionId) {
+          try {
+            const detail=await observeNode(evidence.sessionId,{runId:run.runId,target:input.target});
+            if (detail?.schemaVersion!==2 || detail.graphId!==run.runId || detail.target!==input.target || detail.requestId!==node.requestId || detail.owner!==node.owner) fail('WORKFLOW_REQUEST_STALE','Node changed while reading progress; refresh');
+            evidence.node={...detail,state:'available'};
+          } catch (error) {
+            evidence.node={...evidence.node,progressError:error.message};
           }
-          observation = await observeNode(evidence.sessionId, { runId:run.runId, target:input.target });
-          const target = result.document.targets.find(t => t.target === input.target);
-          if (observation?.schemaVersion !== 1 || observation.runId !== run.runId || observation.target !== input.target || observation.sender !== run.sender || observation.conversationId !== target.conversationId || !Array.isArray(observation.deliveries) || !Array.isArray(observation.progress?.events) || !Array.isArray(observation.results?.replies)) fail('INVALID_RESPONSE', '节点观察返回了不匹配的运行证据');
-          observation = { ...observation, state:'available' };
-        } catch (error) {
-          const unsupported = ['WORKFLOW_NODE_UNSUPPORTED','UNKNOWN_METHOD','METHOD_NOT_FOUND','UNSUPPORTED_METHOD'].includes(error.code);
-          observation = { state:unsupported ? 'unsupported' : /FORBIDDEN|STALE_SESSION|NOT_REGISTERED/.test(error.code || '') ? 'forbidden' : 'error', code:error.code || 'NODE_READ_FAILED', message:unsupported ? '当前 H2B 尚未提供节点观察接口；可查看状态与回复摘要' : error.message, observedAt:now() };
         }
-        evidence.node = observation;
       }
       return evidence;
     }
     if (op === 'cancel') {
       if (input.confirmed !== true || !doc.runs.some(r => r.runId === input.runId)) fail('WORKFLOW_USER_ACTION_REQUIRED', 'Confirm cancellation of an associated run');
+      if (native) return {document:{ok:true,...await native(doc.sessionId,'cancel',{runId:input.runId})}};
       return control({ operation:'workflow-cancel', runId:input.runId, confirmed:true });
+    }
+    if (op === 'complete' || op === 'fail') {
+      if (context.sessionId) fail('WORKFLOW_USER_ACTION_REQUIRED','This workbench control requires an explicit user action');
+      const run = doc.runs.find(r => r.runId === input.runId && !legacyRun(r));
+      if (!run) fail('WORKFLOW_RUN_NOT_FOUND','No associated PAC graph');
+      text(input.target,'node',64); text(input.requestId,'request ID',128); text(input.reasonRef,'evidence reference',512);
+      if (!definitionNodes(run.snapshot?.definition)?.some(n => n.name === input.target)) fail('INVALID_ARGUMENT','Node does not belong to this graph');
+      return control({operation:'workflow-' + op,runId:input.runId,nodeId:input.target,
+                      requestId:input.requestId,reasonRef:input.reasonRef,confirmed:true});
     }
     if (op === 'validate') {
       const rev = revision(doc, input.revision);
@@ -299,13 +339,15 @@ export function createWorkflowWorkbench({ root, control, identity, prepare, reso
       });
       let result, error;
       try {
-        result = await control({operation:'workflow-run', yaml:request.snapshot.yaml, from, previewToken:preview.token});
+        result = native
+          ? {document:{ok:true,...await native(doc.sessionId,'start',{yaml:request.snapshot.yaml,operationKey:request.requestId})}}
+          : await control({operation:'workflow-run', yaml:request.snapshot.yaml, from, operationKey:request.requestId, previewToken:preview.token});
         if (result.document?.ok !== true || typeof result.document.runId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(result.document.runId)) fail('INVALID_RESPONSE', 'Start returned no authoritative runId');
       } catch (e) { error = e; }
       try {
         return await locked(async () => {
           const current = await read(doc.id), record = current.runs.find(r => r.requestId === request.requestId);
-          Object.assign(record, error ? {outcome:error.code === 'SENDER_UNRESOLVED' ? 'rejected' : 'unknown', error:{code:error.code || 'START_UNKNOWN',message:error.message}} : {outcome:'started',runId:result.document.runId});
+          Object.assign(record, error ? {outcome:error.code === 'SENDER_UNRESOLVED' ? 'rejected' : 'unknown', error:{code:error.code || 'START_UNKNOWN',message:error.message}} : {outcome:'started',runId:result.document.runId,graphId:result.document.graphId || result.document.runId,backend:'pac'});
           await save(current); return visible(current);
         });
       } finally { liveRequests.delete(request.requestId); }
@@ -338,7 +380,7 @@ export function createWorkflowWorkbench({ root, control, identity, prepare, reso
           else {
             const value = Number(input.value);
             if (!Number.isFinite(value) || value <= 0 || value > 86400) fail('INVALID_ARGUMENT','Timeout must be 1–86400 seconds');
-            def.await = {...def.await,timeout:value+'s'};
+            def.defaults = {...def.defaults,timeout:value+'s'};
           }
           yaml = stringify(def, { version: '1.1' });
         }

@@ -62,7 +62,7 @@ class WorkerChannel:
 
         ``HYPRIAL_WORKER_ACTOR`` / ``HYPRIAL_WORKER_SESSION_REF`` let any
         harness carrier (and its subprocesses, e.g. a shell-out to
-        ``hyprial pac``) present the session binding this daemon minted to
+        ``workflow commands`) present the session binding this daemon minted to
         the fenced write methods.  ``HYPRIAL_MANAGED_WORKER`` is the
         worker-context MARKER (M2): marker present without the binding pair
         is a loud CLI refusal, never a silent fall-back to the human

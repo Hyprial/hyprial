@@ -154,6 +154,7 @@ class _IoFailed:
     version: int
     delivery_id: str
     error: str
+    allow_retry: bool = True
 
 
 _InternalCompletion = _IoCompleted | _InterruptCompleted | _RecoveryReady | _IoFailed
@@ -444,7 +445,7 @@ class _TurnShard:
         # network-class wording -- retries by count exactly as before
         # (card 260, review round 2 B1).
         terminal = provider_failure_is_terminal(command.error)
-        retry = attempt < self._max_delivery_attempts and not terminal
+        retry = command.allow_retry and attempt < self._max_delivery_attempts and not terminal
         self._event_sink(
             TurnProgressObserved(
                 correlation_id=current.correlation_id,
@@ -702,6 +703,7 @@ class TurnRuntime:
         version: int,
         delivery_id: str,
         error: str,
+        allow_retry: bool = True,
     ) -> PortAdmission:
         return self._relay.submit(
             _IoFailed(
@@ -709,6 +711,7 @@ class TurnRuntime:
                 version=version,
                 delivery_id=delivery_id,
                 error=error,
+                allow_retry=allow_retry,
             )
         )
 

@@ -154,12 +154,12 @@ from hyprial.contracts.agent_task import (
     validate_status_request as validate_agent_task_status,
 )
 from hyprial.pac.agent_task import PacAgentTaskError, PacAgentTaskService
-from hyprial.workflow.service import WorkflowService, WorkflowServiceError
+from hyprial.pac.workflow_runtime import GraphWorkflowService, WorkflowServiceError
+from hyprial.dispatch.alarm import DispatchAlarm
 from hyprial.inbox.io import (
     CorrelatedInboxEventRouter,
     InboxDeliveryIoAdapter,
     InboxIoError,
-    InboxProjectionAdapter,
 )
 from hyprial.assign_reconcile import AssignReconcileReport
 from hyprial.routine.pac_dispatch import PacRoutineDispatch
@@ -203,7 +203,7 @@ from hyprial.contracts.lifecycle_budgets import (
 )
 from hyprial.dispatch.admission import dispatch_gate
 from hyprial.dispatch.identity import dispatch_service_actor_uri
-from hyprial.workflow.schema import WorkflowSpec
+from hyprial.pac.workflow_schema import WorkflowSpec
 from .lifecycle_manager import (
     LifecycleKind,
     LifecycleOperation,
@@ -342,6 +342,7 @@ _CLOSE_STEP_BUDGETS = (
     # Bounded join of the restore thread (`_RESTORE_THREAD_JOIN_TIMEOUT`); a
     # restore that outlives it is left to the daemon-thread/backstop path.
     ("restore-thread", 2.0),
+    ("remote-workflow", 5.0),
 )
 
 #: Closing steps that carry no timeout, each with the reason it is tolerated.
@@ -357,6 +358,13 @@ _CLOSE_UNBUDGETED_STEPS = (
     ("daemon-json", "one unlink"),
     ("routine-service", "joins a queue the step before it drained"),
     ("workflow-service", "same shape as routine-service"),
+    (
+        "degraded-workflow-component",
+        "retries close() on workflow/remote/PAC-actor handles that already failed "
+        "to drain at a degraded startup; same shapes as the steps above, and the "
+        "list is empty unless startup degraded",
+    ),
+    ("remote-workflow-registrations", "Zenoh subscriber undeclare; no Python worker join, native transport has no deadline"),
     ("route-registrations", "in-memory unregister; observed 16ms"),
     ("adapters", "signals workers; observed 24ms"),
     ("inbox", "flushes a sqlite handle"),
@@ -766,7 +774,7 @@ class DaemonApplication:
         self.user_adapters = UserAdapterRegistry()
         self.stop_event = threading.Event()
         self.epoch = uuid4().hex
-        self._workflow_service: WorkflowService | None = None
+        self._workflow_service: GraphWorkflowService | None = None
         self._routine_service: RoutineService | None = None
         self._routine_coordinator_lock = threading.RLock()
         self._pac_notification_io: InboxDeliveryIoAdapter | None = None
@@ -778,6 +786,8 @@ class DaemonApplication:
         self._lifecycle_router: CorrelationEventRouter | None = None
         self._runtime: DaemonEventBridge | None = None
         self._transport: ZenohTransport | None = None
+        self._remote_workflow = None
+        self._degraded_workflow_handles: list[Any] = []
         self._presence: _LocalPresence | None = None
         self._directory: LivelinessDirectory | None = None
         self._inbox: DeliveryCustodyFacade | None = None
@@ -1987,6 +1997,10 @@ class DaemonApplication:
             logger=lambda level, component, event, **fields: self._log(
                 level, component, event, **fields
             ),
+            workflow_outcome=lambda result: (
+                self._record_workflow_outcome(result)
+                if self._workflow_service is not None and result.delivery_id.startswith("workflow-") else False
+            ),
             usage_limit_observer=(
                 self._on_usage_limit_failure
                 if self._quota_watchdog is not None
@@ -2064,14 +2078,6 @@ class DaemonApplication:
             PacActorService,
         )
 
-        self._pac_actor_service = PacActorService(
-            state_dir=self.state_dir,
-            reference_root=self.hyprial_home,
-            runtime=DaemonActorRuntime(self),
-            sender=DaemonPacNotificationSender(self),
-            daemon_epoch=self.epoch,
-            logger=self._log,
-        )
         # U0BRACE: nothing else may live here.  This used to be the call site
         # of ``_bootstrap_lifecycle_harnesses``, which submitted one create
         # saga per non-Lark running row -- the same selection predicate
@@ -2081,53 +2087,253 @@ class DaemonApplication:
         # a second process).  Restore owns those rows now;
         # ``tests/test_daemon_restart_ownership.py`` pins that the startup
         # window submits no lifecycle operations at all.
-        # Legacy workflow v1 retains its executor while U3/U4/U6/U7 are
-        # pending.  It consumes the already-running shared inbox path; PAC did
-        # not wait for this service to be constructed.
-        self._workflow_service = WorkflowService(
-            alarm=inbox.alarm_emitter,
-            state_dir=self.state_dir,
-            delivery_io=shared_inbox_io,
-            acknowledge_io=shared_inbox_io,
-            inbox_projection=InboxProjectionAdapter(inbox),
-            deliver_user=self._workflow_deliver_user,
-            routine_probe=self._assign_routine_probe,
-            assign_reconcile_sink=self._on_assign_reconcile_report,
-            service_actor=self._dispatch_service_actor,
-            dispatch_gate=self._pac_dispatch_gate,
-            logger=self._logger,
+        from hyprial.pac.legacy_workflows import cutover
+
+        workflow_cutover_ok = False
+        try:
+            self._legacy_workflow_cutover = cutover(self.state_dir)
+        except Exception as error:  # noqa: BLE001 - autoupdate must remain reachable
+            self._legacy_workflow_cutover = None
+            self._log(
+                "error",
+                "workflow",
+                "workflow.cutover_failed",
+                phase="cutover",
+                exceptionClass=type(error).__name__,
+                detail=str(error),
+                databasePath=str(self.state_dir / "workflows.sqlite3"),
+                sealed=False,
+                disabledCapabilities=(
+                    "workflow.dispatch",
+                    "workflow.mutation",
+                    "workflow.recovery",
+                    "workflow.remote",
+                    "routine.dispatch",
+                    "pac.actor.cadence",
+                ),
+            )
+        else:
+            workflow_cutover_ok = True
+            self._log(
+                "info",
+                "workflow",
+                "workflow.cutover_applied",
+                present=self._legacy_workflow_cutover["present"],
+                at=self._legacy_workflow_cutover["at"],
+                sealed=self._legacy_workflow_cutover["sealed"],
+                terminated=self._legacy_workflow_cutover["terminated"],
+            )
+            for cancelled in self._legacy_workflow_cutover["cancelled"]:
+                self._log(
+                    "warn",
+                    "workflow",
+                    "workflow.cutover_cancelled",
+                    runId=cancelled["runId"],
+                    sender=cancelled["sender"],
+                    table=cancelled["table"],
+                    priorState=cancelled["priorState"],
+                    reason=cancelled["reason"],
+                    at=self._legacy_workflow_cutover["at"],
+                )
+
+        workflow_disabled = (
+            "workflow.dispatch",
+            "workflow.mutation",
+            "workflow.recovery",
+            "routine.dispatch",
+            "pac.actor.cadence",
         )
-        adopted = self._workflow_service.recover()
-        if adopted:
-            self._log("info", "daemon", "workflow.recovered", runs=adopted)
+
+        def suspend_pac_actor() -> None:
+            actor = self._pac_actor_service
+            self._pac_actor_service = None
+            if actor is None:
+                return
+            try:
+                if actor.close(5.0) is False:
+                    raise RuntimeError("PAC actor service did not drain")
+            except Exception as error:  # noqa: BLE001 - preserve startup
+                self._log(
+                    "error",
+                    "pac",
+                    "workflow.degrade_cleanup_failed",
+                    phase="pac-actor",
+                    exceptionClass=type(error).__name__,
+                    detail=str(error),
+                )
+                self._degraded_workflow_handles.append(actor)
+
+        def degrade_workflow_components() -> None:
+            suspend_pac_actor()
+            remote = self._remote_workflow
+            self._remote_workflow = None
+            if remote is not None:
+                try:
+                    remote.close()
+                except Exception as error:  # noqa: BLE001 - preserve startup
+                    self._log(
+                        "error",
+                        "pac",
+                        "workflow.degrade_cleanup_failed",
+                        phase="remote",
+                        exceptionClass=type(error).__name__,
+                        detail=str(error),
+                    )
+                    self._degraded_workflow_handles.append(remote)
+            workflow_service = self._workflow_service
+            self._workflow_service = None
+            if workflow_service is not None:
+                try:
+                    if workflow_service.close() is False:
+                        raise RuntimeError("workflow service did not drain")
+                except Exception as error:  # noqa: BLE001 - preserve startup
+                    self._log(
+                        "error",
+                        "pac",
+                        "workflow.degrade_cleanup_failed",
+                        phase="workflow",
+                        exceptionClass=type(error).__name__,
+                        detail=str(error),
+                    )
+                    self._degraded_workflow_handles.append(workflow_service)
+
+        from hyprial.dispatch.remote_workflow import RemoteWorkflow
+        dispatch_alarm = DispatchAlarm(inbox.alarm_emitter, self._workflow_deliver_user, self._logger)
+        if workflow_cutover_ok:
+            try:
+                self._pac_actor_service = PacActorService(
+                    state_dir=self.state_dir,
+                    reference_root=self.hyprial_home,
+                    runtime=DaemonActorRuntime(self),
+                    sender=DaemonPacNotificationSender(self),
+                    daemon_epoch=self.epoch,
+                    logger=self._log,
+                )
+            except Exception as error:  # noqa: BLE001 - cadence is optional
+                self._pac_actor_service = None
+                self._log(
+                    "error",
+                    "pac",
+                    "workflow.pac_actor_unavailable",
+                    phase="pac-actor",
+                    exceptionClass=type(error).__name__,
+                    detail=str(error),
+                    disabledCapabilities=workflow_disabled,
+                )
+        if workflow_cutover_ok:
+            try:
+                self._workflow_service = GraphWorkflowService(
+                    state_dir=self.state_dir, owner=self.owner, machine=self.node_id,
+                    sender=DaemonPacNotificationSender(self),
+                    admit=self._workflow_admit, logger=self._log,
+                )
+            except Exception as error:  # noqa: BLE001 - autoupdate must remain reachable
+                self._log(
+                    "error",
+                    "pac",
+                    "workflow.recovery_unavailable",
+                    phase="construct",
+                    exceptionClass=type(error).__name__,
+                    detail=str(error),
+                    disabledCapabilities=workflow_disabled,
+                )
+                suspend_pac_actor()
+            else:
+                try:
+                    self._remote_workflow = RemoteWorkflow(self, transport)
+                except Exception as error:  # noqa: BLE001 - remote is optional
+                    self._remote_workflow = None
+                    self._log(
+                        "error",
+                        "pac",
+                        "workflow.remote_unavailable",
+                        phase="remote-construction",
+                        exceptionClass=type(error).__name__,
+                        detail=str(error),
+                        disabledCapabilities=(
+                            "workflow.remote.admission",
+                            "workflow.remote.completion",
+                            "workflow.remote.returns",
+                            "routine.remote.dispatch",
+                        ),
+                    )
+                try:
+                    adopted = self._workflow_service.recover()
+                except Exception as error:  # noqa: BLE001 - autoupdate must remain reachable
+                    self._log(
+                        "error",
+                        "pac",
+                        "workflow.recovery_unavailable",
+                        phase="recover",
+                        exceptionClass=type(error).__name__,
+                        detail=str(error),
+                        disabledCapabilities=workflow_disabled,
+                    )
+                    degrade_workflow_components()
+                else:
+                    if adopted:
+                        self._log("info", "daemon", "workflow.recovered", runs=adopted)
+
         # Self-drive routines (design-selfdrive-routine): deterministic duty
         # cycles producing one PAC graph per task (U3).  The old dispatcher is
         # no longer in this path; the alarm sink still comes from it, which is
         # U2 residue the retirement removes in U6/U7.
-        self._routine_service = RoutineService(
-            pac=PacRoutineDispatch(
-                state_dir=self.state_dir,
-                deliver=self._deliver_routine_task,
-                clock_ms=lambda: time.time_ns() // 1_000_000,
-                resolve_principal=self._resolve_send_sender,
-            ),
-            alarm=self._workflow_service.alarm_sink,
-            state_dir=self.state_dir,
-            # Stored bare-name addresses migrate ONLY via this machine's
-            # agents registry (approved plan Q1): a unique roster match
-            # rewrites the stored spec; anything else quarantines loudly.
-            migrate_address=self._migrate_stored_routine_address,
-            logger=self._logger,
-        )
-        adopted_routines = self._routine_service.recover()
-        self._reconcile_routine_coordinators()
+        adopted_routines = 0
+        if self._workflow_service is not None:
+            try:
+                self._routine_service = RoutineService(
+                    pac=PacRoutineDispatch(
+                        state_dir=self.state_dir,
+                        workflow=self._workflow_service,
+                        deliver=self._deliver_routine_task,
+                        clock_ms=lambda: time.time_ns() // 1_000_000,
+                        resolve_principal=self._resolve_routine_principal,
+                    ),
+                    alarm=dispatch_alarm,
+                    state_dir=self.state_dir,
+                    # Stored bare-name addresses migrate ONLY via this machine's
+                    # agents registry (approved plan Q1): a unique roster match
+                    # rewrites the stored spec; anything else quarantines loudly.
+                    migrate_address=self._migrate_stored_routine_address,
+                    logger=self._logger,
+                )
+                adopted_routines = self._routine_service.recover()
+                self._reconcile_routine_coordinators()
+            except Exception as error:  # noqa: BLE001 - routine is optional
+                routine = self._routine_service
+                self._routine_service = None
+                if routine is not None:
+                    try:
+                        routine.close()
+                    except Exception as cleanup_error:  # noqa: BLE001
+                        self._log(
+                            "error",
+                            "pac",
+                            "workflow.degrade_cleanup_failed",
+                            phase="routine",
+                            exceptionClass=type(cleanup_error).__name__,
+                            detail=str(cleanup_error),
+                        )
+                self._log(
+                    "error",
+                    "pac",
+                    "routine.recovery_unavailable",
+                    phase="routine",
+                    exceptionClass=type(error).__name__,
+                    detail=str(error),
+                    disabledCapabilities=("routine.dispatch",),
+                )
         if adopted_routines:
             self._log("info", "daemon", "routine.recovered", routines=adopted_routines)
         # U3 deleted the retired dispatcher's rows when the store opened.  The
         # ruling was 「迁移时直接删除」, and a deletion whose only trace is an
         # absence cannot be checked afterwards -- so name the rows here, once,
         # at the startup that dropped them.
-        dropped = self._routine_service.migrated_u3
+        dropped = (
+            self._routine_service.migrated_u3
+            if self._routine_service is not None
+            else {"effects": (), "inFlight": ()}
+        )
         if dropped["effects"] or dropped["inFlight"]:
             self._log(
                 "info",
@@ -3889,8 +4095,9 @@ class DaemonApplication:
             return management
 
     @staticmethod
-    def _routine_coordinator_marker(name: str) -> str:
-        return f"routine:{name}:coordinator"
+    def _routine_coordinator_marker(name: str, registration_id: object = None) -> str:
+        prefix = f"routine:{name}:{registration_id}" if registration_id else f"routine:{name}"
+        return f"{prefix}:coordinator"
 
     def _reconcile_routine_coordinators(self) -> None:
         """Isolate persisted routine faults so daemon startup remains operable."""
@@ -3945,26 +4152,31 @@ class DaemonApplication:
             raise DaemonRequestError("ROUTINE_COORDINATOR_IDENTITY_MISMATCH",
                                      f"coordinator {produced} must belong to agent:{self.owner}:{self.node_id}:*")
         name, actor_name = str(routine["name"]), parsed[2]
-        marker = self._routine_coordinator_marker(name)
+        marker = self._routine_coordinator_marker(name, routine.get("registrationId"))
         existing = [item for item in self.desired_state.load().harnesses if item.name == actor_name]
         if existing:
             if existing[0].nickname != marker:
                 raise DaemonRequestError("ROUTINE_COORDINATOR_CONFLICT",
                                          f"actor {produced} is not owned by routine {name}")
             return {"actor": produced, "restored": recovering, "changed": False}
-        from hyprial.dispatch.matrix import resolve
-        try:
-            choice = resolve("fast")
-        except (RuntimeError, ValueError) as error:
-            raise DaemonRequestError("ROUTINE_COORDINATOR_UNAVAILABLE", str(error)) from error
+        launch = routine.get("launch")
+        if not isinstance(launch, dict):
+            from hyprial.dispatch.matrix import resolve
+            try:
+                choice = resolve("fast")
+            except (RuntimeError, ValueError) as error:
+                raise DaemonRequestError("ROUTINE_COORDINATOR_UNAVAILABLE", str(error)) from error
+            launch = {"harness": choice.harness, "model": choice.model, "provider": choice.provider}
         launched = self.handle("lifecycle.start", {
-            "provider": choice.harness, "name": actor_name, "headless": True,
-            "nickname": marker, "model": choice.model,
-            **({"modelProvider": choice.provider} if choice.provider is not None else {}),
-            "operationId": f"routine:{name}:coordinator:start",
+            "provider": launch["harness"], "name": actor_name, "headless": True,
+            "nickname": marker, "model": launch.get("model"),
+            **({"modelProvider": launch["provider"]} if launch.get("provider") is not None else {}),
+            **({"cwd": launch["cwd"]} if launch.get("cwd") is not None else {}),
+            **({"args": launch["args"]} if launch.get("args") else {}),
+            "operationId": f"{marker}:start",
         })
         if not isinstance(launched, dict) or launched.get("actor") != produced:
-            self.handle("down", {"target": actor_name, "provider": choice.harness})
+            self.handle("down", {"target": actor_name, "provider": launch["harness"]})
             raise DaemonRequestError("ROUTINE_COORDINATOR_IDENTITY_MISMATCH",
                                      f"coordinator did not resolve as {produced}")
         return {**launched, "restored": False}
@@ -3972,7 +4184,7 @@ class DaemonApplication:
     def _retire_routine_coordinator(self, routine: dict[str, object]) -> dict[str, object] | None:
         produced = routine.get("produces")
         name = str(routine["name"])
-        marker = self._routine_coordinator_marker(name)
+        marker = self._routine_coordinator_marker(name, routine.get("registrationId"))
         if isinstance(routine.get("schemaError"), str):
             # The schema is unreadable, so its raw ``produces`` value cannot
             # authorize a stop. The durable ownership marker still can.
@@ -4003,7 +4215,7 @@ class DaemonApplication:
         if not matches:
             return {"actor": produced, "retired": False, "changed": False}
         item = matches[0]
-        if item.nickname != self._routine_coordinator_marker(name):
+        if item.nickname != self._routine_coordinator_marker(name, routine.get("registrationId")):
             raise DaemonRequestError("ROUTINE_COORDINATOR_CONFLICT",
                                      f"actor {produced} is not owned by routine {name}")
         result = self.handle("down", {"target": actor_name, "provider": item.harness})
@@ -4759,21 +4971,41 @@ class DaemonApplication:
                     row["origin"] = origin
                 messages.append(row)
             return {"ok": True, "messages": messages, "daemonEpoch": self.epoch}
+        if method.startswith("routine."):
+            routine_caller = self._workflow_caller(params)
+            if method in ("routine.remove", "routine.pause", "routine.resume", "routine.status") and self._routine_service is not None:
+                current = self._routine_service.status(name=_required_string(params.get("name"), "name"))
+                if routine_caller not in (f"user:{self.owner}", current["owner"], current.get("actor")):
+                    raise DaemonRequestError(ipc_errors.CALLER_NOT_AUTHORIZED, "caller does not own this routine")
         if method == "routine.add":
             if self._routine_service is None:
                 raise DaemonRequestError(ipc_errors.ROUTINE_UNAVAILABLE, "routine service is not running")
             yaml_text = _required_string(params.get("yaml"), "yaml")
+            import yaml
             from hyprial.routine.schema import RoutineSchemaError, load_routine_text
             try:
                 spec = load_routine_text(yaml_text)
             except RoutineSchemaError as error:
                 raise DaemonRequestError("ROUTINE_SCHEMA_ERROR", str(error)) from error
-            requested_source = _actor(params)
-            source = (requested_source if spec.produces is not None and requested_source == spec.produces
-                      else self._resolve_send_sender(requested_source))
-            if spec.produces is not None and spec.produces != source:
-                raise DaemonRequestError("ROUTINE_COORDINATOR_OWNER_MISMATCH",
-                                         f"produces {spec.produces} must equal registration owner {source}")
+            source = self._workflow_caller(params)
+            if spec.actor is not None:
+                if self._remote_workflow is not None and self._remote_workflow.remote(spec.actor):
+                    from types import SimpleNamespace
+                    from hyprial.pac.errors import PacError
+                    try:
+                        self._remote_workflow.admit(SimpleNamespace(owner=spec.actor, role=spec.role,
+                            first_output_eta=None, human_gates=None))
+                    except PacError as error:
+                        raise DaemonRequestError(error.code, str(error)) from error
+                else:
+                    self._resolve_send_sender(spec.actor)
+            elif spec.produces is None:
+                document = yaml.safe_load(yaml_text)
+                from hashlib import sha256
+                actor_name = f"routine-{spec.name}" if len(spec.name) <= 48 else "routine-" + sha256(spec.name.encode()).hexdigest()[:16]
+                document["produces"] = canonical_agent_uri(self.owner, self.node_id, actor_name)
+                yaml_text = yaml.safe_dump(document, allow_unicode=True, sort_keys=False)
+                spec = load_routine_text(yaml_text)
             with self._routine_coordinator_lock:
                 if spec.produces is not None and any(
                     item.get("produces") == spec.produces
@@ -4782,12 +5014,14 @@ class DaemonApplication:
                     raise DaemonRequestError("ROUTINE_COORDINATOR_CONFLICT",
                                              f"coordinator already owned: {spec.produces}")
                 try:
-                    result = self._routine_service.add(yaml_text=yaml_text, owner=source)
+                    result = self._routine_service.add(yaml_text=yaml_text, owner=source, enabled=False)
                 except RoutineServiceError as error:
                     raise DaemonRequestError(error.code, str(error)) from error
                 routine = {**self._routine_service.status(name=spec.name), "name": spec.name}
                 try:
                     coordinator = self._ensure_routine_coordinator(routine, recovering=False)
+                    self._routine_service.resume(name=spec.name, align_schedule=True)
+                    result["enabled"] = True
                 except Exception:
                     self._routine_service.remove(name=spec.name)
                     raise
@@ -4827,6 +5061,17 @@ class DaemonApplication:
                     routine = {**self._routine_service.status(name=name), "name": name}
                     if routine.get("enabled") is True:
                         self._routine_service.pause(name=name)
+                    from hyprial.pac.graph import close_graph
+                    from hyprial.pac.store import PacGraphStore, default_database_path
+                    store = PacGraphStore(default_database_path(self.state_dir))
+                    try:
+                        for task in routine.get("inFlight", []):
+                            graph_id = task["runId"]
+                            graph = store.graph(graph_id)
+                            if graph is not None:
+                                close_graph(store, graph_id, actor=str(routine["owner"]))
+                    finally:
+                        store.close()
                     coordinator = self._retire_routine_coordinator(routine)
                     result = self._routine_service.remove(name=name)
                     return {**result, **({"coordinator": coordinator} if coordinator is not None else {})}
@@ -4862,16 +5107,72 @@ class DaemonApplication:
             payload = choice.to_json()
             self._log("info", "daemon", "dispatch.matrix.resolved", agentName=name, ok=True, **payload)
             return {"ok": True, **payload}
-        if method == "workflow.start":
+        if method == "workflow.remote.current":
+            from hyprial.pac.errors import PacError
+            if self._remote_workflow is None:
+                raise DaemonRequestError("WORKFLOW_REMOTE_UNAVAILABLE", "remote workflow service is not running")
+            try:
+                return self._remote_workflow.delivery_current(_required_string(params.get("messageId"), "messageId"))
+            except PacError as error:
+                raise DaemonRequestError(error.code, str(error)) from error
+        if method in ("workflow.worker.stop", "workflow.worker.restart"):
             if self._workflow_service is None:
                 raise DaemonRequestError(
-                    ipc_errors.WORKFLOW_UNAVAILABLE, "workflow service is not running"
+                    ipc_errors.WORKFLOW_UNAVAILABLE,
+                    "workflow service is not running",
                 )
-            yaml_text = _required_string(params.get("yaml"), "yaml")
-            source = self._resolve_send_sender(_actor(params))
+            graph_id = _required_string(params.get("graphId"), "graphId")
+            actor_name = _required_string(params.get("actorName"), "actorName")
+            caller = self._workflow_caller(params)
             try:
-                return self._workflow_service.start(yaml_text=yaml_text, sender=source)
+                operation = (
+                    self._workflow_service.stop_worker
+                    if method.endswith("stop")
+                    else self._workflow_service.restart_worker
+                )
+                return operation(graph_id=graph_id, actor_name=actor_name, actor=caller)
             except WorkflowServiceError as error:
+                raise DaemonRequestError(error.code, str(error)) from error
+        if method == "workflow.start":
+            if self._workflow_service is None:
+                raise DaemonRequestError(ipc_errors.WORKFLOW_UNAVAILABLE, "workflow service is not running")
+            yaml_text = _required_string(params.get("yaml"), "yaml")
+            source = self._workflow_caller(params)
+            try:
+                return self._workflow_service.start(
+                    yaml_text=yaml_text, sender=source,
+                    operation_key=params.get("operationKey"),
+                )
+            except WorkflowServiceError as error:
+                raise DaemonRequestError(error.code, str(error)) from error
+        if method in ("workflow.complete", "workflow.fail"):
+            if self._workflow_service is None:
+                raise DaemonRequestError(ipc_errors.WORKFLOW_UNAVAILABLE, "workflow service is not running")
+            source = self._workflow_caller(params)
+            graph_id = _required_string(params.get("graphId"), "graphId")
+            node_id = _required_string(params.get("nodeId"), "nodeId")
+            request = _required_string(params.get("requestId"), "requestId")
+            reason = _required_string(params.get("reasonRef"), "reasonRef")
+            from hyprial.pac.errors import PacError
+            try:
+                if self._remote_workflow is not None:
+                    forwarded = self._remote_workflow.forward(method, params, source)
+                    if forwarded is not None:
+                        return forwarded
+                if method == "workflow.fail":
+                    return self._workflow_service.fail(graph_id=graph_id, node_id=node_id,
+                                                       actor=source, request_id=request, reason_ref=reason)
+                from hyprial.pac.reactor import PacReactor
+                from hyprial.pac.store import PacGraphStore, default_database_path
+                store = PacGraphStore(default_database_path(self.state_dir))
+                try:
+                    outcome = PacReactor(store).set_flag(graph_id, node_id, actor=source,
+                                                         reason_ref=reason, expected_request=request)
+                finally:
+                    store.close()
+                self._workflow_service.submit_timer(time.time_ns() // 1_000_000)
+                return {"ok": True, "event": outcome.event}
+            except (WorkflowServiceError, PacError) as error:
                 raise DaemonRequestError(error.code, str(error)) from error
         if method in (
             "pac.flag.set",
@@ -4938,48 +5239,45 @@ class DaemonApplication:
                 )
             except (AgentTaskError, PacAgentTaskError) as error:
                 raise DaemonRequestError(error.code, str(error), error.data) from error
-        if method == "workflow.node.inspect":
-            if self._workflow_service is None:
-                raise DaemonRequestError(ipc_errors.WORKFLOW_UNAVAILABLE, "workflow service is not running")
-            actor = self._message_consumer_actor(params)
-            actor = self._fence_interactive_session(actor, params)
+        if method in ("workflow.status", "workflow.list", "workflow.node.inspect", "workflow.cancel", "workflow.history.list", "workflow.history.status"):
+            caller = self._workflow_caller(params)
+            from hyprial.pac.legacy_workflows import LegacyWorkflowHistory
+            from hyprial.pac.errors import PacError
             try:
-                context = self._workflow_service.node_context(
-                    run_id=_required_string(params.get("runId"), "runId"),
-                    target_ref=_required_string(params.get("target"), "target"), sender=actor,
-                )
-            except WorkflowServiceError as error:
-                raise DaemonRequestError(error.code, str(error)) from error
-            from hyprial.workflow.observation import observe_node
-            return observe_node(context, self._inbox, observed_at_ms=time.time_ns() // 1_000_000, epoch=self.epoch)
-        if method == "workflow.status":
-            if self._workflow_service is None:
-                raise DaemonRequestError(
-                    ipc_errors.WORKFLOW_UNAVAILABLE, "workflow service is not running"
-                )
-            run_id = _required_string(params.get("runId"), "runId")
-            try:
-                return self._workflow_service.status(run_id=run_id)
-            except WorkflowServiceError as error:
-                raise DaemonRequestError(error.code, str(error)) from error
-        if method == "workflow.list":
-            if self._workflow_service is None:
-                raise DaemonRequestError(
-                    ipc_errors.WORKFLOW_UNAVAILABLE, "workflow service is not running"
-                )
-            limit = params.get("limit", 50)
-            if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
-                raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, "limit must be a positive integer")
-            return self._workflow_service.list(limit=limit)
-        if method == "workflow.cancel":
-            if self._workflow_service is None:
-                raise DaemonRequestError(
-                    ipc_errors.WORKFLOW_UNAVAILABLE, "workflow service is not running"
-                )
-            run_id = _required_string(params.get("runId"), "runId")
-            try:
-                return self._workflow_service.cancel(run_id=run_id)
-            except WorkflowServiceError as error:
+                if method.startswith("workflow.history."):
+                    history = LegacyWorkflowHistory(self.state_dir)
+                    viewer = None if caller == f"user:{self.owner}" else caller
+                    if method.endswith("list"):
+                        return history.list(limit=int(params.get("limit", 50)), viewer=viewer)
+                    return history.status(_required_string(params.get("runId"), "runId"), viewer=viewer)
+                if self._workflow_service is None:
+                    raise DaemonRequestError(ipc_errors.WORKFLOW_UNAVAILABLE, "workflow service is not running")
+                if method == "workflow.list":
+                    return self._workflow_service.list(limit=int(params.get("limit", 50)),
+                        viewer=None if caller == f"user:{self.owner}" else caller)
+                run_id = _required_string(params.get("runId"), "runId")
+                if method == "workflow.cancel":
+                    return self._workflow_service.cancel(run_id=run_id, actor=caller)
+                if method == "workflow.node.inspect" and self._remote_workflow is not None:
+                    forwarded = self._remote_workflow.forward(method, params, caller)
+                    if forwarded is not None:
+                        return forwarded
+                result = self._workflow_service.status(run_id=run_id)
+                if caller != f"user:{self.owner}" and caller != result["sender"] and not any(n["owner"] == caller for n in result["nodes"]):
+                    raise DaemonRequestError(ipc_errors.CALLER_NOT_AUTHORIZED, "caller is not a participant of this graph")
+                if method == "workflow.node.inspect":
+                    target = _required_string(params.get("target"), "target")
+                    node = next((n for n in result["nodes"] if n["nodeId"] == target), None)
+                    if node is None:
+                        raise DaemonRequestError("WORKFLOW_NODE_NOT_FOUND", target)
+                    if caller not in (f"user:{self.owner}", result["sender"], node["owner"]):
+                        raise DaemonRequestError(ipc_errors.CALLER_NOT_AUTHORIZED, "only the creator or node owner may read execution progress")
+                    from hyprial.dispatch.workflow_observation import observe_node
+                    return observe_node(self._workflow_service.database, result, node, self._inbox,
+                                        recipient=self._dispatch_service_actor,
+                                        at=time.time_ns() // 1_000_000, epoch=self.epoch)
+                return result
+            except (WorkflowServiceError, PacError) as error:
                 raise DaemonRequestError(error.code, str(error)) from error
         if method == "progress.list":
             actor = self._message_consumer_actor(params)
@@ -6354,32 +6652,67 @@ class DaemonApplication:
 
     # ── A3 dispatch gate (design-dispatch-always-pac-2026-09-03 §三②) ────
 
-    def _pac_dispatch_gate(
-        self, spec: WorkflowSpec, receipt_target: str | None, accepted_text: str
-    ) -> tuple[str, ...]:
-        """PAC admission/receipt audit through the same gate as message.send.
+    def _resolve_routine_principal(self, actor: str) -> str:
+        principal = parse_agent_uri(actor)
+        if principal is not None and principal[:2] != (self.owner, self.node_id):
+            return actor  # explicit target; workflow admission checks its home daemon
+        return self._resolve_send_sender(actor)
 
-        Runs before the registry allocates/persists a new run or emits any
-        dispatch effect. Receipt observations add warnings, never re-admit work.
-        """
-        warnings: list[str] = []
-        for target in spec.targets:
-            if receipt_target is not None and target.name != receipt_target:
-                continue
-            recipient = self._resolve_agent_alias(normalize_agent_recipient(target.name))
-            entity = self.agents.get(recipient)
-            eta, gates = spec.dispatch_fields_for(target)
-            warnings.extend(dispatch_gate(
-                target=recipient,
-                capabilities=entity.capabilities if entity is not None else {},
-                role=target.role if receipt_target is None else None,
-                first_output_eta=eta if receipt_target is None else None,
-                accepted_text=accepted_text,
-                human_gates_declared=gates,
-                emit=self._log,
-                source="pac.admission" if receipt_target is None else "pac.receipt",
-            ))
-        return tuple(warnings)
+    def _record_workflow_outcome(self, result):
+        if self._remote_workflow is not None and self._remote_workflow.outcome(result):
+            return True
+        workflow = self._workflow_service
+        if workflow is None:
+            return False
+        return workflow.record_harness_outcome(
+            message_id=result.delivery_id, recipient=result.recipient,
+            failed=result.status.value != "completed", failure_code=result.failure_code)
+
+    def _workflow_admit(self, spec: WorkflowSpec, sender: str) -> None:
+        from .pac_actor import DaemonActorRuntime
+        from hyprial.pac.lifecycle import LaunchSpec
+
+        from hyprial.pac.errors import WORKFLOW_REMOTE_OWNER_UNSUPPORTED
+
+        for node in spec.nodes:
+            if node.owner is not None:
+                if node.owner.startswith("user:"):
+                    if node.owner != f"user:{self.owner}":
+                        raise DaemonRequestError(WORKFLOW_REMOTE_OWNER_UNSUPPORTED,
+                            "workflow completion currently requires this daemon's local user or bound actors")
+                    continue
+                principal = parse_agent_uri(node.owner)
+                if principal is not None and principal[:2] != (self.owner, self.node_id):
+                    from hyprial.pac.errors import PacError
+                    if self._remote_workflow is None:
+                        raise DaemonRequestError("WORKFLOW_REMOTE_UNAVAILABLE", "remote workflow service is not running")
+                    try:
+                        self._remote_workflow.admit(node)
+                    except PacError as error:
+                        raise DaemonRequestError(error.code, str(error)) from error
+                    continue
+                recipient = self._resolve_send_sender(node.owner)
+                entity = self.agents.get(recipient)
+                capabilities = entity.capabilities if entity is not None else {}
+            else:
+                assert node.launch is not None
+                try:
+                    DaemonActorRuntime._launch_spec("plan-worker", LaunchSpec.from_json(node.launch), "plan")
+                except (TypeError, ValueError) as error:
+                    raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
+                recipient = f"workflow-worker:{node.worker}"
+                capabilities = {"interactive": False}
+            dispatch_gate(target=recipient, capabilities=capabilities, role=node.role,
+                          first_output_eta=node.first_output_eta,
+                          human_gates_declared=node.human_gates is not None,
+                          emit=self._log, source="pac.workflow.admission")
+
+    def _workflow_caller(self, params: JsonObject) -> str:
+        actor = params.get("actor")
+        if actor == f"user:{self.owner}" and "sessionRef" not in params:
+            # The private local control socket is the trusted human boundary.
+            return str(actor)
+        return self._pac_bound_caller(params)
 
     @property
     def _dispatch_service_actor(self) -> str:
@@ -7284,8 +7617,9 @@ class DaemonApplication:
 
     def _handle_pac_write(self, method: str, params: JsonObject) -> JsonObject:
         """Fenced PAC write surface (flag set/reset, graph activate/close,
-        actor stop) -- the ONLY path that writes PAC state under an agent
-        identity.  The human CLI path stays local with ``user:<owner>`` from
+        actor stop) -- the local path that writes PAC state under an agent
+        identity. Remote workflow requests use the scoped daemon delegation
+        protocol after this same local session fence.  The human CLI path stays local with ``user:<owner>`` from
         the trusted local boundary; agent identities never write the local
         database unverified.
         """
@@ -7299,6 +7633,21 @@ class DaemonApplication:
         from .pac_actor import DaemonPacNotificationSender
 
         caller = self._pac_bound_caller(params)
+        if self._remote_workflow is not None and method in ("pac.flag.set", "pac.flag.reset"):
+            graph_id = _required_string(params.get("graphId"), "graphId")
+            node_id = _required_string(params.get("nodeId"), "nodeId")
+            if self._remote_workflow._lookup(graph_id=graph_id, node_id=node_id, actor=caller) is not None:
+                try:
+                    remote_params = dict(params)
+                    if method == "pac.flag.set":
+                        remote_params["requestId"] = _required_string(params.get("expectedRequest"), "expectedRequest")
+                        remote_params["reasonRef"] = _required_string(params.get("reasonRef"), "reasonRef")
+                    forwarded = self._remote_workflow.forward("workflow.complete" if method == "pac.flag.set" else method,
+                                                              remote_params, caller)
+                    if forwarded is not None:
+                        return forwarded
+                except PacError as error:
+                    raise DaemonRequestError(error.code, str(error)) from error
         store = PacGraphStore(default_database_path(self.state_dir))
         try:
             if method in ("pac.flag.set", "pac.flag.reset"):
@@ -7309,7 +7658,8 @@ class DaemonApplication:
                 try:
                     if method == "pac.flag.set":
                         outcome = reactor.set_flag(
-                            graph_id, node_id, actor=caller, reason_ref=reason_ref
+                            graph_id, node_id, actor=caller, reason_ref=reason_ref,
+                            expected_request=params.get("expectedRequest")
                         )
                     else:
                         outcome = reactor.reset_flag(
@@ -9497,10 +9847,21 @@ class DaemonApplication:
             routine_service = self._routine_service
             self._routine_service = None
             attempt(routine_service.close, "routine-service")
+        if self._remote_workflow is not None:
+            remote_workflow = self._remote_workflow
+            self._remote_workflow = None
+            attempt(remote_workflow.close_registrations, "remote-workflow-registrations")
+            def close_remote_workflow():
+                if not remote_workflow.shutdown(5.0):
+                    raise RuntimeError("remote workflow handlers did not drain before deadline")
+            attempt(close_remote_workflow, "remote-workflow")
         if self._workflow_service is not None:
             workflow_service = self._workflow_service
             self._workflow_service = None
             attempt(workflow_service.close, "workflow-service")
+        for handle in self._degraded_workflow_handles:
+            attempt(handle.close, "degraded-workflow-component")
+        self._degraded_workflow_handles.clear()
         if self._pac_actor_service is not None:
             pac_actor_service = self._pac_actor_service
             self._pac_actor_service = None

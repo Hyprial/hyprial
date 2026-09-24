@@ -16,7 +16,7 @@ import json
 import threading
 import time
 from typing import Protocol
-from uuid import UUID, uuid5
+from hyprial.dispatch.identity import dispatch_message_id
 
 from hyprial.contracts.ports import PortAdmission, PortCommandRejected
 from hyprial.inbox.api import DeliveryLifecycle, InboxMessage
@@ -31,7 +31,6 @@ from hyprial.inbox.ports import (
 )
 from hyprial.inbox.service import ConsumptionState
 
-_MESSAGE_NAMESPACE = UUID("1329686b-1adf-5e69-b835-4e05b214cdd6")
 
 
 class InboxIoDeferred(RuntimeError):
@@ -144,9 +143,7 @@ class InboxDeliveryIoAdapter:
 
     @staticmethod
     def message_id(effect_id: str) -> str:
-        if not effect_id:
-            raise ValueError("effect_id must not be empty")
-        return f"workflow-{uuid5(_MESSAGE_NAMESPACE, effect_id)}"
+        return dispatch_message_id(effect_id)
 
     def deliver(
         self,

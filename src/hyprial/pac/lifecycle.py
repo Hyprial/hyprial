@@ -115,6 +115,9 @@ class FileLaunchResolver:
         if not path.is_absolute():
             path = self.root / path
         payload = path.read_bytes()
+        fragment = launch_ref.partition("#")[2]
+        if fragment.startswith("sha256=") and hashlib.sha256(payload).hexdigest() != fragment[7:]:
+            raise ValueError("immutable launch reference digest mismatch")
         value = yaml.safe_load(payload)
         if not isinstance(value, dict):
             raise ValueError("launch_ref must resolve to an object")
@@ -265,6 +268,10 @@ class ActorCoordinator:
                     self.reconcile(graph_id, node.node_id)
 
     def _ready(self, graph_id: str, node_id: str) -> bool:
+        from .workflow_graph import actor_ready, managed_graph
+
+        if managed_graph(self.store, graph_id):
+            return actor_ready(self.store, graph_id, node_id, now_ms=int(self.clock()))
         predecessors = [
             edge.from_node
             for edge in self.store.edges(graph_id)

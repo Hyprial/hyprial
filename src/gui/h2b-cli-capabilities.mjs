@@ -14,7 +14,7 @@ const actionPaths = {
   'adapter-enroll-preview': 'adapter add', 'adapter-enroll': 'adapter add', 'adapter-authorize': 'adapter authorize',
   'org-management-status': 'org status', 'org-fetch': 'org fetch', 'org-import-preview': 'org import', 'org-import': 'org import',
   'dispatch-matrix': 'dispatch matrix', 'profile-list': 'profile list', 'org-show': 'org show',
-  'workflow-plan': 'workflow plan', 'workflow-run': 'workflow run', 'workflow-status': 'workflow status', 'workflow-cancel': 'workflow cancel',
+  'workflow-plan': 'workflow plan', 'workflow-run': 'workflow run', 'workflow-status': 'workflow status', 'workflow-cancel': 'workflow cancel', 'workflow-complete':'workflow complete', 'workflow-fail':'workflow fail', 'workflow-history-status':'workflow history status', 'workflow-history-list':'workflow history list',
   'routine-plan': 'routine plan', 'routine-add': 'routine add', 'routine-status': 'routine status', 'routine-pause': 'routine pause',
   'routine-resume': 'routine resume', 'routine-remove': 'routine rm', 'routine-templates': 'routine templates', 'routine-template': 'routine templates show',
   'delivery-status': 'delivery status', trajectory: 'trajectory', 'log-query': 'log',

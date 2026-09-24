@@ -104,6 +104,7 @@ const CONTROL_QUERIES = Object.freeze({
 const CONTROL_ACTIONS = new Set([
   'dispatch-matrix', 'profile-list', 'org-show', 'routine-templates', 'routine-template',
   'workflow-plan', 'workflow-run', 'workflow-status', 'workflow-cancel',
+  'workflow-history-status', 'workflow-history-list', 'workflow-complete', 'workflow-fail',
   'routine-plan', 'routine-add', 'routine-status', 'routine-pause', 'routine-resume', 'routine-remove',
   'delivery-status', 'trajectory', 'log-query',
   'adapter-status', 'adapter-doctor', 'adapter-identities', 'adapter-start', 'adapter-stop',
@@ -123,7 +124,7 @@ function validateControlWrite(input) {
     }
     controlPreviews.delete(input.previewToken);
   }
-  if (['workflow-cancel', 'routine-add', 'routine-pause', 'routine-resume', 'routine-remove', 'channel-join', 'channel-part', 'agent-restart', 'agent-create', 'agent-destroy', 'agent-start', 'agent-stop', 'adapter-start', 'adapter-stop', 'adapter-pin', 'adapter-unpin', 'adapter-reload'].includes(input.operation) && input.confirmed !== true) {
+  if (['workflow-complete','workflow-fail','workflow-cancel', 'routine-add', 'routine-pause', 'routine-resume', 'routine-remove', 'channel-join', 'channel-part', 'agent-restart', 'agent-create', 'agent-destroy', 'agent-start', 'agent-stop', 'adapter-start', 'adapter-stop', 'adapter-pin', 'adapter-unpin', 'adapter-reload'].includes(input.operation) && input.confirmed !== true) {
     throw new Error('explicit confirmation is required for this h2b control action');
   }
 }
@@ -776,6 +777,7 @@ function workflowWorkbench(ctx, input, context) {
   if (!workbenches.has(ctx)) workbenches.set(ctx, createWorkflowWorkbench({
     root: path.join(H2B_STATE_ROOT, 'workflow-workbench'),
     control: input => controlAction(ctx, input),
+    native: (sessionId,operation,args) => bridgeRpc(ctx,{operation:'session-tool',sessionId,tool:'workflow-'+operation,args},true),
     observeNode: (sessionId,args) => bridgeRpc(ctx, {operation:'session-tool',sessionId,tool:'workflow-node',args}, true),
     resolveSession: async sessionId => {
       const attached = ctx.sessions.get(sessionId);

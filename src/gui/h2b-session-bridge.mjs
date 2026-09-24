@@ -1018,13 +1018,25 @@ async function handleSessionRpc(request, env = process.env) {
   }
   const sessionId = requiredString(request.sessionId, "sessionId", 4096);
   if (operation === 'session-tool') {
-    const specs = { 'workflow-node': ['runId', 'target'], identity: [], prepare: [], targets: [], send: ['target', 'message'], inbox: [], reply: ['messageId', 'message'], ack: ['messageId'] };
+    const specs = { 'workflow-node': ['runId', 'target'],
+      'workflow-start': ['yaml','operationKey'], 'workflow-status': ['runId'],
+      'workflow-history-status': ['runId'], 'workflow-cancel': ['runId'],
+      identity: [], prepare: [], targets: [], send: ['target', 'message'], inbox: [], reply: ['messageId', 'message'], ack: ['messageId'] };
     const fields = Object.hasOwn(specs, request.tool) ? specs[request.tool] : null;
     const args = request.args;
     if (!fields || !args || typeof args !== 'object' || Array.isArray(args) || Object.keys(args).some(key => !fields.includes(key)) || Object.keys(request).some(key => !['operation', 'sessionId', 'tool', 'args'].includes(key))) {
       throw new BridgeError('INVALID_TOOL_ARGUMENT', 'unsupported tool or identity override');
     }
     const identity = await canonicalSessionIdentityFor(sessionId, env);
+    if (['workflow-start','workflow-status','workflow-history-status','workflow-cancel'].includes(request.tool)) {
+      const params = {actor:identity.actor,sessionRef:identity.sessionRef};
+      const method = request.tool.slice('workflow-'.length);
+      if (method === 'start') {
+        params.yaml = requiredString(args.yaml,'yaml',65536);
+        params.operationKey = requiredString(args.operationKey,'operationKey',128);
+      } else params.runId = requiredString(args.runId,'runId',128);
+      return daemonRequest(method === 'history-status' ? 'workflow.history.status' : 'workflow.' + method, params, {env});
+    }
     if (request.tool === 'prepare') {
       await registerSession(sessionId, identity, env);
       const status = await daemonRequest('identity.whoami', fenced(identity), { env });

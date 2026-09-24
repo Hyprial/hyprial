@@ -14,7 +14,7 @@ Two shapes share one fold:
 - :func:`restate` — the pure function behind the headline acceptance: feed
   it the structure and the event list, get the ordered restatement of the
   whole flow (every turn and withdraw, with round numbers) plus the final
-  state.  Hidden ``hyprial pac debug restate`` also cross-checks the
+  state.  Hidden ``projection audit`` also cross-checks the
   live ``notifications`` table against the fold so the two can never
   silently drift.
 """
@@ -82,7 +82,7 @@ def fold_event(state: ProjectionState, structure: dict[str, Any], event: dict[st
     The reactor decides against the live store inside one transaction; this
     fold decides against the accumulated state.  They must agree —
     ``tests/test_pac_restate.py`` (headline acceptance #1) and the drift
-    check in hidden ``hyprial pac debug restate`` pin that agreement.
+    check in hidden ``projection audit`` pin that agreement.
     """
 
     if event.get("action") not in {"set", "reset"} or "type" in event:

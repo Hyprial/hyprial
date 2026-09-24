@@ -1,7 +1,7 @@
-"""The PAC v2 graph file: five business tables plus a typed transaction journal.
+"""The PAC graph store, request projections and typed transaction journal.
 
 ``pac-graph.sqlite3`` lives in the state root next to — but strictly
-separate from — v1's ``workflows.sqlite3``.  This module owns the schema
+separate from — the sealed legacy ``workflows.sqlite3`` archive.  This module owns the schema
 and the row-level reads/writes; edit semantics (CAS, validation) live in
 :mod:`hyprial.pac.graph`, reactor semantics in :mod:`hyprial.pac.reactor`.
 
@@ -15,7 +15,7 @@ the concept itself names as sketch-level:
 - ``notifications`` is keyed ``(event_id, edge)`` exactly as the concept
   prescribes: that primary key IS the idempotency contract (§3.1).  The
   row also carries the exact ``text`` and ``sender`` it was delivered
-  with, so ``hyprial pac notify resend`` retries byte-for-byte. ``plan_json``
+  with, so ``hyprial workflow notify resend`` retries byte-for-byte. ``plan_json``
   captures the version and predecessor facts at the decision's write lock;
   pre-upgrade rows retain NULL rather than invented historical inputs.
 - Schema upgrades are explicit and atomic (see :mod:`hyprial.pac.migrations`).
@@ -289,9 +289,9 @@ class PacGraphStore:
     step.
     """
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, read_only: bool = False) -> None:
         self.path = Path(path)
-        self._db = connect(self.path)
+        self._db = connect(self.path, read_only=read_only)
 
     def close(self) -> None:
         self._db.close()

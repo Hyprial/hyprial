@@ -29,7 +29,8 @@ def render_template(
 ) -> str:
     """Render registration parameters structurally, preserving PAC placeholders.
 
-    ``owner`` is both registration sender and coordinator principal.
+    ``owner`` names the routine-owned coordinator. Registration ownership
+    remains with the authenticated caller.
     """
     if parse_agent_uri(owner) is None:
         raise ValueError("--for must be a canonical agent:<owner>:<machine>:<actor> URI")

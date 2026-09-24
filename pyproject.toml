@@ -74,11 +74,3 @@ extend-exclude = ["notes/repro"]
 # warning is silenced. Enabling it was free: the whole repo had exactly one
 # occurrence, the one above.
 select = ["E4", "E7", "E9", "F", "W605"]
-
-[tool.ruff.lint.per-file-ignores]
-# Verbatim slice of 4fd2be7:src/h2b/daemon/application.py (see the file
-# header): unused imports/locals and names resolved elsewhere in the original
-# module are inherent to an excerpt.  "Fixing" them would break the
-# byte-for-byte agreement with the frozen source that
-# test_frozen_application_slice_matches_pre_liveness_history enforces.
-"tests/fixtures/pre-liveness-application-4fd2be7.py" = ["E", "F"]

@@ -1,6 +1,6 @@
-"""Error surface for PAC v2 (graph file + flag reactor).
+"""Error surface for PAC (graph file + flag reactor).
 
-These are PAC-domain codes: they surface in ``hyprial pac`` ``--json`` output
+These are PAC-domain codes: they surface in ``workflow commands` ``--json`` output
 and in exit statuses.  Since the principal-URI write boundary (2026-09-14,
 G1=A) the daemon's ``pac.*`` IPC methods also raise them -- the handler
 translates :class:`PacError` into ``DaemonRequestError`` with the SAME code,
@@ -49,7 +49,7 @@ PAC_FLAG_ALREADY_SET = "PAC_FLAG_ALREADY_SET"
 PAC_FLAG_NOT_SET = "PAC_FLAG_NOT_SET"
 
 #: Notification delivery could not reach the daemon; the rows are recorded
-#: and ``hyprial pac notify resend`` retries exactly the undelivered ones.
+#: and ``hyprial workflow notify resend`` retries exactly the undelivered ones.
 PAC_NOTIFY_DELIVERY_FAILED = "PAC_NOTIFY_DELIVERY_FAILED"
 
 #: Principal (owner/creator) grammar: the value is neither a canonical
@@ -129,3 +129,6 @@ __all__ = [
     "PAC_OWNER_UNKNOWN",
     "PacError",
 ]
+
+# High-level dispatch requires an owner with a completion path on this daemon.
+WORKFLOW_REMOTE_OWNER_UNSUPPORTED = "WORKFLOW_REMOTE_OWNER_UNSUPPORTED"

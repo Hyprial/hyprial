@@ -51,8 +51,8 @@ function requireYaml(input) {
   return input.yaml;
 }
 
-function requireActor(input) {
-  if (!CANONICAL_AGENT.test(String(input.from || ''))) fail('from must be a canonical agent:owner:node:actor URI');
+function requireActor(input, allowUser = false) {
+  if (!CANONICAL_AGENT.test(String(input.from || '')) && !(allowUser && /^user:[^\s:]+$/.test(String(input.from || '')))) fail('from must be a canonical principal URI');
   return input.from;
 }
 
@@ -170,12 +170,12 @@ async function invoke(input) {
       argv = buildReadonlyOpsArgv(input);
     } else if (operation === 'workflow-plan' || operation === 'workflow-run' || operation === 'routine-add' || operation === 'routine-plan') {
       const yaml = requireYaml(input);
-      const actor = requireActor(input);
+      const actor = requireActor(input, true);
       directory = await mkdtemp(join(tmpdir(), 'dsh-h2b-control-'));
       const file = join(directory, operation.startsWith('routine-') ? 'routine.yaml' : 'workflow.yaml');
       await writeFile(file, yaml, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
       if (operation === 'workflow-plan') argv = ['workflow', 'plan', file, '--json'];
-      else if (operation === 'workflow-run') argv = ['workflow', 'run', file, '--from', actor, '--yes', '--json'];
+      else if (operation === 'workflow-run') argv = ['workflow', 'run', file, '--from', actor, '--yes', '--json', ...(input.operationKey ? ['--operation-key',requireId(input,'operationKey')] : [])];
       else if (operation === 'routine-plan') argv = ['routine', 'plan', file, '--json'];
       else argv = ['routine', 'add', file, '--from', actor, '--json'];
     } else if (operation === 'routine-templates') {
@@ -186,6 +186,16 @@ async function invoke(input) {
       argv = ['workflow', 'status', requireId(input, 'runId'), '--json'];
     } else if (operation === 'workflow-cancel') {
       argv = ['workflow', 'cancel', requireId(input, 'runId'), '--json'];
+    } else if (operation === 'workflow-history-status') {
+      argv = ['workflow', 'history', 'status', requireId(input, 'runId'), '--json'];
+    } else if (operation === 'workflow-history-list') {
+      argv = ['workflow', 'history', 'list', '--json'];
+    } else if (operation === 'workflow-complete' || operation === 'workflow-fail') {
+      const reason = input.reasonRef;
+      if (typeof reason !== 'string' || !reason.trim() || reason.length > 512 || /[\x00-\x1f]/.test(reason)) fail('reasonRef must be a bounded single-line reference');
+      argv = ['workflow', operation === 'workflow-complete' ? 'complete' : 'fail',
+              requireId(input,'runId'), requireId(input,'nodeId'),
+              '--request-id',requireId(input,'requestId'),'--reason-ref',reason,'--json'];
     } else if (operation === 'routine-status') {
       argv = ['routine', 'status', requireId(input, 'name'), '--json'];
     } else if (operation === 'routine-pause') {
@@ -301,6 +311,7 @@ async function invoke(input) {
     try { document = JSON.parse(result.stdout); }
     catch { fail('h2b command returned invalid JSON', 'INVALID_RESPONSE'); }
     if (!document || typeof document !== 'object' || Array.isArray(document)) fail('h2b command returned an invalid document', 'INVALID_RESPONSE');
+    if (document.backend === 'pac' && Array.isArray(document.nodes)) document = {...document,targets:document.nodes.map(n=>({...n,target:n.nodeId,recipient:n.owner,conversationId:'pac-'+document.graphId}))};
     return { ok: true, operation, document };
   } finally {
     if (directory) await rm(directory, { recursive: true, force: true });

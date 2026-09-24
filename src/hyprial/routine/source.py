@@ -92,7 +92,6 @@ def query_pac_journal(
     principal = parse_agent_uri(coordinator)
     if principal is None:
         raise SourcePermanentError("routine coordinator is not a canonical agent URI")
-    actor_name = principal[2]
     threshold_ms = int(idle_threshold_seconds * 1000)
     tasks: list[SourceTask] = []
     for index, raw_snapshot in enumerate(journal.snapshots()):
@@ -104,7 +103,7 @@ def query_pac_journal(
             continue
         assignments = _records(item.get("assignments"), f"pac.snapshot({graph_id}).assignments")
         for target_index, assignment in enumerate(assignments):
-            if assignment.get("owner") != actor_name or assignment.get("blockedOn") != "agent":
+            if assignment.get("owner") != coordinator or assignment.get("blockedOn") != "agent":
                 continue
             requests = _records(assignment.get("requests"), f"pac.snapshot({graph_id}).assignments[{target_index}].requests")
             if not requests:

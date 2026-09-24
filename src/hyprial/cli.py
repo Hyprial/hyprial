@@ -74,7 +74,6 @@ from hyprial.network_profile import (
 )
 from hyprial.routine.cli import routine_app
 from hyprial.workflow.cli import workflow_app
-from hyprial.pac.cli import pac_app
 from hyprial.contracts import ipc_errors
 from hyprial.contracts.daemon_launch import DaemonLaunchResult
 from hyprial.autoupdate.alert import (
@@ -185,104 +184,15 @@ dispatch_app = typer.Typer(
 )
 app.add_typer(dispatch_app, name="dispatch")
 app.add_typer(routine_app, name="routine")
-app.add_typer(pac_app, name="pac")
 
 
-@workflow_app.command("run")
-def workflow_run(
-    file: Path = typer.Argument(
-        ...,
-        help="Path to the workflow.yaml to run.",
-    ),
-    from_identity: str = typer.Option(
-        ..., "--from", help="Registered identity the run dispatches as."
-    ),
-    yes: bool = typer.Option(
-        False, "--yes", help="Skip the expanded-plan confirmation prompt."
-    ),
-    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
-) -> None:
-    """Validate, preview (unless --yes), and start a PAC workflow run."""
-    from hyprial.workflow.schema import WorkflowSchemaError, load_workflow
-
+def _routine_identity(json_output: bool, claimed: str | None = None) -> dict[str, str]:
+    from hyprial.workflow.cli import _identity
+    from hyprial.pac.errors import PacError
     try:
-        text = file.read_text(encoding="utf-8")
-        spec = load_workflow(file)
-    except WorkflowSchemaError as error:
-        raise CliError("WORKFLOW_SCHEMA_ERROR", str(error)) from None
-    except OSError as error:
-        raise CliError(
-            ipc_errors.INVALID_ARGUMENT, f"cannot read {file}: {error}"
-        ) from None
-    if not yes and not json_output:
-        typer.echo(
-            f"workflow {spec.name}: {len(spec.targets)} target(s), "
-            f"await {spec.await_.kind} timeout {spec.await_.timeout_seconds:.0f}s, "
-            f"on_timeout {spec.on_timeout.action}, "
-            f"worst case {spec.worst_case_seconds:.0f}s per target"
-        )
-        for target in spec.targets:
-            typer.echo(f"  - {target.name}")
-        if not typer.confirm("Start this run?"):
-            raise typer.Exit(code=1)
-
-    def operation() -> Any:
-        result = _daemon_request(
-            "workflow.start", {"yaml": text, "from": from_identity}
-        )
-        if not isinstance(result, dict) or not isinstance(result.get("runId"), str):
-            raise CliError("INVALID_RESPONSE", "workflow.start must return runId")
-        return {"ok": True, **result}
-
-    _execute(operation, json_output=json_output)
-
-
-@workflow_app.command("status")
-def workflow_status(
-    run_id: str = typer.Argument(..., help="The runId returned by workflow run."),
-    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
-) -> None:
-    """Show one workflow run's per-target state."""
-
-    def operation() -> Any:
-        result = _daemon_request("workflow.status", {"runId": run_id})
-        if not isinstance(result, dict) or not isinstance(result.get("state"), str):
-            raise CliError("INVALID_RESPONSE", "workflow.status must return state")
-        return {"ok": True, **result}
-
-    _execute(operation, json_output=json_output)
-
-
-@workflow_app.command("list")
-def workflow_list(
-    limit: int = typer.Option(50, "--limit", help="Maximum runs to return."),
-    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
-) -> None:
-    """List recent workflow runs, newest first."""
-
-    def operation() -> Any:
-        result = _daemon_request("workflow.list", {"limit": limit})
-        if not isinstance(result, dict) or not isinstance(result.get("runs"), list):
-            raise CliError("INVALID_RESPONSE", "workflow.list must return runs")
-        return {"ok": True, **result}
-
-    _execute(operation, json_output=json_output)
-
-
-@workflow_app.command("cancel")
-def workflow_cancel(
-    run_id: str = typer.Argument(..., help="The runId to cancel."),
-    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
-) -> None:
-    """Freeze a running workflow (in-flight targets keep their last state)."""
-
-    def operation() -> Any:
-        result = _daemon_request("workflow.cancel", {"runId": run_id})
-        if not isinstance(result, dict) or not isinstance(result.get("state"), str):
-            raise CliError("INVALID_RESPONSE", "workflow.cancel must return state")
-        return {"ok": True, **result}
-
-    _execute(operation, json_output=json_output)
+        return _identity(json_output, claimed)
+    except PacError as error:
+        raise CliError(error.code, str(error)) from error
 
 
 @routine_app.command("add")
@@ -325,24 +235,22 @@ def routine_add(
                 raise CliError("ROUTINE_SCHEMA_ERROR", str(error)) from None
             except ValueError as error:
                 raise CliError(ipc_errors.INVALID_ARGUMENT, str(error)) from None
-            owner = coordinator
         else:
-            if from_identity is None or any(
+            if any(
                 value is not None
                 for value in (coordinator, escalate_to, name, interval, source, filter_expr, idle_threshold)
             ):
                 raise CliError(
                     ipc_errors.INVALID_ARGUMENT,
-                    "FILE requires --from; template options require --template",
+                    "template options require --template",
                 )
             assert file is not None
             try:
                 text = file.read_text(encoding="utf-8")
             except OSError as error:
                 raise CliError(ipc_errors.INVALID_ARGUMENT, f"cannot read {file}: {error}") from None
-            owner = from_identity
         # Coordinator admission includes one shared lifecycle start.
-        result = _daemon_request("routine.add", {"yaml": text, "from": owner}, timeout=60.0)
+        result = _daemon_request("routine.add", {"yaml": text, **_routine_identity(json_output, from_identity)}, timeout=60.0)
         if not isinstance(result, dict) or not isinstance(result.get("name"), str):
             raise CliError("INVALID_RESPONSE", "routine.add must return name")
         return {"ok": True, **result}
@@ -357,7 +265,7 @@ def routine_list(
     """List registered routines."""
 
     def operation() -> Any:
-        result = _daemon_request("routine.list", {})
+        result = _daemon_request("routine.list", _routine_identity(json_output))
         if not isinstance(result, dict) or not isinstance(result.get("routines"), list):
             raise CliError("INVALID_RESPONSE", "routine.list must return routines")
         return {"ok": True, **result}
@@ -373,7 +281,7 @@ def routine_status(
     """Show one routine's state, in-flight tasks, and outcome ledger."""
 
     def operation() -> Any:
-        result = _daemon_request("routine.status", {"name": name})
+        result = _daemon_request("routine.status", {"name": name, **_routine_identity(json_output)})
         if not isinstance(result, dict) or not isinstance(result.get("name"), str):
             raise CliError("INVALID_RESPONSE", "routine.status must return name")
         return {"ok": True, **result}
@@ -389,7 +297,7 @@ def routine_rm(
     """Remove a routine and its in-flight map."""
 
     def operation() -> Any:
-        result = _daemon_request("routine.remove", {"name": name})
+        result = _daemon_request("routine.remove", {"name": name, **_routine_identity(json_output)})
         if not isinstance(result, dict) or result.get("removed") is not True:
             raise CliError(
                 "INVALID_RESPONSE", "routine.remove must return removed=true"
@@ -407,7 +315,7 @@ def routine_pause(
     """Pause a routine (stops new duty cycles)."""
 
     def operation() -> Any:
-        result = _daemon_request("routine.pause", {"name": name})
+        result = _daemon_request("routine.pause", {"name": name, **_routine_identity(json_output)})
         if not isinstance(result, dict) or result.get("enabled") is not False:
             raise CliError(
                 "INVALID_RESPONSE", "routine.pause must return enabled=false"
@@ -425,7 +333,7 @@ def routine_resume(
     """Resume a paused routine with a clean breaker ledger."""
 
     def operation() -> Any:
-        result = _daemon_request("routine.resume", {"name": name})
+        result = _daemon_request("routine.resume", {"name": name, **_routine_identity(json_output)})
         if not isinstance(result, dict) or result.get("enabled") is not True:
             raise CliError(
                 "INVALID_RESPONSE", "routine.resume must return enabled=true"
@@ -2602,6 +2510,15 @@ _SAFE_DAEMON_STARTUP_EVENTS = frozenset(
         "zenoh.forwarding.failed",
         "zenoh.forwarding.start_failed",
         "zenoh.endpoints.unset",
+        "workflow.remote_unavailable",
+        # Degraded workflow startup (#708): the daemon stays up with the
+        # workflow/routine capabilities disabled, and these name why.  Without
+        # them the launch summary shows a healthy start while dispatch is off.
+        "workflow.cutover_failed",
+        "workflow.recovery_unavailable",
+        "workflow.pac_actor_unavailable",
+        "workflow.degrade_cleanup_failed",
+        "routine.recovery_unavailable",
     }
 )
 
@@ -6603,7 +6520,7 @@ def _start_interactive_claude(
     # are therefore always the same value and can never collide.
     session_ref = resume if resume is not None else str(uuid4())
     # M2: the attached TUI (and every shell it runs) carries the carrier's
-    # daemon-bound identity, so its `hyprial pac` writes ride the fenced
+    # daemon-bound identity, so its workflow commands writes ride the fenced
     # path instead of falling to the human identity.
     launch_environment = {
         **launch_environment,

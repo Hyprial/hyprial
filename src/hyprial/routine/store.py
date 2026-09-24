@@ -68,6 +68,15 @@ CREATE INDEX IF NOT EXISTS routine_effects_parent
 ON routine_effects(parent_correlation_id);
 CREATE INDEX IF NOT EXISTS routine_effects_routine
 ON routine_effects(routine_name);
+CREATE TABLE IF NOT EXISTS routine_schedule_events (
+    routine TEXT NOT NULL,
+    slot_ms INTEGER NOT NULL,
+    disposition TEXT NOT NULL,
+    count INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    recorded_at_ms INTEGER NOT NULL,
+    PRIMARY KEY(routine,slot_ms,disposition)
+);
 """
 
 
@@ -83,6 +92,7 @@ class RoutineRow:
     created_at_ms: int
     version: int = 1
     quarantine_reason: str | None = None
+    registration_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,6 +165,8 @@ class RoutineStore:
                 str(row[1])
                 for row in self._db.execute("PRAGMA table_info(routines)")
             }
+            if "registration_id" not in columns:
+                self._db.execute("ALTER TABLE routines ADD COLUMN registration_id TEXT")
             if "version" not in columns:
                 self._db.execute(
                     "ALTER TABLE routines ADD COLUMN version INTEGER NOT NULL DEFAULT 1"
@@ -232,10 +244,13 @@ class RoutineStore:
         remove_in_flight: tuple[tuple[str, str], ...] = (),
         add_effects: tuple[RoutineEffectRow, ...] = (),
         delete_effects: tuple[str, ...] = (),
+        schedule_events: tuple[tuple[str, int, str, int, str, int], ...] = (),
     ) -> None:
         """Atomically apply one actor transition and its durable effects."""
 
         with self._lock, self._db:
+            for event in schedule_events:
+                self._db.execute("INSERT OR IGNORE INTO routine_schedule_events VALUES (?,?,?,?,?,?)", event)
             if remove_routine is not None:
                 self._db.execute("DELETE FROM routines WHERE name = ?", (remove_routine,))
                 self._db.execute("DELETE FROM in_flight WHERE routine = ?", (remove_routine,))
@@ -257,8 +272,8 @@ class RoutineStore:
                     """INSERT INTO routines
                        (name, yaml_text, owner, enabled, next_due_ms,
                         source_error_streak, outcomes, created_at_ms, version,
-                        quarantine_reason)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        quarantine_reason, registration_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                        ON CONFLICT(name) DO UPDATE SET
                            yaml_text = excluded.yaml_text,
                            owner = excluded.owner,
@@ -267,7 +282,8 @@ class RoutineStore:
                            source_error_streak = excluded.source_error_streak,
                            outcomes = excluded.outcomes,
                            version = excluded.version,
-                           quarantine_reason = excluded.quarantine_reason""",
+                           quarantine_reason = excluded.quarantine_reason,
+                           registration_id = excluded.registration_id""",
                     (
                         routine.name,
                         routine.yaml_text,
@@ -279,6 +295,7 @@ class RoutineStore:
                         routine.created_at_ms,
                         routine.version,
                         routine.quarantine_reason,
+                        routine.registration_id,
                     ),
                 )
             if remove_cycle is not None:
@@ -353,6 +370,13 @@ class RoutineStore:
                         json.dumps(payload, sort_keys=True),
                     ),
                 )
+
+    def schedule_events(self, routine: str, limit: int = 100) -> list[dict[str, Any]]:
+        with self._lock:
+            return [dict(row) for row in self._db.execute(
+                "SELECT * FROM routine_schedule_events WHERE routine=? ORDER BY slot_ms DESC LIMIT ?",
+                (routine, limit),
+            )]
 
     def upsert_routine(
         self,
@@ -544,6 +568,7 @@ class RoutineStore:
             outcomes=str(row["outcomes"]),
             created_at_ms=int(row["created_at_ms"]),
             version=int(row["version"]),
+            registration_id=row["registration_id"],
             quarantine_reason=(
                 None if row["quarantine_reason"] is None else str(row["quarantine_reason"])
             ),

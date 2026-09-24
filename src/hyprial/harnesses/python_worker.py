@@ -198,6 +198,29 @@ class PythonWorkerTurnAdapter(ConcurrentTurnProcess):
                 return False
             if self.in_flight >= self.max_in_flight:
                 return False
+            if self.worker_channel is not None:
+                from hyprial.pac.delivery_guard import WITHDRAWN, delivery_current
+                from hyprial.pac.remote_binding import RemoteWorkflowUnavailable
+
+                try:
+                    current = delivery_current(
+                        self.worker_channel.state_dir, delivery.delivery_id
+                    )
+                except RemoteWorkflowUnavailable:
+                    return False
+                if not current:
+                    self._records[delivery.delivery_id] = _DeliveryState(
+                        delivery, time.monotonic(), terminal=True
+                    )
+                    self._results.put(
+                        HarnessResult(
+                            delivery.delivery_id,
+                            delivery.recipient,
+                            HarnessResultStatus.INTERRUPTED,
+                            failure_code=WITHDRAWN,
+                        )
+                    )
+                    return True
             payload: object
             if self.kind == "user-proxy":
                 # A relay needs who sent it and the text, nothing else.

@@ -21,7 +21,7 @@ MIN_INTERVAL_SECONDS = 60.0
 DEFAULT_IDLE_THRESHOLD_SECONDS = 30 * 60.0
 
 _TOP_KEYS = frozenset(
-    {"version", "name", "schedule", "source", "policy", "limits", "on_task_timeout", "produces"}
+    {"version", "name", "schedule", "source", "policy", "limits", "on_task_timeout", "produces", "mode", "task", "actor", "launch", "role"}
 )
 _SCHEDULE_KEYS = frozenset({"interval"})
 _SOURCE_KEYS = frozenset({"kind", "filter", "idle_threshold"})
@@ -29,7 +29,7 @@ _ROUTE_KEYS = frozenset({"tag", "target", "target_from", "escalate_to"})
 _LIMITS_KEYS = frozenset({"max_in_flight", "circuit_breaker"})
 _BREAKER_KEYS = frozenset({"window_runs", "escalate_ratio", "action"})
 _ON_TIMEOUT_KEYS = frozenset({"action", "escalate_to"})
-_SOURCE_KINDS = ("taskwarrior", "pac-journal")
+_SOURCE_KINDS = ("taskwarrior", "pac-journal", "scheduled")
 _POLICY_KEYS = frozenset({"routes", "default", "task_template"})
 _BREAKER_ACTIONS = ("pause+alarm",)
 _TIMEOUT_ACTIONS = ("escalate",)
@@ -109,8 +109,12 @@ class RoutineSpec:
     task_template: str
     limits: RoutineLimits
     escalate_to: str
-    # Reserved declaration only; does not create, own, or start an actor.
+    # Routine-owned persistent actor, or an explicit borrowed actor.
     produces: str | None = None
+    role: str = "dispatch"
+    mode: str = "source"
+    actor: str | None = None
+    launch: dict | None = None
 
 
 def _check_vars(text: str, label: str) -> None:
@@ -129,9 +133,37 @@ def load_routine_text(text: str, *, label: str = "routine") -> RoutineSpec:
         raise RoutineSchemaError(f"{label} is not valid YAML: {error}") from error
     root = _mapping(document, label)
     _reject_unknown(root, _TOP_KEYS, label)
-    if root.get("version") != SCHEMA_VERSION:
-        raise RoutineSchemaError(f"{label}.version must be {SCHEMA_VERSION}")
+    if root.get("version") not in (1, 2):
+        raise RoutineSchemaError(f"{label}.version must be 1 (stored source format) or 2")
+    role = root.get("role", "dispatch")
+    if role not in ("execute", "plan", "review", "dispatch"):
+        raise RoutineSchemaError(f"{label}.role must be execute, plan, review or dispatch")
+    mode = root.get("mode", "source" if root.get("version") == 1 else None)
+    if mode not in ("source", "scheduled"):
+        raise RoutineSchemaError(f"{label}.mode must explicitly be source or scheduled")
+    if mode == "scheduled":
+        if "source" in root or "policy" in root:
+            raise RoutineSchemaError(f"{label}: scheduled mode uses task, not source/policy")
+        task = _string(root, "task", label)
+        root["source"] = {"kind": "scheduled"}
+        root["policy"] = {
+            "routes": [{"tag": "route:self", "target": "self"}],
+            "default": "self", "task_template": task,
+        }
+    elif "task" in root:
+        raise RoutineSchemaError(f"{label}: source mode uses policy.task_template, not task")
     name = _string(root, "name", label)
+    from hyprial.pac.workflow_schema import name as validate_name, launch as validate_launch, WorkflowSchemaError
+    try:
+        validate_name(name, f"{label}.name")
+        launch = validate_launch(root.get("launch", {"tier": "fast"}), f"{label}.launch")
+    except WorkflowSchemaError as error:
+        raise RoutineSchemaError(str(error)) from error
+    actor = root.get("actor")
+    if actor is not None and (not isinstance(actor, str) or parse_agent_uri(actor) is None):
+        raise RoutineSchemaError(f"{label}.actor must be a full agent URI")
+    if actor is not None and ("produces" in root or "launch" in root):
+        raise RoutineSchemaError(f"{label}: borrowed actor cannot have produces/launch")
     produces = None
     if "produces" in root:
         produces = _string(root, "produces", label)
@@ -153,6 +185,8 @@ def load_routine_text(text: str, *, label: str = "routine") -> RoutineSpec:
         raise RoutineSchemaError(
             f"{label}.source.kind must be one of {_SOURCE_KINDS}, got {kind!r}"
         )
+    if (kind == "scheduled") != (mode == "scheduled"):
+        raise RoutineSchemaError(f"{label}: scheduled source is internal to mode=scheduled")
     if kind == "taskwarrior":
         source_filter = _string(source, "filter", f"{label}.source")
         if "idle_threshold" in source:
@@ -218,6 +252,9 @@ def load_routine_text(text: str, *, label: str = "routine") -> RoutineSpec:
     task_template = _string(policy, "task_template", f"{label}.policy")
     _check_vars(task_template, f"{label}.policy.task_template")
 
+    if root.get("version") == 2 and "{{nonce}}" in task_template:
+        raise RoutineSchemaError("nonce reply matching is retired; complete the PAC node explicitly")
+
     limits_raw = root.get("limits")
     limits = RoutineLimits()
     if limits_raw is not None:
@@ -253,6 +290,11 @@ def load_routine_text(text: str, *, label: str = "routine") -> RoutineSpec:
             breaker = CircuitBreaker(window, float(ratio), action)
         limits = RoutineLimits(max_in_flight, breaker)
 
+    if mode == "scheduled":
+        if limits_raw is not None and "max_in_flight" in limits_raw and limits.max_in_flight != 1:
+            raise RoutineSchemaError("scheduled routines are serial: max_in_flight must be 1")
+        limits = RoutineLimits(1, limits.circuit_breaker)
+
     timeout_raw = root.get("on_task_timeout")
     if timeout_raw is None:
         raise RoutineSchemaError(f"{label}.on_task_timeout is required (no silent default)")
@@ -281,7 +323,7 @@ def load_routine_text(text: str, *, label: str = "routine") -> RoutineSpec:
         task_template=task_template,
         limits=limits,
         escalate_to=escalate_to.strip(),
-        produces=produces,
+        produces=produces, role=role, mode=mode, actor=actor, launch=launch if actor is None else None,
     )
 
 

@@ -148,6 +148,21 @@ def _requests_and_counts(db: sqlite3.Connection, graph_id: str):
         {**value, "requests": sorted(value["requests"].values(), key=lambda r: (r["eventId"], r["edge"]))}
         for _, value in sorted(active.items())
     ]
+    # Managed workflows publish durable requests independently of flag events.
+    # Their current request/input binding, not a historical edge notification,
+    # is the activation that a source routine can observe and deduplicate.
+    from .workflow_graph import input_token_from_connection
+
+    managed = db.execute("SELECT w.*,n.owner,n.flag FROM workflow_nodes w JOIN nodes n USING(graph_id,node_id) WHERE w.graph_id=?", (graph_id,)).fetchall()
+    managed_ids = {row["node_id"] for row in managed}
+    assignments = [item for item in assignments if item["nodeId"] not in managed_ids]
+    for row in managed:
+        if row["state"] != "requested" or row["flag"] or row["input_token"] != input_token_from_connection(db, graph_id, row["node_id"]):
+            continue
+        requests = [item for item in notifications if item["eventId"] == row["request_id"] and item["kind"] == "turn"]
+        if requests:
+            assignments.append({"activationId": row["request_id"], "nodeId": row["node_id"],
+                                "owner": row["owner"], "round": requests[0]["round"], "requests": requests})
     return assignments, counts, sorted(notifications, key=lambda r: (r["eventId"], r["edge"]))
 
 
@@ -233,6 +248,7 @@ def snapshot(path: Path, graph_id: str) -> dict[str, Any]:
             # does not understand the format must resync, not silently fold
             # principals into an empty graph.
             "identityFormat": identity_format,
+            **({"assignmentFormat": "workflow-request-v2"} if db.execute("SELECT 1 FROM workflow_graphs WHERE graph_id=?", (graph_id,)).fetchone() else {}),
             "version": graph["version"], "structure": structure,
             "flags": {n["node_id"]: {
                 "flag": bool(n["flag"]), "setBy": n["flag_set_by"], "setAt": n["flag_set_at"],

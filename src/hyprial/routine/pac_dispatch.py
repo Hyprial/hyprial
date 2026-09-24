@@ -74,7 +74,7 @@ def task_message(
 
     return (
         f"{task_text}\n\n"
-        f"完成后执行:hyprial pac flag set {graph_id} {WORK_NODE} "
+        f"完成后执行:hyprial workflow complete {graph_id} {WORK_NODE} "
         f"--reason-ref {reason_ref}\n"
         f"截止:{deadline_ms} (epoch ms,固定截止,不顺延;到点未完成会上报给负责人)"
     )
@@ -90,6 +90,7 @@ class PacRoutineDispatch:
         deliver: RoutineTaskDelivery,
         clock_ms: Callable[[], int],
         resolve_principal: Callable[[str], str],
+        workflow: Any | None = None,
     ) -> None:
         self._state_dir = Path(state_dir)
         self._database = default_database_path(self._state_dir)
@@ -101,6 +102,7 @@ class PacRoutineDispatch:
         # unresolvable target fails the dispatch loudly instead of writing a
         # short name a later flag could never authorize against.
         self._resolve_principal = resolve_principal
+        self._workflow = workflow
 
     # -- dispatch --------------------------------------------------------
 
@@ -114,6 +116,7 @@ class PacRoutineDispatch:
         escalate_to: str,
         timeout_seconds: float,
         sender: str,
+        role: str = "dispatch",
     ) -> dict[str, object]:
         """Create (or re-find) this task's graph and deliver its text.
 
@@ -122,6 +125,57 @@ class PacRoutineDispatch:
         deadline reports -- the reverse order could deliver a task that no
         node records.
         """
+
+        if self._workflow is not None:
+            legacy = False
+            if self._database.exists():
+                probe = PacGraphStore(self._database, read_only=True)
+                try:
+                    key = operation_key(routine_name, task_uuid)
+                    legacy = probe.graph_by_operation_key(key) is not None
+                    existing = None if legacy else probe.graph_by_operation_key(f"workflow:{key}")
+                    if existing is not None:
+                        meta = probe._db.execute("SELECT routine_name,task_key FROM workflow_graphs WHERE graph_id=?", (existing["graph_id"],)).fetchone()
+                        if existing["created_by"] != sender or meta is None or (meta["routine_name"], meta["task_key"]) != (routine_name, task_uuid):
+                            raise PacError(PAC_OPERATION_KEY_CONFLICT, "source task key belongs to another publication")
+                        # The source UUID, not a changing idle-age description,
+                        # identifies accepted work. Retain its fixed deadline
+                        # and result without readmission or another delivery.
+                        result = self._workflow.status(run_id=existing["graph_id"])
+                        return {"graphId": existing["graph_id"], "state": self._workflow_state(str(result["state"]))}
+                finally:
+                    probe.close()
+            if not legacy:
+                import yaml
+
+                target = self._resolve_principal(target)
+                escalation = self._resolve_principal(escalate_to)
+                document = {
+                    "version": 2,
+                    "name": f"routine-{routine_name}",
+                    "on_failure": "terminate",
+                    "escalate_to": escalation,
+                    "nodes": [
+                        {
+                            "id": WORK_NODE,
+                            "owner": target,
+                            "role": role,
+                            "task": task_text,
+                            "timeout": timeout_seconds,
+                        }
+                    ],
+                }
+                result = self._workflow.start(
+                    yaml_text=yaml.safe_dump(document, allow_unicode=True),
+                    sender=sender,
+                    operation_key=operation_key(routine_name, task_uuid),
+                    routine_name=routine_name,
+                    task_key=task_uuid,
+                )
+                return {
+                    "graphId": result["graphId"],
+                    "state": self._workflow_state(str(result["state"])),
+                }
 
         key = operation_key(routine_name, task_uuid)
         target = self._resolve_principal(target)
@@ -256,6 +310,13 @@ class PacRoutineDispatch:
         a routine-level failure, never a silent ``running``.
         """
 
+        if self._is_workflow(graph_id):
+            result = self._workflow.status(run_id=graph_id)
+            return {
+                "graphId": graph_id,
+                "state": self._workflow_state(str(result["state"])),
+            }
+
         store = PacGraphStore(self._database)
         try:
             graph = store.graph(graph_id)
@@ -276,9 +337,37 @@ class PacRoutineDispatch:
     def close(self, *, graph_id: str, actor: str) -> None:
         """Close a settled graph as its creator; flags are never changed."""
 
+        if self._is_workflow(graph_id):
+            self._workflow.cancel(run_id=graph_id, actor=actor)
+            return
+
         store = PacGraphStore(self._database)
         try:
             close_graph(store, graph_id, actor=actor)
+        finally:
+            store.close()
+
+    @staticmethod
+    def _workflow_state(state: str) -> str:
+        return (
+            STATE_DONE
+            if state == "completed"
+            else STATE_ESCALATED
+            if state in {"failed", "cancelled"}
+            else STATE_RUNNING
+        )
+
+    def _is_workflow(self, graph_id: str) -> bool:
+        if self._workflow is None or not self._database.exists():
+            return False
+        store = PacGraphStore(self._database, read_only=True)
+        try:
+            return (
+                store._db.execute(
+                    "SELECT 1 FROM workflow_graphs WHERE graph_id=?", (graph_id,)
+                ).fetchone()
+                is not None
+            )
         finally:
             store.close()
 
@@ -331,4 +420,3 @@ __all__ = [
     "operation_key",
     "task_message",
 ]
-

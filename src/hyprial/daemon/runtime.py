@@ -262,6 +262,7 @@ class DaemonEventBridge:
         logger: Callable[..., None] | None = None,
         clock_ms: Callable[[], int] | None = None,
         usage_limit_observer: Callable[[str], None] | None = None,
+        workflow_outcome: Callable[[HarnessResult], bool] | None = None,
         forwarder: Forwarder | None = None,
     ) -> None:
         self.state_dir = Path(state_dir)
@@ -280,6 +281,8 @@ class DaemonEventBridge:
         # observes: settlement below is unchanged (Allen 09-17: exhausted
         # agents keep today's handling).
         self._usage_limit_observer = usage_limit_observer
+        self._workflow_outcome = workflow_outcome
+        self._pending_workflow_results: dict[str, HarnessResult] = {}
         self._clock_ms = clock_ms or (lambda: time.time_ns() // 1_000_000)
         # One mapping from a supervisor-local short name to the network
         # identity.  Registration and the delivery pump must share it: keys
@@ -729,7 +732,31 @@ class DaemonEventBridge:
             )
             if self._settle_failed_result(failed, original):
                 settled += 1
-        for result in self.harnesses.drain_results():
+        results = [*self._pending_workflow_results.values(), *self.harnesses.drain_results()]
+        for result in results:
+            if self._workflow_outcome is not None:
+                try:
+                    handled = self._workflow_outcome(result)
+                    if handled:
+                        self.inbox.ack(result.recipient, result.delivery_id)
+                        self._finish_attempt(result.delivery_id)
+                        self._pending_workflow_results.pop(result.delivery_id, None)
+                        settled += 1
+                        continue
+                    self._pending_workflow_results.pop(result.delivery_id, None)
+                except (NameError, ImportError):
+                    raise
+                except Exception as error:
+                    self._pending_workflow_results[result.delivery_id] = result
+                    if self._logger:
+                        self._logger("warn", "pac", "workflow.outcome_deferred", messageId=result.delivery_id, detail=str(error))
+                    continue
+            from hyprial.pac.delivery_guard import WITHDRAWN, delivery_current
+            if result.failure_code == WITHDRAWN and not delivery_current(self.state_dir, result.delivery_id, now_ms=self._clock_ms()):
+                self.inbox.ack(result.recipient, result.delivery_id)
+                self._finish_attempt(result.delivery_id)
+                settled += 1
+                continue
             if result.status is HarnessResultStatus.INTERRUPTED:
                 continue
             original = next(

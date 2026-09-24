@@ -18,7 +18,7 @@ from .errors import PAC_MIGRATION_SOURCE_UNREADABLE, PacError
 from .journal import JOURNAL_SCHEMA, append_event
 from .principal import principal_kind
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 12
 
 
 def _create_v1(db: sqlite3.Connection, schema: str) -> None:
@@ -517,9 +517,88 @@ def unrewritten_owners_note(db: sqlite3.Connection, graph_id: str) -> str | None
     return (
         "this graph still carries pre-URI short-name owners the schema-8 "
         "migration could not rewrite (unresolvable or ambiguous); "
-        "`hyprial pac migration status` lists them -- re-create the "
+        "`hyprial workflow migration status` lists them -- re-create the "
         "affected nodes with full principal URIs"
     )
+
+
+def _upgrade_v9_to_v10(db: sqlite3.Connection) -> None:
+    """Add graph workflow projections without moving legacy workflow runs."""
+    db.execute(JOURNAL_SCHEMA.replace("CREATE TABLE journal", "CREATE TABLE journal_next", 1))
+    db.execute("INSERT INTO journal_next SELECT * FROM journal")
+    db.execute("DROP TABLE journal")
+    db.execute("ALTER TABLE journal_next RENAME TO journal")
+    db.execute("CREATE INDEX journal_graph_order ON journal(graph_id, seq)")
+    db.execute("CREATE TRIGGER journal_no_update BEFORE UPDATE ON journal BEGIN SELECT RAISE(ABORT, 'PAC journal is append-only'); END")
+    db.execute("CREATE TRIGGER journal_no_delete BEFORE DELETE ON journal BEGIN SELECT RAISE(ABORT, 'PAC journal is append-only'); END")
+    db.execute("""
+        CREATE TABLE workflow_graphs (
+            graph_id TEXT PRIMARY KEY REFERENCES graphs(graph_id),
+            specification_ref TEXT NOT NULL,
+            specification_digest TEXT NOT NULL,
+            on_failure TEXT NOT NULL CHECK(on_failure IN ('terminate','continue','hold')),
+            state TEXT NOT NULL CHECK(state IN ('running','held','completed','failed','cancelled')),
+            reason_ref TEXT,
+            routine_name TEXT,
+            task_key TEXT
+        )
+    """)
+    db.execute("""
+        CREATE TABLE workflow_nodes (
+            graph_id TEXT NOT NULL,
+            node_id TEXT NOT NULL,
+            actor_node TEXT,
+            state TEXT NOT NULL DEFAULT 'pending'
+                CHECK(state IN ('pending','requested','done','failed','blocked','cancelled')),
+            request_id TEXT,
+            input_token TEXT,
+            generation INTEGER NOT NULL DEFAULT 0,
+            deadline_ms INTEGER NOT NULL,
+            reason_ref TEXT,
+            PRIMARY KEY(graph_id,node_id),
+            FOREIGN KEY(graph_id,node_id) REFERENCES nodes(graph_id,node_id)
+        )
+    """)
+    db.execute("CREATE INDEX workflow_nodes_request ON workflow_nodes(request_id)")
+
+
+def _upgrade_v10_to_v11(db: sqlite3.Connection) -> None:
+    """Bind queued message identities before handing them to the inbox."""
+    from hyprial.dispatch.identity import dispatch_message_id
+
+    db.execute("""
+        CREATE TABLE workflow_deliveries (
+            message_id TEXT PRIMARY KEY,
+            graph_id TEXT NOT NULL REFERENCES graphs(graph_id),
+            node_id TEXT NOT NULL,
+            request_id TEXT NOT NULL
+        )
+    """)
+    db.execute("CREATE INDEX notifications_graph_pending ON notifications(json_extract(plan_json,'$.graphId'),message_id)")
+    for row in db.execute("SELECT event_id,edge,plan_json FROM notifications WHERE event_id LIKE 'workflow-request:%'"):
+        plan = json.loads(row["plan_json"])
+        message_id = dispatch_message_id(f"pac:pac-notify:{row['event_id']}:{row['edge']}")
+        db.execute("INSERT INTO workflow_deliveries VALUES (?,?,?,?)",
+                   (message_id, plan["graphId"], plan["nodeId"], row["event_id"]))
+
+
+def _upgrade_v11_to_v12(db: sqlite3.Connection) -> None:
+    db.execute("CREATE TABLE remote_workflow_key (singleton INTEGER PRIMARY KEY CHECK(singleton=1), secret BLOB NOT NULL)")
+    db.execute("""CREATE TABLE remote_workflow_requests (
+        request_id TEXT PRIMARY KEY, graph_id TEXT NOT NULL, node_id TEXT NOT NULL,
+        owner TEXT NOT NULL, origin TEXT NOT NULL, message_id TEXT UNIQUE NOT NULL,
+        deadline_ms INTEGER NOT NULL, grant_json TEXT NOT NULL
+    )""")
+    db.execute("""CREATE TABLE remote_workflow_outbox (
+        request_id TEXT PRIMARY KEY REFERENCES remote_workflow_requests(request_id),
+        action TEXT NOT NULL, reason_ref TEXT NOT NULL, result_json TEXT,
+        attempted_at INTEGER NOT NULL DEFAULT 0
+    )""")
+    db.execute("CREATE INDEX remote_workflow_graph ON remote_workflow_requests(graph_id,node_id)")
+    db.execute("""CREATE TABLE workflow_outcome_receipts (
+        request_id TEXT PRIMARY KEY, actor TEXT NOT NULL, action TEXT NOT NULL,
+        reason_ref TEXT, result_json TEXT NOT NULL
+    )""")
 
 
 def migrate(db: sqlite3.Connection, legacy_schema: str, state_dir: Path | None = None) -> None:
@@ -564,6 +643,18 @@ def migrate(db: sqlite3.Connection, legacy_schema: str, state_dir: Path | None =
         if version == 8:
             _upgrade_v8_to_v9(db)
             db.execute("PRAGMA user_version = 9")
+            version = 9
+        if version == 9:
+            _upgrade_v9_to_v10(db)
+            db.execute("PRAGMA user_version = 10")
+            version = 10
+        if version == 10:
+            _upgrade_v10_to_v11(db)
+            db.execute("PRAGMA user_version = 11")
+            version = 11
+        if version == 11:
+            _upgrade_v11_to_v12(db)
+            db.execute("PRAGMA user_version = 12")
         db.commit()
     except BaseException:
         db.rollback()

@@ -117,6 +117,17 @@ class DaemonPacNotificationSender:
         )
         return str(delivered.message_id)
 
+    def send_workflow_request(self, request, *, text, idempotency_key):
+        remote = self.application._remote_workflow
+        if remote is None:
+            # Startup recovery must not lose the remote request binding.
+            from hyprial.uri import parse_agent_uri
+            principal = parse_agent_uri(request["owner"])
+            if principal and principal[:2] != (self.application.owner, self.application.node_id):
+                raise RuntimeError("remote workflow service is not running")
+            return None
+        return remote.send(request, text=text, idempotency_key=idempotency_key)
+
 
 class PacActorService:
     """Resident PAC maintenance with independent clock and actor queues.
@@ -177,7 +188,7 @@ class PacActorService:
         this the daemon reaches ``serving`` with PAC permanently inert -- and
         silently, because "no database" and "nothing to do" take the same
         branch.  Nothing else on the startup path opens it: every other
-        creation site is either the ``hyprial pac`` CLI or a test that builds its
+        creation site is either the ``workflow commands` CLI or a test that builds its
         own store, which is why 3900+ green tests never asked who provisions
         it in production.
 

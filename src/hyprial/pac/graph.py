@@ -1,7 +1,7 @@
 """Editing the PAC graph file: CAS-versioned structure edits + validation.
 
 Concept §1/§2 and the slice-1 spec ①: humans and agents edit the graph
-through ``hyprial pac graph create/add-node/add-edge``; every structural edit
+through ``hyprial workflow plan/run``; every structural edit
 bumps ``graphs.version`` under compare-and-swap (the caller must present
 ``--expect-version <n>``, a mismatch is ``PAC_GRAPH_VERSION_CONFLICT`` and
 nothing is written).
@@ -569,6 +569,10 @@ def close_graph(store: PacGraphStore, graph_id: str, *, actor: str) -> dict[str,
             db.execute("UPDATE graphs SET closed_at=?, closed_by=? WHERE graph_id=?", (at, actor, graph_id))
             append_event(db, graph_id=graph_id, version=graph["version"], type="graph_closed",
                          at=at, data={"at": at, "by": actor})
+            db.execute("UPDATE workflow_graphs SET state='cancelled',reason_ref='pac:graph-closed' "
+                       "WHERE graph_id=? AND state NOT IN ('completed','failed','cancelled')", (graph_id,))
+            db.execute("UPDATE workflow_nodes SET state='cancelled',reason_ref='pac:graph-closed' "
+                       "WHERE graph_id=? AND state IN ('pending','requested')", (graph_id,))
     return show_graph(store, graph_id)
 
 

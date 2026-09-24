@@ -11,8 +11,8 @@ Three layers, each owned by exactly one module here:
 - **监控** (project): :mod:`hyprial.pac.projection` — read-only subscribers
   that restate the flow from ``flag_events``.
 
-PAC v1 (:mod:`hyprial.workflow`) is untouched and keeps running; this package
-never opens ``workflows.sqlite3``.
+The workflow CLI compiles into this graph engine. Legacy workflow execution
+is retired; its database is a sealed archive/write barrier, not an executor.
 """
 
 from __future__ import annotations

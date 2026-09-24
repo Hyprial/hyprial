@@ -19,7 +19,7 @@ EVENT_TYPES = (
     "flag_set", "flag_reset", "notification_planned", "delivery_changed",
     "structure_changed", "graph_activated", "graph_closed", "launch_failed",
     "actor_up", "actor_down", "actor_restored", "actor_lost", "actor_unowned",
-    "migration_baseline",
+    "migration_baseline", "workflow_changed",
 )
 
 JOURNAL_SCHEMA = f"""

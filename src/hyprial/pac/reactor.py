@@ -28,7 +28,7 @@ Delivery (the actual ``hyprial send``) is a port: :class:`NotificationSender`
 is implemented by the CLI (daemon ``message.send``) and by a stub in
 tests.  PAC records the notification row — including its exact text and
 sending identity — before delivering; a delivery failure leaves the row
-undelivered, and ``hyprial pac notify resend`` retries exactly those rows
+undelivered, and ``hyprial workflow notify resend`` retries exactly those rows
 byte-for-byte.
 """
 
@@ -242,6 +242,16 @@ class PacReactor:
     def _plan_set(
         self, graph_id: str, node_id: str, event_id: str, actor: str
     ) -> list[PlannedNotification]:
+        from .workflow_graph import managed_graph
+
+        if managed_graph(self._store, graph_id):
+            # Forward joins have one workflow request. Back edges remain
+            # explicit owner notifications; rework never resets another
+            # owner's completion flag implicitly.
+            nodes = {node.node_id: node for node in self._store.nodes(graph_id)}
+            return [self._turn(event_id, source, nodes[target],
+                               self._store.set_event_count(graph_id, target) + 1, actor)
+                    for source, target in self._out_edges(graph_id, node_id, BACK)]
         planned: list[PlannedNotification] = []
         nodes = {node.node_id: node for node in self._store.nodes(graph_id)}
 
@@ -423,10 +433,12 @@ class PacReactor:
         *,
         actor: str,
         reason_ref: str | None = None,
+        expected_request: str | None = None,
     ) -> FlagEventOutcome:
         """Owner sets their node's flag; returns what the event caused."""
 
-        return self._flag(graph_id, node_id, action="set", actor=actor, reason_ref=reason_ref)
+        return self._flag(graph_id, node_id, action="set", actor=actor, reason_ref=reason_ref,
+                          expected_request=expected_request)
 
     def reset_flag(
         self,
@@ -435,11 +447,13 @@ class PacReactor:
         *,
         actor: str,
         reason_ref: str | None = None,
+        expected_request: str | None = None,
     ) -> FlagEventOutcome:
         """Owner un-sets their node's flag (「不通过/撤回」); downstream is
         notified 「已撤回」 but no downstream flag is flipped."""
 
-        return self._flag(graph_id, node_id, action="reset", actor=actor, reason_ref=reason_ref)
+        return self._flag(graph_id, node_id, action="reset", actor=actor, reason_ref=reason_ref,
+                          expected_request=expected_request)
 
     def _flag(
         self,
@@ -449,6 +463,7 @@ class PacReactor:
         action: str,
         actor: str,
         reason_ref: str | None,
+        expected_request: str | None = None,
     ) -> FlagEventOutcome:
         db = self._store.write()
         try:
@@ -468,7 +483,7 @@ class PacReactor:
                 raise PacError(
                     PAC_FLAG_NOT_OWNER,
                     "an actor flag is the reactor's launch outcome, never owner intent; "
-                    "use `hyprial pac actor stop` for an early stop",
+                    "use `hyprial workflow worker stop` for an early stop",
                     {"nodeId": node_id, "owner": node.owner, "actor": actor},
                 )
             if actor != node.owner:
@@ -480,6 +495,14 @@ class PacReactor:
                     + (f"; {note}" if note else ""),
                     {"nodeId": node_id, "owner": node.owner, "actor": actor},
                 )
+            if action == "reset" and expected_request is not None:
+                binding = db.execute("SELECT request_id FROM workflow_nodes WHERE graph_id=? AND node_id=?", (graph_id, node_id)).fetchone()
+                if binding is None or binding[0] != expected_request:
+                    raise PacError("WORKFLOW_REQUEST_STALE", "reset belongs to a superseded request")
+            if action == "set":
+                from .workflow_graph import validate_completion
+
+                validate_completion(self._store, graph_id, node_id, expected_request, at=int(self._clock()))
             if action == "set" and node.flag:
                 raise PacError(
                     PAC_FLAG_ALREADY_SET,
@@ -533,6 +556,15 @@ class PacReactor:
                         at=at,
                         data={"at": at, "by": node_id},
                     )
+            # The workflow cache is a projection of this exact flag write,
+            # not a later reply or a second completion authority.
+            db.execute("UPDATE workflow_nodes SET state=?,reason_ref=? WHERE graph_id=? AND node_id=?",
+                       ("done" if action == "set" else "pending", reason_ref, graph_id, node_id))
+            if action == "reset":
+                db.execute("UPDATE workflow_nodes SET request_id=NULL,input_token=NULL WHERE graph_id=? AND node_id=?", (graph_id, node_id))
+            if action == "set" and node.kind == "end":
+                db.execute("UPDATE workflow_graphs SET state=CASE WHEN EXISTS (SELECT 1 FROM workflow_nodes WHERE graph_id=? AND state='failed') THEN 'failed' ELSE 'completed' END,reason_ref=? WHERE graph_id=?", (graph_id, reason_ref, graph_id))
+                db.execute("UPDATE workflow_nodes SET state='cancelled',reason_ref='pac:end-flag' WHERE graph_id=? AND state IN ('pending','requested')", (graph_id,))
             planned = (
                 self._plan_set(graph_id, node_id, event_id, actor)
                 if action == "set"
@@ -541,6 +573,13 @@ class PacReactor:
             inserted = self._insert_notifications(
                 planned, at, db=db, graph_id=graph_id, version=graph["version"],
             )
+            if expected_request is not None:
+                db.execute("INSERT INTO workflow_outcome_receipts VALUES (?,?,?,?,?)",
+                           (("reset:" if action == "reset" else "") + expected_request,
+                            actor, "complete" if action == "set" else "reset", reason_ref,
+                            json.dumps({"ok": True, "eventId": event_id, "requestId": expected_request,
+                                "event": {"eventId": event_id, "graphId": graph_id, "nodeId": node_id,
+                                          "action": action, "actor": actor, "at": at, "version": graph["version"]}})))
             db.commit()
         except BaseException:
             db.rollback()
@@ -604,6 +643,11 @@ class PacReactor:
     def _plan_clocks(
         self, graph_id: str, graph: dict[str, Any], now: int,
     ) -> list[PlannedNotification]:
+        from .workflow_graph import managed_graph
+        if managed_graph(self._store, graph_id):
+            # Graph workflow cadence applies the deadline and failure policy
+            # together. A second clock sender would duplicate the same alert.
+            return []
         planned: list[PlannedNotification] = []
         nodes = {node.node_id: node for node in self._store.nodes(graph_id)}
         for node in self._store.nodes(graph_id):
