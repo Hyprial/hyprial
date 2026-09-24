@@ -48,13 +48,16 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import TYPE_CHECKING, Any, Callable, Protocol
 
 from ..dispatch.matrix import TIERS
 from ..log import redact
 from ..squire.profile import RuntimeCapability, UserProfileStore
 from .classification import ProviderFailureClass, classify_provider_failure
 from .helper import DeviceCodeAnnouncement, HelperOutcome
+
+if TYPE_CHECKING:
+    from hyprial.agents.runtime import AgentRuntimeContext
 
 #: New reason constants beside ``squire.probe``'s REASON_* set.  ``unavailable``
 #: requires a reason (profile.py), and the restore scan keys on these two.
@@ -93,13 +96,25 @@ class HelperRunner(Protocol):
     ) -> HelperOutcome: ...
 
 
+class RuntimeHelperFactory(Protocol):
+    def __call__(self, context: "AgentRuntimeContext") -> HelperRunner: ...
+
+
+class RuntimeContextValidator(Protocol):
+    def __call__(self, context: "AgentRuntimeContext") -> bool: ...
+
+
 @dataclass
 class _Episode:
     """One provider's broken stretch.  ``round`` counts issued codes."""
 
     provider: str
+    key: str
     episode_id: str
     kind: ProviderFailureClass
+    auth_path: Path
+    runner: HelperRunner
+    mark_capabilities: bool = True
     workers: set[str] = field(default_factory=set)
     round: int = 0
     inflight: bool = False
@@ -132,6 +147,8 @@ class ProviderAuthCoordinator:
         stop: threading.Event,
         clock: Callable[[], float] = time.time,
         logger: Callable[..., None] | None = None,
+        runtime_helper_factory: RuntimeHelperFactory | None = None,
+        runtime_context_validator: RuntimeContextValidator | None = None,
     ) -> None:
         self._store = profile_store
         self._owner_key = owner_key
@@ -142,6 +159,8 @@ class ProviderAuthCoordinator:
         self._stop = stop
         self._clock = clock
         self._log = logger or (lambda *a, **k: None)
+        self._runtime_helper_factory = runtime_helper_factory
+        self._runtime_context_validator = runtime_context_validator
         self._lock = threading.RLock()
         self._episodes: dict[str, _Episode] = {}
 
@@ -155,6 +174,7 @@ class ProviderAuthCoordinator:
         provider: str | None,
         model: str | None,
         worker: str,
+        runtime_context: "AgentRuntimeContext | None" = None,
     ) -> None:
         """One worker turn failure.  Called from the streaming pump thread."""
 
@@ -165,6 +185,7 @@ class ProviderAuthCoordinator:
                 model=model,
                 worker=worker,
                 failure=failure,
+                runtime_context=runtime_context,
             )
         except Exception as error:  # noqa: BLE001 -- never-raises contract
             self._log(
@@ -197,7 +218,12 @@ class ProviderAuthCoordinator:
                         episode = None  # exhausted record; restore restarts fresh
                     if episode is None:
                         episode = self._new_episode(
-                            provider, ProviderFailureClass.RELOGINABLE
+                            provider,
+                            ProviderFailureClass.RELOGINABLE,
+                            key=provider,
+                            auth_path=self._auth_path,
+                            runner=self._runner,
+                            mark_capabilities=True,
                         )
                     # Mark + claim the round under the SAME lock that created
                     # the episode.  The old gap between "episode created" and
@@ -229,27 +255,93 @@ class ProviderAuthCoordinator:
         model: str | None,
         worker: str,
         failure: str,
+        runtime_context: "AgentRuntimeContext | None",
     ) -> None:
         kind = classify_provider_failure(failure, provider=provider)
         if kind is ProviderFailureClass.OTHER:
             return
+        route_key = None
+        auth_path = self._auth_path
+        runner = self._runner
+        mark_capabilities = True
+        if runtime_context is not None:
+            if (
+                self._runtime_context_validator is None
+                or not self._runtime_context_validator(runtime_context)
+            ):
+                self._log(
+                    "provider.auth.runtime-context.rejected",
+                    worker=worker,
+                    provider=provider,
+                )
+                return
+            if self._runtime_helper_factory is None:
+                self._log(
+                    "provider.auth.runtime-context.unsupported",
+                    worker=worker,
+                    provider=provider,
+                )
+                return
+            route_key = (
+                f"{runtime_context.actor}:{runtime_context.entity_token}"
+            )
+            auth_path = runtime_context.roots.native_root / "auth.json"
+            runner = self._runtime_helper_factory(runtime_context)
+            # RuntimeCapability is owner/provider/model scoped and cannot
+            # represent two agent-owned auth roots.  P2 routes stay visible
+            # in route-keyed episodes/logs without writing a misleading
+            # owner-global mark; P24 may add a durable per-agent status type.
+            mark_capabilities = False
         if kind is ProviderFailureClass.ACCOUNT:
             self._handle_account_failure(
                 harness=harness, provider=provider, model=model,
                 worker=worker, failure=failure,
+                episode_key=(
+                    f"{route_key}:{harness}:{provider}:{model}"
+                    if route_key is not None
+                    else f"{harness}:{provider}:{model}"
+                ),
+                mark_capabilities=mark_capabilities,
+            )
+            return
+        if harness != "pi":
+            # DeviceLoginRunner is intentionally Pi-native: sending a Codex
+            # or Claude failure to it would refresh the daemon's one Pi
+            # auth.json and then falsely report another harness recovered.
+            # Provider-specific helpers need an agent/incarnation-bound auth
+            # context before they can be enabled.  Until then, fail loudly at
+            # the exact combination and tell the owner which native login must
+            # be repaired; never fall back to the host or another harness.
+            assert provider is not None  # implied by RELOGINABLE
+            self._handle_unsupported_relogin(
+                harness=harness,
+                provider=provider,
+                model=model,
+                worker=worker,
+                episode_key=(
+                    f"unsupported:{route_key}:{harness}:{provider}:{model}"
+                    if route_key is not None
+                    else f"unsupported:{harness}:{provider}:{model}"
+                ),
+                auth_path=auth_path,
+                runner=runner,
+                mark_capabilities=mark_capabilities,
             )
             return
         # A class: the mark is per-provider (the credential is), so every
         # TIERS combo on this (harness, provider) is marked, not just the
         # model that happened to fail first.
         assert provider is not None  # implied by RELOGINABLE
-        if self._credential_live(provider):
+        episode_key = (
+            f"{route_key}:{provider}" if route_key is not None else provider
+        )
+        if self._credential_live(provider, auth_path=auth_path):
             # Someone relogged by hand while we were marked.  Reconcile first:
             # no flow, just recovery.
-            self._recover(provider)
+            self._recover(episode_key)
             return
         with self._lock:
-            episode = self._episodes.get(provider)
+            episode = self._episodes.get(episode_key)
             if episode is not None and episode.kind is not ProviderFailureClass.RELOGINABLE:
                 episode = None
             elif episode is not None and (
@@ -275,7 +367,14 @@ class ProviderAuthCoordinator:
                     return
                 episode = None
             if episode is None:
-                episode = self._new_episode(provider, ProviderFailureClass.RELOGINABLE)
+                episode = self._new_episode(
+                    provider,
+                    ProviderFailureClass.RELOGINABLE,
+                    key=episode_key,
+                    auth_path=auth_path,
+                    runner=runner,
+                    mark_capabilities=mark_capabilities,
+                )
             episode.workers.add(worker)
             if not episode.sample:
                 # The cause rides in the alert (追加 2), but only after the
@@ -288,10 +387,60 @@ class ProviderAuthCoordinator:
                 )
             if episode.inflight:
                 return
-            self._mark_unavailable(provider, REASON_PROVIDER_AUTH_INVALID)
+            if episode.mark_capabilities:
+                self._mark_unavailable(provider, REASON_PROVIDER_AUTH_INVALID)
             episode.inflight = True
             episode.round += 1
         self._spawn_round(episode)
+
+    def _handle_unsupported_relogin(
+        self,
+        *,
+        harness: str,
+        provider: str,
+        model: str | None,
+        worker: str,
+        episode_key: str,
+        auth_path: Path,
+        runner: HelperRunner,
+        mark_capabilities: bool,
+    ) -> None:
+        with self._lock:
+            episode = self._episodes.get(episode_key)
+            if episode is not None:
+                episode.workers.add(worker)
+                return
+            episode = self._new_episode(
+                provider,
+                ProviderFailureClass.RELOGINABLE,
+                key=episode_key,
+                auth_path=auth_path,
+                runner=runner,
+                mark_capabilities=mark_capabilities,
+            )
+            episode.workers.add(worker)
+            if model is not None and mark_capabilities:
+                self._mark_combo_unavailable(
+                    harness, provider, model, REASON_PROVIDER_AUTH_INVALID
+                )
+        self._notify(
+            "⚠️ provider 登录已失效，自动重新登录不支持该 harness\n"
+            f"主机: {self._host}\n"
+            f"组合: {harness} / {provider} / {model or '-'}\n"
+            f"worker: {worker}\n"
+            "未启动 Pi 登录 helper，也未读取宿主凭据。请在该 agent 的 "
+            f"{harness} 原生凭据根完成获授权登录后重试。",
+            idempotency_key=f"provider-auth:unsupported:{episode.episode_id}",
+        )
+        self._log(
+            "provider.auth.relogin.failed",
+            harness=harness,
+            provider=provider,
+            model=model,
+            worker=worker,
+            reason="unsupported-harness-helper",
+            episodeId=episode.episode_id,
+        )
 
     def _handle_account_failure(
         self,
@@ -301,16 +450,18 @@ class ProviderAuthCoordinator:
         model: str | None,
         worker: str,
         failure: str,
+        episode_key: str,
+        mark_capabilities: bool,
     ) -> None:
         # B class: entitlement/permission.  A relogin cannot fix it, and the
         # boundary may be per-model (one model dropped from the account), so
         # the mark covers exactly the failing combo, and the alert names the
         # manual path.
-        key = f"{harness}:{provider}:{model}"
+        key = episode_key
         with self._lock:
             episode = self._episodes.get(key)
             if episode is not None:
-                if model is None or self._combo_account_marked(
+                if not mark_capabilities or model is None or self._combo_account_marked(
                     harness, provider, model
                 ):
                     # The account mark is still on record: same broken stretch,
@@ -321,13 +472,17 @@ class ProviderAuthCoordinator:
                 # -- this is a fresh failure, so re-alert and re-mark (S4).
                 self._episodes.pop(key, None)
             episode = _Episode(
-                provider=key,
+                provider=f"{harness}:{provider}:{model}",
+                key=key,
                 episode_id=uuid.uuid4().hex[:12],
                 kind=ProviderFailureClass.ACCOUNT,
+                auth_path=self._auth_path,
+                runner=self._runner,
+                mark_capabilities=mark_capabilities,
                 workers={worker},
             )
             self._episodes[key] = episode
-            if model is not None:
+            if model is not None and mark_capabilities:
                 self._mark_combo_unavailable(
                     harness, provider, model, REASON_PROVIDER_AUTH_ACCOUNT
                 )
@@ -336,14 +491,24 @@ class ProviderAuthCoordinator:
             if failure.strip()
             else "unknown"
         )
+        diagnostic_line = (
+            "该组合已标记为不可用(仅用于诊断:派发不会因此跳过)。"
+            if mark_capabilities
+            else "该 agent 的认证路由已记录失败;未写 owner-global 能力标记。"
+        )
+        recovery_instruction = (
+            "人工处理(账号侧)后运行 `hyprial squire probe` 重新探测即可恢复。"
+            if mark_capabilities
+            else "请修复该 agent 的账号授权后重试;不修改其他 agent 的状态。"
+        )
         self._notify(
             f"⚠️ provider 账号/权限类错误(重新登录无法解决)\n"
             f"主机: {self._host}\n"
             f"组合: {harness} / {provider or '-'} / {model or '-'}\n"
             f"worker: {worker}\n"
             f"错误: {summary}\n"
-            f"该组合已标记为不可用(仅用于诊断:派发不会因此跳过)。\n"
-            f"人工处理(账号侧)后运行 `hyprial squire probe` 重新探测即可恢复。",
+            f"{diagnostic_line}\n"
+            f"{recovery_instruction}",
             idempotency_key=f"provider-auth:account:{episode.episode_id}",
         )
         self._log(
@@ -356,11 +521,26 @@ class ProviderAuthCoordinator:
 
     # ----------------------------------------------------------- A-class flow
 
-    def _new_episode(self, provider: str, kind: ProviderFailureClass) -> _Episode:
+    def _new_episode(
+        self,
+        provider: str,
+        kind: ProviderFailureClass,
+        *,
+        key: str,
+        auth_path: Path,
+        runner: HelperRunner,
+        mark_capabilities: bool,
+    ) -> _Episode:
         episode = _Episode(
-            provider=provider, episode_id=uuid.uuid4().hex[:12], kind=kind
+            provider=provider,
+            key=key,
+            episode_id=uuid.uuid4().hex[:12],
+            kind=kind,
+            auth_path=auth_path,
+            runner=runner,
+            mark_capabilities=mark_capabilities,
         )
-        self._episodes[provider] = episode
+        self._episodes[key] = episode
         return episode
 
     def _spawn_round(self, episode: _Episode) -> None:
@@ -401,7 +581,7 @@ class ProviderAuthCoordinator:
             self._announce(episode, round_no, announcement)
 
         try:
-            outcome = self._runner(provider, on_device_code, stop=self._stop)
+            outcome = episode.runner(provider, on_device_code, stop=self._stop)
         except Exception as error:  # noqa: BLE001 -- never-raises contract;
             # a raising runner is a failed round, logged like any other.
             self._log(
@@ -416,7 +596,7 @@ class ProviderAuthCoordinator:
                 episode.inflight = False
             return
         if outcome is HelperOutcome.OK:
-            self._recover(provider)
+            self._recover(episode.key)
             return
         with self._lock:
             episode.inflight = False
@@ -444,14 +624,22 @@ class ProviderAuthCoordinator:
                     # failure cannot open a fresh episode mid-window.
                     episode.exhausted_at = self._clock()
             if not already:
+                diagnostic_line = (
+                    "该 provider 仍标记为不可用(仅用于诊断:派发不会因此跳过)。"
+                    if episode.mark_capabilities
+                    else "该 agent 的认证路由仍失败;未写 owner-global 能力标记。"
+                )
                 self._notify(
                     f"⚠️ provider 自动重登录失败\n"
                     f"主机: {self._host}\n"
                     f"provider: {provider}\n"
                     f"结果: {outcome}\n"
-                    f"该 provider 仍标记为不可用(仅用于诊断:派发不会因此跳过)。"
-                    f"手动兜底:在本机运行 `pi`,"
-                    f"执行 /login {provider}。",
+                    f"{diagnostic_line}\n"
+                    + (
+                        f"手动兜底:在本机运行 `pi`,执行 /login {provider}。"
+                        if episode.mark_capabilities
+                        else "请为该 agent 的 native root 重新授权后重试。"
+                    ),
                     idempotency_key=(
                         f"provider-auth:failed:{episode.episode_id}"
                     ),
@@ -470,7 +658,7 @@ class ProviderAuthCoordinator:
         announcement: DeviceCodeAnnouncement,
     ) -> None:
         with self._lock:
-            if self._episodes.get(episode.provider) is not episode:
+            if self._episodes.get(episode.key) is not episode:
                 # The episode closed while the helper was fetching this code
                 # (manual relogin reconciled, or recovery already ran): the
                 # code is useless, and announcing it after a recovery notice
@@ -483,6 +671,11 @@ class ProviderAuthCoordinator:
             expiry_line = f"有效期至约 {expiry}"
         else:
             expiry_line = "有效期未由服务端给出,请尽快完成"
+        diagnostic_line = (
+            "该标记仅用于诊断,派发不会因此跳过;授权完成后自动恢复并通知。"
+            if episode.mark_capabilities
+            else "该 agent 的认证路由独立处理;授权完成后自动恢复并通知。"
+        )
         self._notify(
             f"⚠️ provider 认证失效,需要本人重新登录\n"
             f"主机: {self._host}\n"
@@ -492,7 +685,7 @@ class ProviderAuthCoordinator:
             f"请打开 {announcement.verification_uri}\n"
             f"并输入 code: {announcement.user_code}({expiry_line};"
             f"本轮 {round_no}/{MAX_ROUNDS})\n"
-            f"该标记仅用于诊断,派发不会因此跳过;授权完成后自动恢复并通知。",
+            f"{diagnostic_line}",
             idempotency_key=(
                 f"provider-auth:code:{episode.episode_id}:r{round_no}"
             ),
@@ -517,7 +710,11 @@ class ProviderAuthCoordinator:
             f"已停止自动重发\n"
             f"主机: {self._host}\n"
             f"下次 daemon 重启、或该 provider 再次出现认证失败时,会重新发起。\n"
-            f"手动兜底:在本机运行 `pi`,执行 /login {episode.provider}。",
+            + (
+                f"手动兜底:在本机运行 `pi`,执行 /login {episode.provider}。"
+                if episode.mark_capabilities
+                else "请为该 agent 的 native root 重新授权后重试。"
+            ),
             idempotency_key=f"provider-auth:closing:{episode.episode_id}",
         )
         self._log(
@@ -646,7 +843,9 @@ class ProviderAuthCoordinator:
 
     # -------------------------------------------------------------- recovery
 
-    def _credential_live(self, provider: str) -> bool:
+    def _credential_live(
+        self, provider: str, *, auth_path: Path | None = None
+    ) -> bool:
         """auth.json structure check: oauth credential with time left.
 
         Reads field names and the expiry number only; token values are never
@@ -655,7 +854,7 @@ class ProviderAuthCoordinator:
         """
 
         try:
-            raw = json.loads(self._auth_path.read_text("utf-8"))
+            raw = json.loads((auth_path or self._auth_path).read_text("utf-8"))
         except (OSError, ValueError):
             return False
         record = raw.get(provider)
@@ -666,22 +865,33 @@ class ProviderAuthCoordinator:
             return False
         return expires / 1000 > self._clock() + _CREDENTIAL_LIVE_FLOOR_SECONDS
 
-    def _recover(self, provider: str) -> None:
+    def _recover(self, episode_key: str) -> None:
         with self._lock:
-            episode = self._episodes.pop(provider, None)
-        marked = provider in self._providers_marked(REASON_PROVIDER_AUTH_INVALID)
+            episode = self._episodes.pop(episode_key, None)
+        provider = episode.provider if episode is not None else episode_key
+        marked = (
+            provider in self._providers_marked(REASON_PROVIDER_AUTH_INVALID)
+            if episode is None or episode.mark_capabilities
+            else False
+        )
         if episode is None and not marked:
             # Nothing was broken on record: a stray success signal must not
             # announce a recovery nobody was waiting for (the reconcile path
             # and a late helper outcome can both arrive after recovery).
             return
-        self._clear_marks(provider)
+        if episode is None or episode.mark_capabilities:
+            self._clear_marks(provider)
         workers = sorted(episode.workers) if episode is not None else []
+        recovery_line = (
+            "该 provider 的诊断标记已清除(标记从不影响派发)。"
+            if episode is None or episode.mark_capabilities
+            else "该 agent 的认证路由已恢复;未改写 owner-global 能力标记。"
+        )
         self._notify(
             f"✅ provider {provider} 认证已恢复\n"
             f"主机: {self._host}\n"
             f"受影响 worker({len(workers)}): {', '.join(workers) or '(无)'}\n"
-            f"该 provider 的诊断标记已清除(标记从不影响派发)。",
+            f"{recovery_line}",
             idempotency_key=(
                 f"provider-auth:recovered:"
                 f"{episode.episode_id if episode is not None else 'external'}"

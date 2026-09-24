@@ -53,6 +53,11 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Self, TYPE_CHECKING
 
+from .config import (
+    AgentConfig,
+    normalize_agent_config,
+    validate_agent_config_location,
+)
 from .home import (
     AgentHomeError,
     AgentHomeProvisioner,
@@ -82,6 +87,7 @@ def _uri() -> Any:
 __all__ = [
     "ACTOR_NAME_PATTERN",
     "Agent",
+    "AgentConfig",
     "AgentError",
     "AgentExistsError",
     "AgentNotFoundError",
@@ -90,6 +96,7 @@ __all__ = [
     "PinConflictError",
     "default_registry",
     "local_actors",
+    "normalize_agent_config",
     "normalize_capabilities",
     "normalize_harness_args",
     "normalize_pinned_adapters",
@@ -255,6 +262,7 @@ class Agent:
 
     # -- configuration independent of any harness --
     cwd: str | None = None
+    config: AgentConfig | None = None
     #: Model-vendor preference, the same vocabulary as squire's
     #: ``RuntimeCapability(harness, provider, model)``.
     provider: str | None = None
@@ -290,6 +298,7 @@ class Agent:
         if self.hosted_by not in (None, "transfer-receive", "squire-container"):
             raise AgentError(f"invalid hosting authority: {self.hosted_by!r}")
         object.__setattr__(self, "capabilities", normalize_capabilities(self.capabilities))
+        object.__setattr__(self, "config", normalize_agent_config(self.config))
         object.__setattr__(
             self, "harness_args", normalize_harness_args(self.harness_args)
         )
@@ -310,6 +319,7 @@ class Agent:
             "machine": self.machine,
             "entityToken": self.entity_token,
             "cwd": self.cwd,
+            "config": None if self.config is None else self.config.to_json(),
             # Wire/on-disk key for the model vendor, mirroring squire.
             "provider": self.provider,
             "model": self.model,
@@ -353,6 +363,11 @@ class Agent:
                 or uuid.uuid4().hex
             ),
             cwd=_optional_string(value.get("cwd"), f"{label}.cwd"),
+            config=(
+                None
+                if value.get("config") is None
+                else AgentConfig.from_json(value.get("config"), f"{label}.config")
+            ),
             provider=_optional_string(value.get("provider"), f"{label}.provider"),
             model=_optional_string(value.get("model"), f"{label}.model"),
             capabilities=normalize_capabilities(raw_capabilities),
@@ -443,6 +458,7 @@ _AGENTS_TABLE_DDL = """CREATE TABLE IF NOT EXISTS __TABLE_NAME__ (
     uri TEXT NOT NULL UNIQUE,
     entity_token TEXT NOT NULL UNIQUE,
     cwd TEXT,
+    config TEXT,
     provider TEXT,
     model TEXT,
     capabilities TEXT NOT NULL DEFAULT '{}',
@@ -488,6 +504,7 @@ _AGENTS_TABLE_COLUMNS = (
     "uri",
     "entity_token",
     "cwd",
+    "config",
     "provider",
     "model",
     "capabilities",
@@ -625,6 +642,8 @@ def _connect(database: Path) -> sqlite3.Connection:
         }
         token_column = columns.get("entity_token")
         if token_column is not None and int(token_column["notnull"]):
+            if "config" not in columns:
+                connection.execute("ALTER TABLE agents ADD COLUMN config TEXT DEFAULT NULL")
             if "hosted_by" not in columns:
                 connection.execute(_HOSTED_BY_ALTER)
         else:
@@ -641,8 +660,13 @@ def _connect(database: Path) -> sqlite3.Connection:
             token_column = columns.get("entity_token")
             if token_column is None or not int(token_column["notnull"]):
                 _rebuild_agents_table(connection)
-            elif "hosted_by" not in columns:
-                connection.execute(_HOSTED_BY_ALTER)
+            else:
+                if "config" not in columns:
+                    connection.execute(
+                        "ALTER TABLE agents ADD COLUMN config TEXT DEFAULT NULL"
+                    )
+                if "hosted_by" not in columns:
+                    connection.execute(_HOSTED_BY_ALTER)
         connection.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS agents_actor_entity_token "
             "ON agents(actor, entity_token)"
@@ -1155,6 +1179,7 @@ class AgentRegistry:
                 owner=self.owner,
                 machine=self.machine,
                 cwd=payload.cwd,
+                config=payload.config,
                 provider=payload.provider,
                 model=payload.model,
                 capabilities=dict(payload.capabilities),
@@ -1267,6 +1292,7 @@ class AgentRegistry:
         actor: str,
         *,
         cwd: str | None = None,
+        config: object = None,
         provider: str | None = None,
         model: str | None = None,
         capabilities: Mapping[str, Any] | None = None,
@@ -1287,6 +1313,7 @@ class AgentRegistry:
             owner=self.owner,
             machine=self.machine,
             cwd=cwd,
+            config=normalize_agent_config(config),
             provider=provider,
             model=model,
             capabilities=normalize_capabilities(capabilities),
@@ -1341,6 +1368,7 @@ class AgentRegistry:
             )
 
     def _create_record(self, agent: Agent) -> Agent:
+        self._validate_config_location(agent)
         home_attempt: HomeProvisioningAttempt | None = None
         with self._lock:
             try:
@@ -1374,6 +1402,18 @@ class AgentRegistry:
                     self._compensate_home_fs(home_attempt, "create-failed")
                 raise
         return agent
+
+    def _validate_config_location(self, agent: Agent) -> None:
+        agent_home = (
+            None
+            if self._home is None
+            else self._home.agents_root / agent.actor
+        )
+        validate_agent_config_location(
+            agent.config,
+            agent_home=agent_home,
+            cwd=agent.cwd,
+        )
 
     def ensure_home(self, actor: str) -> HomeReceipt:
         """Provision or validate the current entity's home under registry lock."""
@@ -1554,6 +1594,7 @@ class AgentRegistry:
         DELETE+INSERT, which would fire the pin cascade).
         """
 
+        self._validate_config_location(agent)
         with self._lock, self._db:
             existing = self._db.execute(
                 "SELECT owner, machine, uri, hosted_by, entity_token "
@@ -1594,6 +1635,7 @@ class AgentRegistry:
                         "machine",
                         "uri",
                         "cwd",
+                        "config",
                         "provider",
                         "model",
                         "capabilities",
@@ -1612,10 +1654,10 @@ class AgentRegistry:
     @staticmethod
     def _insert_statement(agent: Agent) -> tuple[str, tuple[Any, ...]]:
         return (
-            "INSERT INTO agents (actor, owner, machine, uri, entity_token, cwd, provider, "
+            "INSERT INTO agents (actor, owner, machine, uri, entity_token, cwd, config, provider, "
             "model, capabilities, harness_args, preferred_harness, "
             "last_harness, last_session_id, created_at_ms, hosted_by) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 agent.actor,
                 agent.owner,
@@ -1623,6 +1665,9 @@ class AgentRegistry:
                 agent.uri,
                 agent.entity_token,
                 agent.cwd,
+                None
+                if agent.config is None
+                else json.dumps(agent.config.to_json(), sort_keys=True),
                 agent.provider,
                 agent.model,
                 json.dumps(dict(agent.capabilities), sort_keys=True),
@@ -2012,6 +2057,9 @@ class AgentRegistry:
             machine=row["machine"],
             entity_token=token,
             cwd=row["cwd"],
+            config=normalize_agent_config(
+                None if row["config"] is None else json.loads(row["config"])
+            ),
             provider=row["provider"],
             model=row["model"],
             capabilities=normalize_capabilities(json.loads(row["capabilities"])),

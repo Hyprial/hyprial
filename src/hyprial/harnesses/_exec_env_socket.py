@@ -41,16 +41,22 @@ def _child_signal_grace_seconds(environment: dict[str, str]) -> float:
 def main() -> int:
     if len(sys.argv) < 4 or "--" not in sys.argv[2:]:
         raise SystemExit(
-            "usage: _exec_env_socket <socket> [--cleanup-config <path>] "
+            "usage: _exec_env_socket <socket> [--complete-environment] "
+            "[--cleanup-config <path>] "
             "[--cleanup-recovery <path>] -- <command> [args...]"
         )
     path = Path(sys.argv[1])
     separator = sys.argv.index("--", 2)
     cleanup_config: Path | None = None
     cleanup_recovery: Path | None = None
+    complete_environment = False
     index = 2
     while index < separator:
         flag = sys.argv[index]
+        if flag == "--complete-environment":
+            complete_environment = True
+            index += 1
+            continue
         if index + 1 >= separator:
             raise SystemExit(f"missing value for {flag}")
         value = Path(sys.argv[index + 1])
@@ -85,7 +91,11 @@ def main() -> int:
     argv = sys.argv[separator + 1 :]
     from hyprial.agents.environment import whitelist_replacement_environment
 
-    environment = whitelist_replacement_environment(os.environ, value)
+    environment = (
+        dict(value)
+        if complete_environment
+        else whitelist_replacement_environment(os.environ, value)
+    )
     if cleanup_config is None:
         os.execvpe(argv[0], argv, environment)
         return 1

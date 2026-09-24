@@ -315,6 +315,7 @@ class _AgentGeneration:
             agent = self.registry.create(
                 name,
                 cwd=command.cwd,
+                config=command.config,
                 provider=command.provider,
                 model=command.model,
                 capabilities=dict(command.capabilities),
@@ -353,6 +354,7 @@ class _AgentGeneration:
                 machine=existing.machine,
                 entity_token=existing.entity_token,
                 cwd=command.cwd,
+                config=command.config,
                 provider=command.provider,
                 model=command.model,
                 capabilities=dict(command.capabilities),
@@ -754,6 +756,7 @@ def _agent_projection(agent: Agent, version: int) -> AgentProjection:
         machine=agent.machine,
         entity_token=agent.entity_token,
         cwd=agent.cwd,
+        config=None if agent.config is None else agent.config.to_json(),
         provider=agent.provider,
         model=agent.model,
         capabilities=tuple(sorted(agent.capabilities.items())),

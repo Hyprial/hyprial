@@ -12,6 +12,7 @@ class CreateAgentCommand:
     name: str
     reuse_existing: bool = False
     cwd: str | None = None
+    config: object = None
     provider: str | None = None
     model: str | None = None
     capabilities: tuple[tuple[str, object], ...] = ()
@@ -42,6 +43,7 @@ class UpdateAgentCommand:
     correlation_id: str
     name: str
     cwd: str | None = None
+    config: object = None
     provider: str | None = None
     model: str | None = None
     capabilities: tuple[tuple[str, object], ...] = ()
@@ -104,6 +106,7 @@ class AgentProjection:
     machine: str
     entity_token: str
     cwd: str | None = None
+    config: object = None
     provider: str | None = None
     model: str | None = None
     capabilities: tuple[tuple[str, object], ...] = ()
@@ -125,6 +128,7 @@ class AgentProjection:
             # bind to it, but it is not part of the public ``ps`` wire.  The
             # field survives on the projection for the composition round-trip.
             "cwd": self.cwd,
+            "config": self.config,
             "provider": self.provider,
             "model": self.model,
             "capabilities": dict(self.capabilities),

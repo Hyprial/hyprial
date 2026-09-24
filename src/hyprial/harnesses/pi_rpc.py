@@ -43,6 +43,11 @@ from .streaming import (
 from .worker_channel import WorkerChannel
 from hyprial.agents.environment import ChildEnvironmentLaunch
 from .model_provider import pi_model_args
+from .pi_loader import (
+    find_pi_package_root,
+    pi_sdk_launch_from_runtime_context,
+    resolve_approved_pi_project,
+)
 
 # Pi has no MCP support by design (its README defers MCP to extensions), so a
 # managed pi worker cannot receive the harness-bridge MCP server a Claude
@@ -306,29 +311,60 @@ class PiRpcClient:
         # (design §3.1).  It is kept verbatim; the spawn seam never merges
         # ``os.environ`` into it, and it is never blended with ``env``.
         self._complete_launch = complete_launch
-        launch = [
-            *command,
-            *pi_model_args(spec),
-            *without_pi_reserved_arguments(spec.args),
-        ]
-        if worker_channel is not None:
-            # Inject the worker's own harness identity: the extension carries
-            # the harness_* toolset, its env pins the worker's canonical actor
-            # and THIS daemon's socket (never an ambient production daemon).
-            # A containerized worker reads the extension INSIDE the image.
-            extension = (
-                CONTAINER_PI_EXTENSION
-                if spec.containerized
-                else str(PI_HARNESS_BRIDGE_EXTENSION)
-            )
-            launch += ["--extension", extension]
-        self.command = (
-            *launch,
-            "--mode",
-            "rpc",
-            "--session-id",
-            _pi_session_id(session_ref),
+        runtime_context = (
+            None if worker_channel is None else worker_channel.runtime_context
         )
+        complete_environment = (
+            None
+            if self._complete_launch is None
+            else self._complete_launch.environment.for_exec()
+        )
+        if runtime_context is not None:
+            if self._complete_launch is None or complete_environment is None:
+                raise ValueError("Pi P2 SDK bridge requires a complete environment")
+            if self._complete_launch.runtime_context is not runtime_context:
+                raise ValueError("Pi P2 channel and environment contexts differ")
+            if spec.containerized:
+                raise ValueError("Pi P2 SDK bridge is not supported in containers")
+            trust = resolve_approved_pi_project(
+                cwd=spec.cwd,
+                runtime_args=spec.args,
+            )
+            sdk_launch = pi_sdk_launch_from_runtime_context(
+                runtime_context,
+                trust=trust,
+                mode="rpc",
+                session_id=_pi_session_id(session_ref),
+                pi_package_root=find_pi_package_root(command, complete_environment),
+                model_provider=spec.model_provider,
+                model=spec.model,
+                additional_extension_paths=(PI_HARNESS_BRIDGE_EXTENSION,),
+            )
+            self.command = sdk_launch.argv
+        else:
+            launch = [
+                *command,
+                *pi_model_args(spec),
+                *without_pi_reserved_arguments(spec.args),
+            ]
+            if worker_channel is not None:
+                # Inject the worker's own harness identity: the extension carries
+                # the harness_* toolset, its env pins the worker's canonical actor
+                # and THIS daemon's socket (never an ambient production daemon).
+                # A containerized worker reads the extension INSIDE the image.
+                extension = (
+                    CONTAINER_PI_EXTENSION
+                    if spec.containerized
+                    else str(PI_HARNESS_BRIDGE_EXTENSION)
+                )
+                launch += ["--extension", extension]
+            self.command = (
+                *launch,
+                "--mode",
+                "rpc",
+                "--session-id",
+                _pi_session_id(session_ref),
+            )
         channel_env = (
             worker_channel.pi_environment() if worker_channel is not None else {}
         )
@@ -344,7 +380,8 @@ class PiRpcClient:
                     "complete child environment cannot be combined with a "
                     "partial env mapping"
                 )
-            complete = self._complete_launch.environment.for_exec()
+            assert complete_environment is not None
+            complete = complete_environment
             if spec.containerized:
                 if worker_channel is None:
                     raise ValueError(
@@ -1043,6 +1080,11 @@ class PiRpcProcess(StreamingTurnProcess):
                     provider=spec.model_provider,
                     model=spec.model,
                     worker=spec.name,
+                    runtime_context=(
+                        None
+                        if worker_channel is None
+                        else worker_channel.runtime_context
+                    ),
                 )
             )
             if on_turn_failure_for_spec is not None

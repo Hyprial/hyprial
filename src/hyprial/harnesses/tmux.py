@@ -186,6 +186,7 @@ def new_detached_session(
             "-m",
             "hyprial.harnesses._exec_env_socket",
             str(handoff.path),
+            "--complete-environment",
             *(
                 ["--cleanup-config", str(cleanup.config_path)]
                 if cleanup is not None

@@ -7,9 +7,11 @@ import base64
 import hashlib
 import json
 import os
+import re
 import secrets
 import signal
 import socket
+import stat
 import struct
 import subprocess
 import sys as sys
@@ -29,6 +31,8 @@ from hyprial.agents.environment import (
     ChildEnvironmentLaunch,
     whitelist_replacement_environment,
 )
+from hyprial.agents.config import ConfigProjectionReceipt, verify_native_projection
+from hyprial.agents.runtime import AgentRuntimeContext
 from hyprial.daemon.desired_state import HarnessLaunchSpec
 from hyprial.transfer.container import wrap_worker_launch
 from hyprial.log import Logger
@@ -130,6 +134,621 @@ PROCESS_FORCE_JOIN_SECONDS = 1.0
 # nothing is interrupted.  0 disables reporting.  The level state "thread
 # status inProgress" never counts as activity.
 MANAGED_TURN_IDLE_TIMEOUT_SECONDS = 900.0
+
+_CODEX_SUPPORTED_AUTH_STORES = frozenset({"file", "ephemeral"})
+_CODEX_PROJECT_RESERVED_KEYS = frozenset(
+    {
+        "allow_login_shell",
+        "approvals_reviewer",
+        "chatgpt_base_url",
+        "cli_auth_credentials_store",
+        "forced_login_method",
+        "model_provider",
+        "model_providers",
+        "openai_base_url",
+        "shell_environment_policy",
+    }
+)
+_CODEX_MUTABLE_ROOT_FILE = re.compile(
+    r"(?:state|logs|goals|memories|queue)_\d+\.sqlite(?:-shm|-wal)?\Z"
+)
+_CODEX_MUTABLE_FILES = frozenset(
+    {
+        ".sandbox_migration",
+        "auth.json",
+        "history.jsonl",
+        "installation_id",
+        "version.json",
+    }
+)
+_CODEX_MUTABLE_PREFIXES = (
+    ".tmp/",
+    "archived_sessions/",
+    "log/",
+    "logs/",
+    "shell_snapshots/",
+    "skills/.system/",
+    "thread-writer-locks/",
+)
+
+
+class CodexAgentHomeError(ValueError):
+    """The resolved Codex native root failed its P2 loading contract."""
+
+
+@dataclass(frozen=True, slots=True)
+class CodexNativeLoadEvidence:
+    """Non-secret observations returned by the real Codex app-server."""
+
+    codex_home: str
+    layer_types: tuple[str, ...]
+    effective_model: str | None
+    auth_store: str
+    account_type: str | None
+    requires_openai_auth: bool
+    user_skills: tuple[str, ...]
+    project_skills: tuple[str, ...]
+
+
+def _private_directory(path: Path, label: str) -> None:
+    try:
+        metadata = path.lstat()
+    except OSError as error:
+        raise CodexAgentHomeError(f"{label} is unreadable") from error
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != os.getuid()
+        or stat.S_IMODE(metadata.st_mode) != 0o700
+    ):
+        raise CodexAgentHomeError(f"{label} must be an owner-private directory")
+
+
+def _write_or_verify_projection_file(
+    source: Path, destination: Path, *, native_root: Path
+) -> None:
+    try:
+        source_metadata = source.lstat()
+        body = source.read_bytes()
+    except OSError as error:
+        raise CodexAgentHomeError(
+            f"cannot read Codex projection item {source.name}"
+        ) from error
+    if (
+        stat.S_ISLNK(source_metadata.st_mode)
+        or not stat.S_ISREG(source_metadata.st_mode)
+        or stat.S_IMODE(source_metadata.st_mode) != 0o600
+    ):
+        raise CodexAgentHomeError(
+            f"Codex projection item {source.name} is not a private regular file"
+        )
+    try:
+        relative_parent = destination.parent.relative_to(native_root)
+    except ValueError as error:
+        raise CodexAgentHomeError("Codex projection destination escaped its root") from error
+    current = native_root
+    for part in relative_parent.parts:
+        current = current / part
+        try:
+            current.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        _private_directory(current, f"Codex projection directory {part}")
+    try:
+        destination_metadata = destination.lstat()
+    except FileNotFoundError:
+        descriptor = os.open(
+            destination,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
+        try:
+            with os.fdopen(descriptor, "wb", closefd=False) as stream:
+                stream.write(body)
+                stream.flush()
+                os.fsync(stream.fileno())
+        finally:
+            os.close(descriptor)
+        return
+    except OSError as error:
+        raise CodexAgentHomeError(
+            f"cannot inspect Codex native item {destination.name}"
+        ) from error
+    if (
+        stat.S_ISLNK(destination_metadata.st_mode)
+        or not stat.S_ISREG(destination_metadata.st_mode)
+        or stat.S_IMODE(destination_metadata.st_mode) != 0o600
+        or destination.read_bytes() != body
+    ):
+        raise CodexAgentHomeError(
+            f"Codex native projection item {destination.name} drifted"
+        )
+
+
+def _allowed_codex_mutable_file(relative: str) -> bool:
+    return (
+        relative in _CODEX_MUTABLE_FILES
+        or _CODEX_MUTABLE_ROOT_FILE.fullmatch(relative) is not None
+        or relative.startswith(_CODEX_MUTABLE_PREFIXES)
+    )
+
+
+def _verify_codex_native_inventory(
+    native_root: Path,
+    *,
+    expected: frozenset[str],
+    session_root: Path,
+) -> None:
+    stack = [native_root]
+    while stack:
+        directory = stack.pop()
+        try:
+            entries = list(os.scandir(directory))
+        except OSError as error:
+            raise CodexAgentHomeError(
+                f"cannot scan Codex native root at {directory.name}"
+            ) from error
+        for entry in entries:
+            candidate = Path(entry.path)
+            relative = candidate.relative_to(native_root).as_posix()
+            try:
+                metadata = entry.stat(follow_symlinks=False)
+            except OSError as error:
+                raise CodexAgentHomeError(
+                    f"cannot inspect Codex native item {relative}"
+                ) from error
+            if stat.S_ISLNK(metadata.st_mode):
+                if relative != "sessions" or candidate.resolve() != session_root.resolve():
+                    raise CodexAgentHomeError(
+                        f"Codex native item {relative} is an unauthorized symbolic link"
+                    )
+                continue
+            if stat.S_ISDIR(metadata.st_mode):
+                stack.append(candidate)
+                continue
+            if not stat.S_ISREG(metadata.st_mode):
+                raise CodexAgentHomeError(
+                    f"Codex native item {relative} is not a regular file"
+                )
+            if relative not in expected and not _allowed_codex_mutable_file(relative):
+                raise CodexAgentHomeError(
+                    f"Codex native root contains unprojected personality item {relative}"
+                )
+
+
+def prepare_codex_runtime_roots(
+    *,
+    projection_root: Path,
+    native_root: Path,
+    session_root: Path,
+    receipt: ConfigProjectionReceipt | None = None,
+) -> None:
+    """Publish an already-resolved P21 projection into the mutable Codex root."""
+
+    projection_root = Path(projection_root)
+    native_root = Path(native_root)
+    session_root = Path(session_root)
+    for path, label in (
+        (projection_root, "Codex projection root"),
+        (native_root, "resolved CODEX_HOME"),
+        (session_root, "Codex session root"),
+    ):
+        _private_directory(path, label)
+    if receipt is not None:
+        if Path(receipt.projection_root) != projection_root:
+            raise CodexAgentHomeError(
+                "Codex projection receipt does not name the resolved projection root"
+            )
+        if receipt.harness != "codex":
+            raise CodexAgentHomeError(
+                f"native projection belongs to {receipt.harness!r}, not 'codex'"
+            )
+        expected = frozenset(item.native_path for item in receipt.items)
+    else:
+        expected_items: list[str] = []
+        for candidate in projection_root.rglob("*"):
+            metadata = candidate.lstat()
+            if stat.S_ISLNK(metadata.st_mode):
+                raise CodexAgentHomeError("Codex projection contains a symbolic link")
+            if stat.S_ISREG(metadata.st_mode):
+                expected_items.append(candidate.relative_to(projection_root).as_posix())
+        expected = frozenset(expected_items)
+    for relative in sorted(expected):
+        source = projection_root.joinpath(*Path(relative).parts)
+        destination = native_root.joinpath(*Path(relative).parts)
+        _write_or_verify_projection_file(
+            source,
+            destination,
+            native_root=native_root,
+        )
+    sessions = native_root / "sessions"
+    if sessions.exists() or sessions.is_symlink():
+        if not sessions.is_symlink() or sessions.resolve() != session_root.resolve():
+            raise CodexAgentHomeError(
+                "Codex sessions path is not bound to the resolved session root"
+            )
+    else:
+        sessions.symlink_to(session_root, target_is_directory=True)
+    _verify_codex_native_inventory(
+        native_root,
+        expected=expected,
+        session_root=session_root,
+    )
+
+
+def prepare_codex_runtime_context(context: AgentRuntimeContext) -> None:
+    """Consume P22's authoritative roots without deriving a replacement set."""
+
+    if context.harness != "codex":
+        raise CodexAgentHomeError(
+            f"Codex adapter received {context.harness!r} runtime context"
+        )
+    if context.environment().get("CODEX_HOME") != str(context.roots.native_root):
+        raise CodexAgentHomeError(
+            "Codex runtime context environment disagrees with its native root"
+        )
+    verify_native_projection(context.projection, context.roots.projection_root)
+    prepare_codex_runtime_roots(
+        projection_root=context.roots.projection_root,
+        native_root=context.roots.native_root,
+        session_root=context.roots.session_root,
+        receipt=context.projection_receipt,
+    )
+
+
+def _inside(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def _nearest_project_root(cwd: Path) -> Path:
+    current = cwd.resolve()
+    for candidate in (current, *current.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return current
+
+
+def _require_mapping(value: object, label: str) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise CodexAgentHomeError(f"Codex app-server {label} must be an object")
+    return value
+
+
+def _validate_codex_native_load(
+    *,
+    initialize: object,
+    config_read: object,
+    account_read: object,
+    skills_list: object,
+    native_root: Path,
+    cwd: Path,
+    model_provider: str | None,
+    require_tool_profile: bool = False,
+) -> CodexNativeLoadEvidence:
+    """Validate real app-server receipts before a P2 thread starts or resumes."""
+
+    expected_root = Path(native_root)
+    if not expected_root.is_absolute():
+        raise CodexAgentHomeError("resolved CODEX_HOME must be absolute")
+    try:
+        root_metadata = expected_root.lstat()
+    except OSError as error:
+        raise CodexAgentHomeError("resolved CODEX_HOME is unreadable") from error
+    if stat.S_ISLNK(root_metadata.st_mode) or not stat.S_ISDIR(root_metadata.st_mode):
+        raise CodexAgentHomeError("resolved CODEX_HOME must be a real directory")
+    if stat.S_IMODE(root_metadata.st_mode) != 0o700:
+        raise CodexAgentHomeError("resolved CODEX_HOME mode must be 0700")
+    initialized = _require_mapping(initialize, "initialize result")
+    observed_home = initialized.get("codexHome")
+    if not isinstance(observed_home, str) or not observed_home:
+        raise CodexAgentHomeError("Codex initialize omitted codexHome")
+    if Path(observed_home).resolve() != expected_root.resolve():
+        raise CodexAgentHomeError(
+            "Codex initialize codexHome does not match the resolved CODEX_HOME"
+        )
+
+    config_result = _require_mapping(config_read, "config/read result")
+    config = _require_mapping(config_result.get("config"), "effective config")
+    raw_layers = config_result.get("layers")
+    if not isinstance(raw_layers, list):
+        raise CodexAgentHomeError("Codex config/read omitted layers")
+    project_root = _nearest_project_root(Path(cwd))
+    layer_types: list[str] = []
+    user_files: list[Path] = []
+    system_files: list[Path] = []
+    session_flags: dict[str, object] | None = None
+    for index, raw_layer in enumerate(raw_layers):
+        layer = _require_mapping(raw_layer, f"config layer {index}")
+        name = _require_mapping(layer.get("name"), f"config layer {index} name")
+        layer_type = name.get("type")
+        if layer_type not in {"sessionFlags", "project", "user", "system"}:
+            raise CodexAgentHomeError(
+                f"Codex config/read returned unsupported layer {layer_type!r}"
+            )
+        layer_types.append(layer_type)
+        layer_config = _require_mapping(
+            layer.get("config"), f"config layer {index} config"
+        )
+        if layer_type == "sessionFlags":
+            if session_flags is not None:
+                raise CodexAgentHomeError(
+                    "Codex config/read returned multiple session-flags layers"
+                )
+            session_flags = layer_config
+        if layer_type == "project":
+            raw_folder = name.get("dotCodexFolder")
+            if (
+                not isinstance(raw_folder, str)
+                or Path(raw_folder).name != ".codex"
+                or not _inside(Path(raw_folder), project_root)
+            ):
+                raise CodexAgentHomeError(
+                    "Codex project config escaped the repository root"
+                )
+            reserved = sorted(_CODEX_PROJECT_RESERVED_KEYS.intersection(layer_config))
+            if reserved:
+                raise CodexAgentHomeError(
+                    "Codex project config attempted to override reserved key "
+                    f"{reserved[0]}"
+                )
+            project_mcp = layer_config.get("mcp_servers")
+            if project_mcp is not None:
+                project_mcp_config = _require_mapping(
+                    project_mcp, "project config mcp_servers"
+                )
+                if HARNESS_BRIDGE_MCP_SERVER_NAME in project_mcp_config:
+                    raise CodexAgentHomeError(
+                        "Codex project config attempted to override reserved MCP "
+                        f"server {HARNESS_BRIDGE_MCP_SERVER_NAME}"
+                    )
+        if layer_type == "user":
+            raw_file = name.get("file")
+            if isinstance(raw_file, str) and raw_file:
+                user_files.append(Path(raw_file))
+        if layer_type == "system":
+            raw_file = name.get("file")
+            if isinstance(raw_file, str) and raw_file:
+                system_files.append(Path(raw_file))
+    if tuple(layer_types) != tuple(
+        sorted(
+            layer_types,
+            key={"sessionFlags": 0, "project": 1, "user": 2, "system": 3}.get,
+        )
+    ):
+        raise CodexAgentHomeError(
+            "Codex config layer order must be session flags, project, user, system"
+        )
+    if layer_types.count("user") != 1 or layer_types.count("system") != 1:
+        raise CodexAgentHomeError(
+            "Codex config/read must contain exactly one user and system layer"
+        )
+    if system_files != [Path("/etc/codex/config.toml")]:
+        raise CodexAgentHomeError(
+            "Codex system config layer must remain /etc/codex/config.toml"
+        )
+    custom_provider = model_provider not in {None, "openai"}
+    if session_flags is not None:
+        provider_session_flags = {
+            "model",
+            "model_provider",
+            "model_providers",
+            "model_reasoning_effort",
+        }
+        tool_session_flags = {"allow_login_shell", "shell_environment_policy"}
+        allowed_session_flags = provider_session_flags | tool_session_flags
+        extras = sorted(set(session_flags) - allowed_session_flags)
+        if extras:
+            raise CodexAgentHomeError(
+                "Codex session-flags layer is not an approved launch input: "
+                f"{extras[0]}"
+            )
+        observed_provider_flags = provider_session_flags.intersection(session_flags)
+        if bool(observed_provider_flags) != custom_provider:
+            raise CodexAgentHomeError(
+                "Codex session-flags provider overrides do not match the launch mode"
+            )
+        if custom_provider and session_flags.get("model_provider") != model_provider:
+            raise CodexAgentHomeError(
+                "Codex session-flags provider does not match the launch selection"
+            )
+        if custom_provider:
+            providers = _require_mapping(
+                session_flags.get("model_providers"),
+                "session-flags model_providers",
+            )
+            provider_config = _require_mapping(
+                providers.get(str(model_provider)),
+                "session-flags selected provider",
+            )
+            if provider_config.get("requires_openai_auth") is not False:
+                raise CodexAgentHomeError(
+                    "Codex custom provider session flags must disable OpenAI authentication"
+                )
+            env_key = provider_config.get("env_key")
+            if not isinstance(env_key, str) or not env_key:
+                raise CodexAgentHomeError(
+                    "Codex custom provider session flags must name an environment key"
+                )
+        observed_tool_flags = tool_session_flags.intersection(session_flags)
+        if bool(observed_tool_flags) != require_tool_profile:
+            raise CodexAgentHomeError(
+                "Codex session-flags tool profile does not match the launch mode"
+            )
+        if require_tool_profile and (
+            session_flags.get("allow_login_shell") is not False
+            or session_flags.get("shell_environment_policy") != {"inherit": "all"}
+        ):
+            raise CodexAgentHomeError(
+                "Codex session-flags tool profile does not preserve the approved environment"
+            )
+    elif custom_provider or require_tool_profile:
+        raise CodexAgentHomeError(
+            "Codex managed launch omitted its session-flags layer"
+        )
+    expected_user_config = expected_root / "config.toml"
+    if len(user_files) != 1 or user_files[0].resolve() != expected_user_config.resolve():
+        raise CodexAgentHomeError(
+            "Codex user config layer did not come from resolved CODEX_HOME/config.toml"
+        )
+    try:
+        config_metadata = expected_user_config.lstat()
+    except OSError as error:
+        raise CodexAgentHomeError("Codex user config.toml is unreadable") from error
+    if stat.S_ISLNK(config_metadata.st_mode) or not stat.S_ISREG(config_metadata.st_mode):
+        raise CodexAgentHomeError("Codex user config.toml must be a regular file")
+    if stat.S_IMODE(config_metadata.st_mode) != 0o600:
+        raise CodexAgentHomeError("Codex user config.toml mode must be 0600")
+
+    auth_store = config.get("cli_auth_credentials_store")
+    if auth_store not in _CODEX_SUPPORTED_AUTH_STORES:
+        raise CodexAgentHomeError(
+            f"Codex credential store {auth_store!r} is unsupported for agent-home P2"
+        )
+    auth_path = expected_root / "auth.json"
+    auth_present = auth_path.exists() or auth_path.is_symlink()
+    if auth_store == "file":
+        try:
+            metadata = auth_path.lstat()
+        except OSError as error:
+            raise CodexAgentHomeError(
+                "Codex file credential store requires agent-owned auth.json"
+            ) from error
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise CodexAgentHomeError("Codex auth.json must be a regular file")
+        if stat.S_IMODE(metadata.st_mode) != 0o600:
+            raise CodexAgentHomeError("Codex auth.json mode must be 0600")
+    elif auth_present:
+        raise CodexAgentHomeError(
+            "Codex ephemeral credential store must not fall back to auth.json"
+        )
+
+    account_result = _require_mapping(account_read, "account/read result")
+    requires_openai_auth = account_result.get("requiresOpenaiAuth")
+    if not isinstance(requires_openai_auth, bool):
+        raise CodexAgentHomeError("Codex account/read omitted requiresOpenaiAuth")
+    raw_account = account_result.get("account")
+    account_type: str | None = None
+    if raw_account is not None:
+        account = _require_mapping(raw_account, "account/read account")
+        raw_type = account.get("type")
+        if isinstance(raw_type, str) and raw_type:
+            account_type = raw_type
+    if custom_provider and requires_openai_auth:
+        raise CodexAgentHomeError(
+            "Codex custom provider still requires OpenAI authentication"
+        )
+    if custom_provider and auth_present:
+        raise CodexAgentHomeError(
+            "Codex found both native auth.json and custom-provider authentication"
+        )
+    if requires_openai_auth and account_type is None:
+        raise CodexAgentHomeError(
+            "Codex account/read found no authenticated subject for this process"
+        )
+
+    skills_result = _require_mapping(skills_list, "skills/list result")
+    rows = skills_result.get("data")
+    if not isinstance(rows, list):
+        raise CodexAgentHomeError("Codex skills/list omitted data")
+    row = next(
+        (
+            item
+            for item in rows
+            if isinstance(item, dict) and item.get("cwd") == str(cwd)
+        ),
+        None,
+    )
+    if row is None:
+        raise CodexAgentHomeError("Codex skills/list omitted the requested cwd")
+    errors = row.get("errors")
+    if errors not in (None, []):
+        raise CodexAgentHomeError("Codex skills/list reported loader errors")
+    raw_skills = row.get("skills")
+    if not isinstance(raw_skills, list):
+        raise CodexAgentHomeError("Codex skills/list omitted skills")
+    user_skills: list[str] = []
+    project_skills: list[str] = []
+    for raw_skill in raw_skills:
+        skill = _require_mapping(raw_skill, "skill entry")
+        name = skill.get("name")
+        path = skill.get("path")
+        scope = skill.get("scope")
+        if not isinstance(name, str) or not isinstance(path, str):
+            raise CodexAgentHomeError("Codex skill entry omitted name or path")
+        skill_path = Path(path)
+        if scope == "user":
+            if not _inside(skill_path, expected_root / "skills"):
+                raise CodexAgentHomeError(
+                    f"Codex user skill {name!r} escaped resolved CODEX_HOME"
+                )
+            user_skills.append(name)
+        elif scope == "repo":
+            if not _inside(skill_path, project_root):
+                raise CodexAgentHomeError(
+                    f"Codex project skill {name!r} escaped the repository root"
+                )
+            project_skills.append(name)
+        elif scope == "system":
+            if not _inside(skill_path, expected_root / "skills" / ".system"):
+                raise CodexAgentHomeError(
+                    f"Codex system skill {name!r} escaped resolved CODEX_HOME"
+                )
+        else:
+            raise CodexAgentHomeError(
+                f"Codex skill {name!r} used unsupported scope {scope!r}"
+            )
+
+    return CodexNativeLoadEvidence(
+        codex_home=str(expected_root),
+        layer_types=tuple(layer_types),
+        effective_model=(
+            config.get("model") if isinstance(config.get("model"), str) else None
+        ),
+        auth_store=str(auth_store),
+        account_type=account_type,
+        requires_openai_auth=requires_openai_auth,
+        user_skills=tuple(sorted(user_skills)),
+        project_skills=tuple(sorted(project_skills)),
+    )
+
+
+def verify_codex_native_projection(
+    receipt: ConfigProjectionReceipt, native_root: Path
+) -> None:
+    """Verify P21's Codex projection bytes at the P22-resolved mutable root."""
+
+    if receipt.harness != "codex":
+        raise CodexAgentHomeError(
+            f"native projection belongs to {receipt.harness!r}, not 'codex'"
+        )
+    root = Path(native_root)
+    try:
+        metadata = root.lstat()
+    except OSError as error:
+        raise CodexAgentHomeError(f"cannot inspect resolved CODEX_HOME: {error}") from error
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise CodexAgentHomeError("resolved CODEX_HOME must be a real directory")
+    for item in receipt.items:
+        candidate = root.joinpath(*Path(item.native_path).parts)
+        try:
+            item_metadata = candidate.lstat()
+        except OSError as error:
+            raise CodexAgentHomeError(
+                f"Codex native projection item {item.native_path} is missing"
+            ) from error
+        if stat.S_ISLNK(item_metadata.st_mode) or not stat.S_ISREG(item_metadata.st_mode):
+            raise CodexAgentHomeError(
+                f"Codex native projection item {item.native_path} is not a regular file"
+            )
+        body = candidate.read_bytes()
+        if len(body) != item.size or hashlib.sha256(body).hexdigest() != item.digest:
+            raise CodexAgentHomeError(
+                f"Codex native projection item {item.native_path} drifted"
+            )
 
 
 class CodexAppServerRpcError(RuntimeError):
@@ -349,16 +968,49 @@ class CodexInteractiveAppServer:
         startup_timeout_seconds: float = 30.0,
         request_timeout_seconds: float = 15.0,
         config_args: tuple[str, ...] = (),
+        model_provider: str | None = None,
+        projection_root: Path | None = None,
+        native_root: Path | None = None,
+        session_root: Path | None = None,
     ) -> None:
         self.socket_path = Path(socket_path)
         self.cwd = cwd
         self.command = command
+        self.model_provider = model_provider
         # ``-c key=value`` overrides for the app-server invocation; this is
         # codex's session-scoped injection surface (HYPRIAL_HOME plugin MCP
         # servers ride it), so it belongs to the server process that executes
         # tools, not to the remote TUI.
-        self.config_args = tuple(config_args)
         self.env = None if env is None else {**env}
+        roots = (projection_root, native_root, session_root)
+        if any(root is not None for root in roots) and not all(
+            root is not None for root in roots
+        ):
+            raise CodexAgentHomeError(
+                "interactive Codex requires projection, native, and session roots together"
+            )
+        self._native_root = Path(native_root) if native_root is not None else None
+        self._session_root = Path(session_root) if session_root is not None else None
+        if self._native_root is not None:
+            assert projection_root is not None and self._session_root is not None
+            if self.env is None or self.env.get("CODEX_HOME") != str(self._native_root):
+                raise CodexAgentHomeError(
+                    "interactive environment disagrees with resolved Codex native root"
+                )
+            prepare_codex_runtime_roots(
+                projection_root=Path(projection_root),
+                native_root=self._native_root,
+                session_root=self._session_root,
+            )
+        self.config_args = tuple(config_args)
+        if self._native_root is not None:
+            self.config_args = (
+                *self.config_args,
+                "-c",
+                'shell_environment_policy.inherit="all"',
+                "-c",
+                "allow_login_shell=false",
+            )
         self.startup_timeout_seconds = startup_timeout_seconds
         self.request_timeout_seconds = request_timeout_seconds
         self._process: subprocess.Popen[Any] | None = None
@@ -371,11 +1023,16 @@ class CodexInteractiveAppServer:
         self._rpc_lock = threading.RLock()
         self._next_request_id = 1
         self._discovered_thread_id: str | None = None
+        self._native_load_evidence: CodexNativeLoadEvidence | None = None
 
     @property
     def pid(self) -> int | None:
         process = self._process
         return process.pid if process is not None and process.poll() is None else None
+
+    @property
+    def native_load_evidence(self) -> CodexNativeLoadEvidence | None:
+        return self._native_load_evidence
 
     def start(self) -> None:
         self.socket_path.unlink(missing_ok=True)
@@ -412,7 +1069,7 @@ class CodexInteractiveAppServer:
                         self._socket = _CodexUnixWebSocket(
                             self.socket_path, timeout=self.request_timeout_seconds
                         )
-                        self.request(
+                        initialize = self.request(
                             "initialize",
                             {
                                 "clientInfo": {
@@ -423,6 +1080,26 @@ class CodexInteractiveAppServer:
                             },
                         )
                         self.notify("initialized", {})
+                        if self._native_root is not None:
+                            config_read = self.request(
+                                "config/read",
+                                {"cwd": str(self.cwd), "includeLayers": True},
+                            )
+                            account_read = self.request("account/read", {})
+                            skills_list = self.request(
+                                "skills/list",
+                                {"cwds": [str(self.cwd)], "forceReload": True},
+                            )
+                            self._native_load_evidence = _validate_codex_native_load(
+                                initialize=initialize,
+                                config_read=config_read,
+                                account_read=account_read,
+                                skills_list=skills_list,
+                                native_root=self._native_root,
+                                cwd=self.cwd,
+                                model_provider=self.model_provider,
+                                require_tool_profile=True,
+                            )
                         return
                     except (
                         OSError,
@@ -933,6 +1610,8 @@ def _thread_config(
     cwd: str | Path,
     execution: Mapping[str, object],
     worker_channel: WorkerChannel | None,
+    *,
+    managed_environment: bool = False,
 ) -> dict[str, object]:
     """Assemble the ``thread/start`` / ``thread/resume`` ``config`` block.
 
@@ -945,6 +1624,18 @@ def _thread_config(
     config: dict[str, object] = {}
     if worker_channel is not None:
         config.update(_worker_channel_config(worker_channel))
+    if managed_environment:
+        # The app-server already runs under P22's complete replacement env.
+        # Inheriting that exact set gives tool subprocesses the approved tool
+        # profile without serializing any credential value into thread config.
+        # Login shells stay disabled so shell rc files cannot add a second,
+        # mutable personality source after the environment was approved.
+        config.update(
+            {
+                "shell_environment_policy": {"inherit": "all"},
+                "allow_login_shell": False,
+            }
+        )
     sandbox_roots = _sandbox_writable_roots_config(cwd, execution)
     if sandbox_roots is not None:
         config.update(sandbox_roots)
@@ -983,8 +1674,41 @@ class CodexAppServerClient:
             base_environment = whitelist_replacement_environment(
                 os.environ, env or {}
             )
+        runtime_context = (
+            complete_launch.runtime_context
+            if complete_launch is not None
+            else None
+        )
+        channel_context = (
+            worker_channel.runtime_context if worker_channel is not None else None
+        )
+        if worker_channel is not None and channel_context is not runtime_context:
+            raise CodexAgentHomeError(
+                "Codex worker channel and child launch disagree on runtime context"
+            )
+        if runtime_context is not None:
+            if complete_launch is None or runtime_context.actor != complete_launch.actor:
+                raise CodexAgentHomeError(
+                    "Codex runtime context actor does not match the child launch"
+                )
+            prepare_codex_runtime_context(runtime_context)
+            self._native_root = runtime_context.roots.native_root
+            self._session_root = runtime_context.roots.session_root
+            if base_environment.get("CODEX_HOME") != str(self._native_root):
+                raise CodexAgentHomeError(
+                    "complete child environment disagrees with Codex runtime context"
+                )
+        else:
+            if complete_launch is not None and "CODEX_HOME" in base_environment:
+                raise CodexAgentHomeError(
+                    "P2 CODEX_HOME requires an AgentRuntimeContext"
+                )
+            self._native_root = None
+            self._session_root = None
         provider_args, provider_environment = codex_provider_configuration(
-            spec, base_environment
+            spec,
+            base_environment,
+            allow_legacy_home_fallback=self._native_root is None,
         )
         self.command = (*command, *provider_args, "app-server", "--stdio")
         self._session = session or _CodexSession(session_ref)
@@ -1048,6 +1772,7 @@ class CodexAppServerClient:
         )
         self._next_request_id = 1
         self._active_turn_id: str | None = None
+        self._native_load_evidence: CodexNativeLoadEvidence | None = None
 
     @property
     def session_ref(self) -> str | None:
@@ -1060,6 +1785,10 @@ class CodexAppServerClient:
     @property
     def active_turn_id(self) -> str | None:
         return self._active_turn_id
+
+    @property
+    def native_load_evidence(self) -> CodexNativeLoadEvidence | None:
+        return self._native_load_evidence
 
     @property
     def running(self) -> bool:
@@ -1147,7 +1876,7 @@ class CodexAppServerClient:
         self._exit_task = asyncio.create_task(self._watch_process_exit())
         self._reader_task = asyncio.create_task(self._read_loop())
         try:
-            await self.request(
+            initialize = await self.request(
                 "initialize",
                 {
                     "clientInfo": {
@@ -1159,13 +1888,54 @@ class CodexAppServerClient:
                 },
             )
             await self.notify("initialized", {})
+            if self._native_root is not None:
+                working_directory = Path(self._working_directory())
+                config_read = await self.request(
+                    "config/read",
+                    {"cwd": str(working_directory), "includeLayers": True},
+                )
+                account_read = await self.request("account/read", {})
+                skills_list = await self.request(
+                    "skills/list",
+                    {"cwds": [str(working_directory)], "forceReload": True},
+                )
+                self._native_load_evidence = _validate_codex_native_load(
+                    initialize=initialize,
+                    config_read=config_read,
+                    account_read=account_read,
+                    skills_list=skills_list,
+                    native_root=self._native_root,
+                    cwd=working_directory,
+                    model_provider=self.spec.model_provider,
+                )
+                if self._logger is not None:
+                    evidence = self._native_load_evidence
+                    self._logger.info(
+                        "worker.config.loaded",
+                        codexHome=evidence.codex_home,
+                        layerTypes=list(evidence.layer_types),
+                        effectiveModel=evidence.effective_model,
+                        authStore=evidence.auth_store,
+                        accountType=evidence.account_type,
+                        requiresOpenaiAuth=evidence.requires_openai_auth,
+                        userSkillCount=len(evidence.user_skills),
+                        projectSkillCount=len(evidence.project_skills),
+                    )
             if self._session.thread_id is None:
                 await self._start_thread()
             elif not await self._resume_thread():
+                if self._native_root is not None:
+                    raise CodexAgentHomeError(
+                        "Codex resume target was not found in the resolved "
+                        "native root; refusing to cold-start under the old "
+                        "session reference"
+                    )
                 # The persisted thread is definitively gone (no rollout and
                 # not loaded).  Resume must never become a startup failure
-                # source: fall back to a cold start and let the new thread id
-                # flow back to desired state through the session-ref sync.
+                # source for legacy workers: they retain the historical cold
+                # start.  P2 workers above fail loudly because their explicit
+                # root makes a missing target an authorization/locator result,
+                # not permission to create a replacement conversation.
                 if self._logger is not None:
                     self._logger.info(
                         "worker.session_ref.lost",
@@ -1189,7 +1959,10 @@ class CodexAppServerClient:
             **execution,
         }
         config = _thread_config(
-            self._working_directory(), execution, self._worker_channel
+            self._working_directory(),
+            execution,
+            self._worker_channel,
+            managed_environment=self._native_root is not None,
         )
         if config:
             params["config"] = config
@@ -1220,7 +1993,10 @@ class CodexAppServerClient:
         # roots, silently reintroducing the very commit failure this change
         # exists to fix (the same door the pre-approval comment warns about).
         config = _thread_config(
-            self._working_directory(), execution, self._worker_channel
+            self._working_directory(),
+            execution,
+            self._worker_channel,
+            managed_environment=self._native_root is not None,
         )
         if config:
             params["config"] = config
@@ -2947,22 +3723,42 @@ class CodexConnector:
             *spec.args,
         )
 
-    def launch(self, spec: HarnessLaunchSpec) -> PtyHarnessProcess:
-        argv = self.build_argv(spec)
-        _provider_args, provider_environment = codex_provider_configuration(
-            spec,
-            whitelist_replacement_environment(
+    def launch(
+        self,
+        spec: HarnessLaunchSpec,
+        *,
+        complete_launch: ChildEnvironmentLaunch | None = None,
+    ) -> PtyHarnessProcess:
+        base = (
+            complete_launch.environment.for_exec()
+            if complete_launch is not None
+            else whitelist_replacement_environment(
                 os.environ, self.options.env or {}
-            ),
+            )
         )
-        environment = whitelist_replacement_environment(
-            os.environ, self.options.env or {}, provider_environment
+        _provider_args, provider_environment = codex_provider_configuration(
+            spec, base
+        )
+        model_args = ("--model", spec.model) if spec.model is not None else ()
+        argv = (
+            *spec.resolved_command(self.options.command),
+            *_provider_args,
+            *model_args,
+            *spec.args,
+        )
+        environment = (
+            {**base, **provider_environment}
+            if complete_launch is not None
+            else whitelist_replacement_environment(
+                os.environ, self.options.env or {}, provider_environment
+            )
         )
         return PtyHarnessProcess.spawn(
             "codex",
             argv,
             cwd=spec.cwd,
             env=environment or None,
+            complete_environment=complete_launch is not None,
             startup_probe_seconds=self.options.startup_probe_seconds,
             stop_grace_seconds=self.options.stop_grace_seconds,
         )

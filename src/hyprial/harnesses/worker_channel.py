@@ -13,10 +13,14 @@ the worker, ``harness_read`` reads the worker's canonical inbox, and
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from hyprial.home import child_state_environment
+
+if TYPE_CHECKING:
+    from hyprial.agents.runtime import AgentRuntimeContext
 
 # The harness tools a managed worker is pre-authorized to call, mirroring the
 # interactive path's allow-list, so a headless worker's proactive send or read
@@ -49,6 +53,9 @@ class WorkerChannel:
     # never derived from the worker-actor URI.
     node_id: str = ""
     owner: str = ""
+    runtime_context: "AgentRuntimeContext | None" = field(
+        default=None, repr=False, compare=False
+    )
 
     def identity_environment(self) -> dict[str, str]:
         """The worker's daemon-bound identity + daemon pinning as env.
@@ -104,6 +111,7 @@ def build_worker_channel(
     python_executable: str | None = None,
     node_id: str = "",
     owner: str = "",
+    runtime_context: "AgentRuntimeContext | None" = None,
 ) -> WorkerChannel:
     """Compose the worker's harness-bridge stdio server pinned to this daemon.
 
@@ -135,6 +143,7 @@ def build_worker_channel(
         session_ref=session_ref,
         node_id=node_id,
         owner=owner,
+        runtime_context=runtime_context,
         hyprial_home=hyprial_home,
         state_dir=state_dir,
         mcp_server=server,

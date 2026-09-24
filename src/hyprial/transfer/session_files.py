@@ -30,6 +30,10 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from hyprial.agents.runtime import AgentRuntimeContext
 
 #: Harnesses whose sessions P0 can move.  dsh is excluded by design (#190:
 #: its resume is refused in code); lark adapters are not workers.
@@ -86,7 +90,17 @@ def claude_session_file(config_home: Path, cwd: str, session_id: str) -> Path:
     session ids are uuids, so a cross-directory match is unambiguous.
     """
 
-    projects = Path(config_home) / "projects"
+    return claude_session_file_in_session_root(
+        Path(config_home) / "projects", cwd, session_id
+    )
+
+
+def claude_session_file_in_session_root(
+    projects: Path, cwd: str, session_id: str
+) -> Path:
+    """Locate a Claude transcript below P22's resolved session root."""
+
+    projects = Path(projects)
     direct = projects / claude_project_dir_name(cwd) / f"{session_id}.jsonl"
     if direct.is_file():
         return direct
@@ -106,12 +120,17 @@ def claude_session_file(config_home: Path, cwd: str, session_id: str) -> Path:
 def claude_session_target(config_home: Path, cwd: str, session_id: str) -> Path:
     """Where the transcript belongs on the target for one (new) cwd."""
 
-    return (
-        Path(config_home)
-        / "projects"
-        / claude_project_dir_name(cwd)
-        / f"{session_id}.jsonl"
+    return claude_session_target_in_session_root(
+        Path(config_home) / "projects", cwd, session_id
     )
+
+
+def claude_session_target_in_session_root(
+    projects: Path, cwd: str, session_id: str
+) -> Path:
+    """Place a Claude transcript below P22's resolved session root."""
+
+    return Path(projects) / claude_project_dir_name(cwd) / f"{session_id}.jsonl"
 
 
 def pi_session_dir_name(cwd: str) -> str:
@@ -150,13 +169,17 @@ def pi_session_file(agent_dir: Path, cwd: str, session_ref: str) -> Path:
     disagrees is corrupt, and resuming it would cold-start anyway.
     """
 
+    session_dir = Path(agent_dir) / "sessions" / pi_session_dir_name(cwd)
+    return _pi_session_file_in_dir(session_dir, session_ref)
+
+
+def _pi_session_file_in_dir(session_dir: Path, session_ref: str) -> Path:
     # Deferred import: hyprial.harnesses re-enters hyprial.daemon at package load,
     # so this module (imported by daemon.application) must not touch the
     # harnesses package at top level.  pi_session itself is pure `re`.
     from hyprial.harnesses.pi_session import pi_session_id
 
     sanitized = pi_session_id(session_ref)
-    session_dir = Path(agent_dir) / "sessions" / pi_session_dir_name(cwd)
     matches = (
         sorted(session_dir.glob(f"*_{sanitized}.jsonl"))
         if session_dir.is_dir()
@@ -191,7 +214,17 @@ def pi_session_target(agent_dir: Path, cwd: str, filename: str) -> Path:
 def codex_rollout_file(codex_home: Path, thread_id: str) -> Path:
     """Locate a codex rollout by thread id under ``sessions/``."""
 
-    sessions = Path(codex_home) / "sessions"
+    return codex_rollout_file_in_session_root(
+        Path(codex_home) / "sessions", thread_id
+    )
+
+
+def codex_rollout_file_in_session_root(
+    session_root: Path, thread_id: str
+) -> Path:
+    """Locate a Codex rollout from P22's already-resolved session root."""
+
+    sessions = Path(session_root)
     matches = (
         sorted(sessions.rglob(f"*{thread_id}.jsonl")) if sessions.is_dir() else []
     )
@@ -214,7 +247,17 @@ def codex_rollout_target(codex_home: Path, source: Path) -> Path:
     rollouts, so the target keeps the source's relative layout verbatim.
     """
 
-    sessions = Path(codex_home) / "sessions"
+    return codex_rollout_target_in_session_root(
+        Path(codex_home) / "sessions", source
+    )
+
+
+def codex_rollout_target_in_session_root(
+    session_root: Path, source: Path
+) -> Path:
+    """Preserve the date hierarchy under P22's resolved session root."""
+
+    sessions = Path(session_root)
     try:
         relative = Path(source).relative_to(sessions)
     except ValueError as error:
@@ -260,28 +303,70 @@ def rewrite_pi_session_cwd(source: Path, target_cwd: str, dest: Path) -> Path:
 
 
 def locate_session_file(
-    harness: str, cwd: str, session_ref: str, *, home: Path
+    harness: str,
+    cwd: str,
+    session_ref: str,
+    *,
+    home: Path,
+    runtime_context: "AgentRuntimeContext | None" = None,
 ) -> Path:
     """One seam for the orchestrator: locate by harness with default homes."""
 
+    session_root = _runtime_session_root(runtime_context, harness)
     if harness == "claude":
+        if session_root is not None:
+            return claude_session_file_in_session_root(
+                session_root, cwd, session_ref
+            )
         return claude_session_file(Path(home) / ".claude", cwd, session_ref)
     if harness == "pi":
+        if session_root is not None:
+            return _pi_session_file_in_dir(session_root, session_ref)
         return pi_session_file(Path(home) / ".pi" / "agent", cwd, session_ref)
     if harness == "codex":
+        if session_root is not None:
+            return codex_rollout_file_in_session_root(session_root, session_ref)
         return codex_rollout_file(Path(home) / ".codex", session_ref)
     raise SessionFileError(f"harness {harness!r} has no transferable session files")
 
 
 def session_target_path(
-    harness: str, cwd: str, source: Path, session_ref: str, *, home: Path
+    harness: str,
+    cwd: str,
+    source: Path,
+    session_ref: str,
+    *,
+    home: Path,
+    runtime_context: "AgentRuntimeContext | None" = None,
 ) -> Path:
     """One seam for the receive side: target path by harness, default homes."""
 
+    session_root = _runtime_session_root(runtime_context, harness)
     if harness == "claude":
+        if session_root is not None:
+            return claude_session_target_in_session_root(
+                session_root, cwd, session_ref
+            )
         return claude_session_target(Path(home) / ".claude", cwd, session_ref)
     if harness == "pi":
+        if session_root is not None:
+            return session_root / Path(source).name
         return pi_session_target(Path(home) / ".pi" / "agent", cwd, Path(source).name)
     if harness == "codex":
+        if session_root is not None:
+            return codex_rollout_target_in_session_root(session_root, source)
         return codex_rollout_target(Path(home) / ".codex", source)
     raise SessionFileError(f"harness {harness!r} has no transferable session files")
+
+
+def _runtime_session_root(
+    runtime_context: "AgentRuntimeContext | None", harness: str
+) -> Path | None:
+    if runtime_context is None:
+        return None
+    if runtime_context.harness != harness:
+        raise SessionFileError(
+            f"{harness} session locator received runtime context for "
+            f"{runtime_context.harness}"
+        )
+    return runtime_context.roots.session_root

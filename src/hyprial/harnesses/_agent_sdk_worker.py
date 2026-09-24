@@ -40,6 +40,8 @@ except ModuleNotFoundError as error:
 _REQUIRED_OPTION_PARAMS = frozenset(
     {"setting_sources", "strict_mcp_config", "resume", "session_id"}
 )
+_RUNTIME_CONTEXT_MODE_ENV = "HYPRIAL_AGENT_SDK_RUNTIME_CONTEXT_MODE"
+_P2_RUNTIME_CONTEXT_MODE = "agent-home-p2"
 
 
 def _require_supported_sdk() -> None:
@@ -353,21 +355,26 @@ async def _serve() -> None:
     reader = asyncio.create_task(_read_commands(commands))
     try:
         kwargs = _options_kwargs()
+        runtime_context_mode = os.environ.get(_RUNTIME_CONTEXT_MODE_ENV)
+        if runtime_context_mode not in {None, _P2_RUNTIME_CONTEXT_MODE}:
+            raise ValueError(
+                "Agent SDK worker received an unsupported runtime context mode"
+            )
         try:
             client = await _connect(ClaudeAgentOptions(**kwargs))
         except Exception as error:
             resume = kwargs.get("resume")
-            if not (isinstance(resume, str) and resume):
+            if runtime_context_mode == _P2_RUNTIME_CONTEXT_MODE or not (
+                isinstance(resume, str) and resume
+            ):
+                # P2 has an explicit authorized session root.  A missing or
+                # unreadable target there is terminal: replacing it would
+                # report success while silently discarding the conversation.
                 raise
-            # A stored session that no longer exists fails the CLI connect
-            # (client-side validation: "No conversation found with session
-            # ID"); the SDK does not surface the CLI's stderr in the
-            # exception, so any connect failure with a resume target is
-            # treated as a possibly-dead session.  Resume must never become
-            # a startup failure source: retry exactly once with a fresh,
-            # pinned session id and let the daemon learn the replacement
-            # from the ready message.  A persistent environmental failure
-            # fails this retry too and exits with the original clarity.
+            # Legacy workers retain their historical recovery contract: a
+            # stale daemon-owned session id is retried exactly once as a fresh,
+            # pinned session.  The replacement id is reported in ready so the
+            # daemon can persist it.
             print(
                 f"Agent SDK worker: stored session {resume} could not be "
                 f"resumed ({type(error).__name__}: {error}); starting a "

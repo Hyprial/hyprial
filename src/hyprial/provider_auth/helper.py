@@ -20,7 +20,7 @@ import time
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Mapping
 
 HELPER_SCRIPT = Path(__file__).with_name("pi_device_login.mjs")
 
@@ -109,12 +109,14 @@ class DeviceLoginRunner:
         pi_command: tuple[str, ...] = ("pi",),
         node_command: str = "node",
         timeout_seconds: float = 1500.0,
+        environment: Mapping[str, str] | None = None,
     ) -> None:
         if timeout_seconds <= 0:
             raise ValueError("helper timeout must be positive")
         self._pi_command = pi_command
         self._node_command = node_command
         self._timeout_seconds = timeout_seconds
+        self._environment = None if environment is None else dict(environment)
 
     def __call__(
         self,
@@ -142,6 +144,7 @@ class DeviceLoginRunner:
                     stderr=devnull,  # stderr carries only class names;
                     # the outcome comes from the exit code, so the stream is moot.
                     text=True,
+                    env=self._environment,
                 )
             except OSError:
                 return HelperOutcome.SPAWN_ERROR

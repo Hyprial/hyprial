@@ -17,6 +17,7 @@ from hyprial.agents.environment import (
     ChildEnvironmentLaunch,
     whitelist_replacement_environment,
 )
+from hyprial.agents.runtime import AgentRuntimeContext
 from hyprial.daemon.desired_state import HarnessLaunchSpec
 from hyprial.log import Logger
 from hyprial.transfer.container import (
@@ -26,6 +27,11 @@ from hyprial.transfer.container import (
 )
 
 from .codex import PROCESS_FORCE_JOIN_SECONDS, _OwnedProcessGroup
+from .claude_runtime import (
+    CLAUDE_RUNTIME_ENVIRONMENT,
+    prepare_claude_runtime_context,
+    validate_claude_auth_environment,
+)
 from .common import summarize_stderr
 from .model_provider import claude_provider_environment
 from .streaming import (
@@ -42,6 +48,61 @@ from .worker_channel import WorkerChannel
 AgentSdkClient = TurnClient
 ClientFactory = TurnClientFactory
 AGENT_SDK_VERSION = "0.2.125"
+_RUNTIME_CONTEXT_MODE_ENV = "HYPRIAL_AGENT_SDK_RUNTIME_CONTEXT_MODE"
+_P2_RUNTIME_CONTEXT_MODE = "agent-home-p2"
+
+
+def _launch_runtime_context(
+    worker_channel: WorkerChannel | None,
+    complete_launch: "ChildEnvironmentLaunch | None",
+) -> AgentRuntimeContext | None:
+    """Return the one P22 context shared by channel and complete launch.
+
+    A P2 launch must carry the same object at both boundaries. A one-sided or
+    mismatched context is never treated as legacy.
+    """
+
+    channel_context = (
+        worker_channel.runtime_context if worker_channel is not None else None
+    )
+    launch_context = (
+        complete_launch.runtime_context if complete_launch is not None else None
+    )
+    if (channel_context is None) != (launch_context is None):
+        raise ValueError(
+            "Claude runtime context must be present on both the worker channel "
+            "and complete child launch"
+        )
+    if channel_context is not None and channel_context is not launch_context:
+        raise ValueError("Claude worker channel and child launch contexts differ")
+    if channel_context is not None and worker_channel is not None:
+        if channel_context.actor != worker_channel.actor:
+            raise ValueError("Claude runtime context actor differs from worker channel")
+    return channel_context
+
+
+def _validate_runtime_context_environment(
+    context: AgentRuntimeContext, environment: Mapping[str, str]
+) -> None:
+    """Consume P22 roots/environment without deriving or rewriting them."""
+
+    roots = context.roots
+    for label, root in (
+        ("projection", roots.projection_root),
+        ("native", roots.native_root),
+        ("session", roots.session_root),
+    ):
+        if not Path(root).is_absolute():
+            raise ValueError(f"Claude {label} root must be absolute")
+    runtime_environment = context.environment()
+    for name, value in runtime_environment.items():
+        if environment.get(name) != value:
+            raise ValueError(
+                f"Claude complete child environment does not match runtime "
+                f"context for {name}"
+            )
+    if environment.get("CLAUDE_CONFIG_DIR") != str(roots.native_root):
+        raise ValueError("Claude config directory differs from runtime native root")
 
 
 def _sdk_process_group():
@@ -189,13 +250,44 @@ class IsolatedAgentSdkClient:
                 "complete child environment cannot be combined with a "
                 "partial env mapping"
             )
+        runtime_context = _launch_runtime_context(worker_channel, complete_launch)
         if complete_launch is not None:
             base_environment = complete_launch.environment.for_exec()
         else:
             base_environment = whitelist_replacement_environment(
                 os.environ, env or {}
             )
-        provider_environment = claude_provider_environment(spec, base_environment)
+        if runtime_context is not None:
+            _validate_runtime_context_environment(runtime_context, base_environment)
+            prepare_claude_runtime_context(runtime_context)
+            base_environment = {
+                **base_environment,
+                **CLAUDE_RUNTIME_ENVIRONMENT,
+            }
+        self._runtime_context = runtime_context
+        if runtime_context is not None:
+            config_root = base_environment.get("CLAUDE_CONFIG_DIR")
+            if not config_root or not Path(config_root).is_absolute():
+                raise ValueError(
+                    "Claude agent config requires an absolute CLAUDE_CONFIG_DIR "
+                    "from the complete child environment"
+                )
+            if base_environment.get("CLAUDE_CODE_DISABLE_AUTO_MEMORY") != "1":
+                raise ValueError(
+                    "Claude agent config requires "
+                    "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 in the complete child "
+                    "environment"
+                )
+        provider_environment = claude_provider_environment(
+            spec,
+            base_environment,
+            allow_legacy_home_fallback=runtime_context is None,
+        )
+        if runtime_context is not None:
+            validate_claude_auth_environment(
+                runtime_context.roots.native_root,
+                {**base_environment, **provider_environment},
+            )
         self.options: dict[str, Any] = {
             "cwd": spec.cwd,
             "model": spec.model or _option_value(spec.args, "--model"),
@@ -204,27 +296,37 @@ class IsolatedAgentSdkClient:
         # Session persistence, owned by the daemon: a stored ref resumes the
         # conversation after a daemon restart; a fresh mint pins the id so
         # the conversation can be resumed later.  The worker reports the
-        # effective id in its ready message (a dead resume target falls back
-        # to a fresh session there).
+        # effective id in its ready message.  A dead P2 resume target fails
+        # startup rather than silently becoming a fresh conversation; legacy
+        # launches retain their historical one-shot fresh-session fallback.
         if resume is not None:
             self.options["resume"] = resume
         elif session_id is not None:
             self.options["sessionId"] = session_id
         if worker_channel is not None:
             # Speak to the daemon as this worker's own canonical actor.  Two
-            # mechanisms keep the coordinator's ambient harness-bridge server
-            # out of the child: settingSources drops the user/local sources it
-            # can arrive through, and strictMcpConfig makes the CLI use ONLY the
-            # servers we inject via mcp_servers -- so no settings-file server
-            # (from any source) can slip back in.  "project" is retained on
-            # purpose: it is required to load the worker's CLAUDE.md and project
-            # permissions, which for residents ARE the worker's behavior.
-            self.options["settingSources"] = ["project"]
+            # mechanisms keep a settings-file MCP server from replacing that
+            # identity: strictMcpConfig makes the CLI use ONLY the servers we
+            # inject via mcp_servers, while the setting sources control ordinary
+            # Claude configuration independently.  P2 may load the redirected
+            # agent-owned user slot plus project/local slots only after P22 has
+            # supplied CLAUDE_CONFIG_DIR in a complete child environment.
+            # Legacy launches retain the historical project-only behavior.
+            self.options["settingSources"] = (
+                ["user", "project", "local"]
+                if runtime_context is not None
+                else ["project"]
+            )
             self.options["strictMcpConfig"] = True
             self.options["mcpServers"] = {"harness-bridge": worker_channel.mcp_server}
             self.options["allowedTools"] = list(worker_channel.allowed_tools)
         identity_environment = (
             worker_channel.identity_environment() if worker_channel is not None else {}
+        )
+        runtime_mode_environment = (
+            {_RUNTIME_CONTEXT_MODE_ENV: _P2_RUNTIME_CONTEXT_MODE}
+            if runtime_context is not None
+            else {}
         )
         self._env = {
             **base_environment,
@@ -233,6 +335,7 @@ class IsolatedAgentSdkClient:
             # and any shell-out to `hyprial` need it in the worker's own env);
             # explicit whitelist items, see WorkerChannel.identity_environment.
             **identity_environment,
+            **runtime_mode_environment,
             "HYPRIAL_AGENT_SDK_OPTIONS": json.dumps(
                 self.options,
                 separators=(",", ":"),
@@ -253,6 +356,7 @@ class IsolatedAgentSdkClient:
                     **(env or {}),
                     **provider_environment,
                     **identity_environment,
+                    **runtime_mode_environment,
                     "HYPRIAL_AGENT_SDK_OPTIONS": self._env["HYPRIAL_AGENT_SDK_OPTIONS"],
                 },
                 state_dir=worker_channel.state_dir,
@@ -555,9 +659,9 @@ class ClaudeAgentSdkProcess(StreamingTurnProcess):
         # conversation: a spec that carries a ref is a RESUME of a session a
         # previous daemon run persisted; a fresh worker mints its id here and
         # passes it as session_id until the first connect establishes it.
-        # Reconnects then resume the established id.  A dead resume target is
-        # replaced inside the worker (one fresh-session retry) and the
-        # replacement flows back through _session_established.
+        # Reconnects then resume the established id.  A dead P2 resume target
+        # is a loud startup failure; legacy workers retain their pre-P2
+        # fresh-session replacement contract.
         self._session_id = spec.session_ref or str(uuid4())
         self._established = spec.session_ref is not None
         self._env = env

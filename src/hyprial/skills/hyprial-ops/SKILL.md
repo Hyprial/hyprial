@@ -144,6 +144,10 @@ hyprial <域> <子命令> --help   # 参数面
   call fails `PROVIDER_AUTHENTICATION_FAILED` with a message starting
   `TYPESAFE_CREDENTIAL_FILE_ABSENT` / `_KEY_ABSENT` / `_ENV_ABSENT`.
   (headless claude 必带 --dangerously-skip-permissions)
+- **起测试用的隔离 daemon 必须设 `HYPRIAL_NETWORK_ISOLATED=1`**(见 `docs/network-isolation.md`):只允许 loopback
+  endpoint,不做监听推导、对端发现、转发、gossip、用量抓取;设了但为空或拼错 ⇒ 拒启。起来后看
+  `hyprial ps --json` 的 `zenoh.isolated` 必须为 true(它由 daemon 实际生效的状态算出,⛔ 不是回显环境变量)。
+  只靠 `HYPRIAL_PEER_DISCOVERY=0` ⛔ 不算隔离。
 - `hyprial start user-proxy --name <person>-proxy -- --route route:<adapter>:<dm-route>`
   —— 一人一个的消息中转 agent(打包的转发程序,无模型、无凭据、串行保序)。别人发给它的消息
   转进该人的飞书 DM(帖子标明"转述自 <原发送者>");该人在 DM 里回复时**必须以 `@收件人` 开头**

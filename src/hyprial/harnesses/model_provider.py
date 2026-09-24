@@ -121,12 +121,19 @@ def validate_model_selection(
         )
 
 
-def require_deepseek_key(environment: Mapping[str, str]) -> str:
+def require_deepseek_key(
+    environment: Mapping[str, str], *, allow_legacy_home_fallback: bool = True
+) -> str:
     """Return the DeepSeek key or fail without including it in the error."""
 
     key = environment.get(DEEPSEEK_API_KEY_ENV, "").strip()
     if key:
         return key
+    if not allow_legacy_home_fallback:
+        raise ModelProviderError(
+            "provider 'deepseek' requires an agent-owned DEEPSEEK_API_KEY; "
+            "agent-home P2 never falls back to Pi auth under HOME"
+        )
     home = Path(environment.get("HOME") or Path.home())
     for path in (
         home / ".pi" / "agent" / "auth.json",
@@ -149,13 +156,18 @@ def require_deepseek_key(environment: Mapping[str, str]) -> str:
 def claude_provider_environment(
     spec: HarnessLaunchSpec,
     environment: Mapping[str, str],
+    *,
+    allow_legacy_home_fallback: bool = True,
 ) -> dict[str, str]:
     """Return the per-process Claude environment delta for ``spec``."""
 
     validate_model_selection(spec.harness, spec.model_provider, spec.model)
     if spec.model_provider in {None, "anthropic"}:
         return {}
-    key = require_deepseek_key(environment)
+    key = require_deepseek_key(
+        environment,
+        allow_legacy_home_fallback=allow_legacy_home_fallback,
+    )
     model = spec.model or DEEPSEEK_MODEL
     return {
         "ANTHROPIC_BASE_URL": anthropic_base_url(environment),
@@ -172,13 +184,18 @@ def claude_provider_environment(
 def codex_provider_configuration(
     spec: HarnessLaunchSpec,
     environment: Mapping[str, str],
+    *,
+    allow_legacy_home_fallback: bool = True,
 ) -> tuple[tuple[str, ...], dict[str, str]]:
     """Return Codex global config argv and environment delta for ``spec``."""
 
     validate_model_selection(spec.harness, spec.model_provider, spec.model)
     if spec.model_provider in {None, "openai"}:
         return (), {}
-    key = require_deepseek_key(environment)
+    key = require_deepseek_key(
+        environment,
+        allow_legacy_home_fallback=allow_legacy_home_fallback,
+    )
     model = spec.model or DEEPSEEK_MODEL
     # Codex's official config reference recommends ``env_key`` over embedding
     # bearer tokens.  The key is copied only into the child environment; argv
@@ -199,6 +216,8 @@ def codex_provider_configuration(
             'model_providers.deepseek.wire_api="responses"',
             "-c",
             f'model_providers.deepseek.env_key="{DEEPSEEK_API_KEY_ENV}"',
+            "-c",
+            "model_providers.deepseek.requires_openai_auth=false",
         ),
         {DEEPSEEK_API_KEY_ENV: key},
     )

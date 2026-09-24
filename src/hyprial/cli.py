@@ -6221,6 +6221,11 @@ def _interactive_actor_name(name: str) -> str:
 def agent_create(
     name: str = typer.Option(..., "--name", help="Actor name, unique on this machine."),
     cwd: Path | None = typer.Option(None, "--cwd", help="Default working directory."),
+    config: Path | None = typer.Option(
+        None,
+        "--config",
+        help="Single explicit personality config directory (C).",
+    ),
     provider: str | None = typer.Option(
         None,
         "--provider",
@@ -6254,6 +6259,13 @@ def agent_create(
         params: JsonObject = {"name": name}
         if cwd is not None:
             params["cwd"] = str(cwd.expanduser().resolve())
+        if config is not None:
+            params["config"] = {
+                "sources": [
+                    {"path": str(config.expanduser().resolve()), "required": True}
+                ],
+                "discovery": "explicit-only",
+            }
         if provider is not None:
             # Wire key for the model vendor, as squire spells it.
             params["provider"] = provider
@@ -6444,6 +6456,59 @@ def _handover_prompt(result: JsonObject) -> str | None:
     return notice if isinstance(notice, str) and notice else None
 
 
+def _runtime_context_environment(
+    *, name: str, harness: str, cwd: Path, include_projection: bool = False
+) -> JsonObject | None:
+    projection = _runtime_context_projection(name=name, harness=harness, cwd=cwd)
+    if projection is None:
+        return None
+    return (
+        dict(projection)
+        if include_projection
+        else dict(projection["environment"])
+    )
+
+
+def _runtime_context_projection(
+    *, name: str, harness: str, cwd: Path
+) -> JsonObject | None:
+    """Ask the daemon for one non-secret P2 root/profile projection.
+
+    ``None`` is the explicit legacy mode.  The response is intentionally a
+    string map: entity tokens, grants, credential values, and receipts never
+    cross this CLI IPC seam.
+    """
+
+    result = _daemon_request(
+        "agent.runtime-context",
+        {"name": name, "harness": harness, "cwd": str(cwd)},
+    )
+    if result.get("mode") == "legacy":
+        return None
+    if result.get("mode") != "agent-home-p2":
+        raise CliError(
+            ipc_errors.INVALID_ARGUMENT,
+            "daemon returned an unsupported agent runtime context mode",
+        )
+    environment = result.get("environment")
+    if not isinstance(environment, dict) or any(
+        not isinstance(key, str) or not isinstance(value, str)
+        for key, value in environment.items()
+    ):
+        raise CliError(
+            ipc_errors.INVALID_ARGUMENT,
+            "daemon returned an invalid agent runtime environment",
+        )
+    for field in ("projectionRoot", "nativeRoot", "sessionRoot"):
+        value = result.get(field)
+        if not isinstance(value, str) or not Path(value).is_absolute():
+            raise CliError(
+                ipc_errors.INVALID_ARGUMENT,
+                f"daemon returned an invalid agent runtime {field}",
+            )
+    return result
+
+
 def _start_interactive_claude(
     *,
     name: str,
@@ -6478,12 +6543,6 @@ def _start_interactive_claude(
         model_provider=model_provider,
         model=model,
     )
-    provider_environment = claude_provider_environment(provider_spec, os.environ)
-    from hyprial.agents.environment import whitelist_replacement_environment
-
-    launch_environment = whitelist_replacement_environment(
-        os.environ, provider_environment
-    )
     native_model_args = (
         ("--model", model)
         if model is not None and model_provider in {None, "anthropic"}
@@ -6499,6 +6558,41 @@ def _start_interactive_claude(
             model=model,
         )
     )
+    runtime_environment = _runtime_context_environment(
+        name=name, harness="claude", cwd=cwd
+    )
+    from hyprial.agents.environment import apply_runtime_environment_profile
+    from hyprial.harnesses.claude_runtime import (
+        CLAUDE_RUNTIME_ENVIRONMENT,
+        ClaudeRuntimeError,
+        validate_claude_auth_environment,
+    )
+
+    profile_base = apply_runtime_environment_profile(
+        os.environ, runtime_environment
+    )
+    provider_environment = claude_provider_environment(
+        provider_spec,
+        os.environ if runtime_environment is None else profile_base,
+        allow_legacy_home_fallback=runtime_environment is None,
+    )
+    launch_environment = apply_runtime_environment_profile(
+        os.environ,
+        runtime_environment,
+        provider_environment,
+        CLAUDE_RUNTIME_ENVIRONMENT if runtime_environment is not None else {},
+    )
+    if runtime_environment is not None:
+        native_root = runtime_environment.get("CLAUDE_CONFIG_DIR")
+        if not native_root:
+            raise CliError(
+                ipc_errors.INVALID_ARGUMENT,
+                "Claude P2 runtime context is missing CLAUDE_CONFIG_DIR",
+            )
+        try:
+            validate_claude_auth_environment(Path(native_root), launch_environment)
+        except ClaudeRuntimeError as error:
+            raise CliError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
     status = _daemon_request("ps")
     actor = _interactive_actor(name, status)
     from hyprial.uri import agent_uri_actor
@@ -6669,6 +6763,16 @@ def _start_interactive_claude(
         display_name,
         "--mcp-config",
         str(config_path),
+        *(
+            ("--setting-sources", "user,project,local")
+            if runtime_environment is not None
+            else ()
+        ),
+        # Project MCP files remain discoverable inputs, but cannot add or
+        # replace servers for this managed session.  The per-launch config
+        # contains the daemon-bound Harness server plus explicitly approved
+        # plugin-manifest servers.
+        "--strict-mcp-config",
         *plugin_dir_args,
         "--settings",
         json.dumps(settings, separators=(",", ":")),
@@ -7049,6 +7153,18 @@ def _start_interactive_pi(
             model=model,
         )
     )
+    runtime_projection = _runtime_context_environment(
+        name=name, harness="pi", cwd=cwd, include_projection=True
+    )
+    runtime_environment = (
+        None
+        if runtime_projection is None
+        else {
+            key: value
+            for key, value in runtime_projection["environment"].items()
+            if isinstance(key, str) and isinstance(value, str)
+        }
+    )
     status = _daemon_request("ps")
     actor = _interactive_actor(name, status)
     display_name = nickname or agent_uri_actor(actor) or actor
@@ -7057,6 +7173,17 @@ def _start_interactive_pi(
     # (#192; the raw ref remains the daemon identity key).
     session_ref = str(uuid4())
     state_dir = _state_dir()
+    append_system_prompt = (
+        "Harness Network is connected through the hyprial pi harness-bridge "
+        "extension. Harness messages arrive as user messages prefixed "
+        "with [Harness Network ...]; answer them in the transcript and "
+        "the bridge sends your final reply back when the turn settles. "
+        "Use the harness_send/harness_read/harness_progress/harness_reply/harness_ack/"
+        "harness_targets/harness_whoami tools for proactive Harness "
+        "Network access." + (f"\n\n{handover}" if handover else "")
+        # A9: a harness swap starts the conversation from zero. Say so up
+        # front, before the first turn.
+    )
     argv = [
         os.environ.get("HARNESS_PI_BIN", "pi"),
         *selected_args,
@@ -7068,17 +7195,7 @@ def _start_interactive_pi(
         "--extension",
         str(PI_HARNESS_ATTACH_EXTENSION),
         "--append-system-prompt",
-        (
-            "Harness Network is connected through the hyprial pi harness-bridge "
-            "extension. Harness messages arrive as user messages prefixed "
-            "with [Harness Network ...]; answer them in the transcript and "
-            "the bridge sends your final reply back when the turn settles. "
-            "Use the harness_send/harness_read/harness_progress/harness_reply/harness_ack/"
-            "harness_targets/harness_whoami tools for proactive Harness "
-            "Network access." + (f"\n\n{handover}" if handover else "")
-            # A9: a harness swap starts the conversation from zero. Say so up
-            # front, before the first turn.
-        ),
+        append_system_prompt,
     ]
     from hyprial.plugins import PluginManifestError, load_manifest, pi_plan
 
@@ -7090,19 +7207,56 @@ def _start_interactive_pi(
     _announce_plugin_skips(plugin_warnings)
     # HYPRIAL_HOME-declared payloads ride pi's native session-scoped flags, so a
     # session never depends on launch-directory-local discovery.
-    for skill_dir in plugin_plan.skill_dirs:
-        argv.extend(["--skill", str(skill_dir)])
-    for extension in plugin_plan.extensions:
-        argv.extend(["--extension", str(extension)])
-    environment = {
-        **os.environ,
+    if runtime_projection is None:
+        for skill_dir in plugin_plan.skill_dirs:
+            argv.extend(["--skill", str(skill_dir)])
+        for extension in plugin_plan.extensions:
+            argv.extend(["--extension", str(extension)])
+    from hyprial.agents.environment import apply_runtime_environment_profile
+
+    environment = apply_runtime_environment_profile(
+        os.environ,
+        runtime_environment,
+        {
         # The carrier's own canonical identity, pinned to THIS daemon's
         # socket (never an ambient production daemon).
         "HYPRIAL_WORKER_ACTOR": actor,
         "HYPRIAL_WORKER_SESSION_REF": session_ref,
         "HYPRIAL_MANAGED_WORKER": "1",
         **child_state_environment(_hyprial_home(), state_dir),
-    }
+        },
+    )
+    if runtime_projection is not None:
+        from hyprial.harnesses.pi_loader import (
+            find_pi_package_root,
+            pi_sdk_launch_from_public_projection,
+            resolve_approved_pi_project,
+        )
+
+        pi_command = (os.environ.get("HARNESS_PI_BIN", "pi"),)
+        try:
+            trust = resolve_approved_pi_project(
+                cwd=str(cwd), runtime_args=runtime_args
+            )
+            sdk_launch = pi_sdk_launch_from_public_projection(
+                runtime_projection,
+                trust=trust,
+                mode="tui",
+                session_id=pi_session_id(session_ref),
+                pi_package_root=find_pi_package_root(pi_command, environment),
+                model_provider=model_provider,
+                model=model,
+                additional_extension_paths=(
+                    PI_HARNESS_ATTACH_EXTENSION,
+                    *plugin_plan.extensions,
+                ),
+                additional_skill_paths=plugin_plan.skill_dirs,
+                append_system_prompt=(append_system_prompt,),
+                session_name=display_name,
+            )
+        except ValueError as error:
+            raise CliError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
+        argv = list(sdk_launch.argv)
     if tmux:
         from hyprial.harnesses.tmux import session_name_for_actor
 
@@ -7233,9 +7387,6 @@ def _start_interactive_codex(
         model_provider=model_provider,
         model=model,
     )
-    provider_args, provider_environment = codex_provider_configuration(
-        provider_spec, os.environ
-    )
     try:
         plugin_plan = codex_plan(load_manifest(_hyprial_home()))
     except PluginManifestError as error:
@@ -7250,6 +7401,24 @@ def _start_interactive_codex(
         provider=model_provider,
         model=model,
     )
+    runtime_projection = _runtime_context_projection(
+        name=name, harness="codex", cwd=cwd
+    )
+    runtime_environment = (
+        None
+        if runtime_projection is None
+        else dict(runtime_projection["environment"])
+    )
+    from hyprial.agents.environment import apply_runtime_environment_profile
+
+    profile_base = apply_runtime_environment_profile(
+        os.environ, runtime_environment
+    )
+    provider_args, provider_environment = codex_provider_configuration(
+        provider_spec,
+        os.environ if runtime_environment is None else profile_base,
+        allow_legacy_home_fallback=runtime_projection is None,
+    )
     status = _daemon_request("ps")
     actor = _interactive_actor(name, status)
     codex_bin = os.environ.get("HARNESS_CODEX_BIN", "codex")
@@ -7261,13 +7430,31 @@ def _start_interactive_codex(
         socket_path,
         cwd=cwd,
         command=(codex_bin, *provider_args),
-        env={
-            **child_state_environment(_hyprial_home(), _state_dir()),
-            **provider_environment,
-        },
+        env=apply_runtime_environment_profile(
+            os.environ,
+            runtime_environment,
+            child_state_environment(_hyprial_home(), _state_dir()),
+            provider_environment,
+        ),
         # HYPRIAL_HOME plugin MCP servers ride the app-server's ``-c`` override
         # surface: the server executes tools, the remote TUI does not.
         config_args=plugin_plan.config_args,
+        model_provider=model_provider,
+        projection_root=(
+            None
+            if runtime_projection is None
+            else Path(str(runtime_projection["projectionRoot"]))
+        ),
+        native_root=(
+            None
+            if runtime_projection is None
+            else Path(str(runtime_projection["nativeRoot"]))
+        ),
+        session_root=(
+            None
+            if runtime_projection is None
+            else Path(str(runtime_projection["sessionRoot"]))
+        ),
     )
     process: subprocess.Popen[Any] | None = None
     carrier: CodexInteractiveCarrier | None = None
@@ -7282,10 +7469,9 @@ def _start_interactive_codex(
         "--remote",
         f"unix://{socket_path}",
     ]
-    from hyprial.agents.environment import whitelist_replacement_environment
-
-    environment = whitelist_replacement_environment(
+    environment = apply_runtime_environment_profile(
         os.environ,
+        runtime_environment,
         child_state_environment(_hyprial_home(), _state_dir()),
         provider_environment,
     )

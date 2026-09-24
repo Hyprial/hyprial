@@ -10,7 +10,7 @@ import threading
 import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, replace
-from typing import Any, Protocol, Self
+from typing import TYPE_CHECKING, Any, Protocol, Self
 from uuid import uuid4
 
 from hyprial.backoff import capped_exponential
@@ -25,6 +25,9 @@ from hyprial.daemon.api import (
 )
 from hyprial.inbox.progress import ProgressEvent, ProgressEventError
 from hyprial.log import Logger
+
+if TYPE_CHECKING:
+    from hyprial.agents.runtime import AgentRuntimeContext
 
 from .turn_ports import (
     CloseTurnPumpCommand,
@@ -50,6 +53,7 @@ class TurnFailureSpecObserver(Protocol):
         provider: str | None,
         model: str | None,
         worker: str,
+        runtime_context: "AgentRuntimeContext | None" = None,
     ) -> None: ...
 
 

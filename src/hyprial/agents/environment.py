@@ -10,16 +10,21 @@ import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .secrets import ResolvedSecret
+
+if TYPE_CHECKING:
+    from .runtime import AgentRuntimeContext
 
 __all__ = [
     "BASE_CHILD_ENVIRONMENT_NAMES",
     "GENERATED_CHILD_ENVIRONMENT_NAMES",
     "GIT_ONE_SHOT_TRIPLE",
+    "P2_CONTROLLED_ENVIRONMENT_NAMES",
     "CompleteChildEnvironment",
     "ChildEnvironmentLaunch",
+    "apply_runtime_environment_profile",
     "build_complete_child_environment",
     "compose_worker_child_launch",
     "whitelist_replacement_environment",
@@ -88,6 +93,57 @@ GENERATED_CHILD_ENVIRONMENT_NAMES = frozenset(
         "HYPRIAL_NODE_ID",
         "HYPRIAL_OWNER",
         "HYPRIAL_MANAGED_WORKER",
+        # P2 root/profile values.  HOME/XDG remain in BASE as well so the
+        # unconfigured P1 mode preserves the daemon's current values.  A P2
+        # composition removes these names from BASE and supplies them here,
+        # making the two modes explicit rather than changing legacy meaning.
+        "HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+        "CLAUDE_CONFIG_DIR",
+        "CODEX_HOME",
+        "PI_CODING_AGENT_DIR",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_NOSYSTEM",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_KEY_0",
+        "GIT_CONFIG_VALUE_0",
+        "GIT_AUTHOR_NAME",
+        "GIT_AUTHOR_EMAIL",
+        "GIT_COMMITTER_NAME",
+        "GIT_COMMITTER_EMAIL",
+        "GIT_SSH_COMMAND",
+        "SSH_AUTH_SOCK",
+        "HYPRIAL_TOOL_PROFILE_ID",
+        "HYPRIAL_TEA_LOGIN",
+    }
+)
+
+P2_CONTROLLED_ENVIRONMENT_NAMES = frozenset(
+    {
+        "HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+        "CLAUDE_CONFIG_DIR",
+        "CODEX_HOME",
+        "PI_CODING_AGENT_DIR",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_NOSYSTEM",
+        "GIT_AUTHOR_NAME",
+        "GIT_AUTHOR_EMAIL",
+        "GIT_COMMITTER_NAME",
+        "GIT_COMMITTER_EMAIL",
+        "GIT_SSH_COMMAND",
+        "SSH_AUTH_SOCK",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_KEY_0",
+        "GIT_CONFIG_VALUE_0",
+        "HYPRIAL_TOOL_PROFILE_ID",
+        "HYPRIAL_TEA_LOGIN",
     }
 )
 
@@ -151,6 +207,9 @@ class ChildEnvironmentLaunch:
     environment: CompleteChildEnvironment
     actor: str
     grants: tuple[tuple[str, int], ...] = ()
+    runtime_context: "AgentRuntimeContext | None" = field(
+        default=None, repr=False, compare=False
+    )
 
 
 def build_complete_child_environment(
@@ -196,6 +255,11 @@ def build_complete_child_environment(
             if name in combined:
                 raise ValueError("secret environment name conflicts with another mapping")
             combined[name] = value
+    git_names = _GIT_TRIPLE.intersection(combined)
+    if git_names and git_names != _GIT_TRIPLE:
+        raise ValueError("Git one-shot environment must contain the complete triple")
+    if git_names and not git_one_shot_is_valid(combined):
+        raise ValueError("Git one-shot environment is not approved")
     return CompleteChildEnvironment(tuple(sorted(combined.items())))
 
 
@@ -242,10 +306,20 @@ def compose_worker_child_launch(
         # Every other home error still propagates loudly.
         if resolved:
             raise
+    runtime_context = getattr(channel, "runtime_context", None)
+    runtime_environment = (
+        {} if runtime_context is None else runtime_context.environment()
+    )
     base = {
         name: environ[name]
         for name in BASE_CHILD_ENVIRONMENT_NAMES
-        if name in environ and name not in GIT_ONE_SHOT_TRIPLE
+        if name in environ
+        and name not in GIT_ONE_SHOT_TRIPLE
+        and name not in runtime_environment
+        and not (
+            runtime_context is not None
+            and name in P2_CONTROLLED_ENVIRONMENT_NAMES
+        )
     }
     if (
         GIT_ONE_SHOT_TRIPLE.intersection(environ) == GIT_ONE_SHOT_TRIPLE
@@ -253,6 +327,7 @@ def compose_worker_child_launch(
     ):
         for name in GIT_ONE_SHOT_TRIPLE:
             base[name] = environ[name]
+    generated.update(runtime_environment)
     return ChildEnvironmentLaunch(
         environment=build_complete_child_environment(
             base=base, generated=generated, secrets=resolved
@@ -262,6 +337,43 @@ def compose_worker_child_launch(
             (secret.grant.grant_id, secret.grant.revision)
             for secret in resolved
         ),
+        runtime_context=runtime_context,
+    )
+
+
+def apply_runtime_environment_profile(
+    environ: Mapping[str, str],
+    runtime_environment: Mapping[str, str] | None,
+    *deltas: Mapping[str, str],
+) -> dict[str, str]:
+    """Build a CLI/PTY environment with an optional P2 controlled profile.
+
+    Legacy mode is the existing frozen whitelist.  P2 mode first removes every
+    root/tool capability owned by the profile, then overlays the daemon-resolved
+    non-secret selectors.  An omitted profile therefore cannot inherit an SSH
+    socket, Git helper, native root, or operator HOME by accident.
+    """
+
+    if runtime_environment is None:
+        return whitelist_replacement_environment(environ, *deltas)
+    if any(
+        name not in P2_CONTROLLED_ENVIRONMENT_NAMES
+        for name in runtime_environment
+    ):
+        raise ValueError("runtime environment contains an unapproved profile name")
+    runtime_git_names = GIT_ONE_SHOT_TRIPLE.intersection(runtime_environment)
+    if runtime_git_names and (
+        runtime_git_names != GIT_ONE_SHOT_TRIPLE
+        or not git_one_shot_is_valid(runtime_environment)
+    ):
+        raise ValueError("runtime Git one-shot environment is not approved")
+    filtered = {
+        name: value
+        for name, value in environ.items()
+        if name not in P2_CONTROLLED_ENVIRONMENT_NAMES
+    }
+    return whitelist_replacement_environment(
+        filtered, runtime_environment, *deltas
     )
 
 
@@ -288,7 +400,7 @@ def whitelist_replacement_environment(
         if name in environ and name not in GIT_ONE_SHOT_TRIPLE:
             combined[name] = environ[name]
     for name in GENERATED_CHILD_ENVIRONMENT_NAMES:
-        if name in environ:
+        if name in environ and name not in GIT_ONE_SHOT_TRIPLE:
             combined[name] = environ[name]
     if (
         GIT_ONE_SHOT_TRIPLE.intersection(environ) == GIT_ONE_SHOT_TRIPLE

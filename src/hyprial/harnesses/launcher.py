@@ -299,4 +299,6 @@ class HarnessLauncher:
                 (),
                 "unsupported harness; expected claude, pi, codex, dsh, jev, or user-proxy",
             ) from error
-        return connector.launch(spec)
+        channel = self._worker_channel_for(spec)
+        launch = self._complete_launch_for(spec, channel)
+        return connector.launch(spec, complete_launch=launch)

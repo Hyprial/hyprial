@@ -287,6 +287,16 @@ def run_transfer(
     harness = str(spec["provider"])
     old_actor = str(plan["actor"])
     emit(f"plan: {harness}:{name} on {plan['nodeId']} ({old_actor})")
+    agent = plan.get("agent")
+    if isinstance(agent, dict) and agent.get("config") is not None:
+        raise TransferError(
+            ipc_errors.TRANSFER_UNSUPPORTED_HARNESS,
+            f"agent-home P2 transfer is unsupported for {harness}:{name}: "
+            "the target cannot yet rebind the source identity, config, native "
+            "root, and session root as one authorized context; refusing to "
+            "fall back to either host HOME",
+            {"harness": harness, "name": name, "mode": "agent-home-p2"},
+        )
     if plan.get("unreadInbox"):
         emit(
             f"note: {plan['unreadInbox']} undrained inbox row(s) stay on "

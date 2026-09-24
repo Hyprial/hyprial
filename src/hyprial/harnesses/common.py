@@ -191,6 +191,7 @@ class PtyHarnessProcess:
         *,
         cwd: str | Path | None = None,
         env: Mapping[str, str] | None = None,
+        complete_environment: bool = False,
         startup_probe_seconds: float = 0.08,
         stop_grace_seconds: float = 1.0,
     ) -> PtyHarnessProcess:
@@ -212,7 +213,11 @@ class PtyHarnessProcess:
                     env=(
                         None
                         if env is None
-                        else whitelist_replacement_environment(os.environ, env)
+                        else (
+                            dict(env)
+                            if complete_environment
+                            else whitelist_replacement_environment(os.environ, env)
+                        )
                     ),
                     start_new_session=True,
                     close_fds=True,

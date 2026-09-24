@@ -19,6 +19,7 @@ import weakref
 from collections.abc import Callable, Iterator
 from dataclasses import replace
 from pathlib import Path
+from urllib.parse import urlsplit
 from types import FrameType
 from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
@@ -736,6 +737,17 @@ class DaemonApplication:
         )
         self.zenoh_listen = zenoh_listen
         self.zenoh_connect = zenoh_connect
+        #: Set by from_environment when HYPRIAL_NETWORK_ISOLATED is on: no
+        #: path off this machine (see _isolated_endpoints for the inventory).
+        self.network_isolated = False
+        #: What startup ACTUALLY did on the network paths the switch governs,
+        #: recorded where each decision is made -- so `ps` reports the
+        #: effective state, not an echo of the environment variable.
+        self._startup_network: dict[str, bool] = {
+            "listenDerived": False,
+            "discoveryConsulted": False,
+            "gossip": False,
+        }
         self._forwarding_discovery = forwarding_discovery
         self._forwarding_effective: tuple[str, ...] = ()
         self._forwarding_start_attempted = forwarding_discovery is not None
@@ -1003,13 +1015,19 @@ class DaemonApplication:
         if not node_id:
             raise ValueError("HYPRIAL_NODE_ID must not be empty")
         zenoh_listen = _endpoint_list("HYPRIAL_ZENOH_LISTEN")
+        zenoh_connect = _endpoint_list("HYPRIAL_ZENOH_CONNECT")
+        isolated = network_isolated_from_environment()
+        if isolated:
+            zenoh_listen, zenoh_connect = _isolated_endpoints(
+                zenoh_listen, zenoh_connect
+            )
         forwarding_configured = bool(
             os.environ.get(FORWARDING_COMMAND_ENV)
             or os.environ.get(FORWARDING_UP_ENV)
         )
         if forwarding_configured and not zenoh_listen:
             raise ValueError("forwarding requires explicit HYPRIAL_ZENOH_LISTEN")
-        return cls(
+        app = cls(
             state_dir=state_dir,
             socket_path=socket_path,
             node_id=node_id,
@@ -1017,12 +1035,16 @@ class DaemonApplication:
             # redefine which HYPRIAL home this daemon owns.
             hyprial_home=configured_hyprial_home()[0],
             zenoh_listen=zenoh_listen,
-            zenoh_connect=_endpoint_list("HYPRIAL_ZENOH_CONNECT"),
+            zenoh_connect=zenoh_connect,
             usage_cache=(
-                None if usage_collection_disabled() else UsageCache()
+                None
+                if isolated or usage_collection_disabled()
+                else UsageCache()
             ),
             keepalive_duration=keepalive_duration_from_environment(),
         )
+        app.network_isolated = isolated
+        return app
 
     def run(
         self,
@@ -1621,10 +1643,24 @@ class DaemonApplication:
         # every peer it dialed, so from the inside nothing is wrong.  So a
         # node with no listen endpoint derives its own rather than silently
         # becoming unreachable.
-        if not listen:
+        if self.network_isolated:
+            self._log(
+                "info",
+                "zenoh",
+                "network.isolated",
+                listen=list(listen),
+                connect=list(connect),
+                detail=(
+                    "HYPRIAL_NETWORK_ISOLATED: loopback endpoints only; no "
+                    "listen derivation, peer discovery, forwarding, gossip "
+                    "or usage fetch"
+                ),
+            )
+        if not listen and not self.network_isolated:
             derived = self._derive_listen_endpoint()
             if derived is not None:
                 listen = (derived,)
+                self._startup_network["listenDerived"] = True
                 self._log(
                     "info",
                     "zenoh",
@@ -1636,7 +1672,10 @@ class DaemonApplication:
                     ),
                 )
         configured_count = len(connect)
-        discovered = self._discover_peer_endpoints()
+        discovered: tuple[str, ...] = ()
+        if not self.network_isolated:
+            self._startup_network["discoveryConsulted"] = True
+            discovered = self._discover_peer_endpoints()
         if discovered:
             connect = merge_endpoints(connect, discovered)
         # Logged whether or not anything was found, and whether or not it is
@@ -1700,7 +1739,7 @@ class DaemonApplication:
             # node reaches exactly the endpoints it was configured with, so
             # peers sharing a hub never learn about each other: the hub sees
             # everyone and the spokes see only themselves and the hub.
-            gossip_scouting=zenoh_environment_flag("HYPRIAL_ZENOH_GOSSIP"),
+            gossip_scouting=self._gossip_for_startup(),
         )
         transport = ZenohTransport(config)
         directory = LivelinessDirectory(transport)
@@ -1804,6 +1843,19 @@ class DaemonApplication:
             # worker's MCP inbox key never drifts from where deliveries land.
             actor = self._canonical_harness_uri(spec.name, spec)
             session_ref = uuid4().hex
+            from hyprial.agents.runtime import (
+                DEFAULT_AGENT_TOOL_PROFILE,
+                resolve_agent_runtime_context,
+            )
+
+            runtime_context = resolve_agent_runtime_context(
+                registry=self._agent_registry,
+                agent_name=spec.name,
+                harness=spec.harness,
+                cwd=spec.cwd,
+                tool_profile=DEFAULT_AGENT_TOOL_PROFILE,
+                containerized=spec.containerized,
+            )
             return build_worker_channel(
                 actor=actor,
                 session_ref=session_ref,
@@ -1817,6 +1869,7 @@ class DaemonApplication:
                 python_executable=(
                     _CONTAINER_PYTHON if spec.containerized else None
                 ),
+                runtime_context=runtime_context,
             )
 
         def child_environment(
@@ -4002,6 +4055,8 @@ class DaemonApplication:
                 "zenoh": {
                     "listen": list(self.zenoh_listen),
                     "connect": list(self.zenoh_connect),
+                    "isolated": self._network_isolation_status()["effective"],
+                    "isolation": self._network_isolation_status(),
                 },
                 "forwarding": self._forwarding_status_json(),
             }
@@ -4140,6 +4195,8 @@ class DaemonApplication:
                     "zenoh": {
                         "listen": list(self.zenoh_listen),
                         "connect": list(self.zenoh_connect),
+                        "isolated": self._network_isolation_status()["effective"],
+                        "isolation": self._network_isolation_status(),
                     },
                     "duplicateInstance": self._duplicate_instance_payload(),
                     "forwarding": self._forwarding_status_json(),
@@ -5943,6 +6000,7 @@ class DaemonApplication:
                 agent = self.agents.create(
                     name,
                     cwd=_optional_string_param(params.get("cwd"), "cwd"),
+                    config=params.get("config"),
                     # Model vendor, the same word squire uses.
                     provider=_optional_string_param(
                         params.get("provider"), "provider"
@@ -6011,6 +6069,50 @@ class DaemonApplication:
                         self._agent_status_json(agent) for agent in self.agents.list()
                     ],
                 }
+        if method == "agent.runtime-context":
+            # Non-secret interactive-launch handoff.  The daemon remains the
+            # sole root/profile resolver; this projection deliberately omits
+            # entity tokens, grant values, and credential material (T16).
+            name = self.agents.normalize_actor(
+                _required_string(params.get("name"), "name")
+            )
+            harness = _required_string(params.get("harness"), "harness")
+            cwd = _optional_string_param(params.get("cwd"), "cwd")
+            from hyprial.agents.runtime import (
+                DEFAULT_AGENT_TOOL_PROFILE,
+                AgentRuntimeError,
+                resolve_agent_runtime_context,
+            )
+            from hyprial.agents.config import AgentConfigError
+            from hyprial.agents.home import AgentHomeError
+            from hyprial.harnesses.claude_runtime import (
+                ClaudeRuntimeError,
+                prepare_claude_runtime_context,
+            )
+
+            try:
+                context = resolve_agent_runtime_context(
+                    registry=self._agent_registry,
+                    agent_name=name,
+                    harness=harness,
+                    cwd=cwd,
+                    tool_profile=DEFAULT_AGENT_TOOL_PROFILE,
+                    containerized=False,
+                )
+                if context is not None and context.harness == "claude":
+                    prepare_claude_runtime_context(context)
+            except (
+                AgentRuntimeError,
+                AgentConfigError,
+                AgentHomeError,
+                ClaudeRuntimeError,
+            ) as error:
+                raise DaemonRequestError(
+                    ipc_errors.INVALID_ARGUMENT, str(error)
+                ) from error
+            if context is None:
+                return {"ok": True, "mode": "legacy", "environment": {}}
+            return {"ok": True, **context.public_projection()}
         if method == "agent.get":
             name = self.agents.normalize_actor(
                 _required_string(params.get("name"), "name")
@@ -7907,6 +8009,45 @@ class DaemonApplication:
             ),
         }
 
+    def _gossip_for_startup(self) -> bool:
+        gossip = not self.network_isolated and zenoh_environment_flag(
+            "HYPRIAL_ZENOH_GOSSIP"
+        )
+        self._startup_network["gossip"] = gossip
+        return gossip
+
+    def _network_isolation_status(self) -> JsonObject:
+        """Whether this daemon IS isolated, read off what it did and holds.
+
+        ``effective`` is true only when isolation was requested AND every
+        governed path is observably closed: endpoints all loopback, no listen
+        derivation, discovery never consulted, gossip off, no forwarding
+        sidecar or forwarded endpoints, no usage fetcher.  A path added later
+        without a check here leaves ``effective`` unable to vouch for it --
+        which is why the checks are listed, not summarised.
+        """
+
+        endpoints = (*self.zenoh_listen, *self.zenoh_connect)
+        checks = {
+            "endpointsLoopbackOnly": all(
+                _endpoint_host(endpoint) in _LOOPBACK_HOSTS for endpoint in endpoints
+            ),
+            "listenNotDerived": not self._startup_network["listenDerived"],
+            "discoveryNotConsulted": not self._startup_network["discoveryConsulted"],
+            "gossipOff": not self._startup_network["gossip"],
+            "forwardingOff": (
+                self._forwarding_supervisor is None
+                and not self._forwarding_effective
+                and not self._forwarding_start_attempted
+            ),
+            "usageFetchOff": self._usage_cache is None,
+        }
+        return {
+            "requested": self.network_isolated,
+            "effective": self.network_isolated and all(checks.values()),
+            "checks": checks,
+        }
+
     def _derive_listen_endpoint(self) -> str | None:
         """This node's own tailnet address, when nothing was configured.
 
@@ -8509,13 +8650,49 @@ class DaemonApplication:
                 f"{spec.harness}{'' if spec.headless else ' (interactive)'}",
             )
         cwd = spec.cwd or os.getcwd()
+        runtime_context = None
+        agent = self.agents.get(spec.name)
+        if agent is not None and agent.config is not None:
+            from hyprial.agents.config import AgentConfigError
+            from hyprial.agents.home import AgentHomeError
+            from hyprial.agents.runtime import (
+                DEFAULT_AGENT_TOOL_PROFILE,
+                AgentRuntimeError,
+                resolve_agent_runtime_context,
+            )
+
+            try:
+                runtime_context = resolve_agent_runtime_context(
+                    registry=self._agent_registry,
+                    agent_name=agent.actor,
+                    harness=spec.harness,
+                    cwd=cwd,
+                    tool_profile=DEFAULT_AGENT_TOOL_PROFILE,
+                    containerized=spec.containerized,
+                )
+            except (AgentConfigError, AgentHomeError, AgentRuntimeError) as error:
+                raise DaemonRequestError(
+                    ipc_errors.INVALID_ARGUMENT,
+                    f"cannot resolve agent-home P2 session root for "
+                    f"{spec.harness}:{spec.name}: {error}",
+                ) from error
+            if runtime_context is None:
+                raise DaemonRequestError(
+                    ipc_errors.INVALID_ARGUMENT,
+                    f"agent-home P2 session root is unavailable for "
+                    f"{spec.harness}:{spec.name}",
+                )
         try:
             agent_dir = os.environ.get("PI_CODING_AGENT_DIR")
-            if spec.harness == "pi" and agent_dir:
+            if runtime_context is None and spec.harness == "pi" and agent_dir:
                 located = pi_session_file(Path(agent_dir).expanduser(), cwd, session_ref)
             else:
                 located = locate_session_file(
-                    spec.harness, cwd, session_ref, home=Path.home()
+                    spec.harness,
+                    cwd,
+                    session_ref,
+                    home=Path.home(),
+                    runtime_context=runtime_context,
                 )
             if not located.is_file():
                 raise SessionFileNotFound(f"not a regular session file: {located}")
@@ -9496,6 +9673,30 @@ class DaemonApplication:
                 else Path.home() / ".pi" / "agent" / "auth.json"
             )
             pi_binary = shutil.which("pi")
+
+            def runtime_context_valid(context: Any) -> bool:
+                try:
+                    current = self._agent_registry.require(context.actor)
+                except Exception:  # noqa: BLE001 -- stale context is rejection
+                    return False
+                return (
+                    current.uri == context.actor
+                    and current.entity_token == context.entity_token
+                )
+
+            def runtime_helper(context: Any) -> Any:
+                from hyprial.agents.environment import (
+                    apply_runtime_environment_profile,
+                )
+
+                environment = apply_runtime_environment_profile(
+                    os.environ, context.environment()
+                )
+                return DeviceLoginRunner(
+                    pi_command=(pi_binary,) if pi_binary else ("pi",),
+                    environment=environment,
+                )
+
             return ProviderAuthCoordinator(
                 profile_store=store,
                 owner_key=profile.owner_key if profile is not None else None,
@@ -9514,6 +9715,8 @@ class DaemonApplication:
                 logger=lambda event, **fields: self._log(
                     "info", "daemon", event, **fields
                 ),
+                runtime_helper_factory=runtime_helper,
+                runtime_context_validator=runtime_context_valid,
             )
         except Exception as error:  # noqa: BLE001 -- see docstring
             self._log(
@@ -9614,6 +9817,85 @@ def _session_harness(session: InteractiveSession) -> str:
         if candidate:
             return candidate
     return "claude"
+
+
+#: The one switch that keeps a test daemon on this machine.  Parsed like the
+#: other zenoh flags (unset or empty = off; 1/true/yes/on = on).  Isolation
+#: by HOME + HYPRIAL_PEER_DISCOVERY=0 alone left paths open (2026-09-16 ban;
+#: inventory 2026-09-23): forwarding runs before the discovery switch and
+#: joins the tailnet through a sidecar, zenoh may add a default all-interface
+#: listener when ``listen`` is empty, and the usage fetcher calls vendors.
+NETWORK_ISOLATED_ENV = "HYPRIAL_NETWORK_ISOLATED"
+#: Listen here when isolated and nothing loopback was configured: explicit,
+#: so zenoh never falls back to its own default listener.
+ISOLATED_DEFAULT_LISTEN = "tcp/127.0.0.1:0"
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
+def network_isolated_from_environment() -> bool:
+    """Fail closed once set: only UNSET means "not isolated".
+
+    The shared zenoh flag parser treats an empty value as unset (default),
+    which is exactly how ``export HYPRIAL_NETWORK_ISOLATED=`` or an unfilled
+    template would leak a test daemon onto the network.  So an empty or
+    whitespace value is refused here, and an unknown value is refused by the
+    shared parser.  Unset stays "not isolated" because production does not
+    set it; the test entry points refuse to start without it instead.
+    """
+
+    raw = os.environ.get(NETWORK_ISOLATED_ENV)
+    if raw is None:
+        return False
+    if not raw.strip():
+        raise ValueError(
+            f"{NETWORK_ISOLATED_ENV} is set but empty; use 1 to isolate "
+            "this daemon or unset it"
+        )
+    return zenoh_environment_flag(NETWORK_ISOLATED_ENV)
+
+
+def _endpoint_host(endpoint: str) -> str | None:
+    """``tcp/127.0.0.1:7447`` -> ``127.0.0.1``; ``tcp/[::1]:0`` -> ``::1``."""
+
+    locator = endpoint.split("#", 1)[0].split("?", 1)[0]
+    _, slash, address = locator.partition("/")
+    if not slash:
+        return None
+    # A zenoh locator's address is host:port (IPv6 bracketed): the standard
+    # authority parser handles both, brackets included.
+    try:
+        return urlsplit(f"//{address}").hostname
+    except ValueError:
+        return None
+
+
+def _isolated_endpoints(
+    listen: tuple[str, ...], connect: tuple[str, ...]
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Validate endpoints for an isolated daemon; refuse, never silently drop.
+
+    Forwarding is refused by the PRESENCE of any HYPRIAL_FORWARDING_* variable,
+    not by endpoint address: its sidecar exposes loopback endpoints that tunnel
+    to the tailnet, so an address check would wave it through.
+    """
+
+    leaked = sorted(name for name in os.environ if name.startswith("HYPRIAL_FORWARDING_"))
+    if leaked:
+        raise ValueError(
+            f"{NETWORK_ISOLATED_ENV} is set but forwarding is configured "
+            f"({', '.join(leaked)}); unset them -- forwarding joins the tailnet"
+        )
+    remote = [
+        endpoint
+        for endpoint in (*listen, *connect)
+        if _endpoint_host(endpoint) not in _LOOPBACK_HOSTS
+    ]
+    if remote:
+        raise ValueError(
+            f"{NETWORK_ISOLATED_ENV} is set but HYPRIAL_ZENOH_LISTEN/CONNECT "
+            f"name non-loopback endpoints: {', '.join(remote)}"
+        )
+    return (listen or (ISOLATED_DEFAULT_LISTEN,)), connect
 
 
 def _endpoint_list(name: str) -> tuple[str, ...]:
