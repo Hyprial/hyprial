@@ -19,6 +19,11 @@ from hyprial.pac.lifecycle import (
 from hyprial.pac.reactor import NotificationSender, PacReactor
 from hyprial.pac.store import PacGraphStore, default_database_path
 
+#: One actor reconcile slower than this gets its own log line.  Close->reclaim
+#: took 73 s on a 1 s tick with nothing logged (2026-09-24); per-job duration
+#: is what tells a slow reconcile from one that never ran.
+_PAC_RECONCILE_SLOW_MS = 2000
+
 
 class DaemonActorRuntime:
     def __init__(self, application: Any) -> None:
@@ -158,6 +163,9 @@ class PacActorService:
         self._clock_queue: queue.Queue[str | None] = queue.Queue(maxsize=128)
         self._active_actors: set[tuple[str, str]] = set()
         self._active_clocks: set[str] = set()
+        # Last skip reason logged per (graph, node): logged on change only, so
+        # a skip that repeats every tick is one line, not one per second.
+        self._skip_reasons: dict[tuple[str, str], str] = {}
         self._lock = threading.Lock()
         self._closed = False
         # Last, and before the worker threads: the failure branch reports
@@ -321,6 +329,15 @@ class PacActorService:
                 # while the daemon is tearing down, which is the opposite
                 # of what close() is for.
                 return
+            skipped: list[str] = []
+
+            def on_skip(
+                graph_id: str, node_id: str, reason: str, detail: dict[str, Any]
+            ) -> None:
+                skipped.append(reason)
+                self._note_skip(graph_id, node_id, reason, detail)
+
+            started = time.monotonic()
             try:
                 store = PacGraphStore(self.database)
                 try:
@@ -330,10 +347,24 @@ class PacActorService:
                         daemon_epoch=self.daemon_epoch,
                         resolver=FileLaunchResolver(self.reference_root),
                         sender=self.sender,
+                        on_skip=on_skip,
                     )
                     coordinator.reconcile(job[0], job[1])
                 finally:
                     store.close()
+                if not skipped:
+                    with self._lock:
+                        self._skip_reasons.pop(job, None)
+                elapsed_ms = int((time.monotonic() - started) * 1000)
+                if elapsed_ms >= _PAC_RECONCILE_SLOW_MS:
+                    self.logger(
+                        "warn",
+                        "pac",
+                        "pac.actor.reconcile_slow",
+                        graphId=job[0],
+                        nodeId=job[1],
+                        elapsedMs=elapsed_ms,
+                    )
             except Exception as error:  # noqa: BLE001 - isolate one actor from the service
                 self.logger(
                     "error",
@@ -347,6 +378,23 @@ class PacActorService:
             finally:
                 with self._lock:
                     self._active_actors.discard(job)
+
+    def _note_skip(
+        self, graph_id: str, node_id: str, reason: str, detail: dict[str, Any]
+    ) -> None:
+        with self._lock:
+            if self._skip_reasons.get((graph_id, node_id)) == reason:
+                return
+            self._skip_reasons[(graph_id, node_id)] = reason
+        self.logger(
+            "warn",
+            "pac",
+            "pac.actor.reconcile_skipped",
+            graphId=graph_id,
+            nodeId=node_id,
+            reason=reason,
+            **detail,
+        )
 
     def close(self, timeout: float = 5.0) -> bool:
         self._closed = True

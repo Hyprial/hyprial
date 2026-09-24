@@ -12,7 +12,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 from time import time_ns
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 from uuid import uuid4
 
 import yaml
@@ -250,9 +250,14 @@ class ActorCoordinator:
         resolver: LaunchResolver,
         sender: Any | None = None,
         clock: Any = now_ms,
+        on_skip: Callable[[str, str, str, dict[str, Any]], None] | None = None,
     ) -> None:
         self.store = store
         self.runtime = runtime
+        # Told why a reconcile left an activation where it was.  Both paths
+        # below used to return silently: a closed graph whose workers were
+        # reclaimed only 73 s later left no line saying why (2026-09-24).
+        self.on_skip = on_skip
         self.daemon_epoch = daemon_epoch
         self.resolver = resolver
         self.sender = sender
@@ -364,6 +369,15 @@ class ActorCoordinator:
             elif activation["daemon_epoch"] != self.daemon_epoch:
                 self._record_observation(
                     graph_id, node, activation, "actor_unowned", observation, notify=True
+                )
+            else:
+                self._skip(
+                    graph_id,
+                    node_id,
+                    "marker_mismatch",
+                    desired=activation["desired"],
+                    expected=marker,
+                    observed=observation.identity_marker,
                 )
             return
         if activation["desired"] == "down":
@@ -513,6 +527,17 @@ class ActorCoordinator:
             )
         if not observation.present:
             self._complete_down(graph_id, node, activation)
+        else:
+            self._skip(
+                graph_id,
+                node.node_id,
+                "still_present_after_stop",
+                operationId=activation["operation_id"],
+            )
+
+    def _skip(self, graph_id: str, node_id: str, reason: str, **detail: Any) -> None:
+        if self.on_skip is not None:
+            self.on_skip(graph_id, node_id, reason, detail)
 
     def _complete_down(self, graph_id: str, node: NodeRow, activation: dict[str, Any], *, stale: bool = False) -> None:
         db = self.store.write()
