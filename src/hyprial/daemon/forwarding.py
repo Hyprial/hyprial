@@ -74,6 +74,12 @@ class ForwardingSidecarController:
             raise ValueError("daemon forwarding must resume state without an auth key")
         self._timeout = timeout
         self._on_exit = on_exit
+        # Whether the last ``status`` answer carried a ``peers`` key at all.
+        # Current sidecars send an explicit ``[]`` for an empty mesh, so an
+        # absent key means a build that does not report peers -- which must
+        # not look the same as "nobody is online" (forwarding defaults plan
+        # §C).  None until the first status.
+        self.peers_reported: bool | None = None
         self._lock = threading.Lock()
         self._closing = False
         self._startup_complete = False
@@ -273,6 +279,7 @@ class ForwardingSidecarController:
         # non-list) is still a protocol violation, which is what
         # test_explicit_invalid_peers_still_rejected pins.
         raw_peers = event.get("peers")
+        self.peers_reported = "peers" in event
         if "peers" not in event:
             raw_peers = []
         raw_mappings = event.get("mappings", [])

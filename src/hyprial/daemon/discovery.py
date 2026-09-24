@@ -45,6 +45,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import time
 from collections.abc import Callable
 from typing import Protocol, runtime_checkable
 
@@ -102,6 +103,10 @@ class ForwardingEndpoints:
         self._controller = controller
         self._on_failure = on_failure
         self._on_success = on_success
+        # The last poll, for status/ps: who the sidecar reported and which
+        # local port each maps to, or why the poll failed.  Without it
+        # "which peers are we dialing?" had no answer anywhere (2026-09-24).
+        self._last_poll: dict[str, object] | None = None
 
     @property
     def controller(self) -> ForwardingController:
@@ -129,15 +134,34 @@ class ForwardingEndpoints:
                     )
                 endpoints.append(f"tcp/127.0.0.1:{port}")
         except Exception as error:  # noqa: BLE001 - discovery stays best effort
+            self._last_poll = {
+                "atMs": time.time_ns() // 1_000_000,
+                "ok": False,
+                "error": str(error)[:300],
+                "peersReported": getattr(self._controller, "peers_reported", None),
+            }
             if self._on_failure is not None:
                 self._on_failure(str(error))
             return ()
+        self._last_poll = {
+            "atMs": time.time_ns() // 1_000_000,
+            "ok": True,
+            "error": None,
+            "peersReported": getattr(self._controller, "peers_reported", None),
+            "peers": {peer: f"tcp/127.0.0.1:{mappings[peer]}" for peer in peers},
+        }
         # The success hook is what lets an owner tell "answered again" from
         # "never answered": a wedged child that recovers must be visible as
         # a state change, not inferred from the absence of failure events.
         if self._on_success is not None:
             self._on_success()
         return tuple(endpoints)
+
+    @property
+    def last_poll(self) -> dict[str, object] | None:
+        """The most recent poll's outcome, or None before the first one."""
+
+        return self._last_poll
 
     def close(self) -> None:
         self._controller.close()

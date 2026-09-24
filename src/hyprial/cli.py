@@ -9450,8 +9450,12 @@ def _alert_pending_app_migrations(pending: list[str]) -> None:
 
 @config_app.command("set")
 def config_set(
-    key: str = typer.Argument(..., help="Config key (supported: autoUpgrade)."),
-    value: str = typer.Argument(..., help="New value (autoUpgrade: true|false)."),
+    key: str = typer.Argument(
+        ..., help="Config key (supported: autoUpgrade, forwarding.mode)."
+    ),
+    value: str = typer.Argument(
+        ..., help="New value (autoUpgrade: true|false; forwarding.mode: off|auto|on)."
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
     """Set an operator switch in settings.json.
@@ -9460,16 +9464,40 @@ def config_set(
     self-upgrade: the daemon scheduler and the ``autoupdate run`` timer entry
     point skip until this is explicitly ``true``.  The manual
     ``hyprial upgrade`` is an operator's explicit act and stays ungated.
+
+    ``forwarding.mode`` is the durable forwarding switch: ``auto`` (the
+    default) forwards through the sidecar on a sidecar-joined home, ``off``
+    disables it -- including any explicit or generated forwarding variables
+    -- and ``on`` refuses to start the daemon without it.
+    ``HYPRIAL_FORWARDING`` in the daemon's environment still wins.  It takes
+    effect on the next daemon start.
     """
 
     def operation() -> JsonObject:
         from hyprial import updates
+        from hyprial.forwarding_config import (
+            FORWARDING_SETTINGS_KEY,
+            write_forwarding_mode,
+        )
 
+        forwarding_key = f"{FORWARDING_SETTINGS_KEY}.mode"
+        if key == forwarding_key:
+            try:
+                path = write_forwarding_mode(value, _hyprial_home())
+            except (ValueError, ForwardingConfigurationError) as error:
+                raise CliError("INVALID_CONFIGURATION", str(error)) from error
+            return {
+                "ok": True,
+                "key": forwarding_key,
+                "value": value.strip().lower(),
+                "path": str(path),
+                "appliesOn": "next daemon start",
+            }
         if key not in updates.AUTOUPGRADE_KEY_ALIASES:
             raise CliError(
                 "INVALID_CONFIGURATION",
                 f"unknown config key {key!r}; supported: "
-                + ", ".join(updates.AUTOUPGRADE_KEY_ALIASES),
+                + ", ".join((*updates.AUTOUPGRADE_KEY_ALIASES, forwarding_key)),
             )
         normalized = value.strip().lower()
         if normalized not in ("true", "false"):

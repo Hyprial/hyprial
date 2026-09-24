@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 import math
 import os
+import threading
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Self
 
 import zenoh
@@ -59,6 +60,16 @@ def _environment_float(name: str, default: float) -> float:
         return float(raw)
     except ValueError as error:
         raise ValueError(f"{name} must be a number") from error
+
+
+def _validate_endpoints(endpoints: tuple[str, ...]) -> None:
+    """Refuse a malformed locator before anything live is touched."""
+
+    for endpoint in endpoints:
+        protocol, separator, address = endpoint.partition("/")
+        host, colon, port = address.rpartition(":")
+        if not separator or not protocol or not colon or not host or not port.isdigit():
+            raise ValueError(f"not a zenoh endpoint: {endpoint!r}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,17 +191,39 @@ class ZenohConfig:
 
 
 class _Registration:
-    def __init__(self, inner: Any) -> None:
+    """A caller's handle on one declaration; survives a session rebuild.
+
+    ``declare`` re-creates the declaration on a new session, so the caller's
+    handle keeps working after ``ZenohTransport.reconfigure_connect`` without
+    the caller knowing a rebuild happened.  A closed handle is forgotten by its
+    transport and never replayed.
+    """
+
+    def __init__(
+        self,
+        inner: Any,
+        declare: Callable[[Any], Any] | None = None,
+        on_close: Callable[[_Registration], None] | None = None,
+    ) -> None:
         self._inner = inner
         self._closed = False
+        self._declare = declare
+        self._on_close = on_close
 
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
+        if self._on_close is not None:
+            self._on_close(self)
         undeclare = getattr(self._inner, "undeclare", None)
         if undeclare is not None:
             undeclare()
+
+    def _replay(self, session: Any) -> None:
+        # The old handle died with the old session; never undeclare it.
+        if not self._closed and self._declare is not None:
+            self._inner = self._declare(session)
 
 
 def _sample(sample: Any) -> TransportSample:
@@ -223,11 +256,88 @@ def _reply_error(reply: Any) -> str:
 
 class ZenohTransport:
     def __init__(self, config: ZenohConfig | None = None) -> None:
-        self._session = zenoh.open((config or ZenohConfig()).build())
+        self._config = config or ZenohConfig()
+        self._session = zenoh.open(self._config.build())
         self._closed = False
+        # Held across a rebuild so puts and declarations wait it out instead
+        # of racing a closed session; queries only capture the session.
+        self._lock = threading.RLock()
+        self._registrations: list[_Registration] = []
+        self._rebuild_hooks: list[Callable[[], None]] = []
+
+    @property
+    def config(self) -> ZenohConfig:
+        return self._config
+
+    def reconfigure_connect(self, endpoints: tuple[str, ...]) -> None:
+        """Dial ``endpoints`` instead of the current connect set, in place.
+
+        zenoh-python 1.9 has no live setter for a session's connect endpoints,
+        so this closes the session, opens one with the same config except
+        ``connect``, runs the rebuild hooks (materialized presence is cleared
+        so departed peers do not linger), and replays every live declaration
+        onto it.  The same listen set is re-bound, which is why the old
+        session closes first: there is a brief interruption, approved as Q3 of
+        the forwarding defaults plan.  If the new session cannot open, the
+        previous config is restored and replayed and the error is re-raised,
+        so a caller never records a dial set it does not have.
+        """
+
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("transport is closed")
+            candidate = replace(self._config, connect=tuple(endpoints))
+            _validate_endpoints(candidate.connect)
+            built = candidate.build()
+            previous = self._config
+            self._session.close()
+            try:
+                self._session = zenoh.open(built)
+            except Exception:
+                self._session = zenoh.open(previous.build())
+                self._replay()
+                raise
+            self._config = candidate
+            self._replay()
+
+    def on_rebuild(self, hook: Callable[[], None]) -> Callable[[], None]:
+        """Run ``hook`` after each rebuild, before declarations are replayed.
+
+        Returns a function that unregisters it.
+        """
+
+        with self._lock:
+            self._rebuild_hooks.append(hook)
+
+        def remove() -> None:
+            with self._lock:
+                if hook in self._rebuild_hooks:
+                    self._rebuild_hooks.remove(hook)
+
+        return remove
+
+    def _replay(self) -> None:
+        for hook in list(self._rebuild_hooks):
+            hook()
+        for registration in list(self._registrations):
+            registration._replay(self._session)
+
+    def _register(self, declare: Callable[[Any], Any]) -> _Registration:
+        with self._lock:
+            registration = _Registration(
+                declare(self._session), declare, self._forget
+            )
+            self._registrations.append(registration)
+        return registration
+
+    def _forget(self, registration: _Registration) -> None:
+        with self._lock:
+            if registration in self._registrations:
+                self._registrations.remove(registration)
 
     def put(self, key: str, payload: bytes) -> None:
-        self._session.put(key, payload, encoding="application/octet-stream")
+        with self._lock:
+            self._session.put(key, payload, encoding="application/octet-stream")
 
     def get(
         self,
@@ -259,7 +369,9 @@ class ZenohTransport:
         lost a holder's verdict indistinguishable from a complete one.
         """
 
-        replies = self._session.get(
+        with self._lock:
+            session = self._session
+        replies = session.get(
             key_expr,
             target=zenoh.QueryTarget.ALL,
             consolidation=(
@@ -292,10 +404,11 @@ class ZenohTransport:
     def subscribe(
         self, key_expr: str, callback: Callable[[TransportSample], None]
     ) -> _Registration:
-        inner = self._session.declare_subscriber(
-            key_expr, lambda sample: callback(_sample(sample))
+        return self._register(
+            lambda session: session.declare_subscriber(
+                key_expr, lambda sample: callback(_sample(sample))
+            )
         )
-        return _Registration(inner)
 
     def declare_queryable(
         self, key_expr: str, handler: Callable[[str], bytes | None]
@@ -307,12 +420,12 @@ class ZenohTransport:
                     str(query.key_expr), payload, encoding="application/octet-stream"
                 )
 
-        return _Registration(
-            self._session.declare_queryable(key_expr, answer, complete=True)
+        return self._register(
+            lambda session: session.declare_queryable(key_expr, answer, complete=True)
         )
 
     def declare_liveliness(self, key: str) -> _Registration:
-        return _Registration(self._session.liveliness().declare_token(key))
+        return self._register(lambda session: session.liveliness().declare_token(key))
 
     def observe_liveliness(
         self,
@@ -321,15 +434,17 @@ class ZenohTransport:
         *,
         history: bool = True,
     ) -> _Registration:
-        inner = self._session.liveliness().declare_subscriber(
-            key_expr, lambda sample: callback(_sample(sample)), history=history
+        return self._register(
+            lambda session: session.liveliness().declare_subscriber(
+                key_expr, lambda sample: callback(_sample(sample)), history=history
+            )
         )
-        return _Registration(inner)
 
     def close(self) -> None:
-        if not self._closed:
-            self._closed = True
-            self._session.close()
+        with self._lock:
+            if not self._closed:
+                self._closed = True
+                self._session.close()
 
     def __enter__(self) -> Self:
         return self
@@ -345,6 +460,9 @@ class LivelinessDirectory:
         self._keys = keys or KeySpace()
         self._actors: set[str] = set()
         self._mailboxes: set[str] = set()
+        # A rebuilt session re-learns presence from the replayed observers'
+        # history; carrying the old sets over would keep departed peers online.
+        self._stop_rebuild_hook = session.on_rebuild(self._forget_presence)
         self._registrations = [
             session.observe_liveliness(
                 f"{self._keys.prefix}/liveliness/actor/*",
@@ -369,6 +487,10 @@ class LivelinessDirectory:
         else:
             values.add(identity)
 
+    def _forget_presence(self) -> None:
+        self._actors.clear()
+        self._mailboxes.clear()
+
     def actor_online(self, actor: str) -> bool:
         return actor in self._actors
 
@@ -379,5 +501,6 @@ class LivelinessDirectory:
         return tuple(sorted(self._mailboxes))
 
     def close(self) -> None:
+        self._stop_rebuild_hook()
         for registration in reversed(self._registrations):
             registration.close()

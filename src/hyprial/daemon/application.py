@@ -16,7 +16,7 @@ import threading
 import time
 import traceback
 import weakref
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import replace
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -24,6 +24,7 @@ from types import FrameType
 from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
+from hyprial.actor_runtime.policies import DEFAULT_POLICIES, EXTERNAL_IO
 from hyprial.actor_runtime.scheduler import GenerationScheduler
 from hyprial.adapters.lark import LarkSdkGateway
 from hyprial.adapters.lark import lifecycle as lark_lifecycle
@@ -124,6 +125,16 @@ from hyprial.squire import (
 )
 from hyprial.status import build_actor_status_snapshot
 from hyprial.contracts.forwarding import FORWARDING_COMMAND_ENV, FORWARDING_UP_ENV
+from hyprial.forwarding_config import (
+    FORWARDING_DEFAULT_MODE,
+    FORWARDING_MODE_ENV,
+    AutomaticForwarding,
+    ForwardingConfigurationError,
+    ForwardingPolicy,
+    automatic_forwarding,
+    daemon_forwarding_environment,
+    forwarding_policy,
+)
 from .deprecations import deprecation_notices
 from .discovery import (
     CommandEndpoints,
@@ -706,6 +717,10 @@ class DaemonApplication:
         usage_cache: UsageCache | None = None,
         keepalive_duration: float = 5.0,
         forwarding_discovery: ForwardingEndpoints | None = None,
+        forwarding_environment: Mapping[str, str] | None = None,
+        forwarding_policy: ForwardingPolicy | None = None,
+        forwarding_automatic: AutomaticForwarding | None = None,
+        forwarding_unavailable: str | None = None,
     ) -> None:
         self.state_dir = Path(state_dir)
         self.socket_path = Path(socket_path)
@@ -758,10 +773,43 @@ class DaemonApplication:
             "gossip": False,
         }
         self._forwarding_discovery = forwarding_discovery
+        # The sidecar launch variables this daemon resolved for itself
+        # (``from_environment``), so every launch path -- direct ``daemon
+        # run``, a watchdog, a service manager -- gets forwarding from the
+        # same operator inputs, not only the CLI launcher that used to
+        # precompute them in the parent.  Constructed directly (tests), the
+        # already-generated variables are read from the environment.
+        self._forwarding_environment: dict[str, str] = (
+            dict(forwarding_environment)
+            if forwarding_environment is not None
+            else {
+                name: os.environ[name]
+                for name in (FORWARDING_COMMAND_ENV, FORWARDING_UP_ENV)
+                if os.environ.get(name)
+            }
+        )
+        # The operator policy (``HYPRIAL_FORWARDING``) and, in ``auto``/``on``,
+        # either an eligible home's plan -- completed once startup has bound
+        # the loopback inbound port -- or the reason it is not eligible.
+        self._forwarding_policy = forwarding_policy or ForwardingPolicy(
+            FORWARDING_DEFAULT_MODE, "default"
+        )
+        self._forwarding_automatic = forwarding_automatic
+        self._forwarding_unavailable = forwarding_unavailable
         self._forwarding_effective: tuple[str, ...] = ()
         self._forwarding_start_attempted = forwarding_discovery is not None
         self._forwarding_supervisor: ForwardingSidecarSupervisor | None = None
         self._forwarding_dialed: tuple[str, ...] | None = None
+        # The other two parts of the session's connect set, kept apart so a
+        # forwarding redial recomposes it instead of dropping them: the
+        # configured endpoints and what the host-tailnet directory returned
+        # at startup (kept additive during migration, plan §F).
+        self._connect_configured: tuple[str, ...] = ()
+        self._connect_discovered: tuple[str, ...] = ()
+        # The forwarding set a redial was last attempted for: a failed
+        # rebuild is retried when the sidecar's set changes again, not on
+        # every tick (a persistent failure stays visible as restartRequired).
+        self._forwarding_redial_attempted: tuple[str, ...] | None = None
         # One shared state database (U0a-2 丙): desired state and the
         # lifecycle journal write through the same serialized connection
         # owner, so in-process contention between the two is gone by
@@ -1032,19 +1080,22 @@ class DaemonApplication:
             zenoh_listen, zenoh_connect = _isolated_endpoints(
                 zenoh_listen, zenoh_connect
             )
-        forwarding_configured = bool(
-            os.environ.get(FORWARDING_COMMAND_ENV)
-            or os.environ.get(FORWARDING_UP_ENV)
+        hyprial_home = configured_hyprial_home()[0]
+        (
+            policy,
+            forwarding_environment,
+            automatic,
+            unavailable,
+        ) = _resolve_forwarding(
+            hyprial_home, node_id, isolated=isolated, zenoh_listen=zenoh_listen
         )
-        if forwarding_configured and not zenoh_listen:
-            raise ValueError("forwarding requires explicit HYPRIAL_ZENOH_LISTEN")
         app = cls(
             state_dir=state_dir,
             socket_path=socket_path,
             node_id=node_id,
             # HARNESS_STATE_DIR can live elsewhere, but it must not silently
             # redefine which HYPRIAL home this daemon owns.
-            hyprial_home=configured_hyprial_home()[0],
+            hyprial_home=hyprial_home,
             zenoh_listen=zenoh_listen,
             zenoh_connect=zenoh_connect,
             usage_cache=(
@@ -1053,6 +1104,10 @@ class DaemonApplication:
                 else UsageCache()
             ),
             keepalive_duration=keepalive_duration_from_environment(),
+            forwarding_environment=forwarding_environment,
+            forwarding_policy=policy,
+            forwarding_automatic=automatic,
+            forwarding_unavailable=unavailable,
         )
         app.network_isolated = isolated
         return app
@@ -1682,7 +1737,15 @@ class DaemonApplication:
                         "node's tailnet address so other nodes can reach it"
                     ),
                 )
+        # Automatic forwarding's inbound listener is ADDED after the node's
+        # default listener is derived: setting it as the listen list used
+        # to suppress derivation and cost the official listener (plan §A).
+        forwarding_listen: tuple[str, ...] = ()
+        if self._forwarding_automatic is not None:
+            forwarding_listen = (_reserve_loopback_endpoint(),)
+            listen = merge_endpoints(listen, forwarding_listen)
         configured_count = len(connect)
+        self._connect_configured = connect
         discovered: tuple[str, ...] = ()
         if not self.network_isolated:
             self._startup_network["discoveryConsulted"] = True
@@ -1752,7 +1815,9 @@ class DaemonApplication:
             # everyone and the spokes see only themselves and the hub.
             gossip_scouting=self._gossip_for_startup(),
         )
-        transport = ZenohTransport(config)
+        transport, forwarding_listen = _open_transport(config, forwarding_listen)
+        if forwarding_listen:
+            self.zenoh_listen = transport.config.listen
         directory = LivelinessDirectory(transport)
         presence = _LocalPresence(
             directory,
@@ -2051,6 +2116,15 @@ class DaemonApplication:
                 ) from startup_error
             raise
         self._transport = transport
+        if self._forwarding_automatic is not None and forwarding_listen:
+            # Only now is the inbound port certainly this daemon's: the
+            # session bound it.  The first dial rides the reconciler's redial
+            # on the next maintenance tick (~1 s).
+            target = forwarding_listen[0].removeprefix("tcp/")
+            self._forwarding_environment = self._forwarding_automatic.environment(
+                target
+            )
+            self._start_forwarding_supervisor()
         self._directory = directory
         self._presence = presence
         self._inbox = inbox
@@ -8524,29 +8598,12 @@ class DaemonApplication:
         fatal.
         """
 
-        forwarding_configured = bool(
-            os.environ.get(FORWARDING_COMMAND_ENV)
-            or os.environ.get(FORWARDING_UP_ENV)
-        )
-        if (
-            forwarding_configured
-            and self._forwarding_discovery is None
-            and self._forwarding_supervisor is None
-            and not self._forwarding_start_attempted
-        ):
-            self._forwarding_start_attempted = True
-            supervisor = ForwardingSidecarSupervisor(
-                os.environ,
-                event_log=lambda level, event, **fields: self._log(
-                    level, "zenoh", event, **fields
-                ),
-                scheduler=self._maintenance_scheduler,
-            )
-            self._forwarding_supervisor = supervisor
+        forwarding_configured = bool(self._forwarding_environment)
+        if forwarding_configured:
             # Synchronous on purpose: Zenoh fixes its connect set when the
             # session opens, so the first attempt belongs on this startup
             # path; every relaunch after a failure rides the scheduler.
-            supervisor.ensure_started()
+            self._start_forwarding_supervisor()
         forwarding: tuple[str, ...] = ()
         backend = self._forwarding_backend()
         if backend is not None:
@@ -8556,7 +8613,8 @@ class DaemonApplication:
             # What the Zenoh session actually dials is fixed by the FIRST
             # pass -- including the empty answer of a first-start failure,
             # which is exactly the "recovered later, dialed never" gap that
-            # must stay visible. Later passes cannot retroactively change it.
+            # must stay visible until a redial closes it; only a successful
+            # rebuild (``_redial_forwarding``) advances it after this.
             self._forwarding_dialed = forwarding
         if forwarding_configured and zenoh_environment_flag(
             "HYPRIAL_FORWARDING_EXCLUSIVE", default=False
@@ -8591,10 +8649,30 @@ class DaemonApplication:
                 detail=str(error),
             )
             discovered = ()
+        self._connect_discovered = discovered
         # Forwarding first, directory after: a deliberately pinned peer
         # behaves predictably instead of racing the directory, and a daemon
         # that configured forwarding keeps its sidecar ports dialled first.
         return merge_endpoints(forwarding, discovered)
+
+    def _start_forwarding_supervisor(self) -> None:
+        if (
+            not self._forwarding_environment
+            or self._forwarding_discovery is not None
+            or self._forwarding_supervisor is not None
+            or self._forwarding_start_attempted
+        ):
+            return
+        self._forwarding_start_attempted = True
+        supervisor = ForwardingSidecarSupervisor(
+            {**os.environ, **self._forwarding_environment},
+            event_log=lambda level, event, **fields: self._log(
+                level, "zenoh", event, **fields
+            ),
+            scheduler=self._maintenance_scheduler,
+        )
+        self._forwarding_supervisor = supervisor
+        supervisor.ensure_started()
 
     def _forwarding_backend(self) -> ForwardingEndpoints | None:
         """The live forwarding backend, supervisor-owned or test-injected."""
@@ -8612,14 +8690,18 @@ class DaemonApplication:
         failed); "off" is the not-configured answer, which is a fact about
         this node rather than a missing field.
 
-        ``endpoints`` vs ``dialed`` answers the restart-required question the
-        process state cannot: Zenoh fixes its connect set when the session
-        opens, so a relaunch that changed the local-port set leaves the
-        session dialing ports the new child no longer owns. Reporting
-        ``running`` alone would masquerade as connected; the gap is reported
-        instead (review finding D).
+        ``endpoints`` vs ``dialed`` answers the question the process state
+        cannot: Zenoh fixes its connect set when the session opens, so a
+        relaunch that changed the local-port set leaves the session dialing
+        ports the new child no longer owns until ``_redial_forwarding``
+        rebuilds it. Reporting ``running`` alone would masquerade as
+        connected; the gap is reported instead (review finding D). The name
+        ``restartRequired`` is published and kept: it is True while the
+        session does not dial what the sidecar reports -- no session yet, a
+        failed rebuild, or a sidecar that currently reports fewer peers.
         """
 
+        policy = self._forwarding_policy.to_json()
         supervisor = self._forwarding_supervisor
         if supervisor is not None:
             status: dict[str, object] = {
@@ -8630,7 +8712,16 @@ class DaemonApplication:
         elif self._forwarding_discovery is not None:
             status = {"state": "running", "failures": 0, "pid": None}
         else:
-            return {"state": "off", "failures": 0, "pid": None}
+            off: dict[str, object] = {
+                "state": "off",
+                "failures": 0,
+                "pid": None,
+                "policy": policy,
+            }
+            if self._forwarding_unavailable is not None:
+                off["unavailable"] = self._forwarding_unavailable
+            return off
+        status["policy"] = policy
         effective = self._forwarding_effective
         # The session-open capture; before the first discovery pass it is
         # whatever the first pass returned -- including (), which is exactly
@@ -8643,6 +8734,25 @@ class DaemonApplication:
         status["endpoints"] = list(effective)
         status["dialed"] = list(dialed)
         status["restartRequired"] = effective != dialed
+        # Who the sidecar reports and whether each is in the session's
+        # dialed set, plus the last poll's outcome: the questions "can we see
+        # that node?" and "did we dial it?" had no answer before (plan §C).
+        backend = self._forwarding_backend()
+        poll = getattr(backend, "last_poll", None) if backend is not None else None
+        if isinstance(poll, dict):
+            peers = poll.get("peers")
+            peer_endpoints = peers if isinstance(peers, dict) else {}
+            status["lastPoll"] = {
+                "atMs": poll.get("atMs"),
+                "ok": poll.get("ok"),
+                "error": poll.get("error"),
+                "peersReported": poll.get("peersReported"),
+                "peerCount": len(peer_endpoints),
+            }
+            status["peers"] = [
+                {"peer": peer, "endpoint": endpoint, "dialed": endpoint in dialed}
+                for peer, endpoint in sorted(peer_endpoints.items())
+            ]
         return status
 
     def _reconcile_forwarding_endpoints(self) -> None:
@@ -8651,20 +8761,70 @@ class DaemonApplication:
             return
         previous = self._forwarding_effective
         current = backend.list_reachable_endpoints()
+        self._forwarding_effective = current
+        self._redial_forwarding(current)
         if current == previous:
             return
-        self._forwarding_effective = current
-        # Zenoh consumes connect endpoints when its session opens. The sidecar
-        # mapping set is now current, but a changed local-port set needs a
-        # daemon restart to rebuild that session; report this instead of
-        # silently claiming the new peer is connected.
+        # Reported after the redial attempt, so ``restartRequired`` is the
+        # outcome: False once the session dials the new set, True while it
+        # still cannot (no session yet, or the rebuild failed).
         self._log(
             "warn",
             "zenoh",
             "zenoh.forwarding.changed",
             previous=list(previous),
             current=list(current),
-            restartRequired=True,
+            restartRequired=current != self._forwarding_dialed,
+        )
+
+    def _redial_forwarding(self, current: tuple[str, ...]) -> None:
+        """Rebuild the session to dial ``current`` when it names a new endpoint.
+
+        Zenoh fixes its connect set when the session opens, so a peer the
+        sidecar mapped later -- or a relaunch that re-mapped every port -- was
+        never dialed until a daemon restart (plan §C, step 3). Only a NEW
+        endpoint triggers a rebuild: a pure removal (the sidecar died and
+        reports nothing) leaves Zenoh retrying a dead port, which is harmless,
+        instead of costing two interruptions per sidecar blip. The configured
+        and host-tailnet endpoints are recomposed in startup order, so a
+        redial never drops them. Each distinct set is attempted once; a failed
+        rebuild restores the old session and stays visible as
+        ``restartRequired`` until the set changes again.
+        """
+
+        dialed = self._forwarding_dialed or ()
+        if not set(current) - set(dialed):
+            return
+        transport = self._transport
+        if transport is None or current == self._forwarding_redial_attempted:
+            return
+        self._forwarding_redial_attempted = current
+        connect = merge_endpoints(
+            self._connect_configured, current, self._connect_discovered
+        )
+        started_at = time.monotonic()
+        try:
+            transport.reconfigure_connect(connect)
+        except Exception as error:  # noqa: BLE001 - the old session is restored
+            self._log(
+                "warn",
+                "zenoh",
+                "zenoh.forwarding.redial_failed",
+                dialed=list(dialed),
+                wanted=list(current),
+                detail=str(error)[:300],
+            )
+            return
+        self._forwarding_dialed = current
+        self.zenoh_connect = connect
+        self._log(
+            "info",
+            "zenoh",
+            "zenoh.forwarding.redialed",
+            previous=list(dialed),
+            dialed=list(current),
+            connect=len(connect),
+            durationMs=int((time.monotonic() - started_at) * 1000),
         )
 
     def _agent_target_status(
@@ -10296,6 +10456,138 @@ def _endpoint_host(endpoint: str) -> str | None:
         return urlsplit(f"//{address}").hostname
     except ValueError:
         return None
+
+
+def _resolve_forwarding(
+    hyprial_home: Path,
+    node_id: str,
+    *,
+    isolated: bool,
+    zenoh_listen: tuple[str, ...],
+) -> tuple[ForwardingPolicy, dict[str, str], AutomaticForwarding | None, str | None]:
+    """The daemon's forwarding decision: policy, launch variables, plan, reason.
+
+    Precedence: isolation vetoes; ``off`` suppresses every source (a durable
+    rollback, even over explicit or generated variables); explicit or
+    generated variables win otherwise (step 4a); ``auto``/``on`` then use a
+    sidecar-joined home's automatic plan. ``on`` refuses to start when that
+    plan is unavailable; ``auto`` records the reason and stays off.
+    """
+
+    try:
+        policy = forwarding_policy(os.environ, hyprial_home)
+    except ForwardingConfigurationError as error:
+        raise ValueError(f"{error.code}: {error}") from error
+    if isolated:
+        if policy.mode == "on":
+            raise ValueError(
+                f"{NETWORK_ISOLATED_ENV} is set but {FORWARDING_MODE_ENV}=on; "
+                "an isolated daemon never forwards"
+            )
+        return policy, {}, None, None
+    if policy.mode == "off":
+        return policy, {}, None, None
+    environment = _resolve_forwarding_environment(node_id)
+    if environment:
+        if not zenoh_listen:
+            raise ValueError("forwarding requires explicit HYPRIAL_ZENOH_LISTEN")
+        return policy, environment, None, None
+    if policy.mode not in ("auto", "on"):
+        return policy, {}, None, None
+    automatic, reason = automatic_forwarding(
+        hyprial_home, os.environ, node_id=node_id
+    )
+    if automatic is not None and zenoh_listen:
+        # An explicit listen list stays a complete override: reuse a bound
+        # loopback entry in it, never append a hidden one.
+        target = next(
+            (
+                endpoint.removeprefix("tcp/")
+                for endpoint in zenoh_listen
+                if _endpoint_host(endpoint) == "127.0.0.1"
+                and not endpoint.endswith(":0")
+            ),
+            None,
+        )
+        if target is None:
+            automatic, reason = None, "LISTEN_CONFLICT"
+        else:
+            return policy, automatic.environment(target), None, None
+    if automatic is None and policy.mode == "on":
+        raise ValueError(
+            f"FORWARDING_UNAVAILABLE: {FORWARDING_MODE_ENV}=on but {reason}"
+        )
+    return policy, {}, automatic, reason
+
+
+def _reserve_loopback_endpoint() -> str:
+    """A free loopback port for this daemon's forwarding inbound listener.
+
+    Zenoh 1.9 cannot report the port a ``:0`` listener bound, so the OS
+    picks one here and the session binds it right after; a collision in
+    between raises at session open and ``_open_transport`` picks again.
+    """
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return f"tcp/127.0.0.1:{probe.getsockname()[1]}"
+
+
+def _open_transport(
+    config: ZenohConfig, forwarding_listen: tuple[str, ...]
+) -> tuple[ZenohTransport, tuple[str, ...]]:
+    """Open the session; re-pick ONLY the forwarding loopback port on a bind
+    collision on that exact endpoint. Any other failure -- including the
+    node's own tailnet listener being held -- surfaces unchanged. The number
+    of re-picks is the registered external-I/O restart budget."""
+
+    rebinds = DEFAULT_POLICIES[EXTERNAL_IO].max_restarts
+    while True:
+        try:
+            return ZenohTransport(config), forwarding_listen
+        except Exception as error:
+            if (
+                not forwarding_listen
+                or rebinds <= 0
+                or forwarding_listen[0] not in str(error)
+            ):
+                raise
+        rebinds -= 1
+        replacement = (_reserve_loopback_endpoint(),)
+        config = replace(
+            config,
+            listen=tuple(
+                replacement[0] if endpoint == forwarding_listen[0] else endpoint
+                for endpoint in config.listen
+            ),
+        )
+        forwarding_listen = replacement
+
+
+def _resolve_forwarding_environment(node_id: str) -> dict[str, str]:
+    """The sidecar launch variables for this daemon, resolved in-process.
+
+    Already-generated variables (the CLI launcher, a watchdog, a fixture)
+    pass through unchanged. Otherwise the operator inputs -- the sidecar
+    binary and inbound target -- are resolved here with the same function
+    the launcher uses, so a direct ``daemon run`` or a watchdog restart
+    keeps forwarding instead of silently starting without it. An invalid
+    explicit configuration refuses startup, as the launcher does.
+    """
+
+    generated = {
+        name: os.environ[name]
+        for name in (FORWARDING_COMMAND_ENV, FORWARDING_UP_ENV)
+        if os.environ.get(name)
+    }
+    if generated:
+        return generated
+    try:
+        return daemon_forwarding_environment(
+            configured_hyprial_home()[0], os.environ, node_id=node_id
+        )
+    except ForwardingConfigurationError as error:
+        raise ValueError(f"{error.code}: {error}") from error
 
 
 def _isolated_endpoints(
