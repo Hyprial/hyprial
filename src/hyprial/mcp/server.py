@@ -25,8 +25,18 @@ def create_mcp_server(
     actor: str,
     session_ref: str,
     channel_adapter: ClaudeChannelAdapter | None = None,
+    workflow_tools: bool = False,
 ) -> MCPServer:
-    """Build the SDK high-level server (called FastMCP before SDK 2.0)."""
+    """Build the SDK high-level server (called FastMCP before SDK 2.0).
+
+    ``workflow_tools`` adds ``workflow_complete`` / ``workflow_fail`` for a
+    daemon-managed worker: a headless Agent SDK worker is pre-authorized for
+    this server's tools only, so without them it could not flip its own PAC
+    node -- ``hyprial workflow complete`` needs Bash, which it may not run.
+    They sign with the same fixed ``(actor, sessionRef)`` the CLI sends, so
+    the daemon's owner fence is unchanged: a worker completes only its own
+    node.
+    """
 
     if not actor or not session_ref:
         raise ValueError("MCP server requires a fixed actor and session_ref")
@@ -156,6 +166,61 @@ def create_mcp_server(
             mutation=False,
         )
 
+    if workflow_tools:
+
+        @server.tool(
+            description=(
+                "Complete your own PAC workflow node against its exact current "
+                "request (the Graph, node and request-id from the dispatch "
+                "message). reasonRef names the completion evidence. A reply is "
+                "not completion; call this when the node's work is done."
+            )
+        )
+        async def workflow_complete(
+            graphId: NonEmpty,
+            nodeId: NonEmpty,
+            requestId: NonEmpty,
+            reasonRef: NonEmpty,
+            ctx: Context,
+        ) -> dict[str, Any]:
+            return await invoke(
+                ctx,
+                "workflow.complete",
+                {
+                    "graphId": graphId,
+                    "nodeId": nodeId,
+                    "requestId": requestId,
+                    "reasonRef": reasonRef,
+                },
+                mutation=True,
+            )
+
+        @server.tool(
+            description=(
+                "Report explicit failure of your own PAC workflow node against "
+                "its exact current request; the graph's declared failure "
+                "policy applies. reasonRef names the failure evidence."
+            )
+        )
+        async def workflow_fail(
+            graphId: NonEmpty,
+            nodeId: NonEmpty,
+            requestId: NonEmpty,
+            reasonRef: NonEmpty,
+            ctx: Context,
+        ) -> dict[str, Any]:
+            return await invoke(
+                ctx,
+                "workflow.fail",
+                {
+                    "graphId": graphId,
+                    "nodeId": nodeId,
+                    "requestId": requestId,
+                    "reasonRef": reasonRef,
+                },
+                mutation=True,
+            )
+
     # NOTE: no harness_delegate tool. Structured delegation (defer the parent
     # turn, resume it with the child result) is a stateful subsystem that this
     # runtime does not implement: the daemon has no message.delegate dispatch
@@ -196,5 +261,7 @@ async def serve_worker_stdio(
 
     if not actor or not session_ref:
         raise ValueError("worker stdio server requires actor and session_ref")
-    server = create_mcp_server(proxy, actor=actor, session_ref=session_ref)
+    server = create_mcp_server(
+        proxy, actor=actor, session_ref=session_ref, workflow_tools=True
+    )
     await server.run_stdio_async()

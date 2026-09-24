@@ -181,6 +181,8 @@ class WorkflowSender:
                         f"Fixed deadline: {row['deadline_ms']} (epoch ms).\n"
                         f"Complete explicitly: hyprial workflow complete {command} --reason-ref <evidence-reference>\n"
                         f"Report failure: hyprial workflow fail {command} --reason-ref <failure-reference>\n"
+                        "Without a shell, use the workflow_complete / workflow_fail tool with the same "
+                        "graphId, nodeId, requestId and a reasonRef.\n"
                         "If returnState is pending, the outcome is durably queued; inspect until accepted or rejected.\n"
                         "A reply is not completion. Do not repeat a withdrawn request.\n"
                     )

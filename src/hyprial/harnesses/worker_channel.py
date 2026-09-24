@@ -24,7 +24,10 @@ if TYPE_CHECKING:
 
 # The harness tools a managed worker is pre-authorized to call, mirroring the
 # interactive path's allow-list, so a headless worker's proactive send or read
-# never stalls on an unanswerable permission prompt.
+# never stalls on an unanswerable permission prompt.  The two workflow tools
+# are how a worker with no shell completes or fails its own PAC node
+# (org-improver, 2026-09-24: every claude-tier node stayed requested until
+# its deadline because `hyprial workflow complete` needs Bash).
 WORKER_HARNESS_TOOLS = (
     "harness_ack",
     "harness_delegate",
@@ -34,6 +37,8 @@ WORKER_HARNESS_TOOLS = (
     "harness_send",
     "harness_targets",
     "harness_whoami",
+    "workflow_complete",
+    "workflow_fail",
 )
 
 
