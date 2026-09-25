@@ -213,3 +213,76 @@ def sync_identities(
         "identitiesRecorded": recorded,
         "errors": errors,
     }
+
+
+#: How far a resolved sender may be trusted -- the answer to "is this message
+#: from <owner>?".  ``verified``: a person confirmed who this is
+#: (``identities upsert``); it carries an owner when the person has a hyprial
+#: login, and ``owner: null`` for a confirmed guest.  Only a verified row with
+#: an owner is that owner.  ``observed`` is a platform-reported name with no
+#: confirmation; ``ambiguous`` means two confirmations disagree on the owner;
+#: ``unresolved`` means nothing on record names this sender.
+SENDER_STANDINGS = ("verified", "observed", "ambiguous", "unresolved")
+
+
+def resolve_sender_identity(
+    state: LarkStateStore,
+    *,
+    kind: str,
+    platform_id: str,
+    union_id: str | None = None,
+) -> dict[str, Any]:
+    """Resolve one inbound sender to a name and owner, from recorded data only.
+
+    Order: this adapter's own row for the open_id, then every adapter's rows
+    sharing its ``union_id`` (open_ids are per App, so a person verified under
+    one adapter is otherwise invisible to another).  A ``verified`` row with an
+    owner wins; two such rows naming different owners are ``ambiguous`` rather
+    than first-wins; otherwise any recorded display name is ``observed``; with
+    nothing on record the result is ``unresolved`` -- never a guessed name.
+    """
+
+    own = state.identity(kind, platform_id)
+    union = union_id or (own.union_id if own is not None else None)
+    rows = [own] if own is not None else []
+    if union:
+        for adapter, row in state.identities_by_union_id(union, kind=kind):
+            if adapter == state.adapter and row.platform_id == platform_id:
+                continue  # already ``own``
+            rows.append(row)
+    verified = [row for row in rows if row.standing == "verified"]
+    owners = sorted({row.hyprial_owner for row in verified if row.hyprial_owner})
+    names = [row.display_name for row in rows if row.display_name]
+    resolved: dict[str, Any] = {
+        "kind": kind,
+        "platformId": platform_id,
+        "unionId": union,
+        "displayName": None,
+        "owner": None,
+        "standing": "unresolved",
+        "source": None,
+    }
+    if verified and len(owners) <= 1:
+        # A person confirmed who this is.  The owner may legitimately be
+        # absent (a guest with no hyprial login): the name is still verified,
+        # but nothing is anyone's authorisation without an owner.
+        owned = [row for row in verified if row.hyprial_owner]
+        candidates = owned or verified
+        named = [row for row in candidates if row.display_name]
+        winner = named[0] if named else candidates[0]
+        resolved.update(
+            displayName=winner.display_name or (names[0] if names else None),
+            owner=owners[0] if owners else None,
+            standing="verified",
+            source=winner.source,
+        )
+    elif len(owners) > 1:
+        resolved.update(standing="ambiguous", candidateOwners=owners)
+    elif names:
+        observed = next(row for row in rows if row.display_name)
+        resolved.update(
+            displayName=observed.display_name,
+            standing="observed",
+            source=observed.source,
+        )
+    return resolved

@@ -2959,6 +2959,11 @@ class CodexInteractiveCarrier:
                     sender=str(item.get("from") or "unknown"),
                     recipient=self.actor,
                     message=text,
+                    origin=(
+                        item.get("origin")
+                        if isinstance(item.get("origin"), dict)
+                        else None
+                    ),
                 )
                 try:
                     accepted = self._stage_carrier_fetched(

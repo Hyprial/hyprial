@@ -224,7 +224,11 @@ class PythonWorkerTurnAdapter(ConcurrentTurnProcess):
             payload: object
             if self.kind == "user-proxy":
                 # A relay needs who sent it and the text, nothing else.
-                payload = {"from": delivery.sender, "message": delivery.message}
+                payload = {
+                    "from": delivery.sender,
+                    "to": delivery.recipient,
+                    "message": delivery.message,
+                }
             else:
                 try:
                     payload = json.loads(delivery.message)

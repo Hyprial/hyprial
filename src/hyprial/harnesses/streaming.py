@@ -22,6 +22,7 @@ from hyprial.daemon.api import (
     ProcessLiveness,
     ProcessLivenessState,
     classify_harness_failure,
+    delivery_prompt,
 )
 from hyprial.inbox.progress import ProgressEvent, ProgressEventError
 from hyprial.log import Logger
@@ -930,7 +931,7 @@ class SequentialTurnProcess(BaseTurnProcess):
                                 continue
                         self._log_turn("worker.turn.started", current)
                         turn_started = True
-                        await client.query(current.message)
+                        await client.query(delivery_prompt(current))
                         # A selected delivery is not interruptible until the
                         # harness has accepted it as a native turn.  Publishing
                         # it before query() returns lets clients with no turn

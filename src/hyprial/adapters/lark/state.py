@@ -1352,6 +1352,34 @@ class LarkStateStore:
             rows = self._db.execute(" ".join(query), params).fetchall()
         return tuple(Identity(**dict(row)) for row in rows)
 
+    def identities_by_union_id(
+        self, union_id: str, *, kind: str = "user"
+    ) -> tuple[tuple[str, Identity], ...]:
+        """Every adapter's row for one cross-App identity, as (adapter, row).
+
+        Deliberately NOT scoped to this adapter: ``union_id`` is the only join
+        between App namespaces (open_ids differ per App), so a human verified
+        once -- under whichever adapter a person confirmed them -- is known to
+        every adapter that has seen the same union_id.  Read-only.
+        """
+
+        if not union_id:
+            return ()
+        with self._lock:
+            rows = self._db.execute(
+                f"SELECT adapter, {_IDENTITY_COLUMNS} FROM identities"
+                " WHERE union_id = ? AND kind = ?"
+                " ORDER BY adapter, platform_id",
+                (union_id, kind),
+            ).fetchall()
+        return tuple(
+            (
+                row["adapter"],
+                Identity(**{k: row[k] for k in row.keys() if k != "adapter"}),
+            )
+            for row in rows
+        )
+
     def find_identities(
         self,
         *,

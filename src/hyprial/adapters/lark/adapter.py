@@ -41,6 +41,7 @@ from .api import (
     normalize_lark_message_content,
 )
 from .health import DEFAULT_RECONCILE_LOOKBACK_SECONDS
+from .identities import resolve_sender_identity
 from .sdk import LarkApiError
 from .inbound_runtime import LarkInboundRuntime
 from .reaction_effects import ReactionEffectAdmission, ReactionEffectsRuntime
@@ -971,6 +972,7 @@ class LarkAdapter:
                 "replyTo": message.reply_to,
                 "senderId": message.sender_id,
                 "senderType": message.sender_type,
+                "sender": self._resolved_sender(message),
                 "createTime": message.create_time,
                 "messageType": message.message_type,
             },
@@ -1183,6 +1185,40 @@ class LarkAdapter:
             raise
         except Exception:  # noqa: BLE001 - bookkeeping must never break inbound
             pass
+
+    def _resolved_sender(self, message: LarkInboundMessage) -> dict[str, Any]:
+        """Who sent this, from recorded identities -- for the agent to read.
+
+        ``from`` on the harness message is this adapter (the routable actor a
+        reply goes back through), so without this block an agent cannot tell
+        one human from another, nor whether a message is its owner's.  The
+        lookup never fails the message: an unanswerable one is reported as
+        ``unresolved`` with ``lookupFailed``, never as a guessed name.
+        """
+
+        kind = self._SENDER_IDENTITY_KINDS.get(message.sender_type)
+        unresolved: dict[str, Any] = {
+            "kind": kind or message.sender_type or "unknown",
+            "platformId": message.sender_id or None,
+            "unionId": message.sender_union_id or None,
+            "displayName": None,
+            "owner": None,
+            "standing": "unresolved",
+            "source": None,
+        }
+        if kind is None or not message.sender_id or message.sender_id == "unknown":
+            return unresolved
+        try:
+            return resolve_sender_identity(
+                self._state,
+                kind=kind,
+                platform_id=message.sender_id,
+                union_id=message.sender_union_id,
+            )
+        except (NameError, ImportError):
+            raise
+        except Exception:  # noqa: BLE001 - identity lookup must never break inbound
+            return {**unresolved, "lookupFailed": True}
 
     def handle_member_change_event(self, event: Any) -> None:
         """Record identities from a chat member added/deleted event.

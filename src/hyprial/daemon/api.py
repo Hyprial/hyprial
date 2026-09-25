@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol, runtime_checkable
+from typing import Any, Mapping, Protocol, runtime_checkable
 
 from .desired_state import HarnessLaunchSpec
 
@@ -18,6 +18,60 @@ class HarnessDelivery:
     sender: str
     recipient: str
     message: str
+    #: The stored ``origin`` block (chat type, resolved human sender) when
+    #: the reporting adapter sent one; ``None`` means it said nothing.
+    origin: Mapping[str, Any] | None = None
+
+
+def describe_sender(origin: Mapping[str, Any] | None) -> str | None:
+    """One line naming the human behind an adapter-relayed message.
+
+    Worded so an unconfirmed name cannot pass for an owner: only ``verified``
+    with an owner prints "owner", a confirmed guest says it has none, and
+    every other standing says it is not confirmed.  A
+    platform display name is free text anyone can set, and one on record
+    today equals an owner's real name under a different union_id.
+    """
+
+    sender = origin.get("sender") if isinstance(origin, Mapping) else None
+    if not isinstance(sender, Mapping):
+        return None
+    name = sender.get("displayName") or sender.get("platformId") or "unknown"
+    standing = sender.get("standing")
+    if standing == "verified" and sender.get("owner"):
+        return f"{name} (owner {sender['owner']}, verified)"
+    if standing == "verified":
+        return f"{name} (verified person, no hyprial owner)"
+    if standing == "ambiguous":
+        candidates = ", ".join(sender.get("candidateOwners") or ())
+        return f"{name} (NOT verified: owner ambiguous between {candidates})"
+    if standing == "observed":
+        return f"{name} (NOT verified: display name only, no owner)"
+    return f"{name} (NOT verified: sender unresolved)"
+
+
+def delivery_prompt(delivery: HarnessDelivery) -> str:
+    """The text a model receives for one delivery: a header, then the body.
+
+    Headless workers used to receive the bare body, so they could not tell
+    who wrote it or which of their identities it was addressed to.  The header
+    uses the same bracketed shape as the pi interactive attach extension.
+    """
+
+    header = (
+        f"[Harness Network message from {delivery.sender} to {delivery.recipient}"
+    )
+    chat_type = (
+        delivery.origin.get("chatType")
+        if isinstance(delivery.origin, Mapping)
+        else None
+    )
+    if isinstance(chat_type, str) and chat_type:
+        header += f" via {chat_type} chat"
+    human = describe_sender(delivery.origin)
+    if human is not None:
+        header += f"; sender: {human}"
+    return f"{header}]\n{delivery.message}"
 
 
 class HarnessResultStatus(StrEnum):

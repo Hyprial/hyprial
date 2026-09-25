@@ -55,8 +55,44 @@ const CODE_REPLY_UNAVAILABLE = "MESSAGE_REPLY_UNAVAILABLE";
 interface PendingMessage {
   messageId: string;
   from: string;
+  to: string;
   intent: string;
   text: string;
+  /** Resolved human sender line, or null when the adapter reported none. */
+  sender: string | null;
+}
+
+/**
+ * Mirrors hyprial.daemon.api.describe_sender: only a verified row names an
+ * owner, and every other standing says so, because a platform display name
+ * is free text and can equal an owner's real name.
+ */
+function describeSender(origin: unknown): string | null {
+  if (typeof origin !== "object" || origin === null) return null;
+  const sender = (origin as Record<string, unknown>).sender;
+  if (typeof sender !== "object" || sender === null) return null;
+  const record = sender as Record<string, unknown>;
+  const name =
+    (typeof record.displayName === "string" && record.displayName) ||
+    (typeof record.platformId === "string" && record.platformId) ||
+    "unknown";
+  const owner = typeof record.owner === "string" ? record.owner : "";
+  if (record.standing === "verified" && owner) {
+    return `${name} (owner ${owner}, verified)`;
+  }
+  if (record.standing === "verified") {
+    return `${name} (verified person, no hyprial owner)`;
+  }
+  if (record.standing === "ambiguous") {
+    const candidates = Array.isArray(record.candidateOwners)
+      ? record.candidateOwners.filter((item) => typeof item === "string")
+      : [];
+    return `${name} (NOT verified: owner ambiguous between ${candidates.join(", ")})`;
+  }
+  if (record.standing === "observed") {
+    return `${name} (NOT verified: display name only, no owner)`;
+  }
+  return `${name} (NOT verified: sender unresolved)`;
 }
 
 /** One injected batch of Harness messages and its completion lifecycle. */
@@ -120,27 +156,37 @@ function parsePending(result: Record<string, unknown>): PendingMessage[] {
     messages.push({
       messageId: record.messageId,
       from: typeof record.from === "string" ? record.from : "unknown",
+      to: typeof record.to === "string" ? record.to : "unknown",
       intent: typeof record.intent === "string" ? record.intent : "event",
       text: typeof record.message === "string" ? record.message : "",
+      sender: describeSender(record.origin),
     });
   }
   return messages;
+}
+
+function senderSuffix(message: PendingMessage): string {
+  return message.sender === null ? "" : `; sender: ${message.sender}`;
 }
 
 function formatBatch(messages: PendingMessage[]): string {
   if (messages.length === 1) {
     const message = messages[0];
     return (
-      `[Harness Network message from ${message.from} ` +
-      `(intent: ${message.intent}, messageId: ${message.messageId})]\n` +
+      `[Harness Network message from ${message.from} to ${message.to} ` +
+      `(intent: ${message.intent}, messageId: ${message.messageId})` +
+      senderSuffix(message) +
+      `]\n` +
       message.text
     );
   }
   const body = messages
     .map(
       (message, index) =>
-        `[${index + 1}] from: ${message.from} ` +
-        `(intent: ${message.intent}, messageId: ${message.messageId})\n` +
+        `[${index + 1}] from: ${message.from} to: ${message.to} ` +
+        `(intent: ${message.intent}, messageId: ${message.messageId})` +
+        senderSuffix(message) +
+        `\n` +
         message.text,
     )
     .join("\n\n");

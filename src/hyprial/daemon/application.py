@@ -5054,6 +5054,11 @@ class DaemonApplication:
                     "deliveryId": message.message_id,
                     "conversationId": message.conversation_id,
                     "from": message.sender,
+                    # Every delivered row names both ends.  ``to`` matters when
+                    # one reader drains several keys (aliases, a session that
+                    # holds more than one actor): without it the reader cannot
+                    # tell which of its identities was addressed.
+                    "to": message.recipient,
                     "intent": message.intent,
                     "message": text if isinstance(text, str) else str(text),
                 }
@@ -10907,14 +10912,66 @@ def _message_origin(metadata: object) -> JsonObject | None:
 
     if not isinstance(metadata, dict):
         return None
+    origin: JsonObject = {}
     chat_type = metadata.get("chatType")
-    if not isinstance(chat_type, str) or not chat_type:
+    if isinstance(chat_type, str) and chat_type:
+        origin["chatType"] = chat_type
+    sender = _reported_sender(metadata.get("sender"))
+    if sender is not None:
+        origin["sender"] = sender
+    if not origin:
         return None
-    origin: JsonObject = {"chatType": chat_type}
     reported_by = metadata.get("provider")
     if isinstance(reported_by, str) and reported_by:
         origin["provider"] = reported_by
     return origin
+
+
+#: The sender block an adapter may report (see the Lark adapter's
+#: ``_resolved_sender``).  Resolution happens in the adapter, which owns the
+#: identities store; the daemon only carries the answer, bounded, so it
+#: travels with the payload to whichever node the recipient is on.
+_SENDER_TEXT_FIELDS = (
+    "kind",
+    "platformId",
+    "unionId",
+    "displayName",
+    "owner",
+    "standing",
+    "source",
+)
+_SENDER_STANDINGS = frozenset({"verified", "observed", "ambiguous", "unresolved"})
+_SENDER_FIELD_MAX_CHARS = 256
+
+
+def _reported_sender(value: object) -> JsonObject | None:
+    if not isinstance(value, dict):
+        return None
+    standing = value.get("standing")
+    if standing not in _SENDER_STANDINGS:
+        # An answer without a known confidence cannot be acted on safely;
+        # dropping it keeps "no sender block" meaning "the adapter said
+        # nothing we can trust", never a silently upgraded standing.
+        return None
+    sender: JsonObject = {}
+    for field in _SENDER_TEXT_FIELDS:
+        text = value.get(field)
+        sender[field] = (
+            text[:_SENDER_FIELD_MAX_CHARS] if isinstance(text, str) and text else None
+        )
+    if standing != "verified":
+        # Only a person's confirmation names an owner.
+        sender["owner"] = None
+    candidates = value.get("candidateOwners")
+    if standing == "ambiguous" and isinstance(candidates, list):
+        sender["candidateOwners"] = [
+            owner[:_SENDER_FIELD_MAX_CHARS]
+            for owner in candidates[:8]
+            if isinstance(owner, str) and owner
+        ]
+    if value.get("lookupFailed") is True:
+        sender["lookupFailed"] = True
+    return sender
 
 
 def _optional_channel_build_version(value: object, label: str) -> str | None:

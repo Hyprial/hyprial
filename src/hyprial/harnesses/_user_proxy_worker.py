@@ -175,14 +175,19 @@ def _decode_call(line: bytes) -> tuple[str, str, str] | None:
     payload = frame["payload"]
     if not isinstance(request_id, str) or not request_id:
         raise ValueError("call id must be non-empty")
+    # ``to`` names which actor was addressed (every delivery now carries both
+    # ends); the relay needs only the sender, so it is checked, not used.
+    # The two-key form stays accepted so a parent from before ``to`` existed
+    # still drives this child.
     if (
         not isinstance(payload, dict)
-        or set(payload) != {"from", "message"}
+        or set(payload) not in ({"from", "message"}, {"from", "to", "message"})
         or not isinstance(payload["from"], str)
         or not payload["from"]
         or not isinstance(payload["message"], str)
+        or ("to" in payload and not isinstance(payload["to"], str))
     ):
-        raise ValueError("call payload must be {from, message}")
+        raise ValueError("call payload must be {from, to?, message}")
     return request_id, payload["from"], payload["message"]
 
 

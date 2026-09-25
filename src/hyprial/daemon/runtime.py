@@ -650,6 +650,7 @@ class DaemonEventBridge:
                         sender=message.sender,
                         recipient=message.recipient,
                         message=self._message_text(message),
+                        origin=self._message_origin(message),
                     ),
                 ):
                     accepted += 1
@@ -673,6 +674,7 @@ class DaemonEventBridge:
                             sender=notice.sender,
                             recipient=notice.recipient,
                             message=self._message_text(notice),
+                            origin=self._message_origin(notice),
                         ),
                     ):
                         # System notices are offered once.  They have no result,
@@ -1371,6 +1373,15 @@ class DaemonEventBridge:
         if not submitted.accepted:
             return False
         return self.inbox.ack(original.recipient, original.message_id).acknowledged
+
+    @staticmethod
+    def _message_origin(message: InboxMessage) -> dict[str, Any] | None:
+        try:
+            body = json.loads(message.payload)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return None
+        origin = body.get("origin") if isinstance(body, dict) else None
+        return origin if isinstance(origin, dict) and origin else None
 
     @staticmethod
     def _message_text(message: InboxMessage) -> str:
