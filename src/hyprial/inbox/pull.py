@@ -392,6 +392,16 @@ class DeliveryStatusStore:
         return None if row is None else self._row(row)
 
     @_guarded
+    def for_recipient(self, recipient: str, message_id: str) -> DeliveryStatus | None:
+        """The terminal record of one message ``recipient`` received, or None."""
+
+        row = self._db.execute(
+            "SELECT * FROM delivery_status WHERE message_id = ? AND recipient = ?",
+            (message_id, recipient),
+        ).fetchone()
+        return None if row is None else self._row(row)
+
+    @_guarded
     def for_sender(
         self, sender: str, *, message_id: str | None = None, limit: int = 500
     ) -> tuple[DeliveryStatus, ...]:

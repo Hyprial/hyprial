@@ -523,6 +523,16 @@ class InboxReadProjection:
             else ConsumptionState.EXPIRED
         )
 
+    def delivery_status_for_recipient(
+        self, recipient: str, message_id: str
+    ) -> DeliveryStatus | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM delivery_status WHERE message_id = ? AND recipient = ?",
+                (message_id, recipient),
+            ).fetchone()
+        return None if row is None else self._status(row)
+
     def delivery_status_records(
         self,
         sender: str,
@@ -1089,3 +1099,8 @@ class DeliveryCustodyFacade:
         return self._reads.delivery_status_records(
             sender, message_id=message_id, limit=limit
         )
+
+    def delivery_status_for_recipient(
+        self, recipient: str, message_id: str
+    ) -> DeliveryStatus | None:
+        return self._reads.delivery_status_for_recipient(recipient, message_id)

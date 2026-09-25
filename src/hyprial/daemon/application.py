@@ -2972,8 +2972,16 @@ class DaemonApplication:
         already uses for its address predicates.
         """
 
+        # A batch path like ps/top: without the request snapshot every online
+        # actor's liveness probe costs one supervisor round trip plus one
+        # full desired-state load per connector (card 259 / T4).  This runs
+        # on every maintenance tick, so the per-actor fallback kept the
+        # production daemon at ~0.8 core idle (2026-09-25, SIGUSR1 dump:
+        # _watch_inbox_collection -> _running_actor_uris -> ... ->
+        # _canonical_harness_uri -> desired_state.load, 273 agents).
         try:
-            statuses = self._actor_status_snapshot()
+            with self._worker_status_snapshot():
+                statuses = self._actor_status_snapshot()
         except Exception:  # noqa: BLE001 - a watchdog must never break the tick
             return frozenset()
         live: set[str] = set()
@@ -9726,10 +9734,27 @@ class DaemonApplication:
                 key, message_id=message_id
             ):
                 local_by_id.setdefault(record.message_id, record)
+        # A recipient asking about a message it RECEIVED: the sender-keyed
+        # lookup above can never match (records are keyed by the original
+        # sender), and the mesh query would fan out to every holder and come
+        # back empty.  Its own node recorded the receipt, so that local row
+        # is the answer and the mesh is not asked.  This is what a carrier's
+        # ack-unavailable settlement needs; without it the carrier polled the
+        # mesh every 5 s without end (codex-router, 2026-09-25: 56k queries).
+        recipient_read = getattr(self._inbox, "delivery_status_for_recipient", None)
+        if not local_by_id and message_id is not None and callable(recipient_read):
+            for key in sender_keys:
+                received = recipient_read(key, message_id)
+                if received is not None:
+                    local_by_id[received.message_id] = received
+                    break
         local = tuple(local_by_id.values())
+        received_locally = bool(local) and all(
+            record.recipient in sender_keys for record in local
+        )
         mesh = StatusQueryReport()
         mesh_error: str | None = None
-        if self._transport is not None:
+        if self._transport is not None and not received_locally:
             try:
                 mesh = query_delivery_status(
                     self._transport,

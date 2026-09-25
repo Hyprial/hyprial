@@ -2334,6 +2334,14 @@ class InboxService:
         return self._status.for_sender(sender, message_id=message_id)
 
     @_synchronized
+    def delivery_status_for_recipient(
+        self, recipient: str, message_id: str
+    ) -> DeliveryStatus | None:
+        """The terminal record of one message ``recipient`` received here."""
+
+        return self._status.for_recipient(recipient, message_id)
+
+    @_synchronized
     def held_expiry_ms(self, message_id: str) -> int | None:
         """When this holder will evict the message, or None if it holds none.
 
