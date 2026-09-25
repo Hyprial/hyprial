@@ -10947,8 +10947,10 @@ def _message_origin(metadata: object) -> JsonObject | None:
 
 #: The sender block an adapter may report (see the Lark adapter's
 #: ``_resolved_sender``).  Resolution happens in the adapter, which owns the
-#: identities store; the daemon only carries the answer, bounded, so it
-#: travels with the payload to whichever node the recipient is on.
+#: identities and user stores; the daemon only carries the answer, bounded,
+#: so it travels with the payload to whichever node the recipient is on.
+#: ``userKey`` .. ``realName`` come from the per-machine user store; they are
+#: ``None`` when the identities fallback answered.
 _SENDER_TEXT_FIELDS = (
     "kind",
     "platformId",
@@ -10957,6 +10959,10 @@ _SENDER_TEXT_FIELDS = (
     "owner",
     "standing",
     "source",
+    "userKey",
+    "userKind",
+    "nickname",
+    "realName",
 )
 _SENDER_STANDINGS = frozenset({"verified", "observed", "ambiguous", "unresolved"})
 _SENDER_FIELD_MAX_CHARS = 256
@@ -10980,13 +10986,14 @@ def _reported_sender(value: object) -> JsonObject | None:
     if standing != "verified":
         # Only a person's confirmation names an owner.
         sender["owner"] = None
-    candidates = value.get("candidateOwners")
-    if standing == "ambiguous" and isinstance(candidates, list):
-        sender["candidateOwners"] = [
-            owner[:_SENDER_FIELD_MAX_CHARS]
-            for owner in candidates[:8]
-            if isinstance(owner, str) and owner
-        ]
+    for candidates_field in ("candidateOwners", "candidateUsers"):
+        candidates = value.get(candidates_field)
+        if standing == "ambiguous" and isinstance(candidates, list):
+            sender[candidates_field] = [
+                candidate[:_SENDER_FIELD_MAX_CHARS]
+                for candidate in candidates[:8]
+                if isinstance(candidate, str) and candidate
+            ]
     if value.get("lookupFailed") is True:
         sender["lookupFailed"] = True
     return sender

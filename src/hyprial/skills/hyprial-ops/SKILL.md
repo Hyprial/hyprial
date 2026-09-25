@@ -215,6 +215,10 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
   `observed`(只有平台显示名,谁都能改成任何名字)、`ambiguous`、`unresolved` 一律 ⛔ 不当作主人的授权,
   正文首行也会写明 `NOT verified`。名字对不上人时,补登记用
   `hyprial adapter identities upsert`(由持有花名册的协调者做)。
+- 本机用户库(`hyprial user add|bind|unbind|list|show`,每机一份):一人一行,成员 `--kind member --owner <owner>`,
+  访客 `--kind guest`(没有 owner,永远不是任何人的授权)。`user bind <key> --adapter <名> --open-id <id>`
+  是让发送人解析为该用户的确认路径,协调者也可以确认;每次写入必须带 `--confirmed-by <谁>`,记入 `user_events`。
+  解析先查这里(命中即 `verified`,`origin.sender` 多带 `userKey`/`userKind`),查不到才回退上面的 identities。
 - 会话的 harness-bridge MCP/技能面由 `hyprial start` 启动时从 HYPRIAL_HOME 统一注入,
   不依赖启动目录的本地注册;额外 MCP server / skill / 扩展在
   `$HYPRIAL_HOME/plugins/plugins.json` 声明,按 harness 能力注入

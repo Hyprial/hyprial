@@ -42,6 +42,14 @@ def describe_sender(origin: Mapping[str, Any] | None) -> str | None:
         return f"{name} (owner {sender['owner']}, verified)"
     if standing == "verified":
         return f"{name} (verified person, no hyprial owner)"
+    candidate_users = [
+        item for item in sender.get("candidateUsers") or () if isinstance(item, str)
+    ]
+    if standing == "ambiguous" and candidate_users:
+        # From the user store: the candidates are people, and a guest among
+        # them has no owner, so naming owners alone could print nothing.
+        users = ", ".join(candidate_users)
+        return f"{name} (NOT verified: sender ambiguous between users {users})"
     if standing == "ambiguous":
         candidates = ", ".join(sender.get("candidateOwners") or ())
         return f"{name} (NOT verified: owner ambiguous between {candidates})"

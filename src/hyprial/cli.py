@@ -11475,6 +11475,237 @@ def adapter_identities_upsert(
     _execute(operation, json_output=json_output)
 
 
+user_app = typer.Typer(
+    help=(
+        "The people this machine knows: members (with a hyprial owner) and "
+        "guests (without one). A platform account resolves to a person only "
+        "through a binding someone confirmed, and every write records who "
+        "confirmed it (--confirmed-by). The store is per machine."
+    )
+)
+app.add_typer(user_app, name="user")
+
+#: How many of a user's newest events ``user show`` prints.
+_USER_SHOW_EVENTS = 20
+
+
+def _with_user_store(action: Callable[[Any], JsonObject], *, create: bool) -> JsonObject:
+    """Run ``action`` on ``state/users.sqlite3``; ``None`` before any write.
+
+    Reads never create the file: the Lark worker opens it only if it exists,
+    and a ``user list`` must not switch that on as a side effect.  Store and
+    home refusals become ``CliError`` with their named codes.
+    """
+
+    from hyprial.users.home import UserHomeError
+    from hyprial.users.store import UserStore, UserStoreError
+
+    path = _state_dir() / "users.sqlite3"
+    if not create and not path.is_file():
+        return action(None)
+    store = UserStore(path, hyprial_home=_hyprial_home())
+    try:
+        return action(store)
+    except UserStoreError as error:
+        raise CliError(error.code, str(error)) from error
+    except UserHomeError as error:
+        raise CliError("USER_HOME_UNSAFE", str(error)) from error
+    finally:
+        store.close()
+
+
+def _confirmer(confirmed_by: str) -> str:
+    who = confirmed_by.strip()
+    if not who:
+        raise CliError(
+            ipc_errors.INVALID_ARGUMENT,
+            "--confirmed-by must name who confirmed this (a person or a"
+            " coordinator agent); it is recorded with the change",
+        )
+    return who
+
+
+def _user_adapter(name: str) -> str:
+    from hyprial.adapters.lark.identities import adapter_namespace
+
+    adapter = name.strip()
+    if not adapter or ":" in adapter:
+        raise CliError(
+            ipc_errors.INVALID_ARGUMENT,
+            "--adapter takes the configured Lark adapter name (e.g."
+            " 'cli-developer'), not a namespaced 'lark:<name>'",
+        )
+    return adapter_namespace(adapter)
+
+
+def _user_not_found(key: str) -> CliError:
+    from hyprial.users.store import USER_NOT_FOUND
+
+    return CliError(USER_NOT_FOUND, f"no user {key!r}")
+
+
+@user_app.command("add")
+def user_add(
+    kind: str = typer.Option(..., "--kind", help="member (has a hyprial owner) or guest."),
+    confirmed_by: str = typer.Option(
+        ..., "--confirmed-by", help="Who confirmed this person; recorded."
+    ),
+    owner: str | None = typer.Option(
+        None, "--owner", help="The member's hyprial owner. Forbidden for a guest."
+    ),
+    nickname: str | None = typer.Option(None, "--nickname", help="Nickname."),
+    real_name: str | None = typer.Option(None, "--real-name", help="Real name."),
+    display_name: str | None = typer.Option(
+        None, "--display-name", help="The name agents are shown."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Add one person. A member's key is its owner's slug; a guest's key is
+    random (guest-<hex>), because names repeat and change."""
+
+    def operation() -> JsonObject:
+        who = _confirmer(confirmed_by)
+
+        def add(store: Any) -> JsonObject:
+            user = store.add_user(
+                kind=kind,
+                owner=owner,
+                nickname=nickname,
+                real_name=real_name,
+                display_name=display_name,
+                confirmed_by=who,
+            )
+            return {
+                "user": user.to_json(),
+                "home": str(_hyprial_home() / "users" / user.user_key),
+            }
+
+        return _with_user_store(add, create=True)
+
+    _execute(operation, json_output=json_output)
+
+
+@user_app.command("list")
+def user_list(
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """List the people on record on this machine."""
+
+    def operation() -> JsonObject:
+        def listed(store: Any) -> JsonObject:
+            users = () if store is None else store.list_users()
+            return {"count": len(users), "users": [user.to_json() for user in users]}
+
+        return _with_user_store(listed, create=False)
+
+    _execute(operation, json_output=json_output)
+
+
+@user_app.command("show")
+def user_show(
+    key: str = typer.Argument(..., help="User key (owner slug or guest-<hex>)."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Show one person: accounts, channels and the newest 20 events."""
+
+    def operation() -> JsonObject:
+        def shown(store: Any) -> JsonObject:
+            user = None if store is None else store.get_user(key)
+            if store is None or user is None:
+                raise _user_not_found(key)
+            return {
+                "user": user.to_json(),
+                "accounts": [item.to_json() for item in store.accounts(key)],
+                "channels": [item.to_json() for item in store.channels(key)],
+                "events": [
+                    item.to_json()
+                    for item in store.events(key, limit=_USER_SHOW_EVENTS)
+                ],
+            }
+
+        return _with_user_store(shown, create=False)
+
+    _execute(operation, json_output=json_output)
+
+
+@user_app.command("bind")
+def user_bind(
+    key: str = typer.Argument(..., help="User key."),
+    adapter: str = typer.Option(..., "--adapter", help="Configured Lark adapter name."),
+    open_id: str = typer.Option(
+        ..., "--open-id", help="The person's open_id under that adapter's App."
+    ),
+    confirmed_by: str = typer.Option(
+        ..., "--confirmed-by", help="Who confirmed this binding; recorded."
+    ),
+    union_id: str | None = typer.Option(
+        None, "--union-id", help="Feishu cross-App union_id, when known."
+    ),
+    dm_chat_id: str | None = typer.Option(
+        None, "--dm-chat-id", help="Also record this p2p chat as the person's DM."
+    ),
+    source: str | None = typer.Option(
+        None,
+        "--source",
+        help="Provenance, e.g. 'manual:allen-confirmed 2026-09-25'.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Confirm that a platform account is this person.
+
+    The only path that makes a sender resolve as this user. An account already
+    bound to someone else is refused (USER_ACCOUNT_CONFLICT), never moved;
+    unbind it there first. Re-binding to the same person changes nothing.
+    """
+
+    def operation() -> JsonObject:
+        who = _confirmer(confirmed_by)
+        namespace = _user_adapter(adapter)
+        def bind(store: Any) -> JsonObject:
+            account, changed = store.bind_account(
+                key,
+                adapter=namespace,
+                open_id=open_id,
+                union_id=union_id,
+                source=source,
+                dm_chat_id=dm_chat_id,
+                confirmed_by=who,
+            )
+            return {"userKey": key, "account": account.to_json(), "changed": changed}
+
+        return _with_user_store(bind, create=True)
+
+    _execute(operation, json_output=json_output)
+
+
+@user_app.command("unbind")
+def user_unbind(
+    key: str = typer.Argument(..., help="User key."),
+    adapter: str = typer.Option(..., "--adapter", help="Configured Lark adapter name."),
+    open_id: str = typer.Option(..., "--open-id", help="The bound open_id."),
+    confirmed_by: str = typer.Option(
+        ..., "--confirmed-by", help="Who confirmed the removal; recorded."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Remove one confirmed binding; the event keeps who had confirmed it."""
+
+    def operation() -> JsonObject:
+        who = _confirmer(confirmed_by)
+        namespace = _user_adapter(adapter)
+        def unbind(store: Any) -> JsonObject:
+            if store is None:
+                raise _user_not_found(key)
+            account = store.unbind_account(
+                key, adapter=namespace, open_id=open_id, confirmed_by=who
+            )
+            return {"userKey": key, "unbound": account.to_json()}
+
+        return _with_user_store(unbind, create=False)
+
+    _execute(operation, json_output=json_output)
+
+
 media_app = typer.Typer(
     help=(
         "Retrieve platform media referenced by inbound stand-ins. Image and "

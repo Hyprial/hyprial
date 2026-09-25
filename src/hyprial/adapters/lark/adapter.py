@@ -19,6 +19,7 @@ from hyprial.contracts import ipc_errors
 from hyprial.contracts.ipc_errors import DaemonRequestError
 from hyprial.log import Logger
 from hyprial.home import configured_hyprial_home
+from hyprial.users.store import LazyUserStore, UserStore
 
 from .api import (
     MAX_LARK_TEXT_CONTENT_BYTES,
@@ -530,6 +531,7 @@ class LarkAdapter:
         ),
         utcnow: Callable[[], datetime] | None = None,
         org_context_path: Path | None = None,
+        users: UserStore | LazyUserStore | None = None,
     ) -> None:
         if dead_letter_alert_threshold < 1:
             raise ValueError("dead-letter alert threshold must be positive")
@@ -538,6 +540,10 @@ class LarkAdapter:
         if transient_retry_backoff_initial <= 0.0:
             raise ValueError("transient retry backoff start must be positive")
         self._state = state
+        # The per-machine user store, consulted first when naming a sender.
+        # ``None`` (no users.sqlite3 on this machine) keeps #818's
+        # identities-only resolution exactly.
+        self._users = users
         self._lark = lark
         self._reaction_lark = reaction_lark or lark
         self._reaction_lock = threading.Lock()
@@ -592,6 +598,8 @@ class LarkAdapter:
         if self._reaction_effects is not None:
             self._reaction_effects.close(timeout)
         self._state.close()
+        if self._users is not None:
+            self._users.close()
 
     def __del__(self) -> None:
         # Tests and embedders historically treated LarkAdapter as a plain
@@ -1214,6 +1222,7 @@ class LarkAdapter:
                 kind=kind,
                 platform_id=message.sender_id,
                 union_id=message.sender_union_id,
+                users=self._users,
             )
         except (NameError, ImportError):
             raise

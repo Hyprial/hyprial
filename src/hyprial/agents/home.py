@@ -194,11 +194,11 @@ class AgentHomeProvisioner:
         path = Path(receipt.path)
         if path != expected:
             raise AgentHomeError("receipt-mismatch", receipt.actor, "validate-path")
-        self._safe_directory(self.hyprial_home, receipt.actor, "validate-home-root")
-        self._safe_directory(self.agents_root, receipt.actor, "validate-agents-root")
-        self._safe_directory(path, receipt.actor, "validate-agent-root", mode=0o700)
+        self.safe_directory(self.hyprial_home, receipt.actor, "validate-home-root")
+        self.safe_directory(self.agents_root, receipt.actor, "validate-agents-root")
+        self.safe_directory(path, receipt.actor, "validate-agent-root", mode=0o700)
         for relative in _AGENT_SUBDIRECTORIES:
-            self._safe_directory(
+            self.safe_directory(
                 path / relative,
                 receipt.actor,
                 f"validate-{relative.name}",
@@ -206,7 +206,7 @@ class AgentHomeProvisioner:
             )
         workspace = path / _WORKSPACE_RELATIVE
         if workspace.exists() or workspace.is_symlink():
-            self._safe_directory(
+            self.safe_directory(
                 workspace,
                 receipt.actor,
                 "validate-workspace",
@@ -228,7 +228,7 @@ class AgentHomeProvisioner:
             pass
         except OSError as error:
             raise AgentHomeError("io", receipt.actor, "workspace-create") from error
-        self._safe_directory(
+        self.safe_directory(
             workspace,
             receipt.actor,
             "validate-workspace",
@@ -243,7 +243,7 @@ class AgentHomeProvisioner:
         workspace = root / _WORKSPACE_RELATIVE
         if not workspace.exists() and not workspace.is_symlink():
             return WorkspaceSummary(str(workspace), False, 0, 0)
-        self._safe_directory(
+        self.safe_directory(
             workspace,
             receipt.actor,
             "validate-workspace",
@@ -328,9 +328,9 @@ class AgentHomeProvisioner:
         # every ancestor before deciding whether a missing mirror represents
         # the receipt-last crash window; otherwise a symlinked ``agents``
         # directory can redirect the empty-scaffold branch outside H.
-        self._safe_directory(self.hyprial_home, receipt.actor, "cleanup-home-root")
-        self._safe_directory(self.agents_root, receipt.actor, "cleanup-agents-root")
-        self._safe_directory(root, receipt.actor, "cleanup-agent-root", mode=0o700)
+        self.safe_directory(self.hyprial_home, receipt.actor, "cleanup-home-root")
+        self.safe_directory(self.agents_root, receipt.actor, "cleanup-agents-root")
+        self.safe_directory(root, receipt.actor, "cleanup-agent-root", mode=0o700)
 
         receipt_path = root / _RECEIPT_RELATIVE
         try:
@@ -396,14 +396,14 @@ class AgentHomeProvisioner:
             if not required.issubset(names) or not names.issubset(allowed):
                 raise AgentHomeError("cleanup-fenced", actor, "cleanup-topology")
             for relative in _AGENT_SUBDIRECTORIES:
-                self._safe_directory(
+                self.safe_directory(
                     root / relative,
                     actor,
                     f"cleanup-{relative.name}",
                     mode=0o700,
                 )
             if _WORKSPACE_RELATIVE.name in names:
-                self._safe_directory(
+                self.safe_directory(
                     root / _WORKSPACE_RELATIVE,
                     actor,
                     "cleanup-workspace",
@@ -424,7 +424,7 @@ class AgentHomeProvisioner:
         """Finish only the exact empty shape left after receipt-last cleanup."""
 
         try:
-            self._safe_directory(root, actor, "cleanup-agent-root", mode=0o700)
+            self.safe_directory(root, actor, "cleanup-agent-root", mode=0o700)
             allowed = {item.name for item in _CLEANUP_DIRECTORIES}
             children = tuple(root.iterdir())
             if any(child.name not in allowed for child in children):
@@ -470,11 +470,11 @@ class AgentHomeProvisioner:
         # this mirrors ``SecretResolver._validate_ancestors``, which likewise
         # starts at H rather than walking to the root.
         if self.hyprial_home.exists() or self.hyprial_home.is_symlink():
-            self._safe_directory(self.hyprial_home, actor, "prepare-home-root")
+            self.safe_directory(self.hyprial_home, actor, "prepare-home-root")
         else:
             self.hyprial_home.mkdir(mode=0o700, parents=True)
         if self.agents_root.exists() or self.agents_root.is_symlink():
-            self._safe_directory(self.agents_root, actor, "prepare-agents-root", mode=0o700)
+            self.safe_directory(self.agents_root, actor, "prepare-agents-root", mode=0o700)
         else:
             self.agents_root.mkdir(mode=0o700)
 
@@ -492,13 +492,21 @@ class AgentHomeProvisioner:
         return None
 
     @staticmethod
-    def _safe_directory(
+    def safe_directory(
         path: Path,
         actor: str,
         phase: str,
         *,
         mode: int | None = None,
     ) -> None:
+        """Refuse ``path`` unless it is a real directory this process owns.
+
+        Public because the user home (``hyprial.users.home``) holds its
+        directories to the same contract: no symlink or non-directory, owned
+        by the current uid, and exactly ``mode`` when one is given.  Raises
+        :class:`AgentHomeError` naming ``phase``; nothing here is agent-specific.
+        """
+
         try:
             metadata = path.lstat()
         except OSError as error:

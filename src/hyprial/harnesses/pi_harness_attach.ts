@@ -83,6 +83,14 @@ function describeSender(origin: unknown): string | null {
   if (record.standing === "verified") {
     return `${name} (verified person, no hyprial owner)`;
   }
+  const candidateUsers = Array.isArray(record.candidateUsers)
+    ? record.candidateUsers.filter((item) => typeof item === "string")
+    : [];
+  if (record.standing === "ambiguous" && candidateUsers.length > 0) {
+    // Mirrors describe_sender: user-store candidates are people, and a
+    // guest among them has no owner to name.
+    return `${name} (NOT verified: sender ambiguous between users ${candidateUsers.join(", ")})`;
+  }
   if (record.standing === "ambiguous") {
     const candidates = Array.isArray(record.candidateOwners)
       ? record.candidateOwners.filter((item) => typeof item === "string")

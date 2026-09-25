@@ -26,6 +26,8 @@ import time
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from hyprial.users.store import Ambiguous, LazyUserStore, ResolvedUser, UserStore
+
 from .api import LarkBotInfo, LarkChatMember, LarkChatSummary
 from .state import LarkStateStore
 
@@ -231,8 +233,15 @@ def resolve_sender_identity(
     kind: str,
     platform_id: str,
     union_id: str | None = None,
+    users: UserStore | LazyUserStore | None = None,
 ) -> dict[str, Any]:
     """Resolve one inbound sender to a name and owner, from recorded data only.
+
+    A person's binding in the user store (``users``) is consulted first: it
+    is the one record that says who confirmed it.  Only when the store has
+    no binding for this account does the identities table below answer, and
+    it stays that fallback until the P2 migration moves its verified rows
+    into the store.
 
     Order: this adapter's own row for the open_id, then every adapter's rows
     sharing its ``union_id`` (open_ids are per App, so a person verified under
@@ -241,6 +250,13 @@ def resolve_sender_identity(
     than first-wins; otherwise any recorded display name is ``observed``; with
     nothing on record the result is ``unresolved`` -- never a guessed name.
     """
+
+    if kind == "user" and users is not None:
+        bound = users.resolve_account(state.adapter, platform_id, union_id)
+        if bound is not None:
+            return _resolved_from_user_store(
+                bound, kind=kind, platform_id=platform_id, union_id=union_id
+            )
 
     own = state.identity(kind, platform_id)
     union = union_id or (own.union_id if own is not None else None)
@@ -286,3 +302,49 @@ def resolve_sender_identity(
             source=observed.source,
         )
     return resolved
+
+
+def _resolved_from_user_store(
+    bound: ResolvedUser | Ambiguous,
+    *,
+    kind: str,
+    platform_id: str,
+    union_id: str | None,
+) -> dict[str, Any]:
+    """The sender block for an account the user store answered for.
+
+    A binding is by construction a person's confirmation, so a match is
+    ``verified``; its ``owner`` is the member's owner and ``None`` for a
+    guest, which keeps a guest's words from ever reading as anyone's
+    authorisation.  ``userKey``/``userKind`` are only present on this path,
+    so the identities fallback keeps #818's exact shape.
+    """
+
+    if isinstance(bound, Ambiguous):
+        return {
+            "kind": kind,
+            "platformId": platform_id,
+            "unionId": union_id,
+            "displayName": None,
+            "owner": None,
+            "standing": "ambiguous",
+            "source": None,
+            "candidateOwners": sorted(
+                {user.owner for user in bound.candidates if user.owner}
+            ),
+            "candidateUsers": sorted(bound.user_keys),
+        }
+    user = bound.user
+    return {
+        "kind": kind,
+        "platformId": platform_id,
+        "unionId": union_id or bound.account.union_id,
+        "displayName": user.shown_name,
+        "owner": user.owner if user.kind == "member" else None,
+        "standing": "verified",
+        "source": bound.account.source,
+        "userKey": user.user_key,
+        "userKind": user.kind,
+        "nickname": user.nickname,
+        "realName": user.real_name,
+    }

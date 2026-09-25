@@ -21,6 +21,7 @@ from hyprial.home import configured_hyprial_home
 from hyprial.persistent_config import PersistentConfigStore
 from hyprial.contracts import ipc_errors
 from hyprial.contracts.ipc_errors import DaemonRequestError
+from hyprial.users.store import LazyUserStore
 
 from .adapter import (
     ACK_EMOJI,
@@ -957,6 +958,19 @@ def main(arguments: list[str] | None = None) -> int:
         # lark_reply_adapter's dual-read, never rewritten.
         channel_actor_id=f"adapter:lark:{name}",
         org_context_path=home / "org-context.md",
+        users=LazyUserStore(
+            state_dir / "users.sqlite3",
+            on_open_failure=lambda error: emit(
+                {
+                    "status": "warning",
+                    "event": "lark.users.open_failed",
+                    "errorType": type(error).__name__,
+                    # Local sqlite diagnostic, not platform-controlled text.
+                    "error": str(error),
+                    "fallback": "identities-only",
+                }
+            ),
+        ),
         logger=logger,
         notify_operator=(
             notify_operator
