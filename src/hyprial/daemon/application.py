@@ -5961,7 +5961,21 @@ class DaemonApplication:
             spec = HarnessLaunchSpec.from_json(
                 {**params, "provider": harness, "name": name}, "provider"
             )
-            if spec.pinned_owner is not None and spec.pinned_owner != self.owner:
+            hosted_owner = self._host_invited_owner(name)
+            if hosted_owner is not None:
+                if spec.pinned_owner is None:
+                    spec = replace(spec, pinned_owner=hosted_owner)
+                elif spec.pinned_owner != hosted_owner:
+                    raise DaemonRequestError(
+                        ipc_errors.INVALID_ARGUMENT,
+                        "start cannot re-own a host-invited agent; "
+                        f"registry row is owned by {hosted_owner}",
+                    )
+            if (
+                spec.pinned_owner is not None
+                and spec.pinned_owner != self.owner
+                and spec.pinned_owner != hosted_owner
+            ):
                 raise DaemonRequestError(
                     ipc_errors.INVALID_ARGUMENT,
                     "start cannot create a foreign-owner entity; use transfer receive",
@@ -6271,6 +6285,39 @@ class DaemonApplication:
         raise DaemonRequestError(ipc_errors.METHOD_NOT_FOUND, f"unknown daemon method {method}")
 
     def _handle_agent(self, method: str, params: JsonObject) -> Any:
+        if method in ("agent.grant", "agent.revoke", "agent.grants"):
+            # L0: the local host operator records these facts. This ledger is
+            # not a caller-authentication or runtime enforcement boundary.
+            try:
+                if method == "agent.grant":
+                    revision = _optional_positive_integer(params.get("revision"), "revision")
+                    if revision is None:
+                        raise ValueError("revision is required")
+                    grant = self._agent_registry.grant_capability(
+                        _required_string(params.get("actor"), "actor"),
+                        grant_id=_required_string(params.get("grantId"), "grantId"),
+                        capability=_required_string(params.get("capability"), "capability"),
+                        scope=_required_string(params.get("scope"), "scope"),
+                        granted_by=f"user:{self.owner}", revision=revision,
+                    )
+                    return {"ok": True, "grant": grant.to_json()}
+                if method == "agent.revoke":
+                    revoked = self._agent_registry.revoke_capability(
+                        _required_string(params.get("actor"), "actor"),
+                        _required_string(params.get("grantId"), "grantId"),
+                        revoked_by=f"user:{self.owner}",
+                    )
+                    return {"ok": True, "revoked": revoked}
+                actor = _optional_string_param(params.get("actor"), "actor")
+                if params.get("audit") is True:
+                    if actor is None:
+                        raise ValueError("actor is required for audit")
+                    entries = self._agent_registry.grant_journal(actor)
+                    return {"ok": True, "journal": [entry.to_json() for entry in entries]}
+                grants = self._agent_registry.capability_grants(actor)
+                return {"ok": True, "grants": [grant.to_json() for grant in grants]}
+            except (ValueError, TypeError, AgentError) as error:
+                raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
         if method == "agent.secret." + "provider-write":
             from hyprial.agents.secrets import SecretResolver
 
@@ -6367,6 +6414,19 @@ class DaemonApplication:
             except AgentError as error:
                 raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
             return {"ok": True, "revoked": revoked}
+        if method == "agent.host-invite":
+            # Host-controlled creation is separate from ordinary create/start:
+            # neither a URI nor a caller-supplied flag confers hosting authority.
+            agent = self.agents.create_host_invited(
+                _required_string(params.get("name"), "name"),
+                pinned_owner=_required_string(params.get("owner"), "owner"),
+                cwd=_optional_string_param(params.get("cwd"), "cwd"),
+                preferred_harness=_optional_string_param(
+                    params.get("preferredHarness"), "preferredHarness"
+                ),
+            )
+            self._declare_persona_route(agent.uri)
+            return {"ok": True, "created": True, "agent": self._agent_status_json(agent)}
         if method == "agent.create":
             # Decision A5: the one creation path. `hyprial agent create` calls it
             # directly; `hyprial start` calls it first and only then launches a
@@ -6758,6 +6818,11 @@ class DaemonApplication:
                 replace(state, channel_pins=tuple(sorted(remaining.items())))
             )
 
+    def _host_invited_owner(self, name: str) -> str | None:
+        """Read the admitted visitor owner; transfer-receive grants no start authority."""
+        agent = self.agents.get(self.agents.uri_for(name))
+        return agent.owner if agent is not None and agent.hosted_by == "host-invite" else None
+
     def _canonical_harness_uri(
         self,
         name: str,
@@ -6766,9 +6831,9 @@ class DaemonApplication:
     ) -> str:
         """The network identity this daemon mints for a managed harness.
 
-        A containerized spec carries ``pinned_owner`` (decision D-D): the
-        URI keeps the SOURCE owner instead of this daemon's ambient one,
-        so a transfer never silently renames the worker.  The machine
+        A transferred or host-invited spec carries ``pinned_owner``: the
+        URI keeps the admitted owner instead of this daemon's ambient one,
+        so hosting never silently renames the worker. The machine
         segment stays this node's id -- the worker physically lives here.
 
         The spec=None fallback is a defensive load for single-call paths

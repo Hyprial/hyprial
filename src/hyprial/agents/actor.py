@@ -34,6 +34,7 @@ from .ports import (
     AgentResolveProjection,
     BindAgentCommand,
     CreateAgentCommand,
+    CreateHostInvitedAgentCommand,
     CreateTransferHostedAgentCommand,
     DestroyAgentCommand,
     PinAgentAdapterCommand,
@@ -135,6 +136,7 @@ class _AgentGeneration:
             command,
             (
                 CreateAgentCommand,
+                CreateHostInvitedAgentCommand,
                 CreateTransferHostedAgentCommand,
                 UpdateAgentCommand,
                 DestroyAgentCommand,
@@ -151,6 +153,16 @@ class _AgentGeneration:
         try:
             if isinstance(command, CreateAgentCommand):
                 self._create(command)
+            elif isinstance(command, CreateHostInvitedAgentCommand):
+                agent = self.registry.create_host_invited(
+                    command.name, pinned_owner=command.pinned_owner,
+                    cwd=command.cwd, harness_args=dict(command.harness_args),
+                    preferred_harness=command.preferred_harness,
+                )
+                self._completed(
+                    command, operation="create", changed=True,
+                    version=self.version.bump(), agent=agent,
+                )
             elif isinstance(command, CreateTransferHostedAgentCommand):
                 agent = self.registry.create_transfer_hosted(
                     command.name, pinned_owner=command.pinned_owner,

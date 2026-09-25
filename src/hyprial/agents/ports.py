@@ -33,6 +33,16 @@ class CreateTransferHostedAgentCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class CreateHostInvitedAgentCommand:
+    correlation_id: str
+    name: str
+    pinned_owner: str
+    cwd: str | None = None
+    harness_args: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    preferred_harness: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class DestroyAgentCommand:
     correlation_id: str
     name: str
@@ -88,6 +98,7 @@ class UnpinAgentAdapterCommand:
 AgentCommand: TypeAlias = (
     CreateAgentCommand
     | CreateTransferHostedAgentCommand
+    | CreateHostInvitedAgentCommand
     | UpdateAgentCommand
     | DestroyAgentCommand
     | BindAgentCommand

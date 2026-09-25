@@ -145,6 +145,20 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
   stderr-only stream errors retain the public contract in the contract documents.
 
 ### agent / worker / 消息
+- `hyprial agent host-invite <name> --owner <visitor-owner> [--cwd ...] [--preferred-harness ...] --json`
+  — 由受信 host 操作员创建访客的身份记录与 agent-home；owner 属于访客，machine 属于本机。
+  同名记录不收养、不覆盖；本机 owner 应用普通 `agent create`。owner 非空、无首尾空白、无冒号。
+  此入口仅创建记录，不启动 worker，不证明访客身份已由登录服务认证，也不提供进程隔离。
+  仅用于组织内受信访客（L0），不据此对外开放。
+  建好后可用 `hyprial start pi --name <name> --headless`（或其它已支持的 headless harness）启动；
+  启动与重启恢复沿用记录中的访客 owner，host 只提供运行位置。不得用 start 改访客归属。
+  此路径不扩大 transfer-receive 的启动权限；凭据、工具权限和进程隔离仍按各自能力验收。
+- `hyprial agent grant <actor> --capability <cap> --scope <scope> [--grant-id <id>] [--revision <n>] --json`
+  记录当前 agent 化身的授权；新 id 默认 UUID、revision 默认 1，更新同一 id 必须递增。
+  `agent revoke <actor> <id>` 撤活动记录；`agent grants [actor]` 查看活动记录，`--audit` 需 actor，查看含销毁前的历史。
+  scope 闭集：agent-home=`self`（不可撤）、isolation=`directory|container`、org-context=`accepted`；
+  see-actors/send-to 为 principal URI JSON 数组；tool-surface/channel 为名称 JSON 数组；shared-path 为 `{"path":"/absolute/path","mode":"ro|rw"}`。
+  本片只记账与格式校验，不限制运行权限，不代替 secret grant，也不证明调用方身份；执行者记为本机 host owner。
 - `hyprial start claude|codex|pi|jev --name ... [--headless] --cwd ... -- <harness args>`
   `jev` is a packaged, headless TypeSafe worker: it accepts no script or model-vendor selector,
   model, or positional runtime arguments. It finds `TYPESAFE_API_KEY` the same

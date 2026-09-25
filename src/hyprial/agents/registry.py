@@ -65,6 +65,7 @@ from .home import (
     HomeReceipt,
     WorkspaceSummary,
 )
+from .grants import CapabilityGrant, GrantJournalEntry, principal, single_line
 
 #: This module's single logging seam, deliberately narrow: filesystem
 #: compensation failures are the one edge whose silence had no other
@@ -114,6 +115,8 @@ __all__ = [
 ACTOR_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 _MAX_ACTOR_NAME_LENGTH = 128
+
+HOSTED_BY_VALUES = ("transfer-receive", "squire-container", "host-invite")
 
 
 class AgentError(RuntimeError):
@@ -296,7 +299,7 @@ class Agent:
     hosted_by: str | None = None
 
     def __post_init__(self) -> None:
-        if self.hosted_by not in (None, "transfer-receive", "squire-container"):
+        if self.hosted_by not in (None, *HOSTED_BY_VALUES):
             raise AgentError(f"invalid hosting authority: {self.hosted_by!r}")
         object.__setattr__(self, "capabilities", normalize_capabilities(self.capabilities))
         object.__setattr__(self, "config", normalize_agent_config(self.config))
@@ -443,7 +446,7 @@ class HandoverNotice:
 #: ``ALTER TABLE`` constant — so this stays one plain string literal.
 _HOSTED_BY_ALTER = (
     "ALTER TABLE agents ADD COLUMN hosted_by TEXT DEFAULT NULL "
-    "CHECK (hosted_by IN ('transfer-receive', 'squire-container'))"
+    "CHECK (hosted_by IN ('transfer-receive', 'squire-container', 'host-invite'))"
 )
 
 #: The ``agents`` table DDL, parameterized by table name.  The entity-token
@@ -601,6 +604,19 @@ def _rebuild_agents_table(connection: sqlite3.Connection) -> None:
     )
 
 
+def _hosted_check_needs_rebuild(
+    connection: sqlite3.Connection, columns: Mapping[str, sqlite3.Row],
+) -> bool:
+    # A missing column can use ALTER. An existing CHECK cannot: in particular,
+    # modern databases already have NOT NULL tokens but only two hosting values.
+    if "hosted_by" not in columns:
+        return False
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agents'"
+    ).fetchone()
+    return row is not None and "'host-invite'" not in str(row["sql"])
+
+
 def _connect(database: Path) -> sqlite3.Connection:
     """Open the agents database with the repo's established sqlite settings.
 
@@ -633,8 +649,9 @@ def _connect(database: Path) -> sqlite3.Connection:
     # shape itself is rebuilt, not patched: the replacement table carries the
     # full ``NOT NULL UNIQUE`` contract and the old binary's NULL INSERT now
     # fails loudly at the write.  ``PRAGMA foreign_keys`` is a no-op inside a
-    # transaction, so the rebuild runs with it off and the deferred
-    # ``foreign_key_check`` before commit is what proves pins/grants survived.
+    # transaction, so the rebuild runs with it off. This also upgrades an
+    # existing hosted_by CHECK. foreign_key_check detects dangling references;
+    # only row-for-row regression tests detect accidental cascade deletions.
     rebuild = False
     try:
         connection.execute("BEGIN IMMEDIATE")
@@ -642,7 +659,10 @@ def _connect(database: Path) -> sqlite3.Connection:
             row["name"]: row for row in connection.execute("PRAGMA table_info(agents)")
         }
         token_column = columns.get("entity_token")
-        if token_column is not None and int(token_column["notnull"]):
+        if (
+            token_column is not None and int(token_column["notnull"])
+            and not _hosted_check_needs_rebuild(connection, columns)
+        ):
             if "config" not in columns:
                 connection.execute("ALTER TABLE agents ADD COLUMN config TEXT DEFAULT NULL")
             if "hosted_by" not in columns:
@@ -659,7 +679,10 @@ def _connect(database: Path) -> sqlite3.Connection:
                 for row in connection.execute("PRAGMA table_info(agents)")
             }
             token_column = columns.get("entity_token")
-            if token_column is None or not int(token_column["notnull"]):
+            if (
+                token_column is None or not int(token_column["notnull"])
+                or _hosted_check_needs_rebuild(connection, columns)
+            ):
                 _rebuild_agents_table(connection)
             else:
                 if "config" not in columns:
@@ -684,6 +707,24 @@ def _connect(database: Path) -> sqlite3.Connection:
             "PRIMARY KEY (agent, grant_id), "
             "FOREIGN KEY (agent, entity_token) REFERENCES agents(actor, entity_token) "
             "ON DELETE CASCADE)"
+        )
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS agent_capability_grants ("
+            "actor TEXT NOT NULL, entity_token TEXT NOT NULL, grant_id TEXT NOT NULL, "
+            "capability TEXT NOT NULL, scope TEXT NOT NULL, granted_by TEXT NOT NULL, "
+            "revision INTEGER NOT NULL CHECK (revision > 0), "
+            "PRIMARY KEY (actor, grant_id), "
+            "FOREIGN KEY (actor, entity_token) REFERENCES agents(actor, entity_token) "
+            "ON DELETE CASCADE)"
+        )
+        # Historical facts survive actor destruction and incarnation changes.
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS agent_grant_journal ("
+            "seq INTEGER PRIMARY KEY AUTOINCREMENT, at_ms INTEGER NOT NULL, "
+            "actor TEXT NOT NULL, entity_token TEXT NOT NULL, "
+            "action TEXT NOT NULL CHECK (action IN ('host-invite','grant','revoke')), "
+            "grant_id TEXT NOT NULL, capability TEXT, scope TEXT, "
+            "\"by\" TEXT NOT NULL, revision INTEGER, note TEXT)"
         )
         # `agent:<name>` looked like a canonical URI while actually naming an
         # internal lifecycle resource.  Migrate it transactionally to an explicit
@@ -1344,6 +1385,37 @@ class AgentRegistry:
             created_at_ms=int(self._clock()),
         ))
 
+    def create_host_invited(
+        self, actor: str, *, pinned_owner: str, cwd: str | None = None,
+        harness_args: Mapping[str, Iterable[str]] | None = None,
+        preferred_harness: str | None = None,
+    ) -> Agent:
+        """Explicit host invitation; never adopt or overwrite an existing agent.
+
+        The host asserts the visitor's owner string. This is not proof of a
+        login, an OS isolation boundary, or permission to start a worker.
+        """
+
+        if (
+            not isinstance(pinned_owner, str) or not pinned_owner
+            or pinned_owner != pinned_owner.strip() or ":" in pinned_owner
+        ):
+            raise ValueError("owner must be non-empty, unpadded and contain no ':'")
+        if pinned_owner == self.owner:
+            raise ValueError("use agent create for the host's own agents")
+        name = self.normalize_actor(actor)
+        return self._create_record(Agent(
+            uri=_uri().canonical_agent_uri(pinned_owner, self.machine, name),
+            actor=name,
+            owner=pinned_owner,
+            machine=self.machine,
+            hosted_by="host-invite",
+            cwd=cwd,
+            harness_args=normalize_harness_args(harness_args),
+            preferred_harness=preferred_harness,
+            created_at_ms=int(self._clock()),
+        ))
+
     def _compensate_home_fs(self, attempt: HomeProvisioningAttempt, phase: str) -> None:
         """Remove a half-built home and record the failure when it stays.
 
@@ -1388,6 +1460,8 @@ class AgentRegistry:
                     )
                     if home_attempt is not None:
                         self._record_home_resource_locked(home_attempt.receipt, True)
+                    if agent.hosted_by == "host-invite":
+                        self._record_host_invite_locked(agent)
             except sqlite3.IntegrityError as error:
                 if home_attempt is not None:
                     self._compensate_home_fs(home_attempt, "create-duplicate")
@@ -1875,6 +1949,122 @@ class AgentRegistry:
 
     # -- secret authority -------------------------------------------------
 
+    def _append_grant_journal_locked(
+        self, agent: Agent, *, action: str, grant_id: str, by: str,
+        capability: str | None = None, scope: str | None = None,
+        revision: int | None = None, note: str | None = None,
+    ) -> GrantJournalEntry:
+        values = (int(self._clock()), agent.actor, agent.entity_token, action,
+                  grant_id, capability, scope, by, revision, note)
+        cursor = self._db.execute(
+            'INSERT INTO agent_grant_journal '
+            '(at_ms, actor, entity_token, action, grant_id, capability, scope, "by", revision, note) '
+            'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', values,
+        )
+        return GrantJournalEntry(int(cursor.lastrowid), *values)
+
+    def _record_host_invite_locked(self, agent: Agent) -> GrantJournalEntry:
+        existing = self._db.execute(
+            "SELECT * FROM agent_grant_journal WHERE actor=? AND entity_token=? "
+            "AND action='host-invite' ORDER BY seq LIMIT 1",
+            (agent.actor, agent.entity_token),
+        ).fetchone()
+        if existing is not None:
+            return GrantJournalEntry(**dict(existing))
+        return self._append_grant_journal_locked(
+            agent, action="host-invite", grant_id="host-invite",
+            by=f"user:{self.owner}", note="ownerAsserted=host",
+        )
+
+    def record_host_invite(
+        self, actor: str, *, by: str, note: str | None,
+    ) -> GrantJournalEntry:
+        """Idempotent invitation fact, always attributed to this host owner."""
+        if by != f"user:{self.owner}" or note != "ownerAsserted=host":
+            raise ValueError("invitation attribution is fixed by the host")
+        with self._lock, self._db:
+            self._db.execute("BEGIN IMMEDIATE")
+            agent = self.require(actor)
+            if agent.hosted_by != "host-invite":
+                raise AgentError("not a host-invited agent")
+            return self._record_host_invite_locked(agent)
+
+    def grant_capability(
+        self, actor: str, *, grant_id: str, capability: str,
+        scope: str, granted_by: str, revision: int,
+    ) -> CapabilityGrant:
+        """Record one current-incarnation grant and its audit in one transaction."""
+        with self._lock, self._db:
+            self._db.execute("BEGIN IMMEDIATE")
+            agent = self.require(actor)
+            grant = CapabilityGrant(agent.actor, agent.entity_token, grant_id,
+                                    capability, scope, granted_by, revision)
+            previous = self._db.execute(
+                "SELECT revision FROM agent_capability_grants WHERE actor=? AND grant_id=?",
+                (agent.actor, grant_id),
+            ).fetchone()
+            if previous is not None and revision <= int(previous["revision"]):
+                raise AgentError("capability grant revision must increase")
+            self._db.execute(
+                "INSERT INTO agent_capability_grants VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(actor, grant_id) DO UPDATE SET "
+                "entity_token=excluded.entity_token, capability=excluded.capability, "
+                "scope=excluded.scope, granted_by=excluded.granted_by, revision=excluded.revision",
+                (grant.actor, grant.entity_token, grant.grant_id, grant.capability,
+                 grant.scope, grant.granted_by, grant.revision),
+            )
+            self._append_grant_journal_locked(
+                agent, action="grant", grant_id=grant_id, by=granted_by,
+                capability=capability, scope=scope, revision=revision,
+            )
+            return grant
+
+    def capability_grants(self, actor: str | None = None) -> tuple[CapabilityGrant, ...]:
+        # A stale/corrupt grant is never returned as an active grant. The join is
+        # the incarnation fence, not a same-name or same-owner inference.
+        with self._lock:
+            name = None if actor is None else self.require(actor).actor
+            rows = self._db.execute(
+                "SELECT g.* FROM agent_capability_grants g JOIN agents a "
+                "ON a.actor=g.actor AND a.entity_token=g.entity_token "
+                "WHERE (? IS NULL OR g.actor=?) ORDER BY g.actor,g.grant_id", (name, name),
+            ).fetchall()
+            return tuple(CapabilityGrant(**dict(row)) for row in rows)
+
+    def revoke_capability(self, actor: str, grant_id: str, *, revoked_by: str) -> bool:
+        single_line(grant_id, "grant_id")
+        principal(revoked_by)
+        with self._lock, self._db:
+            self._db.execute("BEGIN IMMEDIATE")
+            agent = self.require(actor)
+            row = self._db.execute(
+                "SELECT * FROM agent_capability_grants WHERE actor=? AND grant_id=? "
+                "AND entity_token=?", (agent.actor, grant_id, agent.entity_token),
+            ).fetchone()
+            if row is None:
+                return False
+            grant = CapabilityGrant(**dict(row))
+            if grant.capability == "agent-home":
+                raise AgentError("agent-home is intrinsic; destroy the agent to retire it")
+            self._db.execute(
+                "DELETE FROM agent_capability_grants WHERE actor=? AND grant_id=?",
+                (agent.actor, grant_id),
+            )
+            self._append_grant_journal_locked(
+                agent, action="revoke", grant_id=grant_id, by=revoked_by,
+                capability=grant.capability, scope=grant.scope, revision=grant.revision,
+            )
+            return True
+
+    def grant_journal(self, actor: str) -> tuple[GrantJournalEntry, ...]:
+        # No require(): operators can inspect a destroyed actor's history.
+        name = self.normalize_actor(actor)
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM agent_grant_journal WHERE actor=? ORDER BY seq", (name,),
+            ).fetchall()
+            return tuple(GrantJournalEntry(**dict(row)) for row in rows)
+
     def grant_secret(
         self,
         actor: str,
@@ -2008,6 +2198,9 @@ class AgentRegistry:
             self._revoke_home_locked(agent)
             self._db.execute(
                 "DELETE FROM agent_secret_grants WHERE agent = ?", (agent.actor,)
+            )
+            self._db.execute(
+                "DELETE FROM agent_capability_grants WHERE actor = ?", (agent.actor,)
             )
             self._db.execute(
                 "UPDATE agents SET entity_token = ? WHERE actor = ?",

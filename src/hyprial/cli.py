@@ -6303,6 +6303,72 @@ def agent_create(
     _execute(operation, json_output=json_output)
 
 
+@agent_app.command("host-invite")
+def agent_host_invite(
+    name: str = typer.Argument(..., help="Actor name, unique on this host."),
+    owner: str = typer.Option(..., "--owner", help="Visitor's owner identity, asserted by this host."),
+    cwd: Path | None = typer.Option(None, "--cwd", help="Default working directory."),
+    preferred_harness: str | None = typer.Option(None, "--preferred-harness", help="Preferred harness for later starts."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Register a trusted visitor's agent; does not launch or isolate a worker."""
+
+    def operation() -> Any:
+        params: JsonObject = {"name": name, "owner": owner}
+        if cwd is not None:
+            params["cwd"] = str(cwd.expanduser().resolve())
+        if preferred_harness is not None:
+            params["preferredHarness"] = preferred_harness
+        return _daemon_request("agent.host-invite", params)
+
+    _execute(operation, json_output=json_output)
+
+
+@agent_app.command("grant")
+def agent_grant(
+    actor: str = typer.Argument(..., help="Agent instance name."),
+    capability: str = typer.Option(..., "--capability", help="Capability name from the grant schema."),
+    scope: str = typer.Option(..., "--scope", help="Single-line capability scope; arrays/paths use JSON."),
+    grant_id: str | None = typer.Option(None, "--grant-id", help="Stable id; defaults to a new UUID."),
+    revision: int = typer.Option(1, "--revision", help="Must increase when updating an existing id."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Record a capability grant. Recording does not enforce runtime permissions."""
+    _execute(
+        lambda: _daemon_request("agent.grant", {
+            "actor": actor, "capability": capability, "scope": scope,
+            "grantId": grant_id if grant_id is not None else str(uuid4()), "revision": revision,
+        }), json_output=json_output,
+    )
+
+
+@agent_app.command("revoke")
+def agent_revoke(
+    actor: str = typer.Argument(..., help="Agent instance name."),
+    grant_id: str = typer.Argument(..., help="Grant id returned by agent grant."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Remove an active capability record and retain its audit history."""
+    _execute(
+        lambda: _daemon_request("agent.revoke", {"actor": actor, "grantId": grant_id}),
+        json_output=json_output,
+    )
+
+
+@agent_app.command("grants")
+def agent_grants(
+    actor: str | None = typer.Argument(None, help="Agent name; required with --audit."),
+    audit: bool = typer.Option(False, "--audit", help="Show history, including destroyed incarnations."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """List capability records, or an agent's append-only audit history."""
+    _execute(
+        lambda: _daemon_request("agent.grants", {
+            **({"actor": actor} if actor is not None else {}), "audit": audit,
+        }), json_output=json_output,
+    )
+
+
 @agent_app.command("list")
 def agent_list(
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),

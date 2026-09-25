@@ -388,6 +388,11 @@ OWNER_JSON_KEYS = ("owner",)
 #: unaccounted value.  A listed column is a completed record and is skipped
 #: byte-for-byte, including any address quoted inside it.
 ARCHIVAL_COLUMNS = (
+    # Capability journal values describe the original decision, not current
+    # routing. Owner rename must not rewrite its attribution or scope.
+    *(("agent_grant_journal", column) for column in (
+        "actor", "entity_token", "action", "grant_id", "capability", "scope", "by", "note"
+    )),
     ("runs", "yaml_text"),
     ("runs", "report_text"),
     ("targets", "reply_excerpt"),
@@ -862,8 +867,9 @@ def detect_previous_owner(state_dir: Path, current: str) -> str | None:
     written by the very version that did not know it needed to.
 
     ``agents.owner`` is the read: it is the one column holding a **bare** owner
-    value (every other occurrence is embedded in an address), and every agent
-    this node registered carries it.
+    value (every other occurrence is embedded in an address). Only native
+    agents describe this node's owner: hosted rows belong to visitors and
+    must never trigger a host alias rewrite or a multiple-owner refusal.
 
     ⚠️ Fail-closed, same as the rewrite: more than one distinct foreign owner
     means the state was written under several identities and this function
@@ -878,7 +884,9 @@ def detect_previous_owner(state_dir: Path, current: str) -> str | None:
         try:
             if not _table_exists(db, "agents"):
                 return None  # verified absent: this state predates agents
-            rows = db.execute("SELECT DISTINCT owner FROM agents").fetchall()
+            columns = {row[1] for row in db.execute("PRAGMA table_info(agents)")}
+            native_filter = " WHERE hosted_by IS NULL" if "hosted_by" in columns else ""
+            rows = db.execute("SELECT DISTINCT owner FROM agents" + native_filter).fetchall()
         except sqlite3.Error as exc:
             # 读不到 ≠ 没有 applies one level up as well: an unreadable
             # agents table must not masquerade as "no previous owner", or

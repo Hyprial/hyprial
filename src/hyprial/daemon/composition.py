@@ -26,6 +26,7 @@ from hyprial.agents.ports import (
     AgentProjection,
     BindAgentCommand,
     CreateAgentCommand,
+    CreateHostInvitedAgentCommand,
     CreateTransferHostedAgentCommand,
     DestroyAgentCommand,
     PinAgentAdapterCommand,
@@ -929,6 +930,22 @@ class AgentDirectoryFacade:
         event = self._domains.call_agent(
             CreateTransferHostedAgentCommand(
                 correlation_id=f"agent-command:transfer-hosted:{uuid.uuid4().hex}",
+                name=actor, pinned_owner=pinned_owner, cwd=cwd,
+                harness_args=_harness_pairs(harness_args),
+                preferred_harness=preferred_harness,
+            ),
+            AgentMutationCompleted,
+        )
+        assert event.agent is not None
+        return _agent(event.agent)
+
+    def create_host_invited(
+        self, actor: str, *, pinned_owner: str, cwd: str | None = None,
+        harness_args: object = None, preferred_harness: str | None = None,
+    ) -> Agent:
+        event = self._domains.call_agent(
+            CreateHostInvitedAgentCommand(
+                correlation_id=f"agent-command:host-invite:{uuid.uuid4().hex}",
                 name=actor, pinned_owner=pinned_owner, cwd=cwd,
                 harness_args=_harness_pairs(harness_args),
                 preferred_harness=preferred_harness,
