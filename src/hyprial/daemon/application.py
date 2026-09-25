@@ -3856,10 +3856,7 @@ class DaemonApplication:
         _timed("routes.expire", lambda: self._expire_stale_channel_routes(now))
         _timed("forwarding.timer", self._reconcile_forwarding_endpoints)
         observed_at_ms = int(time.time_ns() // 1_000_000)
-        outcome = _timed(
-            "runtime.timer",
-            lambda: self._runtime.on_timer(observed_at_ms),
-        )
+        outcome = _timed("runtime.timer", lambda: self._runtime_timer(observed_at_ms))
 
         # Timer admission is bounded and never shares ownership with local IPC.
         # Each domain actor serializes its own cadence with its business commands.
@@ -6852,6 +6849,14 @@ class DaemonApplication:
         """
 
         owner = self.owner
+        if spec is None and desired is None:
+            # A batch path that installed the worker-status snapshot already
+            # holds one loaded copy; reuse it instead of one full load per
+            # call (the runtime timer resolved every streaming actor this way,
+            # 2026-09-25 production dump on pid 54206).
+            snapshot = self._current_worker_snapshot()
+            if snapshot is not None and snapshot.desired is not None:
+                desired = snapshot.desired
         if spec is None:
             try:
                 state = (
@@ -7985,6 +7990,19 @@ class DaemonApplication:
             session.actor
             for session in self._agent_session_domains.session.read_sessions()
         )
+
+    def _runtime_timer(self, observed_at_ms: int) -> Any:
+        """One runtime cadence tick inside one worker-status snapshot.
+
+        ``_dispatch_harness_deliveries`` resolves the canonical URI of every
+        streaming actor on every tick; outside a snapshot each resolution was
+        a full desired-state load (the ~0.6 core left after #787, production
+        2026-09-25).  One snapshot per tick makes that one load per tick.
+        """
+
+        assert self._runtime is not None
+        with self._worker_status_snapshot():
+            return self._runtime.on_timer(observed_at_ms)
 
     def _current_worker_snapshot(self) -> _WorkerStatusSnapshot | None:
         """The snapshot installed for this request thread, when there is one."""
