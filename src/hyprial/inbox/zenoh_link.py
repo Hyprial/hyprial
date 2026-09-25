@@ -10,6 +10,7 @@ from dataclasses import replace
 from hyprial.transport import KeySpace, PresenceView, Registration, TransportSession
 
 from .api import DeliveryLifecycle, InboxMessage
+from .pull import TerminalState, merge_delivery_status, query_delivery_status
 from .service import InboxService
 
 
@@ -112,7 +113,30 @@ class ZenohDeliveryTransport:
         )
 
     def confirm_fetch(self, message: InboxMessage) -> bool:
-        """Query durable pull evidence even when actor presence is stale/offline."""
+        """Query durable commit evidence even when the actor route is gone.
+
+        A custody or direct publication can reach the recipient while its
+        one-shot receipt is lost.  The recipient records that commit in the
+        daemon-wide delivery-status ledger, whose lifetime is independent of
+        the actor-scoped fetch-receipt queryable.  Consult that authoritative
+        ledger before falling back to the legacy fetch marker.
+        """
+
+        report = query_delivery_status(
+            self._session,
+            message.sender,
+            message_id=message.message_id,
+            keys=self._keys,
+            timeout=self._receipt_timeout,
+        )
+        if any(
+            record.message_id == message.message_id
+            and record.sender == message.sender
+            and record.recipient == message.recipient
+            and record.state is TerminalState.FETCHED
+            for record in merge_delivery_status(report.records)
+        ):
+            return True
 
         return self._await_receipt(
             self._keys.fetch_receipt(message.sender, message.message_id)

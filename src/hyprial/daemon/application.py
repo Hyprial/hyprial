@@ -24,6 +24,7 @@ from types import FrameType
 from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
+from hyprial import __version__
 from hyprial.actor_runtime.policies import DEFAULT_POLICIES, EXTERNAL_IO
 from hyprial.actor_runtime.scheduler import GenerationScheduler
 from hyprial.adapters.lark import LarkSdkGateway
@@ -4327,6 +4328,7 @@ class DaemonApplication:
                 "running": True,
                 "pid": os.getpid(),
                 "epoch": self.epoch,
+                "version": __version__,
                 "nodeId": self.node_id,
                 # owner/socket keep init's spread payload at parity with the
                 # ps daemon block it used to carry; all of this is in-memory
@@ -4489,6 +4491,7 @@ class DaemonApplication:
                         "running": True,
                         "pid": os.getpid(),
                         "epoch": self.epoch,
+                        "version": __version__,
                         "nodeId": self.node_id,
                         "owner": self.owner,
                         "socket": str(self.socket_path),
