@@ -113,9 +113,14 @@ class DaemonPacNotificationSender:
         delivery_io = self.application._pac_notification_io
         if delivery_io is None:
             raise RuntimeError("PAC typed inbox delivery is unavailable")
+        # The planned sender is the principal whose verified action caused
+        # this notification (a flag set, the graph run), or the graph's
+        # creator when nothing did (deadline, timeout).  Allen, 2026-09-25:
+        # ownership and the source of a handoff are separate; a hard-coded
+        # service identity (formerly `mfu-coordinator`) is not acceptable.
         delivered = delivery_io.deliver(
             effect_id=f"pac:{idempotency_key}",
-            sender=self.application._dispatch_service_actor,
+            sender=sender,
             target=recipient,
             conversation_id=conversation_id,
             text=text,

@@ -502,7 +502,7 @@ class ActorCoordinator:
                     event_id=event_id,
                     data={"nodeId": node.node_id, "action": "set", "actor": "reactor", "reasonRef": current["effect_id"]},
                 )
-                planned = self.reactor._plan_set(graph_id, node.node_id, event_id, "reactor")
+                planned = self.reactor._plan_set(graph_id, node.node_id, event_id, graph["created_by"])
                 inserted = self.reactor._insert_notifications(
                     planned, at, db=db, graph_id=graph_id, version=graph["version"]
                 )
@@ -584,7 +584,7 @@ class ActorCoordinator:
                     event_id=event_id,
                     data={"nodeId": node.node_id, "action": "reset", "actor": "reactor", "reasonRef": current["effect_id"]},
                 )
-                planned = self.reactor._plan_reset(graph_id, node.node_id, event_id, "reactor")
+                planned = self.reactor._plan_reset(graph_id, node.node_id, event_id, graph["created_by"])
                 inserted = self.reactor._insert_notifications(
                     planned, at, db=db, graph_id=graph_id, version=graph["version"]
                 )
@@ -735,8 +735,11 @@ class ActorCoordinator:
                         "reasonRef": current["effect_id"],
                     },
                 )
+                # The flag flip is the system's ("reactor" stays the recorded
+                # actor); no principal caused it, so what it notifies comes
+                # from the graph's creator (Allen, 2026-09-25).
                 planned = self.reactor._plan_reset(
-                    graph_id, node.node_id, flag_event_id, "reactor"
+                    graph_id, node.node_id, flag_event_id, graph["created_by"]
                 )
                 inserted.extend(
                     self.reactor._insert_notifications(

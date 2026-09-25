@@ -202,6 +202,27 @@ class WorkflowSender:
         )
 
 
+def _handoff_sender(store: PacGraphStore, graph: dict, node_id: str) -> str:
+    """Who hands this node its work: the principal that set the most recent
+    predecessor flag (forward or back edge), or the creator for a root.
+
+    Allen, 2026-09-25: when worker-2 asks who handed the work off, the answer
+    is worker-1; ownership (the creator) is a separate question.
+    """
+
+    sources = {edge.from_node for edge in store.edges(graph["graph_id"]) if edge.to_node == node_id}
+    latest = None
+    for name in sources:
+        row = store.node(graph["graph_id"], name)
+        if row is None or not row.flag or not row.flag_set_by or row.flag_set_at is None:
+            continue
+        if ":" not in row.flag_set_by:  # the system ("reactor"), not a principal
+            continue
+        if latest is None or row.flag_set_at > latest.flag_set_at:
+            latest = row
+    return latest.flag_set_by if latest is not None else graph["created_by"]
+
+
 class GraphWorkflowService:
     """Bounded resident cadence; the PAC database owns all durable facts."""
 
@@ -452,7 +473,7 @@ class GraphWorkflowService:
             node_id=node.node_id,
             round_no=round_no,
             text=turn_text(node.node_id, node.brief_ref, request, round_no),
-            sender=graph["created_by"],
+            sender=_handoff_sender(store, graph, node.node_id),
         )
         from hyprial.dispatch.identity import dispatch_message_id
 
