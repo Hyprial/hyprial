@@ -1221,6 +1221,7 @@ class DaemonApplication:
                 owner=self.owner,
                 rewrittenCells=self._owner_migration_rewrites,
             )
+            self._warn_if_worker_proxy_absent()
             step(self._start_runtime, DaemonStartupPhase.ACTOR_RUNTIME)
             step(self._start_server, DaemonStartupPhase.IPC_SERVER)
             # daemon.json now means "serving", not "restored": it is written
@@ -1544,6 +1545,65 @@ class DaemonApplication:
             "logs.migrated",
             fileCount=result.file_count,
         )
+
+    def _warn_if_worker_proxy_absent(self) -> None:
+        """One warning when model-vendor workers will connect directly.
+
+        The 2026-09-25 incident was a restart from a shell with no usable
+        proxy: nothing said so, and it took a 40-minute hung worker to find
+        out.  This is the cheap half of noticing -- a fact about the
+        configuration read at startup, with no network probe.  A damaged
+        setting is reported too, because every worker launch will now fail
+        on it.
+        """
+
+        from hyprial.agents.worker_proxy import (
+            WORKER_PROXY_SETTINGS_KEY,
+            WorkerProxyError,
+            ambient_proxy_absent,
+            read_worker_proxy,
+        )
+
+        try:
+            setting = read_worker_proxy(self.hyprial_home)
+        except WorkerProxyError as error:
+            self._log(
+                "warn",
+                "daemon",
+                "daemon.proxy.settings_invalid",
+                code=error.code,
+                detail=str(error),
+            )
+            return
+        if ambient_proxy_absent(setting, os.environ):
+            self._log(
+                "warn",
+                "daemon",
+                "daemon.proxy.absent",
+                detail=(
+                    f"no {WORKER_PROXY_SETTINGS_KEY} setting and no "
+                    "HTTP(S)_PROXY/ALL_PROXY in the daemon environment: "
+                    "model-vendor workers will connect directly"
+                ),
+            )
+
+    def _worker_proxy_status_json(self) -> dict[str, object]:
+        """``workerProxy`` for status/ps: what the NEXT worker launch uses.
+
+        Read at request time, like the launch itself, so it never shows a
+        value the daemon cached at startup.  A damaged setting is reported,
+        not raised: ``ps`` must stay answerable while it is broken.
+        """
+
+        from hyprial.agents.worker_proxy import WorkerProxyError, read_worker_proxy
+
+        try:
+            setting = read_worker_proxy(self.hyprial_home)
+        except WorkerProxyError as error:
+            return {"configured": False, "error": error.code, "detail": str(error)}
+        if setting is None:
+            return {"configured": False}
+        return {"configured": True, **setting.to_json()}
 
     def _warn_log_migration_failure(self, error: Exception) -> None:
         detail = str(error) or type(error).__name__
@@ -1961,19 +2021,17 @@ class DaemonApplication:
             """P1b B1: the pi worker's complete replacement environment.
 
             The composition itself is the shared, tested implementation in
-            :func:`hyprial.agents.environment.compose_worker_child_launch`;
-            this closure binds it to THIS daemon's authority (registry,
-            home, channel, environment).
+            :func:`compose_daemon_worker_launch` (which adds the per-launch
+            ``workerProxy`` route); this closure binds it to THIS daemon's
+            authority (registry, home, channel, environment).
             """
 
-            from hyprial.agents.environment import compose_worker_child_launch
-
-            return compose_worker_child_launch(
+            return compose_daemon_worker_launch(
                 registry=self._agent_registry,
                 hyprial_home=self.hyprial_home,
+                spec=spec,
                 channel=channel,
                 environ=os.environ,
-                agent_name=spec.name,
             )
 
         harness_events = CorrelatedDomainEvents()
@@ -4365,6 +4423,7 @@ class DaemonApplication:
                     "isolation": self._network_isolation_status(),
                 },
                 "forwarding": self._forwarding_status_json(),
+                "workerProxy": self._worker_proxy_status_json(),
             }
         # The restore gate lives at dispatch, not inside each method: while
         # restore is running, half-initialised collaborators must not be
@@ -4507,6 +4566,7 @@ class DaemonApplication:
                     },
                     "duplicateInstance": self._duplicate_instance_payload(),
                     "forwarding": self._forwarding_status_json(),
+                    "workerProxy": self._worker_proxy_status_json(),
                     "connectors": connector_statuses,
                     "orphanProcesses": list(self._orphan_process_status()),
                     "adapters": (
@@ -10584,6 +10644,38 @@ def _endpoint_host(endpoint: str) -> str | None:
         return urlsplit(f"//{address}").hostname
     except ValueError:
         return None
+
+
+def compose_daemon_worker_launch(
+    *,
+    registry: Any,
+    hyprial_home: Path,
+    spec: HarnessLaunchSpec,
+    channel: Any,
+    environ: Mapping[str, str],
+) -> Any:
+    """The daemon's child-environment factory body, one call per worker launch.
+
+    Every managed carrier -- pi, codex app-server, the Claude agent SDK,
+    jev and the PTY connectors -- receives its environment from here, so
+    this is the one place the ``workerProxy`` route is decided.  It is read
+    per launch, never at startup: ``hyprial config set workerProxy.*``
+    applies to the next worker without a daemon restart, and a damaged
+    setting fails THIS start loudly.  Module level so the wiring itself is
+    testable without building a daemon.
+    """
+
+    from hyprial.agents.environment import compose_worker_child_launch
+    from hyprial.agents.worker_proxy import launch_worker_proxy_route
+
+    return compose_worker_child_launch(
+        registry=registry,
+        hyprial_home=hyprial_home,
+        channel=channel,
+        environ=environ,
+        agent_name=spec.name,
+        worker_proxy=launch_worker_proxy_route(hyprial_home, spec),
+    )
 
 
 def _resolve_forwarding(

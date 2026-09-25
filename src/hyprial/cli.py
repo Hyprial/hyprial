@@ -9623,10 +9623,19 @@ def _alert_pending_app_migrations(pending: list[str]) -> None:
 @config_app.command("set")
 def config_set(
     key: str = typer.Argument(
-        ..., help="Config key (supported: autoUpgrade, forwarding.mode)."
+        ...,
+        help=(
+            "Config key (supported: autoUpgrade, forwarding.mode, "
+            "workerProxy.url, workerProxy.vendors, workerProxy.noProxy)."
+        ),
     ),
     value: str = typer.Argument(
-        ..., help="New value (autoUpgrade: true|false; forwarding.mode: off|auto|on)."
+        ...,
+        help=(
+            "New value (autoUpgrade: true|false; forwarding.mode: off|auto|on; "
+            "workerProxy.url: http(s) URL, empty clears; workerProxy.vendors: "
+            "comma list; workerProxy.noProxy: NO_PROXY list, empty = ambient)."
+        ),
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
@@ -9643,16 +9652,54 @@ def config_set(
     -- and ``on`` refuses to start the daemon without it.
     ``HYPRIAL_FORWARDING`` in the daemon's environment still wins.  It takes
     effect on the next daemon start.
+
+    ``workerProxy.*`` is hyprial's own proxy for model-vendor workers:
+    ``url`` (http/https; empty clears the whole setting and restores the
+    ambient behaviour), ``vendors`` (the model-vendor families that use it,
+    default ``openai,anthropic``; every other vendor's worker gets NO proxy
+    variables) and ``noProxy`` (the workers' ``NO_PROXY``; empty keeps the
+    daemon's own).  It is read at each worker launch, so it applies to the
+    next launch without a daemon restart.
     """
 
     def operation() -> JsonObject:
         from hyprial import updates
+        from hyprial.agents.worker_proxy import (
+            WORKER_PROXY_FIELDS,
+            WORKER_PROXY_SETTINGS_KEY,
+            WorkerProxyError,
+            write_worker_proxy_field,
+        )
         from hyprial.forwarding_config import (
             FORWARDING_SETTINGS_KEY,
             write_forwarding_mode,
         )
 
         forwarding_key = f"{FORWARDING_SETTINGS_KEY}.mode"
+        worker_proxy_keys = {
+            f"{WORKER_PROXY_SETTINGS_KEY}.{field}": field
+            for field in WORKER_PROXY_FIELDS
+        }
+        if key in worker_proxy_keys:
+            try:
+                path, setting = write_worker_proxy_field(
+                    worker_proxy_keys[key], value, _hyprial_home()
+                )
+            except WorkerProxyError as error:
+                raise CliError(
+                    "INVALID_CONFIGURATION", str(error), data={"reason": error.code}
+                ) from error
+            return {
+                "ok": True,
+                "key": key,
+                "path": str(path),
+                # The effective setting after this write; None means no url,
+                # i.e. workers keep the ambient behaviour.
+                WORKER_PROXY_SETTINGS_KEY: (
+                    None if setting is None else setting.to_json()
+                ),
+                "appliesOn": "next worker launch",
+            }
         if key == forwarding_key:
             try:
                 path = write_forwarding_mode(value, _hyprial_home())
@@ -9669,7 +9716,13 @@ def config_set(
             raise CliError(
                 "INVALID_CONFIGURATION",
                 f"unknown config key {key!r}; supported: "
-                + ", ".join((*updates.AUTOUPGRADE_KEY_ALIASES, forwarding_key)),
+                + ", ".join(
+                    (
+                        *updates.AUTOUPGRADE_KEY_ALIASES,
+                        forwarding_key,
+                        *worker_proxy_keys,
+                    )
+                ),
             )
         normalized = value.strip().lower()
         if normalized not in ("true", "false"):

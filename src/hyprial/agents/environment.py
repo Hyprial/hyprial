@@ -16,6 +16,7 @@ from .secrets import ResolvedSecret
 
 if TYPE_CHECKING:
     from .runtime import AgentRuntimeContext
+    from .worker_proxy import WorkerProxyRoute
 
 __all__ = [
     "BASE_CHILD_ENVIRONMENT_NAMES",
@@ -28,6 +29,10 @@ __all__ = [
     "build_complete_child_environment",
     "compose_worker_child_launch",
     "whitelist_replacement_environment",
+    "derived_proxy_environment",
+    "routed_proxy_environment",
+    "PROXY_ENVIRONMENT_NAMES",
+    "NO_PROXY_ENVIRONMENT_NAMES",
 ]
 
 BASE_CHILD_ENVIRONMENT_NAMES = frozenset(
@@ -48,9 +53,11 @@ BASE_CHILD_ENVIRONMENT_NAMES = frozenset(
         "TERM_PROGRAM",
         "HTTP_PROXY",
         "HTTPS_PROXY",
+        "ALL_PROXY",
         "NO_PROXY",
         "http_proxy",
         "https_proxy",
+        "all_proxy",
         "no_proxy",
         "SSL_CERT_FILE",
         "SSL_CERT_DIR",
@@ -212,6 +219,73 @@ class ChildEnvironmentLaunch:
     )
 
 
+#: The per-scheme proxy names a catch-all proxy may stand in for.
+_SCHEME_PROXY_NAMES = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy")
+
+
+def derived_proxy_environment(environ: Mapping[str, str]) -> dict[str, str]:
+    """Per-scheme proxy names filled from ``ALL_PROXY``/``all_proxy`` when absent.
+
+    A daemon started from a shell that exports only ``all_proxy`` used to
+    hand its workers no proxy at all: ``all_proxy`` was not in the approved
+    vocabulary, and codex reads only ``HTTP(S)_PROXY`` (2026-09-25, a codex
+    worker hung 40 min in SYN_SENT to DNS-poisoned addresses).  Passing the
+    name through is not enough on its own, so the catch-all also fills the
+    per-scheme names -- but only when NONE of them is set: an explicit
+    per-scheme proxy always wins and is never mixed with a derived one.  Only
+    an http(s) catch-all is derived; a ``socks5://`` value is passed through
+    as ``all_proxy`` alone, because not every client accepts a SOCKS URL in
+    ``HTTPS_PROXY``.
+    """
+
+    source = environ.get("ALL_PROXY") or environ.get("all_proxy")
+    if not source or not source.lower().startswith(("http://", "https://")):
+        return {}
+    if any(environ.get(name) for name in _SCHEME_PROXY_NAMES):
+        return {}
+    return {name: source for name in _SCHEME_PROXY_NAMES}
+
+
+#: Every name that sends a worker's traffic through a proxy.  A
+#: ``workerProxy`` route owns all six: it sets them together or removes them
+#: together, so no ambient spelling (a lowercase ``http_proxy``, a lone
+#: ``all_proxy``) survives to route a worker the setting sends direct.
+PROXY_ENVIRONMENT_NAMES = ("ALL_PROXY", "all_proxy", *_SCHEME_PROXY_NAMES)
+#: The exclusion list travels with the proxy it qualifies: meaningless
+#: without one, and removed with it.
+NO_PROXY_ENVIRONMENT_NAMES = ("NO_PROXY", "no_proxy")
+_ROUTED_PROXY_NAMES = frozenset(
+    (*PROXY_ENVIRONMENT_NAMES, *NO_PROXY_ENVIRONMENT_NAMES)
+)
+
+
+def routed_proxy_environment(
+    environ: Mapping[str, str], route: "WorkerProxyRoute"
+) -> dict[str, str]:
+    """The proxy names one worker carries under a ``workerProxy`` route.
+
+    A proxied route sets all six proxy names to the configured URL, both
+    cases, because codex reads only the uppercase per-scheme names and other
+    clients only the lowercase or catch-all ones.  ``NO_PROXY``/``no_proxy``
+    carry the configured ``noProxy``, else the daemon's own value -- tailnet
+    names and internal hosts must stay direct even though every model call
+    now goes through the proxy.  A direct route returns nothing:
+    the caller has already dropped the ambient proxy names.
+    """
+
+    if route.url is None:
+        return {}
+    routed = {name: route.url for name in PROXY_ENVIRONMENT_NAMES}
+    no_proxy = (
+        route.no_proxy
+        if route.no_proxy is not None
+        else environ.get("NO_PROXY") or environ.get("no_proxy")
+    )
+    if no_proxy:
+        routed.update({name: no_proxy for name in NO_PROXY_ENVIRONMENT_NAMES})
+    return routed
+
+
 def build_complete_child_environment(
     *,
     base: Mapping[str, str],
@@ -270,6 +344,7 @@ def compose_worker_child_launch(
     channel: Any,
     environ: Mapping[str, str],
     agent_name: str,
+    worker_proxy: "WorkerProxyRoute | None" = None,
 ) -> ChildEnvironmentLaunch:
     """The daemon-side composition of one worker's complete environment (B1).
 
@@ -283,6 +358,12 @@ def compose_worker_child_launch(
     the global gitconfig path stays available.  Any resolution failure
     propagates — the worker start fails loudly; there is no ambient
     fallback and no silent secretless continuation.
+
+    ``worker_proxy`` is this launch's ``workerProxy`` route (see
+    :mod:`hyprial.agents.worker_proxy`).  None keeps the ambient proxy
+    names plus the ``all_proxy`` derivation; a route replaces every proxy
+    name wholesale -- the daemon's own proxy values are not consulted
+    except as the ``NO_PROXY`` fallback.
     """
 
     from .home import AgentHomeError
@@ -320,6 +401,7 @@ def compose_worker_child_launch(
             runtime_context is not None
             and name in P2_CONTROLLED_ENVIRONMENT_NAMES
         )
+        and not (worker_proxy is not None and name in _ROUTED_PROXY_NAMES)
     }
     if (
         GIT_ONE_SHOT_TRIPLE.intersection(environ) == GIT_ONE_SHOT_TRIPLE
@@ -327,6 +409,11 @@ def compose_worker_child_launch(
     ):
         for name in GIT_ONE_SHOT_TRIPLE:
             base[name] = environ[name]
+    if worker_proxy is None:
+        for name, value in derived_proxy_environment(environ).items():
+            base.setdefault(name, value)
+    else:
+        base.update(routed_proxy_environment(environ, worker_proxy))
     generated.update(runtime_environment)
     return ChildEnvironmentLaunch(
         environment=build_complete_child_environment(
@@ -402,6 +489,8 @@ def whitelist_replacement_environment(
     for name in GENERATED_CHILD_ENVIRONMENT_NAMES:
         if name in environ and name not in GIT_ONE_SHOT_TRIPLE:
             combined[name] = environ[name]
+    for name, value in derived_proxy_environment(environ).items():
+        combined.setdefault(name, value)
     if (
         GIT_ONE_SHOT_TRIPLE.intersection(environ) == GIT_ONE_SHOT_TRIPLE
         and git_one_shot_is_valid(environ)

@@ -37,6 +37,10 @@ hyprial <域> <子命令> --help   # 参数面
   入口同拦；`hyprial autoupdate status --json` 的 `autoUpgradeEnabled` 读
   出开/关。用户或 agent 要开自动升级就走这条命令，不要手编 settings.json。
 - 楔死排障(doctor 超时但进程活着):看 daemon.jsonl 的 `reconcile_overrun`
+- `hyprial config set workerProxy.url <url|"">` / `workerProxy.vendors openai,anthropic` / `workerProxy.noProxy <list>`
+  —— hyprial 自己的 worker 代理(Allen 2026-09-25 定):列出的模型厂商(默认 openai、anthropic)的 worker 走代理,
+  其它厂商(deepseek、智谱、kimi)的 worker **去掉**代理直连;下一个 worker 启动即生效,不用重启 daemon;
+  url 置空即清除。没配置时沿用 daemon 自己环境里的代理(含 all_proxy)。⛔ 重启生产 daemon 时不要剥掉代理变量。
 
 ### 应用安装(hyprial install <app>)与取源诊断
 - `hyprial install <app> [--yes] [--check] [--force]` — 按 catalog 钉住的精确
