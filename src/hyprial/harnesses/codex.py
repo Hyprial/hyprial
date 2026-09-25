@@ -1815,13 +1815,21 @@ class CodexAppServerClient:
     def _spawn_environment(self) -> dict[str, str] | None:
         """The exact env mapping the exec consumer receives (B2).
 
-        Complete-replacement mode returns the frozen mapping verbatim;
-        legacy callers keep the whitelist-filtered form.  Wholesale
-        ``os.environ`` merging is gone from this carrier either way.
+        Complete-replacement mode returns the frozen mapping plus this
+        client's own delta (the resolved provider key and the worker
+        identity), the same ``{**base, **delta}`` form the connector and the
+        Agent SDK carrier use: argv names ``env_key="DEEPSEEK_API_KEY"``, so
+        dropping the delta leaves codex failing every turn on a missing
+        variable.  Legacy callers keep the whitelist-filtered form.
+        Wholesale ``os.environ`` merging is gone from this carrier either
+        way.
         """
 
         if self._complete_launch is not None:
-            return self._complete_launch.environment.for_exec()
+            return {
+                **self._complete_launch.environment.for_exec(),
+                **(self._env or {}),
+            }
         return None if self._env is None else whitelist_replacement_environment(
             os.environ, self._env
         )
