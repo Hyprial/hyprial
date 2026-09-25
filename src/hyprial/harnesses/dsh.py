@@ -786,6 +786,12 @@ class DshApiClient:
         self.exit_error: str | None = None
         self._baseline_seq = 0
         self._turn_pending = False
+        # session.cancel was accepted for the pending turn.  Only then may the
+        # session's idle readout end the turn (see receive_response).
+        self._cancel_sent = False
+        # A turn was ended from the idle readout, so its own turn/end may still
+        # land late: ignore a turn/end seen before the next turn's turn/start.
+        self._stale_turn_end_possible = False
         self.worker_channel = worker_channel
         self.worker_preset: DshWorkerPreset | None = None
         self.dsh_home = Path(dsh_home) if dsh_home is not None else None
@@ -897,22 +903,35 @@ class DshApiClient:
         if not isinstance(value, dict) or value.get("accepted") is not True:
             raise DshApiError("DSH session.prompt was not accepted")
         self._turn_pending = True
+        self._cancel_sent = False
 
     async def receive_response(self) -> AsyncIterator[_DshTurnOutcome]:
         session_id = self._require_session()
         last_text = ""
+        idle_after_cancel = False
         while True:
             history = await self.api.call(
                 "session.history", {"sessionId": session_id, "maxMessages": 200}
             )
+            # Each poll re-reads everything past the baseline, so whether this
+            # turn's turn/start has been seen is recomputed per poll.
+            turn_started = False
             for event in _events(history):
                 seq = event.get("seq")
                 if not isinstance(seq, int) or seq <= self._baseline_seq:
                     continue
+                if event.get("type") == "turn/start":
+                    turn_started = True
                 text = _assistant_text(event)
                 if text is not None:
                     last_text = text
                 if event.get("type") == "turn/end":
+                    if self._stale_turn_end_possible and not turn_started:
+                        # The previous turn, already ended from the idle
+                        # readout, announcing itself late.
+                        continue
+                    self._stale_turn_end_possible = False
+                    self._cancel_sent = False
                     self._turn_pending = False
                     data = event.get("data")
                     reason = data.get("reason") if isinstance(data, dict) else None
@@ -924,6 +943,31 @@ class DshApiClient:
                             f"DSH turn ended with reason {kind or 'unknown'}", True
                         )
                     return
+            if turn_started:
+                self._stale_turn_end_possible = False
+            if idle_after_cancel:
+                # DSH (@deepseek-ai/dsh 0.1.0-rc.7) can honour a cancel that
+                # lands as it opens a new step after tool results -- the step
+                # ends and the session goes idle -- without ever writing
+                # turn/end.  The idle readout was taken on the previous poll
+                # and this re-read still has no turn/end, so end the turn here
+                # (once); a turn/end that lands later is the stale one above.
+                self._cancel_sent = False
+                self._turn_pending = False
+                self._stale_turn_end_possible = True
+                yield _DshTurnOutcome(
+                    "DSH turn stopped after cancel without turn/end "
+                    "(session idle)",
+                    True,
+                )
+                return
+            if self._cancel_sent:
+                # State, not a clock: this runs on every poll wake (the loop
+                # polls regardless of new events), and only after an accepted
+                # session.cancel.
+                idle_after_cancel = await self._session_idle(session_id)
+                if idle_after_cancel:
+                    continue
             # No wall-clock deadline (#277): the turn ends when DSH reports
             # turn/end, or on an explicit interrupt.  Stall reporting waits
             # for a truthful DSH activity source (the current fixed
@@ -931,10 +975,27 @@ class DshApiClient:
             # fake a heartbeat).
             await asyncio.sleep(self.poll_interval_seconds)
 
+    async def _session_idle(self, session_id: str) -> bool:
+        """True only when DSH positively reports this session not running.
+
+        An absent session, a missing field or an unreadable reply is not
+        idleness: the turn then keeps waiting for turn/end as before.
+        """
+
+        value = await self.api.call("session.list", {})
+        items = value.get("items") if isinstance(value, dict) else None
+        if not isinstance(items, list):
+            return False
+        for item in items:
+            if isinstance(item, dict) and item.get("sessionId") == session_id:
+                return item.get("running") is False
+        return False
+
     async def interrupt(self) -> None:
         if not self._turn_pending:
             return
         await self.api.call("session.cancel", {"sessionId": self._require_session()})
+        self._cancel_sent = True
 
     def force_stop(self) -> None:
         cancel_active = getattr(self.api, "cancel_active", None)
