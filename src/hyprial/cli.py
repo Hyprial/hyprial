@@ -75,7 +75,9 @@ from hyprial.network_profile import (
 from hyprial.routine.cli import routine_app
 from hyprial.workflow.cli import workflow_app
 from hyprial.contracts import ipc_errors
+from hyprial.contracts.daemon_diagnostics import DAEMON_STARTUP_PHASES
 from hyprial.contracts.daemon_launch import DaemonLaunchResult
+from hyprial.process_diagnostics import process_cpu_seconds
 from hyprial.autoupdate.alert import (
     UPGRADE_ALREADY_CURRENT,
     UPGRADE_DECLINED_DOWNGRADE,
@@ -2535,6 +2537,89 @@ _SAFE_DAEMON_STARTUP_EVENTS = frozenset(
     }
 )
 
+_DAEMON_LOG_READ_BYTES = 64 * 1024
+
+
+def _daemon_startup_phase_summary(
+    state_dir: Path, *, spawned_at: datetime
+) -> JsonObject:
+    """Read only this launch's bounded startup phase names from daemon.jsonl."""
+
+    result: JsonObject = {"lastStartupPhase": None, "phasesSeen": 0}
+    path = state_dir / "logs" / "daemon.jsonl"
+    try:
+        with path.open("rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            end = stream.tell()
+            start = max(0, end - _DAEMON_LOG_READ_BYTES)
+            stream.seek(start)
+            raw = stream.read(_DAEMON_LOG_READ_BYTES)
+        if start:
+            _, separator, raw = raw.partition(b"\n")
+            if not separator:
+                return result
+    except OSError:
+        return result
+
+    phases_seen = 0
+    last_phase: str | None = None
+    for raw_line in raw.splitlines():
+        try:
+            entry = json.loads(raw_line)
+        except (UnicodeDecodeError, ValueError, RecursionError):
+            continue
+        if not isinstance(entry, dict) or entry.get("event") != "daemon.start.begin":
+            continue
+        timestamp = entry.get("ts")
+        if not isinstance(timestamp, str):
+            continue
+        try:
+            observed_at = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if observed_at.tzinfo is None or observed_at < spawned_at:
+            continue
+        # Saturation keeps even corrupted or adversarial logs finite while
+        # preserving the useful distinction between none, some, and more than
+        # the daemon's closed set of phases.
+        phases_seen = min(phases_seen + 1, len(DAEMON_STARTUP_PHASES) + 1)
+        phase = entry.get("phase")
+        last_phase = (
+            phase
+            if isinstance(phase, str) and phase in DAEMON_STARTUP_PHASES
+            else "unknown"
+        )
+    result["lastStartupPhase"] = last_phase
+    result["phasesSeen"] = phases_seen
+    return result
+
+
+def _daemon_startup_failure_evidence(
+    process: subprocess.Popen[bytes],
+    *,
+    state_dir: Path,
+    spawned_at: datetime,
+    started_monotonic: float,
+) -> JsonObject:
+    """Take one post-wait snapshot for a failed daemon launch."""
+
+    status = process.poll()
+    alive = status is None
+    # One probe only.  process_cpu_seconds uses one /proc read on Linux or one
+    # one-second-capped ps invocation on macOS; it never waits on or signals
+    # the daemon child and returns None if the child vanishes or probing fails.
+    cpu_seconds = process_cpu_seconds(process.pid) if alive else None
+    phase = _daemon_startup_phase_summary(state_dir, spawned_at=spawned_at)
+    return {
+        **phase,
+        "elapsedSeconds": round(max(0.0, time.monotonic() - started_monotonic), 6),
+        "child": {
+            "alive": alive,
+            "exitCode": None if alive else status,
+            "cpuSeconds": cpu_seconds,
+        },
+    }
+
 
 # Named startup refusals the launch log is allowed to surface (#513): the
 # daemon child's ``--json`` failure line carries these codes with bounded,
@@ -2824,6 +2909,8 @@ def _launch_daemon_process_locked(
             environment[IDENTITY_TRANSACTION_FD_ENV] = str(
                 identity_transaction.fileno
             )
+            spawned_at = datetime.now(UTC)
+            started_monotonic = time.monotonic()
             process = subprocess.Popen(
                 [sys.executable, "-m", "hyprial.cli", "daemon", "run", "--json"],
                 stdin=subprocess.DEVNULL,
@@ -2853,6 +2940,12 @@ def _launch_daemon_process_locked(
                     log_stream,
                     marker=marker,
                     offset=launch_log_offset,
+                )
+                startup_evidence = _daemon_startup_failure_evidence(
+                    process,
+                    state_dir=state_dir,
+                    spawned_at=spawned_at,
+                    started_monotonic=started_monotonic,
                 )
                 startup_error = diagnostics.pop("startupError", None)
                 if (
@@ -2928,7 +3021,7 @@ def _launch_daemon_process_locked(
                     ) from error
                 if (
                     error.code == ipc_errors.DAEMON_START_TIMEOUT
-                    and process.poll() is None
+                    and startup_evidence["child"]["alive"] is True
                 ):
                     # ① never arrived: the process is alive but did not bind
                     # and answer within the budget.  That is a startup
@@ -2946,6 +3039,7 @@ def _launch_daemon_process_locked(
                             "pid": process.pid,
                             "logPath": str(log_path),
                             **diagnostics,
+                            **startup_evidence,
                         },
                     )
                     raise _launch_process_error(
@@ -2960,6 +3054,7 @@ def _launch_daemon_process_locked(
                         "exitCode": process.returncode,
                         "logPath": str(log_path),
                         **diagnostics,
+                        **startup_evidence,
                     },
                 )
                 raise _launch_process_error(

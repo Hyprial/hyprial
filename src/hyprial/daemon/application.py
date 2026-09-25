@@ -67,6 +67,7 @@ from hyprial.adapters.lark.reply_bridge import (
     lark_reply_adapter,
 )
 from hyprial.contracts import ipc_errors
+from hyprial.contracts.daemon_diagnostics import DaemonStartupPhase
 from hyprial.contracts.ipc_errors import DaemonRequestError
 from hyprial.contracts.ports import PortAdmission
 from hyprial.contracts.readiness import ReadinessReport
@@ -1143,8 +1144,11 @@ class DaemonApplication:
         # A `begin` with no `end` names the step; the elapsed time on each
         # `end` is what turns "slow startup" into a number that can be
         # compared against that timeout.
-        def step(operation: Callable[[], Any], phase: str) -> None:
-            self._log_trace("info", "daemon.start.begin", phase=phase)
+        def step(operation: Callable[[], Any], phase: DaemonStartupPhase) -> None:
+            if not isinstance(phase, DaemonStartupPhase):
+                raise TypeError("daemon startup phases must use DaemonStartupPhase")
+            phase_name = phase.value
+            self._log_trace("info", "daemon.start.begin", phase=phase_name)
             started = time.monotonic()
             try:
                 operation()
@@ -1152,7 +1156,7 @@ class DaemonApplication:
                 self._log_trace(
                     "warn",
                     "daemon.start.failed",
-                    phase=phase,
+                    phase=phase_name,
                     errorType=type(error).__name__,
                     error=str(error)[:500],
                     elapsedMs=int((time.monotonic() - started) * 1000),
@@ -1160,12 +1164,14 @@ class DaemonApplication:
                 # The launch summary reads the launch capture (stderr), not
                 # daemon.jsonl -- mirror the failure name there or a failed
                 # `hyprial init` reports `daemonEvents: []`.
-                _mirror_startup_event_to_stderr("daemon.start.failed", phase=phase)
+                _mirror_startup_event_to_stderr(
+                    "daemon.start.failed", phase=phase_name
+                )
                 raise
             self._log_trace(
                 "info",
                 "daemon.start.end",
-                phase=phase,
+                phase=phase_name,
                 elapsedMs=int((time.monotonic() - started) * 1000),
             )
 
@@ -1214,18 +1220,18 @@ class DaemonApplication:
                 owner=self.owner,
                 rewrittenCells=self._owner_migration_rewrites,
             )
-            step(self._start_runtime, "actor-runtime")
-            step(self._start_server, "ipc-server")
+            step(self._start_runtime, DaemonStartupPhase.ACTOR_RUNTIME)
+            step(self._start_server, DaemonStartupPhase.IPC_SERVER)
             # daemon.json now means "serving", not "restored": it is written
             # at the phase-① boundary -- socket bound, accept about to run,
             # ping answerable -- so the CLI can key its readiness probe on it
             # without waiting for restore.  Everyone reading it as "restore
             # complete" was already wrong once: the CLI's 0.5s `ps` probes
             # filled the backlog because accept had not started, marker or no.
-            step(self._write_pid_file, "pid-file")
+            step(self._write_pid_file, DaemonStartupPhase.PID_FILE)
             if self._usage_cache is not None:
-                step(self._usage_cache.start, "usage-cache")
-            step(self._autoupdate.start, "autoupdate")
+                step(self._usage_cache.start, DaemonStartupPhase.USAGE_CACHE)
+            step(self._autoupdate.start, DaemonStartupPhase.AUTOUPDATE)
             # Restore leaves the startup path here.  Adapter workers receive
             # this socket path and may use it as soon as their native stream
             # becomes ready (including history replay), so the socket must
@@ -3465,7 +3471,10 @@ class DaemonApplication:
             deferred=summary.deferred,
         )
 
-    def _start_restore_thread(self, step: Callable[[Callable[[], Any], str], None]) -> None:
+    def _start_restore_thread(
+        self,
+        step: Callable[[Callable[[], Any], DaemonStartupPhase], None],
+    ) -> None:
         """Move restore off the startup path: accept first, restore alongside.
 
         The gate is cleared here, not inside the thread, so a client that
@@ -3487,7 +3496,7 @@ class DaemonApplication:
         thread.start()
 
     def _restore_then_open_gate(
-        self, step: Callable[[Callable[[], Any], str], None]
+        self, step: Callable[[Callable[[], Any], DaemonStartupPhase], None]
     ) -> None:
         """Run both restore halves, then open the dispatch gate.
 
@@ -3501,9 +3510,12 @@ class DaemonApplication:
         """
 
         try:
-            step(self._restore_adapters, "restore-adapters")
-            step(self._restore_harnesses, "restore-harnesses")
-            step(self._restore_provider_auth, "restore-provider-auth")
+            step(self._restore_adapters, DaemonStartupPhase.RESTORE_ADAPTERS)
+            step(self._restore_harnesses, DaemonStartupPhase.RESTORE_HARNESSES)
+            step(
+                self._restore_provider_auth,
+                DaemonStartupPhase.RESTORE_PROVIDER_AUTH,
+            )
         except BaseException as error:
             self._restore_error = error
             self.stop_event.set()

@@ -29,3 +29,9 @@ LIFECYCLE_OPERATION_DEADLINE_SECONDS = 70.0
 #: derived from the deadline, never chosen independently.
 LIFECYCLE_WAIT_MARGIN_SECONDS = 10.0
 LIFECYCLE_IPC_MARGIN_SECONDS = 10.0
+
+#: The diagnostic sampler is deliberately not a new daemon-start budget.  It
+#: runs only after the unchanged readiness wait has failed, and bounds the one
+#: macOS ``ps`` process used to read child CPU time.  Linux uses one ``/proc``
+#: read and does not consume this allowance.
+PROCESS_CPU_PROBE_TIMEOUT_SECONDS = 1.0
