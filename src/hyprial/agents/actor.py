@@ -43,6 +43,7 @@ from .ports import (
     UpdateAgentCommand,
 )
 from .registry import Agent, AgentError, AgentHomeError, AgentRegistry
+from hyprial.cost_counters import CallCostCounters
 
 __all__ = ["AgentActor", "AgentRegistryActor", "SenderIdentityError"]
 
@@ -55,6 +56,32 @@ class _DesiredStatePort(Protocol):
 
 class SenderIdentityError(AgentError):
     code = ipc_errors.SENDER_UNRESOLVED
+
+
+# The fixed key set of the Agent actor's cost counters: every message type
+# ``_AgentGeneration`` dispatches, split by origin.  ``/session`` is work a
+# SessionActor effect asked for (heartbeat/register binds and releases),
+# ``/other`` is everything else; the split is what lets the calibration
+# contract count the session-originated share into the IPC path.
+_AGENT_COST_TYPES = (
+    "LifecycleMutationRequest",
+    "CreateAgentCommand",
+    "CreateHostInvitedAgentCommand",
+    "CreateTransferHostedAgentCommand",
+    "UpdateAgentCommand",
+    "DestroyAgentCommand",
+    "BindAgentCommand",
+    "ReleaseAgentCommand",
+    "PinAgentAdapterCommand",
+    "UnpinAgentAdapterCommand",
+)
+AGENT_COST_ORIGIN_SESSION = "session"
+AGENT_COST_ORIGIN_OTHER = "other"
+_AGENT_COST_KEYS = frozenset(
+    f"{name}/{origin}"
+    for name in _AGENT_COST_TYPES
+    for origin in (AGENT_COST_ORIGIN_SESSION, AGENT_COST_ORIGIN_OTHER)
+)
 
 
 class _Version:
@@ -125,8 +152,43 @@ class _AgentGeneration:
     events: object
     version: _Version
     projection: _AgentProjectionState
+    command_costs: CallCostCounters | None = None
+    session_originated: Callable[[str], bool] | None = None
 
     def __call__(self, command: object) -> None:
+        """Dispatch one command, charging this actor thread's CPU to it.
+
+        Runs on the Agent actor's own thread, so the thread-CPU delta is only
+        Agent work: the SessionActor or IPC thread that asked for it records
+        its own CPU on its own side (the ipc_stats attribution rule).  The
+        origin is decided BEFORE dispatch, while the SessionActor still holds
+        the attempt; its completion retires the attempt during dispatch.
+        """
+
+        costs = self.command_costs
+        if costs is None or not costs.enabled:
+            self._dispatch(command)
+            return
+        origin_of = self.session_originated
+        origin = (
+            AGENT_COST_ORIGIN_SESSION
+            if origin_of is not None
+            and origin_of(str(getattr(command, "correlation_id", "")))
+            else AGENT_COST_ORIGIN_OTHER
+        )
+        failed = True
+        started_cpu = time.thread_time()
+        try:
+            self._dispatch(command)
+            failed = False
+        finally:
+            costs.record(
+                f"{type(command).__name__}/{origin}",
+                cpu_seconds=time.thread_time() - started_cpu,
+                error=failed,
+            )
+
+    def _dispatch(self, command: object) -> None:
         from hyprial.daemon.lifecycle_receipts import LifecycleMutationRequest
 
         if isinstance(command, LifecycleMutationRequest):
@@ -409,6 +471,15 @@ class _AgentGeneration:
             binding = incumbent
             self.liveness.touch(agent.uri)
             changed = False
+            # Nothing the read projection is built from moved: no registry
+            # write, the same binding object (same bound_at_ms), no version
+            # bump -- only the liveness heartbeat, which the projection does
+            # not carry.  Rebuilding it would rescan every agent row (293 in
+            # production) once per channel heartbeat per second for an
+            # identical result.  The ``exact`` test above reads the actor's
+            # own AgentLiveness (the authority the projection is copied
+            # from), so a lost, changed or stale binding never reaches here.
+            refresh_projection = False
         else:
             self.registry.record_session(
                 agent.actor,
@@ -425,6 +496,7 @@ class _AgentGeneration:
             # daemon contact (session register or supervised start).
             self.liveness.touch(agent.uri)
             changed = True
+            refresh_projection = True
             agent = self.registry.require(agent.actor)
         if changed:
             self.registry.record_external_binding(
@@ -441,6 +513,7 @@ class _AgentGeneration:
             version=version,
             agent=agent,
             binding=binding,
+            refresh_projection=refresh_projection,
         )
 
     def _release(self, command: ReleaseAgentCommand) -> None:
@@ -526,13 +599,15 @@ class _AgentGeneration:
         version: int,
         agent: Agent | None = None,
         binding: AgentBinding | None = None,
+        refresh_projection: bool = True,
     ) -> None:
-        _refresh_projection(
-            self.projection,
-            self.registry,
-            self.liveness,
-            version,
-        )
+        if refresh_projection:
+            _refresh_projection(
+                self.projection,
+                self.registry,
+                self.liveness,
+                version,
+            )
         self._publish(
             AgentMutationCompleted(
                 correlation_id=command.correlation_id,
@@ -575,8 +650,12 @@ class AgentActor:
         clock: Callable[[], float] | None = None,
         mailbox_capacity: int = 128,
         runtime: ActorRuntime | None = None,
+        session_originated: Callable[[str], bool] | None = None,
     ) -> None:
         self._registry = registry
+        # Owned by the actor, not a generation: totals survive restarts.
+        self._command_costs = CallCostCounters(_AGENT_COST_KEYS, wall=False)
+        self._session_originated = session_originated
         self._machine = registry.machine
         self._liveness = liveness or AgentLiveness(
             node_id=registry.machine,
@@ -610,6 +689,8 @@ class AgentActor:
                 events=self._events,
                 version=self._version,
                 projection=self._projection,
+                command_costs=self._command_costs,
+                session_originated=self._session_originated,
             )
 
         self._handle = self._runtime.start(
@@ -627,6 +708,12 @@ class AgentActor:
     @property
     def version(self) -> int:
         return self._version.read()
+
+    @property
+    def command_costs(self) -> CallCostCounters:
+        """Per-command-type/origin thread CPU on this actor (``ps`` ipcStats)."""
+
+        return self._command_costs
 
     def submit(self, command: object) -> PortAdmission:
         admission = self._runtime.tell(self._handle, command)

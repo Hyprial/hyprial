@@ -274,12 +274,19 @@ class AgentSessionDomains:
             if session is not None:
                 session.accept_agent_event(event)
 
+        def session_originated(correlation_id: str) -> bool:
+            session = self._session
+            return session is not None and session.owns_agent_correlation(
+                correlation_id
+            )
+
         self.agent = AgentActor(
             registry,
             event_sink=agent_event,
             desired_state=desired_state,
             worker_running=worker_running,
             clock=clock,
+            session_originated=session_originated,
         )
         self.session = SessionActor(
             desired_state,

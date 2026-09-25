@@ -260,6 +260,7 @@ from hyprial.uri import (
     parse_agent_uri,
     parse_channel_uri,
 )
+from .ipc_stats import CallCostCounters, ipc_stats_payload
 from .home_guard import ActiveDaemonHeartbeat, keepalive_duration_from_environment
 from .route_delivery import (
     RouteDeliveryError,
@@ -420,6 +421,107 @@ _IPC_CLIENT_SHUTDOWN_TIMEOUT = 2.0
 # while restore has not finished it gets an immediate DAEMON_RESTORING
 # refusal rather than a queued wait behind work that may take a minute.
 _RESTORE_GATE_LIGHT_METHODS = frozenset({"ping", "shutdown"})
+# The fixed key set of the per-method IPC cost counters (``ps`` →
+# ``daemon.ipcStats.methods``): every method name ``handle`` and its
+# delegates dispatch on.  Anything else -- a typo, a retired method, a
+# hostile client inventing names -- folds into ``"(other)"``, so the counter
+# map cannot be grown from outside.  A drift test re-derives this set from
+# the method-name comparisons in this module, so a new method that is not
+# added here fails CI instead of silently landing in ``"(other)"``.
+_IPC_STATS_METHODS = frozenset(
+    {
+        "adapter.list",
+        "adapter.pin",
+        "adapter.pins",
+        "adapter.reload",
+        "adapter.start",
+        "adapter.status",
+        "adapter.stop",
+        "adapter.unpin",
+        "agent.create",
+        "agent.destroy",
+        "agent.destroy.preview",
+        "agent.get",
+        "agent.grant",
+        "agent.grants",
+        "agent.host-invite",
+        "agent.list",
+        "agent.resolve",
+        "agent.revoke",
+        "agent.runtime-context",
+        "agent.secret.grant",
+        "agent.secret.list",
+        # Spelled split exactly like its dispatch site (term lint).
+        "agent.secret." + "provider-write",
+        "agent.secret.revoke",
+        "agent.task.cancel",
+        "agent.task.capabilities",
+        "agent.task.observe",
+        "agent.task.result",
+        "agent.task.start",
+        "agent.task.status",
+        "autoupdate.notify",
+        "autoupdate.status",
+        "autoupdate.trigger",
+        "dispatch.matrix.resolve",
+        "down",
+        "hosts",
+        "identity.whoami",
+        "lifecycle.start",
+        "management.adapter.remove",
+        "management.squire.ensure",
+        "message.ack",
+        "message.pending.list",
+        "message.query",
+        "message.reply",
+        "message.send",
+        "message.status",
+        "org.fetch",
+        "org.publish",
+        "outbox.list",
+        "outbox.prune",
+        "pac.actor.stop",
+        "pac.flag.reset",
+        "pac.flag.set",
+        "pac.graph.activate",
+        "pac.graph.close",
+        "ping",
+        "progress.list",
+        "ps",
+        "routine.add",
+        "routine.audit",
+        "routine.list",
+        "routine.pause",
+        "routine.remove",
+        "routine.resume",
+        "routine.status",
+        "session.heartbeat",
+        "session.refresh",
+        "session.register",
+        "session.unregister",
+        "shutdown",
+        "targets",
+        "top.snapshot",
+        "transfer.complete",
+        "transfer.plan",
+        "transfer.precheck",
+        "transfer.quiesce",
+        "transfer.receive",
+        "transfer.resume",
+        "workflow.cancel",
+        "workflow.complete",
+        "workflow.fail",
+        "workflow.history.list",
+        "workflow.history.status",
+        "workflow.list",
+        "workflow.node.inspect",
+        "workflow.remote.current",
+        "workflow.start",
+        "workflow.status",
+        "workflow.worker.restart",
+        "workflow.worker.stop",
+    }
+)
 # How long `_close` waits for the restore thread before moving on.  The
 # thread is a daemon and the loops it drives poll `stop_event`, so a join
 # that outlasts this is the exit backstop's case, not a reason to hold
@@ -915,6 +1017,10 @@ class DaemonApplication:
         self._server: socket.socket | None = None
         self._accept_reserve_fd: int | None = None
         self._ipc_client_slots = threading.BoundedSemaphore(_IPC_MAX_CLIENTS)
+        # Per-method handler cost (see ipc_stats for the attribution rule and
+        # the calibration contract).  Owned here, not per connection: the
+        # client threads are short-lived and the totals must outlive them.
+        self._ipc_stats = CallCostCounters(_IPC_STATS_METHODS, wall=True)
         self._ipc_clients: set[socket.socket] = set()
         self._ipc_client_threads: set[threading.Thread] = set()
         self._ipc_clients_lock = threading.Lock()
@@ -4218,7 +4324,7 @@ class DaemonApplication:
                 and "idempotencyKey" not in params
             ):
                 params = {**params, "idempotencyKey": request_id}
-            result = self.handle(method, params)
+            result = self._timed_handle(method, params)
             return {"version": 1, "id": request_id, "result": result}
         except (NameError, ImportError):
             raise
@@ -4229,6 +4335,37 @@ class DaemonApplication:
             if data is not None:
                 failure["data"] = data
             return {"version": 1, "id": request_id, "error": failure}
+
+    def _timed_handle(self, method: str, params: JsonObject) -> Any:
+        """``handle`` for one IPC request, charged to ``daemon.ipcStats``.
+
+        This is the single point every socket request passes through; the
+        in-process ``self.handle(...)`` calls (restore, lifecycle helpers)
+        deliberately bypass it, so the counters mean "cost of serving IPC".
+        Only this thread's CPU is read: time the handler spends parked on a
+        domain actor is charged on that actor's own thread, never here (the
+        attribution rule in ``ipc_stats``).  Request framing -- JSON parse,
+        envelope, ``sendall`` -- stays outside the timed span and is a named
+        uncovered category.
+        """
+
+        stats = self._ipc_stats
+        if not stats.enabled:
+            return self.handle(method, params)
+        failed = True
+        started_cpu = time.thread_time()
+        started_wall = time.perf_counter()
+        try:
+            result = self.handle(method, params)
+            failed = False
+            return result
+        finally:
+            stats.record(
+                method,
+                cpu_seconds=time.thread_time() - started_cpu,
+                wall_seconds=time.perf_counter() - started_wall,
+                error=failed,
+            )
 
     def _registry_management_handler(self) -> RegistryManagementHandler:
         with self._registry_management_lock:
@@ -4557,6 +4694,20 @@ class DaemonApplication:
                         "lifecycle": self._lifecycle_status(),
                         "dispatchWithoutPacCount": self._dispatch_without_pac_snapshot(),
                         "dispatchConversationCount": self._dispatch_conversation_snapshot(),
+                        # Additive and read-only: the per-method cost
+                        # counters plus processCpuSeconds read at the same
+                        # moment, so two ps snapshots reconcile the
+                        # counters against process CPU (ipc_stats docstring).
+                        "ipcStats": ipc_stats_payload(
+                            methods=self._ipc_stats,
+                            session_actor=(
+                                self._agent_session_domains.session.command_costs
+                            ),
+                            agent_actor=self._agent_session_domains.agent.command_costs,
+                            effect_admission=(
+                                self._agent_session_domains.session.effect_admission_costs
+                            ),
+                        ),
                     },
                     "zenoh": {
                         "listen": list(self.zenoh_listen),

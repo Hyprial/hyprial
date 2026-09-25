@@ -39,6 +39,7 @@ from .desired_state import (
     InteractiveSession,
     PendingSessionAgentEffect,
 )
+from hyprial.cost_counters import CallCostCounters
 from hyprial.uri import parse_agent_uri
 from .session_ports import (
     HeartbeatSessionCommand,
@@ -56,6 +57,27 @@ from .session_ports import (
 )
 
 __all__ = ["SessionActor", "SessionOwnershipError"]
+
+
+# The fixed key set of the session actor's cost counters: every message
+# type ``_SessionGeneration`` dispatches.  Anything else is rejected by the
+# dispatcher and its (tiny) cost folds into ``"(other)"``.
+_SESSION_COST_KEYS = frozenset(
+    {
+        "RegisterSessionCommand",
+        "RefreshSessionCommand",
+        "HeartbeatSessionCommand",
+        "UnregisterSessionCommand",
+        "SessionLeaseElapsedCommand",
+        "LifecycleMutationRequest",
+        "_AgentEffectResult",
+        "_AgentEffectUnavailable",
+    }
+)
+
+
+# The effect-admission thread's key set: the effect operations it admits.
+_EFFECT_ADMISSION_COST_KEYS = frozenset({"bind", "release"})
 
 
 class _CommandSubmitter(Protocol):
@@ -237,6 +259,12 @@ class _AgentEffectWorker:
         self._condition = threading.Condition()
         self._pending = 0
         self._closed = False
+        # Its own side of the ipc_stats attribution rule: the admission work
+        # (building the Agent command, submitting it, backing off) runs on
+        # this thread only.  Every effect here is session-originated.
+        self.admission_costs = CallCostCounters(
+            _EFFECT_ADMISSION_COST_KEYS, wall=False
+        )
         self._thread = threading.Thread(
             target=self._run,
             name="hyprial-session-agent-effects",
@@ -301,10 +329,28 @@ class _AgentEffectWorker:
                 continue
             if work is None:
                 return
-            self._admit(work)
+            self._timed_admit(work)
             with self._condition:
                 self._pending -= 1
                 self._condition.notify_all()
+
+    def _timed_admit(self, work: _EffectWork) -> None:
+        costs = self.admission_costs
+        if not costs.enabled:
+            self._admit(work)
+            return
+        failed = True
+        # thread_time excludes the backoff sleeps: only CPU is charged.
+        started_cpu = time.thread_time()
+        try:
+            self._admit(work)
+            failed = False
+        finally:
+            costs.record(
+                work.effect.operation,
+                cpu_seconds=time.thread_time() - started_cpu,
+                error=failed,
+            )
 
     def _admit(self, work: _EffectWork) -> None:
         if self._commands is None:
@@ -369,10 +415,37 @@ class _SessionGeneration:
     clock_ms: Callable[[], int]
     lease_ttl_seconds: float
     runtime_projection: _SessionRuntimeState
+    command_costs: CallCostCounters | None = None
     _mutations: dict[str, _PendingMutation] = field(default_factory=dict, init=False)
     _effect_owners: dict[str, str] = field(default_factory=dict, init=False)
 
     def __call__(self, command: object) -> None:
+        """Dispatch one command, charging this actor thread's CPU to its type.
+
+        This runs on the session actor's own thread, so the thread-CPU delta
+        is exactly the session side of a request: the IPC thread that sent
+        it is parked in ``call_session`` meanwhile and records only its own
+        CPU (the ipc_stats attribution rule).  Queue wait is not measured --
+        it is not CPU.
+        """
+
+        costs = self.command_costs
+        if costs is None or not costs.enabled:
+            self._dispatch(command)
+            return
+        failed = True
+        started_cpu = time.thread_time()
+        try:
+            self._dispatch(command)
+            failed = False
+        finally:
+            costs.record(
+                type(command).__name__,
+                cpu_seconds=time.thread_time() - started_cpu,
+                error=failed,
+            )
+
+    def _dispatch(self, command: object) -> None:
         from .lifecycle_receipts import LifecycleMutationRequest
 
         if isinstance(command, LifecycleMutationRequest):
@@ -902,6 +975,9 @@ class SessionActor:
         self._lease_ttl_seconds = lease_ttl_seconds
         self._version = _Version()
         self._runtime_projection = _SessionRuntimeState(daemon_epoch)
+        # Owned by the actor, not the generation: a guardian restart mints a
+        # new _SessionGeneration and the totals must survive it.
+        self._command_costs = CallCostCounters(_SESSION_COST_KEYS, wall=False)
         self._runtime = runtime or ActorRuntime()
         self._generation = 0
         self._generation_lock = threading.Lock()
@@ -928,6 +1004,7 @@ class SessionActor:
                 clock_ms=self._clock_ms,
                 lease_ttl_seconds=self._lease_ttl_seconds,
                 runtime_projection=self._runtime_projection,
+                command_costs=self._command_costs,
             )
             # Generation 1 is reconciled synchronously after the worker and
             # stable handle exist.  Guardian-created generations need their
@@ -987,6 +1064,31 @@ class SessionActor:
     @property
     def version(self) -> int:
         return self._version.read()
+
+    @property
+    def command_costs(self) -> CallCostCounters:
+        """Per-command-type thread CPU on this actor (``ps`` ipcStats)."""
+
+        return self._command_costs
+
+    @property
+    def effect_admission_costs(self) -> CallCostCounters:
+        """Thread CPU of the Agent-effect admission lane (``ps`` ipcStats)."""
+
+        return self._effect_worker.admission_costs
+
+    def owns_agent_correlation(self, correlation_id: str) -> bool:
+        """Is ``correlation_id`` an Agent command one of this actor's effects sent?
+
+        Authoritative, not a guess from the id's shape: the attempt is
+        registered before the command is submitted and retired only after
+        its result comes back, so the Agent actor asking at dispatch time
+        always gets the true answer.  Used only to split Agent-actor cost by
+        origin for the calibration contract.
+        """
+
+        with self._effect_lock:
+            return correlation_id in self._agent_attempts
 
     def submit(self, command: object) -> PortAdmission:
         admission = self._runtime.tell(self._handle, command)
