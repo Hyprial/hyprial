@@ -48,6 +48,16 @@ BASE_CHILD_ENVIRONMENT_NAMES = frozenset(
         "XDG_CACHE_HOME",
         "XDG_DATA_HOME",
         "XDG_STATE_HOME",
+        # Harness config roots: the same rule as HOME/XDG above.  The
+        # unconfigured P1 mode preserves the daemon's values; a P2
+        # composition strips every P2_CONTROLLED name from base and supplies
+        # the agent's own native root.  Only GENERATED before, these were
+        # silently dropped by the P1b B2 whitelist: from 2026-09-20 the
+        # nightly's claude workers ignored its CLAUDE_CONFIG_DIR=~/.claude-ci
+        # and ran on ~/.claude (E2E-006 claude.fresh-session-id BLOCKED).
+        "CLAUDE_CONFIG_DIR",
+        "CODEX_HOME",
+        "PI_CODING_AGENT_DIR",
         "TERM",
         "COLORTERM",
         "TERM_PROGRAM",
