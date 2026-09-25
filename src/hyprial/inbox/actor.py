@@ -2555,6 +2555,7 @@ class DeliveryCustodyCoordinator(InboxProjectionPort):
         """Bounded synchronous wait permitted only at system protocol edges."""
 
         reply = self._events.expect(command.correlation_id, expected)
+        started = time.monotonic()
         admission = self.submit(command)
         if admission is not PortAdmission.ACCEPTED:
             self._events.cancel(command.correlation_id)
@@ -2563,6 +2564,13 @@ class DeliveryCustodyCoordinator(InboxProjectionPort):
             )
         try:
             event = reply.wait(timeout)
+        except InboxAuthorityTimeout as exc:
+            # Say what the actor was doing when the reply deadline passed:
+            # busy with earlier commands, idle with this one still queued, or
+            # a waiter that itself woke far past its deadline.
+            raise InboxAuthorityTimeout(
+                f"{exc}; {self._timeout_evidence(started, timeout)}"
+            ) from exc
         finally:
             self._events.cancel(command.correlation_id)
         if isinstance(event, PortCommandRejected):
@@ -2570,6 +2578,18 @@ class DeliveryCustodyCoordinator(InboxProjectionPort):
                 raise KeyError(event.detail)
             raise InboxAuthorityUnavailable(f"{event.code}: {event.detail}")
         return event
+
+    def _timeout_evidence(self, started: float, timeout: float) -> str:
+        waited = time.monotonic() - started
+        try:
+            snapshot = self._runtime.snapshot(self._handle)
+        except Exception as exc:  # noqa: BLE001 - evidence must not mask the timeout
+            return f"waited {waited:.3f}s of {timeout:.3f}s; actor snapshot failed: {exc!r}"
+        return (
+            f"waited {waited:.3f}s of {timeout:.3f}s; actor state={snapshot.state.value} "
+            f"generation={snapshot.generation} queued={snapshot.queued} "
+            f"in_flight={snapshot.in_flight} failures={snapshot.failures_in_window}"
+        )
 
     def read_counts(self) -> InboxCountsProjection:
         return self._projection.read_counts()

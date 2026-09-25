@@ -993,10 +993,18 @@ class DeliveryCustodyFacade:
         return event.items
 
     def shutdown(self) -> None:
-        event = self._call(
-            CloseInboxCommand(self._correlation("close")),
-            InboxClosed,
-        )
+        try:
+            event = self._call(
+                CloseInboxCommand(self._correlation("close")),
+                InboxClosed,
+            )
+        except InboxAuthorityTimeout:
+            # The close is still queued; an unanswered reply is no reason to
+            # abandon custody.  Drain anyway so a stalled-but-live actor
+            # finishes, stops and releases its SQLite descriptors.  The
+            # caller still sees the timeout.
+            self._coordinator.drain(self._timeout)
+            raise
         assert isinstance(event, InboxClosed)
         report = self._coordinator.drain(self._timeout)
         if not report.complete:
