@@ -71,6 +71,7 @@ def delivery_current(
                 and not node.flag
                 and row["state"] == "requested"
                 and row["request_id"] == bound["request_id"]
+                and row["deadline_ms"] is not None
                 and at <= row["deadline_ms"]
                 and row["input_token"]
                 == input_token(store, bound["graph_id"], bound["node_id"])

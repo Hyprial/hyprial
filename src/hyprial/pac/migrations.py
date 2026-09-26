@@ -18,7 +18,7 @@ from .errors import PAC_MIGRATION_SOURCE_UNREADABLE, PacError
 from .journal import JOURNAL_SCHEMA, append_event
 from .principal import principal_kind
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 
 def _create_v1(db: sqlite3.Connection, schema: str) -> None:
@@ -601,6 +601,47 @@ def _upgrade_v11_to_v12(db: sqlite3.Connection) -> None:
     )""")
 
 
+def _upgrade_v12_to_v13(db: sqlite3.Connection) -> None:
+    """Start relative workflow timeouts at their first request.
+
+    Existing rows retain their absolute deadline.  Their original relative
+    timeout was not stored, so migration deliberately leaves ``timeout_ms``
+    NULL instead of reconstructing it from unrelated timestamps.
+    """
+    db.execute(
+        """
+        CREATE TABLE workflow_nodes_v13 (
+            graph_id TEXT NOT NULL,
+            node_id TEXT NOT NULL,
+            actor_node TEXT,
+            state TEXT NOT NULL DEFAULT 'pending'
+                CHECK(state IN ('pending','requested','done','failed','blocked','cancelled')),
+            request_id TEXT,
+            input_token TEXT,
+            generation INTEGER NOT NULL DEFAULT 0,
+            deadline_ms INTEGER,
+            timeout_ms INTEGER,
+            reason_ref TEXT,
+            PRIMARY KEY(graph_id,node_id),
+            FOREIGN KEY(graph_id,node_id) REFERENCES nodes(graph_id,node_id)
+        )
+        """
+    )
+    db.execute(
+        """
+        INSERT INTO workflow_nodes_v13
+            (graph_id,node_id,actor_node,state,request_id,input_token,generation,
+             deadline_ms,timeout_ms,reason_ref)
+        SELECT graph_id,node_id,actor_node,state,request_id,input_token,generation,
+               deadline_ms,NULL,reason_ref
+        FROM workflow_nodes
+        """
+    )
+    db.execute("DROP TABLE workflow_nodes")
+    db.execute("ALTER TABLE workflow_nodes_v13 RENAME TO workflow_nodes")
+    db.execute("CREATE INDEX workflow_nodes_request ON workflow_nodes(request_id)")
+
+
 def migrate(db: sqlite3.Connection, legacy_schema: str, state_dir: Path | None = None) -> None:
     db.execute("BEGIN IMMEDIATE")
     try:
@@ -655,6 +696,10 @@ def migrate(db: sqlite3.Connection, legacy_schema: str, state_dir: Path | None =
         if version == 11:
             _upgrade_v11_to_v12(db)
             db.execute("PRAGMA user_version = 12")
+            version = 12
+        if version == 12:
+            _upgrade_v12_to_v13(db)
+            db.execute("PRAGMA user_version = 13")
         db.commit()
     except BaseException:
         db.rollback()

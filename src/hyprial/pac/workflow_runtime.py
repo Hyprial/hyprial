@@ -451,6 +451,34 @@ class GraphWorkflowService:
     ):
         request = f"workflow-request:{uuid4().hex}"
         round_no = store.set_event_count(graph["graph_id"], node.node_id) + 1
+        deadline = row["deadline_ms"]
+        if deadline is None:
+            timeout = row["timeout_ms"]
+            assert timeout is not None  # new rows always store their relative timeout
+            deadline = at + timeout
+            store._db.execute(
+                "UPDATE workflow_nodes SET deadline_ms=? WHERE graph_id=? AND node_id=?",
+                (deadline, graph["graph_id"], node.node_id),
+            )
+            metadata = store._db.execute(
+                "SELECT * FROM workflow_graphs WHERE graph_id=?",
+                (graph["graph_id"],),
+            ).fetchone()
+            clock_owner = (
+                read_specification(metadata)["escalateTo"] or graph["created_by"]
+            )
+            store._db.execute(
+                "INSERT INTO nodes(graph_id,node_id,owner,brief_ref,kind,deadline_ms,guarded_by_node_id) "
+                "VALUES (?,?,?,?,'clock',?,?)",
+                (
+                    graph["graph_id"],
+                    f"_deadline.{node.node_id}",
+                    clock_owner,
+                    f"workflow:{graph['graph_id']}#{node.node_id}:deadline",
+                    deadline,
+                    node.node_id,
+                ),
+            )
         store._db.execute(
             "UPDATE workflow_nodes SET state='requested',request_id=?,input_token=?,generation=generation+1 "
             "WHERE graph_id=? AND node_id=?",
@@ -463,7 +491,7 @@ class GraphWorkflowService:
             nodeId=node.node_id,
             state="requested",
             requestId=request,
-            deadlineMs=row["deadline_ms"],
+            deadlineMs=deadline,
         )
         planned = PlannedNotification(
             event_id=request,
@@ -579,7 +607,10 @@ class GraphWorkflowService:
                     if row["input_token"] != input_token(
                         store, graph_id, node.node_id, ignore_actor=True
                     ):
-                        if at > row["deadline_ms"]:
+                        if (
+                            row["deadline_ms"] is not None
+                            and at > row["deadline_ms"]
+                        ):
                             self._failure(
                                 store,
                                 graph,
@@ -602,7 +633,7 @@ class GraphWorkflowService:
                     continue
                 if row["state"] in {"failed", "blocked", "cancelled"}:
                     continue
-                if at > row["deadline_ms"]:
+                if row["deadline_ms"] is not None and at > row["deadline_ms"]:
                     self._failure(
                         store, graph, node.node_id, "pac:deadline-expired", at, reactor
                     )
@@ -839,7 +870,8 @@ class GraphWorkflowService:
                     )
                     reason = (
                         "pac:deadline-expired"
-                        if self.clock() > row["deadline_ms"]
+                        if row["deadline_ms"] is not None
+                        and self.clock() > row["deadline_ms"]
                         else f"harness:{code}"
                     )
                     self._failure(
@@ -893,6 +925,7 @@ class GraphWorkflowService:
                         ),
                         "requestId": rows[node.node_id]["request_id"],
                         "deadlineMs": rows[node.node_id]["deadline_ms"],
+                        "timeoutMs": rows[node.node_id]["timeout_ms"],
                         "reasonRef": rows[node.node_id]["reason_ref"]
                         or node.flag_reason_ref,
                         "actorNode": rows[node.node_id]["actor_node"],
@@ -904,6 +937,7 @@ class GraphWorkflowService:
                     projected["localHumanCanComplete"] = (
                         projected["owner"] == f"user:{self.owner}"
                         and projected["state"] == "requested"
+                        and projected["deadlineMs"] is not None
                         and self.clock() <= projected["deadlineMs"]
                     )
                     notification = store._db.execute(
@@ -1139,7 +1173,10 @@ class GraphWorkflowService:
                     or row is None
                     or row["request_id"] != request_id
                     or row["state"] != "requested"
-                    or self.clock() > row["deadline_ms"]
+                    or (
+                        row["deadline_ms"] is not None
+                        and self.clock() > row["deadline_ms"]
+                    )
                     or row["input_token"] != input_token(store, graph_id, node_id)
                 ):
                     raise WorkflowServiceError(

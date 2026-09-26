@@ -508,6 +508,7 @@ class RemoteWorkflow:
                     and row
                     and row["state"] == "requested"
                     and row["request_id"] == grant["requestId"]
+                    and row["deadline_ms"] is not None
                     and row["deadline_ms"]
                     == grant["deadlineMs"]
                     >= time_ns() // 1_000_000

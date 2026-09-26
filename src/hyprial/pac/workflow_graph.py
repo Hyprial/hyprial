@@ -190,11 +190,7 @@ def compile_workflow(
             actor_node, owner = (
                 workers[node.worker] if node.worker else (None, node.owner)
             )
-            deadline = (
-                node.deadline_ms
-                if node.deadline_ms is not None
-                else at + node.timeout_ms
-            )
+            deadline = node.deadline_ms
             db.execute(
                 "INSERT INTO nodes(graph_id,node_id,owner,brief_ref,kind) VALUES (?,?,?,?,?)",
                 (
@@ -206,21 +202,24 @@ def compile_workflow(
                 ),
             )
             db.execute(
-                "INSERT INTO workflow_nodes(graph_id,node_id,actor_node,deadline_ms) VALUES (?,?,?,?)",
-                (graph_id, node.id, actor_node, deadline),
+                "INSERT INTO workflow_nodes"
+                "(graph_id,node_id,actor_node,deadline_ms,timeout_ms) "
+                "VALUES (?,?,?,?,?)",
+                (graph_id, node.id, actor_node, deadline, node.timeout_ms),
             )
-            db.execute(
-                "INSERT INTO nodes(graph_id,node_id,owner,brief_ref,kind,deadline_ms,guarded_by_node_id) "
-                "VALUES (?,?,?,?,'clock',?,?)",
-                (
-                    graph_id,
-                    f"_deadline.{node.id}",
-                    spec.escalate_to or sender,
-                    f"workflow:{graph_id}#{node.id}:deadline",
-                    deadline,
-                    node.id,
-                ),
-            )
+            if deadline is not None:
+                db.execute(
+                    "INSERT INTO nodes(graph_id,node_id,owner,brief_ref,kind,deadline_ms,guarded_by_node_id) "
+                    "VALUES (?,?,?,?,'clock',?,?)",
+                    (
+                        graph_id,
+                        f"_deadline.{node.id}",
+                        spec.escalate_to or sender,
+                        f"workflow:{graph_id}#{node.id}:deadline",
+                        deadline,
+                        node.id,
+                    ),
+                )
             if actor_node:
                 db.execute(
                     "INSERT INTO edges(graph_id,from_node,to_node,kind) VALUES (?,?,?,'forward')",
@@ -335,7 +334,7 @@ def actor_ready(
 ) -> bool:
     """A shared worker starts when ANY assigned executable step is ready."""
     return any(
-        now_ms <= row["deadline_ms"]
+        (row["deadline_ms"] is None or now_ms <= row["deadline_ms"])
         and input_token(store, graph_id, row["node_id"], ignore_actor=True) is not None
         for row in store._db.execute(
             "SELECT node_id,deadline_ms FROM workflow_nodes WHERE graph_id=? AND actor_node=? AND state IN ('pending','requested')",
@@ -369,5 +368,5 @@ def validate_completion(
             "WORKFLOW_REQUEST_STALE",
             "complete only the currently requested activation; inspect workflow status",
         )
-    if at > row["deadline_ms"]:
+    if row["deadline_ms"] is not None and at > row["deadline_ms"]:
         raise PacError("WORKFLOW_DEADLINE_EXPIRED", "the fixed deadline has passed")
