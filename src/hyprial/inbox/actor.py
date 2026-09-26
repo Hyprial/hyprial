@@ -2036,6 +2036,14 @@ class DeliveryCustody:
                 result.message_id,
             ),
         )
+        if result.accepted and isinstance(message.idempotency_key, str):
+            inbound_message_id = message.idempotency_key.removeprefix("reply:")
+            inbound = self._service._db.execute(
+                "SELECT recipient FROM inbox WHERE message_id = ?",
+                (inbound_message_id,),
+            ).fetchone()
+            if inbound is not None:
+                self._service.ack(str(inbound["recipient"]), inbound_message_id)
 
     def _settle_submission_receipt_locked(
         self,

@@ -1068,6 +1068,14 @@ class DeliveryCustodyFacade:
     def outbox_count(self) -> int:
         return self._reads.outbox_count()
 
+    def reply_submission_result(self, message_id: str) -> SubmissionResult | None:
+        """Read the durable receipt for one deterministic reply message."""
+
+        return self._reads.submission_result(
+            f"inbox:reply-submit:{message_id}",
+            message_id,
+        )
+
     def custody_count(self) -> int:
         return self._reads.custody_count()
 

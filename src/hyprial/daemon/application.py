@@ -6070,6 +6070,45 @@ class DaemonApplication:
             try:
                 submitted = self._inbox.submit(reply)
             except (InboxAuthorityTimeout, InboxAuthorityUnavailable) as error:
+                if isinstance(error, InboxAuthorityUnavailable) and str(error).startswith(
+                    "SUBMISSION_RECEIPT_CONFLICT"
+                ):
+                    receipt_reader = getattr(
+                        self._inbox, "reply_submission_result", None
+                    )
+                    existing = None
+                    if callable(receipt_reader):
+                        try:
+                            existing = receipt_reader(reply.message_id)
+                        except Exception as read_error:  # noqa: BLE001
+                            self._log(
+                                "warn",
+                                "daemon",
+                                "harness.reply.receipt_read_failed",
+                                messageId=message_id,
+                                replyMessageId=reply.message_id,
+                                failure=type(read_error).__name__,
+                            )
+                    settled = existing is not None and not existing.queued
+                    replied = bool(
+                        settled and existing is not None and existing.accepted
+                    )
+                    acknowledged = False
+                    if replied:
+                        acknowledged = self._inbox.ack(
+                            original_key, message_id
+                        ).acknowledged
+                    return {
+                        "ok": False,
+                        "messageId": message_id,
+                        "replyMessageId": reply.message_id,
+                        "replied": replied,
+                        "acknowledged": acknowledged,
+                        "queued": existing.queued if existing is not None else True,
+                        "code": "REPLY_ALREADY_SUBMITTED",
+                        "retryable": False,
+                        **({"settled": settled} if existing is not None else {}),
+                    }
                 if isinstance(error, InboxAuthorityUnavailable) and (
                     "CORRELATION_IN_FLIGHT" not in str(error)
                 ):
@@ -6087,6 +6126,7 @@ class DaemonApplication:
                     "queued": True,
                     "code": "REPLY_SETTLEMENT_PENDING",
                     "retryable": True,
+                    "hint": "the reply is queued; retrying returns its state and never sends different text",
                 }
             # A Lark bridge reply is not complete merely because its outbox
             # row was durably admitted.  ``queued`` means the native reply did
@@ -6105,6 +6145,7 @@ class DaemonApplication:
                     "queued": True,
                     "code": "REPLY_SETTLEMENT_PENDING",
                     "retryable": True,
+                    "hint": "the reply is queued; retrying returns its state and never sends different text",
                 }
             if not submitted.accepted:
                 return {
