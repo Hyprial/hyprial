@@ -6833,7 +6833,7 @@ def _start_interactive_claude(
         try:
             validate_claude_auth_environment(Path(native_root), launch_environment)
         except ClaudeRuntimeError as error:
-            raise CliError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
+            raise CliError(error.code or ipc_errors.INVALID_ARGUMENT, str(error)) from error
     status = _daemon_request("ps")
     actor = _interactive_actor(name, status)
     from hyprial.uri import agent_uri_actor

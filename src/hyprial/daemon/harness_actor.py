@@ -1958,7 +1958,18 @@ class HarnessRuntimeActor:
                 # is where its readiness report is written (reconcile-kind
                 # starts never reach `_finish_start_attempt`).
                 if completed.error is not None:
-                    self._record_failure(key, record, str(completed.error))
+                    self._record_failure(
+                        key,
+                        record,
+                        str(completed.error),
+                        permanent=bool(
+                            getattr(
+                                completed.error,
+                                "permanent_start_failure",
+                                False,
+                            )
+                        ),
+                    )
                     self._report_readiness(
                         key,
                         "failed" if self._is_failed(record) else "retrying",
@@ -2436,7 +2447,14 @@ class HarnessRuntimeActor:
             record.completed_start = event
             return
         if event.error is not None:
-            self._record_failure(event.harness_id, record, str(event.error))
+            self._record_failure(
+                event.harness_id,
+                record,
+                str(event.error),
+                permanent=bool(
+                    getattr(event.error, "permanent_start_failure", False)
+                ),
+            )
             self._finish_start_attempt(event.harness_id, record, False, event.error)
             return
         assert event.process is not None
@@ -2692,10 +2710,19 @@ class HarnessRuntimeActor:
             ReadinessReport(phase="connector-up", verdict=verdict, source=key)
         )
 
-    def _record_failure(self, key: str, record: _Record, detail: str) -> None:
+    def _record_failure(
+        self,
+        key: str,
+        record: _Record,
+        detail: str,
+        *,
+        permanent: bool = False,
+    ) -> None:
         record.last_error = detail
         was_failed = self._is_failed(record)
         record.failures += 1
+        if permanent:
+            record.restore_failed_terminal = True
         if self._is_failed(record):
             record.restart_after = None
             if not was_failed:
@@ -2794,12 +2821,17 @@ class HarnessRuntimeActor:
                 )
             else:
                 failure = error or RuntimeError(record.last_error or "start failed")
+                failure_code = getattr(failure, "code", None)
                 self._reject_correlation(
                     correlation_id,
                     (
                         "HARNESS_START_TIMEOUT"
                         if isinstance(failure, TimeoutError)
-                        else "HARNESS_START_FAILED"
+                        else (
+                            failure_code
+                            if isinstance(failure_code, str) and failure_code
+                            else "HARNESS_START_FAILED"
+                        )
                     ),
                     str(failure),
                 )
@@ -3681,7 +3713,9 @@ class HarnessRuntimeFacade:
             }:
                 reply.fail(HarnessRuntimeClosed(event.detail))
             else:
-                reply.fail(RuntimeError(event.detail))
+                failure = RuntimeError(event.detail)
+                failure.code = event.code  # type: ignore[attr-defined]
+                reply.fail(failure)
             return
         reply.complete(event)
 

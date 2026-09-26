@@ -18,10 +18,22 @@ _EXPLICIT_AUTH_NAMES = (
     "ANTHROPIC_AUTH_TOKEN",
     "ANTHROPIC_OAUTH_TOKEN",
 )
+CLAUDE_CREDENTIAL_MISSING = "CLAUDE_CREDENTIAL_MISSING"
 
 
 class ClaudeRuntimeError(ValueError):
     """A resolved P2 context cannot be represented by Claude Code safely."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        permanent_start_failure: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.permanent_start_failure = permanent_start_failure
 
 
 def prepare_claude_runtime_context(context: AgentRuntimeContext) -> None:
@@ -136,7 +148,9 @@ def validate_claude_auth_environment(
         )
     credentials = Path(native_root) / ".credentials.json"
     if not credentials.exists() and not credentials.is_symlink():
-        return
+        if selected:
+            return
+        raise _missing_claude_credential(credentials)
     try:
         metadata = credentials.lstat()
     except OSError as error:
@@ -153,6 +167,18 @@ def validate_claude_auth_environment(
         raise ClaudeRuntimeError(
             "Claude native credentials and explicit authentication may not coexist"
         )
+    if metadata.st_size == 0:
+        raise _missing_claude_credential(credentials)
+
+
+def _missing_claude_credential(credentials: Path) -> ClaudeRuntimeError:
+    methods = ", ".join(_EXPLICIT_AUTH_NAMES)
+    return ClaudeRuntimeError(
+        "Claude credential is missing: provide a non-empty 0600 regular file at "
+        f"{credentials}, or set exactly one of {methods} in the agent environment",
+        code=CLAUDE_CREDENTIAL_MISSING,
+        permanent_start_failure=True,
+    )
 
 
 def _require_private_directory(path: Path, label: str) -> None:

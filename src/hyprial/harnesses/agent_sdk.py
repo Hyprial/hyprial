@@ -105,6 +105,55 @@ def _validate_runtime_context_environment(
         raise ValueError("Claude config directory differs from runtime native root")
 
 
+def _validated_claude_launch_environment(
+    spec: HarnessLaunchSpec,
+    *,
+    env: Mapping[str, str] | None,
+    worker_channel: WorkerChannel | None,
+    complete_launch: "ChildEnvironmentLaunch | None",
+) -> tuple[AgentRuntimeContext | None, dict[str, str], dict[str, str]]:
+    """Resolve and validate auth before a managed SDK process can start."""
+
+    if complete_launch is not None and env is not None:
+        raise ValueError(
+            "complete child environment cannot be combined with a partial env mapping"
+        )
+    runtime_context = _launch_runtime_context(worker_channel, complete_launch)
+    if complete_launch is not None:
+        base_environment = complete_launch.environment.for_exec()
+    else:
+        base_environment = whitelist_replacement_environment(os.environ, env or {})
+    if runtime_context is not None:
+        _validate_runtime_context_environment(runtime_context, base_environment)
+        prepare_claude_runtime_context(runtime_context)
+        base_environment = {
+            **base_environment,
+            **CLAUDE_RUNTIME_ENVIRONMENT,
+        }
+        config_root = base_environment.get("CLAUDE_CONFIG_DIR")
+        if not config_root or not Path(config_root).is_absolute():
+            raise ValueError(
+                "Claude agent config requires an absolute CLAUDE_CONFIG_DIR "
+                "from the complete child environment"
+            )
+        if base_environment.get("CLAUDE_CODE_DISABLE_AUTO_MEMORY") != "1":
+            raise ValueError(
+                "Claude agent config requires CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 "
+                "in the complete child environment"
+            )
+    provider_environment = claude_provider_environment(
+        spec,
+        base_environment,
+        allow_legacy_home_fallback=runtime_context is None,
+    )
+    if runtime_context is not None:
+        validate_claude_auth_environment(
+            runtime_context.roots.native_root,
+            {**base_environment, **provider_environment},
+        )
+    return runtime_context, base_environment, provider_environment
+
+
 def _sdk_process_group():
     if os.name == "nt":
         from hyprial.platform.windows_owned_process import WindowsOwnedProcessGroup
@@ -245,49 +294,15 @@ class IsolatedAgentSdkClient:
             )
         )
         self._complete_launch = complete_launch
-        if complete_launch is not None and env is not None:
-            raise ValueError(
-                "complete child environment cannot be combined with a "
-                "partial env mapping"
+        runtime_context, base_environment, provider_environment = (
+            _validated_claude_launch_environment(
+                spec,
+                env=env,
+                worker_channel=worker_channel,
+                complete_launch=complete_launch,
             )
-        runtime_context = _launch_runtime_context(worker_channel, complete_launch)
-        if complete_launch is not None:
-            base_environment = complete_launch.environment.for_exec()
-        else:
-            base_environment = whitelist_replacement_environment(
-                os.environ, env or {}
-            )
-        if runtime_context is not None:
-            _validate_runtime_context_environment(runtime_context, base_environment)
-            prepare_claude_runtime_context(runtime_context)
-            base_environment = {
-                **base_environment,
-                **CLAUDE_RUNTIME_ENVIRONMENT,
-            }
-        self._runtime_context = runtime_context
-        if runtime_context is not None:
-            config_root = base_environment.get("CLAUDE_CONFIG_DIR")
-            if not config_root or not Path(config_root).is_absolute():
-                raise ValueError(
-                    "Claude agent config requires an absolute CLAUDE_CONFIG_DIR "
-                    "from the complete child environment"
-                )
-            if base_environment.get("CLAUDE_CODE_DISABLE_AUTO_MEMORY") != "1":
-                raise ValueError(
-                    "Claude agent config requires "
-                    "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 in the complete child "
-                    "environment"
-                )
-        provider_environment = claude_provider_environment(
-            spec,
-            base_environment,
-            allow_legacy_home_fallback=runtime_context is None,
         )
-        if runtime_context is not None:
-            validate_claude_auth_environment(
-                runtime_context.roots.native_root,
-                {**base_environment, **provider_environment},
-            )
+        self._runtime_context = runtime_context
         self.options: dict[str, Any] = {
             "cwd": spec.cwd,
             "model": spec.model or _option_value(spec.args, "--model"),
@@ -666,11 +681,12 @@ class ClaudeAgentSdkProcess(StreamingTurnProcess):
         self._established = spec.session_ref is not None
         self._env = env
         self._complete_launch = complete_launch
-        if complete_launch is not None and env is not None:
-            raise ValueError(
-                "complete child environment cannot be combined with a "
-                "partial env mapping"
-            )
+        _validated_claude_launch_environment(
+            spec,
+            env=env,
+            worker_channel=worker_channel,
+            complete_launch=complete_launch,
+        )
         # One stable worker identity across client reconnects: every reconnected
         # SDK client re-injects the same canonical actor and session ref.
         self.worker_channel = worker_channel
