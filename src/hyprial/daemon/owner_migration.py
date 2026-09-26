@@ -185,6 +185,38 @@ ALLOWED_RESIDUALS: tuple[ResidualForm, ...] = (
             "such state unclassifiable without widening the gate to `{old}-`."
         ),
     ),
+    ResidualForm(
+        name="Linux home-directory path",
+        template="/home/{old}",
+        why=(
+            "same class as /Users/{old}: the old owner is also the host login "
+            "on Linux/WSL nodes, so it names a home directory in stored cwd "
+            "values (a member's switch-account, 2026-09-26: 3 lifecycle "
+            "payload cwds from when the node ran on WSL)"
+        ),
+    ),
+    ResidualForm(
+        name="squire adapter name under the <owner>-squire convention",
+        template="{old}-squire",
+        why=(
+            "squire setup names the owner's Lark adapter f\"{owner}-squire\" "
+            "(squire/setup.py); the name is the key behind every "
+            "lark:<name> / adapter:lark:<name> / harness:lark:<name> row, the "
+            "delivery ledger and pins.  External connector identity, same "
+            "semantics as the app-name convention rows above; renaming it would sever "
+            "history.  ~93 of 99 unclassified cells in the 2026-09-26 member "
+            "switch.  Exact suffix, not `{old}-`."
+        ),
+    ),
+    ResidualForm(
+        name="manual provenance note",
+        template="manual:{old}-confirmed-",
+        why=(
+            "adapters identities.source records who confirmed a binding as "
+            "free text (`manual:<login>-confirmed-<date> ...`); it is a "
+            "historical note, not an address (2 cells, 2026-09-26)"
+        ),
+    ),
 )
 
 
