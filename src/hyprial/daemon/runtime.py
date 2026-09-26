@@ -19,6 +19,7 @@ from hyprial.contracts.readiness import ReadinessReport
 
 from hyprial.availability_loud import (
     AttemptIdentity,
+    is_human_facing_requester,
     no_progress_budget_seconds,
     no_progress_notice,
     unavailable_notice,
@@ -1278,6 +1279,21 @@ class DaemonEventBridge:
         kept (so it is not lost) and retried on a later tick.
         """
 
+        if is_human_facing_requester(message.recipient):
+            # Never into a person's chat: log it, do not hold it for retry.
+            self._pending_notices.pop(message.message_id, None)
+            if self._logger is not None:
+                self._logger(
+                    "warn",
+                    "daemon",
+                    "availability_loud.diverted",
+                    messageId=message.message_id,
+                    recipient=message.recipient,
+                    idempotencyKey=message.idempotency_key,
+                    notification=_notice_kind(message),
+                    detail="human-facing requester; notice logged, not sent",
+                )
+            return False
         submit = getattr(self.inbox, "submit", None)
         if not callable(submit):
             self._remember_pending_notice(message, code="INBOX_SUBMIT_UNAVAILABLE")
@@ -1443,3 +1459,14 @@ class DaemonEventBridge:
             except (OSError, RuntimeError) as error:
                 errors.append(error)
         return errors
+
+
+def _notice_kind(message: InboxMessage) -> str | None:
+    """The ``notification`` kind of a fail-loud notice, for its log line."""
+
+    try:
+        body = json.loads(message.payload)
+    except (TypeError, ValueError):
+        return None
+    kind = body.get("notification") if isinstance(body, dict) else None
+    return kind if isinstance(kind, str) else None

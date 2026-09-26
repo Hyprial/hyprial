@@ -65,6 +65,24 @@ NOTICE_KIND_UNAVAILABLE = "provider-unavailable"
 NOTICE_KIND_NO_PROGRESS = "provider-no-progress"
 
 
+#: Requester URI schemes that address a person, not an agent: a chat adapter
+#: (``adapter:lark:…``), a named route into a chat (``route:…``) or a user.
+HUMAN_FACING_SCHEMES = ("adapter:", "route:", "user:")
+
+
+def is_human_facing_requester(recipient: str) -> bool:
+    """True when a notice to ``recipient`` would land in a person's chat.
+
+    These notices are internal machine text (worker, harness, silence budget,
+    attempt id).  A requester behind a chat adapter is a customer or an
+    operator mid-conversation, so the daemon diverts the notice to its own
+    log instead of sending it -- the original-sender rule above is kept for
+    agent requesters, and no owner is guessed for the diverted ones.
+    """
+
+    return recipient.startswith(HUMAN_FACING_SCHEMES)
+
+
 def no_progress_budget_seconds(harness: str | None) -> int:
     """Reporting deadline for one harness; unknown harnesses get the maximum."""
 
