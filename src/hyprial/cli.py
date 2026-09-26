@@ -10508,6 +10508,33 @@ def _parse_adapter_routes(raw_routes: list[str]) -> tuple[Any, ...]:
     return tuple(parsed)
 
 
+def _adapter_secret_from_text(text: str) -> str:
+    """The bare app secret from what --secret-file/stdin supplied.
+
+    Onboard writes ``secrets/lark-<name>.json`` as ``{"appSecret": ...}``, and
+    feeding that file back to ``adapter add --secret-file`` stored its whole
+    JSON text as the secret (allen-channel, 2026-09-26: a 53-char "secret",
+    found only later as Lark 10014).  A JSON object is read for its
+    ``appSecret``; any other JSON-looking input is refused, never stored.
+    The value is never echoed in an error.
+    """
+
+    if not text.startswith(("{", "[")):
+        return text
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        parsed = None
+    value = parsed.get("appSecret") if isinstance(parsed, dict) else None
+    if not isinstance(value, str) or not value.strip():
+        raise CliError(
+            "SECRET_FORMAT_INVALID",
+            "the secret looks like JSON but is not an object with a non-empty "
+            '"appSecret"; pass the bare secret, or a {"appSecret": "..."} file',
+        )
+    return value.strip()
+
+
 def _read_adapter_secret(*, secret_file: Path | None, json_output: bool) -> str:
     """Obtain the Lark app secret without ever accepting it on argv.
 
@@ -10527,12 +10554,12 @@ def _read_adapter_secret(*, secret_file: Path | None, json_output: bool) -> str:
             ) from error
         if not secret:
             raise CliError("SECRET_REQUIRED", "secret file is empty")
-        return secret
+        return _adapter_secret_from_text(secret)
     if not sys.stdin.isatty():
         secret = sys.stdin.read().strip()
         if not secret:
             raise CliError("SECRET_REQUIRED", "no app secret provided on stdin")
-        return secret
+        return _adapter_secret_from_text(secret)
     if json_output:
         raise CliError(
             "SECRET_REQUIRED",

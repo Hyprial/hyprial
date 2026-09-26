@@ -236,7 +236,7 @@ class LarkWorkerProcess:
             self._fail("did not become online")
             return
         except _ReadyEOF:
-            self._fail("failed before becoming online")
+            self._fail("failed before becoming online" + self._last_words())
             return
         except _ReadyInvalid:
             self._fail("emitted an invalid ready signal")
@@ -318,6 +318,12 @@ class LarkWorkerProcess:
                         **health,
                     }
                 )
+
+    def _last_words(self) -> str:
+        """``: <last output line>`` when the worker said something, else ``""``."""
+
+        line = self.last_sdk_output
+        return f": {line[:300]}" if line else ""
 
     def _fail(self, reason: str) -> None:
         self._terminate()
@@ -649,7 +655,11 @@ class LarkWorkerLauncher:
                 [*self.command, gateway.name],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
+                # stderr joins the drained stdout: a worker that dies before
+                # ready (e.g. "cannot obtain Lark tenant token (10014)") used
+                # to say why to /dev/null, leaving only "failed before
+                # becoming online" (allen-channel, 2026-09-26).
+                stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
                 env=environment,
@@ -691,14 +701,19 @@ class LarkWorkerLauncher:
         process = self.spawn(gateway)
         readiness = process.wait_ready(self.startup_timeout + 5.0)
         if readiness != ONLINE:
+            # No handle reaches the caller on failure. Reclaim its control
+            # socket and join the ready/stdout readers before raising; a held
+            # traceback must not keep a failed worker's descriptors alive.
+            # Stopping first also lets the drainer finish, so the worker's own
+            # last line is complete when it is quoted below.
+            process.stop()
             error = (
                 process.error
                 or f"Lark adapter {gateway.name} failed before becoming online"
             )
-            # No handle reaches the caller on failure. Reclaim its control
-            # socket and join the ready/stdout readers before raising; a held
-            # traceback must not keep a failed worker's descriptors alive.
-            process.stop()
+            last = process.last_sdk_output
+            if last and last[:300] not in error:
+                error = f"{error}: {last[:300]}"
             raise AdapterStartError(error)
         return process
 

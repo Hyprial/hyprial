@@ -741,20 +741,31 @@ class _LocalPresence:
 
 
 class _RouteGatewayCache:
-    """Thread-safe cache for outbound route SDK resources."""
+    """Thread-safe cache for outbound route SDK resources.
+
+    Keyed by adapter name AND a fingerprint of the credential the gateway was
+    built from.  It used to be keyed by name alone for the daemon's lifetime,
+    so a fixed secret file never reached the sender: allen-channel kept
+    failing every send with Lark 10014 after its secret was repaired, until
+    the daemon restarted (2026-09-26).
+    """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._gateways: dict[str, LarkSdkGateway] = {}
+        self._gateways: dict[str, tuple[str, LarkSdkGateway]] = {}
 
-    def get(self, name: str) -> LarkSdkGateway | None:
+    def get(self, name: str, fingerprint: str) -> LarkSdkGateway | None:
         with self._lock:
-            return self._gateways.get(name)
+            entry = self._gateways.get(name)
+            return entry[1] if entry is not None and entry[0] == fingerprint else None
 
-    def put(self, name: str, gateway: LarkSdkGateway) -> LarkSdkGateway:
+    def put(self, name: str, fingerprint: str, gateway: LarkSdkGateway) -> LarkSdkGateway:
         with self._lock:
-            incumbent = self._gateways.setdefault(name, gateway)
-            return incumbent
+            entry = self._gateways.get(name)
+            if entry is not None and entry[0] == fingerprint:
+                return entry[1]  # a concurrent builder won; keep one gateway
+            self._gateways[name] = (fingerprint, gateway)
+            return gateway
 
 
 class _WorkerStatusSnapshot:
@@ -2937,13 +2948,17 @@ class DaemonApplication:
     def _route_lark_gateway(self, gateway_config: Any) -> LarkSdkGateway:
         """Return a cached SDK facade for one configured Lark adapter."""
 
-        existing = self._route_gateway_cache.get(gateway_config.name)
-        if existing is not None:
-            return existing
         secret_path = (
             self.hyprial_home / "secrets" / f"{gateway_config.credential_ref}.json"
         )
-        raw_secret = json.loads(secret_path.read_text(encoding="utf-8"))
+        secret_bytes = secret_path.read_bytes()
+        fingerprint = hashlib.sha256(
+            gateway_config.app_id.encode("utf-8") + b"\0" + secret_bytes
+        ).hexdigest()
+        existing = self._route_gateway_cache.get(gateway_config.name, fingerprint)
+        if existing is not None:
+            return existing
+        raw_secret = json.loads(secret_bytes.decode("utf-8"))
         app_secret = (
             raw_secret.get("appSecret") if isinstance(raw_secret, dict) else None
         )
@@ -2956,7 +2971,7 @@ class DaemonApplication:
         gateway = self._lark_gateway_with_scope_recovery(
             gateway_config, app_secret, self.state_dir
         )
-        return self._route_gateway_cache.put(gateway_config.name, gateway)
+        return self._route_gateway_cache.put(gateway_config.name, fingerprint, gateway)
 
     @staticmethod
     def _lark_gateway_with_scope_recovery(
