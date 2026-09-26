@@ -227,6 +227,12 @@ class ChildEnvironmentLaunch:
     runtime_context: "AgentRuntimeContext | None" = field(
         default=None, repr=False, compare=False
     )
+    # Retain how the complete environment was composed independently of the
+    # context object.  A damaged handoff that drops ``runtime_context`` must
+    # not make P2-owned roots look like operator-inherited P1 values.
+    agent_home_profile_applied: bool = field(
+        default=False, repr=False, compare=False
+    )
 
 
 #: The per-scheme proxy names a catch-all proxy may stand in for.
@@ -435,6 +441,7 @@ def compose_worker_child_launch(
             for secret in resolved
         ),
         runtime_context=runtime_context,
+        agent_home_profile_applied=runtime_context is not None,
     )
 
 

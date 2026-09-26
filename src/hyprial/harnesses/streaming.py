@@ -314,6 +314,7 @@ class SequentialTurnProcess(BaseTurnProcess):
             tuple[int, str], tuple[threading.Event, list[tuple[bool, int]]]
         ] = {}
         self._ready = threading.Event()
+        self._startup_settled = threading.Event()
         self._stopping = threading.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._client: TurnClient | None = None
@@ -403,7 +404,8 @@ class SequentialTurnProcess(BaseTurnProcess):
         )
 
     def wait_ready(self, *, timeout: float | None = None) -> bool:
-        return self._ready.wait(timeout)
+        self._startup_settled.wait(timeout)
+        return self._ready.is_set()
 
     def enqueue(self, delivery: HarnessDelivery) -> bool:
         if not delivery.delivery_id or not delivery.message:
@@ -952,6 +954,7 @@ class SequentialTurnProcess(BaseTurnProcess):
                         self._connecting_client = None
                     self.last_error = None
                     self._ready.set()
+                    self._startup_settled.set()
                     connect_failures = 0
                     while not self._stopping.is_set():
                         if current is None:
@@ -1246,6 +1249,22 @@ class SequentialTurnProcess(BaseTurnProcess):
                     self._client = None
                     self._connecting_client = None
                     self._active_delivery_id = None
+                if (
+                    not turn_started
+                    and getattr(error, "permanent_start_failure", False) is True
+                ):
+                    if self._logger is not None:
+                        try:
+                            self._logger.error(
+                                "worker.start.failed",
+                                harness=self.harness,
+                                failure=failure,
+                            )
+                        except OSError:
+                            pass
+                    self._stopping.set()
+                    self._startup_settled.set()
+                    break
                 if self._stopping.is_set():
                     break
                 await asyncio.sleep(self._backoff_delay(failures_for_delay))

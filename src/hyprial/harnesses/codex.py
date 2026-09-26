@@ -176,6 +176,8 @@ _CODEX_MUTABLE_PREFIXES = (
 class CodexAgentHomeError(ValueError):
     """The resolved Codex native root failed its P2 loading contract."""
 
+    permanent_start_failure = True
+
 
 @dataclass(frozen=True, slots=True)
 class CodexNativeLoadEvidence:
@@ -1700,16 +1702,28 @@ class CodexAppServerClient:
                     "complete child environment disagrees with Codex runtime context"
                 )
         else:
-            if complete_launch is not None and "CODEX_HOME" in base_environment:
+            if (
+                complete_launch is not None
+                and complete_launch.agent_home_profile_applied
+                and "CODEX_HOME" in base_environment
+            ):
                 raise CodexAgentHomeError(
                     "P2 CODEX_HOME requires an AgentRuntimeContext"
                 )
-            self._native_root = None
-            self._session_root = None
+            inherited_root = base_environment.get("CODEX_HOME")
+            self._native_root = (
+                Path(inherited_root) if inherited_root is not None else None
+            )
+            self._session_root = (
+                self._native_root / "sessions"
+                if self._native_root is not None
+                else None
+            )
+        self._p2_runtime = runtime_context is not None
         provider_args, provider_environment = codex_provider_configuration(
             spec,
             base_environment,
-            allow_legacy_home_fallback=self._native_root is None,
+            allow_legacy_home_fallback=not self._p2_runtime,
         )
         self.command = (*command, *provider_args, "app-server", "--stdio")
         self._session = session or _CodexSession(session_ref)
@@ -1897,7 +1911,8 @@ class CodexAppServerClient:
                 },
             )
             await self.notify("initialized", {})
-            if self._native_root is not None:
+            if self._p2_runtime:
+                assert self._native_root is not None
                 working_directory = Path(self._working_directory())
                 config_read = await self.request(
                     "config/read",
@@ -1933,7 +1948,7 @@ class CodexAppServerClient:
             if self._session.thread_id is None:
                 await self._start_thread()
             elif not await self._resume_thread():
-                if self._native_root is not None:
+                if self._p2_runtime:
                     raise CodexAgentHomeError(
                         "Codex resume target was not found in the resolved "
                         "native root; refusing to cold-start under the old "
@@ -1971,7 +1986,7 @@ class CodexAppServerClient:
             self._working_directory(),
             execution,
             self._worker_channel,
-            managed_environment=self._native_root is not None,
+            managed_environment=self._p2_runtime,
         )
         if config:
             params["config"] = config
@@ -2005,7 +2020,7 @@ class CodexAppServerClient:
             self._working_directory(),
             execution,
             self._worker_channel,
-            managed_environment=self._native_root is not None,
+            managed_environment=self._p2_runtime,
         )
         if config:
             params["config"] = config
