@@ -114,6 +114,7 @@ from hyprial.daemon.identity import (
 from hyprial.home import configured_hyprial_home
 from hyprial.network_profile import SECRETS_DIRNAME, NetworkProfile
 from hyprial.persistent_config import atomic_json_write
+from hyprial.proxy_route import url_opener
 
 __all__ = [
     "CREDENTIAL_VERSION",
@@ -406,8 +407,10 @@ def _request_json(
         body = urllib.parse.urlencode(dict(data)).encode("utf-8")
         request_headers.setdefault("Content-Type", "application/x-www-form-urlencoded")
     request = urllib.request.Request(url, data=body, headers=request_headers)
+    # ALL_PROXY-only shells: urllib alone would go direct (proxy_route).
+    open_url, route = url_opener()
     try:
-        with urllib.request.urlopen(request, timeout=_HTTP_TIMEOUT_S) as response:
+        with open_url(request, timeout=_HTTP_TIMEOUT_S) as response:
             status = response.status
             raw = response.read()
     except urllib.error.HTTPError as error:
@@ -415,11 +418,11 @@ def _request_json(
         raw = error.read()
     except urllib.error.URLError as error:
         raise LoginError(
-            "ISSUER_UNREACHABLE", f"cannot reach {url}: {error.reason}"
+            "ISSUER_UNREACHABLE", f"cannot reach {url}: {error.reason} ({route})"
         ) from error
     except OSError as error:
         raise LoginError(
-            "ISSUER_UNREACHABLE", f"cannot reach {url}: {error}"
+            "ISSUER_UNREACHABLE", f"cannot reach {url}: {error} ({route})"
         ) from error
     if not raw:
         return status, None
