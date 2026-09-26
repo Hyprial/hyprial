@@ -17,6 +17,7 @@ from hyprial.inbox.api import DeliveryLifecycle, InboxMessage, InboxPruneItem
 from hyprial.inbox.progress import COALESCE_KEPT_PHASES, ProgressEvent
 from hyprial.contracts.readiness import ReadinessReport
 
+from hyprial.uri import parse_agent_uri
 from hyprial.availability_loud import (
     AttemptIdentity,
     is_human_facing_requester,
@@ -1025,6 +1026,14 @@ class DaemonEventBridge:
                 return spec.harness
         return None
 
+    def _is_user_proxy(self, recipient: str) -> bool:
+        """True when ``recipient`` is a local user-proxy, i.e. a person's chat."""
+
+        parsed = parse_agent_uri(recipient)
+        if parsed is None or parsed[1] != self.node_id:
+            return False
+        return self._harness_kind(parsed[2]) == "user-proxy"
+
     def _note_delivery_seen(self, actor: str, message: InboxMessage) -> None:
         """Start the no-progress clock for a request a live worker owes.
 
@@ -1036,6 +1045,8 @@ class DaemonEventBridge:
 
         if message.message_id in self._inflight:
             return
+        if _notice_kind(message) is not None:
+            return  # nobody waits on a notice; reporting it would chain
         harness = self._harness_kind(actor)
         now = self._clock_ms()
         # The clock starts when this daemon hands the request over (or finds it
@@ -1171,6 +1182,20 @@ class DaemonEventBridge:
         the original delivery and does not pretend to be the result.
         """
 
+        if _notice_kind(original) is not None:
+            # A notice about a notice is the chain that flooded allen-proxy
+            # (2026-09-26): its failure is logged, never reported onward.
+            if self._logger is not None:
+                self._logger(
+                    "warn",
+                    "daemon",
+                    "availability_loud.notice_of_notice_suppressed",
+                    deliveryId=result.delivery_id,
+                    recipient=original.sender,
+                    failureCode=result.failure_code
+                    or classify_harness_failure(result.error),
+                )
+            return None
         failure_code = result.failure_code or classify_harness_failure(result.error)
         settlement = failure if failure is not None else self._settlement(result.delivery_id)
         message = self._unavailable_notice_for(
@@ -1285,8 +1310,12 @@ class DaemonEventBridge:
         kept (so it is not lost) and retried on a later tick.
         """
 
-        if is_human_facing_requester(message.recipient):
-            # Never into a person's chat.  Not held for retry; the owner is
+        if is_human_facing_requester(message.recipient) or self._is_user_proxy(
+            message.recipient
+        ):
+            # Never into a person's chat.  A user-proxy is one: it relays
+            # everything it receives into its person's DM (2026-09-26: 252
+            # notices to allen-proxy in a self-feeding chain).  Not held for retry; the owner is
             # told instead (once per notice: diversion happens only here).
             self._pending_notices.pop(message.message_id, None)
             redirected = self._owner_notifier is not None
