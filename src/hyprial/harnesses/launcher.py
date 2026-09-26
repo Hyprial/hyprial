@@ -20,7 +20,10 @@ from .common import ConnectorOptions, HarnessStartError
 from .dsh import DSH_STARTUP_TIMEOUT_SECONDS_DEFAULT, DshHarnessProcess
 from .pi import PiConnector
 from .pi_rpc import PiRpcProcess, TurnFailureSpecObserver
-from .python_worker import PythonHarnessProcess
+from .python_worker import (
+    PYTHON_WORKER_STARTUP_TIMEOUT_SECONDS_DEFAULT,
+    PythonHarnessProcess,
+)
 from hyprial.agents.environment import ChildEnvironmentLaunch
 from .worker_channel import WorkerChannel
 
@@ -282,7 +285,9 @@ class HarnessLauncher:
                 if declared.mechanism == "python_worker":
                     process = self._python_worker_factory(spec)
                     wait_ready = getattr(process, "wait_ready", None)
-                    if not callable(wait_ready) or not wait_ready(timeout=10.0):
+                    if not callable(wait_ready) or not wait_ready(
+                        timeout=PYTHON_WORKER_STARTUP_TIMEOUT_SECONDS_DEFAULT
+                    ):
                         process.stop()
                         detail = getattr(process, "last_error", None)
                         raise HarnessStartError(

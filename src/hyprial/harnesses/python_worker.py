@@ -47,6 +47,32 @@ _DEFAULT_COMMAND = (
     "--kind",
     "jev",
 )
+#: Stderr line a packaged worker writes just before its ready frame.
+READY_EMITTED_MARKER = b"hyprial-worker-ready-emitted-at-ms "
+
+
+def _ready_emitted_at_ms(stderr: bytes) -> int | None:
+    """The worker-reported ready emit time (epoch ms), if it wrote one."""
+
+    for line in reversed(stderr.splitlines()):
+        if line.startswith(READY_EMITTED_MARKER):
+            try:
+                return int(line[len(READY_EMITTED_MARKER):].strip())
+            except ValueError:
+                return None
+    return None
+
+
+#: How long a packaged python worker gets to send its ready frame.  Was a
+#: hard 10 s; on 2026-09-26 production jev and user-proxy starts exceeded it
+#: under load (43 s from op start to a PROCESSED ready), failed with no log
+#: line, and exhausted their retry budget.  The ready frame now carries the
+#: worker's own emit time, and every start logs spawn->emit and
+#: emit->processed, so this default is to be re-sized from that measurement;
+#: until then it is generous -- a long budget only costs time when a worker
+#: is truly broken, and the lifecycle deadline still bounds the start.
+PYTHON_WORKER_STARTUP_TIMEOUT_SECONDS_DEFAULT = 60.0
+
 #: The kinds this parent can host.  user-proxy has no default command: its
 #: child needs the person's ``--route``, which only the start request knows.
 PYTHON_WORKER_KINDS = frozenset({"jev", "user-proxy"})
@@ -83,7 +109,7 @@ class PythonWorkerTurnAdapter(ConcurrentTurnProcess):
         env: Mapping[str, str] | None = None,
         worker_channel: WorkerChannel | None = None,
         complete_launch: Any | None = None,
-        startup_timeout_seconds: float = 10.0,
+        startup_timeout_seconds: float = PYTHON_WORKER_STARTUP_TIMEOUT_SECONDS_DEFAULT,
         stop_timeout_seconds: float = 5.0,
         logger: Logger | None = None,
     ) -> None:
@@ -316,6 +342,8 @@ class PythonWorkerTurnAdapter(ConcurrentTurnProcess):
             )
         except OSError as error:
             raise HarnessStartError(self.kind, self.command, str(error)) from error
+        self._spawned_at = time.monotonic()
+        self._spawned_at_ms = int(time.time() * 1000)
         assert self._process.stdout is not None
         assert self._process.stderr is not None
         self._reader_thread = threading.Thread(target=self._read_stdout, name=f"hyprial-{self.kind}-reader-{self.spec.name}", daemon=True)
@@ -326,6 +354,17 @@ class PythonWorkerTurnAdapter(ConcurrentTurnProcess):
         if not self._ready.wait(timeout):
             detail = self._ready_error or summarize_stderr(bytes(self._stderr)) or "worker did not become ready"
             self.last_error = detail
+            # Silent until 2026-09-26: the only trace was connectors[].error.
+            self._log_event(
+                "worker.start_failed",
+                node="worker-process",
+                actorId=self._actor_id,
+                kind=self.kind,
+                pid=self._process.pid,
+                waitedMs=int((time.monotonic() - self._spawned_at) * 1000),
+                budgetMs=int(timeout * 1000),
+                detail=detail,
+            )
             self.stop()
             raise HarnessStartError(self.kind, self.command, detail, stderr_tail=summarize_stderr(bytes(self._stderr)))
         if self.startup is None:
@@ -485,6 +524,7 @@ class PythonWorkerTurnAdapter(ConcurrentTurnProcess):
             pid=frame["pid"],
             generation=1,
             hyprialCommit=frame["hyprialCommit"],
+            **self._ready_timing(frame),
         )
 
     def _handle_user_proxy_ready(self, frame: dict[str, object]) -> None:
@@ -520,6 +560,7 @@ class PythonWorkerTurnAdapter(ConcurrentTurnProcess):
             pid=pid,
             generation=1,
             hyprialCommit=frame["hyprialCommit"],
+            **self._ready_timing(frame),
         )
 
     def _handle_metric(self, frame: dict[str, object]) -> None:
@@ -733,6 +774,22 @@ class PythonWorkerTurnAdapter(ConcurrentTurnProcess):
             maxInFlight=self.max_in_flight,
             queueDepth=0,
         )
+
+    def _ready_timing(self, frame: dict[str, object]) -> dict[str, int]:
+        """Split spawn->processed into worker latency and daemon read latency."""
+
+        spawned = getattr(self, "_spawned_at", None)
+        if spawned is None:
+            return {}
+        timing = {"readyAfterMs": int((time.monotonic() - spawned) * 1000)}
+        # The worker's own emit time rides on stderr, never in the ready
+        # frame: an old parent (autoupdate installed new scripts but held the
+        # restart) validates the frame's exact key set and would reject it.
+        emitted = _ready_emitted_at_ms(bytes(self._stderr))
+        if emitted is not None:
+            timing["workerEmitAfterMs"] = emitted - self._spawned_at_ms
+            timing["daemonReadAfterMs"] = int(time.time() * 1000) - emitted
+        return timing
 
     def _log_event(self, event: str, **fields: object) -> None:
         if self._logger is None:

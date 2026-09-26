@@ -201,6 +201,9 @@ def run(route: str) -> int:
     if commit is None:
         print("Hyprial commit is unavailable", file=sys.stderr)
         return 1
+    # Timing for the parent's start log; stderr, so an older parent that
+    # validates the ready frame's exact keys is unaffected.
+    print(f"hyprial-worker-ready-emitted-at-ms {int(time.time() * 1000)}", file=sys.stderr, flush=True)
     _emit(
         {
             "v": PROTOCOL_VERSION,

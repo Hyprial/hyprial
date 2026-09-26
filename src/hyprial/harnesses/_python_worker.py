@@ -495,6 +495,7 @@ def run(kind: str) -> int:
         return 1
 
     lock = threading.Lock()
+    print(f"hyprial-worker-ready-emitted-at-ms {int(time.time() * 1000)}", file=sys.stderr, flush=True)
     _emit(lock, {"v": PROTOCOL_VERSION, "type": "ready", "kind": kind, "pid": os.getpid(), **metadata})
     executor = ThreadPoolExecutor(max_workers=CONCURRENCY, thread_name_prefix="hyprial-jev")
     active = [0]
