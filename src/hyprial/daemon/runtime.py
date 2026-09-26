@@ -312,6 +312,7 @@ class DaemonEventBridge:
         self._usage_limit_observer = usage_limit_observer
         self._workflow_outcome = workflow_outcome
         self._pending_workflow_results: dict[str, HarnessResult] = {}
+        self._pending_workflow_attempts: dict[str, _InflightAttempt] = {}
         # Answers whose reply did not confirm on their tick, keyed by the
         # delivery they answer.  Retried as the SAME reply (idempotent) and
         # never re-dispatched meanwhile: the answer exists, asking the model
@@ -352,10 +353,15 @@ class DaemonEventBridge:
         # only thread that touches the fail-loud state above.
         self._forwarder = forwarder
         self._forward_jobs: queue.Queue[
-            tuple[InboxMessage, HarnessResult] | None
+            tuple[InboxMessage, HarnessResult, _InflightAttempt | None] | None
         ] = queue.Queue()
         self._forward_outcomes: queue.Queue[
-            tuple[InboxMessage, HarnessResult, ForwardOutcome]
+            tuple[
+                InboxMessage,
+                HarnessResult,
+                ForwardOutcome,
+                _InflightAttempt | None,
+            ]
         ] = queue.Queue()
         self._forward_thread: threading.Thread | None = None
 
@@ -605,9 +611,13 @@ class DaemonEventBridge:
         later sends queue durably instead of vanishing.
         """
 
+        active = set(self.harnesses.streaming_actors())
+        active_workers = {self.harness_actor_uri(name) for name in active}
+        for attempt in tuple(self._inflight.values()):
+            if attempt.identity.worker not in active_workers:
+                self._finish_attempt(attempt.identity.delivery_id)
         if self.harness_actor_registrar is None:
             return
-        active = set(self.harnesses.streaming_actors())
         for name in sorted(active):
             registration = self._actor_registrations.get(name)
             if registration is not None and registration.healthy:
@@ -651,12 +661,16 @@ class DaemonEventBridge:
                     # drain_results() released the worker's dedup, so a
                     # dispatch here would run the whole turn again.
                     continue
-                # Start (or keep) the no-progress clock for every request this
-                # live worker owes a receipt for, even before it accepts the
-                # enqueue: "queued but never picked up" is one of the silent
-                # shapes this change exists to report.
-                self._note_delivery_seen(actor, message)
-                if self.harnesses.dispatch(
+                # The first attempt starts when a live worker is first offered
+                # the delivery, even if enqueue never succeeds: "queued but
+                # never picked up" is one of the silent shapes this reports.
+                # A retry is different: its prior terminal result finished the
+                # old clock, so its new generation starts only after enqueue
+                # actually accepts it.
+                is_retry = message.message_id in self._attempt_generation
+                if not is_retry:
+                    self._note_delivery_seen(actor, message)
+                dispatched = self.harnesses.dispatch(
                     actor,
                     HarnessDelivery(
                         delivery_id=message.message_id,
@@ -666,7 +680,10 @@ class DaemonEventBridge:
                         message=self._message_text(message),
                         origin=self._message_origin(message),
                     ),
-                ):
+                )
+                if dispatched:
+                    if is_retry:
+                        self._note_delivery_seen(actor, message)
                     accepted += 1
                     # #276: a worker just genuinely accepted this delivery
                     # into its queue (StreamingHarnessProcess.enqueue dedups
@@ -756,7 +773,7 @@ class DaemonEventBridge:
         # under the same settlement owner as every other harness result.
         while True:
             try:
-                original, result, outcome = self._forward_outcomes.get_nowait()
+                original, result, outcome, attempt = self._forward_outcomes.get_nowait()
             except queue.Empty:
                 break
             if outcome.accepted:
@@ -771,7 +788,7 @@ class DaemonEventBridge:
                 error=outcome.error or outcome.failure_code,
                 failure_code=outcome.failure_code or "HARNESS_TRANSIENT_FAILURE",
             )
-            if self._settle_failed_result(failed, original):
+            if self._settle_failed_result(failed, original, attempt=attempt):
                 settled += 1
         results = [
             *self._pending_workflow_results.values(),
@@ -779,6 +796,15 @@ class DaemonEventBridge:
             *self.harnesses.drain_results(),
         ]
         for result in results:
+            # A terminal turn ends this attempt's silence budget regardless of
+            # whether delivery settlement is accepted, deferred, retried, or
+            # rejected because its PAC node has already closed.  Any later
+            # retry registers a new generation when that retry actually starts.
+            terminal_attempt = self._finish_attempt(result.delivery_id)
+            if terminal_attempt is None:
+                terminal_attempt = self._pending_workflow_attempts.get(
+                    result.delivery_id
+                )
             # Re-added below only if its reply fails to confirm again.
             self._pending_reply_results.pop(result.delivery_id, None)
             if self._workflow_outcome is not None:
@@ -786,15 +812,20 @@ class DaemonEventBridge:
                     handled = self._workflow_outcome(result)
                     if handled:
                         self.inbox.ack(result.recipient, result.delivery_id)
-                        self._finish_attempt(result.delivery_id)
                         self._pending_workflow_results.pop(result.delivery_id, None)
+                        self._pending_workflow_attempts.pop(result.delivery_id, None)
                         settled += 1
                         continue
                     self._pending_workflow_results.pop(result.delivery_id, None)
+                    self._pending_workflow_attempts.pop(result.delivery_id, None)
                 except (NameError, ImportError):
                     raise
                 except Exception as error:
                     self._pending_workflow_results[result.delivery_id] = result
+                    if terminal_attempt is not None:
+                        self._pending_workflow_attempts[result.delivery_id] = (
+                            terminal_attempt
+                        )
                     if self._logger:
                         self._logger("warn", "pac", "workflow.outcome_deferred", messageId=result.delivery_id, detail=str(error))
                     continue
@@ -822,20 +853,24 @@ class DaemonEventBridge:
                 if result.status is HarnessResultStatus.FAILED:
                     fallback = self._failure_original(result.delivery_id)
                     if fallback is not None:
-                        self._loud_harness_failure(result, fallback)
-                        self._finish_attempt(result.delivery_id)
+                        self._loud_harness_failure(
+                            result, fallback, attempt=terminal_attempt
+                        )
                         continue
                     self._log_missing_failure_route(result)
                 continue
             if result.status is HarnessResultStatus.FAILED:
-                if self._settle_failed_result(result, original):
+                if self._settle_failed_result(
+                    result, original, attempt=terminal_attempt
+                ):
                     settled += 1
                 continue
             if result.forward_to is not None:
                 # Before the reply-intent short-circuit below: a person
                 # answering in-thread arrives as a reply, and acking it
-                # without sending would drop the forward silently.  The
-                # attempt stays open until the send settles.
+                # without sending would drop the forward silently.  Forward
+                # settlement continues independently after the turn's silence
+                # clock has finished.
                 if self._forwarder is None:
                     if self._settle_failed_result(
                         replace(
@@ -845,11 +880,12 @@ class DaemonEventBridge:
                             failure_code=FORWARD_UNAVAILABLE,
                         ),
                         original,
+                        attempt=terminal_attempt,
                     ):
                         settled += 1
                     continue
                 self._start_forward_thread()
-                self._forward_jobs.put((original, result))
+                self._forward_jobs.put((original, result, terminal_attempt))
                 continue
             self._finish_attempt(result.delivery_id)
             try:
@@ -913,7 +949,11 @@ class DaemonEventBridge:
         return False
 
     def _settle_failed_result(
-        self, result: HarnessResult, original: InboxMessage
+        self,
+        result: HarnessResult,
+        original: InboxMessage,
+        *,
+        attempt: _InflightAttempt | None = None,
     ) -> bool:
         """Settle one FAILED turn against its still-pending inbox row."""
 
@@ -977,7 +1017,9 @@ class DaemonEventBridge:
         # above is a separate, retained channel and does not stand in
         # for this one (the 2026-09-21 incident: the owner was told
         # within a second and the sender was told nothing).
-        self._loud_harness_failure(result, original, failure=failure)
+        self._loud_harness_failure(
+            result, original, failure=failure, attempt=attempt
+        )
         self._finish_attempt(result.delivery_id)
         return True
 
@@ -998,7 +1040,7 @@ class DaemonEventBridge:
             job = self._forward_jobs.get()
             if job is None:
                 return
-            original, result = job
+            original, result, attempt = job
             assert result.forward_to is not None
             try:
                 outcome = forwarder(original, result.forward_to, result.output)
@@ -1008,7 +1050,7 @@ class DaemonEventBridge:
                     "HARNESS_TRANSIENT_FAILURE",
                     f"forward raised {type(error).__name__}",
                 )
-            self._forward_outcomes.put((original, result, outcome))
+            self._forward_outcomes.put((original, result, outcome, attempt))
 
     def _halt_forward_thread(self) -> None:
         thread = self._forward_thread
@@ -1082,12 +1124,13 @@ class DaemonEventBridge:
         if attempt is not None:
             attempt.last_progress_ms = now_ms
 
-    def _finish_attempt(self, delivery_id: str) -> None:
+    def _finish_attempt(self, delivery_id: str) -> _InflightAttempt | None:
         attempt = self._inflight.pop(delivery_id, None)
         if attempt is not None:
             # Remember the generation so a retry of the same delivery is a
             # new attempt for the once-per-notice key, not a replay.
             self._attempt_generation[delivery_id] = attempt.identity.generation
+        return attempt
 
     def _attempt_was_acknowledged(self, delivery_id: str) -> bool:
         """Whether durable inbox state says the worker finished this attempt.
@@ -1149,6 +1192,7 @@ class DaemonEventBridge:
         failure_code: str,
         settlement: object | None,
         observed_at_ms: int,
+        attempt: _InflightAttempt | None = None,
     ) -> InboxMessage:
         """Build the sender notice from durable facts when possible.
 
@@ -1159,7 +1203,8 @@ class DaemonEventBridge:
         exact same notice after a crash instead of inventing a second one.
         """
 
-        attempt = self._inflight.get(original.message_id)
+        if attempt is None:
+            attempt = self._inflight.get(original.message_id)
         durable_attempts = int(getattr(settlement, "attempts", 0) or 0)
         if durable_attempts > 0:
             generation = durable_attempts
@@ -1197,6 +1242,7 @@ class DaemonEventBridge:
         original: InboxMessage,
         *,
         failure: object | None = None,
+        attempt: _InflightAttempt | None = None,
     ) -> InboxMessage | None:
         """Tell the waiting sender that *this* attempt failed, with evidence.
 
@@ -1228,6 +1274,7 @@ class DaemonEventBridge:
             failure_code=failure_code,
             settlement=settlement,
             observed_at_ms=self._clock_ms(),
+            attempt=attempt,
         )
         self._submit_loud(message)
         return message

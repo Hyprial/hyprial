@@ -55,6 +55,7 @@ from .graph import BACK, FORWARD, canonical_edge
 from .journal import activation_id, append_event
 from .migrations import unrewritten_owners_note
 from .store import PacGraphStore
+from .workflow_output import validate_workflow_output_text
 
 TURN = "turn"
 WITHDRAW = "withdraw"
@@ -124,6 +125,7 @@ class NotificationSender(Protocol):
         sender: str,
         conversation_id: str,
         idempotency_key: str,
+        expires_at_ms: int | None = None,
     ) -> str:
         """Deliver one notification; returns the wire ``message_id``."""
 
@@ -134,7 +136,7 @@ class NullSender:
     """Records notifications without delivering them (unit tests, dry runs)."""
 
     def __init__(self) -> None:
-        self.sent: list[dict[str, str]] = []
+        self.sent: list[dict[str, Any]] = []
 
     def send(
         self,
@@ -144,6 +146,7 @@ class NullSender:
         sender: str,
         conversation_id: str,
         idempotency_key: str,
+        expires_at_ms: int | None = None,
     ) -> str:
         self.sent.append(
             {
@@ -152,6 +155,11 @@ class NullSender:
                 "sender": sender,
                 "conversationId": conversation_id,
                 "idempotencyKey": idempotency_key,
+                **(
+                    {"expiresAtMs": expires_at_ms}
+                    if expires_at_ms is not None
+                    else {}
+                ),
             }
         )
         return f"null-{len(self.sent)}"
@@ -404,7 +412,10 @@ class PacReactor:
         undelivered: list[PlannedNotification] = []
         error: str | None = None
         for index, item in enumerate(planned):
-            if self._require_graph(graph_id)["closed_at"] is not None:
+            if (
+                self._require_graph(graph_id)["closed_at"] is not None
+                and item.kind != "actor_alert"
+            ):
                 undelivered.extend(planned[index:])
                 error = "graph closed before delivery; remaining plans are not retried"
                 break
@@ -434,11 +445,23 @@ class PacReactor:
         actor: str,
         reason_ref: str | None = None,
         expected_request: str | None = None,
+        output_text: str | None = None,
     ) -> FlagEventOutcome:
         """Owner sets their node's flag; returns what the event caused."""
 
-        return self._flag(graph_id, node_id, action="set", actor=actor, reason_ref=reason_ref,
-                          expected_request=expected_request)
+        try:
+            output_text = validate_workflow_output_text(output_text)
+        except ValueError as error:
+            raise PacError("WORKFLOW_OUTPUT_INVALID", str(error)) from error
+        return self._flag(
+            graph_id,
+            node_id,
+            action="set",
+            actor=actor,
+            reason_ref=reason_ref,
+            expected_request=expected_request,
+            output_text=output_text,
+        )
 
     def reset_flag(
         self,
@@ -464,6 +487,7 @@ class PacReactor:
         actor: str,
         reason_ref: str | None,
         expected_request: str | None = None,
+        output_text: str | None = None,
     ) -> FlagEventOutcome:
         db = self._store.write()
         try:
@@ -558,8 +582,17 @@ class PacReactor:
                     )
             # The workflow cache is a projection of this exact flag write,
             # not a later reply or a second completion authority.
-            db.execute("UPDATE workflow_nodes SET state=?,reason_ref=? WHERE graph_id=? AND node_id=?",
-                       ("done" if action == "set" else "pending", reason_ref, graph_id, node_id))
+            db.execute(
+                "UPDATE workflow_nodes SET state=?,reason_ref=?,output_text=? "
+                "WHERE graph_id=? AND node_id=?",
+                (
+                    "done" if action == "set" else "pending",
+                    reason_ref,
+                    output_text if action == "set" else None,
+                    graph_id,
+                    node_id,
+                ),
+            )
             if action == "reset":
                 db.execute("UPDATE workflow_nodes SET request_id=NULL,input_token=NULL WHERE graph_id=? AND node_id=?", (graph_id, node_id))
             if action == "set" and node.kind == "end":
@@ -570,16 +603,54 @@ class PacReactor:
                 if action == "set"
                 else self._plan_reset(graph_id, node_id, event_id, actor)
             )
+            if action == "set" and output_text is not None:
+                planned.append(
+                    PlannedNotification(
+                        event_id=event_id,
+                        edge=f"workflow-output:{node_id}:{event_id}",
+                        kind="actor_alert",
+                        recipient=graph["created_by"],
+                        node_id=node_id,
+                        round_no=None,
+                        text=(
+                            f"Workflow {graph_id} node {node_id} completed: "
+                            f"{reason_ref or 'no evidence reference'}.\nOutput:\n{output_text}"
+                        ),
+                        sender=actor,
+                    )
+                )
             inserted = self._insert_notifications(
                 planned, at, db=db, graph_id=graph_id, version=graph["version"],
             )
             if expected_request is not None:
-                db.execute("INSERT INTO workflow_outcome_receipts VALUES (?,?,?,?,?)",
-                           (("reset:" if action == "reset" else "") + expected_request,
-                            actor, "complete" if action == "set" else "reset", reason_ref,
-                            json.dumps({"ok": True, "eventId": event_id, "requestId": expected_request,
-                                "event": {"eventId": event_id, "graphId": graph_id, "nodeId": node_id,
-                                          "action": action, "actor": actor, "at": at, "version": graph["version"]}})))
+                db.execute(
+                    "INSERT INTO workflow_outcome_receipts "
+                    "(request_id,actor,action,reason_ref,result_json,output_text) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (
+                        ("reset:" if action == "reset" else "") + expected_request,
+                        actor,
+                        "complete" if action == "set" else "reset",
+                        reason_ref,
+                        json.dumps(
+                            {
+                                "ok": True,
+                                "eventId": event_id,
+                                "requestId": expected_request,
+                                "event": {
+                                    "eventId": event_id,
+                                    "graphId": graph_id,
+                                    "nodeId": node_id,
+                                    "action": action,
+                                    "actor": actor,
+                                    "at": at,
+                                    "version": graph["version"],
+                                },
+                            }
+                        ),
+                        output_text if action == "set" else None,
+                    ),
+                )
             db.commit()
         except BaseException:
             db.rollback()

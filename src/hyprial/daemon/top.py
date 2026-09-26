@@ -276,7 +276,7 @@ def classify_actor(
         window_durations = durations[-thresholds.spin_window :]
         window_outcomes = outcomes[-thresholds.spin_window :]
         mean_ms = sum(window_durations) / len(window_durations)
-        failures = sum(1 for outcome in window_outcomes if outcome != "completed")
+        failures = sum(1 for outcome in window_outcomes if outcome == "failed")
         if (
             mean_ms < thresholds.spin_mean_ms
             and failures / len(window_outcomes) > thresholds.spin_failure_ratio
@@ -392,7 +392,7 @@ def build_actor_row(
         ),
         "recentFailureRatio": (
             (
-                sum(1 for outcome in stats.recent_outcomes if outcome != "completed")
+                sum(1 for outcome in stats.recent_outcomes if outcome == "failed")
                 / len(stats.recent_outcomes)
             )
             if stats is not None and stats.recent_outcomes

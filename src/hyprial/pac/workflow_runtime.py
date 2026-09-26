@@ -30,6 +30,7 @@ from .workflow_graph import (
     replay_graph,
 )
 from .workflow_schema import WorkflowSchemaError, WorkflowSpec, load_workflow_text
+from .workflow_output import validate_workflow_output_text
 
 TERMINAL = {"completed", "failed", "cancelled"}
 
@@ -49,6 +50,18 @@ def _changed(store: PacGraphStore, graph: dict, at: int, **data: Any) -> None:
         at=at,
         data=data,
     )
+
+
+def _request_expires_at_ms(row: sqlite3.Row) -> int | None:
+    """Return the one authoritative inbox expiry for a workflow request.
+
+    Deadline computation belongs to workflow projection.  Keeping the read in
+    one helper gives deadline-policy changes one adaptation point instead of
+    duplicating them across local and remote notification paths.
+    """
+
+    value = row["deadline_ms"]
+    return None if value is None else int(value)
 
 
 def close_workflow(
@@ -121,6 +134,7 @@ class WorkflowSender:
         conversation_id: str,
         idempotency_key: str,
     ) -> str:
+        request_expires_at_ms = None
         if idempotency_key.startswith("pac-notify:workflow-request:"):
             request_id = idempotency_key.split(":", 3)[2]
             store = PacGraphStore(self.database, read_only=True)
@@ -153,6 +167,7 @@ class WorkflowSender:
                             "task was withdrawn or closed before delivery",
                         )
                     spec = read_specification(row)
+                    request_expires_at_ms = _request_expires_at_ms(row)
                     node = next(n for n in spec["nodes"] if n["id"] == row["node_id"])
                     predecessors = [
                         edge.from_node
@@ -168,7 +183,8 @@ class WorkflowSender:
                     remote_request = {
                         "graphId": row["graph_id"], "nodeId": row["node_id"],
                         "requestId": row["request_id"], "owner": recipient,
-                        "inputToken": row["input_token"], "deadlineMs": row["deadline_ms"],
+                        "inputToken": row["input_token"],
+                        "deadlineMs": request_expires_at_ms,
                         "role": node["role"], "firstOutputEta": node.get("first_output_eta"),
                         "humanGatesDeclared": node.get("human_gates") is not None,
                     }
@@ -179,10 +195,10 @@ class WorkflowSender:
                         f"Inspect current work before acting: hyprial workflow inspect {row['graph_id']} --node {row['node_id']} --json\n"
                         f"Graph: {row['graph_id']}; node: {row['node_id']}; role: {node['role']}\n"
                         f"Fixed deadline: {row['deadline_ms']} (epoch ms).\n"
-                        f"Complete explicitly: hyprial workflow complete {command} --reason-ref <evidence-reference>\n"
-                        f"Report failure: hyprial workflow fail {command} --reason-ref <failure-reference>\n"
+                        f"Complete explicitly: hyprial workflow complete {command} --reason-ref <evidence-reference> [--output-text <result>]\n"
+                        f"Report failure: hyprial workflow fail {command} --reason-ref <failure-reference> [--output-text <result>]\n"
                         "Without a shell, use the workflow_complete / workflow_fail tool with the same "
-                        "graphId, nodeId, requestId and a reasonRef.\n"
+                        "graphId, nodeId, requestId and reasonRef; outputText optionally carries the result inline.\n"
                         "If returnState is pending, the outcome is durably queued; inspect until accepted or rejected.\n"
                         "A reply is not completion. Do not repeat a withdrawn request.\n"
                     )
@@ -193,12 +209,18 @@ class WorkflowSender:
             message_id = remote_send(remote_request, text=text, idempotency_key=idempotency_key)
             if message_id is not None:
                 return message_id
+        expiry = (
+            {"expires_at_ms": request_expires_at_ms}
+            if request_expires_at_ms is not None
+            else {}
+        )
         return self.downstream.send(
             recipient=recipient,
             text=text,
             sender=sender,
             conversation_id=conversation_id,
             idempotency_key=idempotency_key,
+            **expiry,
         )
 
 
@@ -480,7 +502,8 @@ class GraphWorkflowService:
                 ),
             )
         store._db.execute(
-            "UPDATE workflow_nodes SET state='requested',request_id=?,input_token=?,generation=generation+1 "
+            "UPDATE workflow_nodes SET state='requested',request_id=?,input_token=?,generation=generation+1,"
+            "reason_ref=NULL,output_text=NULL "
             "WHERE graph_id=? AND node_id=?",
             (request, token, graph["graph_id"], node.node_id),
         )
@@ -528,10 +551,12 @@ class GraphWorkflowService:
         reason: str,
         at: int,
         reactor: PacReactor,
+        output_text: str | None = None,
     ):
         store._db.execute(
-            "UPDATE workflow_nodes SET state='failed',reason_ref=? WHERE graph_id=? AND node_id=?",
-            (reason, graph["graph_id"], node_id),
+            "UPDATE workflow_nodes SET state='failed',reason_ref=?,output_text=? "
+            "WHERE graph_id=? AND node_id=?",
+            (reason, output_text, graph["graph_id"], node_id),
         )
         event = f"workflow-failure:{uuid4().hex}"
         _changed(store, graph, at, nodeId=node_id, state="failed", reasonRef=reason)
@@ -550,7 +575,11 @@ class GraphWorkflowService:
             node_id=node_id,
             round_no=None,
             sender=graph["created_by"],
-            text=f"Workflow {graph['graph_id']} node {node_id} failed: {reason}. Policy: {row['on_failure']}.",
+            text=(
+                f"Workflow {graph['graph_id']} node {node_id} failed: {reason}. "
+                f"Policy: {row['on_failure']}."
+                + (f"\nOutput:\n{output_text}" if output_text is not None else "")
+            ),
         )
         reactor._insert_notifications(
             [alert],
@@ -621,7 +650,8 @@ class GraphWorkflowService:
                             )
                             continue
                         db.execute(
-                            "UPDATE workflow_nodes SET state='pending',reason_ref='pac:stale-inputs' WHERE graph_id=? AND node_id=?",
+                            "UPDATE workflow_nodes SET state='pending',reason_ref='pac:stale-inputs',output_text=NULL "
+                            "WHERE graph_id=? AND node_id=?",
                             (graph_id, node.node_id),
                         )
                         continue
@@ -657,7 +687,8 @@ class GraphWorkflowService:
                 token = input_token(store, graph_id, node.node_id)
                 if row["state"] == "requested" and row["input_token"] != token:
                     db.execute(
-                        "UPDATE workflow_nodes SET state='pending',request_id=NULL,input_token=NULL WHERE graph_id=? AND node_id=?",
+                        "UPDATE workflow_nodes SET state='pending',request_id=NULL,input_token=NULL,output_text=NULL "
+                        "WHERE graph_id=? AND node_id=?",
                         (graph_id, node.node_id),
                     )
                     _changed(
@@ -670,7 +701,8 @@ class GraphWorkflowService:
                     )
                 elif row["state"] == "done":
                     db.execute(
-                        "UPDATE workflow_nodes SET state='pending',request_id=NULL,input_token=NULL WHERE graph_id=? AND node_id=?",
+                        "UPDATE workflow_nodes SET state='pending',request_id=NULL,input_token=NULL,output_text=NULL "
+                        "WHERE graph_id=? AND node_id=?",
                         (graph_id, node.node_id),
                     )
             graph = store.graph(graph_id)
@@ -752,7 +784,7 @@ class GraphWorkflowService:
         ]:
             if item.message_id is not None:
                 continue
-            is_alert = item.event_id.startswith("workflow-failure:")
+            is_alert = item.kind == "actor_alert"
             if graph["closed_at"] is not None and not is_alert:
                 continue
             try:
@@ -789,7 +821,7 @@ class GraphWorkflowService:
                     "SELECT w.graph_id FROM workflow_graphs w JOIN graphs g USING(graph_id) "
                     "WHERE g.closed_at IS NULL OR w.state NOT IN ('completed','failed','cancelled') OR EXISTS "
                     "(SELECT 1 FROM notifications n WHERE json_extract(n.plan_json,'$.graphId')=g.graph_id "
-                    "AND n.message_id IS NULL AND n.event_id LIKE 'workflow-failure:%') "
+                    "AND n.message_id IS NULL AND n.kind='actor_alert') "
                     "ORDER BY (g.closed_at IS NOT NULL), g.created_at"
                 )
             ]
@@ -887,6 +919,58 @@ class GraphWorkflowService:
         self.submit_timer(self.clock())
         return True
 
+    def record_request_pruned(self, *, message_id: str, recipient: str) -> bool:
+        """Fail the still-current node request whose inbox row was pruned.
+
+        The delivery binding is request-scoped.  An old row can therefore be
+        swept after a new generation has been requested without authorizing a
+        failure of that new generation.
+        """
+
+        failed = False
+        store = self._open()
+        try:
+            with store.write():
+                binding = store._db.execute(
+                    "SELECT * FROM workflow_deliveries WHERE message_id=?",
+                    (message_id,),
+                ).fetchone()
+                if binding is None:
+                    return False
+                graph = store.graph(binding["graph_id"])
+                node = store.node(binding["graph_id"], binding["node_id"])
+                row = store._db.execute(
+                    "SELECT * FROM workflow_nodes WHERE graph_id=? AND node_id=?",
+                    (binding["graph_id"], binding["node_id"]),
+                ).fetchone()
+                if not (
+                    graph
+                    and graph["closed_at"] is None
+                    and node
+                    and node.owner == recipient
+                    and not node.flag
+                    and row
+                    and row["state"] == "requested"
+                    and row["request_id"] == binding["request_id"]
+                    and row["input_token"]
+                    == input_token(store, binding["graph_id"], binding["node_id"])
+                ):
+                    return False
+                self._failure(
+                    store,
+                    graph,
+                    node.node_id,
+                    "pac:request-expired",
+                    self.clock(),
+                    PacReactor(store),
+                )
+                failed = True
+        finally:
+            store.close()
+        if failed:
+            self.submit_timer(self.clock())
+        return failed
+
     def status(self, *, run_id: str) -> dict[str, Any]:
         store = self._open(read_only=True)
         try:
@@ -928,6 +1012,11 @@ class GraphWorkflowService:
                         "timeoutMs": rows[node.node_id]["timeout_ms"],
                         "reasonRef": rows[node.node_id]["reason_ref"]
                         or node.flag_reason_ref,
+                        **(
+                            {"outputText": rows[node.node_id]["output_text"]}
+                            if rows[node.node_id]["output_text"] is not None
+                            else {}
+                        ),
                         "actorNode": rows[node.node_id]["actor_node"],
                     }
                     for node in store.nodes(run_id)
@@ -1128,7 +1217,7 @@ class GraphWorkflowService:
                         "WORKFLOW_NOT_OWNER", "only the workflow owner can restart its worker"
                     )
                 store._db.execute(
-                    "UPDATE workflow_nodes SET state='pending',request_id=NULL,input_token=NULL,reason_ref=NULL "
+                    "UPDATE workflow_nodes SET state='pending',request_id=NULL,input_token=NULL,reason_ref=NULL,output_text=NULL "
                     "WHERE graph_id=? AND actor_node=? AND state NOT IN ('done','cancelled')",
                     (graph_id, worker.node_id),
                 )
@@ -1154,7 +1243,12 @@ class GraphWorkflowService:
         actor: str,
         request_id: str,
         reason_ref: str,
+        output_text: str | None = None,
     ):
+        try:
+            output_text = validate_workflow_output_text(output_text)
+        except ValueError as error:
+            raise WorkflowServiceError("WORKFLOW_OUTPUT_INVALID", str(error)) from error
         store = self._open()
         try:
             with store.write():
@@ -1184,11 +1278,27 @@ class GraphWorkflowService:
                         "failure belongs to a withdrawn or completed request",
                     )
                 self._failure(
-                    store, graph, node_id, reason_ref, self.clock(), PacReactor(store)
+                    store,
+                    graph,
+                    node_id,
+                    reason_ref,
+                    self.clock(),
+                    PacReactor(store),
+                    output_text,
                 )
-                store._db.execute("INSERT INTO workflow_outcome_receipts VALUES (?,?,?,?,?)",
-                    (request_id, actor, "fail", reason_ref,
-                     json.dumps({"ok": True, "requestId": request_id})))
+                store._db.execute(
+                    "INSERT INTO workflow_outcome_receipts "
+                    "(request_id,actor,action,reason_ref,result_json,output_text) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (
+                        request_id,
+                        actor,
+                        "fail",
+                        reason_ref,
+                        json.dumps({"ok": True, "requestId": request_id}),
+                        output_text,
+                    ),
+                )
         finally:
             store.close()
         self._tick()

@@ -380,6 +380,7 @@ class _TurnShard:
                 status="interrupted",
                 output="",
                 error="harness turn interrupted",
+                failure_code=None,
             )
             self._interrupted.discard(result.delivery_id)
         self._version += 1

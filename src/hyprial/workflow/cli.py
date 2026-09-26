@@ -430,6 +430,9 @@ def complete(
     reason_ref: str = typer.Option(
         ..., "--reason-ref", help="Reference to completion or failure evidence."
     ),
+    output_text: str | None = typer.Option(
+        None, "--output-text", help="Optional bounded result text stored with this request."
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ):
     """Set your node flag against the exact current request."""
@@ -440,6 +443,7 @@ def complete(
             "nodeId": node_id,
             "requestId": request_id,
             "reasonRef": reason_ref,
+            **({"outputText": output_text} if output_text is not None else {}),
         },
         json_output=json_output,
     )
@@ -457,6 +461,9 @@ def fail(
     reason_ref: str = typer.Option(
         ..., "--reason-ref", help="Reference to completion or failure evidence."
     ),
+    output_text: str | None = typer.Option(
+        None, "--output-text", help="Optional bounded result text stored with this request."
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ):
     """Report explicit failure and apply this graph's declared failure policy."""
@@ -467,6 +474,7 @@ def fail(
             "nodeId": node_id,
             "requestId": request_id,
             "reasonRef": reason_ref,
+            **({"outputText": output_text} if output_text is not None else {}),
         },
         json_output=json_output,
     )

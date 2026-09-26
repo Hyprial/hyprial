@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import queue
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -79,6 +81,45 @@ class DaemonActorRuntime:
         )
         return self.observe(actor_name)
 
+    def _interruption_reason(self, identity_marker: str) -> str:
+        """Classify this PAC-owned stop from the graph's durable close fact."""
+
+        parts = identity_marker.split(":", 2)
+        if len(parts) < 3 or parts[0] != "pac":
+            return "graph-cleanup"
+        state_dir = getattr(self.application, "state_dir", None)
+        if state_dir is None:
+            return "graph-cleanup"
+        store = PacGraphStore(default_database_path(state_dir), read_only=True)
+        try:
+            graph = store.graph(parts[1])
+            if graph is None or graph["closed_at"] is None:
+                return "graph-cleanup"
+            workflow = store._db.execute(
+                "SELECT state FROM workflow_graphs WHERE graph_id=?", (parts[1],)
+            ).fetchone()
+            if workflow is not None:
+                if workflow["state"] == "cancelled":
+                    return "graph-cancelled"
+                if workflow["state"] in {"completed", "failed"}:
+                    return "graph-settled"
+                # A graph close is visible before the workflow projector can
+                # stamp its terminal state only on the explicit cancel path.
+                return "graph-cancelled"
+            row = store._db.execute(
+                "SELECT data_json FROM journal "
+                "WHERE graph_id=? AND type='graph_closed' "
+                "ORDER BY at DESC, rowid DESC LIMIT 1",
+                (parts[1],),
+            ).fetchone()
+            if row is not None:
+                detail = json.loads(row["data_json"])
+                if detail.get("state") == "cancelled":
+                    return "graph-cancelled"
+            return "graph-settled"
+        finally:
+            store.close()
+
     def stop(
         self,
         actor_name: str,
@@ -91,8 +132,12 @@ class DaemonActorRuntime:
         # Never stop a same-name connector whose durable marker is not ours.
         if spec is None or spec.nickname != identity_marker:
             return self.observe(actor_name)
+        lifecycle_spec = replace(
+            self.application._lifecycle_spec(spec),
+            interruption_reason=self._interruption_reason(identity_marker),
+        )
         self.application._run_lifecycle_operation(
-            LifecycleOperation.deactivate(operation_id, self.application._lifecycle_spec(spec))
+            LifecycleOperation.deactivate(operation_id, lifecycle_spec)
         )
         return self.observe(actor_name)
 
@@ -109,6 +154,7 @@ class DaemonPacNotificationSender:
         sender: str,
         conversation_id: str,
         idempotency_key: str,
+        expires_at_ms: int | None = None,
     ) -> str:
         delivery_io = self.application._pac_notification_io
         if delivery_io is None:
@@ -124,6 +170,7 @@ class DaemonPacNotificationSender:
             target=recipient,
             conversation_id=conversation_id,
             text=text,
+            expires_at_ms=expires_at_ms,
         )
         return str(delivered.message_id)
 

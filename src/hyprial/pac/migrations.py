@@ -18,7 +18,7 @@ from .errors import PAC_MIGRATION_SOURCE_UNREADABLE, PacError
 from .journal import JOURNAL_SCHEMA, append_event
 from .principal import principal_kind
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 
 def _create_v1(db: sqlite3.Connection, schema: str) -> None:
@@ -642,6 +642,14 @@ def _upgrade_v12_to_v13(db: sqlite3.Connection) -> None:
     db.execute("CREATE INDEX workflow_nodes_request ON workflow_nodes(request_id)")
 
 
+def _upgrade_v13_to_v14(db: sqlite3.Connection) -> None:
+    """Persist bounded node output with its request and remote return custody."""
+
+    db.execute("ALTER TABLE workflow_nodes ADD COLUMN output_text TEXT")
+    db.execute("ALTER TABLE workflow_outcome_receipts ADD COLUMN output_text TEXT")
+    db.execute("ALTER TABLE remote_workflow_outbox ADD COLUMN output_text TEXT")
+
+
 def migrate(db: sqlite3.Connection, legacy_schema: str, state_dir: Path | None = None) -> None:
     db.execute("BEGIN IMMEDIATE")
     try:
@@ -700,6 +708,10 @@ def migrate(db: sqlite3.Connection, legacy_schema: str, state_dir: Path | None =
         if version == 12:
             _upgrade_v12_to_v13(db)
             db.execute("PRAGMA user_version = 13")
+            version = 13
+        if version == 13:
+            _upgrade_v13_to_v14(db)
+            db.execute("PRAGMA user_version = 14")
         db.commit()
     except BaseException:
         db.rollback()

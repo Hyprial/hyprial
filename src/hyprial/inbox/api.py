@@ -35,6 +35,11 @@ class InboxMessage:
     # physical source survives even when a client bypasses sender
     # canonicalization.  None on frames from pre-stamp peers.
     origin_node: str | None = None
+    # An authoritative work-order deadline supplied by the producer.  None
+    # keeps the holder's ordinary TTL policy.  Holders persist this separately
+    # from their effective expiry so retries and custody transfers do not turn
+    # a local TTL into a cross-machine absolute timestamp.
+    expires_at_ms: int | None = None
 
     def with_payload(self, payload: bytes) -> InboxMessage:
         return replace(self, payload=payload)

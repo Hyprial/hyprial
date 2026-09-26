@@ -68,5 +68,13 @@ def observe_node(database, graph, node, inbox, *, recipient: str, at: int, epoch
             "gaps": gaps,
             "truncated": len(events) > 200,
         },
-        "results": {"replies": [], "evidenceRef": node["reasonRef"]},
+        "results": {
+            "replies": [],
+            "evidenceRef": node["reasonRef"],
+            **(
+                {"outputText": node["outputText"]}
+                if "outputText" in node
+                else {}
+            ),
+        },
     }

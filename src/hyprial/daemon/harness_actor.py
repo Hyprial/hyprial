@@ -24,6 +24,7 @@ from hyprial.actor_runtime import ActorHandle, ActorRuntime, ActorSpec, Admissio
 from hyprial.backoff import capped_exponential
 
 from .api import (
+    DaemonInterruptibleHarnessProcess,
     HarnessDelivery,
     HarnessLauncher,
     HarnessResult,
@@ -849,6 +850,7 @@ class ProcessIoPort:
         identity: ProcessIdentity | None,
         *,
         harness_id: str,
+        interruption_reason: str | None = None,
     ) -> tuple[bool, str | None]:
         if (
             identity is not None
@@ -877,6 +879,10 @@ class ProcessIoPort:
             marker=None if identity is None else identity.marker,
         )
         try:
+            if interruption_reason is not None and isinstance(
+                process, DaemonInterruptibleHarnessProcess
+            ):
+                process.prepare_daemon_interruption(interruption_reason)
             process.stop()
         except BaseException as error:
             self._orphan_processes.collect_once()
@@ -1547,7 +1553,10 @@ class HarnessRuntimeActor:
             if process is not None:
                 assert self._io is not None
                 stopped, error = self._io._stop_checked(
-                    process, record.identity, harness_id=harness_id
+                    process,
+                    record.identity,
+                    harness_id=harness_id,
+                    interruption_reason=command.interruption_reason,
                 )
                 if not stopped:
                     detail.append(error or "harness did not stop")
@@ -1911,7 +1920,10 @@ class HarnessRuntimeActor:
             if process is not None:
                 assert self._io is not None
                 stopped, error = self._io._stop_checked(
-                    process, record.identity, harness_id=harness_id
+                    process,
+                    record.identity,
+                    harness_id=harness_id,
+                    interruption_reason=command.interruption_reason,
                 )
                 if not stopped:
                     detail.append(error or "harness did not stop")

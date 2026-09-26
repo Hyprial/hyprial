@@ -82,9 +82,10 @@ class _QueuedWake:
 class WakeCoordinator:
     """Schedule formal wakes fairly while leaving preview completely inert.
 
-    One dispatch pass visits every item that was queued when the pass began at
-    most once. A busy actor is put at the tail with backoff, so it cannot hold
-    another actor's formal delivery behind repeated harness rejections.
+    One dispatch pass visits every actor with queued work at most once. The
+    actor's first eligible due item consumes that scheduling slot. A busy actor
+    is put at the tail with backoff, so it cannot hold another actor's formal
+    delivery behind repeated harness rejections.
 
     Renotify policy is state-dependent. ``SIGNALLED`` means the transport
     accepted the edge but nothing proves a model turn saw it, so the edge is
@@ -264,18 +265,25 @@ class WakeCoordinator:
         for _ in range(visits):
             actor = self._actors.popleft()
             queue = self._queues[actor]
-            batch_size = len(queue)
-            item = queue[0]
-            # A read-owned delivery suppresses further notifications for this
-            # session until terminal reply/ack clears it, except the
-            # read_retry_delay fallback nudge for a session that died mid-turn.
-            if item.state == WakeDeliveryState.AWAITING_ACK and item.not_before > now:
+            due_index = None
+            for index, queued_item in enumerate(queue):
+                if queued_item.not_before <= now:
+                    due_index = index
+                    break
+                # Read custody silences only this item. An unread item that is
+                # waiting on its normal retry cadence still gates later unread
+                # items, preserving the single outstanding wake edge.
+                if queued_item.state != WakeDeliveryState.AWAITING_ACK:
+                    break
+            if due_index is None:
                 self._actors.append(actor)
                 continue
-            if item.not_before > now:
-                self._actors.append(actor)
-                continue
-            queue.popleft()
+            unread_batch_size = sum(
+                queued_item.state != WakeDeliveryState.AWAITING_ACK
+                for queued_item in queue
+            )
+            item = queue[due_index]
+            del queue[due_index]
             session = sessions.get(item.actor)
             if session is None:
                 attempt = WakeAttempt(
@@ -283,7 +291,11 @@ class WakeCoordinator:
                 )
             else:
                 attempt = await self._driver.wake(
-                    _formal_command(item, session, batch_size=batch_size)
+                    _formal_command(
+                        item,
+                        session,
+                        unread_batch_size=unread_batch_size,
+                    )
                 )
             outcomes.append(
                 WakeOutcome(
@@ -301,33 +313,36 @@ class WakeCoordinator:
                 # have died after read. Whatever the transport said, stay in
                 # AWAITING_ACK on the long window — never fall back to the
                 # aggressive signalled cadence.
-                queue.appendleft(
+                queue.insert(
+                    due_index,
                     replace(
                         item,
                         attempt=next_attempt,
                         not_before=now + self._read_retry_delay,
-                    )
+                    ),
                 )
                 if attempt.status == WakeStatus.ACCEPTED:
                     outcomes[-1] = replace(outcomes[-1], status=WakeStatus.SIGNALLED)
             elif attempt.status == WakeStatus.ACCEPTED:
-                queue.appendleft(
+                queue.insert(
+                    due_index,
                     replace(
                         item,
                         state=WakeDeliveryState.SIGNALLED,
                         attempt=next_attempt,
                         not_before=now + self._resignal_delay(next_attempt),
-                    )
+                    ),
                 )
                 outcomes[-1] = replace(outcomes[-1], status=WakeStatus.SIGNALLED)
             else:
-                queue.appendleft(
+                queue.insert(
+                    due_index,
                     replace(
                         item,
                         state=WakeDeliveryState.QUEUED,
                         attempt=next_attempt,
                         not_before=now + self._retry_delay(next_attempt),
-                    )
+                    ),
                 )
             if queue:
                 self._actors.append(actor)
@@ -363,14 +378,25 @@ class WakeCoordinator:
 
 
 def _formal_command(
-    item: _QueuedWake, session: InteractiveSession, *, batch_size: int
+    item: _QueuedWake,
+    session: InteractiveSession,
+    *,
+    unread_batch_size: int,
 ) -> WakeCommand:
-    noun = "delivery" if batch_size == 1 else "deliveries"
-    prompt = (
-        f"Harness backlog has {batch_size} pending {noun} for actor={item.actor} "
-        f"(head delivery_id={item.delivery_id}). Call harness_read once and drain "
-        "the entire FIFO batch; then use harness_reply or harness_ack for every item."
-    )
+    if item.state == WakeDeliveryState.AWAITING_ACK:
+        prompt = (
+            f"Harness delivery_id={item.delivery_id} for actor={item.actor} remains "
+            "awaiting a durable reply or ack. Call harness_read for "
+            "daemon-authoritative state, then use harness_reply or harness_ack."
+        )
+    else:
+        noun = "delivery" if unread_batch_size == 1 else "deliveries"
+        prompt = (
+            f"Harness backlog has {unread_batch_size} pending {noun} for "
+            f"actor={item.actor} (first due delivery_id={item.delivery_id}). Call "
+            "harness_read once and drain the entire FIFO batch; then use "
+            "harness_reply or harness_ack for every item."
+        )
     return WakeCommand(
         kind="formal",
         actor=item.actor,

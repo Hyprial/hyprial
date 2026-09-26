@@ -305,6 +305,7 @@ class SequentialTurnProcess(BaseTurnProcess):
         self._connecting_client: TurnClient | None = None
         self._active_delivery_id: str | None = None
         self._active_generation: int | None = None
+        self._daemon_interruption_reasons: dict[str, str] = {}
         self._aborted_generations: set[int] = set()
         self._abort_callbacks: dict[int, Callable[[], None]] = {}
         self._abort_timers: dict[int, threading.Timer] = {}
@@ -430,7 +431,7 @@ class SequentialTurnProcess(BaseTurnProcess):
         """
 
         with self._lock:
-            if result.status is HarnessResultStatus.COMPLETED:
+            if result.status is not HarnessResultStatus.FAILED:
                 self._repeated_failures.pop(result.delivery_id, None)
                 self.repeated_failure_delivery_id = None
                 self.repeated_failure_count = 0
@@ -546,6 +547,23 @@ class SequentialTurnProcess(BaseTurnProcess):
                 self._interrupt_waiters.pop(correlation_id, None)
             return False
         return outcome == [True]
+
+    def prepare_daemon_interruption(self, reason: str) -> None:
+        """Record why the daemon is about to interrupt the open turn.
+
+        The record is delivery-correlated and written before ``stop()`` asks
+        the native turn to interrupt. Harness result text never participates
+        in the classification: without this record, an interrupted outcome
+        remains a failure.
+        """
+
+        if reason not in {"graph-settled", "graph-cancelled", "graph-cleanup"}:
+            raise ValueError(f"unsupported daemon interruption reason: {reason}")
+        in_flight = self._turn_runtime.read_in_flight()
+        if in_flight is None:
+            return
+        with self._lock:
+            self._daemon_interruption_reasons[in_flight.delivery_id] = reason
 
     def stop(self) -> None:
         correlation_id = f"close-{uuid4().hex}"
@@ -962,11 +980,29 @@ class SequentialTurnProcess(BaseTurnProcess):
                         result = await self._receive_result(client, current)
                         provider_error = self._turn_provider_error
                         self._turn_provider_error = None
+                        with self._lock:
+                            interruption_reason = self._daemon_interruption_reasons.pop(
+                                current.delivery_id, None
+                            )
+                        if (
+                            interruption_reason is not None
+                            and result.status is not HarnessResultStatus.COMPLETED
+                        ):
+                            result = replace(
+                                result,
+                                status=HarnessResultStatus.INTERRUPTED,
+                                output="",
+                                error=None,
+                                failure_code=None,
+                            )
                         self._log_turn(
                             f"worker.turn.{result.status.value}",
                             current,
                             **(
-                                {
+                                {"reason": interruption_reason}
+                                if result.status is HarnessResultStatus.INTERRUPTED
+                                and interruption_reason is not None
+                                else {
                                     # The event name already says "failed", so
                                     # repeating the status here carried no
                                     # information while the actual reason sat
@@ -993,12 +1029,12 @@ class SequentialTurnProcess(BaseTurnProcess):
                                         else {}
                                     ),
                                 }
-                                if result.status is not HarnessResultStatus.COMPLETED
+                                if result.status is HarnessResultStatus.FAILED
                                 else {}
                             ),
                         )
                         if (
-                            result.status is not HarnessResultStatus.COMPLETED
+                            result.status is HarnessResultStatus.FAILED
                             and self._on_turn_failure is not None
                             and result.error
                         ):

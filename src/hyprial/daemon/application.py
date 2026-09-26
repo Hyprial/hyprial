@@ -3976,6 +3976,7 @@ class DaemonApplication:
                 adapterRestarts=adapter_restarts,
             )
         for item in outcome.inbox_pruned_items:
+            self._record_pruned_workflow_request(item)
             self._log(
                 "info",
                 "daemon",
@@ -3989,6 +3990,41 @@ class DaemonApplication:
                 receivedAtMs=item.received_at_ms,
             )
         self._watch_inbox_collection(outcome.inbox_pruned_items)
+
+    def _record_pruned_workflow_request(self, item: InboxPruneItem) -> None:
+        """Route an inbox prune to the local or remote PAC authority."""
+
+        try:
+            workflow = getattr(self, "_workflow_service", None)
+            handled = bool(
+                workflow
+                and workflow.record_request_pruned(
+                    message_id=item.message_id,
+                    recipient=item.recipient,
+                )
+            )
+            remote = getattr(self, "_remote_workflow", None)
+            if not handled and remote is not None:
+                handled = remote.request_pruned(item.message_id, item.recipient)
+            if handled:
+                self._log(
+                    "info",
+                    "pac",
+                    "workflow.request_pruned",
+                    messageId=item.message_id,
+                    recipient=item.recipient,
+                    reason="pac:request-expired",
+                )
+        except Exception as error:  # noqa: BLE001 - preserve daemon reconcile
+            self._log(
+                "error",
+                "pac",
+                "workflow.request_prune_failed",
+                messageId=item.message_id,
+                recipient=item.recipient,
+                exceptionClass=type(error).__name__,
+                detail=str(error),
+            )
 
     def _watch_inbox_collection(
         self, pruned: tuple[InboxPruneItem, ...] = ()
@@ -5562,6 +5598,13 @@ class DaemonApplication:
             request = _required_string(params.get("requestId"), "requestId")
             reason = _required_string(params.get("reasonRef"), "reasonRef")
             from hyprial.pac.errors import PacError
+            from hyprial.pac.workflow_output import validate_workflow_output_text
+            try:
+                output_text = validate_workflow_output_text(params.get("outputText"))
+            except ValueError as error:
+                raise DaemonRequestError(
+                    "WORKFLOW_OUTPUT_INVALID", str(error)
+                ) from error
             try:
                 if self._remote_workflow is not None:
                     forwarded = self._remote_workflow.forward(method, params, source)
@@ -5569,13 +5612,15 @@ class DaemonApplication:
                         return forwarded
                 if method == "workflow.fail":
                     return self._workflow_service.fail(graph_id=graph_id, node_id=node_id,
-                                                       actor=source, request_id=request, reason_ref=reason)
+                                                       actor=source, request_id=request, reason_ref=reason,
+                                                       output_text=output_text)
                 from hyprial.pac.reactor import PacReactor
                 from hyprial.pac.store import PacGraphStore, default_database_path
                 store = PacGraphStore(default_database_path(self.state_dir))
                 try:
                     outcome = PacReactor(store).set_flag(graph_id, node_id, actor=source,
-                                                         reason_ref=reason, expected_request=request)
+                                                         reason_ref=reason, expected_request=request,
+                                                         output_text=output_text)
                 finally:
                     store.close()
                 self._workflow_service.submit_timer(time.time_ns() // 1_000_000)

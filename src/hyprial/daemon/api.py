@@ -244,6 +244,13 @@ class StreamingHarnessProcess(Protocol):
 
 
 @runtime_checkable
+class DaemonInterruptibleHarnessProcess(Protocol):
+    """Optional seam for recording a daemon-owned turn stop before I/O."""
+
+    def prepare_daemon_interruption(self, reason: str) -> None: ...
+
+
+@runtime_checkable
 class HarnessLauncher(Protocol):
     """Placeholder seam used while harness implementations land independently."""
 

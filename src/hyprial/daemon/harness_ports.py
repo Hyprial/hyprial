@@ -84,6 +84,7 @@ class RemoveHarnessCommand:
     correlation_id: str
     harness: str
     name: str
+    interruption_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

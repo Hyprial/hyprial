@@ -153,6 +153,7 @@ class InboxDeliveryIoAdapter:
         target: str,
         conversation_id: str,
         text: str,
+        expires_at_ms: int | None = None,
     ) -> DeliveredMessage:
         message_id = self.message_id(effect_id)
         recipient = str(self._resolve_target(target))
@@ -176,6 +177,7 @@ class InboxDeliveryIoAdapter:
             lifecycle=DeliveryLifecycle.DURABLE_SERVICE,
             created_at_ms=int(self._clock_ms()),
             idempotency_key=f"workflow:{effect_id}",
+            expires_at_ms=expires_at_ms,
         )
         event = self._submit_and_wait(
             effect_id,

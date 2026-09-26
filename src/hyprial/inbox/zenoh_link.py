@@ -39,6 +39,11 @@ def encode_delivery_frame(message: InboxMessage) -> bytes:
             "idempotency_key": message.idempotency_key,
             "created_at_ms": message.created_at_ms,
             "payload": base64.b64encode(message.payload).decode("ascii"),
+            **(
+                {"expires_at_ms": message.expires_at_ms}
+                if message.expires_at_ms is not None
+                else {}
+            ),
             # Optional and additive: pre-stamp decoders ignore the key, and
             # pre-stamp frames simply decode to origin_node=None.
             **(
@@ -66,6 +71,11 @@ def decode_delivery_frame(frame: bytes) -> InboxMessage:
         lifecycle=DeliveryLifecycle(str(value["lifecycle"])),
         idempotency_key=value.get("idempotency_key"),
         created_at_ms=int(value["created_at_ms"]),
+        expires_at_ms=(
+            int(value["expires_at_ms"])
+            if value.get("expires_at_ms") is not None
+            else None
+        ),
         origin_node=(
             str(value["origin_node"]) if value.get("origin_node") is not None else None
         ),

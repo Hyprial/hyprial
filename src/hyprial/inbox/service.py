@@ -203,6 +203,7 @@ class InboxService:
                 lifecycle TEXT NOT NULL,
                 idempotency_key TEXT,
                 created_at_ms INTEGER NOT NULL,
+                message_expires_at_ms INTEGER,
                 expires_at_ms INTEGER NOT NULL,
                 attempts INTEGER NOT NULL DEFAULT 0,
                 next_attempt_ms INTEGER NOT NULL,
@@ -222,6 +223,7 @@ class InboxService:
                 idempotency_key TEXT,
                 created_at_ms INTEGER NOT NULL,
                 received_at_ms INTEGER NOT NULL,
+                message_expires_at_ms INTEGER,
                 expires_at_ms INTEGER,
                 consumed INTEGER NOT NULL DEFAULT 0,
                 acknowledged_at_ms INTEGER,
@@ -286,6 +288,7 @@ class InboxService:
                 idempotency_key TEXT,
                 created_at_ms INTEGER NOT NULL,
                 accepted_at_ms INTEGER NOT NULL,
+                message_expires_at_ms INTEGER,
                 expires_at_ms INTEGER NOT NULL,
                 attempts INTEGER NOT NULL DEFAULT 0,
                 next_attempt_ms INTEGER NOT NULL
@@ -375,6 +378,18 @@ class InboxService:
                 "WHERE expires_at_ms IS NULL",
                 (self.durable_ttl_ms,),
             )
+        for table in ("outbox", "inbox", "custody"):
+            columns = {
+                str(row["name"])
+                for row in self._db.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            if "message_expires_at_ms" not in columns:
+                # Existing effective expiries were holder-local TTLs.  They
+                # must remain NULL here rather than becoming producer
+                # deadlines that a later hop would interpret as absolute.
+                self._db.execute(
+                    f"ALTER TABLE {table} ADD COLUMN message_expires_at_ms INTEGER"
+                )
         settlement_columns = {
             str(row["name"])
             for row in self._db.execute(
@@ -497,8 +512,9 @@ class InboxService:
         self._db.execute(
             """INSERT OR IGNORE INTO outbox (
                    message_id, conversation_id, sender, recipient, payload, intent,
-                   lifecycle, idempotency_key, created_at_ms, expires_at_ms, next_attempt_ms
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   lifecycle, idempotency_key, created_at_ms,
+                   message_expires_at_ms, expires_at_ms, next_attempt_ms
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 message.message_id,
                 message.conversation_id,
@@ -509,11 +525,15 @@ class InboxService:
                 message.lifecycle.value,
                 message.idempotency_key,
                 message.created_at_ms,
-                # The hold deadline is this holder's own clock plus the TTL,
-                # stamped when it took the message -- never derived from
-                # ``message.created_at_ms``, which came off another machine's
-                # clock (section 6).
-                now_ms + self.durable_ttl_ms,
+                message.expires_at_ms,
+                # Ordinary messages use this holder's own clock plus the TTL.
+                # A producer deadline is an explicit absolute work-order
+                # boundary, never inferred from foreign ``created_at_ms``.
+                (
+                    message.expires_at_ms
+                    if message.expires_at_ms is not None
+                    else now_ms + self.durable_ttl_ms
+                ),
                 now_ms,
             ),
         )
@@ -806,8 +826,8 @@ class InboxService:
                 """INSERT INTO inbox (
                        message_id, conversation_id, sender, recipient, payload, intent,
                        lifecycle, idempotency_key, created_at_ms, received_at_ms,
-                       expires_at_ms, origin_node
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       message_expires_at_ms, expires_at_ms, origin_node
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     message.message_id,
                     message.conversation_id,
@@ -819,11 +839,15 @@ class InboxService:
                     message.idempotency_key,
                     message.created_at_ms,
                     now,
-                    # TTL deadline counted from this node's own clock at
-                    # receive time (section 6): a message nobody consumed
-                    # within the hold window is stale, same as an outbox
-                    # hold nobody collected.
-                    now + self.durable_ttl_ms,
+                    message.expires_at_ms,
+                    # Ordinary TTLs count from this node's receive clock.  An
+                    # explicit producer deadline is kept exactly, including
+                    # when it is later than the ordinary hold window.
+                    (
+                        message.expires_at_ms
+                        if message.expires_at_ms is not None
+                        else now + self.durable_ttl_ms
+                    ),
                     message.origin_node,
                 ),
             )
@@ -1035,7 +1059,7 @@ class InboxService:
 
     @_synchronized
     def refresh_hold(self, message_id: str, *, now_ms: int | None = None) -> bool:
-        """Push an unconsumed row's TTL deadline out to ``now + durable_ttl_ms``.
+        """Refresh an ordinary hold without replacing a producer deadline.
 
         #276: ``expires_at_ms`` used to be stamped once at :meth:`receive`
         and never touched again, so a turn legitimately running longer than
@@ -1054,7 +1078,8 @@ class InboxService:
         now = self._now_ms() if now_ms is None else now_ms
         with self._db:
             cursor = self._db.execute(
-                """UPDATE inbox SET expires_at_ms = ?
+                """UPDATE inbox
+                      SET expires_at_ms = COALESCE(message_expires_at_ms, ?)
                     WHERE message_id = ? AND consumed = 0
                       AND NOT EXISTS (
                           SELECT 1 FROM harness_failure_settlements
@@ -1223,7 +1248,9 @@ class InboxService:
             else:
                 assert next_attempt_ms is not None
                 self._db.execute(
-                    "UPDATE inbox SET expires_at_ms = MAX(expires_at_ms, ?) "
+                    "UPDATE inbox SET expires_at_ms = "
+                    "CASE WHEN message_expires_at_ms IS NULL "
+                    "THEN MAX(expires_at_ms, ?) ELSE message_expires_at_ms END "
                     "WHERE recipient = ? AND message_id = ? AND consumed = 0",
                     (
                         next_attempt_ms + self.durable_ttl_ms,
@@ -1359,8 +1386,9 @@ class InboxService:
                 """INSERT INTO custody (
                        message_id, mailbox_node, conversation_id, sender, recipient,
                        payload, intent, lifecycle, idempotency_key, created_at_ms,
-                       accepted_at_ms, expires_at_ms, next_attempt_ms
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       accepted_at_ms, message_expires_at_ms, expires_at_ms,
+                       next_attempt_ms
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     message.message_id,
                     mailbox_node,
@@ -1372,10 +1400,15 @@ class InboxService:
                     message.lifecycle.value,
                     message.idempotency_key,
                     message.created_at_ms,
-                    # ``accepted_at_ms`` and the hold deadline both come off
-                    # this mailbox's clock, at the instant custody transfers.
+                    # Ordinary custody uses this mailbox's clock; an explicit
+                    # producer deadline remains fixed across the transfer.
                     now,
-                    now + self.custody_ttl_ms,
+                    message.expires_at_ms,
+                    (
+                        message.expires_at_ms
+                        if message.expires_at_ms is not None
+                        else now + self.custody_ttl_ms
+                    ),
                     now,
                 ),
             )
@@ -1465,6 +1498,12 @@ class InboxService:
             lifecycle=DeliveryLifecycle(str(row["lifecycle"])),
             idempotency_key=row["idempotency_key"],
             created_at_ms=int(row["created_at_ms"]),
+            expires_at_ms=(
+                int(row["message_expires_at_ms"])
+                if "message_expires_at_ms" in row.keys()
+                and row["message_expires_at_ms"] is not None
+                else None
+            ),
             # Only the inbox table carries the column; outbox/custody/
             # system_notices rows flow through this same helper.
             origin_node=(
@@ -2179,7 +2218,8 @@ class InboxService:
                FROM inbox
                WHERE consumed = 0
                  AND fetched_at_ms IS NULL
-                 AND expires_at_ms <= received_at_ms + ?
+                 AND (message_expires_at_ms IS NOT NULL
+                      OR expires_at_ms <= received_at_ms + ?)
                  AND NOT EXISTS (
                      SELECT 1 FROM harness_failure_settlements
                       WHERE harness_failure_settlements.message_id = inbox.message_id

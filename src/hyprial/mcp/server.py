@@ -172,7 +172,8 @@ def create_mcp_server(
             description=(
                 "Complete your own PAC workflow node against its exact current "
                 "request (the Graph, node and request-id from the dispatch "
-                "message). reasonRef names the completion evidence. A reply is "
+                "message). reasonRef names the completion evidence and optional "
+                "outputText stores the result inline. A reply is "
                 "not completion; call this when the node's work is done."
             )
         )
@@ -182,6 +183,7 @@ def create_mcp_server(
             requestId: NonEmpty,
             reasonRef: NonEmpty,
             ctx: Context,
+            outputText: str | None = None,
         ) -> dict[str, Any]:
             return await invoke(
                 ctx,
@@ -191,6 +193,7 @@ def create_mcp_server(
                     "nodeId": nodeId,
                     "requestId": requestId,
                     "reasonRef": reasonRef,
+                    **({"outputText": outputText} if outputText is not None else {}),
                 },
                 mutation=True,
             )
@@ -199,7 +202,8 @@ def create_mcp_server(
             description=(
                 "Report explicit failure of your own PAC workflow node against "
                 "its exact current request; the graph's declared failure "
-                "policy applies. reasonRef names the failure evidence."
+                "policy applies. reasonRef names the failure evidence and "
+                "optional outputText stores the result inline."
             )
         )
         async def workflow_fail(
@@ -208,6 +212,7 @@ def create_mcp_server(
             requestId: NonEmpty,
             reasonRef: NonEmpty,
             ctx: Context,
+            outputText: str | None = None,
         ) -> dict[str, Any]:
             return await invoke(
                 ctx,
@@ -217,6 +222,7 @@ def create_mcp_server(
                     "nodeId": nodeId,
                     "requestId": requestId,
                     "reasonRef": reasonRef,
+                    **({"outputText": outputText} if outputText is not None else {}),
                 },
                 mutation=True,
             )

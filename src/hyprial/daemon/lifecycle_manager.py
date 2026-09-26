@@ -107,6 +107,7 @@ class LifecycleSpec:
     harness: HarnessLaunchProjection
     route: RouteSpec
     session: SessionLifecycleSpec | None = None
+    interruption_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1478,7 +1479,10 @@ def _command(
         if operation == "ensure":
             return EnsureHarnessCommand(correlation, spec.harness)
         return RemoveHarnessCommand(
-            correlation, spec.harness.harness, spec.harness.name
+            correlation,
+            spec.harness.harness,
+            spec.harness.name,
+            interruption_reason=spec.interruption_reason,
         )
     if step.domain == "session":
         session = spec.session
@@ -1559,6 +1563,11 @@ def _spec_payload(spec: LifecycleSpec) -> dict[str, object]:
         "harness": harness,
         "route": asdict(spec.route),
         "session": session,
+        **(
+            {"interruptionReason": spec.interruption_reason}
+            if spec.interruption_reason is not None
+            else {}
+        ),
     }
 
 
@@ -1632,6 +1641,7 @@ def _spec_from_payload(raw: dict[str, object]) -> LifecycleSpec:
                 runtime=str(session.get("runtime", "claude_interactive")),
             )
         ),
+        interruption_reason=_optional_str(raw.get("interruptionReason")),
     )
 
 

@@ -24,6 +24,7 @@ from hyprial.pac.errors import PacError
 from hyprial.pac.reactor import PacReactor
 from hyprial.pac.store import PacGraphStore, default_database_path
 from hyprial.pac.workflow_graph import input_token
+from hyprial.pac.workflow_output import validate_workflow_output_text
 from hyprial.transport.keys import KeySpace
 from hyprial.uri import parse_agent_uri
 
@@ -324,6 +325,7 @@ class RemoteWorkflow:
                     "grant": grant,
                     "action": row["action"],
                     "reasonRef": row["reason_ref"],
+                    "outputText": row["output_text"],
                 },
             )
             result = {**result, "returnState": "accepted"}
@@ -347,7 +349,7 @@ class RemoteWorkflow:
             store.close()
         return result
 
-    def _enqueue(self, grant, action, reason):
+    def _enqueue(self, grant, action, reason, output_text=None):
         if (
             action not in ("complete", "fail")
             or not isinstance(reason, str)
@@ -358,6 +360,10 @@ class RemoteWorkflow:
                 "WORKFLOW_REMOTE_INVALID",
                 "explicit complete/fail and evidence reference required",
             )
+        try:
+            output_text = validate_workflow_output_text(output_text)
+        except ValueError as error:
+            raise PacError("WORKFLOW_OUTPUT_INVALID", str(error)) from error
         store = PacGraphStore(self.database)
         try:
             with store.write():
@@ -365,18 +371,51 @@ class RemoteWorkflow:
                     "SELECT * FROM remote_workflow_outbox WHERE request_id=?",
                     (grant["requestId"],),
                 ).fetchone()
-                if row and (row["action"], row["reason_ref"]) != (action, reason):
+                if row and (row["action"], row["reason_ref"], row["output_text"]) != (
+                    action,
+                    reason,
+                    output_text,
+                ):
                     raise PacError(
                         "WORKFLOW_OUTCOME_CONFLICT",
                         "request already has a queued or accepted outcome",
                     )
                 store._db.execute(
-                    "INSERT OR IGNORE INTO remote_workflow_outbox(request_id,action,reason_ref,result_json) VALUES (?,?,?,NULL)",
-                    (grant["requestId"], action, reason),
+                    "INSERT OR IGNORE INTO remote_workflow_outbox"
+                    "(request_id,action,reason_ref,result_json,output_text) "
+                    "VALUES (?,?,?,NULL,?)",
+                    (grant["requestId"], action, reason, output_text),
                 )
         finally:
             store.close()
         return self._flush(grant["requestId"])
+
+    def request_pruned(self, message_id: str, recipient: str) -> bool:
+        """Durably queue failure of a pruned remote workflow request."""
+
+        grant = self._lookup(message_id=message_id, actor=recipient)
+        if grant is None:
+            return False
+        store = PacGraphStore(self.database)
+        try:
+            with store.write():
+                row = store._db.execute(
+                    "SELECT * FROM remote_workflow_outbox WHERE request_id=?",
+                    (grant["requestId"],),
+                ).fetchone()
+                if row and (row["action"], row["reason_ref"]) != (
+                    "fail",
+                    "pac:request-expired",
+                ):
+                    return False
+                store._db.execute(
+                    "INSERT OR IGNORE INTO remote_workflow_outbox"
+                    "(request_id,action,reason_ref,result_json) VALUES (?,?,?,NULL)",
+                    (grant["requestId"], "fail", "pac:request-expired"),
+                )
+        finally:
+            store.close()
+        return True
 
     def remote(self, actor):
         principal = parse_agent_uri(actor)
@@ -520,7 +559,7 @@ class RemoteWorkflow:
         finally:
             store.close()
 
-    def _receipt(self, grant, action, reason):
+    def _receipt(self, grant, action, reason, output_text=None):
         store = PacGraphStore(self.database, read_only=True)
         try:
             row = store._db.execute(
@@ -528,10 +567,16 @@ class RemoteWorkflow:
                 (("reset:" if action == "reset" else "") + grant["requestId"],),
             ).fetchone()
             if row:
-                if (row["actor"], row["action"], row["reason_ref"]) != (
+                if (
+                    row["actor"],
+                    row["action"],
+                    row["reason_ref"],
+                    row["output_text"],
+                ) != (
                     grant["owner"],
                     action,
                     reason,
+                    output_text,
                 ):
                     raise PacError(
                         "WORKFLOW_OUTCOME_CONFLICT",
@@ -597,6 +642,7 @@ class RemoteWorkflow:
                 target=grant["owner"],
                 conversation_id=f"pac-{grant['graphId']}",
                 text=text,
+                expires_at_ms=grant["deadlineMs"],
             )
             return {"ok": True, "messageId": str(delivered.message_id)}
         self._verify(grant)
@@ -654,9 +700,13 @@ class RemoteWorkflow:
                     "WORKFLOW_REMOTE_INVALID",
                     "explicit complete/fail and evidence reference required",
                 )
+            try:
+                output_text = validate_workflow_output_text(data.get("outputText"))
+            except ValueError as error:
+                raise PacError("WORKFLOW_OUTPUT_INVALID", str(error)) from error
             workflow = self._local_workflow()
             with self.outcome_lock:
-                replay = self._receipt(grant, action, reason)
+                replay = self._receipt(grant, action, reason, output_text)
                 if replay is not None:
                     return replay
                 if not self.current(grant)["current"]:
@@ -673,6 +723,7 @@ class RemoteWorkflow:
                             actor=grant["owner"],
                             reason_ref=reason,
                             expected_request=grant["requestId"],
+                            output_text=output_text,
                         )
                     finally:
                         store.close()
@@ -683,9 +734,10 @@ class RemoteWorkflow:
                         actor=grant["owner"],
                         request_id=grant["requestId"],
                         reason_ref=reason,
+                        output_text=output_text,
                     )
                 workflow.submit_timer(time_ns() // 1_000_000)
-                return self._receipt(grant, action, reason)
+                return self._receipt(grant, action, reason, output_text)
         raise PacError("WORKFLOW_REMOTE_INVALID", "unsupported remote operation")
 
     def forward(self, method, params, caller):
@@ -704,7 +756,12 @@ class RemoteWorkflow:
                 {"grant": grant, "reasonRef": params.get("reasonRef")},
             )
         if method in ("workflow.complete", "workflow.fail"):
-            result = self._enqueue(grant, method.split(".")[-1], params["reasonRef"])
+            result = self._enqueue(
+                grant,
+                method.split(".")[-1],
+                params["reasonRef"],
+                params.get("outputText"),
+            )
             if result.get("returnState") == "rejected":
                 raise PacError(result["error"]["code"], result["error"]["message"])
             return result

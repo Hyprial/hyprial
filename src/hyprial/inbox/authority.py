@@ -109,6 +109,12 @@ class InboxReadProjection:
             lifecycle=DeliveryLifecycle(str(row["lifecycle"])),
             created_at_ms=int(row["created_at_ms"]),
             idempotency_key=row["idempotency_key"],
+            expires_at_ms=(
+                int(row["message_expires_at_ms"])
+                if "message_expires_at_ms" in row.keys()
+                and row["message_expires_at_ms"] is not None
+                else None
+            ),
             origin_node=(
                 str(row["origin_node"])
                 if "origin_node" in row.keys() and row["origin_node"] is not None
