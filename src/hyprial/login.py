@@ -614,6 +614,12 @@ def _poll_device_token(
     re-run.  Terminal errors: ``access_denied``, ``expired_token``,
     ``invalid_client`` (the poll is bound to the original client id,
     Casdoor ``controllers/token.go:326-338``).
+
+    A transport error (``ISSUER_UNREACHABLE``: connection reset, TLS EOF)
+    is not a terminal state: the user may already have authorised and the
+    code is still valid, so the poll waits one ``interval`` and asks again.
+    The bound is the code's own ``expires_in`` -- no separate retry budget --
+    and an expiry reached that way names the last transport error.
     """
 
     deadline = clock() + float(authorization.expires_in)
@@ -623,21 +629,37 @@ def _poll_device_token(
         else _RFC8628_DEFAULT_INTERVAL_S
     )
     interval = max(interval, 0.0)
+    last_transport_error: LoginError | None = None
     while True:
         if clock() >= deadline:
+            cause = (
+                f" (last poll failed: {last_transport_error})"
+                if last_transport_error is not None
+                else ""
+            )
             raise LoginError(
                 "DEVICE_CODE_EXPIRED",
-                "the device code expired before authorization completed; "
-                "re-run hyprial login",
+                "the device code expired before authorization completed"
+                f"{cause}; re-run hyprial login",
             )
-        status, payload = _request_json(
-            endpoints.token_endpoint,
-            data={
-                "grant_type": DEVICE_GRANT_TYPE,
-                "client_id": profile.client_id,
-                "device_code": authorization.device_code,
-            },
-        )
+        try:
+            status, payload = _request_json(
+                endpoints.token_endpoint,
+                data={
+                    "grant_type": DEVICE_GRANT_TYPE,
+                    "client_id": profile.client_id,
+                    "device_code": authorization.device_code,
+                },
+            )
+        except LoginError as error:
+            if error.code != "ISSUER_UNREACHABLE":
+                raise
+            last_transport_error = error
+            # A server interval of 0 must not turn a flaky edge into a tight
+            # loop; fall back to the RFC 8628 default for transport retries.
+            sleep(interval or _RFC8628_DEFAULT_INTERVAL_S)
+            continue
+        last_transport_error = None
         if 200 <= status < 300 and isinstance(payload, dict):
             access = payload.get("access_token")
             refresh = payload.get("refresh_token")
