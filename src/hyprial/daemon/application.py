@@ -250,6 +250,7 @@ from hyprial.uri import (
     ADAPTER_URI_PREFIX,
     AGENT_URI_PREFIX,
     CHANNEL_URI_PREFIX,
+    ROUTE_URI_PREFIX,
     TARGET_KIND_AGENT,
     TARGET_KIND_CHANNEL_ROUTE,
     TARGET_KIND_HOST,
@@ -257,6 +258,7 @@ from hyprial.uri import (
     TARGET_KIND_USER,
     agent_uri_actor,
     canonical_agent_uri,
+    canonical_user_uri,
     parse_agent_uri,
     parse_channel_uri,
 )
@@ -2256,6 +2258,7 @@ class DaemonApplication:
             ),
             forwarder=self._forward_as_actor,
             owner_notifier=self._owner_alert_notifier,
+            owner_requester_addresses=self._owner_requester_addresses(),
         )
         duplicate_watch: DuplicateInstanceWatch | None = None
         try:
@@ -10604,6 +10607,50 @@ class DaemonApplication:
             text=text,
             idempotency_key=idempotency_key,
         )
+
+    def _owner_requester_addresses(self) -> frozenset[str]:
+        """Addresses whose fail-loud notices already reach this owner.
+
+        A notice diverted away from a person's chat is handed to the owner
+        instead.  When the waiting sender IS the owner -- their squire adapter,
+        one of its routes, or their ``user:`` address -- the hand-off puts the
+        same machine text in front of the same person, one wrapper deeper, so
+        the runtime logs those instead (observed 2026-09-26).
+
+        Degrades to the ``user:`` addresses when the profile or its gateway
+        cannot be read; the degradation is logged, not silent.
+        """
+
+        addresses: set[str] = set()
+        try:
+            addresses.add(canonical_user_uri(self.owner))
+            profile = self.user_profiles.get_by_owner(self.owner)
+            if profile is None:
+                return frozenset(addresses)
+            addresses.add(canonical_user_uri(profile.owner_key))
+            squire_adapter = profile.squire_adapter
+            if not squire_adapter:
+                return frozenset(addresses)
+            parsed = parse_channel_uri(squire_adapter)
+            adapter_name = parsed[2] if parsed is not None else squire_adapter
+            for gateway in self.load_persistent_configuration().channels.gateways:
+                if gateway.name != adapter_name:
+                    continue
+                # The gateway model is Lark-only, so this is the same
+                # ``adapter:lark:<name>`` shape an inbound notice carries.
+                addresses.add(f"{ADAPTER_URI_PREFIX}lark:{gateway.name}")
+                addresses.update(
+                    f"{ROUTE_URI_PREFIX}{gateway.name}:{route.name}"
+                    for route in gateway.routes
+                )
+        except Exception as error:  # noqa: BLE001 -- degraded, and it says so
+            self._log(
+                "warn",
+                "daemon",
+                "availability_loud.owner_addresses_degraded",
+                detail=str(error) or type(error).__name__,
+            )
+        return frozenset(addresses)
 
     def _log(self, level: str, component: str, event: str, **fields: Any) -> None:
         self._logger.bind(component=component).log(level, event, **fields)

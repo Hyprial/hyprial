@@ -9,7 +9,7 @@ import threading
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Protocol
+from typing import TYPE_CHECKING, Any, Callable, Collection, Protocol
 from uuid import NAMESPACE_URL, uuid5
 
 from hyprial.inbox import InboxAuthorityTimeout, InboxAuthorityUnavailable
@@ -282,6 +282,7 @@ class DaemonEventBridge:
         workflow_outcome: Callable[[HarnessResult], bool] | None = None,
         forwarder: Forwarder | None = None,
         owner_notifier: Callable[..., object] | None = None,
+        owner_requester_addresses: Collection[str] = (),
     ) -> None:
         self.state_dir = Path(state_dir)
         # Allen 2026-09-26 「提醒改发负责人」: a fail-loud notice diverted away
@@ -289,6 +290,11 @@ class DaemonEventBridge:
         # owner-DM channel instead of only the log.  Called off the runtime
         # loop; never raises into it.
         self._owner_notifier = owner_notifier
+        # Addresses that ALREADY reach the owner: their own squire adapter, one
+        # of its routes, their ``user:`` address.  Handing a diverted notice to
+        # "the owner" when the waiting sender is one of these puts the same
+        # machine text in front of the same person, one wrapper deeper.
+        self._owner_requester_addresses = frozenset(owner_requester_addresses)
         self.node_id = node_id
         self.desired_state = desired_state
         self.transport = transport
@@ -1315,11 +1321,30 @@ class DaemonEventBridge:
         ):
             # Never into a person's chat.  A user-proxy is one: it relays
             # everything it receives into its person's DM (2026-09-26: 252
-            # notices to allen-proxy in a self-feeding chain).  Not held for retry; the owner is
-            # told instead (once per notice: diversion happens only here).
+            # notices to allen-proxy in a self-feeding chain).
+            #
+            # Handing it to the owner is the fallback, not the rule: when the
+            # waiting sender IS the owner, "the owner" is the same person and
+            # the wrap only adds a layer to text they were never meant to
+            # receive (2026-09-26: the owner asked why the same notice kept
+            # arriving about his own requests).  Those are logged, not re-handed.
+            # Not held for retry; diversion happens only here, once per notice.
             self._pending_notices.pop(message.message_id, None)
-            redirected = self._owner_notifier is not None
+            requester_is_owner = self._request_reaches_the_owner(message)
+            redirected = self._owner_notifier is not None and not requester_is_owner
             if self._logger is not None:
+                if requester_is_owner:
+                    detail = (
+                        "human-facing requester is the owner; notice logged, "
+                        "not sent to the owner"
+                    )
+                elif redirected:
+                    detail = (
+                        "human-facing requester; notice sent to the owner, "
+                        "not to the requester"
+                    )
+                else:
+                    detail = "human-facing requester; notice logged, not sent"
                 self._logger(
                     "warn",
                     "daemon",
@@ -1328,13 +1353,9 @@ class DaemonEventBridge:
                     recipient=message.recipient,
                     idempotencyKey=message.idempotency_key,
                     notification=_notice_kind(message),
+                    requesterIsOwner=requester_is_owner,
                     redirectedToOwner=redirected,
-                    detail=(
-                        "human-facing requester; notice sent to the owner, "
-                        "not to the requester"
-                        if redirected
-                        else "human-facing requester; notice logged, not sent"
-                    ),
+                    detail=detail,
                 )
             if redirected:
                 self._notify_owner_of_diverted(message)
@@ -1364,6 +1385,22 @@ class DaemonEventBridge:
             )
         return True
 
+    def _request_reaches_the_owner(self, message: InboxMessage) -> bool:
+        """True when re-handing this notice would reach the waiting sender.
+
+        The addresses come from the composition root, which is the only place
+        that knows which adapter, routes and ``user:`` address belong to this
+        owner.  Conversation ids count too: a notice for a request made inside
+        the owner's own chat reaches them whichever address proposed it.
+        """
+
+        if not self._owner_requester_addresses:
+            return False
+        return (
+            message.recipient in self._owner_requester_addresses
+            or message.conversation_id in self._owner_requester_addresses
+        )
+
     def _notify_owner_of_diverted(self, message: InboxMessage) -> None:
         """Hand a diverted notice to the owner channel on its own thread."""
 
@@ -1372,7 +1409,7 @@ class DaemonEventBridge:
         text = (
             f"一条原本要发给 {message.recipient} 的失败/无进展提醒，因对方是真人会话"
             f"（{message.conversation_id}）而未发送，改发给你：\n"
-            f"{_notice_text(message)}"
+            f"{_owner_facing_notice_text(message)}"
         )
         key = f"owner-diverted:{message.idempotency_key or message.message_id}"
 
@@ -1557,3 +1594,19 @@ def _notice_text(message: InboxMessage) -> str:
         return str(message.payload)
     text = body.get("message") if isinstance(body, dict) else None
     return text if isinstance(text, str) else json.dumps(body, ensure_ascii=False)
+
+
+#: Lines of a fail-loud notice that only an operator reads.  The owner is told
+#: who was waiting and what happened -- the worker URI, the silence budget and
+#: the attempt id stay in the daemon log, where an operator goes for them.
+_OWNER_HIDDEN_NOTICE_LABELS = ("- worker:", "- 静默预算:", "- attempt:")
+
+
+def _owner_facing_notice_text(message: InboxMessage) -> str:
+    """The notice text with its operator-only fields dropped."""
+
+    return "\n".join(
+        line
+        for line in _notice_text(message).splitlines()
+        if not line.startswith(_OWNER_HIDDEN_NOTICE_LABELS)
+    )
