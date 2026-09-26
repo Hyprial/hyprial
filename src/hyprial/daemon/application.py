@@ -8873,10 +8873,21 @@ class DaemonApplication:
         # starts answering as this node on the real network, which is a test
         # fixture impersonating production.
         #
-        # Same signal the socket path already uses to detect isolation
-        # (see `cli.py`): an explicitly set home or state dir means "not the
-        # node's daemon".
-        if "HYPRIAL_HOME" in os.environ or "HARNESS_STATE_DIR" in os.environ:
+        # Which daemon is the node's primary one is decided explicitly, not
+        # by whether HYPRIAL_HOME/HARNESS_STATE_DIR happen to be set: the
+        # launchd/systemd units set both for the REAL daemon, and keying on
+        # their presence left every service-managed daemon without a tailnet
+        # listen -- outbound-only and invisible to peers (2026-09-26, a
+        # member's macOS node; HQ listened only because it was shell-started).
+        #   * HYPRIAL_NETWORK_ISOLATED always wins: never claim the address.
+        #   * HYPRIAL_SERVICE_MANAGED=1 (set by the units) is the primary
+        #     daemon, whatever home it was pointed at.
+        #   * Otherwise only the default home/state is the primary daemon;
+        #     a custom one (a debug instance, a fixture) stays off the
+        #     node's address.
+        if network_isolated_from_environment():
+            return None
+        if os.environ.get("HYPRIAL_SERVICE_MANAGED") != "1" and _custom_home_or_state():
             return None
         try:
             return local_tailnet_endpoint()
@@ -10758,6 +10769,23 @@ NETWORK_ISOLATED_ENV = "HYPRIAL_NETWORK_ISOLATED"
 #: so zenoh never falls back to its own default listener.
 ISOLATED_DEFAULT_LISTEN = "tcp/127.0.0.1:0"
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
+def _custom_home_or_state() -> bool:
+    """True when HYPRIAL_HOME or HARNESS_STATE_DIR points off the default.
+
+    The default home is ``~/.hyprial`` and its state dir ``~/.hyprial/state``;
+    an explicit value equal to those is the node's own home, not a custom one.
+    """
+
+    from hyprial.home import default_hyprial_home
+
+    default_home = default_hyprial_home()[0]
+    home = os.environ.get("HYPRIAL_HOME")
+    state = os.environ.get("HARNESS_STATE_DIR")
+    if home and Path(home).expanduser().resolve() != default_home:
+        return True
+    return bool(state) and Path(state).expanduser().resolve() != default_home / "state"
 
 
 def network_isolated_from_environment() -> bool:
