@@ -50,6 +50,7 @@ from collections.abc import Callable
 from typing import Protocol, runtime_checkable
 
 from hyprial.contracts.forwarding import DEFAULT_PEER_PORT
+from hyprial.peer_reachability import tailnet_status_projection
 
 # A directory query runs on the daemon's startup path, so it is bounded. A
 # discovery backend that hangs must degrade to "no endpoints today" rather
@@ -215,6 +216,7 @@ class TailscaleEndpoints:
         self._port = port
         self._timeout = timeout
         self._runner = runner
+        self._status_snapshot: dict[str, object] | None = None
 
     def list_reachable_endpoints(self) -> tuple[str, ...]:
         status = self._read_status()
@@ -256,9 +258,12 @@ class TailscaleEndpoints:
 
         if self._runner is not None:
             try:
-                return self._runner()  # type: ignore[operator]
+                status = self._runner()  # type: ignore[operator]
             except Exception:  # noqa: BLE001 - a backend must not break startup
+                self._status_snapshot = None
                 return None
+            self._status_snapshot = status if isinstance(status, dict) else None
+            return self._status_snapshot
         executable = shutil.which("tailscale")
         if executable is None:
             return None
@@ -270,14 +275,36 @@ class TailscaleEndpoints:
                 check=False,
             )
         except (OSError, subprocess.SubprocessError):
+            self._status_snapshot = None
             return None
         if completed.returncode != 0:
+            self._status_snapshot = None
             return None
         try:
             parsed = json.loads(completed.stdout)
         except (ValueError, TypeError):
+            self._status_snapshot = None
             return None
-        return parsed if isinstance(parsed, dict) else None
+        self._status_snapshot = parsed if isinstance(parsed, dict) else None
+        return self._status_snapshot
+
+    @property
+    def status_snapshot(self) -> dict[str, object] | None:
+        """The exact status document consumed by the latest directory read."""
+
+        return self._status_snapshot
+
+    @property
+    def tailnet_status(self) -> dict[str, object]:
+        """Cheap status projection; no command or probe is run here."""
+
+        return tailnet_status_projection(self._status_snapshot)
+
+    def refresh_tailnet_status(self) -> dict[str, object]:
+        """Refresh from the bounded local status command, then project it."""
+
+        self._read_status()
+        return self.tailnet_status
 
 
 class CommandEndpoints:

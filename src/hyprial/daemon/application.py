@@ -154,6 +154,7 @@ from hyprial.transport import (
     zenoh_environment_flag,
 )
 from hyprial.quota_watchdog import QuotaWatchdog
+from hyprial.peer_reachability import tailnet_status_projection
 from hyprial.inbox.api import InboxPruneItem
 from hyprial.inbox_watchdog import InboxWatchdog
 from hyprial.usage import UsageCache, usage_collection_disabled
@@ -923,6 +924,10 @@ class DaemonApplication:
         # at startup (kept additive during migration, plan §F).
         self._connect_configured: tuple[str, ...] = ()
         self._connect_discovered: tuple[str, ...] = ()
+        # Raw document retained from the discovery command already paid for at
+        # startup. ``ps`` only projects this snapshot; it never probes peers.
+        self._tailnet_status_snapshot: dict[str, object] | None = None
+        self._tailnet_directory: TailscaleEndpoints | None = None
         # The forwarding set a redial was last attempted for: a failed
         # rebuild is retried when the sidecar's set changes again, not on
         # every tick (a persistent failure stays visible as restartRequired).
@@ -4736,6 +4741,9 @@ class DaemonApplication:
                     },
                     "duplicateInstance": self._duplicate_instance_payload(),
                     "forwarding": self._forwarding_status_json(),
+                    "tailnet": self._tailnet_status_json(
+                        refresh=params.get("refreshTailnetStatus") is True
+                    ),
                     "workerProxy": self._worker_proxy_status_json(),
                     "connectors": connector_statuses,
                     "orphanProcesses": list(self._orphan_process_status()),
@@ -4777,6 +4785,10 @@ class DaemonApplication:
                     # reporting only the outbox made a transferred message look
                     # like a message that had vanished.
                     "custodyCount": self._inbox.custody_count(),
+                    # Same bare node-id presence projection as ``hosts``.
+                    # Unlike tailnet peers, every entry is known to be a
+                    # Hyprial daemon rather than an arbitrary device.
+                    "meshNodes": list(self._online_host_nodes()),
                     "mailboxes": list(self._presence.online_mailboxes()),
                 }
         if method == "top.snapshot":
@@ -7557,6 +7569,30 @@ class DaemonApplication:
             return (actor, canonical_agent_uri(self.owner, self.node_id, raw))
         return (actor,)
 
+    def _online_host_nodes(self) -> tuple[str, ...]:
+        """Online bare node identities proven by daemon mesh presence.
+
+        The caller owns a worker-status snapshot so ``liveness_keeps`` stays a
+        table lookup. This mirrors the established ``hosts`` authority for the
+        ``ps.meshNodes`` allowlist used by peer reachability diagnostics.
+        """
+
+        presence = self._presence
+        if presence is None:
+            return ()
+        raw_online_actors = getattr(presence, "raw_online_actors", None)
+        liveness_keeps = getattr(presence, "liveness_keeps", None)
+        if not callable(raw_online_actors) or not callable(liveness_keeps):
+            return ()
+        return tuple(
+            sorted(
+                actor
+                for actor in raw_online_actors()
+                if classify_target_identity(actor) == TARGET_KIND_HOST
+                and liveness_keeps(actor)
+            )
+        )
+
     def _pending_recipient_stats(self) -> dict[str, tuple[int, int | None]]:
         """Per-recipient (pending count, oldest arrival ms), payload-free.
 
@@ -8950,6 +8986,9 @@ class DaemonApplication:
         fatal.
         """
 
+        self._tailnet_directory = None
+        self._tailnet_status_snapshot = None
+
         forwarding_configured = bool(self._forwarding_environment)
         if forwarding_configured:
             # Synchronous on purpose: Zenoh fixes its connect set when the
@@ -8991,6 +9030,9 @@ class DaemonApplication:
             backend = CommandEndpoints(tuple(shlex.split(command)))
         else:
             backend = TailscaleEndpoints()
+        self._tailnet_directory = (
+            backend if isinstance(backend, TailscaleEndpoints) else None
+        )
         try:
             discovered = backend.list_reachable_endpoints()  # type: ignore[attr-defined]
         except Exception as error:  # noqa: BLE001 - startup must not depend on it
@@ -9001,11 +9043,24 @@ class DaemonApplication:
                 detail=str(error),
             )
             discovered = ()
+        if isinstance(backend, TailscaleEndpoints):
+            self._tailnet_status_snapshot = backend.status_snapshot
         self._connect_discovered = discovered
         # Forwarding first, directory after: a deliberately pinned peer
         # behaves predictably instead of racing the directory, and a daemon
         # that configured forwarding keeps its sidecar ports dialled first.
         return merge_endpoints(forwarding, discovered)
+
+    def _tailnet_status_json(
+        self, *, refresh: bool = False
+    ) -> dict[str, object]:
+        """Status-only peer facts; refresh only for an explicit doctor read."""
+
+        if refresh and self._tailnet_directory is not None:
+            projected = self._tailnet_directory.refresh_tailnet_status()
+            self._tailnet_status_snapshot = self._tailnet_directory.status_snapshot
+            return projected
+        return tailnet_status_projection(self._tailnet_status_snapshot)
 
     def _start_forwarding_supervisor(self) -> None:
         if (

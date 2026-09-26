@@ -28,6 +28,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, NoReturn
@@ -78,6 +79,12 @@ from hyprial.contracts import ipc_errors
 from hyprial.contracts.daemon_diagnostics import DAEMON_STARTUP_PHASES
 from hyprial.contracts.daemon_launch import DaemonLaunchResult
 from hyprial.process_diagnostics import process_cpu_seconds
+from hyprial.peer_reachability import (
+    PEER_CONNECT_START_TIMEOUT_SECONDS,
+    classify_peer_reachability,
+    tcp_probe,
+)
+from hyprial.uri import parse_agent_uri
 from hyprial.autoupdate.alert import (
     UPGRADE_ALREADY_CURRENT,
     UPGRADE_DECLINED_DOWNGRADE,
@@ -3559,10 +3566,15 @@ def _format_trajectory(result: JsonObject) -> str:
     return "\n".join(lines)
 
 
-def _doctor_result() -> JsonObject:
+def _doctor_result(*, peer: str | None = None) -> JsonObject:
     checks: list[JsonObject] = []
     try:
-        result = _daemon_request("ps", timeout=2.0, restore_wait=0.0)
+        result = _daemon_request(
+            "ps",
+            {"refreshTailnetStatus": True},
+            timeout=7.0,
+            restore_wait=0.0,
+        )
         running = (
             isinstance(result, dict)
             and isinstance(result.get("daemon"), dict)
@@ -3573,6 +3585,9 @@ def _doctor_result() -> JsonObject:
                 {"name": "daemon", "status": "ok", "detail": "daemon IPC is available"}
             )
             checks.append(_zenoh_doctor_check(result))
+            peer_check = _peer_reachability_doctor_check(result, peer=peer)
+            if peer_check is not None:
+                checks.append(peer_check)
             duplicate_check = _duplicate_instance_doctor_check(result)
             if duplicate_check is not None:
                 checks.append(duplicate_check)
@@ -3624,6 +3639,118 @@ def _doctor_result() -> JsonObject:
         "schemaVersion": 1,
         "checks": checks,
         "summary": summary,
+    }
+
+
+def _peer_host_port(peer: JsonObject) -> tuple[str, int] | None:
+    """The peer's probe target from the projected fields, never a re-parse.
+
+    The projection builds ``listenAddress`` from the first tailnet address and
+    the fixed peer port; deriving host and port from those same fields keeps
+    address strings from being split outside ``hyprial.uri``.
+    """
+
+    from hyprial.contracts.forwarding import DEFAULT_PEER_PORT
+
+    addresses = peer.get("addresses")
+    if not isinstance(addresses, list) or not addresses:
+        return None
+    host = addresses[0]
+    return (host, DEFAULT_PEER_PORT) if isinstance(host, str) and host else None
+
+
+def _responding_peer_names(result: JsonObject) -> set[str]:
+    names: set[str] = set()
+    mailboxes = result.get("mailboxes")
+    if not isinstance(mailboxes, list):
+        return names
+    for mailbox in mailboxes:
+        parsed = parse_agent_uri(mailbox) if isinstance(mailbox, str) else None
+        if parsed is not None:
+            names.add(parsed[1].casefold())
+    return names
+
+
+def _known_mesh_nodes(result: JsonObject) -> set[str]:
+    nodes = result.get("meshNodes")
+    if not isinstance(nodes, list):
+        return set()
+    return {
+        node.casefold() for node in nodes if isinstance(node, str) and node
+    }
+
+
+def _peer_aliases(peer: JsonObject) -> set[str]:
+    aliases = {
+        value
+        for value in (peer.get("name"), peer.get("dnsName"))
+        if isinstance(value, str)
+    }
+    addresses = peer.get("addresses")
+    if isinstance(addresses, list):
+        aliases.update(value for value in addresses if isinstance(value, str))
+    return aliases
+
+
+def _peer_identity_keys(peer: JsonObject) -> set[str]:
+    return {alias.casefold() for alias in _peer_aliases(peer)}
+
+
+def _peer_matches(peer: JsonObject, requested: str) -> bool:
+    return requested.casefold() in _peer_identity_keys(peer)
+
+
+def _peer_reachability_doctor_check(
+    result: JsonObject, *, peer: str | None
+) -> JsonObject | None:
+    tailnet = result.get("tailnet")
+    raw_peers = tailnet.get("peers") if isinstance(tailnet, dict) else None
+    peers = [item for item in raw_peers or () if isinstance(item, dict)]
+    if peer is not None:
+        selected = [item for item in peers if _peer_matches(item, peer)]
+        if not selected:
+            raise CliError(
+                ipc_errors.INVALID_ARGUMENT,
+                f"tailnet peer {peer!r} was not reported by the daemon",
+            )
+    else:
+        responding = _responding_peer_names(result)
+        known_nodes = _known_mesh_nodes(result)
+        selected = [
+            item
+            for item in peers
+            if item.get("online") is True
+            and not _peer_identity_keys(item).isdisjoint(known_nodes)
+            and _peer_identity_keys(item).isdisjoint(responding)
+        ]
+    targets = [
+        (item, address)
+        for item in selected
+        if (address := _peer_host_port(item)) is not None
+    ]
+    if not targets:
+        return None
+
+    def probe_target(
+        target: tuple[JsonObject, tuple[str, int]],
+    ) -> JsonObject | None:
+        peer_status, (host, port) = target
+        probe = tcp_probe(
+            host, port, timeout=PEER_CONNECT_START_TIMEOUT_SECONDS
+        )
+        return classify_peer_reachability(peer_status, probe)
+
+    with ThreadPoolExecutor(max_workers=len(targets)) as executor:
+        findings = [item for item in executor.map(probe_target, targets) if item]
+    if not findings:
+        return None
+    return {
+        "name": "peer-reachability",
+        "status": "fail",
+        "detail": (
+            f"{len(findings)} tailnet peer(s) failed the raw TCP listen check"
+        ),
+        "metrics": {"peers": findings},
     }
 
 
@@ -4978,11 +5105,14 @@ def top_status(
 
 @app.command()
 def doctor(
+    peer: str | None = typer.Option(
+        None, "--peer", help="Probe one named tailnet peer even if it is responding."
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
     """Run read-only health checks."""
 
-    _execute(_doctor_result, json_output=json_output)
+    _execute(lambda: _doctor_result(peer=peer), json_output=json_output)
 
 
 _TARGETS_KIND_OPTIONS = ("agent", "user", "channel_route")
