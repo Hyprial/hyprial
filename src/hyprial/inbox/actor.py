@@ -93,12 +93,13 @@ from .ports import (
     SubmitProgressCommand,
 )
 from .progress import PROGRESS_INTENT, encode_progress_event
-from .service import InboxService, RetryPolicy, _bare_sender
+from .service import InboxService, RetryPolicy, _ExpiredSenderNotice, _bare_sender
 
 
 class DispatchIoKind(StrEnum):
     DELIVERY = "delivery"
     ALARM = "alarm"
+    NOTICE = "notice"
     PROGRESS = "progress"
 
 
@@ -111,6 +112,7 @@ class DispatchOutcomeKind(StrEnum):
     ALARM_DELIVERED = "alarm_delivered"
     ALARM_LOCAL = "alarm_local"
     ALARM_UNROUTABLE = "alarm_unroutable"
+    NOTICE_DELIVERED = "notice_delivered"
     PROGRESS_DELIVERED = "progress_delivered"
 
 
@@ -123,6 +125,7 @@ class DispatchItem:
     terminal_alarm: bool = False
     custody_retry: bool = False
     target_node: str | None = None
+    source_message_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -523,6 +526,36 @@ class DeliveryIoWorker:
                         recipient_online=delivered,
                     ),
                 ),
+                completed_at_ms=time.time_ns() // 1_000_000,
+                receipt_token=request.receipt_token,
+            )
+
+        if request.kind is DispatchIoKind.NOTICE:
+            outcomes = []
+            for item in request.items:
+                if item.target_node is None:
+                    raise ValueError("notice dispatch requires a target node")
+                try:
+                    delivered = bool(
+                        self._transport.deliver_notice(
+                            item.target_node,
+                            item.message,
+                        )
+                    )
+                except Exception:  # noqa: BLE001 - each notice is best-effort
+                    delivered = False
+                outcomes.append(
+                    DispatchOutcome(
+                        message_id=item.message.message_id,
+                        kind=DispatchOutcomeKind.NOTICE_DELIVERED,
+                        recipient_online=delivered,
+                    )
+                )
+            return DispatchIoCompleted(
+                correlation_id=request.correlation_id,
+                generation=request.generation,
+                version=request.version,
+                outcomes=tuple(outcomes),
                 completed_at_ms=time.time_ns() // 1_000_000,
                 receipt_token=request.receipt_token,
             )
@@ -980,7 +1013,8 @@ class DeliveryCustody:
             if not self._current_fence(command.generation, command.version):
                 self._reject_stale(command.correlation_id)
                 return
-            items = self._service.prune_inbox(now_ms=command.now_ms)
+            items, notices = self._service._prune_inbox_state(command.now_ms)
+            self._stage_expired_sender_notices(command.correlation_id, notices)
             version = self._committed_version()
             self._publish(
                 InboxPruneCompleted(
@@ -1220,6 +1254,7 @@ class DeliveryCustody:
             "progress",
             "alarm",
             "explicit_alarm",
+            "expiry_notice",
         }:
             self._reject_stale(command.correlation_id)
             return False
@@ -1635,6 +1670,18 @@ class DeliveryCustody:
                 delivered,
             )
             return True
+        if pending.completion_kind == "expiry_notice":
+            outcomes = {outcome.message_id: outcome for outcome in event.outcomes}
+            for item in pending.request.items:
+                message_id = item.message.message_id
+                outcome = outcomes[message_id] if message_id in outcomes else None
+                self._service._log_expired_sender_notice(
+                    item.source_message_id or item.message.message_id,
+                    item.target_node,
+                    bool(outcome and outcome.recipient_online),
+                )
+            self._publish(event)
+            return True
         outcomes = {outcome.message_id: outcome for outcome in event.outcomes}
         results: list[SubmissionResult] = list(pending.pre_results)
         for item in pending.request.items:
@@ -1706,6 +1753,14 @@ class DeliveryCustody:
                 "submit_progress_event",
                 False,
             )
+            return True
+        if pending.completion_kind == "expiry_notice":
+            for item in pending.request.items:
+                self._service._log_expired_sender_notice(
+                    item.source_message_id or item.message.message_id,
+                    item.target_node,
+                    False,
+                )
             return True
         if pending.completion_kind == "custody_retry":
             deferred = tuple(
@@ -2355,6 +2410,49 @@ class DeliveryCustody:
             alarm_claimed=True,
         )
         self._request_io(request, completion_kind="alarm")
+
+    def _stage_expired_sender_notices(
+        self,
+        prune_correlation_id: str,
+        notices: tuple[_ExpiredSenderNotice, ...],
+    ) -> None:
+        remote: list[DispatchItem] = []
+        for item in notices:
+            if item.target_node is None:
+                self._service._log_expired_sender_notice(
+                    item.original_message_id,
+                    None,
+                    False,
+                )
+                continue
+            if item.target_node == self._service.node_id:
+                try:
+                    delivered = self._service.receive_system_notice(item.notice)
+                except Exception:  # noqa: BLE001 - the notice is best-effort
+                    delivered = False
+                self._service._log_expired_sender_notice(
+                    item.original_message_id,
+                    item.target_node,
+                    delivered,
+                )
+                continue
+            remote.append(
+                DispatchItem(
+                    message=item.notice,
+                    target_node=item.target_node,
+                    source_message_id=item.original_message_id,
+                )
+            )
+        if not remote:
+            return
+        request = DispatchIoRequested(
+            correlation_id=f"{prune_correlation_id}:expiry-notice",
+            generation=self._generation,
+            version=self._version,
+            kind=DispatchIoKind.NOTICE,
+            items=tuple(remote),
+        )
+        self._request_io(request, completion_kind="expiry_notice")
 
     def _reject_correlation(self, correlation_id: str) -> None:
         self._publish(
