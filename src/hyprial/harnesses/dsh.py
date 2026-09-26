@@ -37,6 +37,7 @@ from .owned_process import OwnedProcessGroup
 from .streaming import (
     StreamingTurnProcess,
     TurnClientFactory,
+    TurnCompletedObserver,
     resolve_turn_timeout_seconds,
 )
 from .worker_channel import WorkerChannel
@@ -1047,6 +1048,7 @@ class DshHarnessProcess(StreamingTurnProcess):
         env: Mapping[str, str] | None = None,
         state_dir: Path | None = None,
         dsh_home: Path | None = None,
+        on_turn_completed: TurnCompletedObserver | None = None,
     ) -> None:
         if spec.harness != "dsh" or not spec.headless:
             raise ValueError("DSH API process requires a headless dsh spec")
@@ -1109,6 +1111,7 @@ class DshHarnessProcess(StreamingTurnProcess):
             reconnect_delay_max_seconds=1.0,
             force_stop=self._force_stop_client,
             force_stopped=self._force_stopped_client,
+            on_turn_completed=on_turn_completed,
         )
 
     @property

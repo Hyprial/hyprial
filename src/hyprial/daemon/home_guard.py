@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from hyprial.contracts import ipc_errors
+from hyprial.contracts.daemon_teardown import TEARDOWN_BUDGETED_SECONDS
 from hyprial.home import HYPRIALHomeNotInitialized
 
 if TYPE_CHECKING:
@@ -30,14 +31,14 @@ CLAIM_WAIT_ENV = "HYPRIAL_DAEMON_LOCK_WAIT_TIMEOUT"
 DEFAULT_CLAIM_WAIT_TIMEOUT = 15.0
 
 DUPLICATE_OBSERVE_WINDOW_ENV = "HYPRIAL_DAEMON_DUPLICATE_OBSERVE_WINDOW"
-# Window basis (written down so the number is checkable, not lore): the
-# daemon's own teardown budget is TEARDOWN_BUDGETED_SECONDS = 52s in
-# application.py -- _CLOSE_BUDGET_SECONDS (37s, the sum of the eight
-# bounded close steps) + _EXIT_BACKSTOP_SECONDS (15s, after which a stuck
-# process is forced out).  A normal restart's old process is therefore
-# dead well inside 60s; one still alive past the window has exceeded the
-# daemon's own shutdown budget (a stall), where an alert is defensible.
-DEFAULT_DUPLICATE_OBSERVE_WINDOW = 60.0
+# Preserve the original eight-second observation margin while deriving the
+# window from the shared teardown contract.  A future close-budget increase
+# therefore extends the normal-restart allowance instead of silently turning
+# a slow but budgeted teardown into a duplicate-home alert.
+DUPLICATE_OBSERVE_MARGIN_SECONDS = 8.0
+DEFAULT_DUPLICATE_OBSERVE_WINDOW = (
+    TEARDOWN_BUDGETED_SECONDS + DUPLICATE_OBSERVE_MARGIN_SECONDS
+)
 
 
 class HYPRIALHomeInUse(RuntimeError):
@@ -409,10 +410,9 @@ class ActiveDaemonHeartbeat:
         1. The snapshot's process is still alive with an unchanged
            identity.  A normal restart's old process exits when its
            shutdown completes, so it dies inside the window and never
-           alerts; the window (default 60s) exceeds the daemon's own
-           teardown budget (52s, see DEFAULT_DUPLICATE_OBSERVE_WINDOW), so
-           a shutdown slow enough to outlive it is already a stall by the
-           daemon's own definition.
+           alerts; the default window derives from the daemon's own teardown
+           budget plus DUPLICATE_OBSERVE_MARGIN_SECONDS, so a shutdown slow
+           enough to outlive it has already exceeded that budget and margin.
         2. This home's record generation stayed ours for the whole window.
            If a third process re-claims the home mid-window, the situation
            the snapshot described no longer exists and a verdict from it

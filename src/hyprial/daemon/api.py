@@ -21,6 +21,11 @@ class HarnessDelivery:
     #: The stored ``origin`` block (chat type, resolved human sender) when
     #: the reporting adapter sent one; ``None`` means it said nothing.
     origin: Mapping[str, Any] | None = None
+    #: Opaque text returned by a configured delivery hook.  The daemon never
+    #: parses or rewrites it; ``None`` preserves the historical prompt bytes.
+    hook_text: str | None = None
+    #: Internal recursion fence for the mechanism's own actor exchange.
+    hook_request: bool = False
 
 
 def describe_sender(origin: Mapping[str, Any] | None) -> str | None:
@@ -79,7 +84,15 @@ def delivery_prompt(delivery: HarnessDelivery) -> str:
     human = describe_sender(delivery.origin)
     if human is not None:
         header += f"; sender: {human}"
-    return f"{header}]\n{delivery.message}"
+    prompt = f"{header}]\n{delivery.message}"
+    if delivery.hook_text is None:
+        return prompt
+    return (
+        f"{prompt}\n\n"
+        "<<<HYPRIAL-HOOK>>>\n"
+        f"{delivery.hook_text}\n"
+        "<<<END-HYPRIAL-HOOK>>>"
+    )
 
 
 class HarnessResultStatus(StrEnum):

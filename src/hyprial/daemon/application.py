@@ -217,6 +217,13 @@ from hyprial.contracts.lifecycle_budgets import (
     LIFECYCLE_OPERATION_DEADLINE_SECONDS,
     LIFECYCLE_WAIT_MARGIN_SECONDS,
 )
+from hyprial.contracts.daemon_teardown import (
+    DAEMON_CLOSE_BUDGET_SECONDS,
+    DAEMON_CLOSE_STEP_BUDGETS,
+    DAEMON_EXIT_BACKSTOP_SECONDS,
+    TEARDOWN_BUDGETED_SECONDS,
+    TURN_HOOK_CLOSE_TIMEOUT_SECONDS,
+)
 from hyprial.dispatch.admission import dispatch_gate
 from hyprial.dispatch.identity import dispatch_service_actor_uri
 from hyprial.pac.workflow_schema import WorkflowSpec
@@ -277,6 +284,12 @@ from .route_delivery import (
     resolve_gateway_routes,
 )
 from .runtime import DaemonEventBridge, ForwardOutcome
+from .turn_hooks import (
+    HOOK_CONFIG_NAME,
+    InboxTurnHookInvoker,
+    TurnHookService,
+    harness_supports_before_delivery,
+)
 from .top import build_top_snapshot
 from .harness_actor import HarnessRuntimeActor
 
@@ -309,16 +322,12 @@ _INBOX_WATCH_INTERVAL_MS = 60_000
 # guarantees ps, targets and delivery cannot drift onto different windows.
 _INTERACTIVE_HEARTBEAT_TTL_SECONDS = AGENT_HEARTBEAT_TTL_SECONDS
 
-# Grace between "shutdown finished" and "exit or be killed".  Only has to
-# outlast a normal interpreter teardown, not the close itself -- `_close` runs
-# to completion before this is armed.
-#
-# ⚠️ The note that used to sit here said the longest close observed in
-# production was ~9s.  That was true when written and is not any more: the
-# 2026-08-30 upgrade measured 20.5s (10s of untraced lifecycle drains, 5.0s
-# harnesses, 5.4s zenoh).  Left visible rather than silently corrected,
-# because the stale number is what the waits below were sized against.
-_EXIT_BACKSTOP_SECONDS = 15.0
+# Compatibility aliases keep the existing daemon-internal and test seams while
+# the values themselves live in the shared contract consumed by home_guard.
+_CLOSE_BUDGET_SECONDS = DAEMON_CLOSE_BUDGET_SECONDS
+_CLOSE_STEP_BUDGETS = DAEMON_CLOSE_STEP_BUDGETS
+_EXIT_BACKSTOP_SECONDS = DAEMON_EXIT_BACKSTOP_SECONDS
+_TURN_HOOK_CLOSE_TIMEOUT = TURN_HOOK_CLOSE_TIMEOUT_SECONDS
 
 # ⚠️ How long a shutdown may take before this daemon guarantees it is gone.
 #
@@ -350,20 +359,6 @@ _EXIT_BACKSTOP_SECONDS = 15.0
 # The first cannot see a step added with no timeout, because such a step does
 # not move the sum. It would even leave the total looking more conservative
 # while making it less true.
-_CLOSE_STEP_BUDGETS = (
-    ("maintenance-scheduler", 5.0),
-    ("lifecycle-manager", 5.0),
-    ("lifecycle-port:agent", 5.0),
-    ("lifecycle-port:session", 5.0),
-    ("lifecycle-port:harness", 5.0),
-    ("route-registration", 5.0),
-    ("harnesses", 5.0),
-    # Bounded join of the restore thread (`_RESTORE_THREAD_JOIN_TIMEOUT`); a
-    # restore that outlives it is left to the daemon-thread/backstop path.
-    ("restore-thread", 2.0),
-    ("remote-workflow", 5.0),
-)
-
 #: Closing steps that carry no timeout, each with the reason it is tolerated.
 #: ⚠️ Membership here is a claim, and the roster test forces someone to make
 #: it: a new step belongs to neither table, the suite goes red, and the author
@@ -400,9 +395,6 @@ _CLOSE_UNBUDGETED_STEPS = (
     ),
     ("home-lock", "closes the lock stream"),
 )
-
-_CLOSE_BUDGET_SECONDS = sum(seconds for _name, seconds in _CLOSE_STEP_BUDGETS)
-TEARDOWN_BUDGETED_SECONDS = _CLOSE_BUDGET_SECONDS + _EXIT_BACKSTOP_SECONDS
 
 # Distinguishes "the daemon had to be forced out" from a clean exit, so a
 # supervisor or an operator reading exit codes can tell that a thread refused
@@ -957,6 +949,7 @@ class DaemonApplication:
         self._routes: RouteRegistrationClient | None = None
         self._lifecycle_router: CorrelationEventRouter | None = None
         self._runtime: DaemonEventBridge | None = None
+        self._turn_hooks: TurnHookService | None = None
         self._transport: ZenohTransport | None = None
         self._remote_workflow = None
         self._degraded_workflow_handles: list[Any] = []
@@ -2096,6 +2089,44 @@ class DaemonApplication:
             deliver_user=self._deliver_report_to_user,
         )
         self._pac_notification_io = shared_inbox_io
+
+        def before_delivery_supported(actor: str) -> bool:
+            parsed = parse_agent_uri(actor)
+            if parsed is None or parsed[1] != self.node_id:
+                return True
+            spec = next(
+                (
+                    item
+                    for item in self.desired_state.load().harnesses
+                    if item.name == parsed[2]
+                ),
+                None,
+            )
+            if spec is None:
+                return True
+            return harness_supports_before_delivery(spec.harness)
+
+        turn_hooks = TurnHookService(
+            home_for_agent=lambda actor: Path(
+                self._agent_registry.home_receipt(actor).path
+            ),
+            invoker=InboxTurnHookInvoker(
+                inbox,
+                callback_actor=canonical_agent_uri(
+                    self.owner, self.node_id, "_turn-hooks"
+                ),
+            ),
+            logger=lambda level, component, event, **fields: self._log(
+                level, component, event, **fields
+            ),
+            before_delivery_supported=before_delivery_supported,
+            config_path_for_agent=lambda actor: (
+                self._agent_registry.workspace_path(actor).parent
+                / "config"
+                / HOOK_CONFIG_NAME
+            ),
+        )
+        self._turn_hooks = turn_hooks
         # Deferred import: hyprial.harnesses eagerly imports .agent_sdk, which
         # imports hyprial.daemon.api; hyprial.daemon eagerly imports this module, so a
         # module-level import here would re-enter while hyprial.harnesses is still
@@ -2172,6 +2203,7 @@ class DaemonApplication:
                     if provider_auth is not None
                     else None
                 ),
+                turn_completed_observer=turn_hooks.observe_turn,
             ),
             # A dead child is first exposed as stopped/error and its actor
             # registration is withdrawn.  Desired-state recovery starts a
@@ -2269,6 +2301,7 @@ class DaemonApplication:
             forwarder=self._forward_as_actor,
             owner_notifier=self._owner_alert_notifier,
             owner_requester_addresses=self._owner_requester_addresses(),
+            turn_hooks=turn_hooks,
         )
         duplicate_watch: DuplicateInstanceWatch | None = None
         try:
@@ -2290,6 +2323,7 @@ class DaemonApplication:
             cleanup_errors: list[BaseException] = []
             for cleanup in (
                 harnesses.stop,
+                turn_hooks.close,
                 adapters.stop,
                 lark_events.close,
                 org_endpoint.close,
@@ -10718,6 +10752,15 @@ class DaemonApplication:
                 errors.append(
                     RuntimeError("harness domain did not drain before deadline")
                 )
+        if self._turn_hooks is not None:
+            turn_hooks = self._turn_hooks
+            self._turn_hooks = None
+
+            def close_turn_hooks() -> None:
+                if not turn_hooks.close(_TURN_HOOK_CLOSE_TIMEOUT):
+                    raise RuntimeError("turn-hook recap writer did not drain")
+
+            attempt(close_turn_hooks, "turn-hooks")
         if self._adapters is not None:
             adapters = self._adapters
             self._adapters = None

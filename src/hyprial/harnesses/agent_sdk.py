@@ -39,6 +39,7 @@ from .streaming import (
     StreamingTurnProcess,
     TurnClient,
     TurnClientFactory,
+    TurnCompletedObserver,
     TurnFailureSpecObserver,
 )
 from .worker_channel import WorkerChannel
@@ -666,6 +667,7 @@ class ClaudeAgentSdkProcess(StreamingTurnProcess):
         complete_launch: "ChildEnvironmentLaunch | None" = None,
         reconnect_delay_seconds: float = 0.25,
         on_turn_failure_for_spec: TurnFailureSpecObserver | None = None,
+        on_turn_completed: TurnCompletedObserver | None = None,
     ) -> None:
         if spec.harness != "claude" or not spec.headless:
             raise ValueError("Claude Agent SDK requires a managed headless spec")
@@ -724,6 +726,7 @@ class ClaudeAgentSdkProcess(StreamingTurnProcess):
                 if on_turn_failure_for_spec is not None
                 else None
             ),
+            on_turn_completed=on_turn_completed,
         )
 
     @property

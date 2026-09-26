@@ -38,6 +38,7 @@ from .streaming import (
     ProgressObservation,
     StreamingTurnProcess,
     TurnClientFactory,
+    TurnCompletedObserver,
     TurnFailureSpecObserver,
 )
 from .worker_channel import WorkerChannel
@@ -1034,6 +1035,7 @@ class PiRpcProcess(StreamingTurnProcess):
         reconnect_delay_seconds: float = 0.25,
         complete_launch: "ChildEnvironmentLaunch | None" = None,
         on_turn_failure_for_spec: TurnFailureSpecObserver | None = None,
+        on_turn_completed: TurnCompletedObserver | None = None,
     ) -> None:
         if spec.harness != "pi" or not spec.headless:
             raise ValueError("pi RPC requires a managed headless spec")
@@ -1100,6 +1102,7 @@ class PiRpcProcess(StreamingTurnProcess):
             force_stop=self._force_stop_client,
             force_stopped=self._force_stopped_client,
             on_turn_failure=adapted_observer,
+            on_turn_completed=on_turn_completed,
         )
 
     @property

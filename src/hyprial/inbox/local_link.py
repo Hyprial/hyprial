@@ -116,6 +116,19 @@ class LocalFirstDeliveryTransport:
             return self._receiver is not None
         return self._inner.is_online(recipient)
 
+    def is_online_only_live(self, recipient: str) -> bool:
+        """Require a live connector for ephemeral same-node delivery."""
+
+        with self._lock:
+            if recipient in self._actors:
+                return self._receiver is not None
+        if self._is_self_node_uri(recipient):
+            return False
+        predicate = getattr(self._inner, "is_online_only_live", None)
+        if callable(predicate):
+            return bool(predicate(recipient))
+        return self._inner.is_online(recipient)
+
     def deliver(self, message: InboxMessage) -> bool:
         receiver = self._local_receiver(message.recipient)
         if receiver is None:

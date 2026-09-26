@@ -34,7 +34,7 @@ from hyprial.log import Logger
 
 from .capabilities import concurrency
 from .common import HarnessStartError, summarize_stderr
-from .streaming import ConcurrentTurnProcess
+from .streaming import ConcurrentTurnProcess, TurnCompletedObserver
 from .worker_channel import WorkerChannel
 
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
@@ -95,6 +95,7 @@ def _reject_non_finite(value: str) -> object:
 class _DeliveryState:
     delivery: HarnessDelivery
     accepted_at: float
+    started_at_ms: int
     terminal: bool = False
 
 
@@ -112,6 +113,7 @@ class PythonWorkerTurnAdapter(ConcurrentTurnProcess):
         startup_timeout_seconds: float = PYTHON_WORKER_STARTUP_TIMEOUT_SECONDS_DEFAULT,
         stop_timeout_seconds: float = 5.0,
         logger: Logger | None = None,
+        on_turn_completed: TurnCompletedObserver | None = None,
     ) -> None:
         if spec.harness not in PYTHON_WORKER_KINDS or not spec.headless:
             raise ValueError("python worker requires a managed headless jev or user-proxy spec")
@@ -135,6 +137,7 @@ class PythonWorkerTurnAdapter(ConcurrentTurnProcess):
             else (dict(env) if env is not None else {})
         )
         self._logger = logger or self._make_logger()
+        self._on_turn_completed = on_turn_completed
         self._stop_timeout_seconds = stop_timeout_seconds
         self._lock = threading.RLock()
         self._write_lock = threading.Lock()
@@ -236,7 +239,10 @@ class PythonWorkerTurnAdapter(ConcurrentTurnProcess):
                     return False
                 if not current:
                     self._records[delivery.delivery_id] = _DeliveryState(
-                        delivery, time.monotonic(), terminal=True
+                        delivery,
+                        time.monotonic(),
+                        time.time_ns() // 1_000_000,
+                        terminal=True,
                     )
                     self._results.put(
                         HarnessResult(
@@ -262,7 +268,11 @@ class PythonWorkerTurnAdapter(ConcurrentTurnProcess):
                     # Keep the turn accepted so the child owns the decode failure;
                     # the daemon must see a failed turn, not a lost inbox row.
                     payload = delivery.message
-            self._records[delivery.delivery_id] = _DeliveryState(delivery, time.monotonic())
+            self._records[delivery.delivery_id] = _DeliveryState(
+                delivery,
+                time.monotonic(),
+                time.time_ns() // 1_000_000,
+            )
             try:
                 self._write_frame(
                     {"v": 1, "op": "call", "id": delivery.delivery_id, "payload": payload}
@@ -284,6 +294,18 @@ class PythonWorkerTurnAdapter(ConcurrentTurnProcess):
                     record = self._records.get(result.delivery_id)
                     if record is not None and record.terminal:
                         self._records.pop(result.delivery_id, None)
+                observer = self._on_turn_completed
+                if record is not None and observer is not None:
+                    try:
+                        observer(
+                            record.delivery,
+                            result,
+                            started_at_ms=record.started_at_ms,
+                            ended_at_ms=time.time_ns() // 1_000_000,
+                            tool_names=(),
+                        )
+                    except Exception:
+                        pass
             except queue.Empty:
                 return tuple(results)
 

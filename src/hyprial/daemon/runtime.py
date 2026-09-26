@@ -35,10 +35,12 @@ from .api import (
 )
 from .desired_state import DesiredStateError, DesiredStateStore, InteractiveSession
 from .supervisor import ManagedHarnessRuntime
+from .turn_hooks import is_hook_request
 
 if TYPE_CHECKING:
     from hyprial.inbox.api import DeliveryTransport, InboxPort
     from hyprial.transport.api import PresenceView, TransportSession
+    from .turn_hooks import TurnHookService
 
 
 HARNESS_FAILURE_MAX_ATTEMPTS = 3
@@ -167,7 +169,9 @@ def _reply_already_answered(error: BaseException) -> bool:
     )
 
 
-def _coalesce_progress_events(events: tuple[ProgressEvent, ...]) -> tuple[ProgressEvent, ...]:
+def _coalesce_progress_events(
+    events: tuple[ProgressEvent, ...],
+) -> tuple[ProgressEvent, ...]:
     """Keep the newest tool-call, tool-result, and other event per delivery.
 
     Coalesced events count as drops, and their own ``dropped_since_seq``
@@ -283,6 +287,7 @@ class DaemonEventBridge:
         forwarder: Forwarder | None = None,
         owner_notifier: Callable[..., object] | None = None,
         owner_requester_addresses: Collection[str] = (),
+        turn_hooks: "TurnHookService | None" = None,
     ) -> None:
         self.state_dir = Path(state_dir)
         # Allen 2026-09-26 「提醒改发负责人」: a fail-loud notice diverted away
@@ -306,6 +311,7 @@ class DaemonEventBridge:
         self.delivery = delivery
         self.harness_actor_registrar = harness_actor_registrar
         self._logger = logger
+        self._turn_hooks = turn_hooks
         # The quota watchdog hears each PROVIDER_USAGE_LIMIT turn.  It only
         # observes: settlement below is unchanged (Allen 09-17: exhausted
         # agents keep today's handling).
@@ -452,9 +458,7 @@ class DaemonEventBridge:
             "availability.report_stalled", self._report_stalled_deliveries
         )
         drain_failed = getattr(self.harnesses, "drain_failed_events", None)
-        failed = (
-            drain_failed() if callable(drain_failed) else ()
-        )
+        failed = drain_failed() if callable(drain_failed) else ()
         drain_readiness = getattr(self.harnesses, "drain_readiness_reports", None)
         readiness_reports = (
             _timed("harnesses.drain_readiness", drain_readiness)
@@ -646,16 +650,36 @@ class DaemonEventBridge:
         refresh_hold = getattr(self.inbox, "refresh_hold", None)
         can_refresh_hold = callable(refresh_hold)
         dispatchable = getattr(self.inbox, "dispatchable_messages", None)
+        notice_reader = getattr(self.inbox, "system_notices", None)
+        dismiss_notice = getattr(self.inbox, "dismiss_system_notice", None)
         for actor in self.harnesses.streaming_actors():
+            actor_held = False
             # The inbox is keyed by the canonical network identity — the
             # exact key the registrar advertised for this connector.
             recipient = self.harness_actor_uri(actor)
+            pending_messages = self.inbox.pending_messages(recipient)
             messages = (
                 dispatchable(recipient, now_ms=self._clock_ms())
                 if callable(dispatchable)
-                else self.inbox.pending_messages(recipient)
+                else pending_messages
             )
+            notices = (
+                tuple(notice_reader(recipient))
+                if callable(notice_reader) and callable(dismiss_notice)
+                else ()
+            )
+            if self._turn_hooks is not None:
+                self._turn_hooks.forget_missing_deliveries(
+                    recipient,
+                    {message.message_id for message in (*pending_messages, *notices)},
+                )
             for message in messages:
+                hook_request = is_hook_request(message)
+                if actor_held and not hook_request:
+                    # Keep scanning only for mechanism-owned hook requests.
+                    # They must be able to reach a dedicated handler even
+                    # when an older ordinary row is waiting on its own hook.
+                    continue
                 if message.message_id in self._pending_reply_results:
                     # Already answered; only its reply is still settling.
                     # drain_results() released the worker's dedup, so a
@@ -670,18 +694,29 @@ class DaemonEventBridge:
                 is_retry = message.message_id in self._attempt_generation
                 if not is_retry:
                     self._note_delivery_seen(actor, message)
-                dispatched = self.harnesses.dispatch(
-                    actor,
-                    HarnessDelivery(
-                        delivery_id=message.message_id,
-                        conversation_id=message.conversation_id,
-                        sender=message.sender,
-                        recipient=message.recipient,
-                        message=self._message_text(message),
-                        origin=self._message_origin(message),
-                    ),
+                delivery = HarnessDelivery(
+                    delivery_id=message.message_id,
+                    conversation_id=message.conversation_id,
+                    sender=message.sender,
+                    recipient=message.recipient,
+                    message=self._message_text(message),
+                    origin=self._message_origin(message),
+                    hook_request=hook_request,
                 )
-                if dispatched:
+                if self._turn_hooks is not None:
+                    if not delivery.hook_request:
+                        prepared = self._turn_hooks.prepare_delivery(delivery)
+                        if prepared is None:
+                            # Inbox order is the actor's delivery order.  A
+                            # bounded hook may hold the head, but no younger
+                            # ordinary message may pass it during this tick.
+                            # Hook requests are the one mechanism exception.
+                            actor_held = True
+                            continue
+                        delivery = prepared
+                if self.harnesses.dispatch(actor, delivery):
+                    if self._turn_hooks is not None:
+                        self._turn_hooks.mark_dispatched(message.message_id)
                     if is_retry:
                         self._note_delivery_seen(actor, message)
                     accepted += 1
@@ -693,21 +728,29 @@ class DaemonEventBridge:
                     # counting down from receipt while the turn runs.
                     if can_refresh_hold:
                         refresh_hold(message.message_id)
-            notice_reader = getattr(self.inbox, "system_notices", None)
-            dismiss_notice = getattr(self.inbox, "dismiss_system_notice", None)
+            if actor_held:
+                continue
             if callable(notice_reader) and callable(dismiss_notice):
-                for notice in notice_reader(self.harness_actor_uri(actor)):
-                    if self.harnesses.dispatch(
-                        actor,
-                        HarnessDelivery(
-                            delivery_id=notice.message_id,
-                            conversation_id=notice.conversation_id,
-                            sender=notice.sender,
-                            recipient=notice.recipient,
-                            message=self._message_text(notice),
-                            origin=self._message_origin(notice),
-                        ),
-                    ):
+                for notice in notices:
+                    delivery = HarnessDelivery(
+                        delivery_id=notice.message_id,
+                        conversation_id=notice.conversation_id,
+                        sender=notice.sender,
+                        recipient=notice.recipient,
+                        message=self._message_text(notice),
+                        origin=self._message_origin(notice),
+                        hook_request=is_hook_request(notice),
+                    )
+                    if self._turn_hooks is not None:
+                        if not delivery.hook_request:
+                            prepared = self._turn_hooks.prepare_delivery(delivery)
+                            if prepared is None:
+                                break
+                            delivery = prepared
+                    if self.harnesses.dispatch(actor, delivery):
+                        if self._turn_hooks is not None:
+                            self._turn_hooks.mark_dispatched(notice.message_id)
+                            self._turn_hooks.forget_delivery(notice.message_id)
                         # System notices are offered once.  They have no result,
                         # acknowledgement, receipt, or FIFO settlement duty.
                         dismiss_notice(notice.message_id)
@@ -779,6 +822,7 @@ class DaemonEventBridge:
             if outcome.accepted:
                 self._finish_attempt(result.delivery_id)
                 if self.inbox.ack(original.recipient, original.message_id).acknowledged:
+                    self._forget_turn_hook_delivery(result.delivery_id)
                     settled += 1
                 continue
             failed = replace(
@@ -812,6 +856,7 @@ class DaemonEventBridge:
                     handled = self._workflow_outcome(result)
                     if handled:
                         self.inbox.ack(result.recipient, result.delivery_id)
+                        self._forget_turn_hook_delivery(result.delivery_id)
                         self._pending_workflow_results.pop(result.delivery_id, None)
                         self._pending_workflow_attempts.pop(result.delivery_id, None)
                         settled += 1
@@ -827,12 +872,22 @@ class DaemonEventBridge:
                             terminal_attempt
                         )
                     if self._logger:
-                        self._logger("warn", "pac", "workflow.outcome_deferred", messageId=result.delivery_id, detail=str(error))
+                        self._logger(
+                            "warn",
+                            "pac",
+                            "workflow.outcome_deferred",
+                            messageId=result.delivery_id,
+                            detail=str(error),
+                        )
                     continue
             from hyprial.pac.delivery_guard import WITHDRAWN, delivery_current
-            if result.failure_code == WITHDRAWN and not delivery_current(self.state_dir, result.delivery_id, now_ms=self._clock_ms()):
+
+            if result.failure_code == WITHDRAWN and not delivery_current(
+                self.state_dir, result.delivery_id, now_ms=self._clock_ms()
+            ):
                 self.inbox.ack(result.recipient, result.delivery_id)
                 self._finish_attempt(result.delivery_id)
+                self._forget_turn_hook_delivery(result.delivery_id)
                 settled += 1
                 continue
             if result.status is HarnessResultStatus.INTERRUPTED:
@@ -846,6 +901,7 @@ class DaemonEventBridge:
                 None,
             )
             if original is None:
+                self._forget_turn_hook_delivery(result.delivery_id)
                 # The row can be fetched/consumed (or already carry a terminal
                 # settlement) before this failure lands.  That used to be a
                 # silent drop; the authoritative sender is still durable in
@@ -905,6 +961,7 @@ class DaemonEventBridge:
                     else False
                 )
             if acknowledged:
+                self._forget_turn_hook_delivery(result.delivery_id)
                 settled += 1
         return settled
 
@@ -957,9 +1014,7 @@ class DaemonEventBridge:
     ) -> bool:
         """Settle one FAILED turn against its still-pending inbox row."""
 
-        failure_code = result.failure_code or classify_harness_failure(
-            result.error
-        )
+        failure_code = result.failure_code or classify_harness_failure(result.error)
         try:
             failure = self.inbox.settle_harness_failure(
                 original.recipient,
@@ -974,6 +1029,7 @@ class DaemonEventBridge:
             # A concurrent public ack can retire the row after the
             # read above.  That is a completed ownership decision,
             # not a reason to crash/restart the inbox authority.
+            self._forget_turn_hook_delivery(result.delivery_id)
             return False
         if self._logger is not None:
             self._logger(
@@ -1017,11 +1073,15 @@ class DaemonEventBridge:
         # above is a separate, retained channel and does not stand in
         # for this one (the 2026-09-21 incident: the owner was told
         # within a second and the sender was told nothing).
-        self._loud_harness_failure(
-            result, original, failure=failure, attempt=attempt
-        )
+        self._loud_harness_failure(result, original, failure=failure, attempt=attempt)
         self._finish_attempt(result.delivery_id)
+        if failure.terminal:
+            self._forget_turn_hook_delivery(result.delivery_id)
         return True
+
+    def _forget_turn_hook_delivery(self, delivery_id: str) -> None:
+        if self._turn_hooks is not None:
+            self._turn_hooks.forget_delivery(delivery_id)
 
     # ------------------------------------------------------------- forwards
 
@@ -1179,8 +1239,7 @@ class DaemonEventBridge:
             "availability_loud.route_missing",
             deliveryId=result.delivery_id,
             recipient=result.recipient,
-            failureCode=result.failure_code
-            or classify_harness_failure(result.error),
+            failureCode=result.failure_code or classify_harness_failure(result.error),
             detail="no pending row and no settlement tombstone for the sender",
         )
 
@@ -1267,7 +1326,9 @@ class DaemonEventBridge:
                 )
             return None
         failure_code = result.failure_code or classify_harness_failure(result.error)
-        settlement = failure if failure is not None else self._settlement(result.delivery_id)
+        settlement = (
+            failure if failure is not None else self._settlement(result.delivery_id)
+        )
         message = self._unavailable_notice_for(
             original,
             recipient=result.recipient,
@@ -1435,7 +1496,9 @@ class DaemonEventBridge:
             self._remember_pending_notice(message, code=type(error).__name__)
             return False
         if not result.accepted:
-            self._remember_pending_notice(message, code=result.code or "SUBMIT_REJECTED")
+            self._remember_pending_notice(
+                message, code=result.code or "SUBMIT_REJECTED"
+            )
             return False
         self._pending_notices.pop(message.message_id, None)
         self._notice_failures_logged.discard(message.message_id)
@@ -1650,7 +1713,6 @@ def _notice_kind(message: InboxMessage) -> str | None:
         return None
     kind = body.get("notification") if isinstance(body, dict) else None
     return kind if isinstance(kind, str) else None
-
 
 
 def _notice_text(message: InboxMessage) -> str:

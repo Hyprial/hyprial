@@ -24,6 +24,7 @@ from .python_worker import (
     PYTHON_WORKER_STARTUP_TIMEOUT_SECONDS_DEFAULT,
     PythonHarnessProcess,
 )
+from .streaming import TurnCompletedObserver
 from hyprial.agents.environment import ChildEnvironmentLaunch
 from .worker_channel import WorkerChannel
 
@@ -94,6 +95,7 @@ class HarnessLauncher:
         child_environment_factory: "ChildEnvironmentFactory | None" = None,
         state_dir: Path | None = None,
         turn_failure_observer: TurnFailureSpecObserver | None = None,
+        turn_completed_observer: TurnCompletedObserver | None = None,
     ) -> None:
         configured = commands or {}
         self._claude_command_overridden = "claude" in configured
@@ -114,6 +116,7 @@ class HarnessLauncher:
         # provider_auth's coordinator, when the daemon wires one; passed
         # straight through to every PiRpcProcess.
         self._turn_failure_observer = turn_failure_observer
+        self._turn_completed_observer = turn_completed_observer
         self._agent_sdk_factory = agent_sdk_factory or self._make_agent_sdk_process
         self._pi_rpc_factory = pi_rpc_factory or self._make_pi_process
         self._codex_app_server_factory = (
@@ -125,6 +128,7 @@ class HarnessLauncher:
                 env=env,
                 state_dir=state_dir,
                 worker_channel=self._worker_channel_for(spec),
+                on_turn_completed=self._turn_completed_observer,
             )
         )
         self._python_worker_factory = python_worker_factory or self._make_python_process
@@ -174,6 +178,7 @@ class HarnessLauncher:
             worker_channel=channel,
             complete_launch=self._complete_launch_for(spec, channel),
             on_turn_failure_for_spec=self._turn_failure_observer,
+            on_turn_completed=self._turn_completed_observer,
         )
 
     def _make_codex_process(self, spec: HarnessLaunchSpec) -> "CodexAppServerProcess":
@@ -187,6 +192,7 @@ class HarnessLauncher:
             worker_channel=channel,
             command=spec.resolved_command(("codex",)),
             complete_launch=launch,
+            on_turn_completed=self._turn_completed_observer,
         )
 
     def _make_pi_process(self, spec: HarnessLaunchSpec) -> "PiRpcProcess":
@@ -211,6 +217,7 @@ class HarnessLauncher:
             command=spec.resolved_command(("pi",)),
             complete_launch=complete_launch,
             on_turn_failure_for_spec=self._turn_failure_observer,
+            on_turn_completed=self._turn_completed_observer,
         )
 
     def _make_python_process(self, spec: HarnessLaunchSpec) -> "PythonHarnessProcess":
@@ -230,6 +237,7 @@ class HarnessLauncher:
             command=spec.command or None,
             complete_launch=complete_launch,
             logger=None,
+            on_turn_completed=self._turn_completed_observer,
         )
 
     def _command_overridden(self, harness: str) -> bool:

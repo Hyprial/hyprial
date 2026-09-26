@@ -13,6 +13,8 @@ class TurnDeliveryProjection:
     sender: str
     recipient: str
     message: str
+    hook_text: str | None = None
+    hook_request: bool = False
 
 
 @dataclass(frozen=True, slots=True)

@@ -473,7 +473,7 @@ class InboxService:
         now = self._now_ms() if now_ms is None else now_ms
         if (
             message.lifecycle == DeliveryLifecycle.ONLINE_ONLY
-            and not self._transport.is_online(message.recipient)
+            and not self._recipient_online(message)
         ):
             return SubmissionResult(
                 message_id=message.message_id,
@@ -490,7 +490,7 @@ class InboxService:
             # (retry_due), which owns all network I/O on this cadence.
             self._defer_outbox(message, now)
             return SubmissionResult(message.message_id, accepted=True, queued=True)
-        if self._transport.is_online(message.recipient) and self._attempt_direct(
+        if self._recipient_online(message) and self._attempt_direct(
             message, now
         ):
             return SubmissionResult(message.message_id, accepted=True, queued=False)
@@ -504,9 +504,16 @@ class InboxService:
                 queued=False,
                 custody_mailbox=mailbox,
             )
-        if not self._transport.is_online(message.recipient):
+        if not self._recipient_online(message):
             self._defer_outbox(message, now)
         return SubmissionResult(message.message_id, accepted=True, queued=True)
+
+    def _recipient_online(self, message: InboxMessage) -> bool:
+        if message.lifecycle == DeliveryLifecycle.ONLINE_ONLY:
+            live = getattr(self._transport, "is_online_only_live", None)
+            if callable(live):
+                return bool(live(message.recipient))
+        return self._transport.is_online(message.recipient)
 
     def _insert_outbox(self, message: InboxMessage, now_ms: int) -> None:
         self._db.execute(

@@ -66,6 +66,7 @@ from .streaming import (
     TURN_IDLE_TIMEOUT_ENV,
     ProgressObservation,
     StreamingTurnProcess,
+    TurnCompletedObserver,
     TurnClientFactory,
     resolve_turn_timeout_seconds,
 )
@@ -3658,6 +3659,7 @@ class CodexAppServerProcess(StreamingTurnProcess):
         reconnect_delay_max_seconds: float = 30.0,
         max_delivery_attempts: int = 5,
         complete_launch: ChildEnvironmentLaunch | None = None,
+        on_turn_completed: TurnCompletedObserver | None = None,
     ) -> None:
         if spec.harness != "codex" or not spec.headless:
             raise ValueError("Codex app-server requires a managed headless spec")
@@ -3704,6 +3706,7 @@ class CodexAppServerProcess(StreamingTurnProcess):
             force_stopped=self._process_group.stopped,
             force_stop_join_seconds=PROCESS_FORCE_JOIN_SECONDS,
             liveness_probe=self._process_group.liveness,
+            on_turn_completed=on_turn_completed,
         )
 
     @property

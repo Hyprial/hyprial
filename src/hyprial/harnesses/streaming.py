@@ -58,6 +58,20 @@ class TurnFailureSpecObserver(Protocol):
     ) -> None: ...
 
 
+class TurnCompletedObserver(Protocol):
+    """Never-raises observer for a terminal headless turn."""
+
+    def __call__(
+        self,
+        delivery: HarnessDelivery,
+        result: HarnessResult,
+        *,
+        started_at_ms: int,
+        ended_at_ms: int,
+        tool_names: tuple[str, ...],
+    ) -> None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class ProgressObservation:
     """A harness-side progress signal before the pump stamps delivery context.
@@ -214,6 +228,7 @@ class SequentialTurnProcess(BaseTurnProcess):
         liveness_probe: Callable[[], ProcessLiveness] | None = None,
         on_turn_started: TurnStartedObserver | None = None,
         on_turn_failure: Callable[[str], None] | None = None,
+        on_turn_completed: TurnCompletedObserver | None = None,
     ) -> None:
         if reconnect_delay_seconds < 0:
             raise ValueError("reconnect delay must not be negative")
@@ -240,6 +255,10 @@ class SequentialTurnProcess(BaseTurnProcess):
         self._force_stop_join_seconds = force_stop_join_seconds
         self._liveness_probe = liveness_probe
         self._on_turn_started = on_turn_started
+        self._on_turn_completed = on_turn_completed
+        self._turn_deliveries: dict[str, HarnessDelivery] = {}
+        self._turn_started_ms: dict[str, int] = {}
+        self._turn_tool_names: dict[str, list[str]] = {}
         # Every turn failure is reported to this observer with the verbatim
         # failure text; classification (terminal/auth/entitlement/transient)
         # lives in provider_auth, whose tables are the single closed list —
@@ -391,7 +410,7 @@ class SequentialTurnProcess(BaseTurnProcess):
             raise ValueError("harness delivery requires an id and message")
         if not self.running:
             return False
-        return (
+        accepted = (
             self._turn_runtime.submit(
                 EnqueueTurnCommand(
                     correlation_id=delivery.delivery_id,
@@ -401,14 +420,25 @@ class SequentialTurnProcess(BaseTurnProcess):
                         sender=delivery.sender,
                         recipient=delivery.recipient,
                         message=delivery.message,
+                        hook_text=delivery.hook_text,
+                        hook_request=delivery.hook_request,
                     ),
                 )
             )
             is PortAdmission.ACCEPTED
         )
+        if accepted and self._on_turn_completed is not None:
+            with self._lock:
+                # A pending inbox row is offered again on every daemon tick.
+                # Admission is the ownership boundary: an already-reserved
+                # re-offer must not replace or remove the live turn's observer
+                # state, especially the tool names collected since acceptance.
+                self._turn_deliveries[delivery.delivery_id] = delivery
+                self._turn_tool_names.setdefault(delivery.delivery_id, [])
+        return accepted
 
     def drain_results(self) -> tuple[HarnessResult, ...]:
-        return tuple(
+        results = tuple(
             HarnessResult(
                 result.delivery_id,
                 result.recipient,
@@ -419,6 +449,33 @@ class SequentialTurnProcess(BaseTurnProcess):
             )
             for result in self._turn_runtime.drain_results()
         )
+        observer = self._on_turn_completed
+        if observer is None:
+            return results
+        ended_at_ms = time.time_ns() // 1_000_000
+        for result in results:
+            with self._lock:
+                delivery = self._turn_deliveries.pop(result.delivery_id, None)
+                started_at_ms = self._turn_started_ms.pop(
+                    result.delivery_id, ended_at_ms
+                )
+                tool_names = tuple(
+                    self._turn_tool_names.pop(result.delivery_id, ())
+                )
+            if delivery is None:
+                continue
+            try:
+                observer(
+                    delivery,
+                    result,
+                    started_at_ms=started_at_ms,
+                    ended_at_ms=ended_at_ms,
+                    tool_names=tool_names,
+                )
+            except Exception:
+                # Turn settlement is authoritative; an observer is advisory.
+                pass
+        return results
 
     def _record_turn_outcome(self, result: HarnessResult) -> int:
         """Track consecutive failures of one delivery; return the run length.
@@ -481,6 +538,11 @@ class SequentialTurnProcess(BaseTurnProcess):
         the OLDEST event and the drop count is reported on the next drain.
         """
 
+        if self._on_turn_completed is not None and observation.tool_name:
+            with self._lock:
+                names = self._turn_tool_names.setdefault(delivery.delivery_id, [])
+                if observation.tool_name not in names:
+                    names.append(observation.tool_name)
         try:
             event = ProgressEvent(
                 delivery_id=delivery.delivery_id,
@@ -917,6 +979,8 @@ class SequentialTurnProcess(BaseTurnProcess):
                                 sender=projection.sender,
                                 recipient=projection.recipient,
                                 message=projection.message,
+                                hook_text=projection.hook_text,
+                                hook_request=projection.hook_request,
                             )
                         channel = getattr(self, "worker_channel", None)
                         if channel is not None:
@@ -948,6 +1012,11 @@ class SequentialTurnProcess(BaseTurnProcess):
                                 current_fence = None
                                 continue
                         self._log_turn("worker.turn.started", current)
+                        if self._on_turn_completed is not None:
+                            with self._lock:
+                                self._turn_started_ms[current.delivery_id] = (
+                                    time.time_ns() // 1_000_000
+                                )
                         turn_started = True
                         await client.query(delivery_prompt(current))
                         # A selected delivery is not interruptible until the
@@ -1291,4 +1360,5 @@ __all__ = [
     "StreamingTurnProcess",
     "TurnClient",
     "TurnClientFactory",
+    "TurnCompletedObserver",
 ]
