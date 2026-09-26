@@ -8483,6 +8483,35 @@ def _prime_post_install_restart_imports() -> None:
         importlib.import_module(name)
 
 
+def _require_installed_commit(
+    installed: Any, resolution: Any, resolved: JsonObject, resolved_suffix: str
+) -> None:
+    """Refuse to report an upgrade whose installed commit was never resolved.
+
+    The restart decision follows the CODE, not the ref's name: an explicit
+    movable tag (``--tag internal``) keeps the same requested_revision while
+    uv installs a new commit, and comparing names alone left the daemon on
+    the old code (jjkysy-dev, 2026-09-26: b6cd834 -> e9dec894, "resolved tag
+    unchanged").  Symmetrically, if uv fetched something other than what was
+    resolved (the tag moved again, a stale cache), never report upgraded=true
+    for it; restarting onto it would also defeat the downgrade guard, which
+    judged the resolved commit.
+    """
+
+    if (
+        installed.commit is not None
+        and resolution.commit is not None
+        and installed.commit != resolution.commit
+    ):
+        raise CliError(
+            "UPGRADE_COMMIT_MISMATCH",
+            f"uv installed commit {installed.commit} but {resolution.commit} "
+            f"was resolved; not restarting onto unresolved code. Re-run "
+            f"`hyprial upgrade`. {resolved_suffix}",
+            {**resolved, "installedCommit": installed.commit},
+        )
+
+
 def _perform_upgrade_and_report(*args: object, **kwargs: object) -> JsonObject:
     """Upgrade, then check what got installed, then tell the owner -- every time.
 
@@ -8572,6 +8601,7 @@ def _perform_upgrade_and_report(*args: object, **kwargs: object) -> JsonObject:
     except Exception:  # noqa: BLE001 -- reporting must not undo a good upgrade
         pass
     return result
+
 
 
 def _perform_upgrade(
@@ -8672,7 +8702,12 @@ def _perform_upgrade(
     # restart the daemon on every timer tick.  The legacy and explicit-tag
     # paths keep their exact @tag requirement.
     requested = resolution.commit if track is not None else resolution.tag
-    ref_changed = installation.requested_revision != requested
+    # A moved tag keeps its name: compare the commit too (see _require_installed_commit).
+    ref_changed = installation.requested_revision != requested or (
+        installation.commit is not None
+        and resolution.commit is not None
+        and installation.commit != resolution.commit
+    )
     before = (
         _running_daemon_before_upgrade(installation.version or "unknown")
         if ref_changed
@@ -8740,6 +8775,7 @@ def _perform_upgrade(
         )
         raise CliError("UPGRADE_FAILED", f"{detail}; {resolved_suffix}", resolved)
     installed = updates.read_installation()
+    _require_installed_commit(installed, resolution, resolved, resolved_suffix)
     installed_version = installed.version or resolution.version or resolution.tag
     result: JsonObject = {
         "ok": True,
