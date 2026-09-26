@@ -2244,6 +2244,7 @@ class DaemonApplication:
                 else None
             ),
             forwarder=self._forward_as_actor,
+            owner_notifier=self._owner_alert_notifier,
         )
         duplicate_watch: DuplicateInstanceWatch | None = None
         try:
@@ -10576,6 +10577,18 @@ class DaemonApplication:
     def _restore_signal_handlers(previous: dict[int, Any]) -> None:
         for signum, handler in previous.items():
             signal.signal(signum, handler)
+
+    def _owner_alert_notifier(self, text: str, *, idempotency_key: str) -> None:
+        """The owner-DM channel for alerts (autoupdate.alert.notify_owner)."""
+
+        from hyprial.autoupdate.alert import notify_owner
+
+        notify_owner(
+            hyprial_home=self.hyprial_home,
+            state_dir=self.state_dir,
+            text=text,
+            idempotency_key=idempotency_key,
+        )
 
     def _log(self, level: str, component: str, event: str, **fields: Any) -> None:
         self._logger.bind(component=component).log(level, event, **fields)

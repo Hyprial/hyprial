@@ -280,8 +280,14 @@ class DaemonEventBridge:
         usage_limit_observer: Callable[[str], None] | None = None,
         workflow_outcome: Callable[[HarnessResult], bool] | None = None,
         forwarder: Forwarder | None = None,
+        owner_notifier: Callable[..., object] | None = None,
     ) -> None:
         self.state_dir = Path(state_dir)
+        # Allen 2026-09-26 「提醒改发负责人」: a fail-loud notice diverted away
+        # from a person's chat goes to the owner through the existing
+        # owner-DM channel instead of only the log.  Called off the runtime
+        # loop; never raises into it.
+        self._owner_notifier = owner_notifier
         self.node_id = node_id
         self.desired_state = desired_state
         self.transport = transport
@@ -1280,8 +1286,10 @@ class DaemonEventBridge:
         """
 
         if is_human_facing_requester(message.recipient):
-            # Never into a person's chat: log it, do not hold it for retry.
+            # Never into a person's chat.  Not held for retry; the owner is
+            # told instead (once per notice: diversion happens only here).
             self._pending_notices.pop(message.message_id, None)
+            redirected = self._owner_notifier is not None
             if self._logger is not None:
                 self._logger(
                     "warn",
@@ -1291,8 +1299,16 @@ class DaemonEventBridge:
                     recipient=message.recipient,
                     idempotencyKey=message.idempotency_key,
                     notification=_notice_kind(message),
-                    detail="human-facing requester; notice logged, not sent",
+                    redirectedToOwner=redirected,
+                    detail=(
+                        "human-facing requester; notice sent to the owner, "
+                        "not to the requester"
+                        if redirected
+                        else "human-facing requester; notice logged, not sent"
+                    ),
                 )
+            if redirected:
+                self._notify_owner_of_diverted(message)
             return False
         submit = getattr(self.inbox, "submit", None)
         if not callable(submit):
@@ -1318,6 +1334,36 @@ class DaemonEventBridge:
                 idempotencyKey=message.idempotency_key,
             )
         return True
+
+    def _notify_owner_of_diverted(self, message: InboxMessage) -> None:
+        """Hand a diverted notice to the owner channel on its own thread."""
+
+        notifier = self._owner_notifier
+        assert notifier is not None
+        text = (
+            f"一条原本要发给 {message.recipient} 的失败/无进展提醒，因对方是真人会话"
+            f"（{message.conversation_id}）而未发送，改发给你：\n"
+            f"{_notice_text(message)}"
+        )
+        key = f"owner-diverted:{message.idempotency_key or message.message_id}"
+
+        def deliver() -> None:
+            try:
+                notifier(text, idempotency_key=key)
+            except Exception as error:  # noqa: BLE001 -- never into the loop
+                if self._logger is not None:
+                    self._logger(
+                        "error",
+                        "daemon",
+                        "availability_loud.owner_notify_failed",
+                        messageId=message.message_id,
+                        recipient=message.recipient,
+                        detail=str(error) or type(error).__name__,
+                    )
+
+        threading.Thread(
+            target=deliver, name="hyprial-owner-diverted-notice", daemon=True
+        ).start()
 
     def _remember_pending_notice(self, message: InboxMessage, *, code: str) -> None:
         self._pending_notices.setdefault(message.message_id, message)
@@ -1470,3 +1516,15 @@ def _notice_kind(message: InboxMessage) -> str | None:
         return None
     kind = body.get("notification") if isinstance(body, dict) else None
     return kind if isinstance(kind, str) else None
+
+
+
+def _notice_text(message: InboxMessage) -> str:
+    """The human-readable ``message`` of a fail-loud notice (else the raw body)."""
+
+    try:
+        body = json.loads(message.payload)
+    except (TypeError, ValueError):
+        return str(message.payload)
+    text = body.get("message") if isinstance(body, dict) else None
+    return text if isinstance(text, str) else json.dumps(body, ensure_ascii=False)
