@@ -1089,6 +1089,24 @@ class DaemonEventBridge:
             # new attempt for the once-per-notice key, not a replay.
             self._attempt_generation[delivery_id] = attempt.identity.generation
 
+    def _attempt_was_acknowledged(self, delivery_id: str) -> bool:
+        """Whether durable inbox state says the worker finished this attempt.
+
+        Acknowledgement is authoritative, rather than reply submission: a
+        native reply can still be queued or fail settlement, while ACK is the
+        durable boundary that the inbound delivery was consumed.  Native
+        reply acknowledges that delivery after its reply settles, and an
+        explicit ACK reaches the same boundary.
+        """
+
+        reader = getattr(self.inbox, "is_acknowledged", None)
+        if not callable(reader):
+            return False
+        try:
+            return bool(reader(delivery_id))
+        except Exception:  # noqa: BLE001 - an unavailable read is not an ACK
+            return False
+
     def _failure_original(self, delivery_id: str) -> InboxMessage | None:
         """Authoritative sender of a delivery whose row is no longer pending."""
 
@@ -1463,6 +1481,9 @@ class DaemonEventBridge:
         never kills or interrupts the turn.  One report per attempt.
         """
 
+        for attempt in tuple(self._inflight.values()):
+            if self._attempt_was_acknowledged(attempt.identity.delivery_id):
+                self._finish_attempt(attempt.identity.delivery_id)
         self._retry_pending_notices()
         now = self._clock_ms()
         reported = 0

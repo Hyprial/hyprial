@@ -239,6 +239,23 @@ class _PendingCall:
     subject_id: str | None = None
 
 
+@dataclass(slots=True)
+class _EnsureFailureFence:
+    request: object
+    provenance: object
+    code: str
+    detail: str
+    control_correlations: list[str] = field(default_factory=list)
+    unstopped: list[
+        tuple[
+            str,
+            int,
+            ManagedHarnessProcess,
+            ProcessIdentity | None,
+        ]
+    ] = field(default_factory=list)
+
+
 class _PendingCallRegistry:
     """Thread-safe custody for ephemeral facade correlations."""
 
@@ -965,6 +982,23 @@ class HarnessRuntimeActor:
             else set(desired_state.incomplete_harness_lifecycle_resources())
         )
         self._lifecycle_effect_requests: dict[str, tuple[object, object]] = {}
+        # A lifecycle ensure can own multiple launcher calls when actor-level
+        # retries overlap late I/O completions.  Keep every call fenced until
+        # it reports and any process it created is stopped.
+        self._lifecycle_ensure_io: dict[str, tuple[str, str, int]] = {}
+        self._lifecycle_ensure_failure_fences: dict[
+            str, _EnsureFailureFence
+        ] = {}
+        self._lifecycle_ensure_failure_stops: dict[
+            str,
+            tuple[
+                str,
+                str,
+                int,
+                ManagedHarnessProcess,
+                ProcessIdentity | None,
+            ],
+        ] = {}
         # Terminal failures replay to re-admissions just like successful receipts.
         # Evicted with the existing bounded settled-attempt ledger.
         self._lifecycle_failures: dict[str, object] = {}
@@ -1413,6 +1447,17 @@ class HarnessRuntimeActor:
         self._lifecycle_effect_requests[resource_id] = (request, provenance)
         if isinstance(internal_payload, EnsureHarnessCommand):
             self._on_ensure(internal_payload, lifecycle=True)
+            record = self._records.get(resource_id)
+            if (
+                record is not None
+                and record.starting
+                and record.attempt_correlation_id == internal_correlation
+            ):
+                self._lifecycle_ensure_io[internal_correlation] = (
+                    request.attempt_token,
+                    resource_id,
+                    record.generation,
+                )
         else:
             assert isinstance(internal_payload, RemoveHarnessCommand)
             self._on_lifecycle_remove(internal_payload)
@@ -2339,6 +2384,33 @@ class HarnessRuntimeActor:
         )
 
     def _on_start_completed(self, event: HarnessProcessStarted) -> None:
+        tracked = self._lifecycle_ensure_io.pop(event.correlation_id, None)
+        if (
+            tracked is not None
+            and tracked[0] in self._lifecycle_ensure_failure_fences
+        ):
+            attempt_token, harness_id, generation = tracked
+            self._cancel_start_timer(harness_id, generation)
+            record = self._records.get(harness_id)
+            if (
+                record is not None
+                and record.generation == event.generation
+                and record.attempt_correlation_id == event.correlation_id
+            ):
+                record.starting = False
+                record.explicit_correlation_id = None
+                record.attempt_correlation_id = None
+            if event.process is not None:
+                self._schedule_ensure_failure_stop(
+                    attempt_token,
+                    harness_id,
+                    event.generation,
+                    cast(ManagedHarnessProcess, event.process),
+                    ProcessIdentity(event.pid, event.identity_marker),
+                )
+            self._publish()
+            self._maybe_finish_ensure_failure_fence(attempt_token)
+            return
         self._cancel_start_timer(event.harness_id, event.generation)
         record = self._records.get(event.harness_id)
         if (
@@ -2396,6 +2468,20 @@ class HarnessRuntimeActor:
         self._finish_start_attempt(event.harness_id, record, False, error)
 
     def _on_stop_completed(self, event: HarnessStopIoCompleted) -> None:
+        fenced = self._lifecycle_ensure_failure_stops.pop(
+            event.correlation_id, None
+        )
+        if fenced is not None:
+            attempt_token, harness_id, generation, process, identity = fenced
+            fence = self._lifecycle_ensure_failure_fences.get(attempt_token)
+            if fence is None:
+                return
+            if not event.stopped:
+                fence.unstopped.append(
+                    (harness_id, generation, process, identity)
+                )
+            self._maybe_finish_ensure_failure_fence(attempt_token)
+            return
         record = self._records.get(event.harness_id)
         if record is None or record.generation != event.generation:
             return
@@ -2918,6 +3004,162 @@ class HarnessRuntimeActor:
         self._publish()
         return failure
 
+    def _settle_failed_ensure(
+        self, request: object, provenance: object, code: str, detail: str,
+    ) -> object:
+        from .lifecycle_receipts import (
+            LifecycleMutationFailed,
+            LifecycleMutationRequest,
+            MutationProvenance,
+        )
+
+        assert isinstance(request, LifecycleMutationRequest)
+        assert isinstance(provenance, MutationProvenance)
+        assert isinstance(request.payload, EnsureHarnessCommand)
+        assert self._desired_state is not None
+        key = f"{request.payload.spec.harness}:{request.payload.spec.name}"
+        active = self._lifecycle_effect_requests.get(key)
+        owns_custody = (
+            active is None or active[0].attempt_token == request.attempt_token
+        )
+        rolled_back = self._desired_state.rollback_harness_lifecycle(
+            request.attempt_token, provenance.resource_token
+        )
+        if owns_custody:
+            self._records.pop(key, None)
+            self._lifecycle_effect_resources.discard(key)
+            self._lifecycle_effect_requests.pop(key, None)
+        for correlation, (pending, _) in tuple(self._lifecycle_pending.items()):
+            if pending.attempt_token == request.attempt_token:
+                self._lifecycle_pending.pop(correlation)
+                self._calls.pop(correlation)
+        for correlation, timer in tuple(self._lifecycle_retry_timers.items()):
+            if correlation.startswith(f"{request.correlation_id}:io:"):
+                timer.cancel()
+                self._lifecycle_retry_timers.pop(correlation)
+        self._remember_settled_lifecycle(request.attempt_token)
+        failure = LifecycleMutationFailed(
+            request.correlation_id,
+            request.attempt_token,
+            self._handler_generation,
+            self._version,
+            "harness",
+            code,
+            detail,
+            rolled_back,
+        )
+        self._lifecycle_failures[request.attempt_token] = failure
+        self._publish()
+        return failure
+
+    def _schedule_ensure_failure_stop(
+        self,
+        attempt_token: str,
+        harness_id: str,
+        generation: int,
+        process: ManagedHarnessProcess,
+        identity: ProcessIdentity | None,
+    ) -> None:
+        correlation = f"harness:fail-stop:{uuid.uuid4().hex}"
+        self._lifecycle_ensure_failure_stops[correlation] = (
+            attempt_token,
+            harness_id,
+            generation,
+            process,
+            identity,
+        )
+        assert self._io is not None
+        self._io.stop(
+            correlation,
+            harness_id,
+            generation,
+            self._version,
+            process,
+            identity,
+        )
+
+    def _drive_ensure_failure_fence(self, attempt_token: str) -> None:
+        fence = self._lifecycle_ensure_failure_fences.get(attempt_token)
+        if fence is None:
+            return
+        from .lifecycle_receipts import LifecycleMutationRequest
+
+        request = fence.request
+        assert isinstance(request, LifecycleMutationRequest)
+        for correlation, timer in tuple(self._lifecycle_retry_timers.items()):
+            if correlation.startswith(f"{request.correlation_id}:io:"):
+                timer.cancel()
+                self._lifecycle_retry_timers.pop(correlation)
+        for _correlation, (attempt, harness_id, generation) in tuple(
+            self._lifecycle_ensure_io.items()
+        ):
+            if attempt == attempt_token:
+                self._cancel_start_timer(harness_id, generation)
+        if not any(
+            pending[0] == attempt_token
+            for pending in self._lifecycle_ensure_failure_stops.values()
+        ):
+            unstopped = tuple(fence.unstopped)
+            fence.unstopped.clear()
+            for harness_id, generation, process, identity in unstopped:
+                self._schedule_ensure_failure_stop(
+                    attempt_token,
+                    harness_id,
+                    generation,
+                    process,
+                    identity,
+                )
+        self._maybe_finish_ensure_failure_fence(attempt_token)
+
+    def _maybe_finish_ensure_failure_fence(self, attempt_token: str) -> None:
+        fence = self._lifecycle_ensure_failure_fences.get(attempt_token)
+        if fence is None or fence.unstopped:
+            return
+        if any(
+            tracked[0] == attempt_token
+            for tracked in self._lifecycle_ensure_io.values()
+        ):
+            return
+        if any(
+            pending[0] == attempt_token
+            for pending in self._lifecycle_ensure_failure_stops.values()
+        ):
+            return
+        self._lifecycle_ensure_failure_fences.pop(attempt_token, None)
+        result = self._settle_failed_ensure(
+            fence.request,
+            fence.provenance,
+            fence.code,
+            fence.detail,
+        )
+        self._emit_event(result)
+        from .lifecycle_receipts import HarnessLifecycleFailureSettled
+
+        for correlation in fence.control_correlations:
+            self._emit_event(HarnessLifecycleFailureSettled(correlation, result))
+
+    def _fence_failed_ensure(
+        self,
+        command: object,
+        request: object,
+        provenance: object,
+        code: str,
+        detail: str,
+    ) -> None:
+        from .lifecycle_receipts import (
+            FailHarnessLifecycleCommand,
+            LifecycleMutationRequest,
+        )
+
+        assert isinstance(request, LifecycleMutationRequest)
+        fence = self._lifecycle_ensure_failure_fences.get(request.attempt_token)
+        if fence is None:
+            fence = _EnsureFailureFence(request, provenance, code, detail)
+            self._lifecycle_ensure_failure_fences[request.attempt_token] = fence
+        if isinstance(command, FailHarnessLifecycleCommand):
+            fence.control_correlations.append(command.correlation_id)
+        self._drive_ensure_failure_fence(request.attempt_token)
+
     def _on_fail_lifecycle(self, command: object) -> None:
         from .lifecycle_receipts import (
             FailHarnessLifecycleCommand, HarnessLifecycleFailureSettled,
@@ -2926,8 +3168,14 @@ class HarnessRuntimeActor:
 
         assert isinstance(command, FailHarnessLifecycleCommand)
         request = command.request
-        if not isinstance(request.payload, RemoveHarnessCommand):
-            self._reject(command, ipc_errors.INVALID_ARGUMENT, "only a removal may be failed by deadline")
+        if not isinstance(
+            request.payload, (EnsureHarnessCommand, RemoveHarnessCommand)
+        ):
+            self._reject(
+                command,
+                ipc_errors.INVALID_ARGUMENT,
+                "only a harness ensure or removal may be failed by deadline",
+            )
             return
         assert self._desired_state is not None
         receipt = self._desired_state.harness_lifecycle_receipt(request.attempt_token)
@@ -2939,7 +3187,12 @@ class HarnessRuntimeActor:
                 self._handler_generation, self._version, "harness", receipt.provenance,
                 HarnessMutationCompleted(
                     request.correlation_id, self._handler_generation, self._version,
-                    f"{request.payload.harness}:{request.payload.name}", receipt.provenance.changed,
+                    (
+                        f"{request.payload.spec.harness}:{request.payload.spec.name}"
+                        if isinstance(request.payload, EnsureHarnessCommand)
+                        else f"{request.payload.harness}:{request.payload.name}"
+                    ),
+                    receipt.provenance.changed,
                 ),
             )
         elif request.attempt_token in self._lifecycle_failures:
@@ -2948,6 +3201,30 @@ class HarnessRuntimeActor:
             self._reject(command, "LIFECYCLE_ATTEMPT_SETTLED", "the successful receipt was already retired")
             return
         else:
+            if isinstance(request.payload, EnsureHarnessCommand):
+                key = f"{request.payload.spec.harness}:{request.payload.spec.name}"
+                active = self._lifecycle_effect_requests.get(key)
+                if (
+                    active is not None
+                    and active[0].attempt_token == request.attempt_token
+                ):
+                    provenance = active[1]
+                else:
+                    # The control can overtake a queued (not yet admitted)
+                    # mutation. Apply the genuine request before settling it.
+                    provenance, _ = self._desired_state.apply_harness_lifecycle(
+                        request,
+                        generation=self._handler_generation,
+                        version=self._version,
+                    )
+                self._fence_failed_ensure(
+                    command,
+                    request,
+                    provenance,
+                    command.code,
+                    command.detail,
+                )
+                return
             # The control can overtake a queued (not yet admitted) mutation.
             # Apply its genuine request through the same domain transaction;
             # never guess absence from a journal's 'dispatched' label.
@@ -2961,7 +3238,6 @@ class HarnessRuntimeActor:
     def _emit_event(self, event: object) -> None:
         from .lifecycle_receipts import (
             LifecycleMutationCompleted,
-            LifecycleMutationFailed,
             LifecycleMutationRequest,
             MutationProvenance,
         )
@@ -2999,25 +3275,21 @@ class HarnessRuntimeActor:
                 self._lifecycle_retry_timers[correlation_id] = timer
                 timer.start()
                 return
-            self._lifecycle_pending.pop(correlation_id, None)
-            self._remember_settled_lifecycle(request.attempt_token)
             if isinstance(request.payload, RemoveHarnessCommand):
+                self._lifecycle_pending.pop(correlation_id, None)
+                self._remember_settled_lifecycle(request.attempt_token)
                 event = self._settle_failed_removal(
                     request, provenance, event.code, event.detail
                 )
             else:
-                rolled_back = self._desired_state.rollback_harness_lifecycle(
-                    request.attempt_token, provenance.resource_token
+                self._fence_failed_ensure(
+                    None,
+                    request,
+                    provenance,
+                    event.code,
+                    event.detail,
                 )
-                resource_key = f"{request.payload.spec.harness}:{request.payload.spec.name}"
-                self._records.pop(resource_key, None)
-                self._lifecycle_effect_resources.discard(resource_key)
-                self._lifecycle_effect_requests.pop(resource_key, None)
-                event = LifecycleMutationFailed(
-                    request.correlation_id, request.attempt_token,
-                    self._handler_generation, self._version, "harness",
-                    event.code, event.detail, rolled_back,
-                )
+                return
         elif pending is not None and isinstance(event, HarnessMutationCompleted):
             request, provenance = pending
             assert isinstance(request, LifecycleMutationRequest)

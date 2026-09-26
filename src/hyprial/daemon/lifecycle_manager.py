@@ -1100,10 +1100,11 @@ class LifecycleProcessManager:
             # unsafe to compensate or declare success until a fenced receipt
             # arrives; a later recovery scan resubmits/reassociates it -- unless
             # the operation has outlived its deadline, in which case the effect
-            # is not "slow" but stuck (card 104164aa (c)).  Fail it terminally,
-            # never COMPENSATING: compensating an unstoppable stop hangs the same
-            # way in reverse.  recover() will not reschedule a FAILED operation,
-            # so the re-drive stops and the caller gets a coded failure.
+            # is not "slow" but stuck (card 104164aa (c)). Harness effects get
+            # one domain-owned settlement attempt: an unacknowledged control
+            # keeps custody, a completed start resumes forward progress, and a
+            # fenced failed start may safely compensate. An unresolved stop
+            # still fails terminally because reversing it would be unsafe.
             started = self._operation_started_at.get(operation_id)
             if (
                 started is not None
@@ -1114,15 +1115,33 @@ class LifecycleProcessManager:
                     f"{self._operation_deadline:g}s deadline with a step still unresolved"
                 )
                 code = "LIFECYCLE_OPERATION_TIMEOUT"
-                if (step.domain == "harness" and step.forward == "remove"
-                        and not self._store.effect_done(operation_id, step.name, "forward")):
+                if (
+                    step.domain == "harness"
+                    and step.forward in {"ensure", "remove"}
+                    and not self._store.effect_done(
+                        operation_id, step.name, "forward"
+                    )
+                ):
                     receipt = self._store.effect_receipt(operation_id, step.name, "forward")
                     assert receipt is not None
+                    payload = (
+                        EnsureHarnessCommand(
+                            receipt.correlation_id,
+                            step.spec.harness,
+                        )
+                        if step.forward == "ensure"
+                        else RemoveHarnessCommand(
+                            receipt.correlation_id,
+                            step.spec.harness.harness,
+                            step.spec.harness.name,
+                        )
+                    )
                     request = LifecycleMutationRequest(
-                        receipt.correlation_id, receipt.attempt_token, operation_id, None,
-                        RemoveHarnessCommand(
-                            receipt.correlation_id, step.spec.harness.harness, step.spec.harness.name,
-                        ),
+                        receipt.correlation_id,
+                        receipt.attempt_token,
+                        operation_id,
+                        None,
+                        payload,
                     )
                     try:
                         settled = self._ports.harness.fail_lifecycle(
@@ -1141,6 +1160,19 @@ class LifecycleProcessManager:
                         self._retire_completed_receipt(operation_id, step, "forward")
                         return
                     code, detail = settled.code, settled.detail
+                    if step.forward == "ensure":
+                        # The harness actor has fenced the start and confirmed
+                        # that no process effect can still complete.  Only that
+                        # domain settlement makes it safe to reverse bind and
+                        # the earlier create effects.
+                        self._store.set_state(
+                            operation_id,
+                            LifecycleState.COMPENSATING,
+                            detail,
+                            code,
+                        )
+                        self._compensate(operation_id, steps, detail, code)
+                        return
                 self._store.set_state(
                     operation_id, LifecycleState.FAILED, detail, code,
                 )
