@@ -176,6 +176,7 @@ class UserProfile:
     notification_rules: tuple[NotificationRule, ...] = ()
     squire_channel: str | None = None
     owner_open_id: OwnerOpenId | None = None
+    delivery_agent: str | None = None
     runtime_capabilities: tuple[RuntimeCapability, ...] = ()
 
     def runtime_capability(
@@ -257,6 +258,9 @@ class UserProfile:
         )
         if channel is not None:
             channel = _channel(channel, f"{label}.squireChannel")
+        delivery_agent = _optional_string(
+            record.get("deliveryAgent"), f"{label}.deliveryAgent"
+        )
         return cls(
             owner=_string(record.get("owner"), f"{label}.owner"),
             owner_key=_string(record.get("ownerKey"), f"{label}.ownerKey"),
@@ -271,6 +275,7 @@ class UserProfile:
             ),
             squire_channel=channel,
             owner_open_id=open_id,
+            delivery_agent=delivery_agent,
             preferred_receiver=PreferredReceiver(
                 machine=_string(
                     receiver.get("machine"), f"{label}.preferredReceiver.machine"
@@ -301,6 +306,11 @@ class UserProfile:
             **(
                 {"ownerOpenId": self.owner_open_id.to_json()}
                 if self.owner_open_id is not None
+                else {}
+            ),
+            **(
+                {"deliveryAgent": self.delivery_agent}
+                if self.delivery_agent is not None
                 else {}
             ),
             "preferredReceiver": self.preferred_receiver.to_json(),
@@ -454,6 +464,20 @@ class UserProfileStore:
             )
 
         return self._replace(owner_key, update, "users.ownerOpenId")
+
+    def set_delivery_agent(
+        self, owner_key: str, agent: str
+    ) -> tuple[UserProfile, tuple[str, ...]]:
+        agent = _string(agent, "delivery agent")
+        return self._replace(
+            owner_key,
+            lambda profile: (
+                profile
+                if profile.delivery_agent == agent
+                else replace(profile, delivery_agent=agent)
+            ),
+            "users.deliveryAgent",
+        )
 
     def set_runtime_capability(
         self, owner_key: str, capability: RuntimeCapability

@@ -212,12 +212,18 @@ class ReceiverUserDelivery:
         adapters: UserAdapterRegistry,
         ledger: UserDeliveryLedger,
         reload_adapters: Callable[[], None] | None = None,
+        delivery_agent_delivery: (
+            Callable[[str, UserDeliveryRequest], UserDeliveryResult | None] | None
+        ) = None,
+        logger: Callable[..., None] | None = None,
     ) -> None:
         self.node_id = node_id
         self.profiles = profiles
         self.adapters = adapters
         self.ledger = ledger
         self.reload_adapters = reload_adapters
+        self.delivery_agent_delivery = delivery_agent_delivery
+        self.logger = logger
         self._lock = threading.RLock()
 
     def owns(self, owner: str) -> bool:
@@ -244,6 +250,23 @@ class ReceiverUserDelivery:
                     code=ipc_errors.TARGET_SQUIRE_UNCONFIGURED,
                     message=UNCONFIGURED_SQUIRE_MESSAGE,
                 )
+            fallback_reason = "not-configured"
+            if profile.delivery_agent is not None:
+                fallback_reason = "not-live"
+                if self.delivery_agent_delivery is not None:
+                    proxy_result = self.delivery_agent_delivery(
+                        profile.delivery_agent, request
+                    )
+                    if proxy_result is not None:
+                        self._log_path(
+                            "user-delivery.proxy",
+                            request,
+                            deliveryAgent=profile.delivery_agent,
+                            accepted=proxy_result.accepted,
+                        )
+                        return self.ledger.record(
+                            request.idempotency_key, proxy_result
+                        )
             binding = profile.owner_open_id
             adapter_uri = profile.squire_adapter
             if (
@@ -274,6 +297,12 @@ class ReceiverUserDelivery:
             rendered = (
                 f"来自我的侍从，转述自 {request.sender}：\n\n{request.message}"
             )
+            self._log_path(
+                "user-delivery.squire",
+                request,
+                fallbackReason=fallback_reason,
+                adapter=adapter_uri,
+            )
             try:
                 native_message_id = adapter.send_owner_dm(
                     binding.open_id,
@@ -292,6 +321,21 @@ class ReceiverUserDelivery:
                 native_message_id=native_message_id,
             )
             return self.ledger.record(request.idempotency_key, result)
+
+    def _log_path(
+        self, event: str, request: UserDeliveryRequest, **fields: object
+    ) -> None:
+        if self.logger is None:
+            return
+        self.logger(
+            "info",
+            event,
+            messageId=request.message_id,
+            conversationId=request.conversation_id,
+            sender=request.sender,
+            owner=request.owner,
+            **fields,
+        )
 
     def _record(
         self, request: UserDeliveryRequest, *, code: str, message: str

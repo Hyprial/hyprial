@@ -119,6 +119,7 @@ from hyprial.squire import (
     UserAdapterRegistry,
     UserDeliveryLedger,
     UserDeliveryRequest,
+    UserDeliveryResult,
     UserDeliveryTarget,
     UserProfileStore,
     ZenohUserDeliveryEndpoint,
@@ -2220,6 +2221,10 @@ class DaemonApplication:
             adapters=self.user_adapters,
             ledger=UserDeliveryLedger(self.state_dir / "user-deliveries.json"),
             reload_adapters=self._reload_user_adapters,
+            delivery_agent_delivery=self._deliver_to_live_user_proxy,
+            logger=lambda level, event, **fields: self._log(
+                level, "user-delivery", event, **fields
+            ),
         )
         user_endpoint = ZenohUserDeliveryEndpoint(transport, user_receiver)
         user_delivery = ZenohUserDeliveryTransport(
@@ -3158,6 +3163,67 @@ class DaemonApplication:
             )
         )
         return outcome.accepted
+
+    def _deliver_to_live_user_proxy(
+        self, agent: str, request: UserDeliveryRequest
+    ) -> UserDeliveryResult | None:
+        """Submit receiver-owned user traffic to one live local proxy.
+
+        ``None`` means the configured agent is not currently a running
+        user-proxy and tells :class:`ReceiverUserDelivery` to use the existing
+        Squire fallback.  A selected proxy returns a real submission result,
+        including a refusal, so one request is never attempted on both paths.
+        """
+
+        if self._inbox is None:
+            return None
+        desired = self.desired_state.load()
+        spec = next(
+            (
+                candidate
+                for candidate in desired.harnesses
+                if candidate.name == agent and candidate.harness == "user-proxy"
+            ),
+            None,
+        )
+        if spec is None:
+            return None
+        recipient = self._canonical_harness_uri(agent, spec, desired)
+        if self._managed_worker_running(recipient, desired) is not True:
+            return None
+        # Through the daemon's own send boundary, not a raw inbox write: the
+        # inbox authority gate keeps raw submits to a shrinking manifest.  A
+        # canonical sender URI passes the send boundary unchanged, so the
+        # proxy still sees (and attributes) the original sender.
+        try:
+            sent = self.handle(
+                "message.send",
+                {
+                    "from": request.sender,
+                    "to": [recipient],
+                    "message": request.message,
+                    "conversationId": request.conversation_id,
+                    "idempotencyKey": request.idempotency_key,
+                },
+            )
+        except DaemonRequestError as error:
+            return UserDeliveryResult(
+                message_id=request.message_id,
+                accepted=False,
+                code=error.code,
+                message=str(error),
+            )
+        deliveries = sent.get("deliveries") if isinstance(sent, dict) else None
+        delivery = deliveries[0] if isinstance(deliveries, list) and deliveries else {}
+        accepted = bool(isinstance(delivery, dict) and delivery.get("accepted"))
+        native = delivery.get("messageId") if isinstance(delivery, dict) else None
+        return UserDeliveryResult(
+            message_id=request.message_id,
+            accepted=accepted,
+            native_message_id=str(native) if accepted and native else None,
+            code=None if accepted else str(delivery.get("code") or "PROXY_SEND_REFUSED"),
+            message=None if accepted else "the live user-proxy refused the delivery",
+        )
 
     def _running_actor_uris(self) -> frozenset[str]:
         """Actors this node currently supervises as running.
@@ -10720,17 +10786,36 @@ class DaemonApplication:
         addresses: set[str] = set()
         try:
             addresses.add(canonical_user_uri(self.owner))
-            profile = self.user_profiles.get_by_owner(self.owner)
+            profile = self.user_profiles.resolve(self.owner)
             if profile is None:
                 return frozenset(addresses)
             addresses.add(canonical_user_uri(profile.owner_key))
+            adapter_names: set[str] = set()
             squire_adapter = profile.squire_adapter
-            if not squire_adapter:
+            if squire_adapter:
+                parsed = parse_channel_uri(squire_adapter)
+                adapter_names.add(
+                    parsed[2] if parsed is not None else squire_adapter
+                )
+            if profile.delivery_agent is not None:
+                agent = self.agents.get(profile.delivery_agent)
+                agent_uri = (
+                    agent.uri
+                    if agent is not None
+                    else canonical_agent_uri(
+                        self.owner, self.node_id, profile.delivery_agent
+                    )
+                )
+                addresses.add(agent_uri)
+                adapter_names.update(
+                    adapter
+                    for adapter, pinned in self._adapter_pins().items()
+                    if pinned == agent_uri
+                )
+            if not adapter_names:
                 return frozenset(addresses)
-            parsed = parse_channel_uri(squire_adapter)
-            adapter_name = parsed[2] if parsed is not None else squire_adapter
             for gateway in self.load_persistent_configuration().channels.gateways:
-                if gateway.name != adapter_name:
+                if gateway.name not in adapter_names:
                     continue
                 # The gateway model is Lark-only, so this is the same
                 # ``adapter:lark:<name>`` shape an inbound notice carries.
