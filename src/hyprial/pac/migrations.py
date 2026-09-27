@@ -19,7 +19,7 @@ from .errors import PAC_MIGRATION_SOURCE_UNREADABLE, PacError
 from .journal import JOURNAL_SCHEMA, append_event
 from .principal import principal_kind
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 
 def _create_v1(db: sqlite3.Connection, schema: str) -> None:
@@ -820,6 +820,100 @@ def _upgrade_v14_to_v15(db: sqlite3.Connection) -> None:
             continue
 
 
+def _upgrade_v15_to_v16(db: sqlite3.Connection) -> None:
+    """Persist terminal cleanup work without inferring ownership from names."""
+
+    db.execute("ALTER TABLE workflow_worker_receipts RENAME TO workflow_worker_receipts_v15")
+    db.execute(
+        """
+        CREATE TABLE workflow_worker_receipts (
+            graph_id          TEXT NOT NULL,
+            actor_node        TEXT NOT NULL,
+            actor_name        TEXT NOT NULL,
+            actor_uri         TEXT NOT NULL,
+            ownership         TEXT NOT NULL CHECK(ownership = 'workflow'),
+            launch_digest     TEXT NOT NULL,
+            roster_digest     TEXT NOT NULL,
+            state             TEXT NOT NULL CHECK(state IN ('planned','down')),
+            admission_generation INTEGER NOT NULL DEFAULT 0
+                CHECK(admission_generation >= 0),
+            agent_entity_token TEXT,
+            created_at        INTEGER NOT NULL,
+            PRIMARY KEY(graph_id, actor_node),
+            FOREIGN KEY(graph_id, actor_node)
+                REFERENCES nodes(graph_id, node_id)
+        )
+        """
+    )
+    db.execute(
+        "INSERT INTO workflow_worker_receipts "
+        "SELECT * FROM workflow_worker_receipts_v15"
+    )
+    db.execute("DROP TABLE workflow_worker_receipts_v15")
+    db.execute(
+        "CREATE UNIQUE INDEX workflow_worker_receipts_actor "
+        "ON workflow_worker_receipts(graph_id, actor_name)"
+    )
+    db.execute(
+        """
+        CREATE TRIGGER workflow_worker_receipt_identity_immutable
+        BEFORE UPDATE OF graph_id,actor_node,actor_name,actor_uri,ownership,
+                         launch_digest,roster_digest,created_at
+        ON workflow_worker_receipts
+        WHEN NEW.graph_id IS NOT OLD.graph_id
+          OR NEW.actor_node IS NOT OLD.actor_node
+          OR NEW.actor_name IS NOT OLD.actor_name
+          OR NEW.actor_uri IS NOT OLD.actor_uri
+          OR NEW.ownership IS NOT OLD.ownership
+          OR NEW.launch_digest IS NOT OLD.launch_digest
+          OR NEW.roster_digest IS NOT OLD.roster_digest
+          OR NEW.created_at IS NOT OLD.created_at
+        BEGIN
+            SELECT RAISE(ABORT, 'workflow worker receipt identity is immutable');
+        END
+        """
+    )
+    db.execute(
+        """
+        CREATE TABLE workflow_worker_cleanup_intents (
+            graph_id          TEXT NOT NULL,
+            actor_node        TEXT NOT NULL,
+            actor_name        TEXT NOT NULL,
+            actor_uri         TEXT NOT NULL,
+            operation_id      TEXT NOT NULL,
+            state             TEXT NOT NULL
+                              CHECK(state IN ('pending','complete','attention')),
+            attempts          INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
+            created_at        INTEGER NOT NULL,
+            updated_at        INTEGER NOT NULL,
+            attention_reason  TEXT,
+            last_observation_json TEXT,
+            PRIMARY KEY(graph_id, actor_node),
+            UNIQUE(graph_id, operation_id),
+            FOREIGN KEY(graph_id, actor_node)
+                REFERENCES workflow_worker_receipts(graph_id, actor_node),
+            CHECK ((state = 'attention') = (attention_reason IS NOT NULL))
+        )
+        """
+    )
+    db.execute(
+        """
+        CREATE TRIGGER workflow_worker_cleanup_identity_immutable
+        BEFORE UPDATE OF graph_id,actor_node,actor_name,actor_uri,operation_id,created_at
+        ON workflow_worker_cleanup_intents
+        WHEN NEW.graph_id IS NOT OLD.graph_id
+          OR NEW.actor_node IS NOT OLD.actor_node
+          OR NEW.actor_name IS NOT OLD.actor_name
+          OR NEW.actor_uri IS NOT OLD.actor_uri
+          OR NEW.operation_id IS NOT OLD.operation_id
+          OR NEW.created_at IS NOT OLD.created_at
+        BEGIN
+            SELECT RAISE(ABORT, 'workflow worker cleanup identity is immutable');
+        END
+        """
+    )
+
+
 def migrate(db: sqlite3.Connection, legacy_schema: str, state_dir: Path | None = None) -> None:
     db.execute("BEGIN IMMEDIATE")
     try:
@@ -886,6 +980,10 @@ def migrate(db: sqlite3.Connection, legacy_schema: str, state_dir: Path | None =
         if version == 14:
             _upgrade_v14_to_v15(db)
             db.execute("PRAGMA user_version = 15")
+            version = 15
+        if version == 15:
+            _upgrade_v15_to_v16(db)
+            db.execute("PRAGMA user_version = 16")
         db.commit()
     except BaseException:
         db.rollback()

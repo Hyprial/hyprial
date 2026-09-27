@@ -408,6 +408,90 @@ class PacGraphStore:
         ).fetchone()
         return dict(row) if row is not None else None
 
+    def workflow_worker_cleanup_intents(
+        self, graph_id: str
+    ) -> list[dict[str, Any]]:
+        """Return durable terminal cleanup work in actor order."""
+
+        return [
+            dict(row)
+            for row in self._db.execute(
+                "SELECT * FROM workflow_worker_cleanup_intents WHERE graph_id=? "
+                "ORDER BY actor_node",
+                (graph_id,),
+            )
+        ]
+
+    def workflow_worker_cleanup_intent(
+        self, graph_id: str, actor_node: str
+    ) -> dict[str, Any] | None:
+        row = self._db.execute(
+            "SELECT * FROM workflow_worker_cleanup_intents "
+            "WHERE graph_id=? AND actor_node=?",
+            (graph_id, actor_node),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def workflow_worker_cleanup(self, graph_id: str) -> str | None:
+        """Project terminal cleanup independently from workflow settlement.
+
+        Terminal graphs created before schema 16 have receipts but no cleanup
+        intents.  Their absence is intentionally not reinterpreted as either
+        ownership authority or successful reclaim.
+        """
+
+        workflow = self._db.execute(
+            "SELECT state FROM workflow_graphs WHERE graph_id=?", (graph_id,)
+        ).fetchone()
+        if workflow is None or workflow["state"] not in {
+            "completed",
+            "failed",
+            "cancelled",
+        }:
+            return None
+        receipts = self.workflow_worker_receipts(graph_id)
+        intents = self.workflow_worker_cleanup_intents(graph_id)
+        if not receipts:
+            return "complete"
+        if not intents:
+            return None
+        if len(intents) != len(receipts):
+            return "attention"
+        states = {str(row["state"]) for row in intents}
+        if "attention" in states:
+            return "attention"
+        if states == {"complete"}:
+            return "complete"
+        return "pending"
+
+    def workflow_worker_cleanup_attention(
+        self, observed_at_ms: int
+    ) -> list[dict[str, Any]]:
+        """Return operator-facing cleanup debt without guessing liveness."""
+
+        findings: list[dict[str, Any]] = []
+        for row in self._db.execute(
+            "SELECT * FROM workflow_worker_cleanup_intents "
+            "WHERE state='attention' ORDER BY created_at,graph_id,actor_node"
+        ):
+            try:
+                observation = json.loads(row["last_observation_json"] or "null")
+            except (TypeError, ValueError):
+                observation = {"malformed": True}
+            findings.append(
+                {
+                    "graphId": row["graph_id"],
+                    "actor": row["actor_uri"],
+                    "actorName": row["actor_name"],
+                    "actorNode": row["actor_node"],
+                    "operationId": row["operation_id"],
+                    "ageMs": max(0, observed_at_ms - int(row["created_at"])),
+                    "reason": row["attention_reason"],
+                    "lastObservation": observation,
+                }
+            )
+        return findings
+
     def workflow_roster(self, graph_id: str) -> dict[str, Any] | None:
         """Read and integrity-check the stored roster and its receipts.
 
@@ -471,7 +555,7 @@ class PacGraphStore:
             }
             if (
                 receipt["ownership"] != "workflow"
-                or receipt["state"] != "planned"
+                or receipt["state"] not in {"planned", "down"}
                 or receipt["actor_name"] != actor["actor_name"]
                 or receipt["launch_digest"] != launch_digest
                 or receipt["roster_digest"] != meta["roster_digest"]

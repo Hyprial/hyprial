@@ -82,4 +82,9 @@ def observe_node(database, graph, node, inbox, *, recipient: str, at: int, epoch
             if "roster" in graph
             else {}
         ),
+        **(
+            {"workerCleanup": graph["workerCleanup"]}
+            if "workerCleanup" in graph
+            else {}
+        ),
     }

@@ -3616,6 +3616,9 @@ def _doctor_result(*, peer: str | None = None) -> JsonObject:
             historical_inbox_check = _historical_inbox_doctor_check(result)
             if historical_inbox_check is not None:
                 checks.append(historical_inbox_check)
+            cleanup_check = _workflow_worker_cleanup_doctor_check(result)
+            if cleanup_check is not None:
+                checks.append(cleanup_check)
             routine_check = _routine_health_doctor_check()
             if routine_check is not None:
                 checks.append(routine_check)
@@ -4162,6 +4165,49 @@ def _historical_inbox_doctor_check(result: JsonObject) -> JsonObject | None:
             "historicalRecipients": [item["recipient"] for item in entries],
             "currentRecipients": [item["currentRecipient"] for item in entries],
         },
+    }
+
+
+def _workflow_worker_cleanup_doctor_check(
+    result: JsonObject,
+) -> JsonObject | None:
+    """Name every terminal worker whose reclaim could not be confirmed."""
+
+    cleanup = result.get("workflowWorkerCleanup")
+    raw_findings = cleanup.get("attention") if isinstance(cleanup, dict) else None
+    if not isinstance(raw_findings, list):
+        return None
+    findings = [
+        item
+        for item in raw_findings
+        if isinstance(item, dict)
+        and isinstance(item.get("graphId"), str)
+        and isinstance(item.get("actor"), str)
+        and isinstance(item.get("operationId"), str)
+        and isinstance(item.get("ageMs"), int)
+        and not isinstance(item.get("ageMs"), bool)
+    ]
+    if not findings:
+        return None
+    first = findings[0]
+    return {
+        "name": "workflow-worker-cleanup",
+        "status": "warn",
+        "detail": (
+            f"{len(findings)} terminal workflow worker(s) need attention; "
+            f"graph={first['graphId']} actor={first['actor']} "
+            f"operation={first['operationId']} ageMs={first['ageMs']} "
+            "lastObservation="
+            + json.dumps(first.get("lastObservation"), sort_keys=True)
+        ),
+        "action": {
+            "command": f"hyprial workflow status {first['graphId']} --json",
+            "description": (
+                "Verify the exact process identity and resolve the lifecycle "
+                "failure before treating the worker as reclaimed."
+            ),
+        },
+        "metrics": {"count": len(findings), "workers": findings},
     }
 
 

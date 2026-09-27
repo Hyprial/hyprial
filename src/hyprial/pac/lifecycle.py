@@ -176,6 +176,12 @@ def now_ms() -> int:
     return time_ns() // 1_000_000
 
 
+# A connector that remains present after three ordinary lifecycle down effects
+# is no longer treated as eventually consistent.  The durable intent moves to
+# attention and requires an operator to resolve the identity/process ambiguity.
+CLEANUP_ATTEMPT_LIMIT = 3
+
+
 def request_actor_stop(store: PacGraphStore, graph_id: str, actor_name: str, *, actor: str) -> None:
     """Owner-only early stop; actor flag is never used as an intent bit."""
     db = store.write()
@@ -323,7 +329,9 @@ class ActorCoordinator:
         assert activation is not None
         return activation
 
-    def _request_down(self, graph_id: str, node_id: str) -> dict[str, Any]:
+    def _request_down(
+        self, graph_id: str, node_id: str, *, operation_id: str | None = None
+    ) -> dict[str, Any]:
         db = self.store.write()
         try:
             row = db.execute(
@@ -331,11 +339,21 @@ class ActorCoordinator:
                 (graph_id, node_id),
             ).fetchone()
             assert row is not None
-            if not (row["desired"] == "down" and row["op"] == "pending"):
+            if not (
+                row["desired"] == "down"
+                and row["op"] == "pending"
+                and (operation_id is None or row["operation_id"] == operation_id)
+            ):
                 db.execute(
                     "UPDATE actor_activations SET desired='down',op='pending',effect_id=?,operation_id=?,"
                     "updated_at=? WHERE graph_id=? AND node_id=?",
-                    (str(uuid4()), f"pac-down:{uuid4().hex}", int(self.clock()), graph_id, node_id),
+                    (
+                        str(uuid4()),
+                        operation_id or f"pac-down:{uuid4().hex}",
+                        int(self.clock()),
+                        graph_id,
+                        node_id,
+                    ),
                 )
             db.commit()
         except BaseException:
@@ -355,22 +373,272 @@ class ActorCoordinator:
                 markers.add(data["identityMarker"])
         return markers
 
+    @staticmethod
+    def _observation_document(observation: RuntimeObservation) -> dict[str, Any]:
+        return {
+            "present": observation.present,
+            "identityMarker": observation.identity_marker,
+            "harness": observation.harness,
+            "operationId": observation.operation_id,
+            "agentEntityToken": observation.agent_entity_token,
+        }
+
+    def _cleanup_attention(
+        self,
+        graph_id: str,
+        node: NodeRow,
+        intent: dict[str, Any],
+        reason: str,
+        observation: dict[str, Any],
+    ) -> None:
+        db = self.store.write()
+        try:
+            graph = self.store.graph(graph_id)
+            current = db.execute(
+                "SELECT * FROM workflow_worker_cleanup_intents "
+                "WHERE graph_id=? AND actor_node=?",
+                (graph_id, node.node_id),
+            ).fetchone()
+            if (
+                graph is None
+                or current is None
+                or current["operation_id"] != intent["operation_id"]
+                or current["state"] == "complete"
+            ):
+                db.rollback()
+                return
+            at = int(self.clock())
+            observation_json = json.dumps(
+                observation, ensure_ascii=False, sort_keys=True
+            )
+            changed = current["state"] != "attention" or current[
+                "attention_reason"
+            ] != reason
+            db.execute(
+                "UPDATE workflow_worker_cleanup_intents SET state='attention',"
+                "attention_reason=?,last_observation_json=?,updated_at=? "
+                "WHERE graph_id=? AND actor_node=?",
+                (reason, observation_json, at, graph_id, node.node_id),
+            )
+            if changed:
+                append_event(
+                    db,
+                    graph_id=graph_id,
+                    version=graph["version"],
+                    type="workflow_changed",
+                    at=at,
+                    data={
+                        "workerCleanup": "attention",
+                        "actorNode": node.node_id,
+                        "actorName": node.actor_name,
+                        "operationId": current["operation_id"],
+                        "ageMs": max(0, at - int(current["created_at"])),
+                        "reason": reason,
+                        "lastObservation": observation,
+                    },
+                )
+            db.commit()
+        except BaseException:
+            db.rollback()
+            raise
+        self._skip(
+            graph_id,
+            node.node_id,
+            reason,
+            actorName=node.actor_name,
+            operationId=intent["operation_id"],
+            ageMs=max(0, int(self.clock()) - int(intent["created_at"])),
+            lastObservation=observation,
+        )
+
+    def _complete_cleanup_without_activation(
+        self,
+        graph_id: str,
+        node: NodeRow,
+        intent: dict[str, Any],
+        observation: RuntimeObservation,
+    ) -> None:
+        db = self.store.write()
+        try:
+            graph = self.store.graph(graph_id)
+            current = db.execute(
+                "SELECT * FROM workflow_worker_cleanup_intents "
+                "WHERE graph_id=? AND actor_node=?",
+                (graph_id, node.node_id),
+            ).fetchone()
+            if (
+                graph is None
+                or current is None
+                or current["operation_id"] != intent["operation_id"]
+                or current["state"] != "pending"
+            ):
+                db.rollback()
+                return
+            at = int(self.clock())
+            db.execute(
+                "INSERT INTO actor_activations "
+                "(graph_id,node_id,incarnation,desired,op,effect_id,operation_id,"
+                "identity_marker,daemon_epoch,updated_at) "
+                "VALUES (?,?,0,'down','done',?,?,NULL,?,?)",
+                (
+                    graph_id,
+                    node.node_id,
+                    str(uuid4()),
+                    current["operation_id"],
+                    self.daemon_epoch,
+                    at,
+                ),
+            )
+            self._complete_cleanup_row(
+                db, graph, node, current, at, observation=observation
+            )
+            db.commit()
+        except BaseException:
+            db.rollback()
+            raise
+
+    def _complete_cleanup_row(
+        self,
+        db: Any,
+        graph: dict[str, Any],
+        node: NodeRow,
+        intent: Any,
+        at: int,
+        *,
+        observation: RuntimeObservation,
+    ) -> None:
+        observation_document = self._observation_document(observation)
+        db.execute(
+            "UPDATE workflow_worker_cleanup_intents SET state='complete',"
+            "attention_reason=NULL,last_observation_json=?,updated_at=? "
+            "WHERE graph_id=? AND actor_node=? AND operation_id=?",
+            (
+                json.dumps(observation_document, ensure_ascii=False, sort_keys=True),
+                at,
+                graph["graph_id"],
+                node.node_id,
+                intent["operation_id"],
+            ),
+        )
+        db.execute(
+            "UPDATE workflow_worker_receipts SET state='down' "
+            "WHERE graph_id=? AND actor_node=?",
+            (graph["graph_id"], node.node_id),
+        )
+        append_event(
+            db,
+            graph_id=graph["graph_id"],
+            version=graph["version"],
+            type="workflow_changed",
+            at=at,
+            data={
+                "workerCleanup": "complete",
+                "actorNode": node.node_id,
+                "actorName": node.actor_name,
+                "operationId": intent["operation_id"],
+                "ageMs": max(0, at - int(intent["created_at"])),
+                "lastObservation": observation_document,
+                "workerState": "stopped",
+            },
+        )
+
     def reconcile(self, graph_id: str, node_id: str) -> None:
         graph = self.store.graph(graph_id)
         node = self.store.node(graph_id, node_id)
         if graph is None or node is None or node.kind != "actor" or node.actor_name is None:
             return
+        cleanup = self.store.workflow_worker_cleanup_intent(graph_id, node_id)
+        receipt = self.store.workflow_worker_receipt(graph_id, node_id)
+        if cleanup is not None and cleanup["state"] in {"complete", "attention"}:
+            return
         activation = self._activation(graph_id, node_id)
         if activation is None:
+            if cleanup is not None:
+                try:
+                    observation = self.runtime.observe(node.actor_name)
+                except Exception as error:  # noqa: BLE001 - durable attention outcome
+                    self._cleanup_attention(
+                        graph_id,
+                        node,
+                        cleanup,
+                        "lifecycle_manager_unavailable",
+                        {"errorType": type(error).__name__, "detail": str(error)[:500]},
+                    )
+                    return
+                if observation.present:
+                    self._cleanup_attention(
+                        graph_id,
+                        node,
+                        cleanup,
+                        "unknown_identity",
+                        self._observation_document(observation),
+                    )
+                else:
+                    self._complete_cleanup_without_activation(
+                        graph_id, node, cleanup, observation
+                    )
+                return
             if graph["activated_at"] is None or graph["closed_at"] is not None or not self._ready(graph_id, node_id):
                 return
             activation = self._prepare_up(graph_id, node)
         elif graph["closed_at"] is not None and activation["desired"] != "down":
-            activation = self._request_down(graph_id, node_id)
+            # Managed workflows gain stop authority only from the cleanup
+            # intent copied from an immutable ownership receipt at close.
+            if receipt is not None and cleanup is None:
+                return
+            activation = self._request_down(
+                graph_id,
+                node_id,
+                operation_id=(cleanup["operation_id"] if cleanup else None),
+            )
 
-        observation = self.runtime.observe(node.actor_name)
+        try:
+            observation = self.runtime.observe(node.actor_name)
+        except Exception as error:  # noqa: BLE001 - cleanup must fail closed
+            if cleanup is None:
+                raise
+            self._cleanup_attention(
+                graph_id,
+                node,
+                cleanup,
+                "lifecycle_manager_unavailable",
+                {"errorType": type(error).__name__, "detail": str(error)[:500]},
+            )
+            return
         marker = activation["identity_marker"]
+        if (
+            cleanup is not None
+            and observation.present
+            and receipt is not None
+            and receipt["agent_entity_token"] is not None
+            and observation.agent_entity_token != receipt["agent_entity_token"]
+        ):
+            self._cleanup_attention(
+                graph_id,
+                node,
+                cleanup,
+                (
+                    "unknown_identity"
+                    if observation.agent_entity_token is None
+                    else "entity_token_mismatch"
+                ),
+                self._observation_document(observation),
+            )
+            return
         if observation.present and observation.identity_marker != marker:
+            if cleanup is not None:
+                self._cleanup_attention(
+                    graph_id,
+                    node,
+                    cleanup,
+                    (
+                        "unknown_identity"
+                        if observation.identity_marker is None
+                        else "marker_mismatch"
+                    ),
+                    self._observation_document(observation),
+                )
+                return
             if observation.identity_marker in self._known_markers(graph_id, node_id):
                 self._retire_stale(graph_id, node, activation, observation)
             elif activation["daemon_epoch"] != self.daemon_epoch:
@@ -388,7 +656,9 @@ class ActorCoordinator:
                 )
             return
         if activation["desired"] == "down":
-            self._reconcile_down(graph_id, node, activation, observation)
+            self._reconcile_down(
+                graph_id, node, activation, observation, cleanup=cleanup
+            )
         else:
             self._reconcile_up(graph_id, node, activation, observation)
 
@@ -579,33 +849,145 @@ class ActorCoordinator:
         self.reactor._deliver(graph_id, tuple(inserted))
 
     def _reconcile_down(
-        self, graph_id: str, node: NodeRow, activation: dict[str, Any], observation: RuntimeObservation
+        self,
+        graph_id: str,
+        node: NodeRow,
+        activation: dict[str, Any],
+        observation: RuntimeObservation,
+        *,
+        cleanup: dict[str, Any] | None = None,
     ) -> None:
         if activation["op"] == "done":
-            return
-        launch = LaunchSpec.from_json(json.loads(activation["launch_json"])) if activation["launch_json"] else LaunchSpec("unknown", None, None, None, ())
-        if observation.present:
-            observation = self.runtime.stop(
-                node.actor_name or "",
-                launch,
-                operation_id=activation["operation_id"],
-                identity_marker=activation["identity_marker"],
-            )
-        if not observation.present:
-            self._complete_down(graph_id, node, activation)
-        else:
-            self._skip(
+            if cleanup is not None:
+                if observation.present:
+                    activation = self._request_down(
+                        graph_id,
+                        node.node_id,
+                        operation_id=cleanup["operation_id"],
+                    )
+                else:
+                    self._complete_down(
+                        graph_id,
+                        node,
+                        activation,
+                        cleanup=cleanup,
+                        observation=observation,
+                    )
+                    return
+            else:
+                return
+        if cleanup is not None and activation["operation_id"] != cleanup["operation_id"]:
+            activation = self._request_down(
                 graph_id,
                 node.node_id,
-                "still_present_after_stop",
-                operationId=activation["operation_id"],
+                operation_id=cleanup["operation_id"],
             )
+        launch = LaunchSpec.from_json(json.loads(activation["launch_json"])) if activation["launch_json"] else LaunchSpec("unknown", None, None, None, ())
+        if observation.present:
+            try:
+                observation = self.runtime.stop(
+                    node.actor_name or "",
+                    launch,
+                    operation_id=activation["operation_id"],
+                    identity_marker=activation["identity_marker"],
+                )
+            except Exception as error:  # noqa: BLE001 - durable cleanup outcome
+                if cleanup is None:
+                    raise
+                reason = (
+                    "stop_timeout"
+                    if isinstance(error, TimeoutError)
+                    else "lifecycle_manager_unavailable"
+                )
+                self._cleanup_attention(
+                    graph_id,
+                    node,
+                    cleanup,
+                    reason,
+                    {
+                        "errorType": type(error).__name__,
+                        "detail": str(error)[:500],
+                        "present": True,
+                    },
+                )
+                return
+        if not observation.present:
+            self._complete_down(
+                graph_id,
+                node,
+                activation,
+                cleanup=cleanup,
+                observation=observation,
+            )
+            return
+        if cleanup is not None:
+            db = self.store.write()
+            try:
+                current = db.execute(
+                    "SELECT * FROM workflow_worker_cleanup_intents "
+                    "WHERE graph_id=? AND actor_node=?",
+                    (graph_id, node.node_id),
+                ).fetchone()
+                if (
+                    current is None
+                    or current["operation_id"] != cleanup["operation_id"]
+                    or current["state"] != "pending"
+                ):
+                    db.rollback()
+                    return
+                attempts = int(current["attempts"]) + 1
+                at = int(self.clock())
+                document = self._observation_document(observation)
+                db.execute(
+                    "UPDATE workflow_worker_cleanup_intents SET attempts=?,"
+                    "last_observation_json=?,updated_at=? "
+                    "WHERE graph_id=? AND actor_node=?",
+                    (
+                        attempts,
+                        json.dumps(document, ensure_ascii=False, sort_keys=True),
+                        at,
+                        graph_id,
+                        node.node_id,
+                    ),
+                )
+                db.commit()
+            except BaseException:
+                db.rollback()
+                raise
+            if attempts >= CLEANUP_ATTEMPT_LIMIT:
+                refreshed = self.store.workflow_worker_cleanup_intent(
+                    graph_id, node.node_id
+                )
+                assert refreshed is not None
+                self._cleanup_attention(
+                    graph_id,
+                    node,
+                    refreshed,
+                    "stop_timeout",
+                    self._observation_document(observation),
+                )
+                return
+        self._skip(
+            graph_id,
+            node.node_id,
+            "still_present_after_stop",
+            operationId=activation["operation_id"],
+        )
 
     def _skip(self, graph_id: str, node_id: str, reason: str, **detail: Any) -> None:
         if self.on_skip is not None:
             self.on_skip(graph_id, node_id, reason, detail)
 
-    def _complete_down(self, graph_id: str, node: NodeRow, activation: dict[str, Any], *, stale: bool = False) -> None:
+    def _complete_down(
+        self,
+        graph_id: str,
+        node: NodeRow,
+        activation: dict[str, Any],
+        *,
+        stale: bool = False,
+        cleanup: dict[str, Any] | None = None,
+        observation: RuntimeObservation | None = None,
+    ) -> None:
         db = self.store.write()
         inserted: list[PlannedNotification] = []
         try:
@@ -614,24 +996,44 @@ class ActorCoordinator:
                 "SELECT * FROM actor_activations WHERE graph_id=? AND node_id=?",
                 (graph_id, node.node_id),
             ).fetchone()
-            if graph is None or current is None or current["operation_id"] != activation["operation_id"] or current["op"] == "done":
+            if graph is None or current is None or current["operation_id"] != activation["operation_id"]:
                 db.rollback()
                 return
             at = int(self.clock())
-            db.execute(
-                "UPDATE actor_activations SET op='done',daemon_epoch=?,updated_at=? WHERE graph_id=? AND node_id=?",
-                (self.daemon_epoch, at, graph_id, node.node_id),
-            )
-            append_event(
-                db, graph_id=graph_id, version=graph["version"], type="actor_down", at=at,
-                data={
-                    "nodeId": node.node_id, "actorName": node.actor_name,
-                    "incarnation": current["incarnation"], "effectId": current["effect_id"],
-                    "operationId": current["operation_id"], "identityMarker": current["identity_marker"],
-                    "daemonEpoch": self.daemon_epoch,
-                    **({"staleIncarnation": True} if stale else {}),
-                },
-            )
+            if current["op"] != "done":
+                db.execute(
+                    "UPDATE actor_activations SET op='done',daemon_epoch=?,updated_at=? WHERE graph_id=? AND node_id=?",
+                    (self.daemon_epoch, at, graph_id, node.node_id),
+                )
+                append_event(
+                    db, graph_id=graph_id, version=graph["version"], type="actor_down", at=at,
+                    data={
+                        "nodeId": node.node_id, "actorName": node.actor_name,
+                        "incarnation": current["incarnation"], "effectId": current["effect_id"],
+                        "operationId": current["operation_id"], "identityMarker": current["identity_marker"],
+                        "daemonEpoch": self.daemon_epoch,
+                        **({"staleIncarnation": True} if stale else {}),
+                    },
+                )
+            if cleanup is not None:
+                cleanup_row = db.execute(
+                    "SELECT * FROM workflow_worker_cleanup_intents "
+                    "WHERE graph_id=? AND actor_node=?",
+                    (graph_id, node.node_id),
+                ).fetchone()
+                if (
+                    cleanup_row is not None
+                    and cleanup_row["state"] == "pending"
+                    and cleanup_row["operation_id"] == cleanup["operation_id"]
+                ):
+                    self._complete_cleanup_row(
+                        db,
+                        graph,
+                        node,
+                        cleanup_row,
+                        at,
+                        observation=observation or RuntimeObservation(False),
+                    )
             refreshed = self.store.node(graph_id, node.node_id)
             if refreshed is not None and refreshed.flag:
                 event_id = str(uuid4())

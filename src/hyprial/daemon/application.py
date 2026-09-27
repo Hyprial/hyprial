@@ -5307,6 +5307,9 @@ class DaemonApplication:
                         refresh=params.get("refreshTailnetStatus") is True
                     ),
                     "workerProxy": self._worker_proxy_status_json(),
+                    "workflowWorkerCleanup": {
+                        "attention": self._workflow_cleanup_attention_snapshot()
+                    },
                     "connectors": connector_statuses,
                     "orphanProcesses": list(self._orphan_process_status()),
                     "adapters": (
@@ -7920,6 +7923,22 @@ class DaemonApplication:
 
         with self._dispatch_without_pac_lock:
             return self._dispatch_conversation_count
+
+    def _workflow_cleanup_attention_snapshot(self) -> list[JsonObject]:
+        """Read durable terminal-cleanup debt for ps and doctor."""
+
+        from hyprial.pac.store import PacGraphStore, default_database_path
+
+        database = default_database_path(self.state_dir)
+        if not database.exists():
+            return []
+        store = PacGraphStore(database, read_only=True)
+        try:
+            return store.workflow_worker_cleanup_attention(
+                time.time_ns() // 1_000_000
+            )
+        finally:
+            store.close()
 
     # Condition (b) of the narrowed gate: the PAC template's delivery-section
     # keywords, verbatim from spec-dispatch-gate-classifier-2026-09-04.  Two

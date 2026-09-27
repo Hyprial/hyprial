@@ -93,6 +93,36 @@ def close_workflow(
                 row["node_id"],
             ),
         )
+    for receipt in store.workflow_worker_receipts(graph["graph_id"]):
+        operation_id = f"pac-cleanup:{uuid4().hex}"
+        inserted = db.execute(
+            "INSERT OR IGNORE INTO workflow_worker_cleanup_intents "
+            "(graph_id,actor_node,actor_name,actor_uri,operation_id,state,"
+            "attempts,created_at,updated_at) VALUES (?,?,?,?,?,'pending',0,?,?)",
+            (
+                graph["graph_id"],
+                receipt["actor_node"],
+                receipt["actor_name"],
+                receipt["actor_uri"],
+                operation_id,
+                at,
+                at,
+            ),
+        )
+        if inserted.rowcount:
+            append_event(
+                db,
+                graph_id=graph["graph_id"],
+                version=graph["version"],
+                type="workflow_changed",
+                at=at,
+                data={
+                    "workerCleanup": "pending",
+                    "actorNode": receipt["actor_node"],
+                    "actorName": receipt["actor_name"],
+                    "operationId": operation_id,
+                },
+            )
     if graph["closed_at"] is None:
         db.execute(
             "UPDATE graphs SET closed_at=?,closed_by=? WHERE graph_id=?",
@@ -998,6 +1028,7 @@ class GraphWorkflowService:
                     )
                 }
                 roster = store.workflow_roster(run_id)
+                worker_cleanup = store.workflow_worker_cleanup(run_id)
                 nodes = [
                     {
                         **node.to_json(),
@@ -1073,6 +1104,11 @@ class GraphWorkflowService:
                     **(
                         {"roster": roster, "rosterDigest": roster["digest"]}
                         if roster is not None
+                        else {}
+                    ),
+                    **(
+                        {"workerCleanup": worker_cleanup}
+                        if worker_cleanup is not None
                         else {}
                     ),
                 }
