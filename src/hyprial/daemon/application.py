@@ -1018,6 +1018,8 @@ class DaemonApplication:
         self._remote_workflow = None
         self._degraded_workflow_handles: list[Any] = []
         self._presence: _LocalPresence | None = None
+        self._interactive_route_actor_versions: dict[str, int] = {}
+        self._interactive_route_versions: dict[tuple[str, str | None], int] = {}
         self._directory: LivelinessDirectory | None = None
         self._inbox: DeliveryCustodyFacade | None = None
         self._inbox_coordinator: DeliveryCustodyCoordinator | None = None
@@ -6233,45 +6235,42 @@ class DaemonApplication:
                 and agent.last_harness != harness
                 else None
             )
-            with self._interactive_route_lock:
-                prior_sessions = tuple(
-                    item
-                    for item in self._agent_session_domains.session.read_sessions()
-                    if item.actor == actor or item.session_ref == session_ref
+            completed = self._call_session(
+                RegisterSessionCommand(
+                    correlation_id=f"session:register:{uuid4().hex}",
+                    actor=actor,
+                    cwd=session.cwd,
+                    command=session.command,
+                    source=session.source,
+                    session_ref=session_ref,
+                    runtime=session.runtime or "claude_interactive",
+                    channel_confirmed=session.channel_confirmed,
+                    channel_build_version=session.channel_build_version,
+                    channel_protocol_version=session.channel_protocol_version,
+                    owner_fence=session.owner_fence,
+                    channel_lease_token=params.get("channelLeaseToken")
+                    if isinstance(params.get("channelLeaseToken"), str)
+                    else None,
+                    tmux_session=session.tmux_session,
+                    process_pid=session.process_pid,
+                    process_identity=session.process_identity,
+                    manage_agent=agent is not None,
                 )
-                route_created = self._ensure_interactive_route(actor, session_ref)
-                try:
-                    completed = self._call_session(
-                        RegisterSessionCommand(
-                            correlation_id=f"session:register:{uuid4().hex}",
-                            actor=actor,
-                            cwd=session.cwd,
-                            command=session.command,
-                            source=session.source,
-                            session_ref=session_ref,
-                            runtime=session.runtime or "claude_interactive",
-                            channel_confirmed=session.channel_confirmed,
-                            channel_build_version=session.channel_build_version,
-                            channel_protocol_version=session.channel_protocol_version,
-                            owner_fence=session.owner_fence,
-                            channel_lease_token=params.get("channelLeaseToken")
-                            if isinstance(params.get("channelLeaseToken"), str)
-                            else None,
-                            tmux_session=session.tmux_session,
-                            process_pid=session.process_pid,
-                            process_identity=session.process_identity,
-                            manage_agent=agent is not None,
-                        )
+            )
+            result_actor = completed.result.actor
+            with self._interactive_route_lock:
+                if self._accept_interactive_route_observation_locked(
+                    result_actor, session_ref, completed.version
+                ):
+                    self._close_other_interactive_routes_locked(
+                        result_actor, session_ref
                     )
-                except BaseException:
-                    if route_created:
-                        self._close_interactive_route(actor, session_ref)
-                    raise
-                for prior in prior_sessions:
-                    if (prior.actor, prior.session_ref) != (actor, session_ref):
-                        self._close_interactive_route(
-                            prior.actor, prior.session_ref
-                        )
+                    self._ensure_interactive_route_locked(result_actor, session_ref)
+                    for superseded_actor in completed.result.superseded_actors:
+                        if self._accept_interactive_route_observation_locked(
+                            superseded_actor, session_ref, completed.version
+                        ):
+                            self._close_interactive_route_locked(superseded_actor)
             result = completed.result.to_payload()
             return {
                 **result,
@@ -6284,63 +6283,76 @@ class DaemonApplication:
         if method == "session.refresh":
             actor = self._mcp_actor(params)
             session_ref = _required_string(params.get("sessionRef"), "sessionRef")
-            with self._interactive_route_lock:
-                completed = self._call_session(
-                    RefreshSessionCommand(
-                        correlation_id=f"session:refresh:{uuid4().hex}",
-                        actor=actor,
-                        session_ref=session_ref,
-                        channel_lease_token=(
-                            params.get("channelLeaseToken")
-                            if isinstance(params.get("channelLeaseToken"), str)
-                            else None
-                        ),
-                        manage_agent=self.agents.get(actor) is not None,
-                    )
+            completed = self._call_session(
+                RefreshSessionCommand(
+                    correlation_id=f"session:refresh:{uuid4().hex}",
+                    actor=actor,
+                    session_ref=session_ref,
+                    channel_lease_token=(
+                        params.get("channelLeaseToken")
+                        if isinstance(params.get("channelLeaseToken"), str)
+                        else None
+                    ),
+                    manage_agent=self.agents.get(actor) is not None,
                 )
+            )
+            with self._interactive_route_lock:
                 # The result carries the canonical actor: after an owner-only
                 # relocation the route is ensured under the migrated spelling,
                 # never the caller's stale one.
-                self._ensure_interactive_route(
-                    completed.result.actor, session_ref
-                )
+                if self._accept_interactive_route_observation_locked(
+                    completed.result.actor, session_ref, completed.version
+                ):
+                    self._ensure_interactive_route_locked(
+                        completed.result.actor, session_ref
+                    )
             return completed.result.to_payload()
         if method == "session.heartbeat":
             actor = self._mcp_actor(params)
             session_ref = _required_string(params.get("sessionRef"), "sessionRef")
+            completed = self._call_session(
+                HeartbeatSessionCommand(
+                    correlation_id=f"session:heartbeat:{uuid4().hex}",
+                    actor=actor,
+                    session_ref=session_ref,
+                    channel_lease_token=(
+                        params.get("channelLeaseToken")
+                        if isinstance(params.get("channelLeaseToken"), str)
+                        else None
+                    ),
+                    manage_agent=self.agents.get(actor) is not None,
+                )
+            )
             with self._interactive_route_lock:
-                completed = self._call_session(
-                    HeartbeatSessionCommand(
-                        correlation_id=f"session:heartbeat:{uuid4().hex}",
-                        actor=actor,
-                        session_ref=session_ref,
-                        channel_lease_token=(
-                            params.get("channelLeaseToken")
-                            if isinstance(params.get("channelLeaseToken"), str)
-                            else None
-                        ),
-                        manage_agent=self.agents.get(actor) is not None,
-                    )
-                )
                 # Canonical actor, same rule as session.refresh.
-                self._ensure_interactive_route(
-                    completed.result.actor, session_ref
-                )
+                if self._accept_interactive_route_observation_locked(
+                    completed.result.actor, session_ref, completed.version
+                ):
+                    self._ensure_interactive_route_locked(
+                        completed.result.actor, session_ref
+                    )
             return completed.result.to_payload()
         if method == "session.unregister":
             actor = self._mcp_actor(params)
             session_ref = _required_string(params.get("sessionRef"), "sessionRef")
-            with self._interactive_route_lock:
-                completed = self._call_session(
-                    UnregisterSessionCommand(
-                        correlation_id=f"session:unregister:{uuid4().hex}",
-                        actor=actor,
-                        session_ref=session_ref,
-                        manage_agent=self.agents.get(actor) is not None,
-                    )
+            completed = self._call_session(
+                UnregisterSessionCommand(
+                    correlation_id=f"session:unregister:{uuid4().hex}",
+                    actor=actor,
+                    session_ref=session_ref,
+                    manage_agent=self.agents.get(actor) is not None,
                 )
-                if completed.result.unregistered:
-                    self._close_interactive_route(actor, session_ref)
+            )
+            with self._interactive_route_lock:
+                if (
+                    completed.result.unregistered
+                    and self._accept_interactive_route_observation_locked(
+                        completed.result.actor, session_ref, completed.version
+                    )
+                ):
+                    self._close_interactive_route_locked(
+                        completed.result.actor, session_ref
+                    )
             return completed.result.to_payload()
         if method == "message.query":
             return self._message_query(params)
@@ -9283,6 +9295,28 @@ class DaemonApplication:
         with self._interactive_route_lock:
             return self._ensure_interactive_route_locked(actor, session_ref)
 
+    def _accept_interactive_route_observation_locked(
+        self, actor: str, session_ref: str | None, version: int
+    ) -> bool:
+        """Fence route work derived from a Session-domain observation.
+
+        Session mutation results and session snapshots share one monotonic
+        version.  The route lock compares it with both the actor and exact
+        ``(actor, session_ref)`` high-water marks before the matching
+        ensure/drop.  The actor mark covers last-writer-wins registration;
+        the exact mark covers delayed observations of one lease.  An older
+        result therefore cannot restore or revoke a newer route.
+        """
+
+        key = (actor, session_ref)
+        latest_actor = self._interactive_route_actor_versions.get(actor, -1)
+        latest_session = self._interactive_route_versions.get(key, -1)
+        if version < max(latest_actor, latest_session):
+            return False
+        self._interactive_route_actor_versions[actor] = version
+        self._interactive_route_versions[key] = version
+        return True
+
     def _ensure_interactive_route_locked(
         self, actor: str, session_ref: str | None = None
     ) -> bool:
@@ -9388,29 +9422,33 @@ class DaemonApplication:
     def _expire_stale_channel_routes(
         self, now: float, sessions: tuple[SessionProjection, ...] | None = None
     ) -> None:
-        # Session heartbeat/refresh and route mutation are one local domain
-        # transaction.  This narrow lock replaces the removed daemon-wide IPC
-        # lock: a stale observation cannot close the route restored by a newer
-        # heartbeat, while unrelated workflow/Lark/lifecycle IPC stays free.
-        #
-        # Callers that already hold a fresh session read for the same request
-        # (ps) pass it in: closing routes below never edits the session store,
-        # so a pre-read is exactly what the locked section would read itself.
+        # Session reads can touch durable state and runtime projections, so all
+        # observation work stays outside the route lock.  The locked section
+        # admits only the matching in-memory version comparison and route drop.
+        # A heartbeat/refresh that applied a newer Session version therefore
+        # fences a delayed expiry observation without making either wait on
+        # the other's domain call.
+        observed_sessions = (
+            self._agent_session_domains.session.read_sessions()
+            if sessions is None
+            else sessions
+        )
+        observations = tuple(
+            (session, self._channel_alive(session, now))
+            for session in observed_sessions
+            if session.source == "claude-channel"
+            and session.channel_lease_backed
+        )
         with self._interactive_route_lock:
-            sessions_by_actor = {
-                session.actor: session
-                for session in (
-                    self._agent_session_domains.session.read_sessions()
-                    if sessions is None
-                    else sessions
-                )
-                if session.source == "claude-channel"
-                and session.channel_lease_backed
-            }
-            for actor, session in sessions_by_actor.items():
-                if not self._channel_alive(session, now):
+            for session, alive in observations:
+                if (
+                    not alive
+                    and self._accept_interactive_route_observation_locked(
+                        session.actor, session.session_ref, session.version
+                    )
+                ):
                     self._close_interactive_route_locked(
-                        actor, session.session_ref
+                        session.actor, session.session_ref
                     )
 
     def _channel_alive(self, session: InteractiveSession, now: float) -> bool:
@@ -9435,6 +9473,17 @@ class DaemonApplication:
     ) -> None:
         with self._interactive_route_lock:
             self._close_interactive_route_locked(actor, session_ref)
+
+    def _close_other_interactive_routes_locked(
+        self, actor: str, session_ref: str
+    ) -> None:
+        routes = self._routes
+        if routes is None:
+            return
+        current_owner = self._interactive_route_lease(actor, session_ref)
+        for owner in tuple(routes.owners(actor)):
+            if owner.startswith("session:") and owner != current_owner:
+                routes.drop(actor, owner_lease=owner)
 
     def _close_interactive_route_locked(
         self, actor: str, session_ref: str | None = None
