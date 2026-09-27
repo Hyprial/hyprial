@@ -38,10 +38,14 @@ SECRET_ENVIRONMENT_NAMES = frozenset(
         "OPENAI_API_KEY",
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
         "DEEPSEEK_API_KEY",
         "TYPESAFE_API_KEY",
+        "ZAI_CODING_CN_API_KEY",
     }
 )
+_DEAD_CLAUDE_OAUTH_NAME = "ANTHROPIC_OAUTH_TOKEN"
+_CLAUDE_OAUTH_REPLACEMENT = "CLAUDE_CODE_OAUTH_TOKEN"
 
 
 class SecretCustody(str, Enum):
@@ -106,6 +110,11 @@ class SecretGrant:
             raise ValueError("secret entry id is not a safe segment")
         if self.field_name is not None and not _ENTRY_PATTERN.fullmatch(self.field_name):
             raise ValueError("secret field name is not a safe key")
+        if _DEAD_CLAUDE_OAUTH_NAME in self.environment_names:
+            raise ValueError(
+                f"secret environment name {_DEAD_CLAUDE_OAUTH_NAME} is unsupported; "
+                f"use {_CLAUDE_OAUTH_REPLACEMENT}"
+            )
         if any(
             not _ENV_PATTERN.fullmatch(name) or name not in SECRET_ENVIRONMENT_NAMES
             for name in self.environment_names

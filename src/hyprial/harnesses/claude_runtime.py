@@ -16,10 +16,12 @@ from hyprial.agents.runtime import (
 CLAUDE_RUNTIME_ENVIRONMENT = {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
 _SESSION_LINK = "projects"
 _RESERVED_PROJECTION_ROOTS = frozenset({_SESSION_LINK, ".credentials.json"})
+_DEAD_AUTH_NAME = "ANTHROPIC_OAUTH_TOKEN"
+_OAUTH_AUTH_NAME = "CLAUDE_CODE_OAUTH_TOKEN"
 _EXPLICIT_AUTH_NAMES = (
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
-    "ANTHROPIC_OAUTH_TOKEN",
+    _OAUTH_AUTH_NAME,
 )
 CLAUDE_CREDENTIAL_MISSING = "CLAUDE_CREDENTIAL_MISSING"
 
@@ -146,6 +148,10 @@ def validate_claude_auth_environment(
 ) -> None:
     """Reject ambiguous Claude auth without reading any credential value."""
 
+    if _DEAD_AUTH_NAME in environment:
+        raise ClaudeRuntimeError(
+            f"Claude launch cannot use {_DEAD_AUTH_NAME}; use {_OAUTH_AUTH_NAME}"
+        )
     selected = [name for name in _EXPLICIT_AUTH_NAMES if environment.get(name)]
     if len(selected) > 1:
         raise ClaudeRuntimeError(
