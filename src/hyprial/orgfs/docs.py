@@ -312,10 +312,65 @@ class _ContentDocument:
         return self.text.to_py() or ""
 
     def set(self, value: str) -> None:
+        current = self.value()
+        if value == current:
+            return
+        shared_prefix = 0
+        prefix_limit = min(len(current), len(value))
+        while (
+            shared_prefix < prefix_limit
+            and current[shared_prefix] == value[shared_prefix]
+        ):
+            shared_prefix += 1
+        shared_suffix = 0
+        suffix_limit = min(len(current), len(value)) - shared_prefix
+        while (
+            shared_suffix < suffix_limit
+            and current[len(current) - shared_suffix - 1]
+            == value[len(value) - shared_suffix - 1]
+        ):
+            shared_suffix += 1
+        old_stop = len(current) - shared_suffix
+        new_stop = len(value) - shared_suffix
+        matcher = difflib.SequenceMatcher(
+            a=current[shared_prefix:old_stop],
+            b=value[shared_prefix:new_stop],
+            autojunk=False,
+        )
+        edits = [
+            (
+                tag,
+                i1 + shared_prefix,
+                i2 + shared_prefix,
+                j1 + shared_prefix,
+                j2 + shared_prefix,
+            )
+            for tag, i1, i2, j1, j2 in matcher.get_opcodes()
+            if tag != "equal"
+        ]
+        # pycrdt.Text/Yrs positions count UTF-8 bytes, while SequenceMatcher
+        # positions count Python Unicode code points.  Resolve only the edit
+        # boundaries, walking the old string once even when there are many edits.
+        boundaries = sorted(
+            {index for _, i1, i2, _, _ in edits for index in (i1, i2)}
+        )
+        byte_offsets: dict[int, int] = {}
+        previous_index = 0
+        previous_offset = 0
+        for index in boundaries:
+            previous_offset += len(current[previous_index:index].encode())
+            byte_offsets[index] = previous_offset
+            previous_index = index
+
         with self.doc.transaction():
-            self.text.clear()
-            if value:
-                self.text.insert(0, value)
+            # Later ranges cannot disturb the positions of earlier ranges.
+            for _tag, i1, i2, j1, j2 in reversed(edits):
+                start = byte_offsets[i1]
+                stop = byte_offsets[i2]
+                if stop > start:
+                    del self.text[start:stop]
+                if j2 > j1:
+                    self.text.insert(start, value[j1:j2])
 
     def update(self, state: bytes) -> None:
         self.doc.apply_update(state)
