@@ -166,6 +166,183 @@ def create_mcp_server(
             mutation=False,
         )
 
+    @server.tool(description="List orgfs spaces joined on this node.")
+    async def orgfs_spaces(ctx: Context) -> dict[str, Any]:
+        return await invoke(ctx, "orgfs.spaces", {}, mutation=False)
+
+    @server.tool(description="Create an orgfs shared folder.")
+    async def orgfs_create(name: NonEmpty, ctx: Context) -> dict[str, Any]:
+        return await invoke(ctx, "orgfs.create", {"name": name}, mutation=True)
+
+    @server.tool(description="Resolve an orgfs path, including ambiguous same-name nodes.")
+    async def orgfs_resolve(spaceId: NonEmpty, path: str, ctx: Context) -> dict[str, Any]:
+        return await invoke(ctx, "orgfs.resolve", {"spaceId": spaceId, "path": path}, mutation=False)
+
+    @server.tool(description="List an orgfs directory; path may be id:<nodeId>.")
+    async def orgfs_ls(spaceId: NonEmpty, path: str, ctx: Context) -> dict[str, Any]:
+        return await invoke(ctx, "orgfs.ls", {"spaceId": spaceId, "path": path}, mutation=False)
+
+    @server.tool(description="Stat an orgfs node; node may be id:<nodeId>.")
+    async def orgfs_stat(spaceId: NonEmpty, node: NonEmpty, ctx: Context) -> dict[str, Any]:
+        return await invoke(ctx, "orgfs.stat", {"spaceId": spaceId, "node": node}, mutation=False)
+
+    @server.tool(description="Read an orgfs text or small binary node.")
+    async def orgfs_read(spaceId: NonEmpty, node: NonEmpty, ctx: Context) -> dict[str, Any]:
+        return await invoke(ctx, "orgfs.read", {"spaceId": spaceId, "node": node}, mutation=False)
+
+    @server.tool(description="Export an orgfs node to a local daemon path.")
+    async def orgfs_export(
+        spaceId: NonEmpty, node: NonEmpty, destination: NonEmpty, ctx: Context
+    ) -> dict[str, Any]:
+        return await invoke(
+            ctx,
+            "orgfs.export",
+            {"spaceId": spaceId, "node": node, "destination": destination},
+            mutation=True,
+        )
+
+    @server.tool(description="Import a local daemon file into orgfs.")
+    async def orgfs_import(
+        spaceId: NonEmpty, node: NonEmpty, source: NonEmpty, ctx: Context
+    ) -> dict[str, Any]:
+        return await invoke(
+            ctx,
+            "orgfs.import",
+            {"spaceId": spaceId, "node": node, "source": source},
+            mutation=True,
+        )
+
+    @server.tool(description="Write orgfs text with optional merge and strict versions.")
+    async def orgfs_write(
+        spaceId: NonEmpty,
+        node: NonEmpty,
+        text: str,
+        ctx: Context,
+        baseVersion: str | None = None,
+        expectVersion: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"spaceId": spaceId, "node": node, "text": text}
+        if baseVersion is not None:
+            params["baseVersion"] = baseVersion
+        if expectVersion is not None:
+            params["expectVersion"] = expectVersion
+        return await invoke(ctx, "orgfs.write", params, mutation=True)
+
+    @server.tool(description="Create an orgfs directory.")
+    async def orgfs_mkdir(spaceId: NonEmpty, path: NonEmpty, ctx: Context) -> dict[str, Any]:
+        return await invoke(ctx, "orgfs.mkdir", {"spaceId": spaceId, "path": path}, mutation=True)
+
+    @server.tool(description="Move or rename one orgfs node.")
+    async def orgfs_move(
+        spaceId: NonEmpty, sourcePath: NonEmpty, destinationPath: NonEmpty, ctx: Context
+    ) -> dict[str, Any]:
+        return await invoke(
+            ctx,
+            "orgfs.move",
+            {"spaceId": spaceId, "sourcePath": sourcePath, "destinationPath": destinationPath},
+            mutation=True,
+        )
+
+    @server.tool(description="Soft-delete an orgfs node.")
+    async def orgfs_remove(spaceId: NonEmpty, node: NonEmpty, ctx: Context) -> dict[str, Any]:
+        return await invoke(ctx, "orgfs.remove", {"spaceId": spaceId, "node": node}, mutation=True)
+
+    @server.tool(description="Read attributed orgfs history.")
+    async def orgfs_history(
+        spaceId: NonEmpty,
+        node: NonEmpty,
+        ctx: Context,
+        limit: int = 50,
+        before: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"spaceId": spaceId, "node": node, "limit": limit}
+        if before is not None:
+            params["before"] = before
+        return await invoke(ctx, "orgfs.history", params, mutation=False)
+
+    @server.tool(description="Read bytes at one orgfs version.")
+    async def orgfs_read_at(
+        spaceId: NonEmpty, node: NonEmpty, version: NonEmpty, ctx: Context
+    ) -> dict[str, Any]:
+        return await invoke(
+            ctx, "orgfs.read_at", {"spaceId": spaceId, "node": node, "version": version}, mutation=False
+        )
+
+    @server.tool(description="Stat one orgfs node at a historical version.")
+    async def orgfs_stat_at(
+        spaceId: NonEmpty, node: NonEmpty, version: NonEmpty, ctx: Context
+    ) -> dict[str, Any]:
+        return await invoke(
+            ctx, "orgfs.stat_at", {"spaceId": spaceId, "node": node, "version": version}, mutation=False
+        )
+
+    @server.tool(description="List soft-deleted orgfs nodes.")
+    async def orgfs_trash(spaceId: NonEmpty, ctx: Context, limit: int = 100) -> dict[str, Any]:
+        return await invoke(ctx, "orgfs.trash", {"spaceId": spaceId, "limit": limit}, mutation=False)
+
+    @server.tool(description="Restore an orgfs node as a new attributed operation.")
+    async def orgfs_restore(
+        spaceId: NonEmpty,
+        node: NonEmpty,
+        version: NonEmpty,
+        ctx: Context,
+        recursive: bool = True,
+    ) -> dict[str, Any]:
+        return await invoke(
+            ctx,
+            "orgfs.restore",
+            {"spaceId": spaceId, "node": node, "version": version, "recursive": recursive},
+            mutation=True,
+        )
+
+    @server.tool(description="Poll orgfs changes since a version.")
+    async def orgfs_watch(
+        spaceId: NonEmpty, ctx: Context, glob: str = "*", sinceVersion: str | None = None
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"spaceId": spaceId, "glob": glob}
+        if sinceVersion is not None:
+            params["sinceVersion"] = sinceVersion
+        return await invoke(ctx, "orgfs.watch", params, mutation=False)
+
+    @server.tool(description="Show orgfs holders and unconfirmed commits.")
+    async def orgfs_status(spaceId: NonEmpty, ctx: Context) -> dict[str, Any]:
+        return await invoke(ctx, "orgfs.status", {"spaceId": spaceId}, mutation=False)
+
+    @server.tool(description="Show acknowledged and pending orgfs purge participants.")
+    async def orgfs_purge_status(
+        spaceId: NonEmpty, planId: NonEmpty, ctx: Context
+    ) -> dict[str, Any]:
+        return await invoke(
+            ctx,
+            "orgfs.purge_status",
+            {"spaceId": spaceId, "planId": planId},
+            mutation=False,
+        )
+
+    @server.tool(description="Invite a user into an orgfs space; inbox notification is a separate send.")
+    async def orgfs_invite(
+        spaceId: NonEmpty, user: NonEmpty, ctx: Context, mode: str = "rw"
+    ) -> dict[str, Any]:
+        return await invoke(
+            ctx, "orgfs.invite", {"spaceId": spaceId, "user": user, "mode": mode}, mutation=True
+        )
+
+    @server.tool(description="Remove an orgfs member from future writes.")
+    async def orgfs_remove_member(
+        spaceId: NonEmpty, user: NonEmpty, ctx: Context
+    ) -> dict[str, Any]:
+        return await invoke(
+            ctx, "orgfs.remove_member", {"spaceId": spaceId, "user": user}, mutation=True
+        )
+
+    @server.tool(description="List current orgfs members.")
+    async def orgfs_members(spaceId: NonEmpty, ctx: Context) -> dict[str, Any]:
+        return await invoke(ctx, "orgfs.members", {"spaceId": spaceId}, mutation=False)
+
+    @server.tool(description="Join an invited orgfs space by cloning from an online holder.")
+    async def orgfs_join(spaceId: NonEmpty, ctx: Context) -> dict[str, Any]:
+        return await invoke(ctx, "orgfs.join", {"spaceId": spaceId}, mutation=True)
+
     if workflow_tools:
 
         @server.tool(

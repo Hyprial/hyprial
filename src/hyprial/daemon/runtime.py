@@ -12,7 +12,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Collection, Protocol
 from uuid import NAMESPACE_URL, uuid5
 
-from hyprial.inbox import InboxAuthorityTimeout, InboxAuthorityUnavailable
+from hyprial.inbox import (
+    DEFAULT_HOLD_TTL_MS,
+    InboxAuthorityTimeout,
+    InboxAuthorityUnavailable,
+)
 from hyprial.inbox.api import DeliveryLifecycle, InboxMessage, InboxPruneItem
 from hyprial.inbox.progress import COALESCE_KEPT_PHASES, ProgressEvent
 from hyprial.contracts.readiness import ReadinessReport
@@ -263,6 +267,14 @@ class _InflightAttempt:
     reported: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class _QueuedDeliveryHold:
+    """Last hold refresh for one delivery accepted by a live worker queue."""
+
+    worker: str
+    refreshed_at_ms: int
+
+
 class DaemonEventBridge:
     """Bridge actor events and own only run-marker/route resource handles."""
 
@@ -287,8 +299,11 @@ class DaemonEventBridge:
         forwarder: Forwarder | None = None,
         owner_notifier: Callable[..., object] | None = None,
         owner_requester_addresses: Collection[str] = (),
+        hold_ttl_ms: int = DEFAULT_HOLD_TTL_MS,
         turn_hooks: "TurnHookService | None" = None,
     ) -> None:
+        if hold_ttl_ms <= 0:
+            raise ValueError("hold TTL must be positive")
         self.state_dir = Path(state_dir)
         # Allen 2026-09-26 「提醒改发负责人」: a fail-loud notice diverted away
         # from a person's chat goes to the owner through the existing
@@ -325,6 +340,9 @@ class DaemonEventBridge:
         # again is what looped wangshuo-sprite on 2026-09-24.
         self._pending_reply_results: dict[str, HarnessResult] = {}
         self._clock_ms = clock_ms or (lambda: time.time_ns() // 1_000_000)
+        # Refresh halfway through the existing hold budget.  This leaves one
+        # half-budget of scheduler delay while avoiding a write on every tick.
+        self._hold_refresh_interval_ms = max(1, hold_ttl_ms // 2)
         # One mapping from a supervisor-local short name to the network
         # identity.  Registration and the delivery pump must share it: keys
         # that disagree recreate the queue-forever trap this closes.
@@ -342,6 +360,9 @@ class DaemonEventBridge:
         # here influences selection -- it exists so an unproductive attempt is
         # reported instead of being routed around.
         self._inflight: dict[str, _InflightAttempt] = {}
+        # Only a successful worker enqueue enters this map.  Merely seeing an
+        # offline/refused delivery must not turn its ordinary TTL into a lease.
+        self._queued_delivery_holds: dict[str, _QueuedDeliveryHold] = {}
         #: How many times a delivery has been handed to a worker.  A delivery
         #: id can host more than one real attempt (retry, or a second run),
         #: so the once-per-notice key must include the generation, not just the
@@ -449,6 +470,7 @@ class DaemonEventBridge:
         harness_deliveries = _timed(
             "harnesses.dispatch_deliveries", self._dispatch_harness_deliveries
         )
+        _timed("inbox.refresh_live_holds", self._refresh_live_queued_holds)
         # The no-event loud path rides the same tick: a delivery that has
         # produced no correlated progress within its harness budget is
         # reported here, and notices the inbox did not accept are retried.
@@ -647,8 +669,6 @@ class DaemonEventBridge:
 
     def _dispatch_harness_deliveries(self) -> int:
         accepted = 0
-        refresh_hold = getattr(self.inbox, "refresh_hold", None)
-        can_refresh_hold = callable(refresh_hold)
         dispatchable = getattr(self.inbox, "dispatchable_messages", None)
         notice_reader = getattr(self.inbox, "system_notices", None)
         dismiss_notice = getattr(self.inbox, "dismiss_system_notice", None)
@@ -726,8 +746,12 @@ class DaemonEventBridge:
                     # per delivery) — in-flight is not "nobody picked this
                     # up", so the hold TTL restarts from here instead of
                     # counting down from receipt while the turn runs.
-                    if can_refresh_hold:
-                        refresh_hold(message.message_id)
+                    self._refresh_queued_hold(
+                        message.message_id,
+                        worker=recipient,
+                        now_ms=self._clock_ms(),
+                        force=True,
+                    )
             if actor_held:
                 continue
             if callable(notice_reader) and callable(dismiss_notice):
@@ -757,6 +781,66 @@ class DaemonEventBridge:
                         accepted += 1
         return accepted
 
+    def _refresh_queued_hold(
+        self,
+        message_id: str,
+        *,
+        worker: str,
+        now_ms: int,
+        force: bool = False,
+    ) -> bool:
+        previous = self._queued_delivery_holds.get(message_id)
+        if (
+            not force
+            and previous is not None
+            and previous.worker == worker
+            and now_ms - previous.refreshed_at_ms < self._hold_refresh_interval_ms
+        ):
+            return False
+        refresh_hold = getattr(self.inbox, "refresh_hold", None)
+        if not callable(refresh_hold):
+            return False
+        # Keep the established inbox-owned clock boundary.  The runtime clock
+        # below controls only throttling; forwarding it into an inbox backed
+        # by another clock domain can shorten the durable deadline.
+        if not refresh_hold(message_id):
+            self._queued_delivery_holds.pop(message_id, None)
+            return False
+        self._queued_delivery_holds[message_id] = _QueuedDeliveryHold(
+            worker=worker,
+            refreshed_at_ms=now_ms,
+        )
+        return True
+
+    def _refresh_live_queued_holds(self) -> int:
+        """Keep accepted queue entries alive while their worker stays live."""
+
+        live_workers = {
+            self.harness_actor_uri(actor) for actor in self.harnesses.streaming_actors()
+        }
+        now_ms = self._clock_ms()
+        refreshed = 0
+        for message_id, hold in tuple(self._queued_delivery_holds.items()):
+            if hold.worker not in live_workers:
+                self._queued_delivery_holds.pop(message_id, None)
+                continue
+            if now_ms - hold.refreshed_at_ms < self._hold_refresh_interval_ms:
+                continue
+            if self._refresh_queued_hold(
+                message_id,
+                worker=hold.worker,
+                now_ms=now_ms,
+            ):
+                refreshed += 1
+        if refreshed and self._logger is not None:
+            self._logger(
+                "debug",
+                "daemon",
+                "inbox.live_holds_refreshed",
+                count=refreshed,
+            )
+        return refreshed
+
     def _publish_harness_progress(self) -> int:
         """Coalesce one tick of worker progress and offer it to each sender.
 
@@ -768,8 +852,6 @@ class DaemonEventBridge:
         submit = getattr(self.inbox, "submit_progress_event", None)
         if not callable(submit):
             return 0
-        refresh_hold = getattr(self.inbox, "refresh_hold", None)
-        can_refresh_hold = callable(refresh_hold)
         events = tuple(
             event
             for event in self.harnesses.drain_progress()
@@ -797,15 +879,16 @@ class DaemonEventBridge:
             # (#276), and it is the single observable that resets a delivery's
             # no-progress budget.  A live pid, "online", or a reconnect
             # attempt is NOT progress and must not reset it.
-            self._note_delivery_progress(event.delivery_id, self._clock_ms())
-            if can_refresh_hold:
-                # #276: correlated worker activity mid-turn is the same
-                # "still being worked" signal dispatch acceptance is, so it
-                # slides the hold deadline the same way — a long but active
-                # turn keeps its inbox row alive tick over tick; a worker
-                # that stops emitting progress gets no further refreshes and
-                # the row still expires (and still prunes) on schedule.
-                refresh_hold(original.message_id)
+            now_ms = self._clock_ms()
+            self._note_delivery_progress(event.delivery_id, now_ms)
+            # Correlated activity slides the same live-worker lease and resets
+            # its throttle window. The periodic path also covers accepted work
+            # queued behind a turn that emits no progress.
+            self._refresh_queued_hold(
+                original.message_id,
+                worker=event.actor,
+                now_ms=now_ms,
+            )
             if submit(event, recipient=original.sender):
                 published += 1
         return published
@@ -840,6 +923,9 @@ class DaemonEventBridge:
             *self.harnesses.drain_results(),
         ]
         for result in results:
+            # The worker released this delivery from its queue before exposing
+            # the result.  Reply/ack settlement has its own retry ownership.
+            self._queued_delivery_holds.pop(result.delivery_id, None)
             # A terminal turn ends this attempt's silence budget regardless of
             # whether delivery settlement is accepted, deferred, retried, or
             # rejected because its PAC node has already closed.  Any later
@@ -1671,6 +1757,7 @@ class DaemonEventBridge:
             errors.append(error)
         finally:
             self._started = False
+            self._queued_delivery_holds.clear()
         if errors:
             raise ExceptionGroup("daemon shutdown failed", errors)
 

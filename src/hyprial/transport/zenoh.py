@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from typing import Any, Self
 
@@ -14,6 +15,8 @@ import zenoh
 
 from .api import TransportSample
 from .keys import KeySpace
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_LEASE_MS = 6_000
 DEFAULT_KEEP_ALIVE = 4
@@ -401,6 +404,59 @@ class ZenohTransport:
                 errors.append(_reply_error(reply))
         return results
 
+    def query(
+        self,
+        key_expr: str,
+        payload: bytes,
+        *,
+        timeout: float = 3.0,
+        errors: list[str] | None = None,
+        all_replies: bool = False,
+    ) -> list[TransportSample]:
+        """Collect replies to one payload-bearing query.
+
+        This is deliberately separate from ``get`` so existing callers keep
+        the exact no-payload API and semantics.  Orgfs uses ``all_replies``
+        for log-range queries, where every reply is a distinct immutable log
+        record and Zenoh's default consolidation would otherwise collapse
+        same-key replies.
+        """
+
+        if not isinstance(payload, bytes):
+            raise TypeError("payload must be bytes")
+        with self._lock:
+            session = self._session
+        replies = session.get(
+            key_expr,
+            payload=payload,
+            target=zenoh.QueryTarget.ALL,
+            consolidation=(
+                zenoh.ConsolidationMode.NONE
+                if all_replies
+                else zenoh.ConsolidationMode.AUTO
+            ),
+            timeout=timeout,
+        )
+        results: list[TransportSample] = []
+        while True:
+            try:
+                reply = replies.recv()
+            except Exception as error:
+                reason = str(error).lower()
+                if (
+                    "disconnected" in reason
+                    or "timeout" in reason
+                    or "empty and closed" in reason
+                ):
+                    break
+                raise
+            sample = reply.ok
+            if sample is not None:
+                results.append(_sample(sample))
+            elif errors is not None:
+                errors.append(_reply_error(reply))
+        return results
+
     def subscribe(
         self, key_expr: str, callback: Callable[[TransportSample], None]
     ) -> _Registration:
@@ -419,6 +475,34 @@ class ZenohTransport:
                 query.reply(
                     str(query.key_expr), payload, encoding="application/octet-stream"
                 )
+
+        return self._register(
+            lambda session: session.declare_queryable(key_expr, answer, complete=True)
+        )
+
+    def declare_query_handler(
+        self,
+        key_expr: str,
+        handler: Callable[[str, bytes | None], Iterable[tuple[str, bytes]]],
+    ) -> _Registration:
+        def answer(query: Any) -> None:
+            raw_payload = getattr(query, "payload", None)
+            if raw_payload is None:
+                payload: bytes | None = None
+            elif hasattr(raw_payload, "to_bytes"):
+                payload = raw_payload.to_bytes()
+            else:
+                payload = bytes(raw_payload)
+            try:
+                replies = handler(str(query.selector), payload)
+                for reply_key, reply_payload in replies:
+                    query.reply(
+                        str(reply_key),
+                        reply_payload,
+                        encoding="application/octet-stream",
+                    )
+            except Exception:  # noqa: BLE001 - a bad handler must not kill the queryable
+                logger.exception("orgfs query handler failed for %s", key_expr)
 
         return self._register(
             lambda session: session.declare_queryable(key_expr, answer, complete=True)

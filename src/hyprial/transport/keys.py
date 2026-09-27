@@ -8,6 +8,12 @@ import re
 _SAFE_SEGMENT = re.compile(r"^[A-Za-z0-9._:-]+$")
 
 
+def _orgfs_segment(value: str, *, name: str) -> str:
+    if not isinstance(value, str) or _SAFE_SEGMENT.fullmatch(value) is None:
+        raise ValueError(f"{name} must be a safe key segment")
+    return value
+
+
 class KeySpace:
     prefix = "hyprial/v1"
 
@@ -157,6 +163,59 @@ class KeySpace:
 
     def org_request_any(self) -> str:
         return f"{self.prefix}/org/request/*"
+
+    # --- shared-folder (orgfs) ---------------------------------------------
+
+    def orgfs_log(self, space_id: str, doc_id: str, writer: str, seq: int) -> str:
+        if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0:
+            raise ValueError("seq must be a non-negative integer")
+        return (
+            f"{self.prefix}/org/fs/"
+            f"{_orgfs_segment(space_id, name='space_id')}/log/"
+            f"{_orgfs_segment(doc_id, name='doc_id')}/"
+            f"{_orgfs_segment(writer, name='writer')}/{seq}"
+        )
+
+    def orgfs_log_writer(self, space_id: str, doc_id: str, writer: str) -> str:
+        return (
+            f"{self.prefix}/org/fs/"
+            f"{_orgfs_segment(space_id, name='space_id')}/log/"
+            f"{_orgfs_segment(doc_id, name='doc_id')}/"
+            f"{_orgfs_segment(writer, name='writer')}/*"
+        )
+
+    def orgfs_log_any(self, space_id: str) -> str:
+        return (
+            f"{self.prefix}/org/fs/"
+            f"{_orgfs_segment(space_id, name='space_id')}/log/**"
+        )
+
+    def orgfs_sync(self, space_id: str, node: str) -> str:
+        return (
+            f"{self.prefix}/org/fs/"
+            f"{_orgfs_segment(space_id, name='space_id')}/sync/"
+            f"{_orgfs_segment(node, name='node')}"
+        )
+
+    def orgfs_snapshot(self, space_id: str, doc_id: str, snapshot_id: str) -> str:
+        return (
+            f"{self.prefix}/org/fs/"
+            f"{_orgfs_segment(space_id, name='space_id')}/snapshot/"
+            f"{_orgfs_segment(doc_id, name='doc_id')}/"
+            f"{_orgfs_segment(snapshot_id, name='snapshot_id')}"
+        )
+
+    def orgfs_blob(self, digest: str) -> str:
+        return (
+            f"{self.prefix}/org/fs/blob/"
+            f"{_orgfs_segment(digest, name='digest')}"
+        )
+
+    def orgfs_announce(self, node: str) -> str:
+        return (
+            f"{self.prefix}/org/fs/announce/"
+            f"{_orgfs_segment(node, name='node')}"
+        )
 
     # --- delivery terminal state (msg/ namespace, design section 5) ----------
     # Owned by the delivery line.  The agent-entity line owns registry/; these

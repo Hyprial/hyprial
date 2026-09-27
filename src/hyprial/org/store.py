@@ -114,6 +114,7 @@ class OrgContextStore:
         self.org_dir = self.hyprial_home / "org"
         self.adoptions_dir = self.org_dir / "adoptions"
         self.pending_dir = self.org_dir / "pending"
+        self.publish_pending_path = self.org_dir / "publish-pending.json"
 
     def ensure_layout(self) -> None:
         self.hyprial_home.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -200,6 +201,51 @@ class OrgContextStore:
             adopted_at=_parse_timestamp(raw.get("adoptedAt"), "adoptedAt"),
             document_sha256=payload_hash,
         )
+
+    def queue_orgfs_publish(self, document_sha256: str) -> None:
+        """Durably request publication of the accepted bytes through orgfs."""
+
+        if len(document_sha256) != 64 or any(
+            character not in "0123456789abcdef" for character in document_sha256
+        ):
+            raise ValueError("document_sha256 must be a lowercase SHA-256 digest")
+        self.ensure_layout()
+        _atomic_write(
+            self.publish_pending_path,
+            _json_bytes({"documentSha256": document_sha256}),
+        )
+
+    def orgfs_publish_pending(self) -> str | None:
+        """Return the accepted digest awaiting orgfs publication, if any."""
+
+        try:
+            raw = json.loads(self.publish_pending_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
+        except (OSError, json.JSONDecodeError) as error:
+            raise OrgStoreError(
+                f"cannot read orgfs publish pending state: {error}"
+            ) from error
+        digest = raw.get("documentSha256") if isinstance(raw, dict) else None
+        if (
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+        ):
+            raise OrgStoreError(
+                "orgfs publish pending state has an invalid documentSha256"
+            )
+        return digest
+
+    def clear_orgfs_publish_pending(self, document_sha256: str) -> None:
+        """Clear only the request that the caller demonstrably published."""
+
+        if self.orgfs_publish_pending() != document_sha256:
+            return
+        try:
+            self.publish_pending_path.unlink()
+        except FileNotFoundError:
+            pass
 
     def stage(
         self,

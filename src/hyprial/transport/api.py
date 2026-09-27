@@ -6,7 +6,7 @@ The protocols deliberately expose bytes rather than protocol objects.  The
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -38,12 +38,28 @@ class TransportSession(Protocol):
         all_replies: bool = False,
     ) -> list[TransportSample]: ...
 
+    def query(
+        self,
+        key_expr: str,
+        payload: bytes,
+        *,
+        timeout: float = 3.0,
+        errors: list[str] | None = None,
+        all_replies: bool = False,
+    ) -> list[TransportSample]: ...
+
     def subscribe(
         self, key_expr: str, callback: Callable[[TransportSample], None]
     ) -> Registration: ...
 
     def declare_queryable(
         self, key_expr: str, handler: Callable[[str], bytes | None]
+    ) -> Registration: ...
+
+    def declare_query_handler(
+        self,
+        key_expr: str,
+        handler: Callable[[str, bytes | None], Iterable[tuple[str, bytes]]],
     ) -> Registration: ...
 
     def declare_liveliness(self, key: str) -> Registration: ...

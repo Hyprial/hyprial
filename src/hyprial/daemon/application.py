@@ -17,7 +17,7 @@ import time
 import traceback
 import weakref
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import replace
+from dataclasses import asdict, is_dataclass, replace
 from pathlib import Path
 from urllib.parse import urlsplit
 from types import FrameType
@@ -113,6 +113,7 @@ from hyprial.management import (
     RegistryManagementHandler,
 )
 from hyprial.org import OrgContextMesh, OrgContextStore
+from hyprial.orgfs.runtime import OrgFsRuntime
 from hyprial.persistent_config import PersistentConfigStore, PersistentConfiguration
 from hyprial.squire import (
     ReceiverUserDelivery,
@@ -384,6 +385,11 @@ _CLOSE_UNBUDGETED_STEPS = (
     ("inbox", "flushes a sqlite handle"),
     ("inbox-store", "closes that handle"),
     ("usage-cache", "stops a daemon thread"),
+    (
+        "orgfs-runtime",
+        "drains only finite blob recoveries; each network query has a 3s timeout, "
+        "but total time scales with finite blob size, so there is no honest fixed budget",
+    ),
     ("actor-runtime", "pykka stop; its actors are daemon threads"),
     # ⚠️ The one that is not fine. No timeout, and 5.437s in the 2026-08-31
     # shutdown -- the largest unbudgeted contributor, and the reason this file
@@ -474,6 +480,35 @@ _IPC_STATS_METHODS = frozenset(
         "message.status",
         "org.fetch",
         "org.publish",
+        "orgfs.create",
+        "orgfs.checkout",
+        "orgfs.export",
+        "orgfs.history",
+        "orgfs.import",
+        "orgfs.invite",
+        "orgfs.join",
+        "orgfs.ls",
+        "orgfs.members",
+        "orgfs.mkdir",
+        "orgfs.move",
+        "orgfs.purge",
+        "orgfs.purge_plan",
+        "orgfs.purge_status",
+        "orgfs.read",
+        "orgfs.read_at",
+        "orgfs.remove",
+        "orgfs.remove_member",
+        "orgfs.resolve",
+        "orgfs.restore",
+        "orgfs.serve",
+        "orgfs.spaces",
+        "orgfs.stat",
+        "orgfs.stat_at",
+        "orgfs.status",
+        "orgfs.trash",
+        "orgfs.unban",
+        "orgfs.watch",
+        "orgfs.write",
         "outbox.list",
         "outbox.prune",
         "pac.actor.stop",
@@ -1069,6 +1104,8 @@ class DaemonApplication:
         self._worker_snapshot_local = threading.local()
         self._lock_stream: Any | None = None
         self._logger = Logger.daemon(self.state_dir, name=self.node_id)
+        self._orgfs_runtime: OrgFsRuntime | None = None
+        self._org_context_bridge: Any | None = None
         # A3 dispatch gate (design-dispatch-always-pac-2026-09-03 §三②): the
         # live numerator of the PAC bypass rate, surfaced on ps/top.  The
         # durable record is the daemon.jsonl dispatch.without_pac stream;
@@ -2009,6 +2046,19 @@ class DaemonApplication:
             self.node_id,
             interactive_liveness=self._interactive_actor_liveness,
         )
+        self._require_orgfs_runtime().bind_transport(
+            transport,
+            supplier_online=lambda supplier: (
+                classify_target_identity(supplier) == TARGET_KIND_HOST
+                and presence.actor_online(supplier)
+            ),
+            holder_candidates=lambda: tuple(
+                actor
+                for actor in presence.raw_online_actors()
+                if classify_target_identity(actor) == TARGET_KIND_HOST
+                and presence.liveness_keeps(actor)
+            ),
+        )
         network_delivery = ZenohDeliveryTransport(
             transport, presence, origin_node=self.node_id
         )
@@ -2060,13 +2110,14 @@ class DaemonApplication:
         delivery = LarkReplyBridgeTransport(local_delivery, lark_client)
         inbox_database = self.state_dir / "inbox.sqlite3"
         shared_inbox_events = CorrelatedInboxEventRouter()
+        hold_policy = HoldPolicy.from_environment()
         inbox_coordinator = DeliveryCustodyCoordinator(
             inbox_database,
             delivery,
             shared_inbox_events,
             node_id=self.node_id,
             service_options={
-                "hold_policy": HoldPolicy.from_environment(),
+                "hold_policy": hold_policy,
                 "logger": self._logger,
                 "alarm_human_delivery": deliver_human_alarm,
                 # Resolve the actor projection live; session mutations no
@@ -2301,6 +2352,7 @@ class DaemonApplication:
             forwarder=self._forward_as_actor,
             owner_notifier=self._owner_alert_notifier,
             owner_requester_addresses=self._owner_requester_addresses(),
+            hold_ttl_ms=hold_policy.ttl_ms,
             turn_hooks=turn_hooks,
         )
         duplicate_watch: DuplicateInstanceWatch | None = None
@@ -2661,6 +2713,7 @@ class DaemonApplication:
                     "org.context.publish_failed",
                     detail=str(error),
                 )
+            self._require_org_context_bridge().publish_accepted()
             self._clean_dead_interactive_sessions()
             self._restore_interactive_routes()
             # Bindings are per daemon generation; re-derive them from desired
@@ -4669,6 +4722,314 @@ class DaemonApplication:
         result = self.handle("down", {"target": actor_name, "provider": item.harness})
         return {"actor": produced, "retired": True, "changed": bool(result.get("removed"))}
 
+    @staticmethod
+    def _orgfs_json(value: Any) -> Any:
+        if is_dataclass(value):
+            return {
+                key: DaemonApplication._orgfs_json(item)
+                for key, item in asdict(value).items()
+            }
+        if isinstance(value, tuple):
+            return [DaemonApplication._orgfs_json(item) for item in value]
+        if isinstance(value, list):
+            return [DaemonApplication._orgfs_json(item) for item in value]
+        if isinstance(value, dict):
+            return {
+                str(key): DaemonApplication._orgfs_json(item)
+                for key, item in value.items()
+            }
+        return value
+
+    def _require_orgfs_runtime(self) -> OrgFsRuntime:
+        if self._orgfs_runtime is None:
+            self._orgfs_runtime = OrgFsRuntime(
+                self.state_dir,
+                node_id=self.node_id,
+                author=(
+                    self.owner
+                    if self.owner.startswith("user:")
+                    else f"user:{self.owner}"
+                ),
+                logger=lambda level, event, **fields: self._log(
+                    level, "orgfs", event, **fields
+                ),
+                owner_notifier=self._notify_orgfs_owner,
+            )
+        return self._orgfs_runtime
+
+    def _notify_orgfs_owner(
+        self, owner: str, event: str, details: dict[str, object]
+    ) -> None:
+        """Deliver resident-replica integrity alarms to the space owner."""
+
+        owner_name = owner.removeprefix("user:")
+        if self._user_delivery is None:
+            self._log(
+                "warn",
+                "orgfs",
+                "orgfs.owner-notice.unavailable",
+                owner=owner,
+                notice=event,
+                **details,
+            )
+            return
+        stable = json.dumps(details, sort_keys=True, separators=(",", ":"))
+        message_id = str(
+            uuid5(NAMESPACE_URL, f"hyprial:orgfs:{owner}:{event}:{stable}")
+        )
+        try:
+            outcome = self._user_delivery.deliver(
+                UserDeliveryRequest(
+                    message_id=message_id,
+                    idempotency_key=f"orgfs:{event}:{message_id}",
+                    owner=owner_name,
+                    sender=canonical_agent_uri(self.owner, self.node_id, "squire"),
+                    message=(
+                        f"orgfs resident replica reported {event}: "
+                        f"{stable}"
+                    ),
+                    conversation_id=f"orgfs:{details.get('spaceId', 'unknown')}",
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - integrity path must still reject
+            self._log(
+                "warn",
+                "orgfs",
+                "orgfs.owner-notice.failed",
+                owner=owner,
+                notice=event,
+                detail=str(exc),
+            )
+            return
+        self._log(
+            "info" if outcome.accepted else "warn",
+            "orgfs",
+            (
+                "orgfs.owner-notice.delivered"
+                if outcome.accepted
+                else "orgfs.owner-notice.failed"
+            ),
+            owner=owner,
+            notice=event,
+            messageId=outcome.message_id,
+        )
+
+    def _require_org_context_bridge(self) -> Any:
+        if self._org_context_bridge is None:
+            from hyprial.org.orgfs_migration import OrgContextOrgFsBridge
+
+            self._org_context_bridge = OrgContextOrgFsBridge(
+                self.hyprial_home,
+                self._require_orgfs_runtime(),
+                logger=lambda level, event, **fields: self._log(
+                    level, "org", event, **fields
+                ),
+            )
+        return self._org_context_bridge
+
+    def _handle_orgfs(self, method: str, params: JsonObject) -> Any:
+        from hyprial.orgfs.api import OrgFsError
+
+        runtime = self._require_orgfs_runtime()
+        fs = runtime.facade
+
+        def required(name: str) -> str:
+            return _required_string(params.get(name), name)
+
+        try:
+            if method == "orgfs.spaces":
+                return {"spaces": self._orgfs_json(fs.spaces())}
+            if method == "orgfs.create":
+                info = fs.create_space(required("name"))
+                runtime.broadcast_pending(info.space_id)
+                if info.name == "org-context":
+                    self._require_org_context_bridge().publish_accepted()
+                return self._orgfs_json(info)
+            if method == "orgfs.resolve":
+                return {"nodes": self._orgfs_json(fs.resolve(required("spaceId"), required("path")))}
+            if method == "orgfs.ls":
+                node = str(params.get("path", params.get("node", "")))
+                return {"nodes": self._orgfs_json(fs.listdir(required("spaceId"), node))}
+            if method == "orgfs.stat":
+                node = str(params.get("node", params.get("path", "")))
+                return self._orgfs_json(fs.stat(required("spaceId"), node))
+            if method == "orgfs.read":
+                space_id = required("spaceId")
+                node = str(params.get("node", params.get("path", "")))
+                info = fs.stat(space_id, node)
+                if info.kind == "doc":
+                    text, version = fs.read_text(space_id, node)
+                    if len(text.encode()) > 2 * 1024 * 1024:
+                        raise OrgFsError("too-large", {"use": "export"})
+                    return {"node": self._orgfs_json(info), "text": text, "version": version}
+                content = fs.read_bytes(space_id, node)
+                if len(content) > 2 * 1024 * 1024:
+                    raise OrgFsError("too-large", {"use": "export"})
+                import base64
+
+                return {"node": self._orgfs_json(info), "contentB64": base64.b64encode(content).decode("ascii")}
+            if method == "orgfs.write":
+                space_id = required("spaceId")
+                node = str(params.get("node", params.get("path", "")))
+                has_text = "text" in params
+                has_bytes = "contentB64" in params
+                if has_text == has_bytes:
+                    raise OrgFsError("invalid-argument", {"message": "provide exactly one of text or contentB64"})
+                if has_text:
+                    text = params.get("text")
+                    if not isinstance(text, str):
+                        raise OrgFsError("invalid-argument", {"message": "text must be a string"})
+                    result = fs.write_text(
+                        space_id,
+                        node,
+                        text,
+                        base_version=params.get("baseVersion"),
+                        expect_version=params.get("expectVersion"),
+                    )
+                else:
+                    import base64
+
+                    try:
+                        content = base64.b64decode(required("contentB64"), validate=True)
+                    except ValueError as exc:
+                        raise OrgFsError("invalid-argument", {"message": "contentB64 is invalid"}) from exc
+                    result = fs.write_bytes(
+                        space_id, node, content, expect_version=params.get("expectVersion")
+                    )
+                return self._orgfs_json(result)
+            if method == "orgfs.export":
+                return self._orgfs_json(
+                    fs.export_to(
+                        required("spaceId"),
+                        str(params.get("node", params.get("path", ""))),
+                        Path(required("destination")),
+                    )
+                )
+            if method == "orgfs.import":
+                return self._orgfs_json(
+                    fs.import_from(
+                        required("spaceId"),
+                        str(params.get("node", params.get("path", ""))),
+                        Path(required("source")),
+                    )
+                )
+            if method == "orgfs.mkdir":
+                return self._orgfs_json(fs.mkdir(required("spaceId"), required("path")))
+            if method == "orgfs.move":
+                return self._orgfs_json(
+                    fs.move(
+                        required("spaceId"),
+                        str(params.get("sourcePath", params.get("source", ""))),
+                        str(params.get("destinationPath", params.get("destination", ""))),
+                    )
+                )
+            if method == "orgfs.remove":
+                fs.remove(required("spaceId"), str(params.get("node", params.get("path", ""))))
+                return {"ok": True}
+            if method == "orgfs.history":
+                before = params.get("before")
+                return {
+                    "history": self._orgfs_json(
+                        fs.history(
+                            required("spaceId"),
+                            str(params.get("node", params.get("path", ""))),
+                            int(params.get("limit", 50)),
+                            str(before) if before is not None else None,
+                        )
+                    )
+                }
+            if method == "orgfs.read_at":
+                import base64
+
+                content = fs.read_at(required("spaceId"), required("node"), required("version"))
+                return {"contentB64": base64.b64encode(content).decode("ascii")}
+            if method == "orgfs.stat_at":
+                return self._orgfs_json(
+                    fs.stat_at(required("spaceId"), required("node"), required("version"))
+                )
+            if method == "orgfs.trash":
+                return {"nodes": self._orgfs_json(fs.trash(required("spaceId"), int(params.get("limit", 100))))}
+            if method == "orgfs.restore":
+                return self._orgfs_json(
+                    fs.restore(
+                        required("spaceId"),
+                        required("node"),
+                        required("version"),
+                        recursive=bool(params.get("recursive", True)),
+                    )
+                )
+            if method == "orgfs.status":
+                return self._orgfs_json(fs.status(required("spaceId")))
+            if method == "orgfs.purge_plan":
+                targets = params.get("targets")
+                if not isinstance(targets, list) or not all(
+                    isinstance(target, dict) for target in targets
+                ):
+                    raise OrgFsError(
+                        "invalid-argument",
+                        {"message": "targets must be an array of objects"},
+                    )
+                return self._orgfs_json(
+                    runtime.purge_plan(required("spaceId"), targets)
+                )
+            if method == "orgfs.purge":
+                return self._orgfs_json(
+                    runtime.purge(required("spaceId"), required("planId"))
+                )
+            if method == "orgfs.purge_status":
+                return self._orgfs_json(
+                    runtime.purge_status(required("spaceId"), required("planId"))
+                )
+            if method == "orgfs.unban":
+                runtime.unban(required("spaceId"), required("sha"))
+                return {"ok": True}
+            if method == "orgfs.serve":
+                return self._orgfs_json(
+                    runtime.serve(
+                        required("spaceId"), str(params.get("backend", "fs"))
+                    )
+                )
+            if method == "orgfs.checkout":
+                enabled = params.get("enabled")
+                if type(enabled) is not bool:
+                    raise OrgFsError(
+                        "invalid-argument", {"message": "enabled must be a boolean"}
+                    )
+                return self._orgfs_json(
+                    runtime.checkout(required("spaceId"), enabled)
+                )
+            if method == "orgfs.watch":
+                return {
+                    "events": self._orgfs_json(
+                        runtime.watch_events(
+                            required("spaceId"),
+                            str(params.get("glob", "*")),
+                            str(params["sinceVersion"]) if params.get("sinceVersion") is not None else None,
+                        )
+                    )
+                }
+            if method == "orgfs.invite":
+                return self._orgfs_json(
+                    fs.invite(
+                        required("spaceId"), required("user"), str(params.get("mode", "rw"))
+                    )
+                )
+            if method == "orgfs.remove_member":
+                fs.remove_member(required("spaceId"), required("user"))
+                return {"ok": True}
+            if method == "orgfs.members":
+                return {"members": self._orgfs_json(fs.members(required("spaceId")))}
+            if method == "orgfs.join":
+                info = fs.join(required("spaceId"))
+                if info.name == "org-context":
+                    self._require_org_context_bridge().publish_accepted()
+                return self._orgfs_json(info)
+        except OrgFsError as exc:
+            raise DaemonRequestError(exc.code, str(exc), exc.details) from exc
+        except (TypeError, ValueError) as exc:
+            raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, str(exc)) from exc
+        raise DaemonRequestError(ipc_errors.METHOD_NOT_FOUND, f"unknown orgfs method: {method}")
+
     def handle(self, method: str, params: JsonObject) -> Any:
         # The phase-① probe.  Everything it reports is already in memory --
         # it must never grow a read of desired state, an actor round trip or
@@ -4741,6 +5102,8 @@ class DaemonApplication:
         assert self._inbox is not None
         assert self._harnesses is not None
         assert self._presence is not None
+        if method.startswith("orgfs."):
+            return self._handle_orgfs(method, params)
         if method == "management.squire.ensure":
             command = EnsureSquireRegistryCommand.from_payload(params)
             result = self._registry_management_handler().ensure_squire(command)
@@ -4999,12 +5362,28 @@ class DaemonApplication:
                 raise DaemonRequestError(
                     ipc_errors.DAEMON_NOT_READY, "org-context mesh endpoint is not ready"
                 )
-            return {"published": self._org_endpoint.publish_accepted()}
-        if method == "org.fetch":
-            if self._org_endpoint is None:
-                raise DaemonRequestError(
-                    ipc_errors.DAEMON_NOT_READY, "org-context mesh endpoint is not ready"
+            try:
+                published = self._org_endpoint.publish_accepted()
+            except Exception as error:  # noqa: BLE001 - orgfs publication is independent
+                published = False
+                self._log(
+                    "warn", "org", "org.context.publish_failed", detail=str(error)
                 )
+            accepted_exists = (self.hyprial_home / "org-context.md").is_file()
+            return {
+                "published": published,
+                "orgfsPublished": (
+                    self._require_org_context_bridge().publish_accepted()
+                    if accepted_exists
+                    else False
+                ),
+            }
+        if method == "org.fetch":
+            from hyprial.org.orgfs_migration import (
+                OrgMigrationError,
+                read_org_fetch_source,
+            )
+
             raw_timeout = params.get("timeoutSeconds", 2.0)
             if (
                 isinstance(raw_timeout, bool)
@@ -5014,6 +5393,32 @@ class DaemonApplication:
                 raise DaemonRequestError(
                     ipc_errors.INVALID_ARGUMENT,
                     "timeoutSeconds must be greater than 0 and at most 30",
+                )
+            try:
+                fetch_source = read_org_fetch_source(self.hyprial_home)
+            except ValueError as error:
+                raise DaemonRequestError(
+                    ipc_errors.INVALID_ARGUMENT, str(error)
+                ) from error
+            if fetch_source == "orgfs":
+                raw_source = params.get("from")
+                source = None
+                if raw_source is not None:
+                    source = _required_string(raw_source, "from")
+                    if not source.startswith("user:"):
+                        source = normalize_agent_recipient(source)
+                try:
+                    return self._require_org_context_bridge().fetch(
+                        source=source,
+                        timeout=float(raw_timeout),
+                    )
+                except OrgMigrationError as error:
+                    raise DaemonRequestError(
+                        error.code, str(error), error.data
+                    ) from error
+            if self._org_endpoint is None:
+                raise DaemonRequestError(
+                    ipc_errors.DAEMON_NOT_READY, "org-context mesh endpoint is not ready"
                 )
             if params.get("requestMode") == "neighbors":
                 return self._org_endpoint.fetch(timeout=float(raw_timeout)).to_json()
@@ -10789,6 +11194,11 @@ class DaemonApplication:
             usage_cache = self._usage_cache
             self._usage_cache = None
             attempt(usage_cache.stop, "usage-cache")
+        if self._orgfs_runtime is not None:
+            orgfs_runtime = self._orgfs_runtime
+            self._orgfs_runtime = None
+            self._org_context_bridge = None
+            attempt(orgfs_runtime.close, "orgfs-runtime")
         for resource_name in (
             "_actor_token",
             "_duplicate_watch",
