@@ -4,8 +4,14 @@ from __future__ import annotations
 
 import re
 
-_DURATION = re.compile(r"([0-9]+(?:\.[0-9]+)?)(ms|s|m|h)\Z")
-_UNIT_SECONDS = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0}
+_DURATION = re.compile(r"([0-9]+(?:\.[0-9]+)?)(ms|s|m|h|d)\Z")
+_UNIT_SECONDS = {
+    "ms": 0.001,
+    "s": 1.0,
+    "m": 60.0,
+    "h": 3600.0,
+    "d": 86_400.0,
+}
 
 
 class DurationParseError(ValueError):
@@ -13,7 +19,7 @@ class DurationParseError(ValueError):
 
 
 def parse_duration(value: object, label: str) -> float:
-    """Parse seconds or a ``<number><ms|s|m|h>`` string into seconds.
+    """Parse seconds or a ``<number><ms|s|m|h|d>`` string into seconds.
 
     Booleans and non-positive values are rejected.  Keeping this parser in a
     dependency-free leaf lets workflow, routine, and PAC-facing configuration
@@ -28,7 +34,7 @@ def parse_duration(value: object, label: str) -> float:
         match = _DURATION.match(value.strip())
         if match is None:
             raise DurationParseError(
-                f"{label} must be seconds or a '<number><ms|s|m|h>' string, got {value!r}"
+                f"{label} must be seconds or a '<number><ms|s|m|h|d>' string, got {value!r}"
             )
         seconds = float(match.group(1)) * _UNIT_SECONDS[match.group(2)]
     else:

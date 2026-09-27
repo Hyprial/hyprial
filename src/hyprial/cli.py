@@ -178,7 +178,11 @@ agent_app = typer.Typer(
 secret_app = typer.Typer(
     help="Manage explicit per-agent secret grants without exposing values."
 )
+agent_keep_app = typer.Typer(
+    help="Protect named agents from inactivity reports.",
+)
 agent_app.add_typer(secret_app, name="secret")
+agent_app.add_typer(agent_keep_app, name="keep")
 app.add_typer(adapter_app, name="adapter")
 app.add_typer(daemon_app, name="daemon")
 app.add_typer(mcp_app, name="mcp")
@@ -6906,11 +6910,70 @@ def agent_grants(
 
 @agent_app.command("list")
 def agent_list(
+    inactive_since: str | None = typer.Option(
+        None,
+        "--inactive-since",
+        help="Show only agents with no recorded or hinted activity in this duration.",
+    ),
+    exclude_wf: bool = typer.Option(
+        False, "--exclude-wf", help="Exclude wf-* workflow workers."
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
     """List this machine's agents with their real online/offline status."""
 
-    _execute(lambda: _daemon_request("agent.list"), json_output=json_output)
+    _execute(
+        lambda: _daemon_request(
+            "agent.list",
+            {
+                **(
+                    {"inactiveSince": inactive_since}
+                    if inactive_since is not None
+                    else {}
+                ),
+                **({"excludeWf": True} if exclude_wf else {}),
+            },
+        ),
+        json_output=json_output,
+    )
+
+
+@agent_keep_app.command("add")
+def agent_keep_add(
+    name: str = typer.Argument(..., help="Agent name to protect."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Add an agent to the inactivity keep-list, idempotently."""
+
+    _execute(
+        lambda: _daemon_request("agent.keep.add", {"name": name}),
+        json_output=json_output,
+    )
+
+
+@agent_keep_app.command("remove")
+def agent_keep_remove(
+    name: str = typer.Argument(..., help="Agent name to unprotect."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Remove an agent from the inactivity keep-list, idempotently."""
+
+    _execute(
+        lambda: _daemon_request("agent.keep.remove", {"name": name}),
+        json_output=json_output,
+    )
+
+
+@agent_keep_app.command("list")
+def agent_keep_list(
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """List agents protected from inactivity reports."""
+
+    _execute(
+        lambda: _daemon_request("agent.keep.list"),
+        json_output=json_output,
+    )
 
 
 @agent_app.command("destroy")
@@ -10035,9 +10098,9 @@ def autoupdate_uninstall(
 def autoupdate_status(
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
-    """Show the update timer state and the most recent run."""
+    """Show whether automatic upgrade is on, when it runs, and what it last did."""
 
-    def operation() -> JsonObject:
+    def collect() -> JsonObject:
         from hyprial import updates
         from hyprial.autoupdate import (
             SCHEDULE,
@@ -10082,6 +10145,7 @@ def autoupdate_status(
         scan = _safe_scan_app_migrations()
         platform = detect_platform()
         auto_upgrade_enabled = updates.auto_upgrade_enabled(_hyprial_home())
+        pending = _read_pending_restart()
         if platform is None:
             return {
                 "ok": True,
@@ -10096,7 +10160,8 @@ def autoupdate_status(
                 ],
                 "lastRun": read_last_run(_state_dir()),
                 # Installed but not yet running; `hyprial autoupdate restart` applies it.
-                "pendingRestart": _read_pending_restart(),
+                "pendingRestart": pending,
+                "pendingRestartState": _pending_restart_state(pending),
                 "scheduler": scheduler,
                 "pendingAppMigrations": list(scan.pending),
                 "pendingAppMigrationsUnreadable": list(scan.unreadable),
@@ -10114,6 +10179,10 @@ def autoupdate_status(
         result["pendingAppMigrationsUnreadable"] = list(scan.unreadable)
         result["pendingAppMigrationsBrokenLinks"] = list(scan.broken_links)
         result["pendingAppMigrationsScanError"] = scan.scan_error
+        # #28: the platform path used to omit this, so on macOS/Linux with the
+        # daemon up the field hyprial-ops documents was simply absent.
+        result["pendingRestart"] = pending
+        result["pendingRestartState"] = _pending_restart_state(pending)
         result["legacyUnit"] = {
             "unit": result["unit"],
             "installed": result["installed"],
@@ -10121,7 +10190,150 @@ def autoupdate_status(
         }
         return result
 
+    def operation() -> JsonObject | str:
+        result = collect()
+        return result if json_output else _render_autoupdate_status(result)
+
     _execute(operation, json_output=json_output)
+
+
+def _pending_restart_state(pending: JsonObject | None) -> str | None:
+    """Is the recorded pending restart still owed?  The same test ``hyprial
+    autoupdate restart`` applies, so status and restart cannot disagree:
+
+    * ``waiting``: the daemon recorded before the install is still running;
+    * ``applied``: a different daemon runs now, so it already has the code;
+    * ``unverified``: no daemon answered in time (restart re-checks).
+
+    Only probes when a record exists, with a short budget: status must stay
+    cheap, and ``ping`` answers mid-restore without an actor snapshot.
+    """
+
+    if pending is None:
+        return None
+    recorded = pending.get("before")
+    recorded_pid = recorded.get("pid") if isinstance(recorded, dict) else None
+    try:
+        probe = _daemon_probe(timeout=1.0)
+    except (
+        ipc_errors.DaemonUnavailableError,
+        ipc_errors.DaemonDisconnectedError,
+        ipc_errors.IpcTimeoutError,
+        CliError,
+    ):
+        return "unverified"
+    if not _probe_reports_running(probe):
+        return "unverified"
+    daemon = probe.get("daemon") if isinstance(probe.get("daemon"), dict) else probe
+    pid = daemon.get("pid")
+    if not isinstance(pid, int) or not isinstance(recorded_pid, int):
+        return "unverified"
+    return "waiting" if pid == recorded_pid else "applied"
+
+
+def _local_minute(value: object) -> str:
+    """ISO timestamp → ``YYYY-MM-DD HH:MM`` local; unparseable ones verbatim."""
+
+    if not isinstance(value, str):
+        return "?"
+    try:
+        moment = datetime.fromisoformat(value)
+    except ValueError:
+        return value
+    if moment.tzinfo is not None:
+        moment = moment.astimezone()
+    return moment.strftime("%Y-%m-%d %H:%M")
+
+
+def _render_autoupdate_status(status: JsonObject) -> str:
+    """``hyprial autoupdate status`` for a person: what is on, when it runs, what
+    it last did, and the one command that acts on it.
+
+    #28: the old output was the raw dict, whose first lines read
+    ``installed: False, loaded: False`` -- the *legacy* launchd/systemd unit --
+    while the daemon's scheduler was running the upgrades.  Scheduling now
+    lives in the daemon, so the unit is shown last and labelled legacy.
+    ``--json`` is unchanged apart from ``pendingRestart``.
+    """
+
+    lines: list[str] = []
+    enabled = status.get("autoUpgradeEnabled") is True
+    if enabled:
+        lines.append("hyprial autoupdate   automatic upgrade: on")
+    else:
+        lines.append("hyprial autoupdate   automatic upgrade: off (scheduled runs are skipped)")
+        lines.append("               turn on with: hyprial config set autoUpgrade true")
+    times = " and ".join(
+        f"{slot.get('hour', 0):02d}:{slot.get('minute', 0):02d}"
+        for slot in status.get("schedule") or []
+        if isinstance(slot, dict)
+    )
+    lines.append(f"  schedule     {times or '?'} local time, run by the daemon")
+
+    scheduler = status.get("scheduler")
+    scheduler = scheduler if isinstance(scheduler, dict) else {}
+    if scheduler.get("active"):
+        lines.append("  scheduler    an upgrade is running now")
+    elif scheduler.get("running"):
+        next_run = scheduler.get("nextRunAt")
+        suffix = f", next run {_local_minute(next_run)}" if next_run else ""
+        lines.append(f"  scheduler    running{suffix}")
+    else:
+        lines.append("  scheduler    not reachable; scheduled runs happen only while the daemon runs")
+
+    last = status.get("lastRun")
+    if not isinstance(last, dict):
+        lines.append("  last run     never")
+    else:
+        when = _local_minute(last.get("at"))
+        if last.get("ok") is not True:
+            code = f"{last['code']}: " if last.get("code") else ""
+            lines.append(f"  last run     {when}  failed: {code}{last.get('error', 'no detail')}")
+        elif last.get("skipped"):
+            lines.append(f"  last run     {when}  skipped: {last.get('skipReason', 'no reason recorded')}")
+        else:
+            commit = str(last.get("resolvedCommit") or "")[:8]
+            target = " ".join(part for part in (last.get("resolvedTag"), commit) if part)
+            verb = "installed" if last.get("upgraded") else "already current at"
+            lines.append(f"  last run     {when}  ok, {verb} {target or '?'}")
+
+    # The pending-restart file, not lastRun.restart, is the authority: a
+    # restart by any other route leaves lastRun saying "awaiting".
+    pending = status.get("pendingRestart")
+    if isinstance(pending, dict):
+        installed = " ".join(
+            part for part in (pending.get("version"), str(pending.get("commit") or "")[:8]) if part
+        ) or "a new version"
+        state = status.get("pendingRestartState")
+        if state == "applied":
+            lines.append(f"  restart      done: the running daemon already has {installed}")
+        elif state == "waiting":
+            lines.append(f"  restart      waiting: {installed} installed; the daemon runs the old code")
+            lines.append("               apply it with: hyprial autoupdate restart")
+        else:
+            lines.append(f"  restart      {installed} was installed; could not check the daemon")
+            lines.append("               check and apply with: hyprial autoupdate restart")
+
+    migrations = status.get("pendingAppMigrations") or []
+    unreadable = status.get("pendingAppMigrationsUnreadable") or []
+    scan_error = status.get("pendingAppMigrationsScanError")
+    if migrations:
+        names = ", ".join(str(item) for item in migrations)
+        lines.append(f"  app migrations  {len(migrations)} pending: {names}")
+    if unreadable:
+        lines.append(f"  app migrations  {len(unreadable)} receipt(s) unreadable; see --json")
+    if scan_error:
+        lines.append(f"  app migrations  could not be checked: {scan_error}")
+
+    unit = status.get("unit")
+    if unit:
+        if status.get("installed"):
+            state = "installed" + (" and loaded" if status.get("loaded") else ", not loaded")
+            lines.append(f"  legacy unit  {unit}: {state}")
+            lines.append("               (from before the daemon scheduled upgrades)")
+        else:
+            lines.append(f"  legacy unit  {unit}: not installed (not needed)")
+    return "\n".join(lines)
 
 
 def _safe_scan_app_migrations() -> MigrationScan:

@@ -23,6 +23,7 @@ because the kanban app *said so*, not because ``cli.py`` was edited for it.
 from __future__ import annotations
 
 import json
+import shlex
 import sys
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -94,7 +95,7 @@ def discover_mounts(
         try:
             commands = _declared_commands(app_root, app)
         except InstallError as error:
-            skipped.append((app, str(error)))
+            skipped.append((app, _with_remedy(error, app_root)))
             continue
         for command in commands:
             if command.name in builtins:
@@ -111,6 +112,23 @@ def discover_mounts(
             claimed[command.name] = app
             mounts.append(Mount(command=command, app=app))
     return MountReport(mounts=tuple(mounts), skipped=tuple(skipped))
+
+
+def _with_remedy(error: InstallError, app_root: Path) -> str:
+    """The skip reason, plus the one step that clears it when there is one.
+
+    A retired-schema app can be neither upgraded nor mounted, so the only step
+    that stops the warning is moving it out of ``apps/``.  ⚠️ *Out of*, not
+    beside: every directory under ``apps/`` is scanned, so ``apps/gui.old``
+    would just warn again under a new name.  Move, not delete: ``runtimes/``
+    under the app holds its process records and sessions.
+    """
+
+    reason = str(error)
+    if not error.data.get("retiredSchema"):
+        return reason
+    target = app_root.parent.parent / f"retired-app-{app_root.name}"
+    return f"{reason}; to stop this warning, move it out of apps/: mv {shlex.quote(str(app_root))} {shlex.quote(str(target))}"
 
 
 def _declared_commands(app_root: Path, app: str) -> tuple[MountedCommand, ...]:

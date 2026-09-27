@@ -67,6 +67,9 @@ _SCHEMA = "hyprial.install/v1"
 #: rejecting it would break ``hyprial gui`` before the migration that removes it.
 _SCHEMA_V2 = "hyprial.install/v2"
 _SCHEMAS = (_SCHEMA, _SCHEMA_V2)
+#: Pre-rename manifest schemas.  Still found on disk (a stale ``apps/gui`` cloned
+#: from the pre-rename GUI repository), never accepted.
+_RETIRED_SCHEMAS = ("h2b.install/v1", "h2b.install/v2")
 _COMMAND_NAME = re.compile(r"^[a-z][a-z0-9-]*$")
 #: The closed set of verbs a mounted command may take.  Closed on purpose: a
 #: free-form string here would let a manifest invent an action the generic
@@ -777,16 +780,21 @@ def _read_manifest(source: Path, *, name: str, manifest_rel: str) -> Manifest:
         raise InstallError(INSTALL_MANIFEST_INVALID, "install manifest must be an object")
     schema = raw.get("schema")
     if schema not in _SCHEMAS:
-        hint = ""
-        if name == "gui" and schema in ("h2b.install/v1", "h2b.install/v2"):
-            hint = (
-                "; installed GUI manifest uses a retired schema; "
-                "upgrade to a corrected Hyprial GUI package with hyprial gui upgrade; "
-                "do not edit verified installed source files"
+        # ⚠️ No remedy is named here: this runs for install, upgrade and mount
+        # alike, and only the caller knows which one works.  #33: the old hint
+        # said ``hyprial gui upgrade`` -- a command that does not exist in
+        # exactly this state, because ``gui`` mounts from the manifest that
+        # just failed.  ``retiredSchema`` lets mount name a remedy that does.
+        if schema in _RETIRED_SCHEMAS:
+            raise InstallError(
+                INSTALL_MANIFEST_INVALID,
+                f"install manifest uses the retired schema {schema!r} "
+                "(an install from before the Hyprial rename) and cannot be upgraded in place",
+                {"retiredSchema": schema},
             )
         raise InstallError(
             INSTALL_MANIFEST_INVALID,
-            f"install manifest schema must be one of {list(_SCHEMAS)!r}" + hint,
+            f"install manifest schema must be one of {list(_SCHEMAS)!r}",
         )
     if schema == _SCHEMA_V2:
         unknown = sorted(set(raw) - _V2_KEYS)

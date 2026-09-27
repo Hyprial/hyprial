@@ -69,6 +69,15 @@ DSH_BANNER_POLL_SECONDS = 0.1
 DSH_STARTUP_REAP_SECONDS = 2.0
 
 _DSH_WEB_BANNER = re.compile(r"^dsh web: http://127\.0\.0\.1:(\d+)\s*$")
+# dsh >= 0.1.5 prints ``dsh web: http://127.0.0.1:<port>/?token=<launch token>``:
+# its web API moved to a token-to-cookie login, ``/api/<service>/<method>``
+# routes and a new envelope, which this client does not speak yet.  Seeing
+# that banner fails the worker at once with a readable reason instead of
+# leaving it "never ready" (which read as a hang).
+_DSH_TOKEN_BANNER = re.compile(r"^dsh web: http://127\.0\.0\.1:\d+/\?token=")
+_DSH_LAUNCH_TOKEN = re.compile(rb"([?&]token=)[^\s&]+")
+#: The dsh this client was last verified against end to end.
+DSH_VERIFIED_VERSION = "0.1.0-rc.7"
 _MCP_PLUGIN_PACKAGE = "@deepseek-ai/dsh-mcp-client"
 _DSH_IO_TAIL_BYTES = 64 * 1024
 #: An unterminated line cannot buffer without bound; ``readline(size)`` caps it.
@@ -718,6 +727,31 @@ def _positive_float(value: str | None, *, default: float, label: str) -> float:
     return parsed
 
 
+def _unsupported_dsh_message(process: subprocess.Popen[bytes]) -> str:
+    """Why this dsh cannot be driven, with the installed and verified versions."""
+
+    installed = "unknown version"
+    try:
+        probe = subprocess.run(
+            [str(process.args[0]) if isinstance(process.args, (list, tuple)) else "dsh", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=DSH_REQUEST_TIMEOUT_SECONDS,
+            check=False,
+        )
+        installed = (probe.stdout or probe.stderr).strip().splitlines()[0] or installed
+    except (OSError, subprocess.SubprocessError, IndexError):
+        pass
+    return (
+        f"DSH_UNSUPPORTED_VERSION: the installed dsh ({installed}) uses the "
+        "newer web API (token login, /api/<service>/<method> routes) that "
+        "this hyprial does not support yet; last verified dsh is "
+        f"{DSH_VERIFIED_VERSION}. Install it with `npm i -g "
+        f"@deepseek-ai/dsh@{DSH_VERIFIED_VERSION}`, or update hyprial once "
+        "support for the new dsh ships"
+    )
+
+
 def _events(value: object) -> list[dict[str, Any]]:
     if not isinstance(value, dict) or not isinstance(value.get("events"), list):
         raise DshApiError("DSH session.history returned an invalid value")
@@ -1273,11 +1307,16 @@ class DshHarnessProcess(StreamingTurnProcess):
             pass
         banner_event = threading.Event()
         endpoint: list[str] = []
+        unsupported: list[str] = []
 
         def drain_stdout() -> None:
             try:
                 for raw in _iter_pipe_lines(stdout):
-                    redacted = self._redact_output(raw)
+                    # The launch token is a live credential for the web API:
+                    # mask it before anything is buffered or logged.
+                    redacted = self._redact_output(
+                        _DSH_LAUNCH_TOKEN.sub(rb"\1<redacted>", raw)
+                    )
                     with self._dsh_lock:
                         self._extend_tail(stdout_tail, redacted)
                     self._append_io_log(b"STDOUT " + redacted)
@@ -1286,6 +1325,9 @@ class DshHarnessProcess(StreamingTurnProcess):
                         match = _DSH_WEB_BANNER.match(line)
                         if match:
                             endpoint.append(f"http://127.0.0.1:{match.group(1)}")
+                        elif _DSH_TOKEN_BANNER.match(line):
+                            unsupported.append(line)
+                            banner_event.set()
             except (OSError, ValueError):
                 pass
             finally:
@@ -1295,7 +1337,9 @@ class DshHarnessProcess(StreamingTurnProcess):
         def drain_stderr() -> None:
             try:
                 for raw in _iter_pipe_lines(stderr):
-                    redacted = self._redact_output(raw)
+                    redacted = self._redact_output(
+                        _DSH_LAUNCH_TOKEN.sub(rb"\1<redacted>", raw)
+                    )
                     with self._dsh_lock:
                         self._extend_tail(stderr_tail, redacted)
                     self._append_io_log(b"STDERR " + redacted)
@@ -1313,7 +1357,7 @@ class DshHarnessProcess(StreamingTurnProcess):
 
         deadline = time.monotonic() + DSH_REQUEST_TIMEOUT_SECONDS
         while not endpoint:
-            if self._stopping.is_set():
+            if self._stopping.is_set() or unsupported:
                 break
             # stdout reached EOF without a banner: no later line can carry one,
             # so do not spin on a set event until the deadline.
@@ -1332,6 +1376,8 @@ class DshHarnessProcess(StreamingTurnProcess):
 
         group.force_close()
         self._reap(process)
+        if unsupported:
+            raise DshApiError(_unsupported_dsh_message(process))
         detail = bytes(stderr_tail).decode("utf-8", errors="replace").strip()
         message = (
             "DSH web banner was not printed within "

@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import json
 import os
+import queue
 import shlex
 import signal
 import socket
@@ -44,6 +45,7 @@ from hyprial.agents import (
     normalize_capabilities,
     normalize_harness_args,
 )
+from hyprial.agents.activity import AgentKeepList, AgentKeepListError
 from hyprial.adapters.lark.sdk import LarkApiError
 from hyprial.transfer.container import CONTAINER_PYTHON as _CONTAINER_PYTHON
 from hyprial.transfer.session_files import (
@@ -72,6 +74,7 @@ from hyprial.contracts.daemon_diagnostics import DaemonStartupPhase
 from hyprial.contracts.ipc_errors import DaemonRequestError
 from hyprial.contracts.ports import PortAdmission
 from hyprial.contracts.readiness import ReadinessReport
+from hyprial.duration import DurationParseError, parse_duration
 from hyprial.contracts.channel import (
     CHANNEL_LIVENESS_TTL_SECONDS,
     CHANNEL_PROTOCOL_VERSION,
@@ -382,6 +385,12 @@ _CLOSE_UNBUDGETED_STEPS = (
     ("remote-workflow-registrations", "Zenoh subscriber undeclare; no Python worker join, native transport has no deadline"),
     ("route-registrations", "in-memory unregister; observed 16ms"),
     ("adapters", "signals workers; observed 24ms"),
+    (
+        "agent-activity",
+        "drains an in-memory queue, then at most one conditional UPDATE per actor "
+        "seen since the last 1s maintenance tick; each write is bounded only by "
+        "the registry's 5s sqlite busy_timeout",
+    ),
     ("inbox", "flushes a sqlite handle"),
     ("inbox-store", "closes that handle"),
     ("usage-cache", "stops a daemon thread"),
@@ -447,6 +456,9 @@ _IPC_STATS_METHODS = frozenset(
         "agent.grant",
         "agent.grants",
         "agent.host-invite",
+        "agent.keep.add",
+        "agent.keep.list",
+        "agent.keep.remove",
         "agent.list",
         "agent.resolve",
         "agent.revoke",
@@ -1058,6 +1070,11 @@ class DaemonApplication:
         # expose — mutations go through Agent commands; the daemon-side
         # environment composition is a read, not a mutation.
         self._agent_registry = self._agent_session_domains._registry  # noqa: SLF001
+        self._agent_keep = AgentKeepList(
+            self.state_dir / "agent-keep.json",
+            normalize=self.agents.normalize_actor,
+        )
+        self._agent_activity_queue: queue.SimpleQueue[str] = queue.SimpleQueue()
         self._agent_domains_finalizer = weakref.finalize(
             self, self._agent_session_domains.close
         )
@@ -3975,6 +3992,7 @@ class DaemonApplication:
             return
         started = time.monotonic()
         try:
+            self._flush_agent_activity()
             outcome, adapter_events, adapter_restarts, phases = (
                 self._run_scheduled_domains(started)
             )
@@ -3995,6 +4013,31 @@ class DaemonApplication:
             )
         finally:
             self._schedule_maintenance(generation, delay=1.0)
+
+    def _queue_agent_activity(self, actor: str) -> None:
+        """Enqueue without waiting; the maintenance owner performs SQLite I/O."""
+
+        self._agent_activity_queue.put(actor)
+
+    def _flush_agent_activity(self) -> None:
+        pending: set[str] = set()
+        while True:
+            try:
+                pending.add(self._agent_activity_queue.get_nowait())
+            except queue.Empty:
+                break
+        for actor in pending:
+            try:
+                self.agents.record_activity(actor)
+            except Exception as error:  # noqa: BLE001 - activity is best effort
+                self._log(
+                    "warn",
+                    "daemon",
+                    "agent.activity_write_failed",
+                    actor=actor,
+                    errorType=type(error).__name__,
+                    detail=str(error)[:500],
+                )
 
     def _record_maintenance_outcome(
         self,
@@ -6223,6 +6266,7 @@ class DaemonApplication:
                 # which is what allows the inbox ingress gate to reject them.
                 source = self._resolve_send_sender(source)
             source = self._fence_interactive_session(source, params)
+            self._queue_agent_activity(source)
             targets = params.get("to")
             if not isinstance(targets, list) or not targets:
                 raise DaemonRequestError(
@@ -6524,6 +6568,7 @@ class DaemonApplication:
                 else self._resolve_send_sender(_actor(params))
             )
             actor = self._fence_interactive_session(actor, params)
+            self._queue_agent_activity(actor)
             raw_resources = params.get("resourcePaths")
             if raw_resources is not None and (
                 not isinstance(raw_resources, list) or raw_resources
@@ -6726,6 +6771,7 @@ class DaemonApplication:
         if method == "message.ack":
             actor = self._message_consumer_actor(params)
             actor = self._fence_interactive_session(actor, params)
+            self._queue_agent_activity(actor)
             message_id = _required_string(params.get("messageId"), "messageId")
             result = self._inbox.ack(actor, message_id)
             if not result.acknowledged:
@@ -7363,13 +7409,54 @@ class DaemonApplication:
         if method == "agent.list":
             # Same per-request snapshot as ps: agent.list is the same loop
             # over agents[], so without it the storm only moves house.
+            inactive_since = params.get("inactiveSince")
+            cutoff_ms: int | None = None
+            if inactive_since is not None:
+                try:
+                    seconds = parse_duration(inactive_since, "inactiveSince")
+                except DurationParseError as error:
+                    raise DaemonRequestError(
+                        ipc_errors.INVALID_ARGUMENT, str(error)
+                    ) from error
+                cutoff_ms = self._agent_registry.now_ms() - int(seconds * 1_000)
+            try:
+                kept = frozenset(self._agent_keep.list())
+            except AgentKeepListError as error:
+                raise DaemonRequestError(
+                    ipc_errors.INVALID_ARGUMENT, str(error)
+                ) from error
             with self._worker_status_snapshot():
+                agents = []
+                for agent in self.agents.list():
+                    if params.get("excludeWf") is True and agent.actor.startswith("wf-"):
+                        continue
+                    hints = self._agent_registry.activity_hints(agent)
+                    if cutoff_ms is not None and not self._agent_is_inactive(
+                        agent, hints, cutoff_ms=cutoff_ms, kept=kept
+                    ):
+                        continue
+                    agents.append(self._agent_status_json(agent, activity_hints=hints))
                 return {
                     "ok": True,
-                    "agents": [
-                        self._agent_status_json(agent) for agent in self.agents.list()
-                    ],
+                    "agents": agents,
                 }
+        if method == "agent.keep.list":
+            return {"ok": True, "agents": list(self._agent_keep.list())}
+        if method in {"agent.keep.add", "agent.keep.remove"}:
+            name = self.agents.normalize_actor(
+                _required_string(params.get("name"), "name")
+            )
+            changed = (
+                self._agent_keep.add(name)
+                if method == "agent.keep.add"
+                else self._agent_keep.remove(name)
+            )
+            return {
+                "ok": True,
+                "agent": name,
+                "changed": changed,
+                "agents": list(self._agent_keep.list()),
+            }
         if method == "agent.runtime-context":
             # Non-secret interactive-launch handoff.  The daemon remains the
             # sole root/profile resolver; this projection deliberately omits
@@ -9411,7 +9498,32 @@ class DaemonApplication:
             status_for_actor=status_for_actor,
         )
 
-    def _agent_status_json(self, agent: Agent) -> JsonObject:
+    @staticmethod
+    def _agent_is_inactive(
+        agent: Agent,
+        hints: Mapping[str, int | bool | None],
+        *,
+        cutoff_ms: int,
+        kept: frozenset[str],
+    ) -> bool:
+        if agent.actor in kept or hints.get("hasLastSessionId") is True:
+            return False
+        timestamps = (
+            agent.last_active_at_ms,
+            hints.get("createdAtMs"),
+            hints.get("agentHomeMtimeMs"),
+        )
+        return not any(
+            isinstance(value, int) and not isinstance(value, bool) and value >= cutoff_ms
+            for value in timestamps
+        )
+
+    def _agent_status_json(
+        self,
+        agent: Agent,
+        *,
+        activity_hints: Mapping[str, int | bool | None] | None = None,
+    ) -> JsonObject:
         spelling = (
             agent.actor
             if self._agent_liveness.binding(agent.uri) is None
@@ -9433,7 +9545,13 @@ class DaemonApplication:
                 key: value
                 for key, value in agent.to_json().items()
                 if key != "entityToken"
+                and (activity_hints is not None or key != "lastActiveAtMs")
             },
+            **(
+                {"activityHints": dict(activity_hints)}
+                if activity_hints is not None
+                else {}
+            ),
             **self._agent_liveness.snapshot(spelling),
             "status": self._registered_agent_status(agent),
             **(
@@ -11086,6 +11204,7 @@ class DaemonApplication:
             raise RuntimeError(
                 "maintenance callback did not stop; refusing unsafe domain teardown"
             )
+        attempt(self._flush_agent_activity, "agent-activity")
         if self._routine_service is not None:
             routine_service = self._routine_service
             self._routine_service = None

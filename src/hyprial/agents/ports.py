@@ -79,6 +79,12 @@ class ReleaseAgentCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class RecordAgentActivityCommand:
+    correlation_id: str
+    actor: str
+
+
+@dataclass(frozen=True, slots=True)
 class PinAgentAdapterCommand:
     correlation_id: str
     actor: str
@@ -103,6 +109,7 @@ AgentCommand: TypeAlias = (
     | DestroyAgentCommand
     | BindAgentCommand
     | ReleaseAgentCommand
+    | RecordAgentActivityCommand
     | PinAgentAdapterCommand
     | UnpinAgentAdapterCommand
 )
@@ -125,6 +132,7 @@ class AgentProjection:
     preferred_harness: str | None = None
     last_harness: str | None = None
     last_session_id: str | None = None
+    last_active_at_ms: int | None = None
     pinned_adapters: tuple[str, ...] = ()
     created_at_ms: int = 0
     hosted_by: str | None = None
@@ -147,6 +155,7 @@ class AgentProjection:
             "preferredHarness": self.preferred_harness,
             "lastHarness": self.last_harness,
             "lastSessionId": self.last_session_id,
+            "lastActiveAtMs": self.last_active_at_ms,
             "pinnedAdapters": list(self.pinned_adapters),
             "createdAtMs": self.created_at_ms,
             "hosted": self.hosted_by is not None,

@@ -38,6 +38,7 @@ from .ports import (
     CreateTransferHostedAgentCommand,
     DestroyAgentCommand,
     PinAgentAdapterCommand,
+    RecordAgentActivityCommand,
     ReleaseAgentCommand,
     UnpinAgentAdapterCommand,
     UpdateAgentCommand,
@@ -72,6 +73,7 @@ _AGENT_COST_TYPES = (
     "DestroyAgentCommand",
     "BindAgentCommand",
     "ReleaseAgentCommand",
+    "RecordAgentActivityCommand",
     "PinAgentAdapterCommand",
     "UnpinAgentAdapterCommand",
 )
@@ -204,6 +206,7 @@ class _AgentGeneration:
                 DestroyAgentCommand,
                 BindAgentCommand,
                 ReleaseAgentCommand,
+                RecordAgentActivityCommand,
                 PinAgentAdapterCommand,
                 UnpinAgentAdapterCommand,
             ),
@@ -243,6 +246,8 @@ class _AgentGeneration:
                 self._bind(command)
             elif isinstance(command, ReleaseAgentCommand):
                 self._release(command)
+            elif isinstance(command, RecordAgentActivityCommand):
+                self._record_activity(command)
             elif isinstance(command, PinAgentAdapterCommand):
                 self._pin(command)
             else:
@@ -436,6 +441,7 @@ class _AgentGeneration:
                 preferred_harness=command.preferred_harness,
                 last_harness=command.last_harness,
                 last_session_id=command.last_session_id,
+                last_active_at_ms=existing.last_active_at_ms,
                 pinned_adapters=existing.pinned_adapters,
                 created_at_ms=existing.created_at_ms,
                 hosted_by=existing.hosted_by,
@@ -471,14 +477,8 @@ class _AgentGeneration:
             binding = incumbent
             self.liveness.touch(agent.uri)
             changed = False
-            # Nothing the read projection is built from moved: no registry
-            # write, the same binding object (same bound_at_ms), no version
-            # bump -- only the liveness heartbeat, which the projection does
-            # not carry.  Rebuilding it would rescan every agent row (293 in
-            # production) once per channel heartbeat per second for an
-            # identical result.  The ``exact`` test above reads the actor's
-            # own AgentLiveness (the authority the projection is copied
-            # from), so a lost, changed or stale binding never reaches here.
+            # The binding did not move. Activity below may still refresh the
+            # projection once per throttle window; ordinary heartbeats do not.
             refresh_projection = False
         else:
             self.registry.record_session(
@@ -498,6 +498,10 @@ class _AgentGeneration:
             changed = True
             refresh_projection = True
             agent = self.registry.require(agent.actor)
+        activity_changed = self.registry.record_activity(agent.actor)
+        if activity_changed:
+            agent = self.registry.require(agent.actor)
+            refresh_projection = True
         if changed:
             self.registry.record_external_binding(
                 agent.uri,
@@ -505,7 +509,9 @@ class _AgentGeneration:
                 runtime=command.runtime,
                 session_id=command.session_id,
             )
-        version = self.version.bump() if changed else self.version.read()
+        version = (
+            self.version.bump() if changed or activity_changed else self.version.read()
+        )
         self._completed(
             command,
             operation="bind",
@@ -514,6 +520,19 @@ class _AgentGeneration:
             agent=agent,
             binding=binding,
             refresh_projection=refresh_projection,
+        )
+
+    def _record_activity(self, command: RecordAgentActivityCommand) -> None:
+        changed = self.registry.record_activity(command.actor)
+        agent = self.registry.get(command.actor)
+        version = self.version.bump() if changed else self.version.read()
+        self._completed(
+            command,
+            operation="activity",
+            changed=changed,
+            version=version,
+            agent=agent,
+            refresh_projection=changed,
         )
 
     def _release(self, command: ReleaseAgentCommand) -> None:
@@ -866,6 +885,7 @@ def _agent_projection(agent: Agent, version: int) -> AgentProjection:
         preferred_harness=agent.preferred_harness,
         last_harness=agent.last_harness,
         last_session_id=agent.last_session_id,
+        last_active_at_ms=agent.last_active_at_ms,
         pinned_adapters=agent.pinned_adapters,
         created_at_ms=agent.created_at_ms,
         hosted_by=agent.hosted_by,

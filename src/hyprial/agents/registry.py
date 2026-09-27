@@ -116,6 +116,10 @@ ACTOR_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 _MAX_ACTOR_NAME_LENGTH = 128
 
+# Activity is archival evidence, not liveness. Repeated heartbeats and message
+# events collapse onto at most one durable write per agent in this window.
+AGENT_ACTIVITY_WRITE_INTERVAL_MS = 60_000
+
 HOSTED_BY_VALUES = ("transfer-receive", "squire-container", "host-invite")
 
 
@@ -281,6 +285,7 @@ class Agent:
     # -- last session clues, for the A9 handover notice after a harness swap --
     last_harness: str | None = None
     last_session_id: str | None = None
+    last_active_at_ms: int | None = None
 
     # -- adapter pins: which adapters route their inbound DMs to this agent --
     #: Composed from the ``pins`` table at read time; writes go through
@@ -334,6 +339,7 @@ class Agent:
             "preferredHarness": self.preferred_harness,
             "lastHarness": self.last_harness,
             "lastSessionId": self.last_session_id,
+            "lastActiveAtMs": self.last_active_at_ms,
             "pinnedAdapters": list(self.pinned_adapters),
             "createdAtMs": self.created_at_ms,
             "hosted": self.hosted_by is not None,
@@ -384,6 +390,11 @@ class Agent:
             ),
             last_session_id=_optional_string(
                 value.get("lastSessionId"), f"{label}.lastSessionId"
+            ),
+            last_active_at_ms=(
+                int(value["lastActiveAtMs"])
+                if isinstance(value.get("lastActiveAtMs"), int)
+                else None
             ),
             pinned_adapters=normalize_pinned_adapters(value.get("pinnedAdapters")),
             created_at_ms=int(created) if isinstance(created, int) else 0,
@@ -470,6 +481,7 @@ _AGENTS_TABLE_DDL = """CREATE TABLE IF NOT EXISTS __TABLE_NAME__ (
     preferred_harness TEXT,
     last_harness TEXT,
     last_session_id TEXT,
+    last_active_at_ms INTEGER,
     created_at_ms INTEGER NOT NULL
 )"""
 
@@ -516,6 +528,7 @@ _AGENTS_TABLE_COLUMNS = (
     "preferred_harness",
     "last_harness",
     "last_session_id",
+    "last_active_at_ms",
     "created_at_ms",
     "hosted_by",
 )
@@ -665,6 +678,10 @@ def _connect(database: Path) -> sqlite3.Connection:
         ):
             if "config" not in columns:
                 connection.execute("ALTER TABLE agents ADD COLUMN config TEXT DEFAULT NULL")
+            if "last_active_at_ms" not in columns:
+                connection.execute(
+                    "ALTER TABLE agents ADD COLUMN last_active_at_ms INTEGER DEFAULT NULL"
+                )
             if "hosted_by" not in columns:
                 connection.execute(_HOSTED_BY_ALTER)
         else:
@@ -688,6 +705,10 @@ def _connect(database: Path) -> sqlite3.Connection:
                 if "config" not in columns:
                     connection.execute(
                         "ALTER TABLE agents ADD COLUMN config TEXT DEFAULT NULL"
+                    )
+                if "last_active_at_ms" not in columns:
+                    connection.execute(
+                        "ALTER TABLE agents ADD COLUMN last_active_at_ms INTEGER DEFAULT NULL"
                     )
                 if "hosted_by" not in columns:
                     connection.execute(_HOSTED_BY_ALTER)
@@ -812,6 +833,7 @@ class AgentRegistry:
         self._clock = clock
         self._lock = threading.RLock()
         self._db = _connect(self.database)
+        self._last_activity_write: dict[str, int] = {}
         self._home = (
             None
             if hyprial_home is None
@@ -942,6 +964,28 @@ class AgentRegistry:
                     "SELECT * FROM agents ORDER BY actor"
                 )
             )
+
+    def now_ms(self) -> int:
+        """Return the registry's injectable wall clock in milliseconds."""
+
+        return int(self._clock())
+
+    def activity_hints(self, actor: str | Agent) -> dict[str, int | bool | None]:
+        """Return conservative, explicitly non-recorded activity clues."""
+
+        agent = actor if isinstance(actor, Agent) else self.require(actor)
+        home_mtime_ms: int | None = None
+        if self._home is not None:
+            home = self._home.agents_root / agent.actor
+            try:
+                home_mtime_ms = home.stat().st_mtime_ns // 1_000_000
+            except FileNotFoundError:
+                pass
+        return {
+            "createdAtMs": agent.created_at_ms,
+            "hasLastSessionId": agent.last_session_id is not None,
+            "agentHomeMtimeMs": home_mtime_ms,
+        }
 
     def local_actors(self) -> tuple[str, ...]:
         """Design §5.2: every actor this machine speaks for, as canonical URIs.
@@ -1742,7 +1786,7 @@ class AgentRegistry:
         self._validate_config_location(agent)
         with self._lock, self._db:
             existing = self._db.execute(
-                "SELECT owner, machine, uri, hosted_by, entity_token "
+                "SELECT owner, machine, uri, hosted_by, entity_token, last_active_at_ms "
                 "FROM agents WHERE actor = ?",
                 (agent.actor,),
             ).fetchone()
@@ -1769,6 +1813,15 @@ class AgentRegistry:
                 raise AgentError(
                     "save cannot change an agent incarnation; use the authority rotation API"
                 )
+            if existing is not None:
+                agent = replace(
+                    agent,
+                    last_active_at_ms=(
+                        None
+                        if existing["last_active_at_ms"] is None
+                        else int(existing["last_active_at_ms"])
+                    ),
+                )
             statement, values = self._insert_statement(agent)
             self._db.execute(
                 statement
@@ -1788,6 +1841,7 @@ class AgentRegistry:
                         "preferred_harness",
                         "last_harness",
                         "last_session_id",
+                        "last_active_at_ms",
                         "created_at_ms",
                         "hosted_by",
                     )
@@ -1801,8 +1855,8 @@ class AgentRegistry:
         return (
             "INSERT INTO agents (actor, owner, machine, uri, entity_token, cwd, config, provider, "
             "model, capabilities, harness_args, preferred_harness, "
-            "last_harness, last_session_id, created_at_ms, hosted_by) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "last_harness, last_session_id, last_active_at_ms, created_at_ms, hosted_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 agent.actor,
                 agent.owner,
@@ -1826,10 +1880,47 @@ class AgentRegistry:
                 agent.preferred_harness,
                 agent.last_harness,
                 agent.last_session_id,
+                agent.last_active_at_ms,
                 agent.created_at_ms,
                 agent.hosted_by,
             ),
         )
+
+    def record_activity(self, actor: str) -> bool:
+        """Best-effort durable activity mark, coalesced per agent per minute.
+
+        The in-memory fence avoids even issuing SQL for repeated events in one
+        daemon. The conditional update is the cross-process fence, so two
+        registry instances racing inside the same window still change one row
+        at most once. Unknown or foreign actors are ignored.
+        """
+
+        name = self.local_actor(actor)
+        if name is None:
+            return False
+        now_ms = self.now_ms()
+        with self._lock:
+            previous = self._last_activity_write.get(name)
+            if (
+                previous is not None
+                and now_ms - previous < AGENT_ACTIVITY_WRITE_INTERVAL_MS
+            ):
+                return False
+            with self._db:
+                cursor = self._db.execute(
+                    "UPDATE agents SET last_active_at_ms = ? WHERE actor = ? "
+                    "AND (last_active_at_ms IS NULL OR last_active_at_ms <= ?)",
+                    (now_ms, name, now_ms - AGENT_ACTIVITY_WRITE_INTERVAL_MS),
+                )
+            if cursor.rowcount != 1:
+                row = self._db.execute(
+                    "SELECT last_active_at_ms FROM agents WHERE actor = ?", (name,)
+                ).fetchone()
+                if row is not None and row["last_active_at_ms"] is not None:
+                    self._last_activity_write[name] = int(row["last_active_at_ms"])
+                return False
+            self._last_activity_write[name] = now_ms
+            return True
 
     def update(self, actor: str, **changes: Any) -> Agent:
         return self.save(replace(self.require(actor), **changes))
@@ -2338,6 +2429,11 @@ class AgentRegistry:
             preferred_harness=row["preferred_harness"],
             last_harness=row["last_harness"],
             last_session_id=row["last_session_id"],
+            last_active_at_ms=(
+                None
+                if row["last_active_at_ms"] is None
+                else int(row["last_active_at_ms"])
+            ),
             pinned_adapters=pinned,
             created_at_ms=int(row["created_at_ms"]),
             hosted_by=row["hosted_by"],

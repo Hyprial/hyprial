@@ -188,7 +188,11 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
   (它发来的消息才算"本人")。不开飞书时用 `hyprial query <user-proxy> inbox` 看。
 - 自动升级(03:17/15:17)只安装、**不重启**:装好后 daemon 仍跑旧代码,主人会收到"新版本已安装,等待确认后重启"。
   确认切换:`hyprial autoupdate restart [--json]`(主人自己运行,或让任一 agent 代为运行);没有待重启时它什么都不做。
-  `hyprial autoupdate status --json` 的 `pendingRestart` 显示是否有待重启。手动 `hyprial upgrade` 仍会直接重启。
+  `hyprial autoupdate status --json` 的 `pendingRestart` 是待重启记录，`pendingRestartState` 表示这条记录现在是否还需要处理：
+  `waiting` = 还在跑旧代码，需要重启；`applied` = daemon 在安装之后已经重启过，不用再重启；
+  `unverified` = daemon 没有应答，`autoupdate restart` 会重新检查。判断要不要重启看 `pendingRestartState`，
+  不要看 `lastRun.restart.awaitingConfirmation`：别的途径重启之后，那个字段会一直停在“等待”。
+  不带 `--json` 时输出给人看的摘要。手动 `hyprial upgrade` 仍会直接重启。
 - `hyprial start --tier fast|strong|super --name ... --headless` —— 由 tier 选定 harness、模型厂商与模型
   (daemon 解析并审计)。⛔ 不要再同时写 harness 名或厂商/模型参数:`start pi --tier super` 以前会
   **静默丢掉 --tier**,起一个没有模型的 pi(落到全局默认);现在直接 `INVALID_ARGUMENT`,什么都不创建。

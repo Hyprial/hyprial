@@ -30,6 +30,7 @@ from hyprial.agents.ports import (
     CreateTransferHostedAgentCommand,
     DestroyAgentCommand,
     PinAgentAdapterCommand,
+    RecordAgentActivityCommand,
     ReleaseAgentCommand,
     UnpinAgentAdapterCommand,
     UpdateAgentCommand,
@@ -1006,6 +1007,16 @@ class AgentDirectoryFacade:
         )
         return notice
 
+    def record_activity(self, actor: str) -> bool:
+        event = self._domains.call_agent(
+            RecordAgentActivityCommand(
+                correlation_id=f"agent-command:activity:{uuid.uuid4().hex}",
+                actor=actor,
+            ),
+            AgentMutationCompleted,
+        )
+        return event.changed
+
     def destroy(self, actor: str) -> bool:
         event = self._domains.call_agent(
             DestroyAgentCommand(
@@ -1191,6 +1202,7 @@ def _agent(value: AgentProjection) -> Agent:
         preferred_harness=value.preferred_harness,
         last_harness=value.last_harness,
         last_session_id=value.last_session_id,
+        last_active_at_ms=value.last_active_at_ms,
         pinned_adapters=value.pinned_adapters,
         created_at_ms=value.created_at_ms,
         hosted_by=value.hosted_by,
