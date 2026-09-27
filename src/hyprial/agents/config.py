@@ -142,6 +142,7 @@ class AgentConfig:
     source: str
     required: bool = True
     discovery: str = "explicit-only"
+    shared_credentials: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         _validate_absolute_path(self.source, "config.sources[0].path")
@@ -151,12 +152,43 @@ class AgentConfig:
             raise AgentConfigError(
                 "config.discovery must be 'explicit-only'; implicit discovery is forbidden"
             )
+        normalized: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for harness, raw_path in self.shared_credentials:
+            if harness not in _SUPPORTED_HARNESSES:
+                raise AgentConfigError(
+                    f"config.sharedCredentials.{harness} names an unsupported harness"
+                )
+            if harness in seen:
+                raise AgentConfigError(
+                    f"config.sharedCredentials.{harness} is duplicated"
+                )
+            if not isinstance(raw_path, str) or not raw_path:
+                raise AgentConfigError(
+                    f"config.sharedCredentials.{harness} must be a non-empty path"
+                )
+            path = Path(raw_path).expanduser()
+            if not path.is_absolute():
+                raise AgentConfigError(
+                    f"config.sharedCredentials.{harness} must be absolute"
+                )
+            seen.add(harness)
+            normalized.append((harness, str(path)))
+        object.__setattr__(self, "shared_credentials", tuple(sorted(normalized)))
 
     def to_json(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "sources": [{"path": self.source, "required": self.required}],
             "discovery": self.discovery,
         }
+        if self.shared_credentials:
+            result["sharedCredentials"] = dict(self.shared_credentials)
+        return result
+
+    def shared_credential_path(self, harness: str) -> str | None:
+        """Return the operator-designated target without guessing a host path."""
+
+        return dict(self.shared_credentials).get(harness)
 
     @classmethod
     def from_json(cls, value: object, label: str = "config") -> Self:
@@ -165,7 +197,7 @@ class AgentConfig:
                 f"{label} must be an object, not {type(value).__name__}; "
                 "list and resolution-chain config shapes are not supported"
             )
-        allowed = {"sources", "discovery"}
+        allowed = {"sources", "discovery", "sharedCredentials"}
         extras = [key for key in value if key not in allowed]
         if extras:
             key = extras[0]
@@ -210,7 +242,21 @@ class AgentConfig:
             raise AgentConfigError(
                 f"{label}.discovery must be 'explicit-only'; implicit discovery is forbidden"
             )
-        return cls(str(source_path), required=required)
+        raw_shared = value.get("sharedCredentials", {})
+        if not isinstance(raw_shared, dict):
+            raise AgentConfigError(f"{label}.sharedCredentials must be an object")
+        shared: list[tuple[str, str]] = []
+        for harness, target in raw_shared.items():
+            if not isinstance(harness, str) or not isinstance(target, str):
+                raise AgentConfigError(
+                    f"{label}.sharedCredentials must map harness names to paths"
+                )
+            shared.append((harness, target))
+        return cls(
+            str(source_path),
+            required=required,
+            shared_credentials=tuple(shared),
+        )
 
     def freeze_manifest(self) -> ConfigManifest:
         """Freeze every regular C file before any native projection is consumed."""

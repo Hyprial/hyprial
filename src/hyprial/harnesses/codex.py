@@ -32,7 +32,12 @@ from hyprial.agents.environment import (
     whitelist_replacement_environment,
 )
 from hyprial.agents.config import ConfigProjectionReceipt, verify_native_projection
-from hyprial.agents.runtime import AgentRuntimeContext
+from hyprial.agents.runtime import (
+    AgentRuntimeContext,
+    SharedCredentialBinding,
+    validate_shared_credential_binding,
+    validate_shared_credential_environment,
+)
 from hyprial.daemon.desired_state import HarnessLaunchSpec
 from hyprial.transfer.container import wrap_worker_launch
 from hyprial.log import Logger
@@ -390,6 +395,8 @@ def prepare_codex_runtime_context(context: AgentRuntimeContext) -> None:
         raise CodexAgentHomeError(
             "Codex runtime context environment disagrees with its native root"
         )
+    if context.shared_credential is not None:
+        validate_shared_credential_binding(context.shared_credential)
     verify_native_projection(context.projection, context.roots.projection_root)
     prepare_codex_runtime_roots(
         projection_root=context.roots.projection_root,
@@ -431,6 +438,7 @@ def _validate_codex_native_load(
     cwd: Path,
     model_provider: str | None,
     require_tool_profile: bool = False,
+    shared_credential: SharedCredentialBinding | None = None,
 ) -> CodexNativeLoadEvidence:
     """Validate real app-server receipts before a P2 thread starts or resumes."""
 
@@ -614,16 +622,23 @@ def _validate_codex_native_load(
     auth_path = expected_root / "auth.json"
     auth_present = auth_path.exists() or auth_path.is_symlink()
     if auth_store == "file":
-        try:
-            metadata = auth_path.lstat()
-        except OSError as error:
-            raise CodexAgentHomeError(
-                "Codex file credential store requires agent-owned auth.json"
-            ) from error
-        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
-            raise CodexAgentHomeError("Codex auth.json must be a regular file")
-        if stat.S_IMODE(metadata.st_mode) != 0o600:
-            raise CodexAgentHomeError("Codex auth.json mode must be 0600")
+        if shared_credential is not None:
+            if shared_credential.native_path != auth_path:
+                raise CodexAgentHomeError(
+                    "Codex shared credential binding names another native path"
+                )
+            validate_shared_credential_binding(shared_credential)
+        else:
+            try:
+                metadata = auth_path.lstat()
+            except OSError as error:
+                raise CodexAgentHomeError(
+                    "Codex file credential store requires agent-owned auth.json"
+                ) from error
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+                raise CodexAgentHomeError("Codex auth.json must be a regular file")
+            if stat.S_IMODE(metadata.st_mode) != 0o600:
+                raise CodexAgentHomeError("Codex auth.json mode must be 0600")
     elif auth_present:
         raise CodexAgentHomeError(
             "Codex ephemeral credential store must not fall back to auth.json"
@@ -975,6 +990,7 @@ class CodexInteractiveAppServer:
         projection_root: Path | None = None,
         native_root: Path | None = None,
         session_root: Path | None = None,
+        shared_credential: SharedCredentialBinding | None = None,
     ) -> None:
         self.socket_path = Path(socket_path)
         self.cwd = cwd
@@ -994,11 +1010,21 @@ class CodexInteractiveAppServer:
             )
         self._native_root = Path(native_root) if native_root is not None else None
         self._session_root = Path(session_root) if session_root is not None else None
+        self._shared_credential = shared_credential
+        if shared_credential is not None and self._native_root is None:
+            raise CodexAgentHomeError(
+                "interactive Codex shared credential requires P2 runtime roots"
+            )
         if self._native_root is not None:
             assert projection_root is not None and self._session_root is not None
             if self.env is None or self.env.get("CODEX_HOME") != str(self._native_root):
                 raise CodexAgentHomeError(
                     "interactive environment disagrees with resolved Codex native root"
+                )
+            if shared_credential is not None:
+                validate_shared_credential_binding(shared_credential)
+                validate_shared_credential_environment(
+                    shared_credential, self.env or {}
                 )
             prepare_codex_runtime_roots(
                 projection_root=Path(projection_root),
@@ -1102,6 +1128,7 @@ class CodexInteractiveAppServer:
                                 cwd=self.cwd,
                                 model_provider=self.model_provider,
                                 require_tool_profile=True,
+                                shared_credential=self._shared_credential,
                             )
                         return
                     except (
@@ -1697,6 +1724,7 @@ class CodexAppServerClient:
             prepare_codex_runtime_context(runtime_context)
             self._native_root = runtime_context.roots.native_root
             self._session_root = runtime_context.roots.session_root
+            self._shared_credential = runtime_context.shared_credential
             if base_environment.get("CODEX_HOME") != str(self._native_root):
                 raise CodexAgentHomeError(
                     "complete child environment disagrees with Codex runtime context"
@@ -1710,6 +1738,7 @@ class CodexAppServerClient:
                 raise CodexAgentHomeError(
                     "P2 CODEX_HOME requires an AgentRuntimeContext"
                 )
+            self._shared_credential = None
             inherited_root = base_environment.get("CODEX_HOME")
             self._native_root = (
                 Path(inherited_root) if inherited_root is not None else None
@@ -1931,6 +1960,7 @@ class CodexAppServerClient:
                     native_root=self._native_root,
                     cwd=working_directory,
                     model_provider=self.spec.model_provider,
+                    shared_credential=self._shared_credential,
                 )
                 if self._logger is not None:
                     evidence = self._native_load_evidence

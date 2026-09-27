@@ -431,10 +431,17 @@ def compose_worker_child_launch(
     else:
         base.update(routed_proxy_environment(environ, worker_proxy))
     generated.update(runtime_environment)
+    complete = build_complete_child_environment(
+        base=base, generated=generated, secrets=resolved
+    )
+    if runtime_context is not None and runtime_context.shared_credential is not None:
+        from .runtime import validate_shared_credential_environment
+
+        validate_shared_credential_environment(
+            runtime_context, complete.for_exec()
+        )
     return ChildEnvironmentLaunch(
-        environment=build_complete_child_environment(
-            base=base, generated=generated, secrets=resolved
-        ),
+        environment=complete,
         actor=channel.actor,
         grants=tuple(
             (secret.grant.grant_id, secret.grant.revision)

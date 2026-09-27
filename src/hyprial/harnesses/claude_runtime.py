@@ -8,7 +8,10 @@ from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 
 from hyprial.agents.config import AgentConfigError, verify_native_projection
-from hyprial.agents.runtime import AgentRuntimeContext
+from hyprial.agents.runtime import (
+    AgentRuntimeContext,
+    validate_shared_credential_binding,
+)
 
 CLAUDE_RUNTIME_ENVIRONMENT = {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
 _SESSION_LINK = "projects"
@@ -61,6 +64,8 @@ def prepare_claude_runtime_context(context: AgentRuntimeContext) -> None:
 def _prepare_claude_runtime_context(context: AgentRuntimeContext) -> None:
     if context.harness != "claude":
         raise ClaudeRuntimeError("Claude runtime adapter requires harness 'claude'")
+    if context.shared_credential is not None:
+        validate_shared_credential_binding(context.shared_credential)
     roots = context.roots
     projection_root = roots.projection_root
     native_root = roots.native_root

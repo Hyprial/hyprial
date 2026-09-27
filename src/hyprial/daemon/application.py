@@ -7496,7 +7496,8 @@ class DaemonApplication:
                 ClaudeRuntimeError,
             ) as error:
                 raise DaemonRequestError(
-                    ipc_errors.INVALID_ARGUMENT, str(error)
+                    getattr(error, "code", None) or ipc_errors.INVALID_ARGUMENT,
+                    str(error),
                 ) from error
             if context is None:
                 return {"ok": True, "mode": "legacy", "environment": {}}
@@ -9536,6 +9537,11 @@ class DaemonApplication:
         recovery_cleanup = self._agent_recovery_cleanups.get(
             agent.uri
         ) or self._agent_recovery_cleanups.get(agent.actor)
+        from hyprial.agents.runtime import shared_credential_status
+
+        credential_status = shared_credential_status(
+            registry=self._agent_registry, agent=agent
+        )
         return {
             # ``Agent.to_json`` is also the durable/lifecycle round-trip form,
             # so it carries the internal ``entityToken`` incarnation fence;
@@ -9554,6 +9560,11 @@ class DaemonApplication:
             ),
             **self._agent_liveness.snapshot(spelling),
             "status": self._registered_agent_status(agent),
+            **(
+                {"sharedCredentials": credential_status}
+                if credential_status
+                else {}
+            ),
             **(
                 {
                     "recoveryStatus": "failed",

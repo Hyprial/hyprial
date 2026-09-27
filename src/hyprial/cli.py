@@ -7215,6 +7215,22 @@ def _runtime_context_projection(
                 ipc_errors.INVALID_ARGUMENT,
                 f"daemon returned an invalid agent runtime {field}",
             )
+    shared_credential = result.get("sharedCredential")
+    if shared_credential is not None:
+        if not isinstance(shared_credential, dict) or shared_credential.get(
+            "authMode"
+        ) != "native-shared-link":
+            raise CliError(
+                ipc_errors.INVALID_ARGUMENT,
+                "daemon returned an invalid shared credential binding",
+            )
+        for field in ("nativePath", "targetPath"):
+            value = shared_credential.get(field)
+            if not isinstance(value, str) or not Path(value).is_absolute():
+                raise CliError(
+                    ipc_errors.INVALID_ARGUMENT,
+                    f"daemon returned an invalid shared credential {field}",
+                )
     return result
 
 
@@ -8078,6 +8094,7 @@ def _start_interactive_codex(
     """
 
     from hyprial.daemon.desired_state import HarnessLaunchSpec
+    from hyprial.agents.runtime import SharedCredentialBinding
     from hyprial.harnesses.codex import (
         CodexAppServerRpcError,
         CodexInteractiveAppServer,
@@ -8135,6 +8152,22 @@ def _start_interactive_codex(
     socket_path = root / "app.sock"
     session_ref: str | None = None
     registered = False
+    raw_shared_credential = (
+        None
+        if runtime_projection is None
+        else runtime_projection.get("sharedCredential")
+    )
+    shared_credential = (
+        None
+        if not isinstance(raw_shared_credential, dict)
+        else SharedCredentialBinding(
+            actor=actor,
+            harness="codex",
+            native_path=Path(str(raw_shared_credential["nativePath"])),
+            target_path=Path(str(raw_shared_credential["targetPath"])),
+            agent_cwd=cwd,
+        )
+    )
     server = CodexInteractiveAppServer(
         socket_path,
         cwd=cwd,
@@ -8164,6 +8197,7 @@ def _start_interactive_codex(
             if runtime_projection is None
             else Path(str(runtime_projection["sessionRoot"]))
         ),
+        shared_credential=shared_credential,
     )
     process: subprocess.Popen[Any] | None = None
     carrier: CodexInteractiveCarrier | None = None
