@@ -7137,7 +7137,9 @@ class DaemonApplication:
             text = _required_string(params.get("message"), "message")
             original_key = actor
             original = None
-            for key in self._message_consumer_keys(params):
+            original_is_pending = True
+            consumer_keys = self._message_consumer_keys(params)
+            for key in consumer_keys:
                 original = next(
                     (
                         item
@@ -7150,12 +7152,44 @@ class DaemonApplication:
                     original_key = key
                     break
             if original is None:
-                raise DaemonRequestError(
-                    ipc_errors.MESSAGE_REPLY_UNAVAILABLE, "pending message was not found"
+                # Background reply settlement acknowledges the inbound row,
+                # removing it from pending_messages before a caller's next
+                # retry.  Join only an existing deterministic reply receipt;
+                # the retained inbound row supplies the original route and
+                # fences the receipt to this actor's consumer key.  A later
+                # submit below checks the receipt's command digest, including
+                # the reply text, without repeating native I/O.
+                reply_id = reply_message_id(message_id)
+                receipt_reader = getattr(
+                    self._inbox, "reply_submission_result", None
                 )
+                original_reader = getattr(
+                    self._inbox, "harness_failure_original", None
+                )
+                existing = (
+                    receipt_reader(reply_id) if callable(receipt_reader) else None
+                )
+                retained = (
+                    original_reader(message_id) if callable(original_reader) else None
+                )
+                if (
+                    existing is None
+                    or retained is None
+                    or retained.recipient not in consumer_keys
+                ):
+                    raise DaemonRequestError(
+                        ipc_errors.MESSAGE_REPLY_UNAVAILABLE,
+                        "pending message was not found",
+                    )
+                original = retained
+                original_key = retained.recipient
+                original_is_pending = False
             adapter_name = lark_reply_adapter(original.sender)
             if (
-                original.sender.startswith((CHANNEL_URI_PREFIX, ADAPTER_URI_PREFIX))
+                original_is_pending
+                and original.sender.startswith(
+                    (CHANNEL_URI_PREFIX, ADAPTER_URI_PREFIX)
+                )
                 and adapter_name is None
             ):
                 raise DaemonRequestError(
@@ -7164,7 +7198,8 @@ class DaemonApplication:
                     "reply bridge",
                 )
             if (
-                adapter_name is not None
+                original_is_pending
+                and adapter_name is not None
                 and self._adapters is not None
                 and adapter_name not in self._lark_gateway_names()
             ):
@@ -7244,9 +7279,13 @@ class DaemonApplication:
                     )
                     acknowledged = False
                     if replied:
-                        acknowledged = self._inbox.ack(
-                            original_key, message_id
-                        ).acknowledged
+                        acknowledged = (
+                            True
+                            if not original_is_pending
+                            else self._inbox.ack(
+                                original_key, message_id
+                            ).acknowledged
+                        )
                     return {
                         "ok": False,
                         "messageId": message_id,
@@ -7300,10 +7339,20 @@ class DaemonApplication:
                 return {
                     "ok": False,
                     "messageId": message_id,
+                    "replyMessageId": reply.message_id,
                     "replied": False,
                     "acknowledged": False,
                     "queued": submitted.queued,
                     "code": submitted.code or "REPLY_DELIVERY_PENDING",
+                }
+            if not original_is_pending:
+                return {
+                    "ok": True,
+                    "messageId": message_id,
+                    "replyMessageId": reply.message_id,
+                    "replied": True,
+                    "acknowledged": True,
+                    "queued": submitted.queued,
                 }
             acknowledged = self._inbox.ack(original_key, message_id)
             return {
