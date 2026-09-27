@@ -77,4 +77,9 @@ def observe_node(database, graph, node, inbox, *, recipient: str, at: int, epoch
                 else {}
             ),
         },
+        **(
+            {"roster": graph["roster"], "rosterDigest": graph["rosterDigest"]}
+            if "roster" in graph
+            else {}
+        ),
     }

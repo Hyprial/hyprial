@@ -87,6 +87,10 @@ PAC_IPC_INVALID_RESPONSE = "PAC_IPC_INVALID_RESPONSE"
 #: aborts as a whole -- zero writes -- rather than rewriting half-blind.
 PAC_MIGRATION_SOURCE_UNREADABLE = "PAC_MIGRATION_SOURCE_UNREADABLE"
 
+#: A managed workflow's immutable worker receipt or roster no longer agrees
+#: with the actor node and launch artifact published in the same transaction.
+WORKFLOW_WORKER_RECEIPT_MISMATCH = "WORKFLOW_WORKER_RECEIPT_MISMATCH"
+
 
 class PacError(RuntimeError):
     """One PAC failure carrying its stable CLI-level code and payload."""
@@ -127,6 +131,7 @@ __all__ = [
     "PAC_PRINCIPAL_UNVERIFIED",
     "PAC_RESOLUTION_UNAVAILABLE",
     "PAC_OWNER_UNKNOWN",
+    "WORKFLOW_WORKER_RECEIPT_MISMATCH",
     "PacError",
 ]
 

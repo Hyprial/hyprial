@@ -17,7 +17,13 @@ from uuid import uuid4
 
 import yaml
 
-from .errors import PAC_GRAPH_NOT_FOUND, PAC_GRAPH_NOT_OWNER, PAC_NODE_NOT_FOUND, PacError
+from .errors import (
+    PAC_GRAPH_NOT_FOUND,
+    PAC_GRAPH_NOT_OWNER,
+    PAC_NODE_NOT_FOUND,
+    WORKFLOW_WORKER_RECEIPT_MISMATCH,
+    PacError,
+)
 from .migrations import unrewritten_owners_note
 from .journal import append_event
 from .reactor import (
@@ -75,6 +81,7 @@ class RuntimeObservation:
     identity_marker: str | None = None
     harness: str | None = None
     operation_id: str | None = None
+    agent_entity_token: str | None = None
 
 
 class ActorRuntime(Protocol):
@@ -385,11 +392,40 @@ class ActorCoordinator:
         else:
             self._reconcile_up(graph_id, node, activation, observation)
 
+    def _validate_receipt_launch(
+        self, graph_id: str, node: NodeRow, launch_digest: str | None
+    ) -> None:
+        from .workflow_graph import managed_graph
+
+        if not managed_graph(self.store, graph_id):
+            return
+        receipt = self.store.workflow_worker_receipt(graph_id, node.node_id)
+        if receipt is not None and (
+            launch_digest is not None
+            and receipt["launch_digest"] != launch_digest
+        ):
+            raise PacError(
+                WORKFLOW_WORKER_RECEIPT_MISMATCH,
+                "workflow worker receipt launch digest mismatch",
+            )
+        roster = self.store.workflow_roster(graph_id)
+        if roster is None:  # historical graph whose artifacts were not derivable
+            return
+        if receipt is None:
+            raise PacError(
+                WORKFLOW_WORKER_RECEIPT_MISMATCH,
+                "workflow worker receipt launch digest mismatch",
+            )
+
     def _resolve_and_store(self, graph_id: str, node: NodeRow, activation: dict[str, Any]) -> LaunchSpec:
         if activation["launch_json"]:
+            self._validate_receipt_launch(
+                graph_id, node, activation["launch_digest"]
+            )
             return LaunchSpec.from_json(json.loads(activation["launch_json"]))
         assert node.launch_ref is not None
         resolved = self.resolver(node.launch_ref, node)
+        self._validate_receipt_launch(graph_id, node, resolved.digest)
         db = self.store.write()
         try:
             current = db.execute(
@@ -427,7 +463,7 @@ class ActorCoordinator:
                 self._complete_lost(graph_id, node, activation, observation)
             return
         if observation.present:
-            self._complete_up(graph_id, node, activation)
+            self._complete_up(graph_id, node, activation, observation)
             return
         try:
             launch = self._resolve_and_store(graph_id, node, activation)
@@ -442,9 +478,18 @@ class ActorCoordinator:
         except Exception as error:  # noqa: BLE001 - failure is a durable lifecycle outcome
             self._launch_failed(graph_id, node, activation, error)
             return
-        self._complete_up(graph_id, node, activation)
+        self._complete_up(graph_id, node, activation, observation)
 
-    def _complete_up(self, graph_id: str, node: NodeRow, activation: dict[str, Any]) -> None:
+    def _complete_up(
+        self,
+        graph_id: str,
+        node: NodeRow,
+        activation: dict[str, Any],
+        observation: RuntimeObservation,
+    ) -> None:
+        self._validate_receipt_launch(
+            graph_id, node, activation["launch_digest"]
+        )
         db = self.store.write()
         inserted: list[PlannedNotification] = []
         try:
@@ -469,6 +514,27 @@ class ActorCoordinator:
                 return
             at = int(self.clock())
             incarnation = int(current["incarnation"]) + 1
+            receipt = db.execute(
+                "SELECT agent_entity_token FROM workflow_worker_receipts "
+                "WHERE graph_id=? AND actor_node=?",
+                (graph_id, node.node_id),
+            ).fetchone()
+            if receipt is not None and observation.agent_entity_token is not None:
+                if (
+                    receipt["agent_entity_token"] is not None
+                    and receipt["agent_entity_token"]
+                    != observation.agent_entity_token
+                ):
+                    raise PacError(
+                        WORKFLOW_WORKER_RECEIPT_MISMATCH,
+                        "workflow worker receipt agent entity token mismatch",
+                    )
+                db.execute(
+                    "UPDATE workflow_worker_receipts SET agent_entity_token=? "
+                    "WHERE graph_id=? AND actor_node=? "
+                    "AND agent_entity_token IS NULL",
+                    (observation.agent_entity_token, graph_id, node.node_id),
+                )
             db.execute(
                 "UPDATE actor_activations SET incarnation=?,op='done',daemon_epoch=?,updated_at=? "
                 "WHERE graph_id=? AND node_id=?",

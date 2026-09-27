@@ -384,6 +384,106 @@ class PacGraphStore:
             )
         ]
 
+    # -- managed workflow ownership --------------------------------------
+
+    def workflow_worker_receipts(self, graph_id: str) -> list[dict[str, Any]]:
+        """Return only explicit graph-owned worker receipts, in actor order."""
+
+        return [
+            dict(row)
+            for row in self._db.execute(
+                "SELECT * FROM workflow_worker_receipts WHERE graph_id=? "
+                "ORDER BY actor_node",
+                (graph_id,),
+            )
+        ]
+
+    def workflow_worker_receipt(
+        self, graph_id: str, actor_node: str
+    ) -> dict[str, Any] | None:
+        row = self._db.execute(
+            "SELECT * FROM workflow_worker_receipts "
+            "WHERE graph_id=? AND actor_node=?",
+            (graph_id, actor_node),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def workflow_roster(self, graph_id: str) -> dict[str, Any] | None:
+        """Read and integrity-check the stored roster and its receipts.
+
+        Pre-v15 graphs whose artifacts were unavailable during migration keep
+        both roster columns NULL.  That is the only accepted absence; a new or
+        derivably migrated roster must agree with every actor node and launch
+        reference exactly.
+        """
+
+        from .errors import WORKFLOW_WORKER_RECEIPT_MISMATCH, PacError
+        from .workflow_roster import validate_roster_document
+
+        meta = self._db.execute(
+            "SELECT roster_json,roster_digest FROM workflow_graphs "
+            "WHERE graph_id=?",
+            (graph_id,),
+        ).fetchone()
+        if meta is None:
+            return None
+        if meta["roster_json"] is None and meta["roster_digest"] is None:
+            return None
+        if meta["roster_json"] is None or meta["roster_digest"] is None:
+            raise PacError(
+                WORKFLOW_WORKER_RECEIPT_MISMATCH,
+                "workflow roster document and digest must be stored together",
+            )
+        try:
+            roster = validate_roster_document(
+                graph_id, str(meta["roster_json"]), str(meta["roster_digest"])
+            )
+        except ValueError as error:
+            raise PacError(
+                WORKFLOW_WORKER_RECEIPT_MISMATCH, str(error)
+            ) from error
+
+        actor_nodes = {
+            str(row["node_id"]): row
+            for row in self._db.execute(
+                "SELECT node_id,actor_name,launch_ref FROM nodes "
+                "WHERE graph_id=? AND kind='actor'",
+                (graph_id,),
+            )
+        }
+        receipts = self.workflow_worker_receipts(graph_id)
+        if {str(row["actor_node"]) for row in receipts} != set(actor_nodes):
+            raise PacError(
+                WORKFLOW_WORKER_RECEIPT_MISMATCH,
+                "workflow worker receipt set does not match graph actor nodes",
+            )
+        for receipt in receipts:
+            actor = actor_nodes[str(receipt["actor_node"])]
+            launch_digest = str(actor["launch_ref"] or "").partition("#sha256=")[2]
+            owners = {
+                str(row[0])
+                for row in self._db.execute(
+                    "SELECT n.owner FROM workflow_nodes w "
+                    "JOIN nodes n ON n.graph_id=w.graph_id AND n.node_id=w.node_id "
+                    "WHERE w.graph_id=? AND w.actor_node=?",
+                    (graph_id, receipt["actor_node"]),
+                )
+            }
+            if (
+                receipt["ownership"] != "workflow"
+                or receipt["state"] != "planned"
+                or receipt["actor_name"] != actor["actor_name"]
+                or receipt["launch_digest"] != launch_digest
+                or receipt["roster_digest"] != meta["roster_digest"]
+                or owners != {str(receipt["actor_uri"])}
+            ):
+                raise PacError(
+                    WORKFLOW_WORKER_RECEIPT_MISMATCH,
+                    "workflow worker receipt does not match its actor node, "
+                    "launch artifact, roster, and assigned owner",
+                )
+        return roster
+
     # -- flag events -------------------------------------------------------
 
     def flag_events(self, graph_id: str) -> list[FlagEventRow]:

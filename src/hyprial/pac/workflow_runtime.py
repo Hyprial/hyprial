@@ -141,7 +141,8 @@ class WorkflowSender:
             try:
                 with store.read():
                     row = store._db.execute(
-                        "SELECT w.*,g.specification_ref,g.specification_digest,n.owner,n.flag "
+                        "SELECT w.*,g.specification_ref,g.specification_digest,"
+                        "g.roster_json,g.roster_digest,n.owner,n.flag "
                         "FROM workflow_nodes w JOIN workflow_graphs g USING(graph_id) "
                         "JOIN nodes n ON n.graph_id=w.graph_id AND n.node_id=w.node_id WHERE w.request_id=?",
                         (f"workflow-request:{request_id}",),
@@ -167,6 +168,12 @@ class WorkflowSender:
                             "task was withdrawn or closed before delivery",
                         )
                     spec = read_specification(row)
+                    roster = store.workflow_roster(str(row["graph_id"]))
+                    roster_line = (
+                        f"Workflow roster: {row['roster_json']}\n"
+                        if roster is not None
+                        else ""
+                    )
                     request_expires_at_ms = _request_expires_at_ms(row)
                     node = next(n for n in spec["nodes"] if n["id"] == row["node_id"])
                     predecessors = [
@@ -192,6 +199,7 @@ class WorkflowSender:
                     text = (
                         f"{node['task']}\n\n"
                         f"Input evidence references: {json.dumps(inputs, ensure_ascii=False)}\n"
+                        f"{roster_line}"
                         f"Inspect current work before acting: hyprial workflow inspect {row['graph_id']} --node {row['node_id']} --json\n"
                         f"Graph: {row['graph_id']}; node: {row['node_id']}; role: {node['role']}\n"
                         f"Fixed deadline: {row['deadline_ms']} (epoch ms).\n"
@@ -989,6 +997,7 @@ class GraphWorkflowService:
                         "SELECT * FROM workflow_nodes WHERE graph_id=?", (run_id,)
                     )
                 }
+                roster = store.workflow_roster(run_id)
                 nodes = [
                     {
                         **node.to_json(),
@@ -1061,6 +1070,11 @@ class GraphWorkflowService:
                     "nodes": nodes,
                     "edges": [e.to_json() for e in store.edges(run_id)],
                     "reasonRef": meta["reason_ref"],
+                    **(
+                        {"roster": roster, "rosterDigest": roster["digest"]}
+                        if roster is not None
+                        else {}
+                    ),
                 }
         finally:
             store.close()

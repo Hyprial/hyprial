@@ -17,6 +17,7 @@ from .errors import PacError
 from .journal import append_event
 from .principal import parse_principal
 from .store import PacGraphStore
+from .workflow_roster import build_roster
 from .workflow_schema import WorkflowSpec
 
 
@@ -156,22 +157,22 @@ def compile_workflow(
             "VALUES (?,?,1,?,?,?,?,?)",
             (graph_id, spec.name, sender, at, f"workflow:{operation_key}", at, sender),
         )
-        db.execute(
-            "INSERT INTO workflow_graphs(graph_id,specification_ref,specification_digest,on_failure,state,routine_name,task_key) "
-            "VALUES (?,?,?,?,'running',?,?)",
-            (graph_id, str(reference), digest, spec.on_failure, routine_name, task_key),
-        )
-        workers = {}
+        workers: dict[str, dict[str, str]] = {}
         for node in spec.nodes:
             if node.worker and node.worker not in workers:
                 actor_node = f"_actor.{node.worker}"
                 actor_name = (
                     f"{graph_id}-{sha256(node.worker.encode()).hexdigest()[:12]}"
                 )
-                workers[node.worker] = (
-                    actor_node,
-                    canonical_agent_uri(local_owner, machine, actor_name),
-                )
+                launch_digest = sha256(launches[node.worker].read_bytes()).hexdigest()
+                workers[node.worker] = {
+                    "actor_node": actor_node,
+                    "actor_name": actor_name,
+                    "actor_uri": canonical_agent_uri(
+                        local_owner, machine, actor_name
+                    ),
+                    "launch_digest": launch_digest,
+                }
                 db.execute(
                     "INSERT INTO nodes(graph_id,node_id,owner,brief_ref,kind,actor_name,launch_ref) "
                     "VALUES (?,?,?,?,'actor',?,?)",
@@ -181,14 +182,65 @@ def compile_workflow(
                         sender,
                         f"workflow:{graph_id}#{actor_node}",
                         actor_name,
-                        str(launches[node.worker])
-                        + "#sha256="
-                        + sha256(launches[node.worker].read_bytes()).hexdigest(),
+                        str(launches[node.worker]) + "#sha256=" + launch_digest,
                     ),
                 )
+        owned_bindings = {
+            node.id: (
+                workers[node.worker]["actor_node"],
+                workers[node.worker]["actor_uri"],
+            )
+            for node in spec.nodes
+            if node.worker is not None
+        }
+        _, roster_digest, roster_json = build_roster(
+            graph_id,
+            spec.nodes,
+            owned_bindings=owned_bindings,
+            local_owner=local_owner,
+            local_machine=machine,
+        )
+        db.execute(
+            "INSERT INTO workflow_graphs"
+            "(graph_id,specification_ref,specification_digest,on_failure,state,"
+            "routine_name,task_key,roster_json,roster_digest) "
+            "VALUES (?,?,?,?,'running',?,?,?,?)",
+            (
+                graph_id,
+                str(reference),
+                digest,
+                spec.on_failure,
+                routine_name,
+                task_key,
+                roster_json,
+                roster_digest,
+            ),
+        )
+        for worker in sorted(workers):
+            binding = workers[worker]
+            db.execute(
+                "INSERT INTO workflow_worker_receipts "
+                "(graph_id,actor_node,actor_name,actor_uri,ownership,launch_digest,"
+                "roster_digest,state,admission_generation,created_at) "
+                "VALUES (?,?,?,?,'workflow',?,?,'planned',0,?)",
+                (
+                    graph_id,
+                    binding["actor_node"],
+                    binding["actor_name"],
+                    binding["actor_uri"],
+                    binding["launch_digest"],
+                    roster_digest,
+                    at,
+                ),
+            )
         for node in spec.nodes:
             actor_node, owner = (
-                workers[node.worker] if node.worker else (None, node.owner)
+                (
+                    workers[node.worker]["actor_node"],
+                    workers[node.worker]["actor_uri"],
+                )
+                if node.worker
+                else (None, node.owner)
             )
             deadline = node.deadline_ms
             db.execute(

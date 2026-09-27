@@ -47,10 +47,12 @@ class DaemonActorRuntime:
             return RuntimeObservation(False)
         actor = self.application._canonical_harness_uri(actor_name, spec)
         running = self.application._managed_worker_running(actor)
+        agent = self.application.agents.get(actor_name)
         return RuntimeObservation(
             present=running is True,
             identity_marker=(spec.nickname if spec.nickname and spec.nickname.startswith("pac:") else None),
             harness=spec.harness,
+            agent_entity_token=(agent.entity_token if agent is not None else None),
         )
 
     @staticmethod
