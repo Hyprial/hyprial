@@ -470,6 +470,9 @@ _IPC_STATS_METHODS = frozenset(
         "agent.keep.list",
         "agent.keep.remove",
         "agent.list",
+        "agent.migrate.execute",
+        "agent.migrate.preflight",
+        "agent.migrate.rollback",
         "agent.resolve",
         "agent.restore-policy",
         "agent.restore-threshold",
@@ -1090,6 +1093,10 @@ class DaemonApplication:
         # expose — mutations go through Agent commands; the daemon-side
         # environment composition is a read, not a mutation.
         self._agent_registry = self._agent_session_domains._registry  # noqa: SLF001
+        # Agent-home migrations are filesystem transactions.  Serialize their
+        # daemon entry point so two IPC clients cannot execute or roll back the
+        # same agent concurrently while still allowing unrelated IPC work.
+        self._agent_migration_lock = threading.Lock()
         self._agent_keep = AgentKeepList(
             self.state_dir / "agent-keep.json",
             normalize=self.agents.normalize_actor,
@@ -7550,7 +7557,116 @@ class DaemonApplication:
             }
         raise DaemonRequestError(ipc_errors.METHOD_NOT_FOUND, f"unknown daemon method {method}")
 
+    def _agent_migration_stopped(
+        self, agent_uri: str, entity_token: str
+    ) -> bool | None:
+        """Prove one current local incarnation has no live daemon binding."""
+
+        agent = self._agent_registry.get(agent_uri)
+        if agent is None or agent.entity_token != entity_token:
+            return None
+        running = self._agent_liveness.verdict(agent_uri)
+        if running is not None:
+            return not running
+        # For a local registry identity, an absent binding is the daemon's
+        # durable post-`down`/never-started state.  A retained binding with no
+        # verdict remains unknown and therefore fails closed in the
+        # coordinator.
+        return True if self._agent_liveness.binding(agent_uri) is None else None
+
+    def _agent_migration_bindings(self, support: Any) -> Any:
+        from hyprial.agents import (
+            DEFAULT_AGENT_TOOL_PROFILE,
+            AgentRuntimeMigrationBindings,
+        )
+
+        harnesses = tuple(dict.fromkeys(key.harness for key in support))
+        return AgentRuntimeMigrationBindings(
+            self._agent_registry,
+            harnesses=harnesses,
+            tool_profile=DEFAULT_AGENT_TOOL_PROFILE,
+            base_environment=os.environ,
+            containerized=False,
+        )
+
+    def _agent_migration_coordinator(self) -> Any:
+        from hyprial.agents import AgentMigrationCoordinator
+        from hyprial.agents.migration_entry import load_packaged_support_matrix
+
+        return AgentMigrationCoordinator(
+            self._agent_registry,
+            load_packaged_support_matrix(),
+            liveness_probe=self._agent_migration_stopped,
+        )
+
+    def _handle_agent_migration(self, method: str, params: JsonObject) -> Any:
+        from hyprial.agents.migration_entry import (
+            AgentMigrationPlanStore,
+            MigrationAuthorizationWindow,
+            MigrationPreflightManifest,
+        )
+
+        requested = _required_string(params.get("agent"), "agent")
+        try:
+            actor = self._agent_registry.require(requested).actor
+        except AgentError as error:
+            raise DaemonRequestError(error.code, str(error)) from error
+        store = AgentMigrationPlanStore(self.state_dir)
+        try:
+            with self._agent_migration_lock:
+                coordinator = self._agent_migration_coordinator()
+                if method == "agent.migrate.preflight":
+                    manifest = MigrationPreflightManifest.from_json(
+                        params.get("manifest")
+                    )
+                    authorization = manifest.authorization_window.bind(
+                        self._agent_registry, actor
+                    )
+                    plan = coordinator.preflight(
+                        authorization,
+                        manifest.entries,
+                        required_support=manifest.required_support,
+                        bindings=self._agent_migration_bindings(
+                            manifest.required_support
+                        ),
+                    )
+                    store.save(plan)
+                    return {
+                        "ok": True,
+                        "agent": plan.agent_uri,
+                        "migrationId": plan.migration_id,
+                        "planDigest": plan.digest,
+                        "createdAtMs": plan.created_at_ms,
+                        "persisted": True,
+                    }
+                migration_id = _required_string(
+                    params.get("migrationId"), "migrationId"
+                )
+                plan = store.load(actor, migration_id)
+                if method == "agent.migrate.execute":
+                    record = coordinator.execute(
+                        plan, bindings=self._agent_migration_bindings(plan.support)
+                    )
+                    return {"ok": True, "migration": record.to_json()}
+                if method == "agent.migrate.rollback":
+                    window = MigrationAuthorizationWindow.from_json(
+                        params.get("authorizationWindow")
+                    )
+                    record = coordinator.rollback(
+                        plan,
+                        authorization=window.bind(self._agent_registry, actor),
+                        bindings=self._agent_migration_bindings(plan.support),
+                    )
+                    return {"ok": True, "migration": record.to_json()}
+        except (TypeError, ValueError, OSError) as error:
+            raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
+        raise DaemonRequestError(
+            ipc_errors.METHOD_NOT_FOUND, f"unknown daemon method {method}"
+        )
+
     def _handle_agent(self, method: str, params: JsonObject) -> Any:
+        if method.startswith("agent.migrate."):
+            return self._handle_agent_migration(method, params)
         if method in ("agent.grant", "agent.revoke", "agent.grants"):
             # L0: the local host operator records these facts. This ledger is
             # not a caller-authentication or runtime enforcement boundary.

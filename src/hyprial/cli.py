@@ -179,10 +179,15 @@ agent_app = typer.Typer(
 secret_app = typer.Typer(
     help="Manage explicit per-agent secret grants without exposing values."
 )
+migration_app = typer.Typer(
+    help="Preflight, execute, and roll back one authorized agent-home migration.",
+    no_args_is_help=True,
+)
 agent_keep_app = typer.Typer(
     help="Protect named agents from inactivity reports.",
 )
 agent_app.add_typer(secret_app, name="secret")
+agent_app.add_typer(migration_app, name="migrate")
 agent_app.add_typer(agent_keep_app, name="keep")
 app.add_typer(adapter_app, name="adapter")
 app.add_typer(daemon_app, name="daemon")
@@ -7152,6 +7157,110 @@ def agent_unblock(
 
     _execute(
         lambda: _daemon_request("agent.unblock", {"name": name}),
+        json_output=json_output,
+    )
+
+
+def _migration_manifest(path: Path) -> JsonObject:
+    try:
+        value = json.loads(path.expanduser().read_text(encoding="utf-8"))
+    except OSError as error:
+        raise CliError(
+            ipc_errors.INVALID_ARGUMENT,
+            f"cannot read migration manifest {path}: {error}",
+        ) from error
+    except json.JSONDecodeError as error:
+        raise CliError(
+            ipc_errors.INVALID_ARGUMENT,
+            f"migration manifest {path} is not valid JSON: {error}",
+        ) from error
+    if not isinstance(value, dict):
+        raise CliError(
+            ipc_errors.INVALID_ARGUMENT,
+            "migration manifest must contain a JSON object",
+        )
+    return value
+
+
+@migration_app.command("preflight")
+def agent_migrate_preflight(
+    agent: str = typer.Argument(..., help="Registered non-resident agent name."),
+    manifest: Path = typer.Option(
+        ...,
+        "--manifest",
+        help=(
+            "JSON manifest containing the authorization window, exact source "
+            "entries, and required support keys."
+        ),
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Validate and privately persist one immutable migration plan."""
+
+    _execute(
+        lambda: _daemon_request(
+            "agent.migrate.preflight",
+            {"agent": agent, "manifest": _migration_manifest(manifest)},
+        ),
+        json_output=json_output,
+    )
+
+
+@migration_app.command("execute")
+def agent_migrate_execute(
+    agent: str = typer.Argument(..., help="Registered non-resident agent name."),
+    migration_id: str = typer.Option(
+        ..., "--migration-id", help="Migration id returned by preflight."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Execute a daemon-persisted preflight plan."""
+
+    _execute(
+        lambda: _daemon_request(
+            "agent.migrate.execute",
+            {"agent": agent, "migrationId": migration_id},
+        ),
+        json_output=json_output,
+    )
+
+
+@migration_app.command("rollback")
+def agent_migrate_rollback(
+    agent: str = typer.Argument(..., help="Registered non-resident agent name."),
+    migration_id: str = typer.Option(
+        ..., "--migration-id", help="Completed migration id to roll back."
+    ),
+    window_id: str = typer.Option(
+        ..., "--window-id", help="Fresh operator authorization window id."
+    ),
+    responsible_owner: str = typer.Option(
+        ...,
+        "--responsible-owner",
+        help="Owner responsible for this rollback and any follow-up.",
+    ),
+    expires_at_ms: int = typer.Option(
+        ...,
+        "--expires-at-ms",
+        help="Authorization deadline as Unix epoch milliseconds.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Roll back a completed plan under a fresh authorization window."""
+
+    _execute(
+        lambda: _daemon_request(
+            "agent.migrate.rollback",
+            {
+                "agent": agent,
+                "migrationId": migration_id,
+                "authorizationWindow": {
+                    "windowId": window_id,
+                    "responsibleOwner": responsible_owner,
+                    "expiresAtMs": expires_at_ms,
+                },
+            },
+        ),
         json_output=json_output,
     )
 

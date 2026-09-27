@@ -1,0 +1,203 @@
+{
+  "schemaVersion": 1,
+  "rows": [
+    {
+      "harness": "claude",
+      "version": "claude-code-2.1.280+sdk-0.2.125",
+      "operatingSystem": "Darwin 25.5.0 arm64",
+      "entrypoint": "cross-host-transfer",
+      "authMode": "all-p2",
+      "status": "UNSUPPORTED",
+      "evidence": "The target cannot yet rebind the source identity, config, native root, and session root as one authorized context; transfer refuses before host-HOME lookup"
+    },
+    {
+      "harness": "claude",
+      "version": "claude-code-2.1.280+sdk-0.2.125",
+      "operatingSystem": "Darwin 25.5.0 arm64",
+      "entrypoint": "sdk",
+      "authMode": "api-key",
+      "status": "PASS",
+      "evidence": "P23-cc official SDK worker loaded redirected user and project config, excluded ambient HOME bait, and observed the explicit non-secret x-api-key source; real vendor identity remains NOT_RUN"
+    },
+    {
+      "harness": "claude",
+      "version": "claude-code-2.1.280+sdk-0.2.125",
+      "operatingSystem": "Darwin 25.5.0 arm64",
+      "entrypoint": "sdk",
+      "authMode": "native-oauth",
+      "status": "NOT_RUN",
+      "evidence": "No authorized native OAuth or Keychain identity and no refresh window; directory redirection alone does not establish Keychain partitioning"
+    },
+    {
+      "harness": "claude",
+      "version": "claude-code-2.1.280+sdk-0.2.125",
+      "operatingSystem": "Darwin 25.5.0 arm64",
+      "entrypoint": "tui",
+      "authMode": "api-key",
+      "status": "NOT_RUN",
+      "evidence": "P23-cc launcher and final environment contract passed, but no real attended TTY or service request was run"
+    },
+    {
+      "harness": "claude",
+      "version": "claude-code-2.1.280+sdk-0.2.125",
+      "operatingSystem": "Darwin 25.5.0 arm64",
+      "entrypoint": "tui",
+      "authMode": "native-oauth",
+      "status": "NOT_RUN",
+      "evidence": "Attended TUI, native OAuth consumption, Keychain ownership, and refresh remain unobserved"
+    },
+    {
+      "harness": "claude",
+      "version": "claude-code-2.1.283+sdk-0.2.125",
+      "operatingSystem": "Darwin 25.5.0 arm64",
+      "entrypoint": "cross-host-transfer",
+      "authMode": "all-p2",
+      "status": "UNSUPPORTED",
+      "evidence": "The target cannot yet rebind the source identity, config, native root, and session root as one authorized context; transfer refuses before host-HOME lookup"
+    },
+    {
+      "harness": "claude",
+      "version": "claude-code-2.1.283+sdk-0.2.125",
+      "operatingSystem": "Darwin 25.5.0 arm64",
+      "entrypoint": "sdk",
+      "authMode": "api-key",
+      "status": "PASS",
+      "evidence": "On Claude Code 2.1.283 with SDK 0.2.125, P23-cc isolated loopback request used redirected project model and user/project CLAUDE.md, excluded ambient HOME bait, carried explicit placeholder x-api-key, and wrote a transcript under the P2 session root; real vendor identity remains NOT_RUN"
+    },
+    {
+      "harness": "claude",
+      "version": "claude-code-2.1.283+sdk-0.2.125",
+      "operatingSystem": "Darwin 25.5.0 arm64",
+      "entrypoint": "sdk",
+      "authMode": "oauth-token",
+      "status": "PASS",
+      "evidence": "On Claude Code 2.1.283 with SDK 0.2.125, P23-cc isolated loopback request loaded redirected user/project config, excluded ambient HOME bait, carried placeholder CLAUDE_CODE_OAUTH_TOKEN as Authorization Bearer with no x-api-key, and neither found nor created native .credentials.json under the redirected root; real vendor identity and refresh remain NOT_RUN"
+    },
+    {
+      "harness": "claude",
+      "version": "claude-code-2.1.283+sdk-0.2.125",
+      "operatingSystem": "Darwin 25.5.0 arm64",
+      "entrypoint": "tui",
+      "authMode": "oauth-token",
+      "status": "NOT_RUN",
+      "evidence": "Isolated tmux TUI launched Claude Code 2.1.283 with placeholder CLAUDE_CODE_OAUTH_TOKEN and no redirected native credentials, but exited at startup service check: api.anthropic.com Status 403 before an attended turn or loopback request; token consumption, config loading, and real vendor identity remain unobserved"
+    },
+    {
+      "harness": "codex",
+      "version": "0.155.1",
+      "operatingSystem": "Darwin 25.5.0 arm64",
+      "entrypoint": "app-server",
+      "authMode": "ephemeral-custom",
+      "status": "PASS",
+      "evidence": "P23-codex real initialize and thread/start used generated provider flags, process-only env_key, requires_openai_auth=false, no auth.json, and no bearer in argv; remote subject remains NOT_RUN"
+    },
+    {
+      "harness": "codex",
+      "version": "0.155.1",
+      "operatingSystem": "Darwin 25.5.0 arm64",
+      "entrypoint": "app-server",
+      "authMode": "file",
+      "status": "PASS",
+      "evidence": "P23-codex real app-server loaded project,user,system layers, projected and project skills, and isolated mode-0600 auth.json; no vendor request was made"
+    },
+    {
+      "harness": "codex",
+      "version": "0.155.1",
+      "operatingSystem": "Darwin 25.5.0 arm64",
+      "entrypoint": "app-server",
+      "authMode": "oauth",
+      "status": "NOT_RUN",
+      "evidence": "No authorized OAuth or keyring account; login, refresh, account-read after refresh, and storage location remain required"
+    },
+    {
+      "harness": "codex",
+      "version": "0.155.1",
+      "operatingSystem": "Darwin 25.5.0 arm64",
+      "entrypoint": "cross-host-transfer",
+      "authMode": "all-p2",
+      "status": "UNSUPPORTED",
+      "evidence": "The target cannot yet rebind the source identity, config, native root, and session root as one authorized context; transfer refuses before host-HOME lookup"
+    },
+    {
+      "harness": "codex",
+      "version": "0.155.1",
+      "operatingSystem": "Darwin 25.5.0 arm64",
+      "entrypoint": "tui",
+      "authMode": "file",
+      "status": "PASS",
+      "evidence": "P23-codex real PTY TUI connected to the real Unix app-server, published a thread, loaded sessionFlags,project,user,system, and observed isolated file-auth; no model turn"
+    },
+    {
+      "harness": "codex",
+      "version": "0.155.1",
+      "operatingSystem": "Darwin 25.5.0 arm64",
+      "entrypoint": "tui",
+      "authMode": "oauth",
+      "status": "NOT_RUN",
+      "evidence": "TUI OAuth and live service subject were not authorized or observed"
+    },
+    {
+      "harness": "pi",
+      "version": "0.85.1",
+      "operatingSystem": "Darwin 25.5.0 arm64",
+      "entrypoint": "bare-rpc",
+      "authMode": "api-key",
+      "status": "UNSUPPORTED",
+      "evidence": "P20 official loader traversed above the Git root; bare RPC remains ineligible and no rejected shortcut was used"
+    },
+    {
+      "harness": "pi",
+      "version": "0.85.1",
+      "operatingSystem": "Darwin 25.5.0 arm64",
+      "entrypoint": "bare-tui",
+      "authMode": "api-key",
+      "status": "UNSUPPORTED",
+      "evidence": "Bare TUI shares the unbounded project-context defect; P2 requires the controlled SDK loader"
+    },
+    {
+      "harness": "pi",
+      "version": "0.85.1",
+      "operatingSystem": "Darwin 25.5.0 arm64",
+      "entrypoint": "controlled-sdk-headless",
+      "authMode": "api-key",
+      "status": "PASS",
+      "evidence": "P23-pi formal SDK loader bounded the Git root, loaded native/project resources, selected the isolated API-key-shaped fixture, and reopened the explicit session root; no vendor request"
+    },
+    {
+      "harness": "pi",
+      "version": "0.85.1",
+      "operatingSystem": "Darwin 25.5.0 arm64",
+      "entrypoint": "controlled-sdk-headless",
+      "authMode": "oauth",
+      "status": "NOT_RUN",
+      "evidence": "Real provider account subject and OAuth refresh were not authorized or observed"
+    },
+    {
+      "harness": "pi",
+      "version": "0.85.1",
+      "operatingSystem": "Darwin 25.5.0 arm64",
+      "entrypoint": "controlled-sdk-tui",
+      "authMode": "api-key",
+      "status": "PASS",
+      "evidence": "P23-pi isolated tmux startup rendered the expected model and wrote a bounded loader receipt; no daemon/model request"
+    },
+    {
+      "harness": "pi",
+      "version": "0.85.1",
+      "operatingSystem": "Darwin 25.5.0 arm64",
+      "entrypoint": "controlled-sdk-tui",
+      "authMode": "oauth",
+      "status": "NOT_RUN",
+      "evidence": "Interactive OAuth refresh and live provider identity remain NOT_RUN"
+    },
+    {
+      "harness": "pi",
+      "version": "0.85.1",
+      "operatingSystem": "Darwin 25.5.0 arm64",
+      "entrypoint": "cross-host-transfer",
+      "authMode": "all-p2",
+      "status": "UNSUPPORTED",
+      "evidence": "The target cannot yet rebind the source identity, config, native root, and session root as one authorized context; transfer refuses before host-HOME lookup"
+    }
+  ]
+}
