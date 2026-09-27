@@ -3601,6 +3601,9 @@ def _doctor_result(*, peer: str | None = None) -> JsonObject:
             duplicate_check = _duplicate_instance_doctor_check(result)
             if duplicate_check is not None:
                 checks.append(duplicate_check)
+            maintenance_check = _maintenance_doctor_check(result)
+            if maintenance_check is not None:
+                checks.append(maintenance_check)
             dsh_check = _dsh_doctor_check(result)
             if dsh_check is not None:
                 checks.append(dsh_check)
@@ -3877,6 +3880,37 @@ def _zenoh_doctor_check(result: JsonObject) -> JsonObject:
             "send/ack"
         ),
         "metrics": {"listen": list(listen), "connect": list(connect)},
+    }
+
+
+def _maintenance_doctor_check(result: JsonObject) -> JsonObject | None:
+    """Fail when the daemon's own maintenance tick has stalled.
+
+    The tick drives delivery retries, worker reconcile and every timer; on
+    2026-09-27 it stopped for 40 minutes while ``ps`` kept answering, so a
+    daemon that answers IPC is not evidence that it is doing its work.
+    Returns None against a daemon that does not report the field.
+    """
+
+    info = result.get("maintenance")
+    if not isinstance(info, dict):
+        return None
+    if info.get("stalled") is not True:
+        return {
+            "name": "maintenance-tick",
+            "status": "ok",
+            "detail": "the daemon's maintenance tick is completing on schedule.",
+        }
+    return {
+        "name": "maintenance-tick",
+        "status": "fail",
+        "detail": (
+            "the daemon's maintenance tick has not completed for "
+            f"{info.get('stalledSeconds')}s; it is in phase "
+            f"{info.get('phase')!r}. Deliveries, worker turns and timers wait on "
+            "it. daemon.maintenance.stalled in the daemon log names the stack "
+            "and the transport lock holder."
+        ),
     }
 
 

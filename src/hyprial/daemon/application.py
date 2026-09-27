@@ -162,6 +162,7 @@ from hyprial.quota_watchdog import QuotaWatchdog
 from hyprial.peer_reachability import tailnet_status_projection
 from hyprial.inbox.api import InboxPruneItem
 from hyprial.inbox_watchdog import InboxWatchdog
+from hyprial.daemon.maintenance_watchdog import MaintenanceWatchdog
 from hyprial.usage import UsageCache, usage_collection_disabled
 from .duplicate_watch import DUPLICATE_INSTANCE_EVENT, DuplicateInstanceWatch
 from hyprial.contracts.agent_task import (
@@ -1024,6 +1025,13 @@ class DaemonApplication:
         self._interactive_route_lock = threading.RLock()
         self._clock: Callable[[], float] = time.monotonic
         self._maintenance_scheduler = GenerationScheduler()
+        # Sees the tick that never returns, which reconcile_overrun cannot.
+        self._maintenance_watchdog = MaintenanceWatchdog(
+            log=lambda level, event, **fields: self._log(
+                level, "daemon", event, **fields
+            ),
+            diagnostics=self._transport_lock_holder,
+        )
         self._maintenance_generation = 0
         self._owns_process_exit = False
         # The daemon.readiness projection (phase ③): one entry per connector
@@ -3970,7 +3978,12 @@ class DaemonApplication:
                 accept_retry = _IPC_ACCEPT_RETRY_INITIAL
                 self._start_ipc_client(connection)
 
+    def _transport_lock_holder(self) -> Any:
+        lock_holder = getattr(getattr(self, "_transport", None), "lock_holder", None)
+        return lock_holder() if lock_holder is not None else None
+
     def _start_maintenance_scheduler(self) -> None:
+        self._maintenance_watchdog.start(self.stop_event)
         self._maintenance_generation += 1
         self._schedule_maintenance(self._maintenance_generation, delay=1.0)
 
@@ -3991,11 +4004,15 @@ class DaemonApplication:
         ):
             return
         started = time.monotonic()
+        watchdog = self._maintenance_watchdog
+        watchdog.tick_started()
         try:
+            watchdog.phase("agent-activity")
             self._flush_agent_activity()
             outcome, adapter_events, adapter_restarts, phases = (
                 self._run_scheduled_domains(started)
             )
+            watchdog.phase("record-outcome")
             self._record_maintenance_outcome(
                 started,
                 outcome,
@@ -4012,6 +4029,7 @@ class DaemonApplication:
                 detail=str(error)[:500],
             )
         finally:
+            watchdog.tick_finished()
             self._schedule_maintenance(generation, delay=1.0)
 
     def _queue_agent_activity(self, actor: str) -> None:
@@ -4268,6 +4286,7 @@ class DaemonApplication:
         phases: list[tuple[str, int]] = []
 
         def _timed(name: str, fn: Callable[[], Any]) -> Any:
+            self._maintenance_watchdog.phase(name)
             started_at = time.monotonic()
             try:
                 return fn()
@@ -5282,6 +5301,7 @@ class DaemonApplication:
                         "isolation": self._network_isolation_status(),
                     },
                     "duplicateInstance": self._duplicate_instance_payload(),
+                    "maintenance": self._maintenance_watchdog.status(),
                     "forwarding": self._forwarding_status_json(),
                     "tailnet": self._tailnet_status_json(
                         refresh=params.get("refreshTailnetStatus") is True
@@ -5866,8 +5886,25 @@ class DaemonApplication:
                             pending_list.append(item)
                 pending = tuple(pending_list)
             if is_session_fetch(params) and self._transport is not None:
-                for message in pending:
-                    publish_fetch_receipt(self._transport, message)
+                for index, message in enumerate(pending):
+                    try:
+                        publish_fetch_receipt(self._transport, message)
+                    except Exception as error:  # noqa: BLE001 - the receipt queryable still answers
+                        # The messages are already fetched; failing the call
+                        # would hand them to nobody.  The sender converges via
+                        # the fetch-receipt queryable, and one bounded failure
+                        # means the transport is wedged, so skip the rest
+                        # instead of paying the wait once per message.
+                        self._log(
+                            "warn",
+                            "inbox",
+                            "inbox.fetch_receipt.publish_failed",
+                            messageId=message.message_id,
+                            skipped=len(pending) - index - 1,
+                            errorType=type(error).__name__,
+                            detail=str(error)[:500],
+                        )
+                        break
             for message in (*notices, *pending):
                 try:
                     body = json.loads(message.payload)
