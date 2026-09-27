@@ -5,9 +5,11 @@ v1，未来全部走pac v2」) moves ``routine`` off ``workflow.start``.  The ma
 this module implements is the one in
 ``notes/pac/u3-routine-to-pac-mapping-2026-09-17.md``:
 
-* one task is one graph, identified durably by ``operation_key =
-  routine:<routine>:<task uuid>`` (PR #500), so a replay or a daemon restart
-  reuses the same graph instead of minting a second one;
+* one source occurrence of one task is one graph, identified durably by
+  ``operation_key = routine:<routine>:<task uuid>:<slot ms>``.  Replaying the
+  same occurrence reuses its graph, while a later occurrence may drive a task
+  whose previous graph completed.  Scheduled task UUIDs already contain their
+  slot and retain the unsuffixed key;
 * node ``work`` (kind=task) is owned by the routed target, and completion is
   that owner setting its flag -- never a text match in a reply (ruling 1 of
   2026-09-13);
@@ -59,8 +61,11 @@ class RoutineTaskDelivery(Protocol):
     ) -> bool: ...
 
 
-def operation_key(routine_name: str, task_uuid: str) -> str:
-    return f"routine:{routine_name}:{task_uuid}"
+def operation_key(
+    routine_name: str, task_uuid: str, occurrence_slot_ms: int | None = None
+) -> str:
+    base = f"routine:{routine_name}:{task_uuid}"
+    return base if occurrence_slot_ms is None else f"{base}:{occurrence_slot_ms}"
 
 
 def task_message(
@@ -117,32 +122,60 @@ class PacRoutineDispatch:
         timeout_seconds: float,
         sender: str,
         role: str = "dispatch",
+        occurrence_slot_ms: int | None = None,
+        rearm_after_created_at_ms: int = 0,
     ) -> dict[str, object]:
-        """Create (or re-find) this task's graph and deliver its text.
+        """Create (or re-find) this occurrence's graph and deliver its text.
 
         The graph is created first and the message second: a delivery that
         fails leaves a graph whose ``work`` node is unflagged, which the
         deadline reports -- the reverse order could deliver a task that no
-        node records.
+        node records.  ``rearm_after_created_at_ms`` is captured from the PAC
+        store by ``routine resume``; terminal escalations at or before that
+        boundary no longer suppress a new occurrence.
         """
 
+        key = operation_key(routine_name, task_uuid, occurrence_slot_ms)
         if self._workflow is not None:
             legacy = False
             if self._database.exists():
                 probe = PacGraphStore(self._database, read_only=True)
                 try:
-                    key = operation_key(routine_name, task_uuid)
                     legacy = probe.graph_by_operation_key(key) is not None
-                    existing = None if legacy else probe.graph_by_operation_key(f"workflow:{key}")
+                    existing = (
+                        None
+                        if legacy
+                        else probe.graph_by_operation_key(f"workflow:{key}")
+                    )
                     if existing is not None:
-                        meta = probe._db.execute("SELECT routine_name,task_key FROM workflow_graphs WHERE graph_id=?", (existing["graph_id"],)).fetchone()
-                        if existing["created_by"] != sender or meta is None or (meta["routine_name"], meta["task_key"]) != (routine_name, task_uuid):
-                            raise PacError(PAC_OPERATION_KEY_CONFLICT, "source task key belongs to another publication")
+                        meta = probe._db.execute(
+                            "SELECT routine_name,task_key FROM workflow_graphs "
+                            "WHERE graph_id=?",
+                            (existing["graph_id"],),
+                        ).fetchone()
+                        if (
+                            existing["created_by"] != sender
+                            or meta is None
+                            or (meta["routine_name"], meta["task_key"])
+                            != (routine_name, task_uuid)
+                        ):
+                            raise PacError(
+                                PAC_OPERATION_KEY_CONFLICT,
+                                "source task key belongs to another publication",
+                            )
                         # The source UUID, not a changing idle-age description,
                         # identifies accepted work. Retain its fixed deadline
                         # and result without readmission or another delivery.
                         result = self._workflow.status(run_id=existing["graph_id"])
                         return {"graphId": existing["graph_id"], "state": self._workflow_state(str(result["state"]))}
+                    latest = self._latest_settled_task(
+                        probe,
+                        routine_name=routine_name,
+                        task_uuid=task_uuid,
+                        after_created_at_ms=rearm_after_created_at_ms,
+                    )
+                    if latest is not None and latest[1] == STATE_ESCALATED:
+                        return {"graphId": latest[0], "state": latest[1]}
                 finally:
                     probe.close()
             if not legacy:
@@ -168,7 +201,7 @@ class PacRoutineDispatch:
                 result = self._workflow.start(
                     yaml_text=yaml.safe_dump(document, allow_unicode=True),
                     sender=sender,
-                    operation_key=operation_key(routine_name, task_uuid),
+                    operation_key=key,
                     routine_name=routine_name,
                     task_key=task_uuid,
                 )
@@ -177,11 +210,20 @@ class PacRoutineDispatch:
                     "state": self._workflow_state(str(result["state"])),
                 }
 
-        key = operation_key(routine_name, task_uuid)
         target = self._resolve_principal(target)
         escalate_to = self._resolve_principal(escalate_to)
         store = PacGraphStore(self._database)
         try:
+            existing = store.graph_by_operation_key(key)
+            if existing is None:
+                latest = self._latest_settled_task(
+                    store,
+                    routine_name=routine_name,
+                    task_uuid=task_uuid,
+                    after_created_at_ms=rearm_after_created_at_ms,
+                )
+                if latest is not None and latest[1] == STATE_ESCALATED:
+                    return {"graphId": latest[0], "state": latest[1]}
             try:
                 head = create_graph(
                     store,
@@ -254,7 +296,11 @@ class PacRoutineDispatch:
 
         delivered = self._deliver(
             target=target,
-            conversation_id=f"routine-{routine_name}-{task_uuid}",
+            conversation_id=(
+                f"routine-{routine_name}-{task_uuid}"
+                if occurrence_slot_ms is None
+                else f"routine-{routine_name}-{task_uuid}-{occurrence_slot_ms}"
+            ),
             text=task_message(
                 task_text=task_text,
                 graph_id=graph_id,
@@ -269,6 +315,81 @@ class PacRoutineDispatch:
                 "message plane; the graph stays and its deadline reports it"
             )
         return {"graphId": graph_id, "state": STATE_RUNNING}
+
+    def rearm_boundary(self, *, routine_name: str) -> int:
+        """Return the newest PAC graph creation covered by ``routine resume``.
+
+        The boundary is read from PAC itself, so terminal task state remains a
+        PAC fact.  The routine store only remembers which already-existing PAC
+        facts the explicit resume chose to re-arm.
+        """
+
+        if not self._database.exists():
+            return 0
+        store = PacGraphStore(self._database, read_only=True)
+        try:
+            prefix = f"routine:{routine_name}:"
+            row = store._db.execute(
+                "SELECT COALESCE(MAX(g.created_at), 0) "
+                "FROM graphs g LEFT JOIN workflow_graphs w USING(graph_id) "
+                "WHERE w.routine_name=? OR g.operation_key LIKE ? "
+                "OR g.operation_key LIKE ?",
+                (routine_name, f"{prefix}%", f"workflow:{prefix}%"),
+            ).fetchone()
+            return 0 if row is None else int(row[0])
+        finally:
+            store.close()
+
+    def _latest_settled_task(
+        self,
+        store: PacGraphStore,
+        *,
+        routine_name: str,
+        task_uuid: str,
+        after_created_at_ms: int,
+    ) -> tuple[str, str] | None:
+        """Latest terminal PAC state for one routine/task after its re-arm.
+
+        Workflow graphs use their typed ``routine_name``/``task_key`` columns.
+        Pre-workflow routine graphs are recognized by the old unsuffixed key or
+        a numeric occurrence suffix.  Old keys therefore remain readable for
+        suppression but never collide with a new slot-keyed occurrence.
+        """
+
+        base = operation_key(routine_name, task_uuid)
+        rows = store._db.execute(
+            "SELECT g.*,w.state AS workflow_state,w.routine_name,w.task_key "
+            "FROM graphs g LEFT JOIN workflow_graphs w USING(graph_id) "
+            "WHERE (w.routine_name=? AND w.task_key=?) "
+            "OR (w.graph_id IS NULL AND (g.operation_key=? "
+            "OR substr(g.operation_key,1,?)=?)) "
+            "ORDER BY g.created_at DESC,g.graph_id DESC",
+            (
+                routine_name,
+                task_uuid,
+                base,
+                len(base) + 1,
+                f"{base}:",
+            ),
+        ).fetchall()
+        for row in rows:
+            if int(row["created_at"]) <= after_created_at_ms:
+                continue
+            if row["routine_name"] == routine_name and row["task_key"] == task_uuid:
+                state = self._workflow_state(str(row["workflow_state"]))
+                if state != STATE_RUNNING:
+                    return str(row["graph_id"]), state
+                continue
+            key = str(row["operation_key"] or "")
+            if key != base:
+                suffix = key[len(base) + 1 :]
+                if not suffix.isdigit():
+                    continue
+            graph = dict(row)
+            state = self._settled_state(store, graph, str(row["graph_id"]))
+            if state is not None:
+                return str(row["graph_id"]), state
+        return None
 
     def _settled_state(
         self, store: PacGraphStore, graph: dict[str, Any], graph_id: str
@@ -401,7 +522,11 @@ class PacDispatchPort(Protocol):
         escalate_to: str,
         timeout_seconds: float,
         sender: str,
+        occurrence_slot_ms: int | None = None,
+        rearm_after_created_at_ms: int = 0,
     ) -> dict[str, object]: ...
+
+    def rearm_boundary(self, *, routine_name: str) -> int: ...
 
     def status(self, *, graph_id: str) -> dict[str, object]: ...
 

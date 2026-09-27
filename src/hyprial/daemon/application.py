@@ -6318,6 +6318,7 @@ class DaemonApplication:
                 document["produces"] = canonical_agent_uri(self.owner, self.node_id, actor_name)
                 yaml_text = yaml.safe_dump(document, allow_unicode=True, sort_keys=False)
                 spec = load_routine_text(yaml_text)
+            self._routine_admit(spec)
             with self._routine_coordinator_lock:
                 if spec.produces is not None and any(
                     item.get("produces") == spec.produces
@@ -8347,6 +8348,32 @@ class DaemonApplication:
         if principal is not None and principal[:2] != (self.owner, self.node_id):
             return actor  # explicit target; workflow admission checks its home daemon
         return self._resolve_send_sender(actor)
+
+    def _routine_admit(self, spec: Any) -> None:
+        """Apply workflow dispatch admission to a routine's target actor.
+
+        Borrowed actors are resolve-or-reject.  A routine-owned ``produces``
+        actor may not exist yet, so absent capabilities are observable but are
+        not guessed to be either interactive or headless, matching
+        :func:`dispatch_gate`.
+        """
+
+        target = spec.actor or spec.produces
+        if target is None:
+            return
+        if spec.actor is not None:
+            if self._remote_workflow is not None and self._remote_workflow.remote(target):
+                return  # the remote workflow admission above checked its home daemon
+            target = self._resolve_send_sender(target)
+        entity = self.agents.get(target)
+        capabilities = entity.capabilities if entity is not None else {}
+        dispatch_gate(
+            target=target,
+            capabilities=capabilities,
+            role=spec.role,
+            emit=self._log,
+            source="routine.add",
+        )
 
     def _record_workflow_outcome(self, result):
         if self._remote_workflow is not None and self._remote_workflow.outcome(result):

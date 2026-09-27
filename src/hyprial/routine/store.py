@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS routines (
     source_error_streak INTEGER NOT NULL DEFAULT 0,
     outcomes TEXT NOT NULL DEFAULT '[]',
     created_at_ms INTEGER NOT NULL,
-    version INTEGER NOT NULL DEFAULT 1
+    version INTEGER NOT NULL DEFAULT 1,
+    rearm_after_created_at_ms INTEGER NOT NULL DEFAULT 0
 );
 -- Address migrations performed at load: one row per rewritten field, keyed
 -- so a repeated startup is idempotent (INSERT OR IGNORE).
@@ -54,7 +55,8 @@ CREATE TABLE IF NOT EXISTS routine_cycles (
     tasks_json TEXT NOT NULL DEFAULT '[]',
     outcomes_json TEXT NOT NULL DEFAULT '[]',
     pending_status INTEGER NOT NULL DEFAULT 0,
-    pending_start INTEGER NOT NULL DEFAULT 0
+    pending_start INTEGER NOT NULL DEFAULT 0,
+    occurrence_slot_ms INTEGER
 );
 CREATE TABLE IF NOT EXISTS routine_effects (
     effect_id TEXT PRIMARY KEY,
@@ -93,6 +95,7 @@ class RoutineRow:
     version: int = 1
     quarantine_reason: str | None = None
     registration_id: str | None = None
+    rearm_after_created_at_ms: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +126,7 @@ class RoutineCycleRow:
     outcomes_json: str = "[]"
     pending_status: int = 0
     pending_start: int = 0
+    occurrence_slot_ms: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,6 +182,19 @@ class RoutineStore:
                 # Existing rows default to not quarantined.
                 self._db.execute(
                     "ALTER TABLE routines ADD COLUMN quarantine_reason TEXT"
+                )
+            if "rearm_after_created_at_ms" not in columns:
+                self._db.execute(
+                    "ALTER TABLE routines ADD COLUMN rearm_after_created_at_ms "
+                    "INTEGER NOT NULL DEFAULT 0"
+                )
+            cycle_columns = {
+                str(row[1])
+                for row in self._db.execute("PRAGMA table_info(routine_cycles)")
+            }
+            if "occurrence_slot_ms" not in cycle_columns:
+                self._db.execute(
+                    "ALTER TABLE routine_cycles ADD COLUMN occurrence_slot_ms INTEGER"
                 )
         self.migrated_u3 = self._migrate_u3()
 
@@ -272,8 +289,9 @@ class RoutineStore:
                     """INSERT INTO routines
                        (name, yaml_text, owner, enabled, next_due_ms,
                         source_error_streak, outcomes, created_at_ms, version,
-                        quarantine_reason, registration_id)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        quarantine_reason, registration_id,
+                        rearm_after_created_at_ms)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                        ON CONFLICT(name) DO UPDATE SET
                            yaml_text = excluded.yaml_text,
                            owner = excluded.owner,
@@ -283,7 +301,8 @@ class RoutineStore:
                            outcomes = excluded.outcomes,
                            version = excluded.version,
                            quarantine_reason = excluded.quarantine_reason,
-                           registration_id = excluded.registration_id""",
+                           registration_id = excluded.registration_id,
+                           rearm_after_created_at_ms = excluded.rearm_after_created_at_ms""",
                     (
                         routine.name,
                         routine.yaml_text,
@@ -296,6 +315,7 @@ class RoutineStore:
                         routine.version,
                         routine.quarantine_reason,
                         routine.registration_id,
+                        routine.rearm_after_created_at_ms,
                     ),
                 )
             if remove_cycle is not None:
@@ -307,15 +327,17 @@ class RoutineStore:
                 self._db.execute(
                     """INSERT INTO routine_cycles
                        (correlation_id, routine_name, generation, version,
-                        tasks_json, outcomes_json, pending_status, pending_start)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        tasks_json, outcomes_json, pending_status, pending_start,
+                        occurrence_slot_ms)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                        ON CONFLICT(correlation_id) DO UPDATE SET
                            generation = excluded.generation,
                            version = excluded.version,
                            tasks_json = excluded.tasks_json,
                            outcomes_json = excluded.outcomes_json,
                            pending_status = excluded.pending_status,
-                           pending_start = excluded.pending_start""",
+                           pending_start = excluded.pending_start,
+                           occurrence_slot_ms = excluded.occurrence_slot_ms""",
                     (
                         cycle.correlation_id,
                         cycle.routine_name,
@@ -325,6 +347,7 @@ class RoutineStore:
                         cycle.outcomes_json,
                         cycle.pending_status,
                         cycle.pending_start,
+                        cycle.occurrence_slot_ms,
                     ),
                 )
             for item in put_in_flight:
@@ -572,6 +595,7 @@ class RoutineStore:
             quarantine_reason=(
                 None if row["quarantine_reason"] is None else str(row["quarantine_reason"])
             ),
+            rearm_after_created_at_ms=int(row["rearm_after_created_at_ms"]),
         )
 
     def set_quarantine(self, name: str, reason: str | None) -> None:
@@ -636,6 +660,11 @@ class RoutineStore:
             outcomes_json=str(row["outcomes_json"]),
             pending_status=int(row["pending_status"]),
             pending_start=int(row["pending_start"]),
+            occurrence_slot_ms=(
+                None
+                if row["occurrence_slot_ms"] is None
+                else int(row["occurrence_slot_ms"])
+            ),
         )
 
     @staticmethod

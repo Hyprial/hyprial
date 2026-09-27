@@ -89,6 +89,8 @@ class RoutinePacEffect:
     timeout_seconds: float | None = None
     sender: str | None = None
     role: str = "dispatch"
+    occurrence_slot_ms: int | None = None
+    rearm_after_created_at_ms: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -296,6 +298,7 @@ class RoutineRegistry:
             source_error_streak=0,
             outcomes="[]",
             version=self._next_version(),
+            rearm_after_created_at_ms=command.rearm_after_created_at_ms,
         )
         self._store.apply(routine=updated, clear_work_for=row.name)
         self._log("info", "routine.resumed", routine=row.name)
@@ -337,7 +340,7 @@ class RoutineRegistry:
             if active is None:
                 continue
             interval_ms = int(active.spec.interval_seconds * 1000)
-            slot = None
+            slot = row.next_due_ms
             skip_dispatch = False
             schedule_events = []
             next_due = command.observed_at_ms + interval_ms
@@ -385,6 +388,7 @@ class RoutineRegistry:
                 generation=self._generation,
                 version=version,
                 outcomes_json=row.outcomes,
+                occurrence_slot_ms=slot,
             )
             self._store.apply(
                 routine=updated,
@@ -621,6 +625,12 @@ class RoutineRegistry:
                     escalate_to=active.spec.escalate_to,
                     timeout_seconds=DEFAULT_TASK_TIMEOUT_SECONDS,
                     sender=active.owner,
+                    occurrence_slot_ms=(
+                        cycle.occurrence_slot_ms
+                        if active.spec.mode == "source"
+                        else None
+                    ),
+                    rearm_after_created_at_ms=row.rearm_after_created_at_ms,
                 )
             )
             slots -= 1
@@ -662,6 +672,7 @@ class RoutineRegistry:
     ) -> None:
         outcomes = list(json.loads(cycle.outcomes_json))
         puts: tuple[InFlightRow, ...] = ()
+        alarms: tuple[RoutineAlarmEffect, ...] = ()
         if (
             event.code is None
             and event.graph_id is not None
@@ -686,6 +697,32 @@ class RoutineRegistry:
             # -- so the routine neither re-dispatches it nor re-counts it.
         else:
             outcomes.append("escalated")
+            escalate_to = effect.escalate_to or active.spec.escalate_to
+            code = event.code or "ROUTINE_START_FAILED"
+            detail = event.detail or "PAC start returned no graph"
+            self._log(
+                "warn",
+                "routine.start_failed",
+                routine=row.name,
+                task=effect.task_uuid,
+                code=code,
+                detail=detail,
+                to=escalate_to,
+            )
+            alarms = (
+                RoutineAlarmEffect(
+                    effect_id=f"routine-io-{uuid4().hex}",
+                    parent_correlation_id=cycle.correlation_id,
+                    generation=self._generation,
+                    version=cycle.version,
+                    routine_name=row.name,
+                    to=escalate_to,
+                    text=(
+                        f"routine '{row.name}' failed to start task "
+                        f"'{effect.task_uuid}': {code}: {detail}"
+                    ),
+                ),
+            )
         remaining = max(0, cycle.pending_start - 1)
         cycle = replace(
             cycle,
@@ -696,16 +733,22 @@ class RoutineRegistry:
             self._store.apply(
                 cycle=cycle,
                 put_in_flight=puts,
+                add_effects=tuple(self.effect_row(item) for item in alarms),
                 delete_effects=(effect.effect_id,),
             )
+            for alarm in alarms:
+                self._publish(alarm)
             return
         self._finish_cycle(
             row,
             active,
             cycle,
+            extra_effects=alarms,
             put_in_flight=puts,
             delete_effects=(effect.effect_id,),
         )
+        for alarm in alarms:
+            self._publish(alarm)
 
     def _finish_cycle(
         self,

@@ -102,6 +102,8 @@ class PacPort(Protocol):
 
     def close(self, *, graph_id: str, actor: str) -> None: ...
 
+    def rearm_boundary(self, *, routine_name: str) -> int: ...
+
 
 SourceQuery = Callable[[str], list[SourceTask]]
 _ResultT = TypeVar("_ResultT")
@@ -254,8 +256,9 @@ class RoutineFacade:
 
     def resume(self, *, name: str, align_schedule: bool = False) -> dict[str, object]:
         correlation = self._correlation()
+        rearm_boundary = self._pac.rearm_boundary(routine_name=name)
         event = self._submit_wait(
-            ResumeRoutineCommand(correlation, name, align_schedule),
+            ResumeRoutineCommand(correlation, name, align_schedule, rearm_boundary),
             correlation,
             RoutineMutationCompleted,
         )
@@ -607,6 +610,8 @@ class RoutineFacade:
                     timeout_seconds=float(effect.timeout_seconds),
                     sender=effect.sender,
                     role=effect.role,
+                    occurrence_slot_ms=effect.occurrence_slot_ms,
+                    rearm_after_created_at_ms=effect.rearm_after_created_at_ms,
                 )
                 graph_id = str(result["graphId"])
                 state = str(result.get("state", "running"))

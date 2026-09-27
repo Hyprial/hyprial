@@ -1207,42 +1207,45 @@ class GraphWorkflowService:
                     raise WorkflowServiceError(
                         "WORKFLOW_NOT_OWNER", "only the workflow owner can stop its worker"
                     )
-                reason = f"worker stopped by {actor}"
-                rows = store._db.execute(
-                    "SELECT node_id FROM workflow_nodes WHERE graph_id=? AND actor_node=? "
-                    "AND state NOT IN ('done','failed','cancelled','blocked')",
-                    (graph_id, worker.node_id),
-                ).fetchall()
-                for row in rows:
-                    store._db.execute(
-                        "UPDATE workflow_nodes SET state='failed',reason_ref=? "
-                        "WHERE graph_id=? AND node_id=?",
-                        (reason, graph_id, row["node_id"]),
-                    )
-                    _changed(
-                        store,
-                        graph,
-                        self.clock(),
-                        nodeId=row["node_id"],
-                        state="failed",
-                        reasonRef=reason,
-                    )
-                meta = store._db.execute(
-                    "SELECT on_failure FROM workflow_graphs WHERE graph_id=?", (graph_id,)
-                ).fetchone()
-                if meta["on_failure"] == "terminate":
-                    close_workflow(
-                        store,
-                        graph,
-                        state="failed",
-                        reason=reason,
-                        at=self.clock(),
-                    )
-                elif meta["on_failure"] == "hold":
-                    store._db.execute(
-                        "UPDATE workflow_graphs SET state='held',reason_ref=? WHERE graph_id=?",
-                        (reason, graph_id),
-                    )
+                if graph["closed_at"] is None:
+                    reason = f"worker stopped by {actor}"
+                    rows = store._db.execute(
+                        "SELECT node_id FROM workflow_nodes WHERE graph_id=? AND actor_node=? "
+                        "AND state NOT IN ('done','failed','cancelled','blocked')",
+                        (graph_id, worker.node_id),
+                    ).fetchall()
+                    for row in rows:
+                        store._db.execute(
+                            "UPDATE workflow_nodes SET state='failed',reason_ref=? "
+                            "WHERE graph_id=? AND node_id=?",
+                            (reason, graph_id, row["node_id"]),
+                        )
+                        _changed(
+                            store,
+                            graph,
+                            self.clock(),
+                            nodeId=row["node_id"],
+                            state="failed",
+                            reasonRef=reason,
+                        )
+                    meta = store._db.execute(
+                        "SELECT on_failure FROM workflow_graphs WHERE graph_id=?",
+                        (graph_id,),
+                    ).fetchone()
+                    if meta["on_failure"] == "terminate":
+                        close_workflow(
+                            store,
+                            graph,
+                            state="failed",
+                            reason=reason,
+                            at=self.clock(),
+                        )
+                    elif meta["on_failure"] == "hold":
+                        store._db.execute(
+                            "UPDATE workflow_graphs SET state='held',reason_ref=? "
+                            "WHERE graph_id=?",
+                            (reason, graph_id),
+                        )
                 store._db.commit()
             try:
                 request_actor_stop(store, graph_id, worker.actor_name, actor=actor)

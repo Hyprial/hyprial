@@ -31,6 +31,7 @@ class ResumeRoutineCommand:
     correlation_id: str
     name: str
     align_schedule: bool = False
+    rearm_after_created_at_ms: int = 0
 
 
 @dataclass(frozen=True, slots=True)
