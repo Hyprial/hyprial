@@ -942,6 +942,7 @@ class HarnessRuntimeActor:
         orphan_logger: Callable[..., None] | None = None,
         event_sink: object | None = None,
         desired_state: DesiredStateStore | None = None,
+        automatic_restore_allowed: Callable[[HarnessLaunchSpec], bool] | None = None,
     ) -> None:
         self._runtime = runtime or ActorRuntime()
         self._projection = projection or HarnessProjection()
@@ -980,6 +981,7 @@ class HarnessRuntimeActor:
             self._event_sinks.append(event_sink)
         self._closing = False
         self._desired_state = desired_state
+        self._automatic_restore_allowed = automatic_restore_allowed
         self._lifecycle_pending: dict[str, tuple[object, object]] = {}
         self._lifecycle_retry_timers: dict[str, threading.Timer] = {}
         self._lifecycle_effect_resources: set[str] = (
@@ -2041,6 +2043,13 @@ class HarnessRuntimeActor:
                     )
                 if self._restart_backoff_seconds > 0:
                     record.restart_after = now + self._restart_backoff_seconds
+                    continue
+            if self._automatic_restore_allowed is not None:
+                try:
+                    allowed = self._automatic_restore_allowed(record.spec)
+                except Exception:  # noqa: BLE001 - degraded policy restores as before
+                    allowed = True
+                if not allowed:
                     continue
             if record.restart_after is not None and now < record.restart_after:
                 continue

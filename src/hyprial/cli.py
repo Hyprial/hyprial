@@ -78,6 +78,7 @@ from hyprial.workflow.cli import workflow_app
 from hyprial.contracts import ipc_errors
 from hyprial.contracts.daemon_diagnostics import DAEMON_STARTUP_PHASES
 from hyprial.contracts.daemon_launch import DaemonLaunchResult
+from hyprial.duration import DurationParseError, parse_duration
 from hyprial.process_diagnostics import process_cpu_seconds
 from hyprial.peer_reachability import (
     PEER_CONNECT_START_TIMEOUT_SECONDS,
@@ -2531,6 +2532,7 @@ _SAFE_DAEMON_STARTUP_EVENTS = frozenset(
         "agent.recovery.failed",
         "agent.recovery.cleaned",
         "harness.recovery.failed",
+        "restore-policy-degraded",
         "daemon.ready",
         "daemon.stopping",
         "service.recovery.completed",
@@ -3616,6 +3618,9 @@ def _doctor_result(*, peer: str | None = None) -> JsonObject:
             historical_inbox_check = _historical_inbox_doctor_check(result)
             if historical_inbox_check is not None:
                 checks.append(historical_inbox_check)
+            restore_check = _restore_doctor_check(result)
+            if restore_check is not None:
+                checks.append(restore_check)
             cleanup_check = _workflow_worker_cleanup_doctor_check(result)
             if cleanup_check is not None:
                 checks.append(cleanup_check)
@@ -3656,6 +3661,53 @@ def _doctor_result(*, peer: str | None = None) -> JsonObject:
         "checks": checks,
         "summary": summary,
     }
+
+
+def _restore_doctor_check(result: JsonObject) -> JsonObject | None:
+    restore = result.get("restore")
+    if not isinstance(restore, dict):
+        return None
+    suppressed = restore.get("suppressedCount", 0)
+    unknown = restore.get("unknownActivityCount", 0)
+    blocked = restore.get("blockedCount", 0)
+    oldest = restore.get("oldestIdleAgeMs")
+    if (
+        not isinstance(suppressed, int)
+        or not isinstance(unknown, int)
+        or not isinstance(blocked, int)
+    ):
+        return None
+    detail = (
+        f"dormant={suppressed}, blocked={blocked}, activityUnknown={unknown}, "
+        f"oldestIdleMs={oldest if isinstance(oldest, int) else 'none'}"
+    )
+    if restore.get("degraded") is True:
+        return {
+            "name": "restore-policy-degraded",
+            "status": "warn",
+            "detail": f"{detail}; {restore.get('degradedReason', 'policy unreadable')}",
+            "action": {
+                "command": "hyprial agent keep list",
+                "description": (
+                    "Repair the restore policy or keep-list; degraded startup "
+                    "restores connectors to preserve availability."
+                ),
+            },
+        }
+    if suppressed or blocked:
+        return {
+            "name": "agent-restore",
+            "status": "warn",
+            "detail": detail,
+            "action": {
+                "command": "hyprial agent keep add <name>",
+                "description": (
+                    "Keep or explicitly start dormant agents; clear blocked "
+                    "agents with hyprial agent unblock <name>."
+                ),
+            },
+        }
+    return {"name": "agent-restore", "status": "ok", "detail": detail}
 
 
 def _peer_host_port(peer: JsonObject) -> tuple[str, int] | None:
@@ -7052,6 +7104,54 @@ def agent_keep_list(
 
     _execute(
         lambda: _daemon_request("agent.keep.list"),
+        json_output=json_output,
+    )
+
+
+@agent_app.command("restore-policy")
+def agent_restore_policy(
+    name: str = typer.Argument(..., help="Agent name."),
+    policy: str = typer.Argument(..., help="active, always, or never."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Set the durable per-agent restart restore policy."""
+
+    _execute(
+        lambda: _daemon_request(
+            "agent.restore-policy", {"name": name, "policy": policy}
+        ),
+        json_output=json_output,
+    )
+
+
+@agent_app.command("restore-threshold")
+def agent_restore_threshold(
+    threshold: str = typer.Argument(..., help="Restart threshold, such as 12h."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Set the durable global restart idle threshold."""
+
+    try:
+        threshold_ms = int(parse_duration(threshold, "threshold") * 1_000)
+    except DurationParseError as error:
+        raise CliError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
+    _execute(
+        lambda: _daemon_request(
+            "agent.restore-threshold", {"thresholdMs": threshold_ms}
+        ),
+        json_output=json_output,
+    )
+
+
+@agent_app.command("unblock")
+def agent_unblock(
+    name: str = typer.Argument(..., help="Blocked agent name."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Release a durable agent block so its next delivery may proceed."""
+
+    _execute(
+        lambda: _daemon_request("agent.unblock", {"name": name}),
         json_output=json_output,
     )
 

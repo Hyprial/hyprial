@@ -295,6 +295,8 @@ class DaemonEventBridge:
         logger: Callable[..., None] | None = None,
         clock_ms: Callable[[], int] | None = None,
         usage_limit_observer: Callable[[str], None] | None = None,
+        blocking_failure_observer: Callable[[str, str], None] | None = None,
+        blocked_actor: Callable[[str], bool] | None = None,
         workflow_outcome: Callable[[HarnessResult], bool] | None = None,
         forwarder: Forwarder | None = None,
         owner_notifier: Callable[..., object] | None = None,
@@ -331,6 +333,8 @@ class DaemonEventBridge:
         # observes: settlement below is unchanged (Allen 09-17: exhausted
         # agents keep today's handling).
         self._usage_limit_observer = usage_limit_observer
+        self._blocking_failure_observer = blocking_failure_observer
+        self._blocked_actor = blocked_actor
         self._workflow_outcome = workflow_outcome
         self._pending_workflow_results: dict[str, HarnessResult] = {}
         self._pending_workflow_attempts: dict[str, _InflightAttempt] = {}
@@ -677,6 +681,8 @@ class DaemonEventBridge:
             # The inbox is keyed by the canonical network identity — the
             # exact key the registrar advertised for this connector.
             recipient = self.harness_actor_uri(actor)
+            if self._blocked_actor is not None and self._blocked_actor(recipient):
+                continue
             pending_messages = self.inbox.pending_messages(recipient)
             messages = (
                 dispatchable(recipient, now_ms=self._clock_ms())
@@ -1151,6 +1157,24 @@ class DaemonEventBridge:
                         "error",
                         "daemon",
                         "quota_watchdog.observe_failed",
+                        recipient=failure.recipient,
+                        error=type(error).__name__,
+                    )
+        if (
+            failure.failure_code
+            in {"PROVIDER_USAGE_LIMIT", "PROVIDER_AUTHENTICATION_FAILED"}
+            and self._blocking_failure_observer is not None
+        ):
+            try:
+                self._blocking_failure_observer(
+                    failure.recipient, failure.failure_code
+                )
+            except Exception as error:  # noqa: BLE001 - observer never breaks settlement
+                if self._logger is not None:
+                    self._logger(
+                        "error",
+                        "daemon",
+                        "agent.block.observe_failed",
                         recipient=failure.recipient,
                         error=type(error).__name__,
                     )

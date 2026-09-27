@@ -120,6 +120,7 @@ class ManagedHarnessRuntime:
         orphan_state_path: Path | None = None,
         orphan_logger: Callable[..., None] | None = None,
         desired_state: DesiredStateStore | None = None,
+        automatic_restore_allowed: Callable[[HarnessLaunchSpec], bool] | None = None,
     ) -> None:
         if restart_backoff_seconds < 0:
             raise ValueError("restart backoff must not be negative")
@@ -159,6 +160,7 @@ class ManagedHarnessRuntime:
             orphan_state_path=orphan_state_path,
             orphan_logger=orphan_logger,
             desired_state=desired_state,
+            automatic_restore_allowed=automatic_restore_allowed,
             **actor_kwargs,
         )
         self._facade = HarnessRuntimeFacade(

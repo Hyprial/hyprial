@@ -207,6 +207,13 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
   开发通道警告)。这两个确认是 CC 故意留给人的,没有受支持的预先同意 ⇒ 会话**保留**,按 `data.attach`
   里的命令 attach、确认、detach,之后它自己注册。⛔ 不要当作失败重起(重起还是停在同一处)。
   (headless codex 带 `-- -a on-request -s workspace-write`;hyprial 客户端只批准 worker 自己的 harness-bridge MCP 工具调用,其它 elicitation 与命令/文件审批一律拒;reviewer 在 worker 线程级为 user,任何提供方下一致。批准≠授权,授权仍在 daemon 侧)
+- daemon 重启时只恢复近期活跃的 agent:空闲超过全局阈值(默认 12h)的会被标成 `idle-suppressed`,
+  不再自动拉起;有待处理消息/托管、在 keep-list 里、有当前 PAC 请求、或显式 start 时会被唤醒。
+  `hyprial agent restore-threshold <如 12h>` 改全局阈值;`hyprial agent restore-policy <name> active|always|never`
+  按 agent 覆盖(`always` 总是恢复,`never` 从不自动恢复)。
+- 模型额度耗尽或凭据失效时,agent 会进入持久的 `blocked` 状态(`hyprial ps` 里带原因):
+  进程照常恢复,但**投递被挡住**,直到人处理完原因后执行 `hyprial agent unblock <name>`(幂等)。
+  主人只收到一次通知;`hyprial doctor` 会列出 blocked 与被抑制的数量和补救命令。⛔ 不要靠重启来解除 blocked。
 - `hyprial agent create` — 注册 agent 记录;`hyprial send --from <四段canonical URI>`
   (裸名派单=回报全丢);`hyprial ack <mid> --from <注册身份URI>`
 - `hyprial query <actor> inbox|outbox [--json]` — 人查看某个本机 actor 的收件箱(待处理消息 +

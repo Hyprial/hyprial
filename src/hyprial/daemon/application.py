@@ -12,6 +12,7 @@ import queue
 import shlex
 import signal
 import socket
+import sqlite3
 import sys
 import threading
 import time
@@ -46,6 +47,14 @@ from hyprial.agents import (
     normalize_harness_args,
 )
 from hyprial.agents.activity import AgentKeepList, AgentKeepListError
+from hyprial.agents.worker_state import (
+    RESTORE_THRESHOLD_MS,
+    RestorePolicy,
+    RestorePolicyError,
+    RestorePolicyStore,
+    desired_generation,
+    pac_restore_facts,
+)
 from hyprial.adapters.lark.sdk import LarkApiError
 from hyprial.transfer.container import CONTAINER_PYTHON as _CONTAINER_PYTHON
 from hyprial.transfer.session_files import (
@@ -462,6 +471,8 @@ _IPC_STATS_METHODS = frozenset(
         "agent.keep.remove",
         "agent.list",
         "agent.resolve",
+        "agent.restore-policy",
+        "agent.restore-threshold",
         "agent.revoke",
         "agent.runtime-context",
         "agent.secret.grant",
@@ -475,6 +486,7 @@ _IPC_STATS_METHODS = frozenset(
         "agent.task.result",
         "agent.task.start",
         "agent.task.status",
+        "agent.unblock",
         "autoupdate.notify",
         "autoupdate.status",
         "autoupdate.trigger",
@@ -1082,6 +1094,12 @@ class DaemonApplication:
             self.state_dir / "agent-keep.json",
             normalize=self.agents.normalize_actor,
         )
+        self._restore_policy = RestorePolicyStore(
+            self.state_dir / "agent-restore-policy.json",
+            normalize=self.agents.normalize_actor,
+        )
+        self._restore_policy_degraded: str | None = None
+        self._restore_activity_unknown: set[str] = set()
         self._agent_activity_queue: queue.SimpleQueue[str] = queue.SimpleQueue()
         self._agent_domains_finalizer = weakref.finalize(
             self, self._agent_session_domains.close
@@ -2290,6 +2308,9 @@ class DaemonApplication:
             orphan_logger=self._log,
             event_sink=harness_events,
             desired_state=self.desired_state,
+            automatic_restore_allowed=lambda spec: not self._is_restore_suppressed_spec(
+                spec
+            ),
         )
         harnesses = HarnessPortClient(harness_actor, harness_events)
         # `as_mailbox` used to declare the liveliness token and nothing else:
@@ -2374,6 +2395,8 @@ class DaemonApplication:
                 if self._quota_watchdog is not None
                 else None
             ),
+            blocking_failure_observer=self._on_blocking_failure,
+            blocked_actor=self._agent_is_blocked,
             forwarder=self._forward_as_actor,
             owner_notifier=self._owner_alert_notifier,
             owner_requester_addresses=self._owner_requester_addresses(),
@@ -3382,6 +3405,50 @@ class DaemonApplication:
         if alert is not None:
             self._log("info", "daemon", "quota_watchdog.alerted", kind=alert.kind, key=alert.key)
 
+    def _agent_is_blocked(self, actor: str) -> bool:
+        return self._agent_registry.is_blocked(actor)
+
+    def _on_blocking_failure(self, recipient: str, failure_code: str) -> None:
+        reason = {
+            "PROVIDER_USAGE_LIMIT": "provider-quota",
+            "PROVIDER_AUTHENTICATION_FAILED": "credential-invalid",
+        }.get(failure_code)
+        if reason is None:
+            return
+        agent = self.agents.get(recipient)
+        if agent is None:
+            return
+        block, changed = self._agent_registry.block_agent(
+            agent.actor, reason=reason
+        )
+        self._agent_registry.clear_restore_disposition(agent.actor)
+        if not changed:
+            return
+        self._log(
+            "warn",
+            "daemon",
+            "agent.blocked",
+            actor=agent.uri,
+            reason=reason,
+            blockedAtMs=block.blocked_at_ms,
+        )
+        try:
+            self._owner_alert_notifier(
+                f"Agent {agent.actor} is blocked and needs human action: {reason}.",
+                idempotency_key=(
+                    f"agent-blocked:{agent.entity_token}:{reason}"
+                ),
+            )
+        except Exception as error:  # noqa: BLE001 - notice cannot break settlement
+            self._log(
+                "error",
+                "daemon",
+                "agent.block.notice_failed",
+                actor=agent.uri,
+                reason=reason,
+                errorType=type(error).__name__,
+            )
+
     def _deliver_routine_task(
         self, *, target: str, conversation_id: str, text: str, sender: str
     ) -> bool:
@@ -3715,6 +3782,195 @@ class DaemonApplication:
             failed=failed,
         )
 
+    def _pending_restore_work(self, agent: Agent) -> bool:
+        inbox = self._inbox
+        if inbox is None:
+            return False
+        reader = getattr(inbox, "has_pending_work", None)
+        if callable(reader):
+            return bool(reader(agent.uri) or reader(agent.actor))
+        pending = getattr(inbox, "pending_messages", None)
+        return bool(
+            callable(pending)
+            and (pending(agent.uri) or pending(agent.actor))
+        )
+
+    def _wake_dormant_agent(self, actor: str, *, reason: str) -> bool:
+        agent = self.agents.get(actor)
+        if agent is None or self._agent_registry.restore_disposition(agent.actor) is None:
+            return False
+        spec = next(
+            (
+                item
+                for item in self.desired_state.load().harnesses
+                if item.harness != "lark" and item.name == agent.actor
+            ),
+            None,
+        )
+        self._agent_registry.clear_restore_disposition(agent.actor)
+        if spec is None:
+            return False
+        try:
+            if self._lifecycle_manager is not None:
+                self._run_lifecycle_operation(
+                    LifecycleOperation.create(
+                        f"restore-wake:{reason}:{uuid4().hex}",
+                        self._lifecycle_spec(spec),
+                    )
+                )
+            elif self._harnesses is not None:
+                self._harnesses.start(spec)
+        except Exception as error:  # noqa: BLE001 - pending work stays durable
+            self._log(
+                "warn",
+                "daemon",
+                "harness.restore.wake_failed",
+                actor=agent.uri,
+                reason=reason,
+                errorType=type(error).__name__,
+                detail=str(error)[:500],
+            )
+            return False
+        self._log(
+            "info",
+            "daemon",
+            "harness.restore.woken",
+            actor=agent.uri,
+            reason=reason,
+        )
+        return True
+
+    def _restore_policy_or_degraded(self) -> RestorePolicy | None:
+        try:
+            policy = self._restore_policy.load()
+            self._agent_keep.list()
+        except (OSError, RestorePolicyError, AgentKeepListError) as error:
+            self._restore_policy_degraded = str(error)
+            self._log(
+                "warn",
+                "daemon",
+                "restore-policy-degraded",
+                errorType=type(error).__name__,
+                detail=str(error)[:500],
+            )
+            return None
+        self._restore_policy_degraded = None
+        return policy
+
+    def _is_restore_suppressed_spec(self, spec: HarnessLaunchSpec) -> bool:
+        """Reconcile-side fence: degraded policy and stale incarnations restore."""
+
+        agent = self.agents.get(spec.name)
+        if agent is None:
+            return False
+        generation = desired_generation(spec)
+        disposition = self._agent_registry.restore_disposition(
+            agent.actor, desired_generation=generation
+        )
+        if disposition is None:
+            return False
+        policy = self._restore_policy_or_degraded()
+        if policy is None:
+            self._agent_registry.clear_restore_disposition(agent.actor)
+            return False
+        try:
+            kept = agent.actor in self._agent_keep.list()
+            pending = self._pending_restore_work(agent)
+        except Exception as error:  # noqa: BLE001 - unreadable override restores
+            self._restore_policy_degraded = str(error)
+            self._agent_registry.clear_restore_disposition(agent.actor)
+            return False
+        if (
+            kept
+            or pending
+            or policy.policy_for(agent.actor) == "always"
+            or self._agent_registry.is_blocked(agent.actor)
+        ):
+            self._agent_registry.clear_restore_disposition(agent.actor)
+            return False
+        return True
+
+    def _classify_restore_specs(
+        self, specs: tuple[HarnessLaunchSpec, ...]
+    ) -> tuple[HarnessLaunchSpec, ...]:
+        policy = self._restore_policy_or_degraded()
+        if policy is None:
+            return specs
+        now_ms = self._restore_now_ms()
+        try:
+            kept = frozenset(self._agent_keep.list())
+        except AgentKeepListError:
+            return specs
+        restored: list[HarnessLaunchSpec] = []
+        self._restore_activity_unknown.clear()
+        for spec in specs:
+            agent = self.agents.get(spec.name)
+            if agent is None:
+                restored.append(spec)
+                continue
+            try:
+                pac = pac_restore_facts(
+                    self.state_dir / "pac-graph.sqlite3", agent.actor
+                )
+            except (OSError, sqlite3.Error):
+                restored.append(spec)
+                continue
+            if pac.terminal:
+                self._agent_registry.clear_restore_disposition(agent.actor)
+                continue
+            agent_policy = policy.policy_for(agent.actor)
+            pending = self._pending_restore_work(agent) or pac.pending_work
+            blocked = self._agent_registry.is_blocked(agent.actor)
+            override = (
+                "keep-list"
+                if agent.actor in kept
+                else (
+                    "pending-work"
+                    if pending
+                    else ("per-agent" if agent_policy == "always" else "none")
+                )
+            )
+            activity_unknown = agent.last_active_at_ms is None
+            effective_activity = (
+                agent.last_active_at_ms
+                if agent.last_active_at_ms is not None
+                else agent.created_at_ms
+            )
+            idle_age_ms = max(0, now_ms - effective_activity)
+            should_restore = (
+                blocked
+                or override != "none"
+                or (
+                    agent_policy != "never"
+                    and (activity_unknown or idle_age_ms <= policy.threshold_ms)
+                )
+            )
+            if should_restore:
+                self._agent_registry.clear_restore_disposition(agent.actor)
+                restored.append(spec)
+                if activity_unknown:
+                    self._restore_activity_unknown.add(agent.actor)
+                    self.agents.record_activity(agent.actor)
+                continue
+            self._agent_registry.suppress_restore(
+                agent.actor,
+                desired_generation=desired_generation(spec),
+                last_active_at_ms=agent.last_active_at_ms,
+                idle_age_ms=idle_age_ms,
+                restore_threshold_ms=policy.threshold_ms,
+                restore_override=("per-agent" if agent_policy == "never" else "none"),
+                activity_unknown=False,
+            )
+            self._log(
+                "info",
+                "daemon",
+                "harness.restore.idle_suppressed",
+                actor=agent.uri,
+                idleAgeMs=idle_age_ms,
+                restoreThresholdMs=policy.threshold_ms,
+            )
+        return tuple(restored)
+
     def _restore_harnesses(self) -> None:
         """Bring back every non-Lark harness this node declared.
 
@@ -3773,11 +4029,12 @@ class DaemonApplication:
         # exist.  Together with start-after-success this is what makes
         # "a daemon restart never retries a start that never succeeded"
         # true.
-        declared = tuple(
+        candidates = tuple(
             spec
             for spec in state.harnesses
             if spec.harness != "lark" and spec.status == "running"
         )
+        declared = self._classify_restore_specs(candidates)
         # The phase-③ expectation: every declared connector owes one first
         # readiness report.  Recorded before restore runs so the maintenance
         # loop (which starts only after restore completes) never reads a
@@ -4009,6 +4266,7 @@ class DaemonApplication:
         try:
             watchdog.phase("agent-activity")
             self._flush_agent_activity()
+            self._wake_pending_dormant_agents()
             outcome, adapter_events, adapter_restarts, phases = (
                 self._run_scheduled_domains(started)
             )
@@ -4036,6 +4294,13 @@ class DaemonApplication:
         """Enqueue without waiting; the maintenance owner performs SQLite I/O."""
 
         self._agent_activity_queue.put(actor)
+
+    def _wake_pending_dormant_agents(self) -> None:
+        for agent in self.agents.list():
+            if self._agent_registry.restore_disposition(agent.actor) is None:
+                continue
+            if self._pending_restore_work(agent):
+                self._wake_dormant_agent(agent.actor, reason="pending-work")
 
     def _flush_agent_activity(self) -> None:
         pending: set[str] = set()
@@ -5228,6 +5493,7 @@ class DaemonApplication:
             return self._deliver_autoupdate_restart_notification(params)
         if method == "ps":
             now = time.monotonic()
+            restore_now_ms = self._restore_now_ms()
             # Read the session projections once for the whole request and hand
             # them to route expiry: closing a route never edits the session
             # store, so the pre-expiry read is exactly what expiry would read
@@ -5267,6 +5533,51 @@ class DaemonApplication:
                         0,
                         pending_count - (in_flight if isinstance(in_flight, int) else 0),
                     )
+                restore_rows: list[JsonObject] = []
+                for spec in desired_by_key.values():
+                    if spec.harness == "lark":
+                        continue
+                    agent = self.agents.get(spec.name)
+                    if agent is None:
+                        continue
+                    projection = self._restore_agent_projection(
+                        agent, now_ms=restore_now_ms, spec=spec
+                    )
+                    if not projection:
+                        continue
+                    restore_rows.append(projection)
+                    key = (spec.harness, spec.name)
+                    existing = next(
+                        (
+                            row
+                            for row in connector_statuses
+                            if (row.get("runtime"), row.get("name")) == key
+                        ),
+                        None,
+                    )
+                    if existing is not None:
+                        existing.update(projection)
+                        continue
+                    if projection.get("restoreStatus") == "idle-suppressed":
+                        connector_statuses.append(
+                            {
+                                "id": f"{spec.harness}:{spec.name}",
+                                "runtime": spec.harness,
+                                "name": spec.name,
+                                "running": False,
+                                **projection,
+                            }
+                        )
+                dormant = [
+                    row
+                    for row in restore_rows
+                    if row.get("restoreStatus") == "idle-suppressed"
+                ]
+                blocked = [
+                    row
+                    for row in restore_rows
+                    if row.get("restoreStatus") == "blocked"
+                ]
                 return {
                     "daemon": {
                         "running": True,
@@ -5311,6 +5622,34 @@ class DaemonApplication:
                         "attention": self._workflow_cleanup_attention_snapshot()
                     },
                     "connectors": connector_statuses,
+                    "restore": {
+                        "restoreThresholdMs": self._restore_threshold_for_status(),
+                        "suppressedCount": len(dormant),
+                        "oldestIdleAgeMs": max(
+                            (
+                                int(row["idleAgeMs"])
+                                for row in dormant
+                                if isinstance(row.get("idleAgeMs"), int)
+                            ),
+                            default=None,
+                        ),
+                        "unknownActivityCount": len(self._restore_activity_unknown),
+                        "blockedCount": len(blocked),
+                        "oldestBlockedAgeMs": max(
+                            (
+                                int(row["blockedAgeMs"])
+                                for row in blocked
+                                if isinstance(row.get("blockedAgeMs"), int)
+                            ),
+                            default=None,
+                        ),
+                        "degraded": self._restore_policy_degraded is not None,
+                        **(
+                            {"degradedReason": self._restore_policy_degraded}
+                            if self._restore_policy_degraded is not None
+                            else {}
+                        ),
+                    },
                     "orphanProcesses": list(self._orphan_process_status()),
                     "adapters": (
                         [item.to_payload() for item in self._lark_client.read_adapters()]
@@ -6527,6 +6866,8 @@ class DaemonApplication:
                     ),
                 )
                 result = self._inbox.submit(message)
+                if result.accepted:
+                    self._wake_dormant_agent(target, reason="pending-work")
                 # A3 dispatch gate (design-dispatch-always-pac §三②,
                 # narrowed by spec-dispatch-gate-classifier-2026-09-04):
                 # classify an accepted coordinator→worker send — a dispatch
@@ -6918,6 +7259,7 @@ class DaemonApplication:
                 params.get("operationId")
                 or f"lifecycle-start:{uuid4().hex}"
             )
+            self._agent_registry.clear_restore_disposition(spec.name)
             result = self._run_lifecycle_operation(
                 LifecycleOperation.create(
                     operation_id,
@@ -7491,12 +7833,58 @@ class DaemonApplication:
                 if method == "agent.keep.add"
                 else self._agent_keep.remove(name)
             )
+            if method == "agent.keep.add":
+                self._wake_dormant_agent(name, reason="keep-list")
             return {
                 "ok": True,
                 "agent": name,
                 "changed": changed,
                 "agents": list(self._agent_keep.list()),
             }
+        if method == "agent.restore-policy":
+            name = self.agents.normalize_actor(
+                _required_string(params.get("name"), "name")
+            )
+            policy_name = _required_string(params.get("policy"), "policy")
+            try:
+                policy = self._restore_policy.set_agent(name, policy_name)
+            except RestorePolicyError as error:
+                raise DaemonRequestError(
+                    ipc_errors.INVALID_ARGUMENT, str(error)
+                ) from error
+            if policy_name == "always":
+                self._wake_dormant_agent(name, reason="per-agent-always")
+            return {
+                "ok": True,
+                "actor": name,
+                "policy": policy.policy_for(name),
+                "restoreThresholdMs": policy.threshold_ms,
+            }
+        if method == "agent.restore-threshold":
+            threshold_ms = params.get("thresholdMs")
+            if (
+                not isinstance(threshold_ms, int)
+                or isinstance(threshold_ms, bool)
+                or threshold_ms < 0
+            ):
+                raise DaemonRequestError(
+                    ipc_errors.INVALID_ARGUMENT,
+                    "thresholdMs must be a non-negative integer",
+                )
+            policy = self._restore_policy.set_threshold(threshold_ms)
+            return {
+                "ok": True,
+                "restoreThresholdMs": policy.threshold_ms,
+            }
+        if method == "agent.unblock":
+            name = self.agents.normalize_actor(
+                _required_string(params.get("name"), "name")
+            )
+            self.agents.require(name)
+            changed = self._agent_registry.unblock_agent(name)
+            if changed:
+                self.agents.record_activity(name)
+            return {"actor": name, "changed": changed}
         if method == "agent.runtime-context":
             # Non-secret interactive-launch handoff.  The daemon remains the
             # sole root/profile resolver; this projection deliberately omits
@@ -9616,6 +10004,9 @@ class DaemonApplication:
             ),
             **self._agent_liveness.snapshot(spelling),
             "status": self._registered_agent_status(agent),
+            **self._restore_agent_projection(
+                agent, now_ms=self._restore_now_ms()
+            ),
             **(
                 {"sharedCredentials": credential_status}
                 if credential_status
@@ -9636,6 +10027,86 @@ class DaemonApplication:
                 }
                 if recovery_failure is None and recovery_cleanup is not None
                 else {}
+            ),
+        }
+
+    def _restore_threshold_for_status(self) -> int:
+        try:
+            return self._restore_policy.load().threshold_ms
+        except RestorePolicyError as error:
+            self._restore_policy_degraded = str(error)
+            return RESTORE_THRESHOLD_MS
+
+    def _restore_now_ms(self) -> int:
+        return time.time_ns() // 1_000_000
+
+    @staticmethod
+    def _restore_age_text(value_ms: int | None) -> str:
+        if value_ms is None:
+            return "unknown"
+        hours = max(0, value_ms) // (60 * 60 * 1_000)
+        if hours:
+            return f"{hours}h"
+        minutes = max(0, value_ms) // (60 * 1_000)
+        return f"{minutes}m"
+
+    def _restore_agent_projection(
+        self,
+        agent: Agent,
+        *,
+        now_ms: int,
+        spec: HarnessLaunchSpec | None = None,
+    ) -> JsonObject:
+        block = self._agent_registry.agent_block(agent.actor)
+        if block is not None:
+            age_ms = max(0, now_ms - block.blocked_at_ms)
+            return {
+                "workerState": "blocked",
+                "restoreStatus": "blocked",
+                "blockReason": block.reason,
+                "blockedAtMs": block.blocked_at_ms,
+                "blockedAgeMs": age_ms,
+                "lastActiveAtMs": agent.last_active_at_ms,
+                "idleAgeMs": None,
+                "restoreThresholdMs": self._restore_threshold_for_status(),
+                "restoreOverride": "none",
+                "activityUnknown": agent.actor in self._restore_activity_unknown,
+                "status": (
+                    f"blocked ({block.reason}; "
+                    f"{self._restore_age_text(age_ms)})"
+                ),
+            }
+        generation = desired_generation(spec) if spec is not None else None
+        disposition = self._agent_registry.restore_disposition(
+            agent.actor, desired_generation=generation
+        )
+        if disposition is None:
+            if agent.actor in self._restore_activity_unknown:
+                return {
+                    "lastActiveAtMs": None,
+                    "idleAgeMs": None,
+                    "restoreThresholdMs": self._restore_threshold_for_status(),
+                    "restoreOverride": "none",
+                    "activityUnknown": True,
+                }
+            return {}
+        idle_age_ms = (
+            max(0, now_ms - disposition.last_active_at_ms)
+            if disposition.last_active_at_ms is not None
+            else disposition.idle_age_ms
+        )
+        return {
+            "workerState": "dormant",
+            "restoreStatus": disposition.status,
+            "lastActiveAtMs": disposition.last_active_at_ms,
+            "idleAgeMs": idle_age_ms,
+            "restoreThresholdMs": disposition.restore_threshold_ms,
+            "restoreOverride": disposition.restore_override,
+            "activityUnknown": disposition.activity_unknown,
+            "status": (
+                "dormant (idle "
+                f"{self._restore_age_text(idle_age_ms)}; auto-restore threshold "
+                f"{self._restore_age_text(disposition.restore_threshold_ms)})"
             ),
         }
 

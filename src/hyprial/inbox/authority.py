@@ -369,8 +369,19 @@ class InboxReadProjection:
                                 AND harness_failure_settlements.terminal = 1
                          )""",
                     (recipient,),
-                ).fetchone()[0]
-            )
+            ).fetchone()[0]
+        )
+
+    def has_pending_work(self, recipient: str) -> bool:
+        """Whether inbox or custody owns unconsumed work for this recipient."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT EXISTS(SELECT 1 FROM inbox WHERE recipient=? AND consumed=0) "
+                "OR EXISTS(SELECT 1 FROM custody WHERE recipient=?)",
+                (recipient, recipient),
+            ).fetchone()
+        return bool(row[0])
 
     def pending_recipient_counts(self) -> tuple[tuple[str, int], ...]:
         with self._connect() as connection:
@@ -1090,6 +1101,9 @@ class DeliveryCustodyFacade:
 
     def pending_count(self, recipient: str) -> int:
         return self._reads.pending_count(recipient)
+
+    def has_pending_work(self, recipient: str) -> bool:
+        return self._reads.has_pending_work(recipient)
 
     def pending_recipient_counts(self) -> tuple[tuple[str, int], ...]:
         return self._reads.pending_recipient_counts()

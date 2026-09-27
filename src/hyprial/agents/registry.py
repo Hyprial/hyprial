@@ -94,6 +94,8 @@ __all__ = [
     "AgentExistsError",
     "AgentNotFoundError",
     "AgentRegistry",
+    "AgentBlock",
+    "RestoreDisposition",
     "AgentHomeError",
     "PinConflictError",
     "default_registry",
@@ -402,6 +404,32 @@ class Agent:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class RestoreDisposition:
+    """Restart suppression fenced to one agent and desired-harness generation."""
+
+    actor: str
+    entity_token: str
+    desired_generation: str
+    status: str
+    last_active_at_ms: int | None
+    idle_age_ms: int | None
+    restore_threshold_ms: int
+    restore_override: str
+    activity_unknown: bool
+    recorded_at_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class AgentBlock:
+    """A durable human-release gate fenced to one agent incarnation."""
+
+    actor: str
+    entity_token: str
+    reason: str
+    blocked_at_ms: int
+
+
 def _string(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise AgentError(f"{label} must be a non-empty string")
@@ -508,6 +536,24 @@ _SCHEMA = "\n".join(
     changed INTEGER NOT NULL,
     resource_token TEXT NOT NULL,
     retired INTEGER NOT NULL DEFAULT 0
+);""",
+        """CREATE TABLE IF NOT EXISTS agent_restore_dispositions (
+    actor TEXT PRIMARY KEY REFERENCES agents(actor) ON DELETE CASCADE,
+    entity_token TEXT NOT NULL,
+    desired_generation TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status = 'idle-suppressed'),
+    last_active_at_ms INTEGER,
+    idle_age_ms INTEGER,
+    restore_threshold_ms INTEGER NOT NULL,
+    restore_override TEXT NOT NULL,
+    activity_unknown INTEGER NOT NULL,
+    recorded_at_ms INTEGER NOT NULL
+);""",
+        """CREATE TABLE IF NOT EXISTS agent_blocks (
+    actor TEXT PRIMARY KEY REFERENCES agents(actor) ON DELETE CASCADE,
+    entity_token TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    blocked_at_ms INTEGER NOT NULL
 );""",
     )
 )
@@ -1921,6 +1967,169 @@ class AgentRegistry:
                 return False
             self._last_activity_write[name] = now_ms
             return True
+
+    def restore_disposition(
+        self, actor: str, *, desired_generation: str | None = None
+    ) -> RestoreDisposition | None:
+        """Return only a suppression owned by the current incarnation/generation."""
+
+        agent = self.get(actor)
+        if agent is None:
+            return None
+        with self._lock:
+            row = self._db.execute(
+                "SELECT * FROM agent_restore_dispositions WHERE actor = ?",
+                (agent.actor,),
+            ).fetchone()
+            if row is None:
+                return None
+            if (
+                str(row["entity_token"]) != agent.entity_token
+                or (
+                    desired_generation is not None
+                    and str(row["desired_generation"]) != desired_generation
+                )
+            ):
+                with self._db:
+                    self._db.execute(
+                        "DELETE FROM agent_restore_dispositions WHERE actor = ?",
+                        (agent.actor,),
+                    )
+                return None
+            return RestoreDisposition(
+                actor=agent.actor,
+                entity_token=str(row["entity_token"]),
+                desired_generation=str(row["desired_generation"]),
+                status=str(row["status"]),
+                last_active_at_ms=(
+                    int(row["last_active_at_ms"])
+                    if row["last_active_at_ms"] is not None
+                    else None
+                ),
+                idle_age_ms=(
+                    int(row["idle_age_ms"])
+                    if row["idle_age_ms"] is not None
+                    else None
+                ),
+                restore_threshold_ms=int(row["restore_threshold_ms"]),
+                restore_override=str(row["restore_override"]),
+                activity_unknown=bool(row["activity_unknown"]),
+                recorded_at_ms=int(row["recorded_at_ms"]),
+            )
+
+    def suppress_restore(
+        self,
+        actor: str,
+        *,
+        desired_generation: str,
+        last_active_at_ms: int | None,
+        idle_age_ms: int | None,
+        restore_threshold_ms: int,
+        restore_override: str = "none",
+        activity_unknown: bool = False,
+    ) -> RestoreDisposition:
+        agent = self.require(actor)
+        recorded_at_ms = self.now_ms()
+        with self._lock, self._db:
+            self._db.execute(
+                "INSERT INTO agent_restore_dispositions "
+                "(actor,entity_token,desired_generation,status,last_active_at_ms,"
+                "idle_age_ms,restore_threshold_ms,restore_override,activity_unknown,"
+                "recorded_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(actor) DO UPDATE SET "
+                "entity_token=excluded.entity_token,"
+                "desired_generation=excluded.desired_generation,status=excluded.status,"
+                "last_active_at_ms=excluded.last_active_at_ms,"
+                "idle_age_ms=excluded.idle_age_ms,"
+                "restore_threshold_ms=excluded.restore_threshold_ms,"
+                "restore_override=excluded.restore_override,"
+                "activity_unknown=excluded.activity_unknown,"
+                "recorded_at_ms=excluded.recorded_at_ms",
+                (
+                    agent.actor,
+                    agent.entity_token,
+                    desired_generation,
+                    "idle-suppressed",
+                    last_active_at_ms,
+                    idle_age_ms,
+                    restore_threshold_ms,
+                    restore_override,
+                    int(activity_unknown),
+                    recorded_at_ms,
+                ),
+            )
+        disposition = self.restore_disposition(
+            agent.actor, desired_generation=desired_generation
+        )
+        assert disposition is not None
+        return disposition
+
+    def clear_restore_disposition(self, actor: str) -> bool:
+        name = self.local_actor(actor)
+        if name is None:
+            return False
+        with self._lock, self._db:
+            return self._db.execute(
+                "DELETE FROM agent_restore_dispositions WHERE actor = ?", (name,)
+            ).rowcount == 1
+
+    def block_agent(self, actor: str, *, reason: str) -> tuple[AgentBlock, bool]:
+        """Enter blocked once; a repeated signal preserves the first timestamp."""
+
+        if reason not in {"provider-quota", "credential-invalid"}:
+            raise ValueError(f"unsupported agent block reason: {reason}")
+        agent = self.require(actor)
+        now_ms = self.now_ms()
+        with self._lock, self._db:
+            cursor = self._db.execute(
+                "INSERT INTO agent_blocks(actor,entity_token,reason,blocked_at_ms) "
+                "VALUES (?,?,?,?) ON CONFLICT(actor) DO NOTHING",
+                (agent.actor, agent.entity_token, reason, now_ms),
+            )
+        block = self.agent_block(agent.actor)
+        assert block is not None
+        return block, cursor.rowcount == 1
+
+    def agent_block(self, actor: str) -> AgentBlock | None:
+        agent = self.get(actor)
+        if agent is None:
+            return None
+        with self._lock:
+            row = self._db.execute(
+                "SELECT * FROM agent_blocks WHERE actor = ?", (agent.actor,)
+            ).fetchone()
+            if row is None:
+                return None
+            if str(row["entity_token"]) != agent.entity_token:
+                with self._db:
+                    self._db.execute(
+                        "DELETE FROM agent_blocks WHERE actor = ?", (agent.actor,)
+                    )
+                return None
+            return AgentBlock(
+                actor=agent.actor,
+                entity_token=str(row["entity_token"]),
+                reason=str(row["reason"]),
+                blocked_at_ms=int(row["blocked_at_ms"]),
+            )
+
+    def is_blocked(self, actor: str) -> bool:
+        """Stable query for lifecycle and the later collector phase."""
+
+        return self.agent_block(actor) is not None
+
+    def unblock_agent(self, actor: str) -> bool:
+        name = self.local_actor(actor)
+        if name is None:
+            return False
+        agent = self.get(name)
+        if agent is None:
+            return False
+        with self._lock, self._db:
+            return self._db.execute(
+                "DELETE FROM agent_blocks WHERE actor = ? AND entity_token = ?",
+                (name, agent.entity_token),
+            ).rowcount == 1
 
     def update(self, actor: str, **changes: Any) -> Agent:
         return self.save(replace(self.require(actor), **changes))
