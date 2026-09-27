@@ -26,6 +26,11 @@ from hyprial.pac.store import PacGraphStore, default_database_path
 #: is what tells a slow reconcile from one that never ran.
 _PAC_RECONCILE_SLOW_MS = 2000
 
+# When both actor classes are pending, seven admissions go to open graphs and
+# the eighth goes to closed cleanup.  The persistent turn makes that guarantee
+# hold even when the queue exposes only one free slot on each resident tick.
+_ACTOR_CLASS_CYCLE = 8
+
 
 class DaemonActorRuntime:
     def __init__(self, application: Any) -> None:
@@ -217,6 +222,16 @@ class PacActorService:
         self._clock_queue: queue.Queue[str | None] = queue.Queue(maxsize=128)
         self._active_actors: set[tuple[str, str]] = set()
         self._active_clocks: set[str] = set()
+        # Queue saturation resumes at the first deferred job instead of
+        # restarting from the lexicographically earliest graph every tick.
+        self._actor_scan_offsets = {"open": 0, "closed": 0}
+        # Start with open priority and carry the weighted turn across ticks.
+        # This is process-local scheduling state; durable lifecycle state stays
+        # in the PAC store and is re-derived after restart.
+        self._actor_class_turn = 0
+        # One warning per continuous saturation episode keeps the signal
+        # useful even when the resident cadence runs every second.
+        self._actor_queue_saturated = False
         # Last skip reason logged per (graph, node): logged on change only, so
         # a skip that repeats every tick is one line, not one per second.
         self._skip_reasons: dict[tuple[str, str], str] = {}
@@ -295,11 +310,43 @@ class PacActorService:
                 for graph in graphs
                 if graph["activated_at"] is not None and graph["closed_at"] is None
             ]
-            actor_jobs = [
-                (row.graph_id, row.node_id)
-                for graph in graphs
-                for row in store.nodes(str(graph["graph_id"]))
-                if row.kind == "actor"
+            actor_rows = list(
+                store._db.execute(
+                    "SELECT n.graph_id,n.node_id,g.activated_at,g.closed_at,"
+                    "a.desired,a.op,c.state AS cleanup_state,"
+                    "r.graph_id AS receipt_graph_id "
+                    "FROM nodes n JOIN graphs g ON g.graph_id=n.graph_id "
+                    "LEFT JOIN actor_activations a "
+                    "ON a.graph_id=n.graph_id AND a.node_id=n.node_id "
+                    "LEFT JOIN workflow_worker_cleanup_intents c "
+                    "ON c.graph_id=n.graph_id AND c.actor_node=n.node_id "
+                    "LEFT JOIN workflow_worker_receipts r "
+                    "ON r.graph_id=n.graph_id AND r.actor_node=n.node_id "
+                    "WHERE n.kind='actor' ORDER BY n.graph_id,n.node_id"
+                )
+            )
+            open_actor_jobs = [
+                (str(row["graph_id"]), str(row["node_id"]))
+                for row in actor_rows
+                if row["activated_at"] is not None and row["closed_at"] is None
+            ]
+            # A closed graph is actionable only while its durable lifecycle
+            # state lets reconcile make progress.  Managed workers require
+            # their receipt-owned pending cleanup intent; unmanaged actors
+            # keep the pre-workflow down reconciliation until it settles.
+            closed_actor_jobs = [
+                (str(row["graph_id"]), str(row["node_id"]))
+                for row in actor_rows
+                if row["closed_at"] is not None
+                and (
+                    row["cleanup_state"] == "pending"
+                    or (
+                        row["cleanup_state"] is None
+                        and row["receipt_graph_id"] is None
+                        and row["desired"] is not None
+                        and (row["desired"] != "down" or row["op"] != "done")
+                    )
+                )
             ]
         finally:
             store.close()
@@ -319,20 +366,90 @@ class PacActorService:
                     )
                     break
                 self._active_clocks.add(graph_id)
-            for job in actor_jobs:
-                if job in self._active_actors:
+            actor_groups = (
+                ("open", open_actor_jobs),
+                ("closed", closed_actor_jobs),
+            )
+            available = self._actor_queue.maxsize - self._actor_queue.qsize()
+            pending: dict[str, list[tuple[int, tuple[str, str]]]] = {}
+            base_offsets: dict[str, int] = {}
+            for group, jobs in actor_groups:
+                if not jobs:
+                    self._actor_scan_offsets[group] = 0
+                    pending[group] = []
+                    base_offsets[group] = 0
                     continue
+                offset = self._actor_scan_offsets[group] % len(jobs)
+                base_offsets[group] = offset
+                rotated = jobs[offset:] + jobs[:offset]
+                pending[group] = [
+                    (job_index, job)
+                    for job_index, job in enumerate(rotated)
+                    if job not in self._active_actors
+                ]
+
+            positions = {"open": 0, "closed": 0}
+            while available:
+                open_waiting = positions["open"] < len(pending["open"])
+                closed_waiting = positions["closed"] < len(pending["closed"])
+                if not open_waiting and not closed_waiting:
+                    break
+                if open_waiting and closed_waiting:
+                    group = (
+                        "closed"
+                        if self._actor_class_turn == _ACTOR_CLASS_CYCLE - 1
+                        else "open"
+                    )
+                    self._actor_class_turn = (
+                        self._actor_class_turn + 1
+                    ) % _ACTOR_CLASS_CYCLE
+                else:
+                    group = "open" if open_waiting else "closed"
+
+                job_index, job = pending[group][positions[group]]
+                positions[group] += 1
                 try:
                     self._actor_queue.put_nowait(job)
                 except queue.Full:
-                    self.logger(
-                        "warn",
-                        "pac",
-                        "pac.actor.queue_full",
-                        capacity=self._actor_queue.maxsize,
-                    )
+                    positions[group] -= 1
                     break
                 self._active_actors.add(job)
+                jobs = open_actor_jobs if group == "open" else closed_actor_jobs
+                self._actor_scan_offsets[group] = (
+                    base_offsets[group] + job_index + 1
+                ) % len(jobs)
+                available -= 1
+
+            open_waiting = positions["open"] < len(pending["open"])
+            closed_waiting = positions["closed"] < len(pending["closed"])
+            deferred_group: str | None = None
+            if open_waiting and closed_waiting:
+                deferred_group = (
+                    "closed"
+                    if self._actor_class_turn == _ACTOR_CLASS_CYCLE - 1
+                    else "open"
+                )
+            elif open_waiting:
+                deferred_group = "open"
+            elif closed_waiting:
+                deferred_group = "closed"
+            deferred = sum(
+                job not in self._active_actors
+                for _group, jobs in actor_groups
+                for job in jobs
+            )
+            if deferred == 0:
+                self._actor_queue_saturated = False
+            elif not self._actor_queue_saturated:
+                self.logger(
+                    "warn",
+                    "pac",
+                    "pac.actor.queue_full",
+                    capacity=self._actor_queue.maxsize,
+                    deferredJobs=deferred,
+                    jobClass=deferred_group,
+                )
+                self._actor_queue_saturated = True
 
     def _clock_worker(self) -> None:
         while True:
