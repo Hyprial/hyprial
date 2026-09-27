@@ -853,6 +853,11 @@ def login(
                 migration = response["daemon"].get("migration")
                 if isinstance(migration, dict):
                     response["migration"] = migration
+                # First login is the moment a new member has no squire and
+                # is watching the terminal: say it on stderr, not only in
+                # the nested JSON.
+                if not json_output:
+                    _announce_setup_guidance(response["daemon"])
             # The daemon is started first, so the identity and the daemon are
             # kept exactly as on #493's route; only the exit code reports that
             # the join the operator asked for did not happen.
@@ -4512,6 +4517,89 @@ def _lark_inbound_doctor_check(result: JsonObject) -> JsonObject | None:
     }
 
 
+#: What `hyprial squire setup` writes, in the order a person completes it, and
+#: what each missing piece means for them.
+_SQUIRE_SETUP_PARTS = (
+    ("profile", "no squire profile yet"),
+    ("channel", "no Feishu channel bound to your squire"),
+    ("ownerOpenId", "your Feishu account is not bound to your squire"),
+)
+
+
+def _squire_setup_warning() -> JsonObject | None:
+    """Guide the owner to set up their squire when the daemon (re)starts.
+
+    Allen 2026-09-26: on daemon start/restart/init, check that the owner's
+    squire and user-proxy are configured, and guide setup in that order --
+    squire first, then squire guides the user-proxy setup.  Without a squire
+    nothing reaches this person through ``user:<owner>``; delivery fails with
+    TARGET_SQUIRE_UNCONFIGURED only when someone first tries.
+
+    ⚠️ Local files only (settings.json for the owner, users.json for the
+    profile): no daemon call, no network, never a write.  It runs inside the
+    commands that start the daemon, whose budgets are tight.  "Configured" is
+    the daemon's own test for a user target (a profile with a channel and an
+    owner open_id, daemon/application.py `_user_targets`).
+
+    Silent when there is no owner yet (login's own next steps cover that) and
+    for an isolated daemon, which cannot reach Feishu at all.
+    """
+
+    if os.environ.get("HYPRIAL_NETWORK_ISOLATED", "").strip() not in ("", "0"):
+        return None
+    from hyprial.daemon.identity import node_owner_or_none
+    from hyprial.squire.profile import UserProfileError, UserProfileStore
+
+    owner = node_owner_or_none()
+    if owner is None:
+        return None
+    try:
+        profile = UserProfileStore(_state_dir() / "users.json").resolve(owner)
+    except (UserProfileError, OSError) as error:
+        return {
+            "code": "SQUIRE_PROFILE_UNREADABLE",
+            "message": (
+                f"cannot read the squire profiles ({error}); messages to user:{owner} "
+                "will fail until it is fixed. Check state/users.json, then run: hyprial squire setup"
+            ),
+            "data": {"owner": owner, "nextStep": "hyprial squire setup"},
+        }
+    if profile is None:
+        missing = [name for name, _ in _SQUIRE_SETUP_PARTS]
+    else:
+        missing = [
+            name
+            for name, present in (
+                ("channel", profile.squire_adapter is not None),
+                ("ownerOpenId", profile.owner_open_id is not None),
+            )
+            if not present
+        ]
+    if not missing:
+        return None
+    first = dict(_SQUIRE_SETUP_PARTS)[missing[0]]
+    return {
+        "code": "SQUIRE_NOT_CONFIGURED",
+        "message": (
+            f"your squire is not set up ({first}), so nobody can reach you through "
+            f"user:{owner} yet. Set it up with: hyprial squire setup"
+        ),
+        "data": {"owner": owner, "missing": missing, "nextStep": "hyprial squire setup"},
+    }
+
+
+def _announce_setup_guidance(result: JsonObject) -> None:
+    """One stderr line per setup warning, for a person reading the terminal.
+
+    The human output of init/restart is the whole result dict, where a
+    warning sits among forty fields.  Same shape as the plugin-skip lines.
+    """
+
+    for warning in result.get("warnings") or []:
+        if isinstance(warning, dict) and str(warning.get("code", "")).startswith("SQUIRE_"):
+            print(f"hyprial: {warning['message']}", file=sys.stderr)
+
+
 def _zenoh_endpoint_warning(result: JsonObject) -> JsonObject | None:
     """Return a startup warning when the effective endpoints are empty.
 
@@ -4600,6 +4688,7 @@ def _complete_initialization(
         existing: JsonObject = DaemonLaunchResult.existing(status).to_payload()
         _append_warning(existing, _org_init_warning(org_warning))
         _append_warning(existing, _zenoh_endpoint_warning(status))
+        _append_warning(existing, _squire_setup_warning())
         return existing
 
     try:
@@ -4655,6 +4744,7 @@ def _complete_initialization(
     result = launched.to_payload()
     _append_warning(result, _org_init_warning(org_warning))
     _append_warning(result, _zenoh_endpoint_warning(result))
+    _append_warning(result, _squire_setup_warning())
     if login_result is not None:
         for key in ("identity", "network", "verificationUri", "userCode", "sidecar"):
             if key in login_result:
@@ -6298,7 +6388,7 @@ def init(
             )
 
         try:
-            return _complete_initialization(
+            result = _complete_initialization(
                 ready_timeout=ready_timeout,
                 listen=listen,
                 connect=connect,
@@ -6309,6 +6399,9 @@ def init(
         finally:
             for transaction in held_identity_transaction:
                 transaction.close()
+        if not json_output:
+            _announce_setup_guidance(result)
+        return result
 
     _execute(operation, json_output=json_output, allow_missing_home=True)
 
@@ -11200,6 +11293,9 @@ def restart_command(
             )
             result["pendingRestart"] = pending
             _clear_pending_restart()
+        _append_warning(result, _squire_setup_warning())
+        if not json_output:
+            _announce_setup_guidance(result)
         return result
 
     _execute(operation, json_output=json_output)
