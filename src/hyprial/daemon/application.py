@@ -876,6 +876,43 @@ _FORWARD_UNKNOWN_TARGET_CODES = frozenset(
     }
 )
 
+
+class _BoundedRecipientWakes:
+    """Bounded, duplicate-free handoff from transport callbacks to maintenance."""
+
+    def __init__(self, capacity: int = 128) -> None:
+        if capacity < 1:
+            raise ValueError("recipient wake capacity must be at least 1")
+        self._capacity = capacity
+        self._lock = threading.Lock()
+        self._recipients: set[str] = set()
+        self._overflowed = False
+
+    def record(self, recipient: str) -> None:
+        with self._lock:
+            if recipient in self._recipients:
+                return
+            if len(self._recipients) < self._capacity:
+                self._recipients.add(recipient)
+            else:
+                self._overflowed = True
+
+    def drain(self) -> tuple[tuple[str, ...], bool]:
+        with self._lock:
+            recipients = tuple(sorted(self._recipients))
+            overflowed = self._overflowed
+            self._recipients.clear()
+            self._overflowed = False
+        return recipients, overflowed
+
+    def restore(self, recipients: tuple[str, ...], *, overflowed: bool) -> None:
+        with self._lock:
+            available = self._capacity - len(self._recipients)
+            self._recipients.update(recipients[:available])
+            self._overflowed = (
+                self._overflowed or overflowed or len(recipients) > available
+            )
+
 class DaemonApplication:
     """Own the real runtime graph and expose it through newline-delimited IPC."""
 
@@ -1022,6 +1059,7 @@ class DaemonApplication:
         self._interactive_route_versions: dict[tuple[str, str | None], int] = {}
         self._directory: LivelinessDirectory | None = None
         self._inbox: DeliveryCustodyFacade | None = None
+        self._outbox_recipient_wakes = _BoundedRecipientWakes()
         self._inbox_coordinator: DeliveryCustodyCoordinator | None = None
         self._harnesses: HarnessPortClient | None = None
         self._registry_management: RegistryManagementHandler | None = None
@@ -2180,6 +2218,10 @@ class DaemonApplication:
             },
         )
         inbox = DeliveryCustodyFacade(inbox_coordinator, inbox_database)
+        # The actor-liveliness observer runs off Zenoh's receive thread. It
+        # only records a bounded, duplicate-free hint; the maintenance owner
+        # applies the actor-owned UPDATE before kicking the delivery pump.
+        self._bind_outbox_recipient_wake(directory, inbox)
         local_delivery.bind_receiver(inbox.receive)
         # PAC owns this outbound path independently of WorkflowService.  The
         # v1 service may share the same typed inbox authority while it exists,
@@ -4305,6 +4347,50 @@ class DaemonApplication:
 
         self._agent_activity_queue.put(actor)
 
+    def _bind_outbox_recipient_wake(
+        self,
+        directory: LivelinessDirectory,
+        inbox: DeliveryCustodyFacade,
+    ) -> None:
+        """Keep the transport callback lane independent of inbox authority."""
+
+        del inbox
+        directory.set_actor_online_callback(self._outbox_recipient_wakes.record)
+
+    def _flush_outbox_recipient_wakes(self, *, now_ms: int) -> None:
+        """Apply callback-recorded wakes from the maintenance owner."""
+
+        inbox = self._inbox
+        if inbox is None:
+            return
+        recipients, overflowed = self._outbox_recipient_wakes.drain()
+        if not recipients and not overflowed:
+            return
+        if overflowed:
+            try:
+                recipients = tuple(
+                    sorted(
+                        set(recipients).union(
+                            item.message.recipient for item in inbox.outbox_items()
+                        )
+                    )
+                )
+            except Exception:
+                self._outbox_recipient_wakes.restore(
+                    recipients,
+                    overflowed=True,
+                )
+                raise
+        for index, recipient in enumerate(recipients):
+            try:
+                inbox.wake_outbox_recipient(recipient, now_ms=now_ms)
+            except Exception:
+                self._outbox_recipient_wakes.restore(
+                    recipients[index:],
+                    overflowed=False,
+                )
+                raise
+
     def _wake_pending_dormant_agents(self) -> None:
         for agent in self.agents.list():
             if self._agent_registry.restore_disposition(agent.actor) is None:
@@ -4571,6 +4657,10 @@ class DaemonApplication:
         _timed("routes.expire", lambda: self._expire_stale_channel_routes(now))
         _timed("forwarding.timer", self._reconcile_forwarding_endpoints)
         observed_at_ms = int(time.time_ns() // 1_000_000)
+        _timed(
+            "inbox.wake_online_recipients",
+            lambda: self._flush_outbox_recipient_wakes(now_ms=observed_at_ms),
+        )
         outcome = _timed("runtime.timer", lambda: self._runtime_timer(observed_at_ms))
 
         # Timer admission is bounded and never shares ownership with local IPC.

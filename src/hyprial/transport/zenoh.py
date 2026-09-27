@@ -857,10 +857,18 @@ class ZenohTransport:
 class LivelinessDirectory:
     """Materialized actor/mailbox presence from Zenoh liveliness tokens."""
 
-    def __init__(self, session: ZenohTransport, keys: KeySpace | None = None) -> None:
+    def __init__(
+        self,
+        session: ZenohTransport,
+        keys: KeySpace | None = None,
+        *,
+        on_actor_online: Callable[[str], None] | None = None,
+    ) -> None:
         self._keys = keys or KeySpace()
+        self._lock = threading.Lock()
         self._actors: set[str] = set()
         self._mailboxes: set[str] = set()
+        self._on_actor_online = on_actor_online
         # A rebuilt session re-learns presence from the replayed observers'
         # history; carrying the old sets over would keep departed peers online.
         self._stop_rebuild_hook = session.on_rebuild(self._forget_presence)
@@ -876,30 +884,56 @@ class LivelinessDirectory:
         ]
 
     def _actor_event(self, sample: TransportSample) -> None:
-        self._update(self._actors, sample)
+        identity = self._identity(sample)
+        callback: Callable[[str], None] | None = None
+        with self._lock:
+            if sample.kind == "delete":
+                self._actors.discard(identity)
+            elif identity not in self._actors:
+                self._actors.add(identity)
+                callback = self._on_actor_online
+        if callback is not None:
+            callback(identity)
 
     def _mailbox_event(self, sample: TransportSample) -> None:
         self._update(self._mailboxes, sample)
 
+    def _identity(self, sample: TransportSample) -> str:
+        return self._keys.decode_identity(sample.key.rsplit("/", 1)[-1])
+
     def _update(self, values: set[str], sample: TransportSample) -> None:
-        identity = self._keys.decode_identity(sample.key.rsplit("/", 1)[-1])
-        if sample.kind == "delete":
-            values.discard(identity)
-        else:
-            values.add(identity)
+        identity = self._identity(sample)
+        with self._lock:
+            if sample.kind == "delete":
+                values.discard(identity)
+            else:
+                values.add(identity)
+
+    def set_actor_online_callback(self, callback: Callable[[str], None]) -> None:
+        """Bind the transition observer and replay actors already learned."""
+
+        with self._lock:
+            self._on_actor_online = callback
+            online = tuple(sorted(self._actors))
+        for actor in online:
+            callback(actor)
 
     def _forget_presence(self) -> None:
-        self._actors.clear()
-        self._mailboxes.clear()
+        with self._lock:
+            self._actors.clear()
+            self._mailboxes.clear()
 
     def actor_online(self, actor: str) -> bool:
-        return actor in self._actors
+        with self._lock:
+            return actor in self._actors
 
     def online_actors(self) -> tuple[str, ...]:
-        return tuple(sorted(self._actors))
+        with self._lock:
+            return tuple(sorted(self._actors))
 
     def online_mailboxes(self) -> tuple[str, ...]:
-        return tuple(sorted(self._mailboxes))
+        with self._lock:
+            return tuple(sorted(self._mailboxes))
 
     def close(self) -> None:
         self._stop_rebuild_hook()

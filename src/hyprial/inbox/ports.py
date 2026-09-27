@@ -50,6 +50,13 @@ class RetryDueCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class WakeOutboxRecipientCommand:
+    correlation_id: str
+    recipient: str
+    now_ms: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class PruneInboxCommand:
     correlation_id: str
     generation: int
@@ -175,6 +182,7 @@ InboxCommand: TypeAlias = (
     | ReceiveMessageCommand
     | AcknowledgeMessageCommand
     | RetryDueCommand
+    | WakeOutboxRecipientCommand
     | PruneInboxCommand
     | RefreshHoldCommand
     | FailMessageCommand

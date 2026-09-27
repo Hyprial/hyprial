@@ -192,6 +192,10 @@ class InboxPort(Protocol):
 
     def retry_due(self, *, now_ms: int | None = None) -> list[SubmissionResult]: ...
 
+    def wake_outbox_recipient(
+        self, recipient: str, *, now_ms: int | None = None
+    ) -> bool: ...
+
     def settle_harness_failure(
         self,
         recipient: str,

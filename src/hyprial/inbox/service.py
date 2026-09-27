@@ -657,6 +657,24 @@ class InboxService:
             )
 
     @_synchronized
+    def wake_outbox_recipient(
+        self, recipient: str, *, now_ms: int | None = None
+    ) -> bool:
+        """Make one recipient's live, delayed rows eligible for the next pump."""
+
+        now = self._now_ms() if now_ms is None else now_ms
+        with self._db:
+            cursor = self._db.execute(
+                """UPDATE outbox
+                      SET next_attempt_ms = ?
+                    WHERE recipient = ?
+                      AND expires_at_ms > ?
+                      AND next_attempt_ms > ?""",
+                (now, recipient, now, now),
+            )
+        return cursor.rowcount > 0
+
+    @_synchronized
     def retry_due(self, *, now_ms: int | None = None) -> list[SubmissionResult]:
         now = self._now_ms() if now_ms is None else now_ms
         # The delivery pump is the only periodic tick this layer has, so the
@@ -677,10 +695,10 @@ class InboxService:
                 interactive=self._interactive_recipient(message.recipient)
             )
             exhausted = int(row["attempts"]) >= maximum_attempts
-            if expired or exhausted:
+            if expired:
                 # A sender that was offline during the one-shot fetch receipt
-                # gets one durable query before terminal DLQ. Ordinary retries
-                # stay non-blocking and do not multiply receipt timeouts by N.
+                # gets one durable query before terminal DLQ. Expiry never
+                # performs a new delivery attempt.
                 confirm_fetch = getattr(self._transport, "confirm_fetch", None)
                 if callable(confirm_fetch) and confirm_fetch(message):
                     self.retire_outbox_receipt(
@@ -690,18 +708,9 @@ class InboxService:
                         SubmissionResult(message.message_id, True, queued=False)
                     )
                     continue
-            if expired:
                 self._outbox_to_dlq(row, "DELIVERY_EXPIRED", now)
                 outcomes.append(
                     SubmissionResult(message.message_id, False, code="DELIVERY_EXPIRED")
-                )
-                continue
-            if exhausted:
-                self._outbox_to_dlq(row, "DELIVERY_RETRY_EXHAUSTED", now)
-                outcomes.append(
-                    SubmissionResult(
-                        message.message_id, False, code="DELIVERY_RETRY_EXHAUSTED"
-                    )
                 )
                 continue
             delivered = False
@@ -723,21 +732,41 @@ class InboxService:
                         custody_mailbox=mailbox,
                     )
                 )
-            else:
-                if not self._transport.is_online(message.recipient):
-                    # C2 (2026-08-22 outbox dead-letter audit): an offline
-                    # deferral IS a retry attempt — before this, only failed
-                    # deliveries incremented `attempts`, so an always-offline
-                    # recipient retried for the whole TTL (weeks) with the
-                    # mailbox query fired every deferral.  One budget covers
-                    # both failure modes now: `attempts` counts retry CYCLES,
-                    # not just wire attempts, and deferrals ride the same
-                    # backoff progression.  This cap is per-MESSAGE outbox
-                    # retries — a different thing from PAC's max_attempts
-                    # (per-run) and routine's SOURCE_ERROR_CAP (source
-                    # queries); keep the names apart.
-                    self._defer_outbox(message, now, count_attempt=True)
-                outcomes.append(SubmissionResult(message.message_id, True, queued=True))
+                continue
+            if exhausted:
+                # The retry budget describes scheduled rounds, including this
+                # last one. Only after its direct/custody attempt misses do we
+                # reconcile a possibly lost receipt and decide terminal failure.
+                confirm_fetch = getattr(self._transport, "confirm_fetch", None)
+                if callable(confirm_fetch) and confirm_fetch(message):
+                    self.retire_outbox_receipt(
+                        message.sender, message.message_id, now_ms=now
+                    )
+                    outcomes.append(
+                        SubmissionResult(message.message_id, True, queued=False)
+                    )
+                    continue
+                self._outbox_to_dlq(row, "DELIVERY_RETRY_EXHAUSTED", now)
+                outcomes.append(
+                    SubmissionResult(
+                        message.message_id, False, code="DELIVERY_RETRY_EXHAUSTED"
+                    )
+                )
+                continue
+            if not self._transport.is_online(message.recipient):
+                # C2 (2026-08-22 outbox dead-letter audit): an offline
+                # deferral IS a retry attempt — before this, only failed
+                # deliveries incremented `attempts`, so an always-offline
+                # recipient retried for the whole TTL (weeks) with the
+                # mailbox query fired every deferral.  One budget covers
+                # both failure modes now: `attempts` counts retry CYCLES,
+                # not just wire attempts, and deferrals ride the same
+                # backoff progression.  This cap is per-MESSAGE outbox
+                # retries — a different thing from PAC's max_attempts
+                # (per-run) and routine's SOURCE_ERROR_CAP (source
+                # queries); keep the names apart.
+                self._defer_outbox(message, now, count_attempt=True)
+            outcomes.append(SubmissionResult(message.message_id, True, queued=True))
         outcomes.extend(self.retry_custody_due(now_ms=now))
         return outcomes
 

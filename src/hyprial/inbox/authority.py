@@ -60,6 +60,7 @@ from .ports import (
     SubmissionProjection,
     SubmitMessageCommand,
     SubmitProgressCommand,
+    WakeOutboxRecipientCommand,
 )
 from .progress import ProgressEvent
 from .pull import DEFAULT_HOLD_TTL_MS, DeliveryStatus, TerminalState
@@ -882,6 +883,15 @@ class DeliveryCustodyFacade:
         )
         assert isinstance(event, SubmissionBatchCompleted)
         return [self._submission(item) for item in event.results]
+
+    def wake_outbox_recipient(
+        self, recipient: str, *, now_ms: int | None = None
+    ) -> bool:
+        return self._bool(
+            WakeOutboxRecipientCommand(
+                self._correlation("wake-outbox-recipient"), recipient, now_ms
+            )
+        )
 
     def retire_outbox_receipt(
         self,

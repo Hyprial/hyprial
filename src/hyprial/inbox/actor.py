@@ -91,6 +91,7 @@ from .ports import (
     SubmissionProjection,
     SubmitMessageCommand,
     SubmitProgressCommand,
+    WakeOutboxRecipientCommand,
 )
 from .progress import PROGRESS_INTENT, encode_progress_event
 from .service import InboxService, RetryPolicy, _ExpiredSenderNotice, _bare_sender
@@ -573,38 +574,7 @@ class DeliveryIoWorker:
     def _dispatch_item(self, item: DispatchItem) -> DispatchOutcome:
         message = item.message
         if item.confirm_only:
-            confirm = getattr(self._transport, "confirm_fetch", None)
-            confirmed = callable(confirm) and bool(confirm(message))
-            notice: InboxMessage | None = None
-            notice_local = False
-            alarm_delivered = False
-            if (
-                not confirmed
-                and item.terminal_reason is not None
-                and item.terminal_alarm
-            ):
-                alarm = Alarm(
-                    correlation_id=message.message_id,
-                    message_id=message.message_id,
-                    conversation_id=message.conversation_id,
-                    sender=message.sender,
-                    recipient=message.recipient,
-                    reason=item.terminal_reason,
-                    audience=audience_for_sender(message.sender),
-                )
-                alarm_delivered, alarm_kind, notice = self._dispatch_alarm(alarm)
-                notice_local = alarm_kind is DispatchOutcomeKind.ALARM_LOCAL
-            return DispatchOutcome(
-                message_id=message.message_id,
-                kind=(
-                    DispatchOutcomeKind.FETCH_CONFIRMED
-                    if confirmed
-                    else DispatchOutcomeKind.FETCH_UNCONFIRMED
-                ),
-                recipient_online=alarm_delivered,
-                notice=notice,
-                notice_local=notice_local,
-            )
+            return self._confirm_terminal(item)
 
         online = self._transport.is_online(message.recipient)
         direct_attempted = online
@@ -631,11 +601,44 @@ class DeliveryIoWorker:
                     direct_attempted=direct_attempted,
                     custody_mailbox=mailbox,
                 )
+        if item.terminal_reason is not None:
+            return self._confirm_terminal(item)
         return DispatchOutcome(
             message_id=message.message_id,
             kind=DispatchOutcomeKind.QUEUED,
             recipient_online=online,
             direct_attempted=direct_attempted,
+        )
+
+    def _confirm_terminal(self, item: DispatchItem) -> DispatchOutcome:
+        message = item.message
+        confirm = getattr(self._transport, "confirm_fetch", None)
+        confirmed = callable(confirm) and bool(confirm(message))
+        notice: InboxMessage | None = None
+        notice_local = False
+        alarm_delivered = False
+        if not confirmed and item.terminal_reason is not None and item.terminal_alarm:
+            alarm = Alarm(
+                correlation_id=message.message_id,
+                message_id=message.message_id,
+                conversation_id=message.conversation_id,
+                sender=message.sender,
+                recipient=message.recipient,
+                reason=item.terminal_reason,
+                audience=audience_for_sender(message.sender),
+            )
+            alarm_delivered, alarm_kind, notice = self._dispatch_alarm(alarm)
+            notice_local = alarm_kind is DispatchOutcomeKind.ALARM_LOCAL
+        return DispatchOutcome(
+            message_id=message.message_id,
+            kind=(
+                DispatchOutcomeKind.FETCH_CONFIRMED
+                if confirmed
+                else DispatchOutcomeKind.FETCH_UNCONFIRMED
+            ),
+            recipient_online=alarm_delivered,
+            notice=notice,
+            notice_local=notice_local,
         )
 
     def _dispatch_alarm(
@@ -1008,6 +1011,16 @@ class DeliveryCustody:
                 self._reject_stale(command.correlation_id)
                 return
             self._claim_retry(command)
+            return
+        if isinstance(command, WakeOutboxRecipientCommand):
+            self._publish_bool(
+                command.correlation_id,
+                "wake_outbox_recipient",
+                self._service.wake_outbox_recipient(
+                    command.recipient,
+                    now_ms=command.now_ms,
+                ),
+            )
             return
         if isinstance(command, PruneInboxCommand):
             if not self._current_fence(command.generation, command.version):
@@ -1524,7 +1537,10 @@ class DeliveryCustody:
                 DispatchItem(
                     message=message,
                     retry=True,
-                    confirm_only=reason is not None,
+                    # Expiry is a hard no-delivery boundary. Exhaustion is a
+                    # scheduled final round: it attempts delivery before the
+                    # terminal confirmation/DLQ decision.
+                    confirm_only=expired,
                     terminal_reason=reason,
                     terminal_alarm=reason is not None,
                 )
