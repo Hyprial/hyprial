@@ -1239,8 +1239,8 @@ class DaemonEventBridge:
 
         if message.message_id in self._inflight:
             return
-        if _notice_kind(message) is not None:
-            return  # nobody waits on a notice; reporting it would chain
+        if message.intent == "reply" or _notice_kind(message) is not None:
+            return  # nobody waits on a reply or notice; reporting it would chain
         harness = self._harness_kind(actor)
         now = self._clock_ms()
         # The clock starts when this daemon hands the request over (or finds it
