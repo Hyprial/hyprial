@@ -9279,7 +9279,10 @@ def _perform_upgrade(
         # otherwise an explicit settings.json updateTrack selects its movable
         # track tag, and no track keeps the legacy latest-version-tag probe.
         track = updates.read_update_track(_hyprial_home()) if tag is None else None
-        resolution = updates.resolve_remote(url, tag=tag or track)
+        ls_remote_timeout = updates.read_ls_remote_timeout(_hyprial_home())
+        resolution = updates.resolve_remote(
+            url, tag=tag or track, timeout=ls_remote_timeout
+        )
     except updates.UpdateProbeError as error:
         raise CliError("UPGRADE_CHECK_FAILED", str(error)) from error
     warning = updates.retired_track_warning(_hyprial_home())
@@ -10436,15 +10439,17 @@ def config_set(
     key: str = typer.Argument(
         ...,
         help=(
-            "Config key (supported: autoUpgrade, forwarding.mode, org.fetchSource, "
-            "workerProxy.url, workerProxy.vendors, workerProxy.noProxy)."
+            "Config key (supported: autoUpgrade, lsRemoteTimeoutSeconds, "
+            "forwarding.mode, org.fetchSource, workerProxy.url, "
+            "workerProxy.vendors, workerProxy.noProxy)."
         ),
     ),
     value: str = typer.Argument(
         ...,
         help=(
-            "New value (autoUpgrade: true|false; forwarding.mode: off|auto|on; "
-            "org.fetchSource: mesh|orgfs; "
+            "New value (autoUpgrade: true|false; lsRemoteTimeoutSeconds: "
+            "positive seconds; forwarding.mode: off|auto|on; org.fetchSource: "
+            "mesh|orgfs; "
             "workerProxy.url: http(s) URL, empty clears; workerProxy.vendors: "
             "comma list; workerProxy.noProxy: NO_PROXY list, empty = ambient)."
         ),
@@ -10493,6 +10498,18 @@ def config_set(
             f"{WORKER_PROXY_SETTINGS_KEY}.{field}": field
             for field in WORKER_PROXY_FIELDS
         }
+        if key in updates.LS_REMOTE_TIMEOUT_KEY_ALIASES:
+            try:
+                timeout = float(value)
+                path = updates.write_ls_remote_timeout(timeout, _hyprial_home())
+            except (ValueError, OverflowError) as error:
+                raise CliError("INVALID_CONFIGURATION", str(error)) from error
+            return {
+                "ok": True,
+                "key": updates.LS_REMOTE_TIMEOUT_SETTINGS_KEY,
+                "value": timeout,
+                "path": str(path),
+            }
         if key in worker_proxy_keys:
             try:
                 path, setting = write_worker_proxy_field(
@@ -10546,6 +10563,7 @@ def config_set(
                 + ", ".join(
                     (
                         *updates.AUTOUPGRADE_KEY_ALIASES,
+                        *updates.LS_REMOTE_TIMEOUT_KEY_ALIASES,
                         forwarding_key,
                         org_fetch_source_key,
                         *worker_proxy_keys,

@@ -27,10 +27,13 @@ update target.
 from __future__ import annotations
 
 import json
+import logging
+import math
 import os
 import re
 import subprocess
 import sys
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError
@@ -43,6 +46,8 @@ from packaging.version import InvalidVersion, Version
 
 Json = dict[str, Any]
 
+_LOG = logging.getLogger(__name__)
+
 DEFAULT_GIT_URL = "ssh://git@git.internal.hyprial.com/HyprialOS/harness-bridge.git"
 _PRE_RENAME_GIT_HOST = "git.internal.hyprial.com"
 _PRE_RENAME_GIT_PATHS = {
@@ -50,7 +55,15 @@ _PRE_RENAME_GIT_PATHS = {
     "/HyprialOS/harness-bridge-py.git",
 }
 
-LS_REMOTE_TIMEOUT = 15.0
+# One cold SSH handshake on the hq Mac took 21.0s on 2026-09-27. Keep enough
+# headroom for that first connection while bounding both attempts to 90s total.
+LS_REMOTE_TIMEOUT = 45.0
+LS_REMOTE_RETRY_COUNT = 1
+LS_REMOTE_TIMEOUT_SETTINGS_KEY = "lsRemoteTimeoutSeconds"
+LS_REMOTE_TIMEOUT_KEY_ALIASES = (
+    LS_REMOTE_TIMEOUT_SETTINGS_KEY,
+    "ls-remote-timeout",
+)
 # A full ``uv tool install`` of a git source can take minutes on a cold cache.
 UV_INSTALL_TIMEOUT = 300.0
 # ``uv tool dir`` is a directory listing (verified read-only on uv 0.11.7:
@@ -292,6 +305,59 @@ def read_update_track(hyprial_home: Path) -> str | None:
             file=sys.stderr,
         )
     return resolved
+
+
+def _valid_ls_remote_timeout(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    timeout = float(value)
+    return timeout if math.isfinite(timeout) and timeout > 0 else None
+
+
+def read_ls_remote_timeout(hyprial_home: Path) -> float:
+    """Return the configured tag-probe budget, or the cold-SSH-safe default."""
+
+    path = Path(hyprial_home) / "settings.json"
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return LS_REMOTE_TIMEOUT
+    except (OSError, json.JSONDecodeError) as error:
+        raise UpdateProbeError(f"cannot parse {path}: {error}") from error
+    if not isinstance(record, dict):
+        raise UpdateProbeError(f"cannot parse {path}: top level is not an object")
+    raw_timeout = record.get(LS_REMOTE_TIMEOUT_SETTINGS_KEY, LS_REMOTE_TIMEOUT)
+    timeout = _valid_ls_remote_timeout(raw_timeout)
+    if timeout is None:
+        raise UpdateProbeError(
+            f"{path} {LS_REMOTE_TIMEOUT_SETTINGS_KEY} must be a positive "
+            f"finite number; got {raw_timeout!r}"
+        )
+    return timeout
+
+
+def write_ls_remote_timeout(timeout: float, hyprial_home: Path) -> Path:
+    """Persist the tag-probe budget without replacing unrelated settings."""
+
+    valid_timeout = _valid_ls_remote_timeout(timeout)
+    if valid_timeout is None:
+        raise ValueError(
+            f"{LS_REMOTE_TIMEOUT_SETTINGS_KEY} must be a positive finite number; "
+            f"got {timeout!r}"
+        )
+    path = Path(hyprial_home) / "settings.json"
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        record = {}
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"cannot parse {path}: {error}") from error
+    if not isinstance(record, dict):
+        raise ValueError(f"cannot parse {path}: top level is not an object")
+    record[LS_REMOTE_TIMEOUT_SETTINGS_KEY] = valid_timeout
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    return path
 
 
 def retired_track_warning(hyprial_home: Path) -> str | None:
@@ -550,10 +616,6 @@ def _run_git(
             timeout=timeout,
             check=False,
         )
-    except subprocess.TimeoutExpired as error:
-        raise UpdateProbeError(
-            f"git {' '.join(args[:2])} timed out after {timeout:g}s"
-        ) from error
     except OSError as error:
         raise UpdateProbeError(f"cannot run git: {error}") from error
     if completed.returncode != 0:
@@ -630,12 +692,76 @@ def resolve_remote(
     *,
     tag: str | None = None,
     runner: object = None,
+    timeout: float = LS_REMOTE_TIMEOUT,
 ) -> RemoteResolution:
-    """Resolve the latest or an explicitly named remote tag with one probe."""
+    """Resolve a remote tag with one retry only when the probe times out.
 
-    output = _run_git(
-        ["ls-remote", "--tags", url], timeout=LS_REMOTE_TIMEOUT, runner=runner
-    )
+    Each attempt has ``timeout`` seconds, so the subprocess wall-time maximum
+    is ``timeout * 2``. Authentication, transport, and Git exit failures are
+    returned immediately and never retried.
+    """
+
+    valid_timeout = _valid_ls_remote_timeout(timeout)
+    if valid_timeout is None:
+        raise UpdateProbeError(
+            "git ls-remote --tags budget must be a positive finite number; "
+            f"got {timeout!r}"
+        )
+    attempts = LS_REMOTE_RETRY_COUNT + 1
+    timeout_elapsed: list[float] = []
+    output: str | None = None
+    for attempt in range(1, attempts + 1):
+        started = time.monotonic()
+        try:
+            output = _run_git(
+                ["ls-remote", "--tags", url],
+                timeout=valid_timeout,
+                runner=runner,
+            )
+        except subprocess.TimeoutExpired as error:
+            elapsed = max(0.0, time.monotonic() - started)
+            timeout_elapsed.append(elapsed)
+            _LOG.info(
+                "git ls-remote --tags attempt %d/%d timed out in %.1fs "
+                "(budget %gs)",
+                attempt,
+                attempts,
+                elapsed,
+                valid_timeout,
+            )
+            if attempt < attempts:
+                continue
+            detail = ", ".join(
+                f"attempt {index} {duration:.1f}s/{valid_timeout:g}s"
+                for index, duration in enumerate(timeout_elapsed, 1)
+            )
+            maximum = valid_timeout * attempts
+            raise UpdateProbeError(
+                f"git ls-remote --tags timed out: {detail}; maximum {maximum:g}s"
+            ) from error
+        except UpdateProbeError:
+            elapsed = max(0.0, time.monotonic() - started)
+            _LOG.info(
+                "git ls-remote --tags attempt %d/%d failed in %.1fs "
+                "(budget %gs)",
+                attempt,
+                attempts,
+                elapsed,
+                valid_timeout,
+            )
+            raise
+        else:
+            elapsed = max(0.0, time.monotonic() - started)
+            _LOG.info(
+                "git ls-remote --tags attempt %d/%d succeeded in %.1fs "
+                "(budget %gs)",
+                attempt,
+                attempts,
+                elapsed,
+                valid_timeout,
+            )
+            break
+    assert output is not None
     candidates = _tag_commits(_parse_ls_remote(output))
     if tag is not None:
         commit = candidates.get(tag)
