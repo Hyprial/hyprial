@@ -36,6 +36,7 @@ from .ports import (
     RoutineSourceQueryCompleted,
     RoutineSourceTaskProjection,
     RoutineTimerElapsedCommand,
+    SetRoutineCommand,
     RoutinePacIoCompleted,
 )
 from .registry import (
@@ -208,6 +209,15 @@ class RoutineFacade:
         correlation = self._correlation()
         event = self._submit_wait(
             AddRoutineCommand(correlation, yaml_text, owner, enabled),
+            correlation,
+            RoutineMutationCompleted,
+        )
+        return event.result.to_payload()
+
+    def set(self, *, name: str, yaml_text: str) -> dict[str, object]:
+        correlation = self._correlation()
+        event = self._submit_wait(
+            SetRoutineCommand(correlation, name, yaml_text),
             correlation,
             RoutineMutationCompleted,
         )

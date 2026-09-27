@@ -332,6 +332,33 @@ def routine_rm(
     _execute(operation, json_output=json_output)
 
 
+@routine_app.command("set")
+def routine_set(
+    name: str = typer.Argument(..., help="Existing routine name to keep."),
+    file: Path = typer.Argument(..., help="Replacement routine.yaml."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Atomically replace a routine while keeping its name and actor binding."""
+
+    def operation() -> Any:
+        try:
+            text = file.read_text(encoding="utf-8")
+        except OSError as error:
+            raise CliError(
+                ipc_errors.INVALID_ARGUMENT, f"cannot read {file}: {error}"
+            ) from None
+        result = _daemon_request(
+            "routine.set",
+            {"name": name, "yaml": text, **_routine_identity(json_output)},
+            timeout=60.0,
+        )
+        if not isinstance(result, dict) or result.get("name") != name:
+            raise CliError("INVALID_RESPONSE", "routine.set must return the same name")
+        return {"ok": True, **result}
+
+    _execute(operation, json_output=json_output)
+
+
 @routine_app.command("pause")
 def routine_pause(
     name: str = typer.Argument(..., help="Routine name to pause."),

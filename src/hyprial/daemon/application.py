@@ -553,6 +553,7 @@ _IPC_STATS_METHODS = frozenset(
         "routine.pause",
         "routine.remove",
         "routine.resume",
+        "routine.set",
         "routine.status",
         "session.heartbeat",
         "session.refresh",
@@ -4934,6 +4935,151 @@ class DaemonApplication:
         prefix = f"routine:{name}:{registration_id}" if registration_id else f"routine:{name}"
         return f"{prefix}:coordinator"
 
+    @staticmethod
+    def _routine_binding(routine: Mapping[str, object]) -> str | None:
+        """Return the actor a routine binds, from its declared ownership form."""
+
+        ownership = routine.get("actorOwnership")
+        if ownership == "borrowed":
+            actor = routine.get("actor")
+            return actor if isinstance(actor, str) else None
+        if ownership == "routine":
+            produced = routine.get("produces")
+            return produced if isinstance(produced, str) else None
+        return None
+
+    def _routines_bound_to(self, actor: str) -> list[dict[str, object]]:
+        if self._routine_service is None:
+            return []
+        return [
+            routine
+            for routine in self._routine_service.list()["routines"]
+            if isinstance(routine, dict) and self._routine_binding(routine) == actor
+        ]
+
+    @staticmethod
+    def _default_agent_routine_name(actor: str) -> str:
+        return f"agent-home-setup-{hashlib.sha256(actor.encode()).hexdigest()[:16]}"
+
+    def _register_default_agent_routine(
+        self, agent: Agent
+    ) -> dict[str, object] | None:
+        """Bind one deterministic setup routine, or return a visible warning.
+
+        The no-service case is the daemon's existing degraded mode.  It leaves
+        the agent usable but observable through both this warning and
+        ``agent list --json``.  Once registration begins, any failure is
+        propagated so the caller can roll the just-created identity back.
+        """
+
+        if self._routine_service is None:
+            warning = {
+                "code": "AGENT_DEFAULT_ROUTINE_UNAVAILABLE",
+                "message": (
+                    "agent was created without a routine because the routine "
+                    "service is unavailable; repair the service, then bind one "
+                    "with `hyprial routine add`"
+                ),
+            }
+            self._log(
+                "info",
+                "agents",
+                "agent.default_routine.unavailable",
+                actor=agent.uri,
+                **warning,
+            )
+            return warning
+        from hyprial.routine.schema import load_routine_text
+        from hyprial.routine.templates import render_template
+
+        with self._routine_coordinator_lock:
+            if self._routines_bound_to(agent.uri):
+                return None
+            name = self._default_agent_routine_name(agent.uri)
+            yaml_text = render_template(
+                "agent-home-setup",
+                owner=agent.uri,
+                escalate_to=f"user:{agent.owner}",
+                name=name,
+            )
+            spec = load_routine_text(yaml_text)
+            self._routine_admit(spec)
+            self._routine_service.add(
+                yaml_text=yaml_text,
+                owner=f"user:{agent.owner}",
+                enabled=True,
+            )
+        return None
+
+    def _finish_resident_agent_creation(
+        self, agent: Agent
+    ) -> dict[str, object] | None:
+        try:
+            return self._register_default_agent_routine(agent)
+        except Exception as error:
+            self.agents.destroy(agent.actor)
+            code = getattr(error, "code", type(error).__name__)
+            raise DaemonRequestError(
+                "AGENT_DEFAULT_ROUTINE_FAILED",
+                f"agent creation rolled back because its default routine "
+                f"could not be registered ({code}): {error}",
+                {"actor": agent.uri, "routineError": str(code)},
+            ) from error
+
+    def _remove_registered_routine(
+        self, name: str, *, enforce_last: bool
+    ) -> JsonObject:
+        assert self._routine_service is not None
+        with self._routine_coordinator_lock:
+            try:
+                routine = {
+                    **self._routine_service.status(name=name),
+                    "name": name,
+                }
+                binding = self._routine_binding(routine)
+                if (
+                    enforce_last
+                    and binding is not None
+                    and len(self._routines_bound_to(binding)) == 1
+                ):
+                    raise DaemonRequestError(
+                        "ROUTINE_LAST_BINDING",
+                        f"routine {name!r} is the last routine bound to {binding}; "
+                        "bind a new one first with `hyprial routine add`, or "
+                        "modify this one with `hyprial routine set`",
+                        {"routine": name, "actor": binding},
+                    )
+                if routine.get("enabled") is True:
+                    self._routine_service.pause(name=name)
+                from hyprial.pac.graph import close_graph
+                from hyprial.pac.store import PacGraphStore, default_database_path
+
+                store = PacGraphStore(default_database_path(self.state_dir))
+                try:
+                    for task in routine.get("inFlight", []):
+                        graph_id = task["runId"]
+                        graph = store.graph(graph_id)
+                        if graph is not None:
+                            close_graph(
+                                store,
+                                graph_id,
+                                actor=str(routine["owner"]),
+                            )
+                finally:
+                    store.close()
+                coordinator = self._retire_routine_coordinator(routine)
+                result = self._routine_service.remove(name=name)
+                return {
+                    **result,
+                    **(
+                        {"coordinator": coordinator}
+                        if coordinator is not None
+                        else {}
+                    ),
+                }
+            except RoutineServiceError as error:
+                raise DaemonRequestError(error.code, str(error)) from error
+
     def _reconcile_routine_coordinators(self) -> None:
         """Isolate persisted routine faults so daemon startup remains operable."""
         assert self._routine_service is not None
@@ -6285,7 +6431,13 @@ class DaemonApplication:
             return {"ok": True, "messages": messages, "daemonEpoch": self.epoch}
         if method.startswith("routine."):
             routine_caller = self._workflow_caller(params)
-            if method in ("routine.remove", "routine.pause", "routine.resume", "routine.status") and self._routine_service is not None:
+            if method in (
+                "routine.remove",
+                "routine.pause",
+                "routine.resume",
+                "routine.set",
+                "routine.status",
+            ) and self._routine_service is not None:
                 current = self._routine_service.status(name=_required_string(params.get("name"), "name"))
                 if routine_caller not in (f"user:{self.owner}", current["owner"], current.get("actor")):
                     raise DaemonRequestError(ipc_errors.CALLER_NOT_AUTHORIZED, "caller does not own this routine")
@@ -6300,18 +6452,7 @@ class DaemonApplication:
             except RoutineSchemaError as error:
                 raise DaemonRequestError("ROUTINE_SCHEMA_ERROR", str(error)) from error
             source = self._workflow_caller(params)
-            if spec.actor is not None:
-                if self._remote_workflow is not None and self._remote_workflow.remote(spec.actor):
-                    from types import SimpleNamespace
-                    from hyprial.pac.errors import PacError
-                    try:
-                        self._remote_workflow.admit(SimpleNamespace(owner=spec.actor, role=spec.role,
-                            first_output_eta=None, human_gates=None))
-                    except PacError as error:
-                        raise DaemonRequestError(error.code, str(error)) from error
-                else:
-                    self._resolve_send_sender(spec.actor)
-            elif spec.produces is None:
+            if spec.actor is None and spec.produces is None:
                 document = yaml.safe_load(yaml_text)
                 from hashlib import sha256
                 actor_name = f"routine-{spec.name}" if len(spec.name) <= 48 else "routine-" + sha256(spec.name.encode()).hexdigest()[:16]
@@ -6369,25 +6510,37 @@ class DaemonApplication:
             if self._routine_service is None:
                 raise DaemonRequestError(ipc_errors.ROUTINE_UNAVAILABLE, "routine service is not running")
             name = _required_string(params.get("name"), "name")
+            return self._remove_registered_routine(name, enforce_last=True)
+        if method == "routine.set":
+            if self._routine_service is None:
+                raise DaemonRequestError(
+                    ipc_errors.ROUTINE_UNAVAILABLE,
+                    "routine service is not running",
+                )
+            name = _required_string(params.get("name"), "name")
+            yaml_text = _required_string(params.get("yaml"), "yaml")
+            from hyprial.routine.schema import RoutineSchemaError, load_routine_text
+
+            try:
+                spec = load_routine_text(yaml_text)
+            except RoutineSchemaError as error:
+                raise DaemonRequestError("ROUTINE_SCHEMA_ERROR", str(error)) from error
+            current = self._routine_service.status(name=name)
+            current_binding = self._routine_binding(current)
+            if spec.name != name:
+                raise DaemonRequestError(
+                    "ROUTINE_NAME_IMMUTABLE",
+                    f"replacement name must remain {name!r}",
+                )
+            if (spec.actor or spec.produces) != current_binding:
+                raise DaemonRequestError(
+                    "ROUTINE_BINDING_IMMUTABLE",
+                    "routine set keeps the existing actor/produces binding",
+                )
+            self._routine_admit(spec)
             with self._routine_coordinator_lock:
                 try:
-                    routine = {**self._routine_service.status(name=name), "name": name}
-                    if routine.get("enabled") is True:
-                        self._routine_service.pause(name=name)
-                    from hyprial.pac.graph import close_graph
-                    from hyprial.pac.store import PacGraphStore, default_database_path
-                    store = PacGraphStore(default_database_path(self.state_dir))
-                    try:
-                        for task in routine.get("inFlight", []):
-                            graph_id = task["runId"]
-                            graph = store.graph(graph_id)
-                            if graph is not None:
-                                close_graph(store, graph_id, actor=str(routine["owner"]))
-                    finally:
-                        store.close()
-                    coordinator = self._retire_routine_coordinator(routine)
-                    result = self._routine_service.remove(name=name)
-                    return {**result, **({"coordinator": coordinator} if coordinator is not None else {})}
+                    return self._routine_service.set(name=name, yaml_text=yaml_text)
                 except RoutineServiceError as error:
                     raise DaemonRequestError(error.code, str(error)) from error
         if method == "routine.pause":
@@ -7808,8 +7961,18 @@ class DaemonApplication:
                     params.get("preferredHarness"), "preferredHarness"
                 ),
             )
+            routine_warning = self._finish_resident_agent_creation(agent)
             self._declare_persona_route(agent.uri)
-            return {"ok": True, "created": True, "agent": self._agent_status_json(agent)}
+            return {
+                "ok": True,
+                "created": True,
+                "agent": self._agent_status_json(agent),
+                **(
+                    {"routineWarning": routine_warning}
+                    if routine_warning is not None
+                    else {}
+                ),
+            }
         if method == "agent.create":
             # Decision A5: the one creation path. `hyprial agent create` calls it
             # directly; `hyprial start` calls it first and only then launches a
@@ -7855,12 +8018,14 @@ class DaemonApplication:
                     )
                     or harness_name,
                 )
+                routine_warning = self._finish_resident_agent_creation(agent)
                 # A legacy pin naming this agent could not migrate while the
                 # record did not exist; it can now.
                 self._migrate_legacy_channel_pins()
                 self._declare_persona_route(agent.uri)
             else:
                 agent = existing
+                routine_warning = None
             # When the caller says which harness it is about to launch, refuse
             # here if the agent is already being served -- before a TUI has
             # been spawned -- and otherwise hand back the A9 handover notice so
@@ -7904,6 +8069,11 @@ class DaemonApplication:
                     if handover is not None
                     else {}
                 ),
+                **(
+                    {"routineWarning": routine_warning}
+                    if routine_warning is not None
+                    else {}
+                ),
             }
         if method == "agent.list":
             # Same per-request snapshot as ps: agent.list is the same loop
@@ -7926,6 +8096,7 @@ class DaemonApplication:
                 ) from error
             with self._worker_status_snapshot():
                 agents = []
+                visible_actors: list[str] = []
                 for agent in self.agents.list():
                     if params.get("excludeWf") is True and agent.actor.startswith("wf-"):
                         continue
@@ -7935,9 +8106,23 @@ class DaemonApplication:
                     ):
                         continue
                     agents.append(self._agent_status_json(agent, activity_hints=hints))
+                    visible_actors.append(agent.uri)
+                bound_actors = {
+                    binding
+                    for routine in (
+                        self._routine_service.list()["routines"]
+                        if self._routine_service is not None
+                        else []
+                    )
+                    if isinstance(routine, dict)
+                    and (binding := self._routine_binding(routine)) is not None
+                }
                 return {
                     "ok": True,
                     "agents": agents,
+                    "agentsWithoutRoutine": [
+                        actor for actor in visible_actors if actor not in bound_actors
+                    ],
                 }
         if method == "agent.keep.list":
             return {"ok": True, "agents": list(self._agent_keep.list())}
@@ -8362,9 +8547,27 @@ class DaemonApplication:
         if target is None:
             return
         if spec.actor is not None:
-            if self._remote_workflow is not None and self._remote_workflow.remote(target):
-                return  # the remote workflow admission above checked its home daemon
-            target = self._resolve_send_sender(target)
+            local_entity = self.agents.get(target)
+            if local_entity is not None and local_entity.uri == target:
+                target = local_entity.uri
+            elif self._remote_workflow is not None and self._remote_workflow.remote(target):
+                from types import SimpleNamespace
+                from hyprial.pac.errors import PacError
+
+                try:
+                    self._remote_workflow.admit(
+                        SimpleNamespace(
+                            owner=target,
+                            role=spec.role,
+                            first_output_eta=None,
+                            human_gates=None,
+                        )
+                    )
+                except PacError as error:
+                    raise DaemonRequestError(error.code, str(error)) from error
+                return
+            else:
+                target = self._resolve_send_sender(target)
         entity = self.agents.get(target)
         capabilities = entity.capabilities if entity is not None else {}
         dispatch_gate(
@@ -9816,6 +10019,7 @@ class DaemonApplication:
                 harness_args={harness: args} if args else None,
                 preferred_harness=harness,
             )
+            self._finish_resident_agent_creation(agent)
             self._log(
                 "info", "agents", "agent.created", actor=agent.uri, harness=harness
             )
@@ -10926,6 +11130,11 @@ class DaemonApplication:
                 harness_args={spec.harness: spec.args},
                 preferred_harness=spec.harness,
             )
+            # No default routine here, deliberately.  A received identity is
+            # staged (source fenced, target not yet complete), so nothing may
+            # schedule it before cutover; the transfer line restores the
+            # source's routines, or binds the default, when the move
+            # completes (AT06; codex-sw, 2026-09-28).
         try:
             self._run_lifecycle_operation(
                 LifecycleOperation.create(
@@ -11308,6 +11517,11 @@ class DaemonApplication:
         stopped = self._stop_agent_runtime(actor, keep=None)
         self._drop_persona_route(actor)
         self._release_agent_binding(actor)
+        removed_routines = []
+        for routine in self._routines_bound_to(actor):
+            routine_name = str(routine["name"])
+            self._remove_registered_routine(routine_name, enforce_last=False)
+            removed_routines.append(routine_name)
         destroyed_messages = self._destroy_agent_messages(agent)
         # Snapshot the pins for the report; the deletion itself needs no pin
         # code at all -- ON DELETE CASCADE erases them in the same
@@ -11323,6 +11537,7 @@ class DaemonApplication:
             stopped=stopped,
             destroyedMessages=destroyed_messages,
             unpinnedAdapters=unpinned,
+            removedRoutines=removed_routines,
         )
         return {
             "ok": True,
@@ -11332,6 +11547,7 @@ class DaemonApplication:
             "stopped": stopped,
             "destroyedMessages": destroyed_messages,
             "unpinnedAdapters": unpinned,
+            "removedRoutines": removed_routines,
             "irreversible": True,
             "workspace": {
                 **workspace.to_json(),

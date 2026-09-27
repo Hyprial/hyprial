@@ -38,6 +38,7 @@ from .ports import (
     RoutineSourceQueryCompleted,
     RoutineTimerCompleted,
     RoutineTimerElapsedCommand,
+    SetRoutineCommand,
     RoutinePacIoCompleted,
 )
 from .schema import RoutineSchemaError, RoutineSpec, load_routine_text
@@ -189,6 +190,8 @@ class RoutineRegistry:
     def __call__(self, command: object) -> None:
         if isinstance(command, AddRoutineCommand):
             self._add(command)
+        elif isinstance(command, SetRoutineCommand):
+            self._set(command)
         elif isinstance(command, RemoveRoutineCommand):
             self._remove(command)
         elif isinstance(command, PauseRoutineCommand):
@@ -260,6 +263,56 @@ class RoutineRegistry:
                 version,
                 RoutineMutationProjection(command.name, removed=True),
             )
+        )
+
+    def _set(self, command: SetRoutineCommand) -> None:
+        row = self._require(command.correlation_id, command.name)
+        if row is None:
+            return
+        snapshot = self._store.snapshot(command.name)
+        if (snapshot is not None and bool(snapshot.in_flight)) or (
+            self._store.cycle_for_routine(command.name) is not None
+        ):
+            self._reject(
+                command.correlation_id,
+                "ROUTINE_BUSY",
+                f"routine {command.name!r} has an active cycle; replace it after the cycle settles",
+            )
+            return
+        try:
+            spec = load_routine_text(command.yaml_text)
+        except RoutineSchemaError as error:
+            self._reject(command.correlation_id, "ROUTINE_SCHEMA_ERROR", str(error))
+            return
+        if spec.name != command.name:
+            self._reject(
+                command.correlation_id,
+                "ROUTINE_NAME_IMMUTABLE",
+                f"replacement name must remain {command.name!r}",
+            )
+            return
+        current = self._active[command.name].spec
+        if (spec.actor, spec.produces) != (current.actor, current.produces):
+            self._reject(
+                command.correlation_id,
+                "ROUTINE_BINDING_IMMUTABLE",
+                "routine set keeps the existing actor/produces binding",
+            )
+            return
+        updated = replace(
+            row,
+            yaml_text=command.yaml_text,
+            next_due_ms=self._clock_ms() + int(spec.interval_seconds * 1000),
+            version=self._next_version(),
+        )
+        self._store.apply(routine=updated)
+        self._active[command.name] = _ActiveRoutine(
+            spec, command.yaml_text, row.owner
+        )
+        self._publish_mutation(
+            command.correlation_id,
+            updated,
+            enabled=updated.enabled,
         )
 
     def _pause(self, command: PauseRoutineCommand) -> None:

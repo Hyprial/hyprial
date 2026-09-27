@@ -1,0 +1,12 @@
+version: 2
+mode: scheduled
+name: agent-home-setup
+schedule:
+  interval: 15m
+actor: "{{owner}}"
+role: dispatch
+task: |
+  你的 agent home 还没有完成。请先完成 agent home，然后用 `hyprial routine add` 绑定一个符合这个 agent 用途的 routine，或用 `hyprial routine set` 原地修改当前默认 routine；完成后解绑或修改这个默认 routine。
+on_task_timeout:
+  action: escalate
+  escalate_to: "{{escalate_to}}"

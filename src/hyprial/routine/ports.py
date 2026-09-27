@@ -15,6 +15,13 @@ class AddRoutineCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class SetRoutineCommand:
+    correlation_id: str
+    name: str
+    yaml_text: str
+
+
+@dataclass(frozen=True, slots=True)
 class RemoveRoutineCommand:
     correlation_id: str
     name: str
@@ -49,6 +56,7 @@ class RoutineTimerElapsedCommand:
 
 RoutineCommand: TypeAlias = (
     AddRoutineCommand
+    | SetRoutineCommand
     | RemoveRoutineCommand
     | PauseRoutineCommand
     | ResumeRoutineCommand

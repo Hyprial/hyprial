@@ -7,7 +7,7 @@ import yaml
 from hyprial.routine.schema import load_routine_text
 from hyprial.uri import parse_agent_uri
 
-BUILTIN_TEMPLATES = ("selfdrive",)
+BUILTIN_TEMPLATES = ("agent-home-setup", "selfdrive")
 
 
 def template_text(name: str) -> str:
@@ -37,9 +37,12 @@ def render_template(
     if not escalate_to.startswith("user:") or not escalate_to[5:].strip() or ":" in escalate_to[5:]:
         raise ValueError("--escalate-to must be user:<owner>")
     document = yaml.safe_load(template_text(template))
-    document["produces"] = owner
+    if template == "agent-home-setup":
+        document["actor"] = owner
+    else:
+        document["produces"] = owner
     document["on_task_timeout"]["escalate_to"] = escalate_to
-    for route in document["policy"]["routes"]:
+    for route in document.get("policy", {}).get("routes", []):
         if route.get("escalate_to") == "{{escalate_to}}":
             route["escalate_to"] = escalate_to
     if name is not None:
@@ -47,8 +50,15 @@ def render_template(
     if interval is not None:
         document["schedule"]["interval"] = interval
     if source is not None:
+        if document["mode"] == "scheduled":
+            raise ValueError("--source is not valid for a scheduled template")
         document["source"] = {"kind": source}
-    if document["source"]["kind"] == "taskwarrior":
+    if document["mode"] == "scheduled":
+        if filter_expr is not None or idle_threshold is not None:
+            raise ValueError(
+                "--filter and --idle-threshold are not valid for a scheduled template"
+            )
+    elif document["source"]["kind"] == "taskwarrior":
         if idle_threshold is not None:
             raise ValueError("--idle-threshold requires source pac-journal")
         document["source"]["filter"] = (

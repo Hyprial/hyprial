@@ -214,7 +214,11 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
 - 模型额度耗尽或凭据失效时,agent 会进入持久的 `blocked` 状态(`hyprial ps` 里带原因):
   进程照常恢复,但**投递被挡住**,直到人处理完原因后执行 `hyprial agent unblock <name>`(幂等)。
   主人只收到一次通知;`hyprial doctor` 会列出 blocked 与被抑制的数量和补救命令。⛔ 不要靠重启来解除 blocked。
-- `hyprial agent create` — 注册 agent 记录;`hyprial send --from <四段canonical URI>`
+- `hyprial agent create` — 注册 agent 记录并绑定 15 分钟一次的默认 agent-home
+  setup routine。确定用途后先用 `hyprial routine add` 绑定新 routine，或用
+  `hyprial routine set <name> <file>` 原地修改；最后一个绑定不能直接 `routine rm`。
+  `hyprial agent list --json` 的 `agentsWithoutRoutine` 只读列出尚无绑定的既有 agent。
+  `hyprial send --from <四段canonical URI>`
   (裸名派单=回报全丢);`hyprial ack <mid> --from <注册身份URI>`
 - `hyprial query <actor> inbox|outbox [--json]` — 人查看某个本机 actor 的收件箱(待处理消息 +
   系统通知,含正文)或发件箱(它发出、仍在排队的消息)。**只读**:不取走、不 ack、不清通知,
