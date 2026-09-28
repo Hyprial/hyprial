@@ -47,6 +47,16 @@ ORGFS_ANNOUNCE_BUFFER_LIMIT: Final[int] = 256
 ORGFS_ANNOUNCE_SPACES_PER_ENTRY_LIMIT: Final[int] = 256
 ORGFS_SYNC_QUEUE_LIMIT: Final[int] = 32
 ORGFS_REPLICA_SYNC_SCAN_ROWS: Final[int] = 256
+# A blob query is broadcast on a key with no node segment, so every mesh
+# answers and the query collects replies until this window closes.  A holder
+# relayed over DERP can need several seconds for one full chunk; a window
+# shorter than that drops its chunk and leaves only non-holders' answers.
+ORGFS_BLOB_FETCH_TIMEOUT_SECONDS: Final[float] = 10.0
+# Answers that only mean "not here": they never decide a fetch while a
+# holder may still be answering.
+_BLOB_ABSENCE_CODES: Final[frozenset[str]] = frozenset(
+    {"unknown-blob", "unknown-space"}
+)
 MeshLogger = Callable[..., None]
 SupplierGate = Callable[[str], bool]
 AppliedHook = Callable[[bytes], Iterable[str] | None]
@@ -71,6 +81,20 @@ def _error(code: str, message: str, **details: object) -> bytes:
             "details": details,
         }
     )
+
+
+def _elapsed_ms(started: float) -> int:
+    return int((time.monotonic() - started) * 1000)
+
+
+def _reply_origin(error: Mapping[str, Any]) -> dict[str, str]:
+    details = error.get("details")
+    details = details if isinstance(details, Mapping) else {}
+    return {
+        "nodeId": str(details.get("nodeId", "")),
+        "spaceId": str(details.get("spaceId", "")),
+        "code": str(error.get("code", "")),
+    }
 
 
 def _decode_request(payload: bytes | None) -> dict[str, Any]:
@@ -230,6 +254,22 @@ class OrgFsMesh:
         if self._logger is not None:
             self._logger(level, event, **fields)
 
+    def _log_blob_fetch_failed(
+        self, event: str, exc: BaseException, *, supplier: str, digest: str
+    ) -> None:
+        details = getattr(exc, "details", None)
+        details = details if isinstance(details, Mapping) else {}
+        self._log(
+            "warn",
+            event,
+            reason=getattr(exc, "code", "blob-unavailable"),
+            supplier=supplier,
+            digest=digest,
+            spaceId=self.store.space_id,
+            replies=list(details.get("replies", ())),
+            elapsedMs=details.get("elapsedMs"),
+        )
+
     def _supplier_allowed(self, supplier: str) -> bool:
         try:
             return bool(supplier) and bool(self._supplier_online(supplier))
@@ -304,12 +344,8 @@ class OrgFsMesh:
             # Exactly one retry: a repeated rejection is final.
             return self.store.import_envelope(envelope, supplier=supplier)
         except Exception as exc:  # noqa: BLE001 - inbound fetch must not kill the worker
-            self._log(
-                "warn",
-                "orgfs.update.blob-fetch-failed",
-                reason=getattr(exc, "code", "blob-unavailable"),
-                supplier=supplier,
-                digest=digest,
+            self._log_blob_fetch_failed(
+                "orgfs.update.blob-fetch-failed", exc, supplier=supplier, digest=digest
             )
             return initial
 
@@ -455,10 +491,9 @@ class OrgFsMesh:
                 self._fetch_blob_into_store(supplier, digest)
                 fetched = True
             except Exception as exc:  # noqa: BLE001 - keep the serial worker alive
-                self._log(
-                    "warn",
+                self._log_blob_fetch_failed(
                     "orgfs.update.blob-fetch-failed",
-                    reason=getattr(exc, "code", "blob-unavailable"),
+                    exc,
                     supplier=supplier,
                     digest=digest,
                 )
@@ -589,10 +624,9 @@ class OrgFsMesh:
                 replica.store_blob(digest, content)
                 self.blob_store.pin(self.store.space_id, digest, "replica")
         except Exception as exc:  # noqa: BLE001 - bounded repair is retried by sync
-            self._log(
-                "warn",
+            self._log_blob_fetch_failed(
                 "orgfs.replica.blob-reconcile-failed",
-                reason=getattr(exc, "code", "blob-unavailable"),
+                exc,
                 supplier=supplier or "",
                 digest=digest,
             )
@@ -1153,13 +1187,7 @@ class OrgFsMesh:
                 )
                 total_value = self.replica_store.backend.get(f"blob/{value['digest']}")
                 if total_value is None:
-                    raise OrgFsError(
-                        "unknown-blob",
-                        {
-                            "digest": str(value["digest"]),
-                            "spaceId": self.store.space_id,
-                        },
-                    )
+                    raise OrgFsError("unknown-blob", {"digest": str(value["digest"])})
                 return (
                     (
                         selector,
@@ -1172,19 +1200,37 @@ class OrgFsMesh:
                     ),
                 )
             except Exception as exc:
-                return (
-                    (
-                        selector,
-                        _error(
-                            str(getattr(exc, "code", "invalid-argument")),
-                            str(exc),
-                            **dict(getattr(exc, "details", {}) or {}),
-                        ),
-                    ),
-                )
+                return ((selector, self._blob_error(exc)),)
         if self.blob_store is None:
-            return ((selector, _error("unknown-blob", "blob store is unavailable")),)
-        return ((selector, self.blob_store.handle_request(payload or b"")),)
+            return (
+                (
+                    selector,
+                    self._blob_error(
+                        StoreError("unknown-blob", "blob store is unavailable")
+                    ),
+                ),
+            )
+        try:
+            return ((selector, self.blob_store.get_chunk(payload or b"")),)
+        except BlobError as exc:
+            return ((selector, self._blob_error(exc)),)
+        except (TypeError, ValueError) as exc:
+            return (
+                (selector, self._blob_error(StoreError("invalid-argument", str(exc)))),
+            )
+
+    def _blob_error(self, exc: BaseException) -> bytes:
+        # The blob key carries no node segment, so the answer itself must say
+        # who answered and for which space.
+        return _error(
+            str(getattr(exc, "code", "invalid-argument")),
+            str(exc),
+            **{
+                **dict(getattr(exc, "details", {}) or {}),
+                "nodeId": self.node_id,
+                "spaceId": self.store.space_id,
+            },
+        )
 
     def _install_sync_snapshot(
         self, supplier: str, manifest: Mapping[str, Any], *, timeout: float
@@ -1458,7 +1504,7 @@ class OrgFsMesh:
         supplier: str,
         digest: str,
         *,
-        timeout: float = 3.0,
+        timeout: float = ORGFS_BLOB_FETCH_TIMEOUT_SECONDS,
         size_hint: int | None = None,
     ) -> bytes:
         if not self._supplier_allowed(supplier):
@@ -1466,6 +1512,7 @@ class OrgFsMesh:
         chunks: list[bytes] = []
         offset = 0
         total: int | None = None
+        started = time.monotonic()
         while total is None or offset < total:
             replies = self.session.query(
                 self._keys.orgfs_blob(digest),
@@ -1485,7 +1532,11 @@ class OrgFsMesh:
                 all_replies=True,
             )
             if not replies:
-                raise StoreError("blob-unavailable", "blob supplier did not answer")
+                raise StoreError(
+                    "blob-unavailable",
+                    "blob supplier did not answer",
+                    elapsedMs=_elapsed_ms(started),
+                )
             chosen: bytes | None = None
             errors: list[dict[str, Any]] = []
             for reply in replies:
@@ -1497,11 +1548,25 @@ class OrgFsMesh:
                     chosen = reply.payload
                     break
             if chosen is None:
-                if errors:
+                answered = [_reply_origin(error) for error in errors]
+                decisive = [
+                    error
+                    for error in errors
+                    if str(error.get("code")) not in _BLOB_ABSENCE_CODES
+                ]
+                if decisive:
                     raise StoreError(
-                        str(errors[0].get("code")), str(errors[0].get("message"))
+                        str(decisive[0].get("code")),
+                        str(decisive[0].get("message")),
+                        replies=answered,
+                        elapsedMs=_elapsed_ms(started),
                     )
-                raise StoreError("blob-unavailable", "no holder returned a blob chunk")
+                raise StoreError(
+                    "blob-unavailable",
+                    "no holder returned a blob chunk",
+                    replies=answered,
+                    elapsedMs=_elapsed_ms(started),
+                )
             try:
                 chunk = decode_chunk(chosen)
             except (BlobError, ValueError) as exc:
