@@ -40,6 +40,10 @@ DEFAULT_PUT_SLOW_SECONDS = 5.0
 # Samples waiting for a subscriber callback, per hand-off lane.
 DEFAULT_CALLBACK_QUEUE_CAPACITY = 4096
 CALLBACK_LANES = 4
+# Queries waiting for one of the shared query workers.  The count is global to
+# one transport, not one thread (or queue) per queryable declaration.
+DEFAULT_QUERY_QUEUE_CAPACITY = 256
+QUERY_WORKERS = 4
 OVERFLOW_LOG_EVERY = 100
 
 
@@ -125,13 +129,11 @@ class _OwnedLock:
 class _CallbackDispatcher:
     """Runs subscriber callbacks off the thread zenoh delivers on.
 
-    zenoh-python runs each callback on its own thread fed by a BOUNDED
-    channel; when a callback blocks, the channel fills and the receive thread
-    blocks in ``flume::Sender::send`` -- which stalls every sample on that
-    link (seen in the 2026-09-27 ``sample``).  Here the zenoh-side callback
-    only enqueues and returns.  Each subscription is pinned to one lane, so
-    its samples keep their order; a full lane drops the sample and says so,
-    because a receive thread that waits is exactly the failure being removed.
+    zenoh-python's default indirect callback runs one ``pyo3-closure`` thread
+    per declaration, parked in an unbounded Rust receive.  Direct callbacks
+    avoid that receive and do only a non-blocking hand-off here.  Each
+    subscription is pinned to one lane, preserving its order without making
+    thread count scale with declaration count.
     """
 
     def __init__(self, capacity: int, lanes: int = CALLBACK_LANES) -> None:
@@ -210,10 +212,127 @@ class _CallbackDispatcher:
         for index, lane in enumerate(self._lanes):
             if self._threads[index] is None:
                 continue
+            while True:
+                try:
+                    lane.put_nowait(None)
+                    break
+                except queue.Full:
+                    # Stop owns the queue now (``_stopped`` rejects new
+                    # deliveries).  Drop queued callbacks until the sentinel
+                    # fits so a once-full lane cannot park forever in get().
+                    try:
+                        lane.get_nowait()
+                    except queue.Empty:
+                        continue
+
+
+class _QueryDispatcher:
+    """Runs queryable handlers away from zenoh's receive threads.
+
+    A ``zenoh.Query`` remains valid after its direct callback returns and is
+    finalized by ``Query.drop``.  A fixed worker pool can therefore own the
+    handler and reply lifetime without restoring zenoh-python's one indirect
+    callback thread per declaration.
+    """
+
+    def __init__(self, capacity: int, workers: int = QUERY_WORKERS) -> None:
+        if capacity < 1 or workers < 1:
+            raise ValueError(
+                "query dispatcher capacity and worker count must be positive"
+            )
+        self._capacity = capacity
+        self._queue: queue.Queue[Any] = queue.Queue(maxsize=capacity)
+        self._worker_count = workers
+        self._threads: list[threading.Thread] = []
+        self._dropped: dict[str, int] = {}
+        self._guard = threading.Lock()
+        self._stopped = False
+
+    def wrap(
+        self, key_expr: str, callback: Callable[[Any], None]
+    ) -> Callable[[Any], None]:
+        def deliver(query: Any) -> None:
+            dropped = 0
+            with self._guard:
+                if self._stopped:
+                    accepted = False
+                else:
+                    self._ensure_workers()
+                    try:
+                        self._queue.put_nowait((key_expr, callback, query))
+                        accepted = True
+                    except queue.Full:
+                        dropped = self._dropped.get(key_expr, 0) + 1
+                        self._dropped[key_expr] = dropped
+                        accepted = False
+            if accepted:
+                return
+            query.drop()
+            if not self._stopped and (
+                dropped == 1 or dropped % OVERFLOW_LOG_EVERY == 0
+            ):
+                logger.error(
+                    "zenoh.queryable.overflow key_expr=%s dropped=%d capacity=%d: "
+                    "the query handlers are not keeping up; query was dropped",
+                    key_expr,
+                    dropped,
+                    self._capacity,
+                    extra={"event": "zenoh.queryable.overflow"},
+                )
+
+        return deliver
+
+    def _ensure_workers(self) -> None:
+        if self._threads:
+            return
+        for index in range(self._worker_count):
+            worker = threading.Thread(
+                target=self._drain,
+                name=f"hyprial-zenoh-query-{index}",
+                daemon=True,
+            )
+            self._threads.append(worker)
+            worker.start()
+
+    def _drain(self) -> None:
+        while True:
+            item = self._queue.get()
+            if item is None:
+                return
+            key_expr, callback, query = item
             try:
-                lane.put_nowait(None)
-            except queue.Full:
-                pass  # the lane's thread is a daemon; a stuck callback cannot hold close()
+                callback(query)
+            except Exception:  # noqa: BLE001 - one bad query must not stop the pool
+                logger.exception(
+                    "zenoh queryable callback failed for %s",
+                    key_expr,
+                    extra={"event": "zenoh.queryable.callback_failed"},
+                )
+            finally:
+                query.drop()
+
+    def stop(self) -> None:
+        with self._guard:
+            if self._stopped:
+                return
+            self._stopped = True
+            threads = list(self._threads)
+
+        # No new work can enter.  Drop queued queries so their queriers receive
+        # completion, then leave exactly one stop sentinel for every worker.
+        while True:
+            try:
+                item = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            if item is not None:
+                item[2].drop()
+        for _ in threads:
+            self._queue.put(None)
+        current = threading.current_thread()
+        for thread in threads:
+            if thread is not current:
+                thread.join()
 
 
 def _environment_integer(name: str, default: int) -> int:
@@ -461,6 +580,12 @@ class ZenohTransport:
             _environment_integer(
                 "HYPRIAL_ZENOH_CALLBACK_QUEUE_CAPACITY",
                 DEFAULT_CALLBACK_QUEUE_CAPACITY,
+            )
+        )
+        self._query_dispatcher = _QueryDispatcher(
+            _environment_integer(
+                "HYPRIAL_ZENOH_QUERY_QUEUE_CAPACITY",
+                DEFAULT_QUERY_QUEUE_CAPACITY,
             )
         )
         self._session = zenoh.open(self._config.build())
@@ -768,7 +893,10 @@ class ZenohTransport:
     ) -> _Registration:
         # The hand-off wrapper is built once, so a replayed declaration keeps
         # its lane (and its order) across a session rebuild.
-        deliver = self._dispatcher.wrap(key_expr, callback)
+        deliver = zenoh.handlers.Callback(
+            self._dispatcher.wrap(key_expr, callback),
+            indirect=False,
+        )
         return self._register(
             lambda session: session.declare_subscriber(key_expr, deliver)
         )
@@ -783,8 +911,14 @@ class ZenohTransport:
                     str(query.key_expr), payload, encoding="application/octet-stream"
                 )
 
+        deliver = zenoh.handlers.Callback(
+            self._query_dispatcher.wrap(key_expr, answer),
+            indirect=False,
+        )
         return self._register(
-            lambda session: session.declare_queryable(key_expr, answer, complete=True)
+            lambda session: session.declare_queryable(
+                key_expr, deliver, complete=True
+            )
         )
 
     def declare_query_handler(
@@ -811,8 +945,14 @@ class ZenohTransport:
             except Exception:  # noqa: BLE001 - a bad handler must not kill the queryable
                 logger.exception("orgfs query handler failed for %s", key_expr)
 
+        deliver = zenoh.handlers.Callback(
+            self._query_dispatcher.wrap(key_expr, answer),
+            indirect=False,
+        )
         return self._register(
-            lambda session: session.declare_queryable(key_expr, answer, complete=True)
+            lambda session: session.declare_queryable(
+                key_expr, deliver, complete=True
+            )
         )
 
     def declare_liveliness(self, key: str) -> _Registration:
@@ -829,7 +969,10 @@ class ZenohTransport:
         # hands it to local observers and waits for them, and orgfs's observer
         # publishes: run inline, it waited for the transport lock that the
         # rebuild replaying that very token held (the 2026-09-27 deadlock).
-        deliver = self._dispatcher.wrap(key_expr, callback)
+        deliver = zenoh.handlers.Callback(
+            self._dispatcher.wrap(key_expr, callback),
+            indirect=False,
+        )
         return self._register(
             lambda session: session.liveliness().declare_subscriber(
                 key_expr, deliver, history=history
@@ -843,6 +986,7 @@ class ZenohTransport:
             self._closed = True
             # Mid-rebuild, the rebuilding thread closes whatever it opened.
             session = None if self._rebuilding is not None else self._session
+        self._query_dispatcher.stop()
         if session is not None:
             session.close()
         self._dispatcher.stop()

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tsnet/internal/node"
+	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tsnet/internal/proto"
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
 )
@@ -70,7 +71,7 @@ func TestRunForwardingUsesV2AndRejectsV1BeforeBackend(t *testing.T) {
 func TestAuthKeyUnexpectedDoesNotLeakOrCreateBackend(t *testing.T) {
 	key := "tskey-auth-super-secret-test-value"
 	dir := t.TempDir()
-	input := `{"v":1,"op":"up","controlUrl":"","hostname":"short","dir":"` + dir + `","ephemeral":false,"join":"interactive","authKey":"` + key + `"}` + "\n"
+	input := `{"v":1,"op":"up","controlUrl":"","hostname":"short","dir":"` + jsonText(dir) + `","ephemeral":false,"join":"interactive","authKey":"` + key + `"}` + "\n"
 	starts := 0
 	var output bytes.Buffer
 	if err := Run(context.Background(), strings.NewReader(input), &output, func(node.Config) node.Backend {
@@ -110,7 +111,7 @@ func (*rejectingBackend) Close() error { return nil }
 
 func TestMissingJoinDoesNotCreateBackend(t *testing.T) {
 	dir := t.TempDir()
-	input := `{"v":1,"op":"up","controlUrl":"","hostname":"short","dir":"` + dir + `","ephemeral":false,"authKey":null}` + "\n"
+	input := `{"v":1,"op":"up","controlUrl":"","hostname":"short","dir":"` + jsonText(dir) + `","ephemeral":false,"authKey":null}` + "\n"
 	starts := 0
 	var output bytes.Buffer
 	if err := Run(context.Background(), strings.NewReader(input), &output, func(node.Config) node.Backend {
@@ -185,7 +186,7 @@ func TestRunWritesErrorBeforeSlowCloseAndExitedOnce(t *testing.T) {
 	defer stdoutWriter.Close()
 	dir := t.TempDir()
 	key := "tskey-auth-test"
-	up := `{"v":1,"op":"up","controlUrl":"","hostname":"short","dir":"` + dir + `","ephemeral":false,"join":"preauthkey","authKey":"` + key + `","timeoutSeconds":1}` + "\n"
+	up := `{"v":1,"op":"up","controlUrl":"","hostname":"short","dir":"` + jsonText(dir) + `","ephemeral":false,"join":"preauthkey","authKey":"` + key + `","timeoutSeconds":1}` + "\n"
 
 	lines := make(chan string, 8)
 	go func() {
@@ -258,5 +259,29 @@ func TestRunWritesErrorBeforeSlowCloseAndExitedOnce(t *testing.T) {
 		case <-time.After(500 * time.Millisecond):
 		}
 		break
+	}
+}
+
+// jsonText is s escaped for use inside a JSON string literal. The request
+// lines here are built by concatenation, and a Windows temp dir
+// (C:\Users\…) is not valid JSON unescaped: the sidecar then rightly refuses
+// the line as "invalid protocol-v1 request" (tsnet-windows.yml run 36390125901).
+func jsonText(s string) string {
+	quoted, err := json.Marshal(s)
+	if err != nil {
+		panic(err)
+	}
+	return string(quoted[1 : len(quoted)-1])
+}
+
+func TestRequestLinesStayValidJSONForWindowsPaths(t *testing.T) {
+	dir := `C:\Users\runneradmin\AppData\Local\Temp\TestX\001`
+	line := `{"v":1,"op":"up","controlUrl":"","hostname":"short","dir":"` + jsonText(dir) + `","ephemeral":false,"join":"interactive","authKey":null}`
+	command, err := proto.ParseCommand([]byte(line))
+	if err != nil {
+		t.Fatalf("ParseCommand(%s): %v", line, err)
+	}
+	if command.Up == nil || command.Up.Dir != dir {
+		t.Fatalf("up = %#v, want dir %q", command.Up, dir)
 	}
 }

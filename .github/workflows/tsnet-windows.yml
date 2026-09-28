@@ -14,6 +14,11 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
+      # Check out byte-identical to the repository: autocrlf on windows-latest
+      # rewrites LF to CRLF, which breaks the GUI snapshot hashes checked at
+      # install (gui_bundle.py, "GUI snapshot input changed", run 36390125901).
+      - name: Keep line endings as committed
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
@@ -48,6 +53,11 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
+      # Check out byte-identical to the repository: autocrlf on windows-latest
+      # rewrites LF to CRLF, which breaks the GUI snapshot hashes checked at
+      # install (gui_bundle.py, "GUI snapshot input changed", run 36390125901).
+      - name: Keep line endings as committed
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
@@ -183,6 +193,11 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
+      # Check out byte-identical to the repository: autocrlf on windows-latest
+      # rewrites LF to CRLF, which breaks the GUI snapshot hashes checked at
+      # install (gui_bundle.py, "GUI snapshot input changed", run 36390125901).
+      - name: Keep line endings as committed
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:

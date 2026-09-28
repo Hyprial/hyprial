@@ -240,6 +240,11 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
   后者每次调用都会清掉该 actor 的系统通知。
 - MCP 会话内:harness_whoami/read/reply/ack/send/targets;
   **回入站消息用 harness_reply(回复+消费一步),新话题才用 hyprial send**
+- **发文件/图片到飞书**:`hyprial send --from <URI> --to route:<adapter>:<route> --file <路径> "说明文字"`
+  (图片用 `--image`,可重复多个)。adapter 会上传后发成飞书的文件/图片消息,返回里
+  `resourceDeliveries[].kind` 为 `file`/`image`。限制:只支持 `route:` 目标(不支持 agent、`user:`),
+  不能挂在 replyTo 上;文件 ≤30MB、图片 ≤10MB、不能是空文件、要有扩展名。
+  ⚠️ MCP 的 harness_send / harness_reply 只能发文字,**不能**据此认为飞书只能收文字;要发文件就用上面的 CLI。
 - **每条收到的消息都带 `from` 与 `to`**(harness_read 行、headless worker 收到的正文首行
   `[Harness Network message from <from> to <to> …]`、pi 附着注入都一样)。飞书进来的消息 `from`
   是 adapter(`adapter:lark:<名>`,回复走它),**真正说话的人在 `origin.sender`**:

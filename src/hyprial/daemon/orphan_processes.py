@@ -154,7 +154,18 @@ class OrphanProcessRegistry:
 
     def _collect_once(self) -> int:
         with self._lock:
-            orphan_ids = tuple(self._entries)
+            # Current-daemon entries are live-process custody records, not
+            # orphans.  Their owning harness actor observes exit and calls
+            # ``observe_stop`` before cleanup; a daemon restart clears the old
+            # owner in ``__init__``.  Scanning them here made the one-second
+            # reconcile tick re-run every process liveness/identity probe even
+            # when there was nothing to reap (hundreds of ``ps`` calls on
+            # macOS).  Only ownerless entries need orphan collection.
+            orphan_ids = tuple(
+                orphan_id
+                for orphan_id, entry in self._entries.items()
+                if entry.owner_id != self._owner_id
+            )
         retired = 0
         for orphan_id in orphan_ids:
             with self._lock:

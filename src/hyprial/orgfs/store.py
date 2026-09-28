@@ -545,10 +545,11 @@ class LocalSpaceStore:
         return self._docs[doc_id]
 
     def active_tree_doc_id(self) -> str | None:
-        meta = self._docs.get("meta")
-        if meta is None:
-            return None
-        docs = _doc_roots(meta).get("docs")
+        with self._lock:
+            meta = self._docs.get("meta")
+            if meta is None:
+                return None
+            docs = _doc_roots(meta).get("docs")
         tree = docs.get("tree") if isinstance(docs, dict) else None
         active = tree.get("active") if isinstance(tree, dict) else None
         if isinstance(active, str) and active.startswith("tree-"):
@@ -559,10 +560,11 @@ class LocalSpaceStore:
         return None
 
     def retired(self, doc_id: str) -> RetirementRecord | None:
-        meta = self._docs.get("meta")
-        if meta is None:
-            return None
-        records = _doc_roots(meta).get("retirements")
+        with self._lock:
+            meta = self._docs.get("meta")
+            if meta is None:
+                return None
+            records = _doc_roots(meta).get("retirements")
         raw = records.get(doc_id) if isinstance(records, dict) else None
         if not isinstance(raw, dict):
             return None
@@ -599,12 +601,17 @@ class LocalSpaceStore:
                 )
 
     def purge_listed(self, sha: str) -> bool:
-        values = _doc_roots(self._docs["meta"]).get("purgeList")
+        # Blob reads call this from transport threads.  pycrdt hands a caller
+        # the doc's open transaction, which is bound to the thread that opened
+        # it, so every read of a store doc must hold the lock writers hold.
+        with self._lock:
+            values = _doc_roots(self._docs["meta"]).get("purgeList")
         raw = values.get(sha) if isinstance(values, dict) else None
         return isinstance(raw, dict) and raw.get("unbannedAt") is None
 
     def snapshot_point(self, doc_id: str) -> bytes | None:
-        values = _doc_roots(self._docs["meta"]).get("snapshotPoints")
+        with self._lock:
+            values = _doc_roots(self._docs["meta"]).get("snapshotPoints")
         raw = values.get(doc_id) if isinstance(values, dict) else None
         frontier = raw.get("frontier") if isinstance(raw, dict) else None
         return _unb64(frontier) if isinstance(frontier, str) else None
