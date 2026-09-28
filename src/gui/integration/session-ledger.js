@@ -48,25 +48,30 @@ export async function readSessionLedger(file) {
   }
 }
 
-async function atomicWrite(file, text) {
+async function atomicWrite(file, text, platform = process.platform) {
   const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
   try {
     const handle = await open(temporary, 'wx', 0o600);
     try { await handle.writeFile(text, 'utf8'); await handle.sync(); }
     finally { await handle.close(); }
     await rename(temporary, file);
-    const directory = await open(path.dirname(file), 'r');
-    try { await directory.sync(); } finally { await directory.close(); }
+    // Node cannot fsync a directory handle on Windows (EPERM). The file itself
+    // was flushed before the atomic rename, so process-crash recovery still
+    // holds; power-loss durability on Windows needs separate validation.
+    if (platform !== 'win32') {
+      const directory = await open(path.dirname(file), 'r');
+      try { await directory.sync(); } finally { await directory.close(); }
+    }
   } finally { await unlink(temporary).catch(error => { if (error.code !== 'ENOENT') throw error; }); }
 }
 
 // Callers hold the bridge ledger lock. Only committed primary state is backed
 // up: a failed primary write never advances the backup. A failure after commit
 // can leave the backup one revision behind; it must not be replayed implicitly.
-export async function writeSessionLedger(file, document) {
+export async function writeSessionLedger(file, document, platform = process.platform) {
   const text = JSON.stringify(validateLedger(document)) + '\n';
-  await atomicWrite(file, text);
-  await atomicWrite(`${file}.backup`, text);
+  await atomicWrite(file, text, platform);
+  await atomicWrite(`${file}.backup`, text, platform);
 }
 
 export function mergeLegacyLedger(current, legacy) {

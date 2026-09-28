@@ -4,11 +4,9 @@ from __future__ import annotations
 
 import errno
 import os
-import pty
 import re
 import signal
 import subprocess
-import termios
 import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -197,6 +195,15 @@ class PtyHarnessProcess:
     ) -> PtyHarnessProcess:
         if not argv:
             raise HarnessStartError(harness, argv, "harness command is empty")
+        if os.name == "nt":
+            raise HarnessStartError(
+                harness,
+                argv,
+                "Unix PTY backend is unavailable on Windows; ConPTY integration is required",
+            )
+        import pty
+        import termios
+
         master_fd, slave_fd = pty.openpty()
         try:
             attributes = termios.tcgetattr(slave_fd)

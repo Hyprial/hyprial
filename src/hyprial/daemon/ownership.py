@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import fcntl
 import os
 import time
 from pathlib import Path
 from typing import IO
+
+from hyprial.platform.file_lock import lock_exclusive
 
 
 class DaemonOwnershipBusy(RuntimeError):
@@ -36,7 +37,7 @@ class DaemonStateOwnershipFence:
         deadline = time.monotonic() + max(0.0, timeout)
         while True:
             try:
-                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                lock_exclusive(stream.fileno(), blocking=False)
                 return cls(path, stream)
             except BlockingIOError as error:
                 if time.monotonic() >= deadline:

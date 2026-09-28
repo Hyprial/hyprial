@@ -4,7 +4,7 @@
   "files": [
     {
       "package": "@deepseek-ai/dsh-client-ui-conversation",
-      "version": "0.1.5-rc.2",
+      "version": "0.1.5-rc.3",
       "file": "lib/client.js",
       "beforeSha256": "81314dfd95864f2522f8edb812e3f8e08b04a8ef2141913e6e8cbdaae1ffc37f",
       "afterSha256": "aa80af66a873fc33dc7b8dda0d53610eb2627afccc13150a8fb4065cbb681381",

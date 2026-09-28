@@ -22,7 +22,8 @@ extracting its bytes, and computing sha256 locally; the release's
 - **Download transport: anonymous HTTPS from the public GitHub release.**
   ``GET <SIDECAR_RELEASE_BASE_URL>/tsnet-v<version>/<asset>`` — one file,
   no clone, **no credentials** — from ``Hyprial/hyprial-tsnet-bin``
-  (release ``tsnet-v<version>``, asset names ``hyprial-tsnet-<platform>``).
+  (release ``tsnet-v<version>``, asset names ``hyprial-tsnet-<platform>``;
+  Windows assets carry the native ``.exe`` suffix).
   The local installed filename is ``hyprial-tsnet`` as well (they are
   separate constants that happen to share a value; ⛔ do not collapse
   them).  The trust root is **still the pinned sha256**; the release's
@@ -108,6 +109,7 @@ __all__ = [
     "fetch_sidecar_asset",
     "install_sidecar",
     "sha256_file",
+    "sidecar_asset_name",
     "sidecar_asset_url",
     "sidecar_release_base_url",
     "sidecar_tag",
@@ -128,6 +130,7 @@ SIDECAR_SHA256: dict[str, str] = {
     "darwin-arm64": "fdbcd151ff68254562ccaae470e59c3441a49c4b41cd0534a5b7c729e41cb9a2",
     "linux-amd64": "10abb550c59ce439a83ddbed579311ae5b074ec66c4cd985497f2aa8d1569bc4",
     "linux-arm64": "1b499cb0d2d66b1cff27a70c42cd44a08369ef18ab37b09b9a8475672ce1afd9",
+    "windows-amd64": "c388684ad0c310638718892093119e46407e76e6ae34d8a39759bc501de31aa7",
 }
 """Per-platform sha256 measured from assets fetched on 2026-09-10 with
 acquisition's then-current ``git archive --remote`` transport and computed
@@ -136,7 +139,22 @@ reconciliation.  hyprial never recomputes these at runtime.
 
 ⭐ The 2026-09-17 move to HTTPS release assets changed **how the bytes
 travel**, ⛔ not what they must hash to: these values are unchanged and
-remain the sole trust root."""
+remain the sole trust root.
+
+``windows-amd64`` (added 2026-09-25, Allen: keep 0.1.4, add Windows) was built
+from the tsnet-v0.1.4 tag's own source -- a real clone at 4e6cef63 with
+go1.26.8, CGO_ENABLED=0, -trimpath and the tag's version ldflags -- after that
+same recipe reproduced all four pins above byte-for-byte.  It was then
+published to the existing tsnet-v0.1.4 release and this value re-measured
+from the public download."""
+
+_SUPPORTED_PLATFORM_KEYS = frozenset((*SIDECAR_SHA256, "windows-amd64"))
+"""Platforms the client knows how to name and launch.
+
+Kept separate from :data:`SIDECAR_SHA256` so platform support and trust stay
+two facts: a supported platform without a pin still fails closed in
+:func:`expected_sha256`.  Since 2026-09-25 every supported platform is pinned.
+"""
 
 SIDECAR_RELEASE_BASE_URL = (
     "https://github.com/Hyprial/hyprial-tsnet-bin/releases/download"
@@ -225,13 +243,16 @@ class SidecarError(RuntimeError):
 
 
 def sidecar_binary_path(hyprial_home: Path) -> Path:
-    """``$HYPRIAL_HOME/bin/hyprial-tsnet`` — where install lands and login starts."""
+    """The platform-native path where install lands and login starts."""
 
-    return Path(hyprial_home) / SIDECAR_BIN_DIRNAME / SIDECAR_BIN_FILENAME
+    filename = SIDECAR_BIN_FILENAME
+    if platform.system().lower() == "windows":
+        filename += ".exe"
+    return Path(hyprial_home) / SIDECAR_BIN_DIRNAME / filename
 
 
 def current_platform() -> str:
-    """The asset platform key for this machine (one of SIDECAR_SHA256's)."""
+    """The supported asset platform key for this machine."""
 
     system = platform.system().lower()
     machine = platform.machine().lower()
@@ -245,13 +266,16 @@ def current_platform() -> str:
             f"no hyprial-tsnet asset for machine architecture {machine!r}",
         )
     key = f"{system}-{architecture}"
-    if key not in SIDECAR_SHA256 and not (
-        os.environ.get("HYPRIAL_BUNDLED_TSNET_BINARY") and key in BUNDLED_SIDECAR_SHA256
-    ):
+    # Platform support and public-release trust are separate facts.  Windows
+    # amd64 is buildable and supported by the client before its first public
+    # asset exists, but acquisition must still stop at expected_sha256() until
+    # that real asset has been published and pinned.  Deriving support from
+    # SIDECAR_SHA256 would make that safe, intentional staging impossible.
+    if key not in _SUPPORTED_PLATFORM_KEYS:
         raise SidecarError(
             "SIDECAR_PLATFORM_UNSUPPORTED",
             f"no hyprial-tsnet asset for platform {key!r}; "
-            f"available: {sorted(SIDECAR_SHA256)}",
+            f"available: {sorted(_SUPPORTED_PLATFORM_KEYS)}",
         )
     return key
 
@@ -267,15 +291,16 @@ def expected_bundled_sha256(platform_key: str) -> str:
 
 
 def expected_sha256(platform_key: str) -> str:
-    """The pinned sha256 for a platform key (loud on an unknown one)."""
+    """The public-release pin for a supported platform (loud when absent)."""
 
     try:
         return SIDECAR_SHA256[platform_key]
     except KeyError:
         raise SidecarError(
-            "SIDECAR_PLATFORM_UNSUPPORTED",
-            f"unknown sidecar platform {platform_key!r}; "
-            f"available: {sorted(SIDECAR_SHA256)}",
+            "SIDECAR_PIN_MISSING",
+            f"no public-release sha256 pin for sidecar platform {platform_key!r}; "
+            "installation is disabled until a real published asset is pinned",
+            {"platform": platform_key},
         ) from None
 
 
@@ -310,6 +335,14 @@ def sidecar_release_base_url(
     return (value or SIDECAR_RELEASE_BASE_URL).rstrip("/")
 
 
+def sidecar_asset_name(platform_key: str | None = None) -> str:
+    """Return the release asset name, including Windows' executable suffix."""
+
+    key = platform_key or current_platform()
+    suffix = ".exe" if key.startswith("windows-") else ""
+    return f"{SIDECAR_ASSET_BASENAME}-{key}{suffix}"
+
+
 def sidecar_asset_url(
     version: str | None = None,
     asset: str | None = None,
@@ -318,7 +351,7 @@ def sidecar_asset_url(
 ) -> str:
     """The full download URL for one platform asset."""
 
-    name = asset or f"{SIDECAR_ASSET_BASENAME}-{current_platform()}"
+    name = asset or sidecar_asset_name()
     base = sidecar_release_base_url(environ)
     return f"{base}/{sidecar_tag(version)}/{name}"
 
@@ -363,7 +396,14 @@ def verify_installed_sidecar(hyprial_home: Path) -> tuple[Path | None, str | Non
         return None, error.code
     if not path.is_file():
         return None, "SIDECAR_MISSING"
-    expected = expected_bundled_sha256(platform_key) if bundled is not None else expected_sha256(platform_key)
+    try:
+        expected = (
+            expected_bundled_sha256(platform_key)
+            if bundled is not None
+            else expected_sha256(platform_key)
+        )
+    except SidecarError as error:
+        return None, error.code
     if sha256_file(path) != expected:
         return None, "SIDECAR_MISMATCH"
     return path, None
@@ -395,7 +435,7 @@ def install_sidecar(
 
     env = os.environ if environ is None else environ
     platform_key = current_platform()
-    asset = f"{SIDECAR_ASSET_BASENAME}-{platform_key}"
+    asset = sidecar_asset_name(platform_key)
     expected = expected_sha256(platform_key)
     destination = sidecar_binary_path(hyprial_home)
     source = sidecar_asset_url(SIDECAR_VERSION, asset, environ=env)
@@ -406,7 +446,7 @@ def install_sidecar(
             "ok": True,
             "installed": True,
             "alreadyCurrent": True,
-            "name": SIDECAR_BIN_FILENAME,
+            "name": destination.name,
             "version": SIDECAR_VERSION,
             "destination": str(destination),
         }
@@ -416,7 +456,7 @@ def install_sidecar(
     _reject_retired_override(env)
     plan: Plan = {
         "ok": True,
-        "name": SIDECAR_BIN_FILENAME,
+        "name": destination.name,
         "version": SIDECAR_VERSION,
         "platform": platform_key,
         "source": source,
@@ -429,7 +469,7 @@ def install_sidecar(
             "ok": True,
             "installed": False,
             "declined": True,
-            "name": SIDECAR_BIN_FILENAME,
+            "name": destination.name,
             "version": SIDECAR_VERSION,
             "destination": str(destination),
         }
@@ -470,7 +510,7 @@ def install_sidecar(
         "ok": True,
         "installed": True,
         "alreadyCurrent": False,
-        "name": SIDECAR_BIN_FILENAME,
+        "name": destination.name,
         "version": SIDECAR_VERSION,
         "platform": platform_key,
         "source": source,

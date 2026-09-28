@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Annotated, Any
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.context import Context
+from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import Field
 
 from hyprial import __version__
+from hyprial.contracts import ipc_errors
 from hyprial.contracts.session import session_fetch_params
 
+from .api import DaemonRequestRejected
 from .proxy import StatelessDaemonProxy
 
 if TYPE_CHECKING:
@@ -54,13 +58,25 @@ def create_mcp_server(
     async def invoke(
         ctx: Context, method: str, params: dict[str, Any], *, mutation: bool
     ) -> dict[str, Any]:
-        return await proxy.call(
-            actor=actor,
-            session_ref=session_ref,
-            method=method,
-            params=params,
-            mutation=mutation,
-        )
+        try:
+            return await proxy.call(
+                actor=actor,
+                session_ref=session_ref,
+                method=method,
+                params=params,
+                mutation=mutation,
+            )
+        except DaemonRequestRejected as exc:
+            if exc.code != ipc_errors.ORGFS_CONTENT_PENDING:
+                raise
+            raise ToolError(
+                json.dumps(
+                    {"code": exc.code, "data": exc.data},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            ) from exc
 
     @server.tool(
         description=(
@@ -174,30 +190,49 @@ def create_mcp_server(
     async def orgfs_create(name: NonEmpty, ctx: Context) -> dict[str, Any]:
         return await invoke(ctx, "orgfs.create", {"name": name}, mutation=True)
 
-    @server.tool(description="Resolve an orgfs path, including ambiguous same-name nodes.")
+    @server.tool(description="Resolve an orgfs path, including ambiguous same-name nodes; path may be id:<nodeId> or a full orgfs:<owner>:<spaceId>:<nodeId> URI (must match spaceId).")
     async def orgfs_resolve(spaceId: NonEmpty, path: str, ctx: Context) -> dict[str, Any]:
         return await invoke(ctx, "orgfs.resolve", {"spaceId": spaceId, "path": path}, mutation=False)
 
-    @server.tool(description="List an orgfs directory; path may be id:<nodeId>.")
+    @server.tool(description="List an orgfs directory; path may be id:<nodeId> or a full orgfs:<owner>:<spaceId>:<nodeId> URI (must match spaceId).")
     async def orgfs_ls(spaceId: NonEmpty, path: str, ctx: Context) -> dict[str, Any]:
         return await invoke(ctx, "orgfs.ls", {"spaceId": spaceId, "path": path}, mutation=False)
 
-    @server.tool(description="Stat an orgfs node; node may be id:<nodeId>.")
+    @server.tool(description="Stat an orgfs node; node may be id:<nodeId> or a full orgfs:<owner>:<spaceId>:<nodeId> URI (must match spaceId).")
     async def orgfs_stat(spaceId: NonEmpty, node: NonEmpty, ctx: Context) -> dict[str, Any]:
         return await invoke(ctx, "orgfs.stat", {"spaceId": spaceId, "node": node}, mutation=False)
 
-    @server.tool(description="Read an orgfs text or small binary node.")
-    async def orgfs_read(spaceId: NonEmpty, node: NonEmpty, ctx: Context) -> dict[str, Any]:
-        return await invoke(ctx, "orgfs.read", {"spaceId": spaceId, "node": node}, mutation=False)
+    @server.tool(description="Read an orgfs text or small binary node; node may be id:<nodeId> or a full orgfs:<owner>:<spaceId>:<nodeId> URI (must match spaceId).")
+    async def orgfs_read(
+        spaceId: NonEmpty,
+        node: NonEmpty,
+        ctx: Context,
+        waitSeconds: float = 10.0,
+    ) -> dict[str, Any]:
+        return await invoke(
+            ctx,
+            "orgfs.read",
+            {"spaceId": spaceId, "node": node, "waitSeconds": waitSeconds},
+            mutation=False,
+        )
 
     @server.tool(description="Export an orgfs node to a local daemon path.")
     async def orgfs_export(
-        spaceId: NonEmpty, node: NonEmpty, destination: NonEmpty, ctx: Context
+        spaceId: NonEmpty,
+        node: NonEmpty,
+        destination: NonEmpty,
+        ctx: Context,
+        waitSeconds: float = 10.0,
     ) -> dict[str, Any]:
         return await invoke(
             ctx,
             "orgfs.export",
-            {"spaceId": spaceId, "node": node, "destination": destination},
+            {
+                "spaceId": spaceId,
+                "node": node,
+                "destination": destination,
+                "waitSeconds": waitSeconds,
+            },
             mutation=True,
         )
 
@@ -212,7 +247,7 @@ def create_mcp_server(
             mutation=True,
         )
 
-    @server.tool(description="Write orgfs text with optional merge and strict versions.")
+    @server.tool(description="Write orgfs text with optional merge and strict versions; node may be id:<nodeId> or a full orgfs:<owner>:<spaceId>:<nodeId> URI (must match spaceId).")
     async def orgfs_write(
         spaceId: NonEmpty,
         node: NonEmpty,
@@ -232,7 +267,7 @@ def create_mcp_server(
     async def orgfs_mkdir(spaceId: NonEmpty, path: NonEmpty, ctx: Context) -> dict[str, Any]:
         return await invoke(ctx, "orgfs.mkdir", {"spaceId": spaceId, "path": path}, mutation=True)
 
-    @server.tool(description="Move or rename one orgfs node.")
+    @server.tool(description="Move or rename one orgfs node; sourcePath/destinationPath may be id:<nodeId> or a full orgfs:<owner>:<spaceId>:<nodeId> URI (must match spaceId).")
     async def orgfs_move(
         spaceId: NonEmpty, sourcePath: NonEmpty, destinationPath: NonEmpty, ctx: Context
     ) -> dict[str, Any]:
@@ -243,11 +278,11 @@ def create_mcp_server(
             mutation=True,
         )
 
-    @server.tool(description="Soft-delete an orgfs node.")
+    @server.tool(description="Soft-delete an orgfs node; node may be id:<nodeId> or a full orgfs:<owner>:<spaceId>:<nodeId> URI (must match spaceId).")
     async def orgfs_remove(spaceId: NonEmpty, node: NonEmpty, ctx: Context) -> dict[str, Any]:
         return await invoke(ctx, "orgfs.remove", {"spaceId": spaceId, "node": node}, mutation=True)
 
-    @server.tool(description="Read attributed orgfs history.")
+    @server.tool(description="Read attributed orgfs history; node may be id:<nodeId> or a full orgfs:<owner>:<spaceId>:<nodeId> URI (must match spaceId).")
     async def orgfs_history(
         spaceId: NonEmpty,
         node: NonEmpty,
@@ -260,7 +295,7 @@ def create_mcp_server(
             params["before"] = before
         return await invoke(ctx, "orgfs.history", params, mutation=False)
 
-    @server.tool(description="Read bytes at one orgfs version.")
+    @server.tool(description="Read bytes at one orgfs version; node may be id:<nodeId> or a full orgfs:<owner>:<spaceId>:<nodeId> URI (must match spaceId).")
     async def orgfs_read_at(
         spaceId: NonEmpty, node: NonEmpty, version: NonEmpty, ctx: Context
     ) -> dict[str, Any]:
@@ -268,7 +303,7 @@ def create_mcp_server(
             ctx, "orgfs.read_at", {"spaceId": spaceId, "node": node, "version": version}, mutation=False
         )
 
-    @server.tool(description="Stat one orgfs node at a historical version.")
+    @server.tool(description="Stat one orgfs node at a historical version; node may be id:<nodeId> or a full orgfs:<owner>:<spaceId>:<nodeId> URI (must match spaceId).")
     async def orgfs_stat_at(
         spaceId: NonEmpty, node: NonEmpty, version: NonEmpty, ctx: Context
     ) -> dict[str, Any]:
@@ -280,7 +315,7 @@ def create_mcp_server(
     async def orgfs_trash(spaceId: NonEmpty, ctx: Context, limit: int = 100) -> dict[str, Any]:
         return await invoke(ctx, "orgfs.trash", {"spaceId": spaceId, "limit": limit}, mutation=False)
 
-    @server.tool(description="Restore an orgfs node as a new attributed operation.")
+    @server.tool(description="Restore an orgfs node as a new attributed operation; node may be id:<nodeId> or a full orgfs:<owner>:<spaceId>:<nodeId> URI (must match spaceId).")
     async def orgfs_restore(
         spaceId: NonEmpty,
         node: NonEmpty,

@@ -1,6 +1,7 @@
+import { installedPackage } from '../scripts/dsh-runtime.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 
@@ -8,14 +9,14 @@ import { createHash } from 'node:crypto';
 // prompt boundary replaced. No model request or business session is created.
 export async function verifyDshGuiFocusCompatibility(runtime) {
   const root = resolve(runtime);
-  const source = readFileSync(join(root, 'node_modules/@deepseek-ai/dsh-client-ui-conversation/lib/client.js'), 'utf8');
+  const source = readFileSync(installedPackage(root, '@deepseek-ai/dsh-client-ui-conversation', 'lib/client.js'), 'utf8');
   const manifest = JSON.parse(readFileSync(new URL('../packages/dsh-gui-focus-compat/patch.json', import.meta.url), 'utf8'));
   assert.equal(createHash('sha256').update(source).digest('hex'), manifest.files[0].afterSha256);
   const start = source.indexOf('async sendSession(session, text, attachmentIds, mode, signal) {');
   const end = source.indexOf('\n\t\t\t/**', start);
   assert.ok(start > 0 && end > start);
   const sendSession = new Function('nextPaint', 'return ({' + source.slice(start, end) + '}).sendSession;')(() => Promise.resolve());
-  const { Context } = await import(pathToFileURL(join(root, 'node_modules/@deepseek-ai/cordis/lib/index.js')).href);
+  const { Context } = await import(pathToFileURL(installedPackage(root, '@deepseek-ai/cordis', 'lib/index.js')).href);
   function fixture(sessionId = 'design') {
     const calls = [], echoes = [], ctx = new Context();
     const image = { id: 'image', kind: 'image', file: { name: 'reference.png' }, previewUrl: 'blob:reference' };

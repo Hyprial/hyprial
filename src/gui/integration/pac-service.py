@@ -131,10 +131,15 @@ class Service:
         for key, limit in [('taskKey', 200), ('title', 200), ('brief', 64000)]:
             if not isinstance(args.get(key), str) or not args[key].strip() or len(args[key]) > limit:
                 fail('PAC_INVALID_TASK', f'invalid {key}')
+        review = args.get('review', True)
+        if not isinstance(review, bool):
+            fail('PAC_INVALID_TASK', 'review must be a boolean')
+        if review and 'verifier' not in self.config['roles']:
+            fail('PAC_VERIFIER_NOT_CONFIGURED', 'review tasks require a configured verifier session')
         source = request.get('source', 'local')
         key = 'dsh-pac:' + digest([request['actor'], source, args['taskKey']])
         path = self.root / ('task-' + digest(key) + '.json')
-        spec = {'taskKey': args['taskKey'], 'title': args['title'], 'brief': args['brief'],
+        spec = {'taskKey': args['taskKey'], 'title': args['title'], 'brief': args['brief'], 'review': review,
                 'roles': self.config['roles'], 'source': source, 'operationKey': key}
         if path.exists():
             doc = json.loads(path.read_text())
@@ -150,8 +155,10 @@ class Service:
         if self.store.graph(gid)['closed_at'] is not None:
             return {'ok': True, 'graphId': gid, 'existing': True}
         owners = {k: v['actor'] for k, v in doc['roles'].items()}
-        nodes = [('dispatch', 'coordinator', 'task'), ('implement', 'worker', 'task'),
-                 ('review', 'verifier', 'task'), ('rework', 'verifier', 'task'), ('finish', 'coordinator', 'end')]
+        nodes = [('dispatch', 'coordinator', 'task'), ('implement', 'worker', 'task')]
+        if review:
+            nodes += [('review', 'verifier', 'task'), ('rework', 'verifier', 'task')]
+        nodes.append(('finish', 'coordinator', 'end'))
         for node, role, kind in nodes:
             existing = self.store.node(gid, node)
             if not existing:
@@ -159,8 +166,12 @@ class Service:
                          brief_ref=str(path) + '#' + node, expect_version=self.store.graph(gid)['version'])
             elif existing.owner != owners[role] or existing.kind != kind:
                 fail('PAC_GRAPH_CONFLICT', 'managed graph structure has changed')
-        for a, b, kind in [('dispatch', 'implement', 'forward'), ('implement', 'review', 'forward'),
-                           ('rework', 'implement', 'back'), ('review', 'finish', 'forward')]:
+        edges = [('dispatch', 'implement', 'forward')]
+        if review:
+            edges += [('implement', 'review', 'forward'), ('rework', 'implement', 'back'), ('review', 'finish', 'forward')]
+        else:
+            edges.append(('implement', 'finish', 'forward'))
+        for a, b, kind in edges:
             if not any(e.from_node == a and e.to_node == b and e.kind == kind for e in self.store.edges(gid)):
                 add_edge(self.store, graph_id=gid, from_node=a, to_node=b, kind=kind, expect_version=self.store.graph(gid)['version'])
         if not self.store.graph(gid)['activated_at']:
@@ -181,6 +192,8 @@ class Service:
         args, gid = request['args'], doc['graphId']
         action = request['tool']
         node = 'review' if action == 'rework' else args['nodeId']
+        if action == 'rework' and not doc.get('review', True):
+            fail('PAC_NO_REVIEW', 'task has no review node; worker self-verifies')
         role = {'implement': 'worker', 'review': 'verifier', 'finish': 'coordinator'}.get(node)
         if not role:
             fail('PAC_INVALID_NODE', 'only implement/review/finish are work nodes')
@@ -236,8 +249,12 @@ class Service:
                 identity = doc['roles'][role]
                 message_id = 'dsh-pac-' + digest([gid, node, sorted(r['eventId'] for r in assignment['requests'])])
                 wake = doc.get('wakes', {}).get(message_id, {})
-                prompt = ('【PAC 任务通知；不是聊天派单】\n' + json.dumps({'graphId': gid, 'nodeId': node, 'title': doc['title']}, ensure_ascii=False)
-                          + '\n先调用 h2b_pac_context 核对当前请求。implement 开始前调用 h2b_pac_begin（返工会撤回旧事实），然后实施和验证；review 独立审核，通过用 h2b_pac_complete，拒绝用 h2b_pac_rework；finish 由协调者验收后 complete。'
+                if doc.get('review', True):
+                    steps = 'implement 开始前调用 h2b_pac_begin（返工会撤回旧事实），然后实施和验证；review 独立审核，通过用 h2b_pac_complete，拒绝用 h2b_pac_rework；finish 由协调者验收后 complete。'
+                else:
+                    steps = '本任务无独立审核：implement 由 worker 自行实施并验证（按任务授权可自提/自合 PR），完成后用 h2b_pac_complete 提交证据；finish 由协调者验收后 complete。'
+                prompt = ('【PAC 任务通知；不是聊天派单】\n' + json.dumps({'graphId': gid, 'nodeId': node, 'title': doc['title'], 'review': doc.get('review', True)}, ensure_ascii=False)
+                          + '\n先调用 h2b_pac_context 核对当前请求。' + steps
                           + '\n完成必须提供实际证据引用和本轮开始工作时取得的 expectedToken。若过期则重新核对任务，不得把旧结果套用新 token。遇到阻塞在本会话明确说明，不虚报完成。不要用 h2b_session_reply/send 发送收到、待命或派工回声。')
                 jobs.append({**identity, 'graphId': gid, 'nodeId': node, 'messageId': message_id,
                              'reserved': bool(wake), 'received': wake.get('state') == 'received', 'expectedToken': self.token(gid, state), 'prompt': prompt})

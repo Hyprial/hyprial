@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { resolve } from 'node:path';
+import { installedPackage } from './dsh-runtime.mjs';
 import { pathToFileURL } from 'node:url';
 import { Script, createContext } from 'node:vm';
 
@@ -166,7 +167,7 @@ export async function verifyDshHistoryOccurrences(runtime) {
   const snippets = await Promise.all([
     ['dsh-client-ui-conversation', conversationRegions], ['dsh-client-ui-chat', chatRegions],
   ].map(async ([pkg, regions]) => {
-    const filename = join(resolve(runtime), 'node_modules', '@deepseek-ai', pkg, 'lib/client.js');
+    const filename = installedPackage(runtime, `@deepseek-ai/${pkg}`, 'lib/client.js');
     const source = await readFile(filename, 'utf8');
     assert.ok(Buffer.byteLength(source) <= MAX_BUNDLE_BYTES, `${filename}: oversized UI bundle`);
     return regions.map(name => extractRegion(source, name, filename)).join('\n');

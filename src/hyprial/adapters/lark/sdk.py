@@ -2,33 +2,12 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import NAMESPACE_URL, uuid5
-
-import lark_oapi as lark
-from lark_oapi.api.im.v1 import (
-    CreateFileRequest,
-    CreateFileRequestBody,
-    CreateImageRequest,
-    CreateImageRequestBody,
-    CreateMessageReactionRequest,
-    CreateMessageReactionRequestBody,
-    CreateMessageRequest,
-    CreateMessageRequestBody,
-    DeleteMessageReactionRequest,
-    Emoji,
-    GetChatMembersRequest,
-    GetMessageRequest,
-    GetMessageResourceRequest,
-    ListChatRequest,
-    ListMessageReactionRequest,
-    ListMessageRequest,
-    ReplyMessageRequest,
-    ReplyMessageRequestBody,
-)
 
 from .api import (
     LarkBotInfo,
@@ -48,6 +27,58 @@ from .scopes import parse_permission_violation, runtime_permission_url
 
 if TYPE_CHECKING:
     from hyprial.log import Logger
+
+
+class _Deferred:
+    """A ``lark_oapi`` name that is imported when it is first used.
+
+    ``import lark_oapi`` runs the package initialiser, and that imports the
+    whole generated API surface: 10,416 modules, measured on 2026-09-24 as
+    15.7s of a 17.7s ``import hyprial.daemon.application`` on the packaged
+    Windows runtime.  The daemon imported it to reach this module, so every
+    launch paid it -- including a client that never signs in to Lark.
+
+    These names instead resolve on first attribute access.  A launch that never
+    builds a Lark request never pays for the SDK, and one that does pays at its
+    first request instead of before the window can appear.
+    """
+
+    __slots__ = ("_module", "_symbol", "_value")
+
+    def __init__(self, module: str, symbol: str | None = None) -> None:
+        self._module = module
+        self._symbol = symbol
+        self._value: Any = None
+
+    def _resolve(self) -> Any:
+        if self._value is None:
+            imported = importlib.import_module(self._module)
+            self._value = imported if self._symbol is None else getattr(imported, self._symbol)
+        return self._value
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._resolve(), name)
+
+
+lark = _Deferred("lark_oapi")
+CreateFileRequest = _Deferred("lark_oapi.api.im.v1", "CreateFileRequest")
+CreateFileRequestBody = _Deferred("lark_oapi.api.im.v1", "CreateFileRequestBody")
+CreateImageRequest = _Deferred("lark_oapi.api.im.v1", "CreateImageRequest")
+CreateImageRequestBody = _Deferred("lark_oapi.api.im.v1", "CreateImageRequestBody")
+CreateMessageReactionRequest = _Deferred("lark_oapi.api.im.v1", "CreateMessageReactionRequest")
+CreateMessageReactionRequestBody = _Deferred("lark_oapi.api.im.v1", "CreateMessageReactionRequestBody")
+CreateMessageRequest = _Deferred("lark_oapi.api.im.v1", "CreateMessageRequest")
+CreateMessageRequestBody = _Deferred("lark_oapi.api.im.v1", "CreateMessageRequestBody")
+DeleteMessageReactionRequest = _Deferred("lark_oapi.api.im.v1", "DeleteMessageReactionRequest")
+Emoji = _Deferred("lark_oapi.api.im.v1", "Emoji")
+GetChatMembersRequest = _Deferred("lark_oapi.api.im.v1", "GetChatMembersRequest")
+GetMessageRequest = _Deferred("lark_oapi.api.im.v1", "GetMessageRequest")
+GetMessageResourceRequest = _Deferred("lark_oapi.api.im.v1", "GetMessageResourceRequest")
+ListChatRequest = _Deferred("lark_oapi.api.im.v1", "ListChatRequest")
+ListMessageReactionRequest = _Deferred("lark_oapi.api.im.v1", "ListMessageReactionRequest")
+ListMessageRequest = _Deferred("lark_oapi.api.im.v1", "ListMessageRequest")
+ReplyMessageRequest = _Deferred("lark_oapi.api.im.v1", "ReplyMessageRequest")
+ReplyMessageRequestBody = _Deferred("lark_oapi.api.im.v1", "ReplyMessageRequestBody")
 
 
 class LarkSdkError(RuntimeError):

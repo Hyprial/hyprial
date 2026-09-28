@@ -11,6 +11,7 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, stat, unlink } from "node:fs/promises";
+import { daemonEndpoint } from "./integration/daemon-endpoint.mjs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -148,7 +149,7 @@ function allowlist(env = process.env) {
 
 function daemonRequest(method, params = {}, { mutation = false, env = process.env } = {}) {
   return new Promise((resolve, reject) => {
-    const socket = net.createConnection(daemonSocketPath(env));
+    const socket = net.createConnection(daemonEndpoint(daemonSocketPath(env)));
     // Every daemon request gets an envelope id. Mutations additionally rely on
     // it as their idempotency key, while reads still benefit from correlation.
     const requestId = randomUUID();
@@ -950,8 +951,9 @@ async function handleSessionRpc(request, env = process.env) {
           let task; try { task = JSON.parse(item.message); } catch { continue; }
           if (task?.schema !== 'dsh.pac.task/v1') continue;
           try {
-            if (Object.keys(task).some(k => !['schema', 'taskKey', 'title', 'brief'].includes(k))) throw new Error('unsupported remote task field');
-            await pacRequest({ operation: 'tool', tool: 'create', actor: identity.actor, sessionId: role.sessionId, source: item.from, args: { taskKey: task.taskKey, title: task.title, brief: task.brief } }, env, config);
+            if (Object.keys(task).some(k => !['schema', 'taskKey', 'title', 'brief', 'review'].includes(k))) throw new Error('unsupported remote task field');
+            if (task.review !== undefined && typeof task.review !== 'boolean') throw new Error('remote review must be a boolean');
+            await pacRequest({ operation: 'tool', tool: 'create', actor: identity.actor, sessionId: role.sessionId, source: item.from, args: { taskKey: task.taskKey, title: task.title, brief: task.brief, ...(task.review !== undefined ? { review: task.review } : {}) } }, env, config);
             await daemonRequest('message.ack', fenced(item.sourceIdentity || identity, { messageId: item.messageId }), { mutation: true, env });
           } catch (error) { incomingErrors.push({ messageId: item.messageId, code: error.code || 'PAC_REMOTE_TASK_REJECTED', message: error.message }); }
         }
@@ -966,8 +968,8 @@ async function handleSessionRpc(request, env = process.env) {
     }
     if (!Object.values(config.roles).some(r => r.sessionId === sessionId && r.actor === identity.actor)) throw new BridgeError('PAC_NOT_OWNER', 'session is not a configured PAC role');
     if (operation === 'pac-tool') {
-      const fields = { list: [], inspect: ['graphId'], create: ['taskKey', 'title', 'brief'], context: ['graphId', 'nodeId'], begin: ['graphId', 'nodeId', 'expectedToken'], complete: ['graphId', 'nodeId', 'expectedToken', 'evidenceRef'], cancel: ['graphId', 'expectedToken', 'evidenceRef'], rework: ['graphId', 'expectedToken', 'evidenceRef'] }[request.tool];
-      if (!fields || !request.args || typeof request.args !== 'object' || Array.isArray(request.args) || Object.keys(request.args).some(k => !fields.includes(k)) || fields.some(k => typeof request.args[k] !== 'string' || !request.args[k].trim()) || Object.keys(request).some(k => !['operation','sessionId','tool','args'].includes(k))) throw new BridgeError('PAC_ARGUMENT_REJECTED', 'unsupported PAC arguments or identity override');
+      const fields = { list: [], inspect: ['graphId'], create: ['taskKey', 'title', 'brief', 'review'], context: ['graphId', 'nodeId'], begin: ['graphId', 'nodeId', 'expectedToken'], complete: ['graphId', 'nodeId', 'expectedToken', 'evidenceRef'], cancel: ['graphId', 'expectedToken', 'evidenceRef'], rework: ['graphId', 'expectedToken', 'evidenceRef'] }[request.tool];
+      if (!fields || !request.args || typeof request.args !== 'object' || Array.isArray(request.args) || Object.keys(request.args).some(k => !fields.includes(k)) || fields.some(k => k !== 'review' && (typeof request.args[k] !== 'string' || !request.args[k].trim())) || Object.keys(request.args).some(k => k === 'review' && typeof request.args[k] !== 'boolean') || Object.keys(request).some(k => !['operation','sessionId','tool','args'].includes(k))) throw new BridgeError('PAC_ARGUMENT_REJECTED', 'unsupported PAC arguments or identity override');
       await daemonRequest('session.register', fenced(identity, { cwd: process.cwd(), command: ['dsh-pac'], source: SOURCE, runtime: RUNTIME }), { mutation: true, env });
       return pacRequest({ operation: 'tool', tool: request.tool, args: request.args, actor: identity.actor, sessionId }, env, config);
     }

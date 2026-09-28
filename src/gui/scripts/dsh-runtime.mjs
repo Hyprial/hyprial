@@ -1,10 +1,46 @@
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 export const registry = 'https://registry.npmjs.org';
+/**
+ * Locate one installed package inside a candidate runtime.
+ *
+ * npm is free to hoist or nest: today's graph resolves dsh-web-app (and the UI
+ * packages under it) inside `@deepseek-ai/dsh/node_modules`, while an older
+ * graph kept them at the top level. The compatibility patches pin exact file
+ * hashes, so they must find the installed copy wherever it landed rather than
+ * assume a layout.
+ */
+export function installedPackage(runtime, packageName, file = '') {
+  const root = resolve(runtime);
+  const queue = [join(root, 'node_modules')];
+  const seen = new Set();
+  while (queue.length > 0) {
+    const modules = queue.shift();
+    if (seen.has(modules)) continue;
+    seen.add(modules);
+    if (!existsSync(modules)) continue;
+    const direct = join(modules, packageName);
+    // Match the directory, not a manifest: callers that need the pinned version
+    // read package.json themselves, and a partial install must fail on the file
+    // it is missing rather than look like "not installed at all".
+    if (existsSync(direct)) return file ? join(direct, file) : direct;
+    for (const entry of readdirSync(modules, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+      const owners = entry.name.startsWith('@')
+        ? readdirSync(join(modules, entry.name), { withFileTypes: true })
+            .filter(scoped => scoped.isDirectory())
+            .map(scoped => join(modules, entry.name, scoped.name))
+        : [join(modules, entry.name)];
+      for (const owner of owners) queue.push(join(owner, 'node_modules'));
+    }
+  }
+  throw new Error(`${packageName} is not installed in ${root}`);
+}
+
 const versionPattern = /^\d+\.\d+\.\d+(?:-[\w.]+)?$/;
 // Share the caller's cache/proxy/isolation for metadata and package installation.
 // Resolve latest only against npm; a transport failure may use a mirror for the

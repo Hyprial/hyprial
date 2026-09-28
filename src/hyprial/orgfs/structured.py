@@ -440,30 +440,37 @@ class StructuredOrgDoc:
     def doc_id(self) -> str:
         return self._doc_id
 
+    def _live_doc(self) -> Doc:
+        current = getattr(self._document, "doc", None)
+        if isinstance(current, Doc):
+            self._doc = current
+        return self._doc
+
     def snapshot_json(self) -> str:
+        document = self._live_doc()
         value: dict[str, object] = {}
         deleted = (
-            self._doc.get(_DELETED_ROOTS, type=Map)
-            if _DELETED_ROOTS in self._doc
+            document.get(_DELETED_ROOTS, type=Map)
+            if _DELETED_ROOTS in document
             else None
         )
         deleted_keys = (
             {str(key) for key in deleted.keys()} if isinstance(deleted, Map) else set()
         )
         storage = (
-            self._doc.get(_STRUCTURED_ROOT, type=Map)
-            if _STRUCTURED_ROOT in self._doc
+            document.get(_STRUCTURED_ROOT, type=Map)
+            if _STRUCTURED_ROOT in document
             else None
         )
         if isinstance(storage, Map):
             value.update(storage.to_py() or {})
-        for key in self._doc.keys():
+        for key in document.keys():
             if key in _INTERNAL_ROOTS or str(key) in deleted_keys:
                 continue
             root_value = (
-                self._doc.get(str(key), type=Text)
+                document.get(str(key), type=Text)
                 if key == "text"
-                else self._doc[str(key)]
+                else document[str(key)]
             )
             value[str(key)] = _plain(root_value)
         return json.dumps(
@@ -476,10 +483,10 @@ class StructuredOrgDoc:
     def version(self) -> str:
         if self._version is not None:
             return self._version()
-        return base64.b64encode(self._doc.get_state()).decode("ascii")
+        return base64.b64encode(self._live_doc().get_state()).decode("ascii")
 
     def root(self) -> _RootMap:
-        return _RootMap(self._doc)
+        return _RootMap(self._live_doc())
 
     def transact(self, mutate: Callable[[_RootMap], None]) -> NodeInfo:
         if not callable(mutate):

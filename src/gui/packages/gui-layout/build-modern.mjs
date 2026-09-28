@@ -11,6 +11,7 @@ export async function modernFactory(extension) {
     source = source.replace(before, after);
   };
   source = source.replaceAll('@deepseek-ai/dsh-client-ui-layout', '@hyprial/dsh-gui-layout');
+  replace('const productTitle = "DeepSeek Harness";', 'const productTitle = "HyprialOS";');
   replace('function computeColumns(viewport, sidebar, rightbar) {', 'function computeColumns(viewport, sidebar, rightbar, hideSidebar = false, objectPanel = false) {');
   replace('clampWidth(sidebar, 264, 420)', 'clampWidth(sidebar, objectPanel ? 200 : 264, objectPanel ? 480 : 420)');
   replace('const s = sidebar === 0 ? 56 :', 'const s = hideSidebar ? 0 : sidebar === 0 ? 56 :');
@@ -97,7 +98,7 @@ export async function modernFactory(extension) {
                     setWorkspaceVisible: (d, visible) => { d.workspaceVisible = visible; },
                     selectPanel:`);
   replace('d.layoutInfo.sidebar = clampWidth(px, 264, 420);', 'd.layoutInfo.sidebar = clampWidth(px, d.workspaceConfiguration ? 200 : 264, d.workspaceConfiguration ? 480 : 420);');
-  replace('function apply(ctx) {', 'function apply(ctx) {\n            let workspaceLayout;');
+  replace('function apply(ctx) {', 'function apply(ctx) {\n            installHyprialBrand(ctx);\n            let workspaceLayout;');
   replace('const layout = new LayoutController(instance.actions, (id) => ctx.slots.entries("main").some((entry) => entry.options.key === id));', `const layout = new WorkspaceLayoutController(instance.actions, (id) => ctx.slots.entries("main").some((entry) => entry.options.key === id));
                 layout.attachPanels(instance.actions); workspaceLayout = layout;`);
   replace('"sidebar": {\n\t\t\t\t\t\t\tkind:', `"workspace": { kind: 'single', scope: 'root' },

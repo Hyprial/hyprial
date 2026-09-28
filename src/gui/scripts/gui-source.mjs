@@ -40,7 +40,7 @@ export function inspectGuiSource(root, { env = process.env, requireClean = false
     for (const required of ['package.json', 'scripts/install-local.sh', 'scripts/gui-source.mjs']) {
       if (!paths.has(required)) throw new Error(`GUI release provenance missing ${required}`);
     }
-    return { kind: 'release', commit: release.commit, version: release.version, workingTreeClean: true, paths: [...paths] };
+    return { kind: 'release', distribution: release.distribution, commit: release.commit, version: release.version, workingTreeClean: true, paths: [...paths] };
   }
   const git = args => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   let commit, status;

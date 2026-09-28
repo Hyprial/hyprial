@@ -46,6 +46,8 @@ class ReplicaBackend(Protocol):
 
     def get(self, key: str) -> bytes | None: ...
 
+    def exists(self, key: str) -> bool: ...
+
     def delete(self, key: str) -> None: ...
 
     def keys(self, prefix: str) -> Iterator[str]: ...
@@ -163,6 +165,11 @@ class MemoryReplicaBackend:
             value = self._objects.get(key)
             return None if value is None else bytes(value)
 
+    def exists(self, key: str) -> bool:
+        key = self._key(key)
+        with self._lock:
+            return key in self._objects
+
     def delete(self, key: str) -> None:
         key = self._key(key)
         with self._lock:
@@ -261,6 +268,9 @@ class FsReplicaBackend:
             return path.read_bytes()
         except FileNotFoundError:
             return None
+
+    def exists(self, key: str) -> bool:
+        return self._path(key).is_file()
 
     def delete(self, key: str) -> None:
         path = self._path(key)
@@ -398,6 +408,16 @@ class ReplicaStore:
         with self._lock:
             return tuple(sorted(self._pinned_blobs))
 
+    def backend_get(self, key: str) -> bytes | None:
+        """Read one raw backend object; diagnostics and tests only."""
+
+        return self.backend.get(key)
+
+    def backend_exists(self, key: str) -> bool:
+        """Return whether one raw backend object is present."""
+
+        return self.backend.exists(key)
+
     def prime_from(self, store: object, blob_store: object | None = None) -> None:
         """Copy an admitted local journal/snapshot/blob set into this backend."""
 
@@ -423,10 +443,30 @@ class ReplicaStore:
                 f"snapshot/{self.space_id}/{doc_id}/{manifest.snapshot_id}",
                 manifest.snapshot_bytes,
             )
+        self.reconcile_blobs(blob_store)
+
+    def reconcile_blobs(self, blob_store: object | None) -> tuple[str, ...]:
+        """Copy every locally retained blob reference into this replica."""
+
         if blob_store is None:
-            return
-        for _space_id, digest, _reason in blob_store.references(self.space_id):
+            return ()
+        retained = {
+            digest
+            for _space_id, digest, _reason in blob_store.references(self.space_id)
+        }
+        reconciled: list[str] = []
+        for digest in sorted(retained):
+            # Purge is checked before the backend.exists skip so a purged
+            # digest is never re-pinned from backend residue.
+            if self.retirement_view.purge_listed(digest):
+                continue
+            if self.backend.exists(f"blob/{digest}"):
+                with self._lock:
+                    self._pinned_blobs.add(digest)
+                continue
             self.store_blob(digest, blob_store.get(self.space_id, digest))
+            reconciled.append(digest)
+        return tuple(reconciled)
 
     def _space_key(self, key: str, expected: str) -> tuple[str, ...]:
         parts = _validate_key(key)

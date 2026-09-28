@@ -328,6 +328,83 @@ def retire_legacy_state(path: Path) -> Path | None:
     return target
 
 
+@dataclass(frozen=True)
+class ObservedChat:
+    """One chat this adapter has already received traffic from."""
+
+    chat_id: str
+    chat_type: str | None = None
+
+
+def observed_chats(
+    path: Path, *, adapter: str = DEFAULT_ADAPTER
+) -> tuple[ObservedChat, ...]:
+    """Chats with recorded inbound activity, read without creating that state.
+
+    First-run asks "which chat did the user already talk to this bot in" while no
+    route exists yet, and the answer lives in the adapter's own correlation
+    tables.  Two properties matter here:
+
+    * the connection is opened ``mode=ro`` and a missing database is an empty
+      answer, so asking the question cannot create the state being asked about --
+      ``onboarding plan`` is documented as read-only;
+    * retired chats are excluded exactly like :meth:`LarkStateStore.recent_chats`:
+      a chat the platform permanently refused is not a candidate to bind.
+    """
+
+    if not path.is_file():
+        return ()
+    try:
+        uri = f"{path.resolve().as_uri()}?mode=ro"
+        connection = sqlite3.connect(uri, uri=True)
+    except sqlite3.Error:
+        return ()
+    try:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            """SELECT chat_id FROM request_correlations WHERE adapter = ?
+               UNION
+               SELECT chat_id FROM dead_letters WHERE adapter = ?
+               EXCEPT
+               SELECT chat_id FROM retired_chats WHERE adapter = ?
+               ORDER BY chat_id""",
+            (adapter, adapter, adapter),
+        ).fetchall()
+        if not rows:
+            return ()
+        chat_ids = [str(row["chat_id"]) for row in rows]
+        # Dead letters carry the chat type they were written with; live events are
+        # the better source and win when both exist.  Either way the field is
+        # presentation-only, so an unknown type stays None rather than blocking.
+        types = {
+            str(row["chat_id"]): str(row["chat_type"])
+            for row in connection.execute(
+                "SELECT chat_id, chat_type FROM dead_letters"
+                " WHERE adapter = ? AND chat_type IS NOT NULL",
+                (adapter,),
+            )
+        }
+        types.update(
+            {
+                str(row["chat_id"]): str(row["chat_type"])
+                for row in connection.execute(
+                    "SELECT chat_id, chat_type FROM chat_types WHERE adapter = ?",
+                    (adapter,),
+                )
+            }
+        )
+        return tuple(
+            ObservedChat(chat_id=chat_id, chat_type=types.get(chat_id))
+            for chat_id in chat_ids
+        )
+    except sqlite3.Error:
+        # A database predating the correlation tables (or one being written by a
+        # worker mid-rotation) is absence of evidence, not a plan failure.
+        return ()
+    finally:
+        connection.close()
+
+
 class LarkStateStore:
     def __init__(
         self,

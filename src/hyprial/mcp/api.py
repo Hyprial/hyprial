@@ -33,10 +33,11 @@ class DaemonRequestRejected(RuntimeError):
     ``.code`` instead of parsing the message string.
     """
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, data: Any | None = None) -> None:
         super().__init__(f"{code}: {message}")
         self.code = code
         self.detail = message
+        self.data = data
 
 
 @runtime_checkable

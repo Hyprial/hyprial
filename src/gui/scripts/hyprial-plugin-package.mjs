@@ -56,7 +56,7 @@ export function buildPluginPackage({ directory = root } = {}) {
   try {
     packed = JSON.parse(run('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', staging], { cwd: directory, capture: true }))[0];
     const entries = run('tar', ['-tzf', join(staging, packed.filename)], { cwd: directory, capture: true }).split('\n');
-    for (const file of ['package/dsh-web.patch.yml', 'package/static/host.js', 'package/static/client.js', 'package/integration/session-ledger.js', 'package/package.json']) {
+    for (const file of ['package/dsh-web.patch.yml', 'package/static/host.js', 'package/static/client.js', 'package/integration/session-ledger.js', 'package/integration/daemon-endpoint.mjs', 'package/package.json']) {
       if (!entries.includes(file)) throw new Error(`GUI plugin package is missing ${file}`);
     }
     bytes = readFileSync(join(staging, packed.filename));

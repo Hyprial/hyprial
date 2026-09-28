@@ -7,6 +7,7 @@ workflow rows bind a dispatch request, its fixed deadline and failure policy.
 from __future__ import annotations
 
 from collections.abc import Callable
+from graphlib import TopologicalSorter
 from pathlib import Path
 import queue
 import json
@@ -1134,6 +1135,42 @@ class GraphWorkflowService:
                     "ORDER BY g.created_at DESC,g.graph_id LIMIT ?",
                     (viewer, viewer, viewer, min(max(limit, 1), 500)),
                 ).fetchall()
+
+                def current_node(row: sqlite3.Row) -> dict[str, str] | None:
+                    if row["closed_at"] is not None:
+                        return None
+                    states = {
+                        str(node["node_id"]): str(node["state"])
+                        for node in store._db.execute(
+                            "SELECT w.node_id,w.state FROM workflow_nodes w "
+                            "JOIN nodes n ON n.graph_id=w.graph_id AND n.node_id=w.node_id "
+                            "WHERE w.graph_id=? ORDER BY n.rowid",
+                            (row["graph_id"],),
+                        )
+                    }
+                    predecessors = {node_id: set() for node_id in states}
+                    for edge in store._db.execute(
+                        "SELECT from_node,to_node FROM edges "
+                        "WHERE graph_id=? AND kind='forward'",
+                        (row["graph_id"],),
+                    ):
+                        source = str(edge["from_node"])
+                        target = str(edge["to_node"])
+                        if source in states and target in states:
+                            predecessors[target].add(source)
+                    for node_id in TopologicalSorter(predecessors).static_order():
+                        state = states[node_id]
+                        if state in {"pending", "requested"}:
+                            return {"nodeId": node_id, "state": state}
+                    return None
+
+                def last_progress_at(row: sqlite3.Row) -> int | None:
+                    progress = store._db.execute(
+                        "SELECT MAX(at) AS at FROM journal WHERE graph_id=?",
+                        (row["graph_id"],),
+                    ).fetchone()["at"]
+                    return int(progress) if progress is not None else None
+
                 return {
                     "runs": [
                         {
@@ -1147,9 +1184,28 @@ class GraphWorkflowService:
                             "closedAtMs": r["closed_at"],
                             "onFailure": r["on_failure"],
                             "routineName": r["routine_name"],
+                            "lastProgressAtMs": last_progress_at(r),
+                            "currentNode": current_node(r),
                         }
                         for r in rows
                     ]
+                }
+        finally:
+            store.close()
+
+    def routine_last_dispatches(self) -> dict[str, int]:
+        """Latest graph creation time for each routine-backed workflow."""
+
+        store = self._open(read_only=True)
+        try:
+            with store.read():
+                return {
+                    str(row["routine_name"]): int(row["created_at"])
+                    for row in store._db.execute(
+                        "SELECT w.routine_name,MAX(g.created_at) AS created_at "
+                        "FROM workflow_graphs w JOIN graphs g USING(graph_id) "
+                        "WHERE w.routine_name IS NOT NULL GROUP BY w.routine_name"
+                    )
                 }
         finally:
             store.close()

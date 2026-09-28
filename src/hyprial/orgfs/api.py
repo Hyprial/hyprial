@@ -7,9 +7,11 @@ future store implementations from having to import the tree engine.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping, Protocol, Sequence, TypeAlias
+
+from hyprial.contracts import ipc_errors
 
 from .purge import PurgePlan, PurgeResult, PurgeStatus
 
@@ -31,6 +33,37 @@ class OrgFsError(Exception):
         self.details = dict(details or {})
         message = self.details.pop("message", None) or code
         super().__init__(f"{code}: {message}")
+
+
+#: Every OrgFsError code a producer may raise.  orgfs codes were inline
+#: string literals with no enumeration; this registry (design
+#: notes/orgfs-uri/design.md §5) retro-covers them and adds the URI codes.
+#: A gate test parses src/hyprial/orgfs for every OrgFsError(<code>, ...) call
+#: (literal or ipc_errors constant) and asserts membership, so a new code must
+#: be registered here or CI is red.  Proto-facing codes come from ipc_errors.
+ORGFS_ERROR_CODES = frozenset(
+    {
+        "ambiguous-path",
+        "blob-unavailable",
+        ipc_errors.ORGFS_CONTENT_PENDING,
+        "cross-space-uri",
+        "invalid-argument",
+        "invalid-uri",
+        "log-key-conflict",
+        "no-holder-online",
+        "not-a-member",
+        "not-owner",
+        "out-of-range",
+        "purged",
+        "snapshot-barrier",
+        "stale-plan",
+        "stale-write",
+        "too-large",
+        "unknown-blob",
+        "unknown-doc",
+        "unknown-space",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +98,13 @@ class NodeInfo:
     modified_via: str | None
     name_conflict: bool
     deleted: bool
+    content_state: Literal["arrived", "pending", "unverifiable"] | None = None
+    # Canonical ``orgfs:<owner>:<spaceId>:<nodeId>`` — always populated by
+    # the two NodeInfo constructors (docs.py ``_node_info``/``_snapshot_info``)
+    # through the single ``_node_uri`` producer.  Keyword-only so it appends
+    # after the defaulted D4 ``content_state`` without a default of its own
+    # (no-fallback rule: an optional field is a compat shim in disguise).
+    uri: str = field(kw_only=True)
 
 
 @dataclass(frozen=True, slots=True)

@@ -967,6 +967,26 @@ class _OwnedProcessGroup(OwnedProcessGroup):
         return _darwin_group_has_live_members(process_group_id)
 
 
+def _managed_process_group() -> OwnedProcessGroup:
+    if os.name == "nt":
+        from hyprial.platform.windows_owned_process import WindowsOwnedProcessGroup
+
+        return WindowsOwnedProcessGroup(label="Codex app-server")
+    return _OwnedProcessGroup()
+
+
+async def _spawn_managed_codex(command, process_group, **options):
+    if os.name == "nt":
+        from hyprial.platform.windows_owned_process import WindowsOwnedProcessGroup
+
+        if not isinstance(process_group, WindowsOwnedProcessGroup):
+            raise ConnectionError("Windows Codex requires a Job-owned launch")
+        return await process_group.spawn(command, **options)
+    return await asyncio.create_subprocess_exec(
+        *command, start_new_session=True, **options
+    )
+
+
 class CodexInteractiveAppServer:
     """Own one external Codex app-server plus its launch-time TUI probe.
 
@@ -1800,7 +1820,7 @@ class CodexAppServerClient:
             env_var=TURN_IDLE_TIMEOUT_ENV,
         )
         self._process: asyncio.subprocess.Process | None = None
-        self._process_group = process_group or _OwnedProcessGroup()
+        self._process_group = process_group or _managed_process_group()
         self._process_group_id: int | None = None
         self._logger = logger
         self._reader_task: asyncio.Task[None] | None = None
@@ -1880,15 +1900,15 @@ class CodexAppServerClient:
 
     async def __aenter__(self) -> Self:
         environment = self._spawn_environment()
-        self._process = await asyncio.create_subprocess_exec(
-            *self.command,
+        self._process = await _spawn_managed_codex(
+            self.command,
+            self._process_group,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=self.spec.cwd,
             env=environment,
             limit=STREAM_LIMIT_BYTES,
-            start_new_session=True,
         )
         if self._complete_launch is not None and self._logger is not None:
             self._logger.info(
@@ -3712,7 +3732,7 @@ class CodexAppServerProcess(StreamingTurnProcess):
             raise ValueError("Codex app-server managed stdio does not accept an endpoint")
         self.spec = spec
         self._session = _CodexSession(spec.session_ref)
-        self._process_group = _OwnedProcessGroup()
+        self._process_group = _managed_process_group()
         self.worker_channel = worker_channel
         self._complete_launch = complete_launch
         if complete_launch is not None and env is not None:

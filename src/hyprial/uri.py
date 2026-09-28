@@ -8,6 +8,8 @@ can import the canonical grammar without executing ``hyprial.daemon``.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 AGENT_URI_PREFIX = "agent:"
 _AGENT_URI_SEGMENTS = 4
 
@@ -49,6 +51,124 @@ def agent_uri_actor(value: str) -> str | None:
 
     parsed = parse_agent_uri(value)
     return parsed[2] if parsed is not None else None
+
+
+#: The ``orgfs:<owner>:<spaceId>:<nodeId>`` shared-folder node prefix.  The
+#: owner segment is ``SpaceInfo.owner`` with its ``user:`` prefix STRIPPED
+#: (a segment may never contain ``:``); readers that need a deliverable
+#: address re-attach it through :func:`canonical_user_uri`.
+ORGFS_URI_PREFIX = "orgfs:"
+_ORGFS_URI_SEGMENTS = 4
+
+
+def canonical_orgfs_uri(owner: str, space_id: str, node_id: str) -> str:
+    """Compose the four-segment ``orgfs:<owner>:<spaceId>:<nodeId>`` URI.
+
+    Same purity bar as :func:`canonical_agent_uri`, plus the ``/`` ban that
+    keeps the HTTP path mapping (``/<owner>/<spaceId>/<nodeId>``) bijective:
+    every segment is non-empty, contains no ``:`` and no ``/``, and equals
+    its own ``.strip()``.  No escaping and no percent-encoding, ever.
+    """
+
+    for label, value in (
+        ("owner", owner),
+        ("spaceId", space_id),
+        ("nodeId", node_id),
+    ):
+        if not value or value.strip() != value:
+            raise ValueError(
+                f"orgfs identity {label} must be non-empty without "
+                "surrounding whitespace"
+            )
+        if ":" in value:
+            raise ValueError(f"orgfs identity {label} must not contain ':'")
+        if "/" in value:
+            raise ValueError(f"orgfs identity {label} must not contain '/'")
+    return f"{ORGFS_URI_PREFIX}{owner}:{space_id}:{node_id}"
+
+
+def parse_orgfs_uri(value: str) -> tuple[str, str, str] | None:
+    """Decompose a canonical ``orgfs:<owner>:<spaceId>:<nodeId>`` URI.
+
+    Returns ``(owner, space_id, node_id)`` for exactly the valid shape,
+    ``None`` for every other shape (including a ``user:``-prefixed owner,
+    which splits into five segments).  This is the ONLY orgfs-URI
+    deconstructor — the same one-reader rule as :func:`parse_agent_uri`.
+    """
+
+    if not value.startswith(ORGFS_URI_PREFIX):
+        return None
+    parts = value.split(":")
+    if len(parts) != _ORGFS_URI_SEGMENTS or not all(parts[1:]):
+        return None
+    if any(part.strip() != part or "/" in part for part in parts[1:]):
+        # Same whitespace-padded-segment rejection as parse_agent_uri
+        # (2026-09-14 S4), plus the orgfs ``/`` ban.
+        return None
+    return parts[1], parts[2], parts[3]
+
+
+@dataclass(frozen=True, slots=True)
+class OrgfsWebNetwork:
+    """The local-node network facts :func:`orgfs_web_url` derives a host from.
+
+    Every field is optional: a node that is not on a tailnet (or whose name
+    is unknown) derives NO web host — surfaces show the bare URI and a host
+    is never guessed.
+    """
+
+    #: Explicit ``orgfs.web_host`` config override — a bare host name, for
+    #: orgs whose fs service is not at ``fs.<tailnet domain>``.
+    web_host: str | None = None
+    #: ``CurrentTailnet.MagicDNSSuffix`` from the node's own tailscale status
+    #: — authoritative when present, needs no label-stripping.
+    magic_dns_suffix: str | None = None
+    #: The node's own tailnet FQDN (``Self.DNSName`` on the host-tailnet join
+    #: path, ``state/tsnet/node.json`` ``hostname`` on the sidecar path).
+    fqdn: str | None = None
+
+
+def orgfs_web_host(network: OrgfsWebNetwork) -> str | None:
+    """The per-tailnet web host for orgfs links, or None when underivable.
+
+    Precedence: the explicit ``orgfs.web_host`` override, then ``fs.`` + the
+    MagicDNS suffix (preferred over the FQDN — it is authoritative), then
+    ``fs.`` + the node's own FQDN minus its first label.  Never a constant:
+    the host belongs to the viewer's own tailnet.
+    """
+
+    override = (network.web_host or "").strip().rstrip(".")
+    if override:
+        return override
+    suffix = (network.magic_dns_suffix or "").strip().rstrip(".")
+    if suffix:
+        return f"fs.{suffix}"
+    fqdn = (network.fqdn or "").strip().rstrip(".")
+    if fqdn:
+        labels = fqdn.split(".")
+        if len(labels) > 1 and all(labels[1:]):
+            return "fs." + ".".join(labels[1:])
+    return None
+
+
+def orgfs_web_url(value: str, *, network: OrgfsWebNetwork) -> str | None:
+    """Derive the read-only web URL for one canonical orgfs node URI.
+
+    ``https://<host>/<owner>/<spaceId>/<nodeId>`` — the three payload
+    segments verbatim (the grammar's ``:``/``/`` bans make the mapping a
+    pure bijection).  Render-time derivation only: the URL is never
+    persisted and is absent (None) when no host is derivable.  Raises
+    ``ValueError`` when ``value`` is not a canonical orgfs URI.
+    """
+
+    parsed = parse_orgfs_uri(value)
+    if parsed is None:
+        raise ValueError(f"not a canonical orgfs URI: {value!r}")
+    host = orgfs_web_host(network)
+    if host is None:
+        return None
+    owner, space_id, node_id = parsed
+    return f"https://{host}/{owner}/{space_id}/{node_id}"
 
 
 #: The legacy ``channel:<owner>:<machine>:<name>`` adapter-address prefix.

@@ -21,7 +21,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--state-dir', type=Path, default=Path(os.environ.get('HARNESS_STATE_DIR') or Path(os.environ.get('HYPRIAL_HOME', str(Path.home() / '.hyprial'))) / 'state'))
     for role in ('coordinator', 'worker', 'verifier'):
-        parser.add_argument('--' + role, help='existing GUI Session ID, not a display title')
+        parser.add_argument('--' + role, help='existing GUI Session ID, not a display title; verifier optional for self-verified (no-review) tasks')
     parser.add_argument('--allow-remote', action='append', default=[], help='exact authorized sender Agent URI; absent = no unattended remote creation')
     parser.add_argument('--enable', action='store_true', help='enable Host polling after role setup')
     parser.add_argument('--disable', action='store_true')
@@ -44,10 +44,10 @@ def main():
                 service.atomic(config_path, old)
             print(json.dumps({'ok': True, 'enabled': False}))
             return
-        if not all(getattr(args, role) for role in ('coordinator', 'worker', 'verifier')):
-            parser.error('provide all three role Session IDs')
-        if len({args.coordinator, args.worker, args.verifier}) != 3:
-            parser.error('three independent sessions are required')
+        if not args.coordinator or not args.worker:
+            parser.error('provide coordinator and worker Session IDs (verifier is optional)')
+        if len({args.coordinator, args.worker}) != 2 or (args.verifier and len({args.coordinator, args.worker, args.verifier}) != 3):
+            parser.error('independent sessions are required for each provided role')
         import re
         if any(not re.fullmatch(r'agent:[^:\s]+:[^:\s]+:[^:\s]+', actor) for actor in args.allow_remote):
             parser.error('--allow-remote requires exact four-part Agent URIs')
@@ -56,6 +56,8 @@ def main():
         roles = {}
         for role in ('coordinator', 'worker', 'verifier'):
             sid = getattr(args, role)
+            if not sid:
+                continue
             result = subprocess.run(['node', str(ROOT / 'h2b-session-bridge.mjs'), 'rpc'],
                                     input=json.dumps({'operation': 'session-tool', 'sessionId': sid, 'tool': 'prepare', 'args': {}}),
                                     env=env, capture_output=True, text=True, timeout=15)

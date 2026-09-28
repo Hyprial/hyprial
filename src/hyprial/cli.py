@@ -14,7 +14,6 @@ from hyprial.contracts.lifecycle_budgets import (
 )
 import difflib
 import errno
-import fcntl
 import json
 import math
 import mimetypes
@@ -73,6 +72,8 @@ from hyprial.network_profile import (
     validate_profile,
     write_profile,
 )
+from hyprial.platform.file_lock import lock_exclusive, unlock
+from hyprial.platform.process import probe_process
 from hyprial.routine.cli import routine_app
 from hyprial.workflow.cli import workflow_app
 from hyprial.contracts import ipc_errors
@@ -85,7 +86,7 @@ from hyprial.peer_reachability import (
     classify_peer_reachability,
     tcp_probe,
 )
-from hyprial.uri import parse_agent_uri
+from hyprial.uri import parse_agent_uri, parse_orgfs_uri
 from hyprial.autoupdate.alert import (
     UPGRADE_ALREADY_CURRENT,
     UPGRADE_DECLINED_DOWNGRADE,
@@ -209,6 +210,204 @@ dispatch_app = typer.Typer(
 )
 app.add_typer(dispatch_app, name="dispatch")
 app.add_typer(routine_app, name="routine")
+onboarding_app = typer.Typer(
+    help="Plan first-run setup from the machine's current read-only state."
+)
+app.add_typer(onboarding_app, name="onboarding")
+
+#: Route name the first-run outbound route is bound under.  Fixed, because the
+#: name is what senders address (``route:<adapter>:<route>``) and the first-run
+#: route exists so the personal assistant can speak first: a stable, readable
+#: name in logs matters more than a per-machine choice nobody asked for.
+FIRST_RUN_ROUTE_NAME = "squire"
+
+
+def _onboarding_scope_authorized(name: str) -> bool:
+    """Read the same tenant-scope evidence as ``adapter doctor --json``."""
+
+    from hyprial.adapters.lark.scopes import configured_scope_client, diagnose_scopes
+
+    app_id, client = configured_scope_client(_hyprial_home(), _state_dir(), name)
+    result = diagnose_scopes(adapter=name, app_id=app_id, response=client.list_scopes())
+    return result.get("ok") is True
+
+
+def _onboarding_snapshot() -> dict[str, object]:
+    """Collect machine state through existing read-only CLI surfaces."""
+
+    from hyprial.onboarding import OnboardingStateReader
+
+    return OnboardingStateReader(
+        hyprial_home=_hyprial_home(),
+        state_dir=_state_dir(),
+        daemon_request=_daemon_request,
+        scope_authorized=_onboarding_scope_authorized,
+    ).read()
+
+
+@onboarding_app.command("plan")
+def onboarding_plan(
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Report the remaining ordered first-run steps without changing state."""
+
+    def operation() -> JsonObject:
+        from hyprial.onboarding import plan_first_run
+
+        return {"ok": True, **plan_first_run(_onboarding_snapshot())}
+
+    _execute(operation, json_output=json_output, allow_missing_home=True)
+
+
+def _onboarding_apply_actions() -> dict[str, Callable[[], object]]:
+    """The steps ``onboarding apply`` can run without a person, and their primitives.
+
+    Each entry is the same primitive the operator would reach for by hand, so a
+    manual run and the automatic path cannot drift into two behaviours.  Steps
+    without an entry here are refused by name (contract section 11) instead of
+    being silently skipped.
+    """
+
+    def create_agent(name: str) -> Callable[[], object]:
+        # The actor names are part of the contract: onboarding's reader recognizes
+        # exactly these to answer "which role already exists" (see _agent_role in
+        # hyprial.onboarding).
+        return lambda: _daemon_request("agent.create", {"name": name})
+
+    def squire() -> object:
+        # The command's own body, with the derived defaults: one implementation,
+        # two callers.
+        return _squire_setup_operation()
+
+    actions: dict[str, Callable[[], object]] = {
+        "default-agent": create_agent("default"),
+        "worker-agent": create_agent("worker"),
+        "squire": squire,
+    }
+    # A pin is one adapter bound to one agent, and an agent can carry at most one
+    # pin, so the step only has one answer while the machine has exactly one
+    # adapter configured.  With several, binding an arbitrary channel would be the
+    # machine picking a message route for the user: leave the action out, which is
+    # what makes `--auto` skip the step and a single-step apply report
+    # MANUAL_ACTION_REQUIRED instead of guessing.
+    names = _configured_adapter_names()
+    if len(names) == 1:
+        adapter = names[0]
+        actions["lark-pin"] = lambda: _daemon_request(
+            "adapter.pin", {"name": adapter, "actor": "squire"}
+        )
+        # The outbound route points at the chat the user already talked to this
+        # bot in, so the machine reads that id from its own inbound observations
+        # instead of asking the user to copy one.  A single observed chat is a
+        # single answer; none means nobody has messaged the bot yet, and several
+        # mean picking the conversation would be the machine's decision rather
+        # than the user's.  Those two leave the action out, which is what makes
+        # `--auto` skip the step and a single-step apply report
+        # MANUAL_ACTION_REQUIRED (contract sections 10/11).
+        candidates = _route_candidates(adapter)
+        if len(candidates) == 1:
+            chat_id = str(candidates[0]["chatId"])
+
+            def bind_first_route(
+                adapter_name: str = adapter, native_id: str = chat_id
+            ) -> object:
+                from hyprial.adapter_registration import (
+                    RouteInput,
+                    add_gateway_route,
+                )
+
+                return _route_operation(
+                    lambda: add_gateway_route(
+                        hyprial_home=_hyprial_home(),
+                        name=adapter_name,
+                        route=RouteInput(
+                            name=FIRST_RUN_ROUTE_NAME, native_id=native_id
+                        ),
+                        make_default=True,
+                    )
+                )
+
+            actions["lark-route"] = bind_first_route
+    return actions
+
+
+def _configured_adapter_names() -> list[str]:
+    """Configured adapters, read through the same surface the plan uses.
+
+    An unreadable ``channels.json`` is absence, not failure: onboarding must still
+    be able to finish the steps that have nothing to do with messaging.
+    """
+
+    from hyprial.adapter_registration import list_gateway_routes
+
+    try:
+        payload = list_gateway_routes(hyprial_home=_hyprial_home())
+        adapters = payload.get("adapters")
+    except Exception:  # noqa: BLE001 - a malformed local config is empty state
+        return []
+    if not isinstance(adapters, list):
+        return []
+    names: list[str] = []
+    for adapter in adapters:
+        if isinstance(adapter, dict):
+            name = adapter.get("name")
+            if isinstance(name, str) and name:
+                names.append(name)
+    return sorted(names)
+
+
+@onboarding_app.command("apply")
+def onboarding_apply(
+    step_id: str | None = typer.Argument(
+        None, help="Onboarding step to apply; omit when using --auto."
+    ),
+    auto: bool = typer.Option(
+        False, "--auto", help="Apply every ready, non-interactive step, in plan order."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Run the first-run steps that need no person (desktop contract section 11).
+
+    Writes go through the same primitives the operator would run by hand; success
+    is re-read from the machine rather than recorded locally, so re-running is
+    always safe.  ``--auto`` is gated by ``settings.json`` ``autoOnboarding``
+    (default on); a single named step is an explicit action and ignores the
+    switch.  Interactive steps refuse here rather than half-running: the desktop
+    shell carries the human part.
+    """
+
+    def operation() -> JsonObject:
+        from hyprial.onboarding_apply import (
+            OnboardingApplier,
+            OnboardingApplyError,
+            auto_onboarding_enabled,
+        )
+
+        if auto and step_id:
+            raise CliError(
+                ipc_errors.INVALID_ARGUMENT,
+                "pass either <step-id> or --auto, not both",
+            )
+        if not auto and not step_id:
+            raise CliError(
+                ipc_errors.INVALID_ARGUMENT,
+                "onboarding apply needs a <step-id> or --auto",
+            )
+        applier = OnboardingApplier(
+            snapshot=_onboarding_snapshot,
+            actions=_onboarding_apply_actions(),
+            auto_enabled=lambda: auto_onboarding_enabled(_hyprial_home()),
+        )
+        try:
+            if auto:
+                return applier.apply_auto()
+            return applier.apply_step(step_id or "")
+        except OnboardingApplyError as error:
+            raise CliError(error.code, str(error), error.details or None) from error
+
+    _execute(operation, json_output=json_output, allow_missing_home=True)
+
+
 
 
 def _routine_identity(json_output: bool, claimed: str | None = None) -> dict[str, str]:
@@ -285,15 +484,29 @@ def routine_add(
 
 @routine_app.command("list")
 def routine_list(
+    all_callers: bool = typer.Option(
+        False, "--all", help="List routines from all callers on this node."
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
     """List registered routines."""
 
     def operation() -> Any:
-        result = _daemon_request("routine.list", _routine_identity(json_output))
+        result = _daemon_request(
+            "routine.list",
+            {
+                **({"all": True} if all_callers else {}),
+                **_routine_identity(json_output),
+            },
+        )
         if not isinstance(result, dict) or not isinstance(result.get("routines"), list):
             raise CliError("INVALID_RESPONSE", "routine.list must return routines")
-        return {"ok": True, **result}
+        payload = {"ok": True, **result}
+        return (
+            payload
+            if json_output
+            else _render_routine_list(result["routines"], all_callers=all_callers)
+        )
 
     _execute(operation, json_output=json_output)
 
@@ -2075,7 +2288,7 @@ def _prove_daemon_absent(
         ):
             raise unproven("the daemon state marker names no usable pid")
         try:
-            os.kill(marker_pid, 0)
+            probe_process(marker_pid)
         except ProcessLookupError:
             pass
         except (PermissionError, OSError) as error:
@@ -2169,7 +2382,10 @@ def _emit(value: Any, *, json_output: bool, json_indent: int | None = None) -> N
 
     console = Console()
     if isinstance(value, str):
-        console.print(value)
+        # soft_wrap: a rendered table or summary is laid out already. Rich's
+        # hard wrap at the console width (80 when stdout is not a TTY) split
+        # headers and commands mid-line.
+        console.print(value, markup=False, soft_wrap=True)
     else:
         console.print(Pretty(value, expand_all=True))
 
@@ -2180,7 +2396,28 @@ def _fail(error: Exception, *, json_output: bool) -> NoReturn:
     else:
         from rich.console import Console
 
-        Console(stderr=True).print(f"[bold red]hyprial:[/bold red] {error}")
+        message = str(error)
+        if (
+            isinstance(error, CliError)
+            and error.code == ipc_errors.ORGFS_CONTENT_PENDING
+            and isinstance(error.data, dict)
+        ):
+            expected = error.data.get("expectedSize")
+            digest = str(error.data.get("expectedSha256") or "")
+            holders = error.data.get("suggestedHolders")
+            waited = error.data.get("waitedSeconds", 0)
+            expected_text = (
+                f"{int(expected) / (1024 * 1024):.1f} MB"
+                if type(expected) is int
+                else "unknown size"
+            )
+            holder_text = ", ".join(map(str, holders)) if holders else "none online"
+            message = (
+                f"content not yet on this node: expected {expected_text} "
+                f"sha256 {digest[:8] or 'unknown'}, holders online: {holder_text}; "
+                f"waited {float(waited):g}s — retry with --wait 60 or from a holder node"
+            )
+        Console(stderr=True).print(f"[bold red]hyprial:[/bold red] {message}")
     raise typer.Exit(code=1)
 
 
@@ -2246,6 +2483,10 @@ def _connect_daemon_socket(socket_path: Path, timeout: float) -> socket.socket:
     budget to report.
     """
 
+    if os.name == "nt":
+        from hyprial.platform.windows_pipe import connect
+
+        return connect(socket_path, timeout)
     client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     client.settimeout(timeout)
     deadline = time.monotonic() + timeout
@@ -2886,7 +3127,7 @@ def _launch_daemon_process_locked(
     lock_path = state_dir / "daemon-launch.lock"
     with lock_path.open("a+b") as launch_lock:
         os.chmod(lock_path, 0o600)
-        fcntl.flock(launch_lock.fileno(), fcntl.LOCK_EX)
+        lock_exclusive(launch_lock.fileno())
         # Two launchers can both miss an optimistic readiness probe.  Recheck
         # under the lock so only one daemon generation is created.
         try:
@@ -4891,11 +5132,16 @@ def install(
                 _emit(plan, json_output=False)
             return yes or typer.confirm(f"Install {name} from this exact commit?")
 
+        options = {}
+        if name == "gui":
+            from hyprial.gui_product import product_source
+            options["release_source"] = product_source()
         result = install_application(
             name,
             hyprial_home=hyprial_home,
             confirm=confirm,
             json_output=json_output,
+            **options,
         )
 
         return result
@@ -5387,6 +5633,153 @@ def doctor(
 _TARGETS_KIND_OPTIONS = ("agent", "user", "channel_route")
 
 
+def _overview_duration(milliseconds: int) -> str:
+    seconds = max(0, milliseconds // 1000)
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 60 * 60:
+        return f"{seconds // 60}m"
+    if seconds < 24 * 60 * 60:
+        return f"{seconds // (60 * 60)}h"
+    return f"{seconds // (24 * 60 * 60)}d"
+
+
+def _overview_age(milliseconds: object, *, now_ms: int) -> str:
+    if type(milliseconds) is not int:
+        return "-"
+    return _overview_duration(now_ms - milliseconds)
+
+
+def _overview_next(milliseconds: object, *, now_ms: int) -> str:
+    if type(milliseconds) is not int:
+        return "-"
+    if milliseconds >= now_ms:
+        return f"in {_overview_duration(milliseconds - now_ms)}"
+    return f"{_overview_duration(now_ms - milliseconds)} ago"
+
+
+def _overview_sender(value: object) -> str:
+    # hyprial.uri owns identity parsing (tests/test_address_parsing_guard.py):
+    # the actor segment of an agent/channel URI; user:<x> and the rest verbatim.
+    from hyprial.uri import short_actor_name
+
+    return short_actor_name(str(value or "-"))
+
+
+def _overview_last_segment(value: object) -> str:
+    return _overview_sender(value)
+
+
+def _overview_table(
+    title: str,
+    headers: list[str],
+    cells: list[list[str]],
+    *,
+    truncate_column: int | None = None,
+) -> str:
+    widths = [
+        max([len(header), *(len(row[index]) for row in cells)])
+        for index, header in enumerate(headers)
+    ]
+    if truncate_column is not None:
+        available = 120 - 2 * (len(headers) - 1)
+        excess = max(0, sum(widths) - available)
+        candidates = [truncate_column] + sorted(
+            (index for index in range(len(headers)) if index != truncate_column),
+            key=lambda index: widths[index] - len(headers[index]),
+            reverse=True,
+        )
+        for index in candidates:
+            reducible = widths[index] - len(headers[index])
+            reduction = min(excess, reducible)
+            widths[index] -= reduction
+            excess -= reduction
+            if excess == 0:
+                break
+
+    def shorten(value: str, width: int) -> str:
+        if len(value) <= width:
+            return value
+        return value[: max(0, width - 1)] + "…"
+
+    lines = [title[:120]]
+    lines.append(
+        "  ".join(
+            header.ljust(widths[index]) for index, header in enumerate(headers)
+        ).rstrip()
+    )
+    for row in cells:
+        lines.append(
+            "  ".join(
+                shorten(cell, widths[index]).ljust(widths[index])
+                for index, cell in enumerate(row)
+            ).rstrip()
+        )
+    return "\n".join(lines)
+
+
+def _render_workflow_list(
+    rows: list[JsonObject], *, all_callers: bool, now_ms: int | None = None
+) -> str:
+    observed_at = time.time_ns() // 1_000_000 if now_ms is None else now_ms
+    cells = []
+    for row in rows:
+        current = row.get("currentNode")
+        current_text = (
+            f"{current.get('nodeId', '?')}:{current.get('state', '?')}"
+            if isinstance(current, dict)
+            else "-"
+        )
+        cells.append(
+            [
+                str(row.get("graphId", "?"))[:12],
+                str(row.get("name", "?")),
+                str(row.get("state", "?")),
+                _overview_sender(row.get("sender")),
+                _overview_age(row.get("createdAtMs"), now_ms=observed_at),
+                _overview_age(row.get("lastProgressAtMs"), now_ms=observed_at),
+                current_text,
+            ]
+        )
+    suffix = " (all callers)" if all_callers else ""
+    return _overview_table(
+        f"hyprial workflow list   {len(rows)} runs{suffix}",
+        ["GRAPH", "NAME", "STATE", "SENDER", "AGE", "PROGRESS", "CURRENT"],
+        cells,
+        truncate_column=1,
+    )
+
+
+def _render_routine_list(
+    rows: list[JsonObject], *, all_callers: bool, now_ms: int | None = None
+) -> str:
+    observed_at = time.time_ns() // 1_000_000 if now_ms is None else now_ms
+    cells = [
+        [
+            str(row.get("name", "?")),
+            _overview_last_segment(row.get("owner")),
+            str(row.get("mode", "?")),
+            "yes" if row.get("enabled") is True else "no",
+            _overview_age(row.get("lastDispatchAtMs"), now_ms=observed_at),
+            str(row.get("lastOutcome") or "-"),
+            _overview_next(row.get("nextDueMs"), now_ms=observed_at)
+            if row.get("enabled") is True
+            else "paused",
+            str(len(row.get("inFlight", [])))
+            if isinstance(row.get("inFlight"), list)
+            else "0",
+        ]
+        for row in rows
+    ]
+    suffix = " (all callers)" if all_callers else ""
+    return _overview_table(
+        f"hyprial routine list   {len(rows)} routines{suffix}",
+        ["NAME", "OWNER", "MODE", "ON", "LAST RUN", "LAST RESULT", "NEXT", "IN-FLIGHT"],
+        cells,
+        truncate_column=0,
+    )
+
+
 def _render_targets(rows: list[JsonObject]) -> str:
     """Plain-text table in the ``hyprial top`` style: preamble, header, columns.
 
@@ -5755,7 +6148,18 @@ def trajectory_command(
 
 
 def _fs_run(method: str, params: JsonObject, *, json_output: bool) -> None:
-    _execute(lambda: _daemon_request(method, params), json_output=json_output)
+    def operation() -> Any:
+        result = _daemon_request(method, params)
+        if json_output:
+            return result
+        # Human output is the one surface that derives the per-tailnet web
+        # link (design notes/orgfs-uri/design.md §7a): the wire form carries
+        # the host-free URI alone.
+        from hyprial.orgfs.web import with_human_web_urls
+
+        return with_human_web_urls(result, require_initialized_hyprial_home())
+
+    _execute(operation, json_output=json_output)
 
 
 @fs_app.command("spaces")
@@ -5778,7 +6182,7 @@ def fs_create(
 @fs_app.command("ls")
 def fs_ls(
     space_id: str = typer.Argument(..., help="Space UUID."),
-    path: str = typer.Argument("", help="Directory path or id:<nodeId>."),
+    path: str = typer.Argument("", help="Directory path, id:<nodeId>, or orgfs: URI."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
     """List one directory."""
@@ -5788,30 +6192,52 @@ def fs_ls(
 
 @fs_app.command("resolve")
 def fs_resolve(
-    space_id: str = typer.Argument(..., help="Space UUID."),
-    path: str = typer.Argument(..., help="Path to resolve."),
+    target: str = typer.Argument(..., help="Space UUID, or a full orgfs:<owner>:<spaceId>:<nodeId> URI."),
+    path: str | None = typer.Argument(None, help="Path, id:<nodeId>, or orgfs: URI to resolve; omit when target is an orgfs: URI."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
     """Resolve a path without rejecting same-name ambiguity."""
 
-    _fs_run("orgfs.resolve", {"spaceId": space_id, "path": path}, json_output=json_output)
+    parsed = parse_orgfs_uri(target)
+    if parsed is not None:
+        if path is not None:
+            raise typer.BadParameter(
+                "path must be omitted when target is an orgfs: URI"
+            )
+        # The daemon re-checks the owner/spaceId binding in _resolve_ids, so
+        # client and server can never disagree; the CLI uses the one reader
+        # (parse_orgfs_uri), never manual splitting.
+        _fs_run(
+            "orgfs.resolve",
+            {"spaceId": parsed[1], "path": target},
+            json_output=json_output,
+        )
+        return
+    if path is None:
+        raise typer.BadParameter("path is required when target is a space UUID")
+    _fs_run("orgfs.resolve", {"spaceId": target, "path": path}, json_output=json_output)
 
 
 @fs_app.command("read")
 def fs_read(
     space_id: str = typer.Argument(..., help="Space UUID."),
-    path: str = typer.Argument(..., help="Path or id:<nodeId>."),
+    path: str = typer.Argument(..., help="Path, id:<nodeId>, or orgfs: URI."),
+    wait: float = typer.Option(10.0, "--wait", min=0.0, max=120.0, help="Seconds to wait for verified content."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
     """Read a text or small binary node."""
 
-    _fs_run("orgfs.read", {"spaceId": space_id, "path": path}, json_output=json_output)
+    _fs_run(
+        "orgfs.read",
+        {"spaceId": space_id, "path": path, "waitSeconds": wait},
+        json_output=json_output,
+    )
 
 
 @fs_app.command("write")
 def fs_write(
     space_id: str = typer.Argument(..., help="Space UUID."),
-    path: str = typer.Argument(..., help="Path or id:<nodeId>."),
+    path: str = typer.Argument(..., help="Path, id:<nodeId>, or orgfs: URI."),
     text: str = typer.Argument(..., help="Complete desired text."),
     base_version: str | None = typer.Option(None, "--base-version", help="Version used as the merge baseline."),
     expect_version: str | None = typer.Option(None, "--expect-version", help="Reject unless this is the current version."),
@@ -5840,8 +6266,8 @@ def fs_mkdir(
 @fs_app.command("mv")
 def fs_mv(
     space_id: str = typer.Argument(..., help="Space UUID."),
-    source: str = typer.Argument(..., help="Source path or id:<nodeId>."),
-    destination: str = typer.Argument(..., help="Destination path or directory id."),
+    source: str = typer.Argument(..., help="Source path, id:<nodeId>, or orgfs: URI."),
+    destination: str = typer.Argument(..., help="Destination path, directory id:<nodeId>, or orgfs: URI."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
     """Move or rename a node."""
@@ -5855,7 +6281,7 @@ def fs_mv(
 @fs_app.command("rm")
 def fs_rm(
     space_id: str = typer.Argument(..., help="Space UUID."),
-    path: str = typer.Argument(..., help="Path or id:<nodeId>."),
+    path: str = typer.Argument(..., help="Path, id:<nodeId>, or orgfs: URI."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
     """Soft-delete a node."""
@@ -5865,7 +6291,7 @@ def fs_rm(
 @fs_app.command("history")
 def fs_history(
     space_id: str = typer.Argument(..., help="Space UUID."),
-    node: str = typer.Argument(..., help="Path or id:<nodeId>."),
+    node: str = typer.Argument(..., help="Path, id:<nodeId>, or orgfs: URI."),
     limit: int = typer.Option(50, "--limit", help="Maximum history entries."),
     before: str | None = typer.Option(None, "--before", help="Return entries before this version."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
@@ -5894,7 +6320,7 @@ def fs_watch(
 @fs_app.command("import")
 def fs_import(
     space_id: str = typer.Argument(..., help="Space UUID."),
-    path: str = typer.Argument(..., help="Destination path or id:<nodeId>."),
+    path: str = typer.Argument(..., help="Destination path, id:<nodeId>, or orgfs: URI."),
     source: Path = typer.Argument(..., exists=True, dir_okay=False, help="Local file to import."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
@@ -5909,14 +6335,20 @@ def fs_import(
 @fs_app.command("export")
 def fs_export(
     space_id: str = typer.Argument(..., help="Space UUID."),
-    node: str = typer.Argument(..., help="Path or id:<nodeId>."),
+    node: str = typer.Argument(..., help="Path, id:<nodeId>, or orgfs: URI."),
     destination: Path = typer.Argument(..., help="Local destination file."),
+    wait: float = typer.Option(10.0, "--wait", min=0.0, max=120.0, help="Seconds to wait for verified content."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
     """Export a node to a local file."""
     _fs_run(
         "orgfs.export",
-        {"spaceId": space_id, "node": node, "destination": str(destination.resolve())},
+        {
+            "spaceId": space_id,
+            "node": node,
+            "destination": str(destination.resolve()),
+            "waitSeconds": wait,
+        },
         json_output=json_output,
     )
 
@@ -6014,7 +6446,7 @@ def fs_trash(
 @fs_app.command("restore")
 def fs_restore(
     space_id: str = typer.Argument(..., help="Space UUID."),
-    node: str = typer.Argument(..., help="Path or id:<nodeId>."),
+    node: str = typer.Argument(..., help="Path, id:<nodeId>, or orgfs: URI."),
     version: str = typer.Argument(..., help="Version to restore."),
     recursive: bool = typer.Option(True, "--recursive/--no-recursive", help="Restore directory descendants too."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
@@ -6702,11 +7134,11 @@ def _wait_daemon_teardown_receipt(
             lock_busy = False
             if stream is not None:
                 try:
-                    fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    lock_exclusive(stream.fileno(), blocking=False)
                 except BlockingIOError:
                     lock_busy = True
                 else:
-                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+                    unlock(stream.fileno())
                     teardown_done = True
                     if receipts_are_sufficient:
                         # ⭐ Report a survivor as a **fact**, not as a verdict.
@@ -6794,7 +7226,7 @@ def _stopped_process(pid: int | None, identity: str | None) -> bool:
             "identity-mismatch",
         }
     try:
-        os.kill(pid, 0)
+        probe_process(pid)
     except ProcessLookupError:
         return True
     except (PermissionError, OSError):
@@ -12336,6 +12768,29 @@ route_app = typer.Typer(
 adapter_app.add_typer(route_app, name="route")
 
 
+def _route_candidates(name: str) -> list[JsonObject]:
+    """Chat ids this adapter observed inbound traffic from, as CLI JSON rows.
+
+    Reads the shared adapter database through one adapter's namespace, read-only:
+    a machine that has never received an inbound event has no database, and asking
+    must not create one.  Unreadable state is reported as "no candidates" rather
+    than as a failure, because this feeds first-run planning, which stays useful
+    for every step that has nothing to do with messaging.
+    """
+
+    from hyprial.adapters.lark.identities import adapter_namespace
+    from hyprial.adapters.lark.state import observed_chats
+
+    try:
+        rows = observed_chats(
+            _state_dir() / "adapters.sqlite3",
+            adapter=adapter_namespace(name),
+        )
+    except Exception:  # noqa: BLE001 - an unreadable store is absence, not failure
+        return []
+    return [{"chatId": row.chat_id, "chatType": row.chat_type} for row in rows]
+
+
 def _parse_one_route(value: str) -> Any:
     """Parse a single ``name=native_id`` pair, reusing the add-time rules."""
 
@@ -12395,6 +12850,29 @@ def adapter_route_list(
             raise CliError(_route_error_code(error), str(error)) from error
 
     _execute(operation, json_output=json_output)
+
+
+@route_app.command("candidates")
+def adapter_route_candidates(
+    name: str = typer.Argument(..., help="Configured adapter name."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """List the chat ids this adapter has already seen inbound traffic from.
+
+    This is the machine-side answer to "which chat should a first route point
+    at": the user talks to the bot once and the id is observed, instead of being
+    copied by hand.  Read-only by construction -- it never creates adapter state,
+    so a first-run plan may call it before any route exists.
+    """
+
+    def operation() -> JsonObject:
+        return {
+            "ok": True,
+            "adapter": name,
+            "candidates": _route_candidates(name),
+        }
+
+    _execute(operation, json_output=json_output, allow_missing_home=True)
 
 
 @route_app.command("add")
@@ -12790,6 +13268,119 @@ def adapter_pins(
     _execute(lambda: _daemon_request("adapter.pins", {}), json_output=json_output)
 
 
+def _squire_setup_operation(
+    *,
+    owner_key: str | None = None,
+    login_name: str | None = None,
+    machine: str | None = None,
+    machine_key: str | None = None,
+    channel: str | None = None,
+    owner_open_id: str | None = None,
+    binding_code: str | None = None,
+    home: Path | None = None,
+    display_name: str | None = None,
+    adapter: str | None = None,
+    dm_route: str = "owner",
+    provider: str = "deepseek",
+    model: str = "deepseek-flash",
+    preferred_harness: str = "pi",
+    start_worker: bool = False,
+    step: str | None = None,
+) -> JsonObject:
+    """The work behind ``squire setup``, shared with the first-run apply path.
+
+    One implementation, two callers: the operator's command (with its flags) and
+    ``onboarding apply squire`` (with the derived defaults). The first-run path
+    must not grow a second copy of the setup rules, so the command delegatees
+    here rather than owning the body.
+    """
+
+    from hyprial.daemon.identity import resolve_node_owner
+    from hyprial.daemon.ownership import DaemonOwnershipBusy
+    from hyprial.management import (
+        EnsureSquireRegistryCommand,
+        ManagementError,
+        OfflineManagementLease,
+        SquireRegistryResult,
+    )
+    from hyprial.squire import SquireSetup, derive_setup_identity
+
+    # The owner segment is the user identity of this home (design §3.3);
+    # a missing one raises the resolver's guidance (naming hyprial login).
+    owner = resolve_node_owner()
+    # The four host-side lookup keys are derived unless explicitly
+    # overridden (Allen, 2026-09-18): machine from HYPRIAL_NODE_ID else
+    # hostname, owner_key/machine_key as slugs, login_name from the
+    # platform login. An explicit --machine that disagrees with a
+    # configured node id still fails inside SquireSetup's cross-checks.
+    identity = derive_setup_identity(
+        owner,
+        owner_key=owner_key,
+        login_name=login_name,
+        machine=machine,
+        machine_key=machine_key,
+    )
+
+    class CliSquireManagement:
+        @staticmethod
+        def ensure_squire(
+            command: EnsureSquireRegistryCommand,
+        ) -> SquireRegistryResult:
+            try:
+                response = _daemon_request(
+                    "management.squire.ensure", command.to_payload()
+                )
+            except ipc_errors.DaemonUnavailableError:
+                if command.start:
+                    raise
+                try:
+                    with OfflineManagementLease(
+                        _state_dir(),
+                        owner=command.owner,
+                        machine=command.machine,
+                        hyprial_home=_hyprial_home(),
+                    ) as management:
+                        return management.ensure_squire(command)
+                except DaemonOwnershipBusy as busy:
+                    raise CliError(busy.code, str(busy)) from busy
+                except ManagementError as managed_error:
+                    raise CliError(
+                        managed_error.code, str(managed_error)
+                    ) from managed_error
+            if not isinstance(response, dict):
+                raise CliError(
+                    ipc_errors.INVALID_RESPONSE,
+                    "management.squire.ensure result must be an object",
+                )
+            return SquireRegistryResult.from_payload(response)
+
+    setup = SquireSetup(
+        hyprial_home=_hyprial_home(),
+        state_dir=_state_dir(),
+        management_port=CliSquireManagement(),
+    )
+    try:
+        return setup.run(
+            identity,
+            channel=channel,
+            owner_open_id=owner_open_id,
+            binding_code=binding_code,
+            squire_home=home,
+            display_name=display_name,
+            adapter=adapter,
+            dm_route=dm_route,
+            provider=provider,  # squire harness/provider/model model-vendor field
+            model=model,
+            preferred_harness=preferred_harness,
+            start=start_worker,
+            step=step,
+        )
+    except ManagementError as error:
+        raise CliError(error.code, str(error)) from error
+    except ValueError as error:
+        raise CliError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
+
+
 def _user_proxy_launch_params(
     name: str, route_uri: str, *, cwd: Path | None = None
 ) -> JsonObject:
@@ -13156,90 +13747,24 @@ def squire_setup(
     """
 
     def operation() -> JsonObject:
-        from hyprial.daemon.identity import resolve_node_owner
-        from hyprial.daemon.ownership import DaemonOwnershipBusy
-        from hyprial.management import (
-            EnsureSquireRegistryCommand,
-            ManagementError,
-            OfflineManagementLease,
-            SquireRegistryResult,
-        )
-        from hyprial.squire import SquireSetup, derive_setup_identity
-
-        # The owner segment is the user identity of this home (design §3.3);
-        # a missing one raises the resolver's guidance (naming hyprial login).
-        owner = resolve_node_owner()
-        # The four host-side lookup keys are derived unless explicitly
-        # overridden (Allen, 2026-09-18): machine from HYPRIAL_NODE_ID else
-        # hostname, owner_key/machine_key as slugs, login_name from the
-        # platform login. An explicit --machine that disagrees with a
-        # configured node id still fails inside SquireSetup's cross-checks.
-        identity = derive_setup_identity(
-            owner,
+        return _squire_setup_operation(
             owner_key=owner_key,
             login_name=login_name,
             machine=machine,
             machine_key=machine_key,
+            channel=channel,
+            owner_open_id=owner_open_id,
+            binding_code=binding_code,
+            home=home,
+            display_name=display_name,
+            adapter=adapter,
+            dm_route=dm_route,
+            provider=provider,
+            model=model,
+            preferred_harness=preferred_harness,
+            start_worker=start_worker,
+            step=step,
         )
-
-        class CliSquireManagement:
-            @staticmethod
-            def ensure_squire(
-                command: EnsureSquireRegistryCommand,
-            ) -> SquireRegistryResult:
-                try:
-                    response = _daemon_request(
-                        "management.squire.ensure", command.to_payload()
-                    )
-                except ipc_errors.DaemonUnavailableError:
-                    if command.start:
-                        raise
-                    try:
-                        with OfflineManagementLease(
-                            _state_dir(),
-                            owner=command.owner,
-                            machine=command.machine,
-                            hyprial_home=_hyprial_home(),
-                        ) as management:
-                            return management.ensure_squire(command)
-                    except DaemonOwnershipBusy as busy:
-                        raise CliError(busy.code, str(busy)) from busy
-                    except ManagementError as managed_error:
-                        raise CliError(
-                            managed_error.code, str(managed_error)
-                        ) from managed_error
-                if not isinstance(response, dict):
-                    raise CliError(
-                        ipc_errors.INVALID_RESPONSE,
-                        "management.squire.ensure result must be an object",
-                    )
-                return SquireRegistryResult.from_payload(response)
-
-        setup = SquireSetup(
-            hyprial_home=_hyprial_home(),
-            state_dir=_state_dir(),
-            management_port=CliSquireManagement(),
-        )
-        try:
-            return setup.run(
-                identity,
-                channel=channel,
-                owner_open_id=owner_open_id,
-                binding_code=binding_code,
-                squire_home=home,
-                display_name=display_name,
-                adapter=adapter,
-                dm_route=dm_route,
-                provider=provider,  # squire harness/provider/model model-vendor field
-                model=model,
-                preferred_harness=preferred_harness,
-                start=start_worker,
-                step=step,
-            )
-        except ManagementError as error:
-            raise CliError(error.code, str(error)) from error
-        except ValueError as error:
-            raise CliError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
 
     _execute(operation, json_output=json_output)
 
@@ -13865,6 +14390,26 @@ def adapter_media_get(
     _execute(operation, json_output=json_output)
 
 
+@app.command("gui")
+def gui_command(
+    app_or_action: str = typer.Argument("start", help="start (default), status, stop, or upgrade the GUI."),
+    check: bool = typer.Option(False, "--check", help="Upgrade: report only."),
+    force: bool = typer.Option(False, "--force", help="Upgrade: replace dirty or older sources."),
+    yes: bool = typer.Option(False, "--yes", help="Skip the installation or upgrade prompt."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Start the product DSH GUI; upgrade installs the component paired with this Hyprial."""
+    def operation() -> Any:
+        from hyprial.gui_apps import resolve_invocation
+        verb, _ = resolve_invocation(app_or_action)
+        if verb != "upgrade" and (check or force):
+            raise CliError(ipc_errors.INVALID_ARGUMENT, "--check and --force require hyprial gui upgrade")
+        if verb in ("stop", "status") and yes:
+            raise CliError(ipc_errors.INVALID_ARGUMENT, "--yes requires GUI start or upgrade")
+        return _run_mounted_app_action("gui", verb, check=check, force=force, yes=yes, json_output=json_output)
+    _execute(operation, json_output=json_output)
+
+
 # ── H3: mount app-declared commands (design-app-manifest-commands §3) ─────────
 _MOUNTED_NAMES: set[str] = set()
 
@@ -13891,32 +14436,6 @@ def _mount_app_commands() -> None:
     _mount.warn_skipped(report)
 
     def register(name: str, help_text: str, fn: Any) -> None:
-        if name == "gui":
-            def gui_command(
-                app_or_action: str = typer.Argument("start", help="start (default), status, stop, or upgrade the DSH GUI."),
-                check: bool = typer.Option(False, "--check", help="Upgrade: report only."),
-                force: bool = typer.Option(False, "--force", help="Upgrade: replace dirty/diverged sources."),
-                yes: bool = typer.Option(False, "--yes", help="Upgrade: skip the confirmation prompt."),
-                json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
-            ) -> None:
-                def operation() -> Any:
-                    from hyprial.gui_apps import resolve_invocation
-
-                    verb, selected = resolve_invocation(app_or_action)
-                    if verb != "upgrade" and (check or force or yes):
-                        raise CliError(ipc_errors.INVALID_ARGUMENT, "--check, --force, and --yes are only valid with: hyprial gui upgrade")
-                    options = dict(check=check, force=force, yes=yes, json_output=json_output)
-                    if selected is not None:
-                        options["gui_app"] = selected
-                    return fn(verb, **options)
-
-                _execute(operation, json_output=json_output)
-
-            app.command(name, help=(
-                "DSH GUI: hyprial gui [start|status|stop|upgrade]. "
-                "Starts DSH by default; upgrade updates the GUI package."
-            ))(gui_command)
-            return
         # ``fn`` validates the action against the manifest; this wrapper only
         # adds the CLI surface.  ``--check/--force/--yes`` exist because the
         # old ``hyprial gui upgrade`` had them, and dropping flags during a
@@ -13964,6 +14483,16 @@ def _run_mounted_app_action(
     if name == "gui" and action != "upgrade":
         from hyprial.gui_apps import perform
 
+        if action == "start" and not (hyprial_home / "apps/gui/install.json").is_file():
+            from hyprial.gui_product import product_source
+            def confirm_install(plan: JsonObject) -> bool:
+                if json_output and not yes:
+                    raise CliError("CONFIRMATION_REQUIRED", "GUI installation requires --yes", plan)
+                if not json_output:
+                    _emit(plan, json_output=False)
+                return yes or typer.confirm("Install the GUI paired with this Hyprial version?")
+            install_application("gui", hyprial_home=hyprial_home, confirm=confirm_install,
+                                json_output=json_output, release_source=product_source())
         return perform(hyprial_home, action, gui_app)
     if action == "status":
         return gui_status(hyprial_home, name)
@@ -14022,7 +14551,17 @@ def upgrade_mounted_app(
 
     if name == "gui":
         from hyprial.gui_apps import upgrade
+        from hyprial.gui_product import product_source
 
+        release_source = product_source()
+        if not (hyprial_home / "apps/gui/install.json").is_file():
+            if check_only:
+                entry, registry = release_source
+                return {"ok": True, "name": "gui", "checked": True, "installed": False,
+                        "version": entry.version, "commit": entry.commit, "registry": registry,
+                        "upgraded": False, "restarted": False}
+            return install_application("gui", hyprial_home=hyprial_home, confirm=confirm,
+                                       json_output=json_output, release_source=release_source)
         return upgrade(
             hyprial_home,
             lambda before: upgrade_application(
@@ -14033,6 +14572,7 @@ def upgrade_mounted_app(
                 force=force,
                 json_output=json_output,
                 before_apply=before,
+                release_source=release_source,
             ),
         )
 

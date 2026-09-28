@@ -12,11 +12,14 @@ export async function pacConfig(env) {
   try {
     const config = JSON.parse(await readFile(path.join(pacStateDir(env), 'dsh-pac/config.json'), 'utf8'));
     if (config.version !== 1 || typeof config.python !== 'string' || !path.isAbsolute(config.python)) throw new Error('PAC_INVALID_CONFIG');
-    for (const role of ['coordinator', 'worker', 'verifier']) {
+    for (const role of ['coordinator', 'worker']) {
       const value = config.roles?.[role];
       if (!value || typeof value.sessionId !== 'string' || !/^agent:[^:\s]+:[^:\s]+:[^:\s]+$/.test(value.actor)) throw new Error('PAC_INVALID_CONFIG: ' + role);
     }
-    if (new Set(Object.values(config.roles).map(r => r.actor)).size !== 3 || new Set(Object.values(config.roles).map(r => r.sessionId)).size !== 3) throw new Error('PAC_INVALID_CONFIG: roles require separate sessions');
+    const verifier = config.roles?.verifier;
+    if (verifier !== undefined && (typeof verifier.sessionId !== 'string' || !/^agent:[^:\s]+:[^:\s]+:[^:\s]+$/.test(verifier.actor))) throw new Error('PAC_INVALID_CONFIG: verifier');
+    const roles = Object.values(config.roles);
+    if (new Set(roles.map(r => r.actor)).size !== roles.length || new Set(roles.map(r => r.sessionId)).size !== roles.length) throw new Error('PAC_INVALID_CONFIG: roles require separate sessions');
     return config;
   } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
 }

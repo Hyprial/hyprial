@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import signal
@@ -18,6 +17,7 @@ from uuid import uuid4
 
 from hyprial.contracts import ipc_errors
 from hyprial.installers import InstallError, prepare_application_launch
+from hyprial.platform.file_lock import lock_exclusive, unlock
 from hyprial.mcp.channel import (
     _OwnerProcessStatus,
     _owner_process_status,
@@ -54,10 +54,10 @@ def _lifecycle_lock(app_root: Path) -> Iterator[None]:
     app_root.mkdir(parents=True, exist_ok=True, mode=0o700)
     descriptor = os.open(app_root / "app.lock", os.O_RDWR | os.O_CREAT, 0o600)
     try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        lock_exclusive(descriptor)
         yield
     finally:
-        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        unlock(descriptor)
         os.close(descriptor)
 
 

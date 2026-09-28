@@ -1,3 +1,4 @@
+import { daemonEndpoint } from './daemon-endpoint.mjs';
 import net from 'node:net';
 import { createHash, randomUUID } from 'node:crypto';
 import { dirname, join, isAbsolute } from 'node:path';
@@ -11,7 +12,7 @@ function socketPath(env) {
 export function launchStateDir(env = process.env) { return dirname(socketPath(env)); }
 export function requestDaemon(method, params, env = process.env) {
   return new Promise((resolve, reject) => {
-    const id = randomUUID(), socket = net.createConnection(socketPath(env));
+    const id = randomUUID(), socket = net.createConnection(daemonEndpoint(socketPath(env)));
     socket.setEncoding('utf8');
     let buffer = '', settled = false;
     const finish = (error, value) => { if (settled) return; settled = true; clearTimeout(timer); socket.destroy(); error ? reject(error) : resolve(value); };

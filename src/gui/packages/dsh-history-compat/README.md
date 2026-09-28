@@ -2,8 +2,8 @@
 
 ## Subagent descriptors
 
-DSH 0.1.5-rc.2 rejects released descriptor version 2 records during Session migration,
-then cannot classify them during cold continuation. Descriptor version 3 adds only
+The pinned DSH 0.1.5 release line rejects released descriptor version 2 records
+during Session migration, then cannot classify them during cold continuation. Descriptor version 3 adds only
 an optional `agentReasoningEffort` field. This patch supports descriptor version 2
 while retaining the current released-event payload semantic checks: for example,
 `agentProvider` and `agentModel` must appear together. The supported historical
@@ -17,14 +17,19 @@ histories are rewritten by this installer.
 
 `upstream.patch` records the source change against upstream tag `dsh-v0.1.5-rc.2`
 (`fb2c4b9e698e30edb738bca4cf0618587db7d203`). The original MIT license is included.
-`patch.json` pins the versions and before/after SHA-256 of the three descriptor
-runtime files, including both subagent bundle and internal descriptor entry.
+`patch.json` records the audited package version and the before/after SHA-256 of
+the three descriptor runtime files, including both subagent bundle and internal
+descriptor entry. The audited bytes were lifted from the `0.1.5-rc.2` publish and
+re-verified unchanged in `0.1.5-rc.3`, which is the recorded baseline.
 
 The release verifier applies this patch only to a freshly installed candidate,
 after checking its lockfile and before browser validation or runtime promotion.
-It validates all input files before writing; reapplication is idempotent. A new
-upstream package version or unexpected source hash fails the release check and
-requires review. Do not edit a running installation to bypass that check.
+It validates all input files before writing; reapplication is idempotent. The gate
+is content-addressed — it keys on the bytes each replacement rewrites, not on the
+package version — so an upstream patch release of the audited line that ships these
+files unchanged (as `0.1.5-rc.2` → `0.1.5-rc.3` did) keeps the audit valid, while
+any real source change still fails closed and demands re-audit. Do not edit a
+running installation to bypass that check.
 
 The real published-package regression exercises descriptor v2/v3 migration and
 folding, records rejected by the current payload rules (including malformed or
@@ -40,7 +45,7 @@ lock and retaining the history regression in release verification.
 
 ## Durable message occurrences (manifest version 2)
 
-`@deepseek-ai/dsh-client-ui-chat@0.1.5-rc.2/lib/client.js` used transport
+The pinned `@deepseek-ai/dsh-client-ui-chat/lib/client.js` used transport
 `data.id` alone as the `input-message` start key. Re-delivery at another durable
 sequence could throw a duplicate-start error and abort an older history page.
 The matcher now uses `JSON.stringify([String(event.data.id), event.seq])`:

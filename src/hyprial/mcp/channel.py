@@ -968,6 +968,13 @@ def _read_process_identity(pid: int) -> str | None:
 
     if pid <= 0:
         return None
+    if sys.platform == "win32":
+        from hyprial.platform.windows_process import process_identity
+
+        try:
+            return process_identity(pid)
+        except OSError:
+            return None
     components: list[str] = []
     if sys.platform.startswith("linux"):
         proc_identity = _read_proc_process_identity(pid)
@@ -1006,7 +1013,12 @@ def _owner_process_status(
     opposite)."""
 
     try:
-        signal_process(pid, 0)
+        if sys.platform == "win32" and signal_process is os.kill:
+            from hyprial.platform.windows_process import process_identity
+
+            process_identity(pid)
+        else:
+            signal_process(pid, 0)
     except ProcessLookupError:
         return _OwnerProcessStatus.PID_MISSING
     except (PermissionError, OSError):

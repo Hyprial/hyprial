@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
-import fcntl
 import os
 import time
 from pathlib import Path
 from typing import IO, MutableMapping
+
+from hyprial.platform.file_lock import lock_exclusive
+
+if os.name != "nt":
+    import fcntl
 
 IDENTITY_TRANSACTION_LOCK = ".identity-transaction.lock"
 IDENTITY_TRANSACTION_FD_ENV = "HYPRIAL_IDENTITY_TRANSACTION_FD"
@@ -47,7 +51,7 @@ class IdentityTransactionLock:
         deadline = time.monotonic() + max(timeout, 0.0)
         while True:
             try:
-                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                lock_exclusive(stream.fileno(), blocking=False)
                 return cls(path, stream)
             except BlockingIOError as error:
                 if time.monotonic() >= deadline:
@@ -68,6 +72,10 @@ class IdentityTransactionLock:
         raw = environ.get(IDENTITY_TRANSACTION_FD_ENV)
         if raw is None:
             return cls.acquire(home, timeout=timeout)
+        if os.name == "nt":
+            raise RuntimeError(
+                "inherited identity transaction descriptors are not supported on Windows"
+            )
         try:
             descriptor = int(raw)
         except ValueError as error:

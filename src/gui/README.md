@@ -114,6 +114,8 @@ export H2B_DSH_DEMO_CWD='/absolute/path/to/dsh-hyprial-plugin'
 | `HARNESS_SOCKET_PATH` | bridge（DSH 进程内） | **h2b daemon 那一侧**创建的 socket；bridge 侧（DSH 进程）必须能访问该路径 —— 同机即 daemon 默认 socket；SSH 转发场景把它指向转发后在 DSH 侧可见的 socket 路径 |
 | `H2B_DSH_DEMO_CWD` | bridge 经 `session.register` 上报 daemon，daemon 用作 DSH worker 的启动/工作目录 | **DSH 那一侧**（worker 实际运行的地方）。DSH 与 h2b 不同机时，必须是远端 DSH 机器上真实存在的目录，不是本机目录 |
 
+Windows 没有 Unix socket：daemon 仍把端点写在该路径上，但内容是一次性端点文档（`{"transport":"windows-pipe-v1","pipe":"\\\\.\\pipe\\hyprial-<32hex>"}`），bridge 读出来后再连那条本机命名管道；文档缺失、超长、transport 不符或管道名不是本机 `hyprial-` 前缀时请求直接失败，不静默回退到别的目标。非 Windows 平台该路径本身就是 socket，不做这一步。
+
 ### 远端场景（DSH 与 h2b 不在同一台机器，如 SSH 只转发 HTTP）
 
 这是受支持的配置，不是退化路径：**配好上面两个变量即可**，无需同机。
@@ -430,11 +432,20 @@ GUI 安装流程同时安装仓库携带的 `dsh-codex` 兼容构建包。源码
 或让团队成员自行编译。Codex 登录、刷新及模型通信使用独立代理进程。
 维护、安装及回退见 [兼容版说明](docs/codex-compatibility.md)。
 
+### Hyprial API 提供方
+
+安装时在 DSH 用户设置层声明指向 `https://api.hyprial.ai` 的 `hyprial` 路由，密钥由用户
+在 Settings -> Models 粘贴一次，模型按当前密钥实时拉取。默认模型不变，DSH 源码不改。
+使用与排查见 [提供方说明](docs/hyprial-api-provider.md)。
+
 ## GUI PAC v2 自动任务（测试分支）
 
 新增 `h2b_pac_*` 原生工具与 Host 派工，支持协调者、实施者、审核者三个独立 GUI
-会话，以及授权远端的结构化新任务请求。默认不启用，不复用旧 Workflow v1 面板。
-配置、发起任务、返工和故障恢复见 [操作指南](docs/pac/gui-operation-guide.md)。
+会话（审核者仅用于 `review=true` 任务，可省略），以及授权远端的结构化新任务请求。
+`h2b_pac_create` 的 `review` 参数控制是否经过独立审核：默认 true（dev 目标合入），
+`review=false` 走 worker 自验自合（非 dev/集成分支目标）。默认不启用，不复用旧
+Workflow v1 面板。配置、发起任务、返工和故障恢复见
+[操作指南](docs/pac/gui-operation-guide.md)。
 
 职责资源及适用边界见 [主仓资源盘点](docs/pac/role-resources.md)，
 迁移验证见 [验证记录](docs/pac/validation-20260917.md)。

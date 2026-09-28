@@ -74,6 +74,14 @@ The generated factory selects the legacy implementation only when its runtime
 module exists; otherwise it uses the split `dsh-client-store` implementation.
 Both use the same validated workspace controller and own exactly one root.
 
+The generated provider also owns HyprialOS sidebar branding. It registers the
+Hyprial HF mark and `HyprialOS` name into `sidebar.brand.mark` and
+`sidebar.brand.name` at priority `-1`, so the official DeepSeek brand occupant
+at priority `0` remains loaded but is not the single-slot winner. The mark is a
+pinned 48x48 derived asset inlined as a data URI by the build; the 1254x1254
+source icon is not shipped in the client bundle. The same generated title uses
+`HyprialOS`, or `<session title> - HyprialOS` for a titled session.
+
 ```sh
 node packages/gui-layout/build.mjs
 node packages/gui-layout/build.mjs --check

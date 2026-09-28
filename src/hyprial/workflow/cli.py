@@ -163,10 +163,47 @@ def status(
 @workflow_app.command("list")
 def list_workflows(
     limit: int = typer.Option(50, help="Maximum records to return."),
+    all_callers: bool = typer.Option(
+        False, "--all", help="List workflows from all callers on this node."
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ):
-    """List recent PAC workflows."""
-    _call("workflow.list", {"limit": limit}, json_output=json_output)
+    """List recent PAC workflows.
+
+    PROGRESS / `lastProgressAtMs` is the newest graph journal event
+    (includes explicit progress heartbeats from `workflow progress`).
+    CURRENT / `currentNode` is the first unfinished node in dependency order.
+    """
+    from hyprial.cli import (
+        CliError,
+        _daemon_request,
+        _execute,
+        _render_workflow_list,
+    )
+
+    def operation():
+        try:
+            identity = _identity(json_output)
+        except PacError as error:
+            raise CliError(error.code, str(error)) from error
+        result = _daemon_request(
+            "workflow.list",
+            {
+                "limit": limit,
+                **({"all": True} if all_callers else {}),
+                **identity,
+            },
+        )
+        if not isinstance(result, dict) or not isinstance(result.get("runs"), list):
+            raise CliError("INVALID_RESPONSE", "workflow.list must return runs")
+        payload = {"ok": True, **result}
+        return (
+            payload
+            if json_output
+            else _render_workflow_list(result["runs"], all_callers=all_callers)
+        )
+
+    _execute(operation, json_output=json_output)
 
 
 @workflow_app.command("inspect")

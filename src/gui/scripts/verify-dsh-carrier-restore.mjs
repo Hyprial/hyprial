@@ -1,3 +1,4 @@
+import { installedPackage } from '../scripts/dsh-runtime.mjs';
 import assert from 'node:assert/strict';
 import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -5,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 // Real installed DSH controller; synthetic persistence/preset/agent boundaries.
 // No user sessions, credentials, model calls or production writes.
 export async function verifyDshCarrierRestore(runtime) {
-  const base = join(resolve(runtime), 'node_modules/@deepseek-ai/dsh-api-session-controller/lib');
+  const base = installedPackage(runtime, '@deepseek-ai/dsh-api-session-controller', 'lib');
   const { SessionController } = await import(pathToFileURL(join(base, 'index.js')));
   const { ApiSessionAgentController } = await import(pathToFileURL(join(base, 'types/agent.js')));
   const agents = new Map(), order = [];

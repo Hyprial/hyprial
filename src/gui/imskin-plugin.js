@@ -4638,6 +4638,12 @@ function guiThemeControls(React, theme, onChange) {
       if (h2bSurfacePending.has(key)) return h2bSurfacePending.get(key);
       const pending = (async function () {
         if (!sessions || typeof sessions.create !== 'function' || typeof sessions.open !== 'function') throw new Error('DSH session creation is unavailable');
+        // A pending baseline is not an empty durable list. The custom GUI
+        // replaces the native sidebar that normally triggers this refresh.
+        if (snapshotOf(sessions).phase === 'pending') {
+          if (typeof sessions.refresh === 'function') await sessions.refresh();
+          if (snapshotOf(sessions).phase === 'pending') throw new Error('会话列表尚未加载完成，请稍后重试。');
+        }
         const archived = new Set(snapshotOf(workspaces).archivedSessionIds || []);
         const rows = listedSessions().filter(function (row) { return !archived.has(row.id); });
         // A cold split-runtime binding need not exist until the session opens.
@@ -4853,7 +4859,7 @@ function guiThemeControls(React, theme, onChange) {
             hidden: name === 'mfu',
             style: name === 'mfu' ? { display: 'none' } : undefined,
             disabled: !!appBusy,
-            onClick: function () { return activateApp(name); }
+            onClick: function () { return activateApp(name).catch(guiShowError); }
           },
             React.createElement('span', { className: 'h2bapps-nav-icon' }, icon),
             React.createElement('span', { className: 'h2bapps-nav-label' }, label)

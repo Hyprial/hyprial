@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -40,10 +41,15 @@ class UnixDaemonConnection:
             "method": method,
             "params": params,
         }
-        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        client.settimeout(self.timeout)
-        try:
+        if os.name == "nt":
+            from hyprial.platform.windows_pipe import connect
+
+            client = connect(self.socket_path, self.timeout)
+        else:
+            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            client.settimeout(self.timeout)
             client.connect(str(self.socket_path))
+        try:
             client.sendall(json.dumps(frame, separators=(",", ":")).encode() + b"\n")
             response = bytearray()
             while b"\n" not in response:
@@ -65,19 +71,20 @@ class UnixDaemonConnection:
         if isinstance(error, dict):
             code = str(error.get("code") or ipc_errors.DAEMON_ERROR)
             message = str(error.get("message") or "daemon request failed")
+            data = error.get("data")
             # PR #332 F4②: transient envelope codes deserialise through the
             # shared registry into the SAME class every other client gets.
             # TransientDaemonError is RuntimeError-based, so the channel
             # poll loop's daemon-contact retry keeps surviving it; the
             # supersede verdict (not transient) stays a
             # DaemonRequestRejected for its dedicated branch.
-            transient = ipc_errors.transient_error_from_code(code, message)
+            transient = ipc_errors.transient_error_from_code(code, message, data)
             if transient is not None:
                 raise transient  # noqa: TRY004
             # A RuntimeError subclass: broad ``except RuntimeError`` handlers keep
             # surviving the envelope, but ``.code`` lets a caller branch on the
             # daemon's verdict (e.g. supersede) without parsing the string.
-            raise DaemonRequestRejected(code, message)  # noqa: TRY004
+            raise DaemonRequestRejected(code, message, data)  # noqa: TRY004
         result = document.get("result")
         if not isinstance(result, dict):
             raise DaemonDisconnected("daemon result must be an object")

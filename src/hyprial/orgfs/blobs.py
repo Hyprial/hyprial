@@ -17,6 +17,7 @@ from pathlib import Path
 import re
 import sqlite3
 import tempfile
+import threading
 from typing import Any, Final, TypeAlias
 
 
@@ -339,6 +340,9 @@ class BlobStore:
         self._purge_checker = purge_checker
         self._space_purge_checkers: dict[str, Callable[[str], bool]] = {}
         self.blob_root.mkdir(parents=True, exist_ok=True)
+        # pysqlite connections are not safe for concurrent execute/close;
+        # zenoh callback threads share this store with caller threads.
+        self._db_lock = threading.RLock()
         self._db = sqlite3.connect(self.refs_path, check_same_thread=False)
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA synchronous=NORMAL")
@@ -355,9 +359,10 @@ class BlobStore:
         self._db.commit()
 
     def close(self) -> None:
-        if getattr(self, "_db", None) is not None:
-            self._db.close()
-            self._db = None  # type: ignore[assignment]
+        with self._db_lock:
+            if getattr(self, "_db", None) is not None:
+                self._db.close()
+                self._db = None  # type: ignore[assignment]
 
     def __enter__(self) -> BlobStore:
         return self
@@ -442,19 +447,29 @@ class BlobStore:
         except OSError:
             return False
 
+    def contains(self, digest: str) -> bool:
+        """Return whether the content-addressed path exists without reading it."""
+
+        try:
+            return self._path(digest).is_file()
+        except (OSError, ValueError):
+            return False
+
     def pin(self, space_id: str, digest: str, reason: str) -> None:
         if not isinstance(space_id, str) or not space_id:
             raise ValueError("space_id must be a non-empty string")
         digest = _require_digest(digest)
+        self._check_purged(space_id, digest)
         if not isinstance(reason, str) or not reason:
             raise ValueError("reason must be a non-empty string")
         if not self._path(digest).is_file():
             raise BlobMissing(digest)
-        self._db.execute(
-            "INSERT OR IGNORE INTO blob_refs(spaceId, sha, pinnedReason) VALUES (?, ?, ?)",
-            (space_id, digest, reason),
-        )
-        self._db.commit()
+        with self._db_lock:
+            self._db.execute(
+                "INSERT OR IGNORE INTO blob_refs(spaceId, sha, pinnedReason) VALUES (?, ?, ?)",
+                (space_id, digest, reason),
+            )
+            self._db.commit()
 
     def references(
         self,
@@ -475,26 +490,28 @@ class BlobStore:
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
         query += " ORDER BY spaceId, sha, pinnedReason"
-        return tuple(self._db.execute(query, values).fetchall())
+        with self._db_lock:
+            return tuple(self._db.execute(query, values).fetchall())
 
     def referenced_elsewhere(self, space_id: str, digest: str) -> tuple[str, ...]:
         """Return other local spaces that retain this content-addressed object."""
 
         digest = _require_digest(digest)
-        return tuple(
-            str(row[0])
-            for row in self._db.execute(
-                "SELECT DISTINCT spaceId FROM blob_refs "
-                "WHERE sha = ? AND spaceId <> ? ORDER BY spaceId",
-                (digest, space_id),
+        with self._db_lock:
+            return tuple(
+                str(row[0])
+                for row in self._db.execute(
+                    "SELECT DISTINCT spaceId FROM blob_refs "
+                    "WHERE sha = ? AND spaceId <> ? ORDER BY spaceId",
+                    (digest, space_id),
+                )
             )
-        )
 
     def release(self, space_id: str, digest: str) -> None:
         """Release every reason held by one space without touching other spaces."""
 
         digest = _require_digest(digest)
-        with self._db:
+        with self._db_lock, self._db:
             self._db.execute(
                 "DELETE FROM blob_refs WHERE spaceId = ? AND sha = ?",
                 (space_id, digest),
@@ -504,13 +521,14 @@ class BlobStore:
         """Delete immutable bytes only when no local space still references them."""
 
         digest = _require_digest(digest)
-        if (
-            self._db.execute(
-                "SELECT 1 FROM blob_refs WHERE sha = ? LIMIT 1", (digest,)
-            ).fetchone()
-            is not None
-        ):
-            return False
+        with self._db_lock:
+            if (
+                self._db.execute(
+                    "SELECT 1 FROM blob_refs WHERE sha = ? LIMIT 1", (digest,)
+                ).fetchone()
+                is not None
+            ):
+                return False
         try:
             self._path(digest).unlink()
         except FileNotFoundError:
@@ -529,10 +547,12 @@ class BlobStore:
         offset = value["offset"]
         length = value["length"]
         raw = self.get(space_id, digest)
-        if offset > len(raw) or offset + length > len(raw):
-            # An empty blob is served by the default request at offset zero.
-            if not (len(raw) == 0 and offset == 0):
-                raise BlobRangeError("chunk request lies outside the blob")
+        if offset > len(raw):
+            raise BlobRangeError("chunk request lies outside the blob")
+        # The default request asks for the wire maximum because a caller may
+        # only know the digest.  A holder must return the shorter final chunk
+        # instead of requiring out-of-band size metadata.
+        length = min(length, len(raw) - offset)
         return encode_chunk(digest, offset, len(raw), raw[offset : offset + length])
 
     def chunk(self, request: bytes | Mapping[str, Any]) -> bytes:

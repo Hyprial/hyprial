@@ -98,6 +98,9 @@ def discover_mounts(
             skipped.append((app, _with_remedy(error, app_root)))
             continue
         for command in commands:
+            if app == "gui" and command.name == "gui" and "gui" in builtins:
+                # The product owns this command; retain invalid-receipt diagnostics.
+                continue
             if command.name in builtins:
                 skipped.append(
                     (app, f"command {command.name!r} collides with a built-in hyprial command")

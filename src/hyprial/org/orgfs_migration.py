@@ -240,7 +240,13 @@ class OrgContextOrgFsBridge:
         username = source.removeprefix("user:")
         path = self._candidate_path(username)
         try:
-            content, version = self.runtime.facade.read_text(space_id, path)
+            # Resolve the path once and read that node by id, so the staged
+            # text, its version and the provenance URI all name one node even
+            # if the path is moved or recreated meanwhile.
+            info = self.runtime.facade.stat(space_id, path)
+            content, version = self.runtime.facade.read_text(
+                space_id, f"id:{info.node_id}"
+            )
         except OrgFsError as error:
             if error.code == "unknown-doc":
                 return None
@@ -252,9 +258,11 @@ class OrgContextOrgFsBridge:
                 f"incoming version {document.meta.version} must be newer than "
                 f"accepted version {accepted.meta.version}"
             )
+        # Provenance is the canonical node URI plus @<version> (Q4=A): the
+        # orgfs:<owner>:<spaceId>:<nodeId> identity, never a string splice.
         return self.store.stage(
             document,
-            source=f"orgfs:{space_id}/{path}@{version}",
+            source=f"{info.uri}@{version}",
         )
 
     def fetch(self, *, source: str | None, timeout: float) -> dict[str, object]:

@@ -4,6 +4,15 @@ import { createHash } from 'node:crypto';
 import { modernFactory } from './build-modern.mjs';
 
 const root = new URL('./', import.meta.url);
+const brandMarkBytes = await readFile(new URL('assets/hyprial-hf-48.png', root));
+const brandMarkHash = createHash('sha256').update(brandMarkBytes).digest('hex');
+if (brandMarkHash !== '93c0ab5291788c5dd8dc779924f357e49db5e7baa2f12f6a70fc195b17e05f1a') {
+  throw new Error('Hyprial sidebar mark changed; audit and repin the derived asset');
+}
+if (brandMarkBytes.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a' || brandMarkBytes.readUInt32BE(16) !== 48 || brandMarkBytes.readUInt32BE(20) !== 48) {
+  throw new Error('Hyprial sidebar mark must be a 48x48 PNG');
+}
+const brandMarkDataUri = 'data:image/png;base64,' + brandMarkBytes.toString('base64');
 let source = await readFile(new URL('vendor/dsh-ui-layout-rc.2.js', root), 'utf8');
 const originalHash = createHash('sha256').update(source).digest('hex');
 const expectedHash = (await readFile(new URL('vendor/SHA256SUMS', root), 'utf8')).trim().split(/\s+/)[0];
@@ -121,7 +130,7 @@ replace('actions: {\n\t\t\t\t\tsetSidebar:', `actions: {
                     setNativeSurfaceRect: (d, rect) => { d.nativeSurfaceRect = rect; },
                     setWorkspaceVisible: (d, visible) => { d.workspaceVisible = visible; },
                     setSidebar:`);
-replace('const layout = new LayoutController();', 'const layout = new WorkspaceLayoutController();');
+replace('const layout = new LayoutController();', 'installHyprialBrand(ctx);\n            const layout = new WorkspaceLayoutController();');
 replace('"sidebar": {\n\t\t\t\t\t\t\tkind:', `"workspace": { kind: 'single', scope: 'root' },
                         "workspace.navigation": { kind: 'single', scope: 'root' },
                         "sidebar": {
@@ -137,7 +146,9 @@ replace('off();\n\t\t\t\t\tpresenter.dispose();', `off();
                     media?.removeEventListener('change', refresh);
                     presenter.dispose();`);
 const styleSource = (await readFile(new URL('../../shared/gui-style.mjs', root), 'utf8')).replace(/^export\s+/gm, '');
-const extension = styleSource + '\n' + await readFile(new URL('workspace-extension.js', root), 'utf8');
+const extensionSource = 'const HYPPRIAL_BRAND_MARK_SRC = ' + JSON.stringify(brandMarkDataUri) + ';\n'
+  + await readFile(new URL('workspace-extension.js', root), 'utf8');
+const extension = styleSource + '\n' + extensionSource;
 replace('exports.LayoutController = LayoutController;', extension + '\n        exports.LayoutController = WorkspaceLayoutController;');
 const modern = await modernFactory(extension);
 replace('factory: (require) => {', `factory: (require) => {

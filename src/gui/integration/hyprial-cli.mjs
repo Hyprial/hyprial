@@ -15,3 +15,19 @@ export function hyprialCliEnv(source = process.env) {
   if (!Object.hasOwn(env, 'HYPRIAL_HOME')) env.HYPRIAL_HOME = join(env.HOME || homedir(), '.hyprial');
   return env;
 }
+
+// ctx.shell overlays env on the Host environment; omissions cannot remove old
+// names. Supplying their current counterparts satisfies the CLI guard without
+// forwarding unrelated Host secrets in each request.
+export function hyprialShellRequest(request, source = process.env) {
+  if (!/^hyprial\s/.test(request.command || '')) return request;
+  const translated = hyprialCliEnv(source);
+  const env = {};
+  for (const name of Object.keys(source)) {
+    if (name.startsWith('H2B_')) {
+      const current = 'HYPRIAL_' + name.slice(4);
+      env[current] = translated[current];
+    }
+  }
+  return { ...request, env: { ...env, ...request.env } };
+}

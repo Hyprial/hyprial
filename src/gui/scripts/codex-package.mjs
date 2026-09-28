@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /** Local, versioned distribution of the vendored Codex compatibility fork. */
-import { isShippedGuiFile } from './gui-source.mjs';
+import { isShippedGuiFile, inspectGuiSource } from './gui-source.mjs';
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync, mkdirSync, existsSync, copyFileSync, readdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { dirname, join, resolve, basename } from 'node:path';
@@ -37,7 +37,10 @@ export function verifyPackage(directory = distribution) {
       manifest.file !== `dsh-codex-${manifest.version}.tgz` || !/^[a-f0-9]{64}$/.test(manifest.sha256)) {
     throw new Error('Invalid Codex release manifest');
   }
-  if (manifest.sourceSha256 !== sourceDigest()) throw new Error('Codex source changed; rebuild and version the compatibility package');
+  // Product payloads carry the reviewed binary, not the excluded vendor tree.
+  // Absence alone is not permission to skip source verification.
+  const product = !existsSync(source) && inspectGuiSource(root).distribution === 'product';
+  if (!product && manifest.sourceSha256 !== sourceDigest()) throw new Error('Codex source changed; rebuild and version the compatibility package');
   const artifact = join(directory, manifest.file);
   const digest = createHash('sha256').update(readFileSync(artifact)).digest('hex');
   if (digest !== manifest.sha256) throw new Error('Codex package checksum mismatch');

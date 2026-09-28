@@ -145,6 +145,8 @@ class SpaceStore(Protocol):
 
     def frontier(self, doc_id: str) -> bytes: ...
 
+    def committed_update(self, doc_id: str, since: bytes) -> bytes: ...
+
     def export_since(
         self, doc_id: str, vv: bytes, *, cursor: str | None, max_bytes: int
     ) -> ExportPage: ...
@@ -305,6 +307,13 @@ def _state_covers(actual: bytes, required: bytes) -> bool:
         actual_state.get(client, 0) >= clock
         for client, clock in _decode_state_vector(required).items()
     )
+
+
+# Public verification helpers used by the orgfs facade.  Keep the private
+# spellings above as compatibility aliases for the admission tests and the
+# store's older internal call sites.
+decode_state_vector = _decode_state_vector
+state_covers = _state_covers
 
 
 def _changed_meta_entries(
@@ -1507,6 +1516,20 @@ class LocalSpaceStore:
                 _decode_state_vector(self._doc(doc_id).get_state())
             )
 
+    def committed_update(self, doc_id: str, since: bytes) -> bytes:
+        """Return this node's committed ops for ``doc_id`` past ``since``.
+
+        The facade folds this back into its content doc after a commit, so the
+        writer's own facade carries the reserved coverage-clock op that
+        ``_advance_commit_clock`` writes under the store's writer client.  Every
+        outgoing envelope carries that op; without it the originating writer can
+        never cover a content frontier a peer records after receiving it.
+        """
+
+        with self._lock:
+            self._raise_if_retired(doc_id)
+            return self._doc(doc_id).get_update(since)
+
     @staticmethod
     def _covered(version: bytes, vv: bytes) -> bool:
         if not vv:
@@ -2036,6 +2059,15 @@ class LocalSpaceStore:
             return tuple(
                 sorted((node, durable) for node, (durable, _) in self._holders.items())
             )
+
+    def holder_frontiers(self) -> dict[str, dict[str, bytes]]:
+        """Return an isolated copy of the in-memory holder frontier hints."""
+
+        with self._lock:
+            return {
+                node: dict(frontiers)
+                for node, (_durable, frontiers) in self._holders.items()
+            }
 
     def document_ids(self) -> tuple[str, ...]:
         """Return known document ids in protocol order (metadata first)."""

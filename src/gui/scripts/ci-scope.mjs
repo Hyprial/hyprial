@@ -130,8 +130,9 @@ export function select(event, eventName, project, cwd, fetch = true) {
       }
     }
     const result = classify(paths, project);
-    if (eventName === 'pull_request' && event.pull_request?.base?.ref === 'intg/gaga-gui') {
-      result.reason = `gaga integration tier: ${result.reason}`;
+    // Same lane predicate as scripts/ci-plan.mjs guiBranch: intg/gui, intg/gui/topic, intg/gui-next.
+    if (eventName === 'pull_request' && event.pull_request?.base?.ref?.startsWith('intg/gui')) {
+      result.reason = `gui integration tier: ${result.reason}`;
     }
     return result;
   }

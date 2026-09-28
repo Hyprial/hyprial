@@ -7,7 +7,6 @@ an App version, or replace the administrator's approval.
 
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import math
@@ -25,6 +24,7 @@ from threading import Lock, RLock
 from typing import Any
 from uuid import uuid4
 
+from hyprial.platform.file_lock import lock_exclusive, unlock
 from .endpoint import lark_base_url
 
 JsonObject = dict[str, Any]
@@ -556,10 +556,10 @@ class LarkScopeThrottleStore:
         descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
         try:
             os.chmod(lock_path, 0o600)
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            lock_exclusive(descriptor)
             yield
         finally:
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            unlock(descriptor)
             os.close(descriptor)
 
     def _load(self) -> JsonObject:

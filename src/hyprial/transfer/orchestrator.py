@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import json
 import os
-import pwd
 import subprocess
 import tempfile
 from pathlib import Path
@@ -107,6 +106,12 @@ def _discovered_node(host: str, response: Any) -> str:
 def _local_login_user() -> str:
     # SSH's default account is an OS fact, not HYPRIAL_OWNER or an inferred
     # home-directory segment. Read the current UID, not spoofable USER env.
+    if os.name == "nt":
+        raise OSError(
+            "SSH same-path user inference is unavailable on Windows; pass --cwd"
+        )
+    import pwd
+
     return pwd.getpwuid(os.getuid()).pw_name
 
 

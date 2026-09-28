@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import fcntl
 import json
 import math
 import os
@@ -18,6 +17,7 @@ from uuid import uuid4
 from hyprial.contracts import ipc_errors
 from hyprial.contracts.daemon_teardown import TEARDOWN_BUDGETED_SECONDS
 from hyprial.home import HYPRIALHomeNotInitialized
+from hyprial.platform.file_lock import lock_exclusive
 
 if TYPE_CHECKING:
     from hyprial.mcp.channel import _OwnerProcessStatus
@@ -560,7 +560,7 @@ class ActiveDaemonHeartbeat:
         stream = self.lock_path.open("a+b")
         try:
             os.chmod(self.lock_path, 0o600)
-            fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+            lock_exclusive(stream.fileno())
             yield
         finally:
             stream.close()

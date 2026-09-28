@@ -15,6 +15,7 @@ from hyprial.daemon.api import (
     ProcessLivenessProbeError,
     ProcessLivenessState,
 )
+from hyprial.platform.process import probe_process
 
 PROCESS_FORCE_TERM_SECONDS = 0.25
 PROCESS_FORCE_KILL_SECONDS = 0.25
@@ -275,7 +276,7 @@ class OwnedProcessGroup:
             # must fail safe instead of being declared cleaned.
             if self._group_has_live_members(pid):
                 try:
-                    os.kill(pid, 0)
+                    probe_process(pid)
                 except ProcessLookupError:
                     return False
                 except OSError:
@@ -347,7 +348,7 @@ class OwnedProcessGroup:
         # PGID, that numeric group cannot be reused until those descendants
         # exit.  An existing but unreadable leader is fail-safe: do not signal.
         try:
-            os.kill(pid, 0)
+            probe_process(pid)
         except ProcessLookupError:
             return True
         except OSError:

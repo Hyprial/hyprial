@@ -73,9 +73,10 @@ hyprial <域> <子命令> --help   # 参数面
 - 超时与认证失败的报错里会直接带上上面这些提示;其它非零退出的 git 失败逐字不变。
 
 ### GUI 工作空间（安装 GUI 包后动态挂载）
-- `hyprial gui` / `hyprial gui start` — 启动 DSH 工作空间。
+- `hyprial gui` / `hyprial gui start` — 启动 DSH 工作空间；首次使用安装当前 Hyprial 附带的 GUI 组件，非交互安装传 `--yes`。
 - `hyprial gui status --json` — 查询 DSH 状态；`hyprial gui stop` — 停止 DSH。
-- `hyprial gui upgrade [--check|--yes|--force]` — 更新 GUI 包，恢复此前运行的 DSH。
+- `hyprial gui upgrade [--check|--yes|--force]` — 更新到当前 Hyprial 版本附带的 GUI 组件，校验来源与摘要，恢复此前运行的 DSH；不查询 socialware catalog。
+- `hyprial upgrade` 获取配套 GUI 组件，但不自动切换或重启已运行的 GUI；随后用 `hyprial gui upgrade --check` 查看待更新组件。
 - Dashboard 已退役；`gui dashboard`、`gui dsh`、`gui all` 均不再支持，不派发这些旧指令。
 - 先更新 Hyprial CLI 再更新 GUI 包。原 DSH 进程记录与会话保留；有旧 Dashboard 时，
   启动/停止/升级先核对进程身份后停止它，不再重启。身份未知时停止操作，禁止直接杀 PID。
@@ -112,6 +113,7 @@ hyprial <域> <子命令> --help   # 参数面
 - 相对 timeout 在派图时确定固定截止，等待依赖计入预算；不自动顺延或重试。报告需显式节点。
 - routine format 2 显式选择 mode: scheduled/source。定时模式串行、跳过重叠与错过周期，source 模式按任务 UUID 去重。
 - routine 默认创建并持有常驻协调 agent，也可执行工作；rm 回收自己拥有的 actor，pause 不回收。
+- `hyprial workflow list [--all]` / `hyprial routine list [--all]`：不加 --json 时输出人读的表格。agent 默认只看到自己派的（或自己拥有的），加 --all 看本节点全部，不需要额外授权；主人在终端里直接运行，默认就能看到全部。--json 每行带 `lastProgressAtMs`（该图最新一条 journal 事件的时间，包括 `workflow progress` 发出的显式心跳）、`currentNode {nodeId,state}`（按依赖顺序第一个未完成的节点）（workflow），以及 `lastDispatchAtMs`、`lastOutcome`（routine）。判断是不是卡住，看这两个字段，别只看 state=running。
 - workflow history list/status 只读查询旧任务。切换会终止并归档未结束旧任务；空 home 也有旧写入屏障，不代表存在历史任务。
 
 最小任务书示例（先替换工作目录与任务，再 plan/run）：

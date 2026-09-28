@@ -12,7 +12,6 @@ record to the canonical route.
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import re
@@ -22,6 +21,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, Self
+
+from hyprial.platform.file_lock import lock_exclusive, unlock
 
 LogLevel = Literal["debug", "info", "warn", "error"]
 LogRoute = Literal["daemon", "adapter", "worker", "component"]
@@ -421,7 +422,7 @@ class Logger:
             )
             try:
                 os.chmod(lock_path, 0o600)
-                fcntl.flock(lock_fd, fcntl.LOCK_EX)
+                lock_exclusive(lock_fd)
                 if self.rotation_hook is not None:
                     self.rotation_hook(path)
                 descriptor = os.open(
@@ -444,7 +445,7 @@ class Logger:
                     os.close(descriptor)
             finally:
                 try:
-                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                    unlock(lock_fd)
                 finally:
                     os.close(lock_fd)
 

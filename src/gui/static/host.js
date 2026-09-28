@@ -1,7 +1,9 @@
 import { installPacTools } from '../integration/pac-tools.js';
+import { shellEnvironmentCommand } from '../integration/shell-environment-command.mjs';
 import { installPacCarrier } from '../integration/pac-carrier.js';
 import { createGuiStudioHost, installGuiStudioTools } from '../integration/gui-studio-host.mjs';
 import { subagentRelease } from '../integration/subagent-release.mjs';
+import { hyprialShellRequest } from '../integration/hyprial-cli.mjs';
 import { kanbanStatus } from '../integration/kanban-gui.mjs';
 import { createWorkflowWorkbench } from '../integration/workflow-workbench.mjs';
 import { installWorkflowTools } from '../integration/workflow-tools.js';
@@ -84,22 +86,22 @@ const AGENT_TASK_OPERATIONS = new Set([
 // Read-only control-plane surface. Every argv string is a repository-owned
 // constant; the browser can only choose an allowlisted operation key.
 const CONTROL_QUERIES = Object.freeze({
-  version: { section: 'overview', label: '版本', command: 'h2b version --json' },
-  processes: { section: 'overview', label: '进程', command: 'h2b ps --json' },
-  topology: { section: 'overview', label: '全景', command: 'h2b top --json' },
-  doctor: { section: 'overview', label: '诊断', command: 'h2b doctor --json' },
-  service: { section: 'system', label: '服务', command: 'h2b service --json' },
-  targets: { section: 'agents', label: '目标', command: 'h2b targets --json' },
-  hosts: { section: 'agents', label: '节点', command: 'h2b hosts --json' },
-  agents: { section: 'agents', label: 'Agent', command: 'h2b agent list --json' },
-  workflows: { section: 'workflows', label: 'Workflow', command: 'h2b workflow list --json' },
-  routines: { section: 'schedules', label: 'Routine', command: 'h2b routine list --json' },
-  outbox: { section: 'delivery', label: '发件箱', command: 'h2b outbox list --json' },
-  adapters: { section: 'integrations', label: 'Adapter', command: 'h2b adapter list --json' },
-  channels: { section: 'integrations', label: 'Channel', command: 'h2b channel list --json' },
-  adapterPins: { section: 'integrations', label: '接收绑定', command: 'h2b adapter pins --json' },
-  organization: { section: 'system', label: '组织槽位', command: 'h2b org status --json' },
-  autoupdate: { section: 'system', label: '自动更新', command: 'h2b autoupdate status --json' }
+  version: { section: 'overview', label: '版本', command: 'hyprial version --json' },
+  processes: { section: 'overview', label: '进程', command: 'hyprial ps --json' },
+  topology: { section: 'overview', label: '全景', command: 'hyprial top --json' },
+  doctor: { section: 'overview', label: '诊断', command: 'hyprial doctor --json' },
+  service: { section: 'system', label: '服务', command: 'hyprial service --json' },
+  targets: { section: 'agents', label: '目标', command: 'hyprial targets --json' },
+  hosts: { section: 'agents', label: '节点', command: 'hyprial hosts --json' },
+  agents: { section: 'agents', label: 'Agent', command: 'hyprial agent list --json' },
+  workflows: { section: 'workflows', label: 'Workflow', command: 'hyprial workflow list --json' },
+  routines: { section: 'schedules', label: 'Routine', command: 'hyprial routine list --json' },
+  outbox: { section: 'delivery', label: '发件箱', command: 'hyprial outbox list --json' },
+  adapters: { section: 'integrations', label: 'Adapter', command: 'hyprial adapter list --json' },
+  channels: { section: 'integrations', label: 'Channel', command: 'hyprial channel list --json' },
+  adapterPins: { section: 'integrations', label: '接收绑定', command: 'hyprial adapter pins --json' },
+  organization: { section: 'system', label: '组织槽位', command: 'hyprial org status --json' },
+  autoupdate: { section: 'system', label: '自动更新', command: 'hyprial autoupdate status --json' }
 });
 const CONTROL_ACTIONS = new Set([
   'dispatch-matrix', 'profile-list', 'org-show', 'routine-templates', 'routine-template',
@@ -154,7 +156,7 @@ async function controlCapabilities(ctx) {
   if (!capabilityCache || capabilityCache.expiresAt <= Date.now()) {
     capabilityCache = { expiresAt: Date.now() + 60000, promise: (async () => {
       const result = await ctx.shell.run(resolveGuiCommand(ctx, {
-        command: 'node "$H2B_CLI_CAPABILITIES_PATH"',
+        command: shellEnvironmentCommand('node "$H2B_CLI_CAPABILITIES_PATH"'),
         env: { H2B_CLI_CAPABILITIES_PATH: fileURLToPath(new URL('../h2b-cli-capabilities.mjs', import.meta.url)) },
         workdir: PACKAGE_ROOT, timeoutMs: process.env.HYPRIAL_DESKTOP_COMPONENTS === '1' ? 60000 : 30000, stdoutMaxBytes: 262144
       }));
@@ -244,7 +246,7 @@ async function controlAction(ctx, input) {
   validateControlWrite(input);
   await requireControlCapability(ctx, 'action', input.operation);
   const spec = resolveGuiCommand(ctx, {
-    command: 'node "$H2B_CONTROL_BRIDGE_PATH"',
+    command: shellEnvironmentCommand('node "$H2B_CONTROL_BRIDGE_PATH"'),
     stdin: JSON.stringify(input),
     env: { H2B_CONTROL_BRIDGE_PATH: CONTROL_BRIDGE_PATH },
     workdir: PACKAGE_ROOT,
@@ -323,7 +325,7 @@ async function kanbanRpc(ctx, input) {
       'from `task _get rc.data.location`), before DSH starts');
   }
   const spec = resolveGuiCommand(ctx, {
-    command: 'python3 "$H2B_KANBAN_BRIDGE" rpc',
+    command: shellEnvironmentCommand('python3 "$H2B_KANBAN_BRIDGE" rpc'),
     stdin: JSON.stringify(input),
     env: process.env.H2B_KANBAN_TASK_BIN
       ? { H2B_KANBAN_BRIDGE: bridgePath, H2B_KANBAN_TASK_BIN: process.env.H2B_KANBAN_TASK_BIN }
@@ -422,7 +424,7 @@ async function bridgeRpc(ctx, input, trustedTool = false) {
   const spec = resolveGuiCommand(ctx, {
     // The active DSH Session may use any workspace. Resolve package-owned
     // files from this Host module instead of inheriting that workspace.
-    command: 'node "$H2B_DSH_BRIDGE_PATH" rpc',
+    command: shellEnvironmentCommand('node "$H2B_DSH_BRIDGE_PATH" rpc'),
     stdin: JSON.stringify(input),
     env: {
       H2B_DSH_BRIDGE_PATH: BRIDGE_PATH,
@@ -460,26 +462,26 @@ function resolveGuiCommand(ctx, request) {
   if (process.env.HYPRIAL_DESKTOP_COMPONENTS === '1' && !request.sandboxPolicy) {
     request = { ...request, sandboxPolicy: { mode: 'workspace-write', workspaceRoot: H2B_STATE_ROOT } };
   }
-  return ctx.shell.resolve(request);
+  return ctx.shell.resolve(hyprialShellRequest(request));
 }
 
 async function targets(ctx) {
   const spec = resolveGuiCommand(ctx, {
-    command: 'h2b targets --json',
+    command: 'hyprial targets --json',
     timeoutMs: 5000,
     stdoutMaxBytes: MAX_BODY_BYTES
   });
   const result = await ctx.shell.run(spec);
-  if (result.timedOut) throw new Error('h2b targets timed out');
-  if (result.aborted) throw new Error('h2b targets was aborted');
+  if (result.timedOut) throw new Error('hyprial targets timed out');
+  if (result.aborted) throw new Error('hyprial targets was aborted');
   if (result.exitCode !== 0) {
     let failure;
     try { failure = JSON.parse(result.stdout?.text || ''); } catch {}
     throw controlFailure(failure, diagnostic(result.stderr?.text) || `Hyprial targets exited with code ${result.exitCode}`);
   }
-  if (result.stdout?.truncated) throw new Error('h2b targets output exceeded the safety limit');
+  if (result.stdout?.truncated) throw new Error('hyprial targets output exceeded the safety limit');
   const document = JSON.parse(result.stdout?.text || '');
-  if (!document || document.ok !== true || !Array.isArray(document.targets)) throw new Error('h2b targets returned an invalid document');
+  if (!document || document.ok !== true || !Array.isArray(document.targets)) throw new Error('hyprial targets returned an invalid document');
   return {
     ok: true,
     targets: document.targets.flatMap((item) => {

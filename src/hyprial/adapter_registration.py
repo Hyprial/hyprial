@@ -10,7 +10,6 @@ snapshot, so lifecycle visibility changes only take effect after a restart.
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import re
@@ -22,6 +21,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from hyprial.platform.file_lock import lock_exclusive, unlock
 from hyprial.persistent_config import (
     ChannelConfiguration,
     ChannelRouteConfig,
@@ -79,10 +79,10 @@ def _adapter_config_mutation(hyprial_home: Path) -> Iterator[None]:
         stream = path.open("a+b")
         os.chmod(path, 0o600)
         try:
-            fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+            lock_exclusive(stream.fileno())
             yield
         finally:
-            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+            unlock(stream.fileno())
             stream.close()
 
 

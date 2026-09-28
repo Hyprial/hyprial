@@ -978,21 +978,27 @@ def install_application(
     hyprial_home: Path,
     confirm: Callable[[dict[str, Any]], bool],
     json_output: bool = False,
+    release_source: tuple[CatalogEntry, str] | None = None,
 ) -> dict[str, Any]:
     """Install one catalog application from its pinned release artifact."""
 
-    catalog = load_catalog()
-    entry = catalog.get(name)
-    if entry is None:
-        available = sorted(catalog)
-        raise InstallError(
-            "INSTALLER_NOT_FOUND",
-            f"unknown installer {name!r}; available: {', '.join(available) or 'none'}",
-            {"available": available},
-        )
-
-    registry = _registry_ref()
+    if release_source is None:
+        catalog = load_catalog()
+        entry = catalog.get(name)
+        if entry is None:
+            available = sorted(catalog)
+            raise InstallError(
+                "INSTALLER_NOT_FOUND",
+                f"unknown installer {name!r}; available: {', '.join(available) or 'none'}",
+                {"available": available},
+            )
+        registry = _registry_ref()
+    else:
+        entry, registry = release_source
+        if entry.name != name:
+            raise ValueError("Release source belongs to another application")
     allow_local = _registry_is_local(registry)
+
     app_root = hyprial_home / "apps" / name
     source = app_root / "source"
     if source.exists():
@@ -1126,6 +1132,7 @@ def upgrade_application(
     check_only: bool = False,
     force: bool = False,
     json_output: bool = False,
+    release_source: tuple[CatalogEntry, str] | None = None,
     before_apply: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Check or atomically upgrade one installed catalog application.
@@ -1133,15 +1140,21 @@ def upgrade_application(
     A v1 (git) receipt routes into migration (§6); a v2 receipt takes the
     release relation matrix (§5)."""
 
-    catalog = load_catalog()
-    entry = catalog.get(name)
-    if entry is None:
-        available = sorted(catalog)
-        raise InstallError(
-            "INSTALLER_NOT_FOUND",
-            f"unknown installer {name!r}; available: {', '.join(available) or 'none'}",
-            {"available": available},
-        )
+    if release_source is None:
+        catalog = load_catalog()
+        entry = catalog.get(name)
+        if entry is None:
+            available = sorted(catalog)
+            raise InstallError(
+                "INSTALLER_NOT_FOUND",
+                f"unknown installer {name!r}; available: {', '.join(available) or 'none'}",
+                {"available": available},
+            )
+        registry = _registry_ref()
+    else:
+        entry, registry = release_source
+        if entry.name != name:
+            raise ValueError("Release source belongs to another application")
 
     app_root = hyprial_home / "apps" / name
     receipt = _read_install_receipt(app_root, name)
@@ -1156,6 +1169,7 @@ def upgrade_application(
             force=force,
             json_output=json_output,
             before_apply=before_apply,
+            registry=registry,
         )
     return _upgrade_v2(
         name,
@@ -1167,6 +1181,7 @@ def upgrade_application(
         force=force,
         json_output=json_output,
         before_apply=before_apply,
+        registry=registry,
     )
 
 
@@ -1189,10 +1204,10 @@ def _upgrade_v2(
     force: bool,
     json_output: bool,
     before_apply: Callable[[], None] | None,
+    registry: str,
 ) -> dict[str, Any]:
     app_root = hyprial_home / "apps" / name
     source = app_root / "source"
-    registry = _registry_ref()
     installed = receipt["source"]
     relation = _release_relation(entry, installed)
     # ``force`` (and a read-only ``--check``) must still reach a verdict when the
@@ -1278,6 +1293,7 @@ def _migrate_v1_receipt(
     force: bool,
     json_output: bool,
     before_apply: Callable[[], None] | None,
+    registry: str,
 ) -> dict[str, Any]:
     """Migrate an installed git (v1) app to the release path (design §6).
 
@@ -1285,7 +1301,6 @@ def _migrate_v1_receipt(
     dirty check (the git face is gone).  The old tree, ``.git`` and all, leaves
     with the backup."""
 
-    registry = _registry_ref()
     from_commit = str(receipt["sourceCommit"]).lower()
     plan: dict[str, Any] = {
         "ok": True,
@@ -1365,7 +1380,7 @@ def _apply_release_over_existing(
             f"the recorded {name} source is missing at {source}; "
             "rerun with --force to reinstall it",
         )
-    allow_local = _registry_is_local(_registry_ref())
+    allow_local = _registry_is_local(plan["registry"])
     staging = Path(tempfile.mkdtemp(prefix=".stage-upgrade-", dir=app_root))
     backup = app_root / f".source-backup-{uuid4().hex}"
     manifest_backup: Path | None = None
@@ -1418,7 +1433,7 @@ def _apply_release_over_existing(
             name,
             entry,
             final_url=final_url,
-            registry=_registry_ref(),
+            registry=plan["registry"],
             manifest_sha=manifest_sha,
             installed_at=str(receipt.get("installedAt", upgraded_at)),
             upgraded_at=upgraded_at,

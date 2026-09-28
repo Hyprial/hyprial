@@ -1,9 +1,10 @@
+import { installedPackage } from '../scripts/dsh-runtime.mjs';
 import assert from 'node:assert/strict';
-import { join, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { verifyDshHistoryOccurrences } from './verify-dsh-history-occurrences.mjs';
 export async function verifyDshHistoryCompatibility(runtime) {
-  const moduleAt = (pkg, file = 'lib/index.js') => import(pathToFileURL(join(resolve(runtime), 'node_modules/@deepseek-ai', pkg, file)).href);
+  const moduleAt = (pkg, file = 'lib/index.js') => import(pathToFileURL(installedPackage(runtime, `@deepseek-ai/${pkg}`, file)).href);
   const [format, oldFormat, currentFormat, subagent, descriptorModule] = await Promise.all([
     moduleAt('dsh-session-format'), moduleAt('dsh-session-format-v0-to-v1'),
     moduleAt('dsh-session-format-v2-to-v3'), moduleAt('dsh-subagent'),

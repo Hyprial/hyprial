@@ -11,7 +11,7 @@ from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
-from threading import Lock
+from threading import Event, Lock
 import time
 from typing import TYPE_CHECKING, Any, Final
 
@@ -49,9 +49,10 @@ ORGFS_SYNC_QUEUE_LIMIT: Final[int] = 32
 ORGFS_REPLICA_SYNC_SCAN_ROWS: Final[int] = 256
 MeshLogger = Callable[..., None]
 SupplierGate = Callable[[str], bool]
-AppliedHook = Callable[[bytes], None]
+AppliedHook = Callable[[bytes], Iterable[str] | None]
 ReplacementHook = Callable[[str, str, bytes], None]
 AnnouncementSource = Callable[[], Iterable[Mapping[str, Any]]]
+RecoveryCandidates = Callable[[], Iterable[str]]
 
 
 def _json_bytes(value: Mapping[str, Any]) -> bytes:
@@ -158,6 +159,7 @@ class OrgFsMesh:
         on_replacement: ReplacementHook | None = None,
         announcement_source: AnnouncementSource | None = None,
         holder_discovery: set[str] | None = None,
+        recovery_candidates: RecoveryCandidates | None = None,
         durable: bool = True,
         logger: MeshLogger | None = None,
         keys: KeySpace | None = None,
@@ -178,14 +180,20 @@ class OrgFsMesh:
         self._holder_discovery = (
             holder_discovery if holder_discovery is not None else set()
         )
+        self._recovery_candidates = recovery_candidates or (
+            lambda: tuple(self._holder_discovery)
+        )
         self._logger = logger
         self._keys = keys or KeySpace()
         self.replica_store = replica_store
         self._closed = False
         self._worker_lock = Lock()
         self._blob_fetch_pending: dict[str, list[tuple[bytes, str]]] = {}
+        self._blob_fetch_waiters: dict[str, list[Event]] = {}
         self._blob_fetch_pending_count = 0
         self._blob_fetch_dropped = 0
+        self._replica_blob_pending: dict[str, str] = {}
+        self._replica_blob_dropped = 0
         self._sync_pending: set[str] = set()
         self._sync_active: set[str] = set()
         self._sync_dropped = 0
@@ -323,16 +331,27 @@ class OrgFsMesh:
         with self._worker_lock:
             if self._closed:
                 return
-            if self._blob_fetch_pending_count >= ORGFS_BLOB_FETCH_QUEUE_LIMIT:
-                self._blob_fetch_dropped += 1
-                dropped_count = self._blob_fetch_dropped
-                queue_depth = self._blob_fetch_pending_count
-            else:
-                batch = self._blob_fetch_pending.get(digest)
-                if batch is None:
+            batch = self._blob_fetch_pending.get(digest)
+            if batch is None:
+                if (
+                    self._blob_fetch_pending_count >= ORGFS_BLOB_FETCH_QUEUE_LIMIT
+                    or len(self._blob_fetch_pending) >= ORGFS_BLOB_FETCH_QUEUE_LIMIT
+                ):
+                    self._blob_fetch_dropped += 1
+                    dropped_count = self._blob_fetch_dropped
+                    queue_depth = self._blob_fetch_pending_count
+                else:
                     batch = []
                     self._blob_fetch_pending[digest] = batch
                     submit = True
+            elif (
+                self._blob_fetch_pending_count >= ORGFS_BLOB_FETCH_QUEUE_LIMIT
+                or len(batch) >= ORGFS_BLOB_FETCH_QUEUE_LIMIT
+            ):
+                self._blob_fetch_dropped += 1
+                dropped_count = self._blob_fetch_dropped
+                queue_depth = self._blob_fetch_pending_count
+            if batch is not None and dropped_count is None:
                 batch.append((envelope, supplier))
                 self._blob_fetch_pending_count += 1
         if dropped_count is not None:
@@ -355,24 +374,81 @@ class OrgFsMesh:
             with self._worker_lock:
                 batch = self._blob_fetch_pending.pop(digest, [])
                 self._blob_fetch_pending_count -= len(batch)
+                waiters = self._blob_fetch_waiters.pop(digest, [])
+            for waiter in waiters:
+                waiter.set()
+
+    def request_blob(self, digest: str) -> Event:
+        """Join one bounded, coalesced fetch; the event is not proof of arrival."""
+
+        completed = Event()
+        if self.blob_store is None or self.blob_store.contains(digest):
+            completed.set()
+            return completed
+        rejected: str | None = None
+        with self._worker_lock:
+            if self._closed:
+                completed.set()
+                return completed
+            existing = self._blob_fetch_waiters.get(digest)
+            if existing:
+                return existing[0]
+            if len(self._blob_fetch_waiters) >= ORGFS_BLOB_FETCH_QUEUE_LIMIT or (
+                digest not in self._blob_fetch_pending
+                and len(self._blob_fetch_pending) >= ORGFS_BLOB_FETCH_QUEUE_LIMIT
+            ):
+                rejected = "queue-full"
+            else:
+                self._blob_fetch_waiters[digest] = [completed]
+                if digest not in self._blob_fetch_pending:
+                    self._blob_fetch_pending[digest] = []
+                    try:
+                        self._worker_executor.submit(self._run_blob_recovery, digest)
+                    except RuntimeError:
+                        # Admission failed while the lock still excludes
+                        # inbound envelope attachment to this new batch.
+                        self._blob_fetch_pending.pop(digest, None)
+                        self._blob_fetch_waiters.pop(digest, None)
+                        rejected = "worker-closed"
+        if rejected is not None:
+            completed.set()
+            self._log(
+                "warn",
+                "orgfs.content.blob-fetch-dropped",
+                reason=rejected,
+                digest=digest,
+                queueLimit=ORGFS_BLOB_FETCH_QUEUE_LIMIT,
+            )
+        return completed
 
     def _run_blob_recovery(self, digest: str) -> None:
         fetched = False
         attempted: set[str] = set()
+        pending: list[tuple[bytes, str]] = []
+        waiters: list[Event] = []
         while True:
+            try:
+                discovered = tuple(self._recovery_candidates())
+            except Exception:
+                discovered = ()
             with self._worker_lock:
                 batch = self._blob_fetch_pending.get(digest, ())
                 supplier = next(
                     (
                         candidate
-                        for _envelope, candidate in batch
+                        for candidate in dict.fromkeys(
+                            [item[1] for item in batch] + list(discovered)
+                        )
                         if candidate not in attempted
+                        and candidate != self.node_id
+                        and self._supplier_allowed(candidate)
                     ),
                     None,
                 )
                 if supplier is None:
                     pending = self._blob_fetch_pending.pop(digest, [])
                     self._blob_fetch_pending_count -= len(pending)
+                    waiters = self._blob_fetch_waiters.pop(digest, [])
                     break
             attempted.add(supplier)
             try:
@@ -390,6 +466,7 @@ class OrgFsMesh:
             with self._worker_lock:
                 pending = self._blob_fetch_pending.pop(digest, [])
                 self._blob_fetch_pending_count -= len(pending)
+                waiters = self._blob_fetch_waiters.pop(digest, [])
             break
 
         for envelope, supplier in pending:
@@ -402,6 +479,8 @@ class OrgFsMesh:
                 else initial
             )
             self._finish_receive(envelope, supplier=supplier, result=result)
+        for waiter in waiters:
+            waiter.set()
 
     def schedule_sync_from(self, supplier: str) -> bool:
         """F6: coalesce one bounded anti-entropy job per live peer."""
@@ -452,6 +531,75 @@ class OrgFsMesh:
             with self._worker_lock:
                 self._sync_pending.discard(supplier)
 
+    def _defer_replica_blob(self, digest: str, *, supplier: str) -> None:
+        """Coalesce one bounded worker job per retained blob digest."""
+
+        replica = self.replica_store
+        if replica is None or self.blob_store is None:
+            return
+        if replica.pinned_reason(digest) is not None:
+            return
+        dropped_count: int | None = None
+        with self._worker_lock:
+            if self._closed or digest in self._replica_blob_pending:
+                return
+            if len(self._replica_blob_pending) >= ORGFS_BLOB_FETCH_QUEUE_LIMIT:
+                self._replica_blob_dropped += 1
+                dropped_count = self._replica_blob_dropped
+            else:
+                self._replica_blob_pending[digest] = supplier
+        if dropped_count is not None:
+            self._log(
+                "warn",
+                "orgfs.replica.blob-reconcile-dropped",
+                reason="queue-full",
+                supplier=supplier,
+                digest=digest,
+                droppedCount=dropped_count,
+                queueDepth=ORGFS_BLOB_FETCH_QUEUE_LIMIT,
+                queueLimit=ORGFS_BLOB_FETCH_QUEUE_LIMIT,
+            )
+            return
+        try:
+            self._worker_executor.submit(self._run_replica_blob_reconcile, digest)
+        except RuntimeError:
+            with self._worker_lock:
+                self._replica_blob_pending.pop(digest, None)
+
+    def _run_replica_blob_reconcile(self, digest: str) -> None:
+        with self._worker_lock:
+            supplier = self._replica_blob_pending.get(digest)
+        try:
+            if supplier is None or self.blob_store is None:
+                return
+            try:
+                content = self.blob_store.get(self.store.space_id, digest)
+            except Exception:
+                content = self.fetch_blob(supplier, digest)
+                stored = self.blob_store.put(
+                    self.store.space_id, content, reason="replica"
+                )
+                if stored != digest:
+                    raise StoreError(
+                        "blob-unavailable",
+                        "fetched blob did not match requested digest",
+                    )
+            replica = self.replica_store
+            if replica is not None:
+                replica.store_blob(digest, content)
+                self.blob_store.pin(self.store.space_id, digest, "replica")
+        except Exception as exc:  # noqa: BLE001 - bounded repair is retried by sync
+            self._log(
+                "warn",
+                "orgfs.replica.blob-reconcile-failed",
+                reason=getattr(exc, "code", "blob-unavailable"),
+                supplier=supplier or "",
+                digest=digest,
+            )
+        finally:
+            with self._worker_lock:
+                self._replica_blob_pending.pop(digest, None)
+
     def _finish_receive(
         self, envelope: bytes, *, supplier: str, result: ImportResult
     ) -> None:
@@ -467,12 +615,18 @@ class OrgFsMesh:
             and result.code != "duplicate"
             and self._on_applied is not None
         ):
-            self._on_applied(envelope)
+            referenced = self._on_applied(envelope)
+            for digest in referenced or ():
+                self._defer_replica_blob(str(digest), supplier=supplier)
             drained = (result.details or {}).get("drained", ())
             if isinstance(drained, (tuple, list)):
                 for pending_envelope in drained:
                     if isinstance(pending_envelope, bytes):
-                        self._on_applied(pending_envelope)
+                        referenced = self._on_applied(pending_envelope)
+                        for digest in referenced or ():
+                            self._defer_replica_blob(
+                                str(digest), supplier=supplier
+                            )
         if result.status == "applied" and result.code != "duplicate":
             try:
                 value = json.loads(envelope)
@@ -1372,7 +1526,16 @@ class OrgFsMesh:
         with self._worker_lock:
             self._blob_fetch_pending.clear()
             self._blob_fetch_pending_count = 0
+            self._replica_blob_pending.clear()
+            waiters = tuple(
+                waiter
+                for batch in self._blob_fetch_waiters.values()
+                for waiter in batch
+            )
+            self._blob_fetch_waiters.clear()
             self._sync_pending.clear()
+        for waiter in waiters:
+            waiter.set()
 
 
 __all__ = [

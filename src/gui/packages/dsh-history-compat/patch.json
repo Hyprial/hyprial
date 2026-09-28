@@ -5,7 +5,7 @@
   "files": [
     {
       "package": "@deepseek-ai/dsh-client-ui-chat",
-      "version": "0.1.5-rc.2",
+      "version": "0.1.5-rc.3",
       "file": "lib/client.js",
       "beforeSha256": "6527556d25c7b2a27f2e3bfb96cc2ae3d9244f1213147e245b17684ad8d9e396",
       "afterSha256": "adcdbfda652968b65a743d4b646b99cc4656dfd4cb74e1bcd8ab8188cf75f72b",
@@ -18,7 +18,7 @@
     },
     {
       "package": "@deepseek-ai/dsh-session-format-v0-to-v1",
-      "version": "0.1.5-rc.2",
+      "version": "0.1.5-rc.3",
       "file": "lib/index.js",
       "beforeSha256": "15ae26b90310d83b1b90a5e7cad9e2f34282fddaba2f19f2fd2232382065603d",
       "afterSha256": "c71d1f4cc7c1148f33b2ea051824fc1679cb18dfeb6b015d6a2f8526f5fc2869",
@@ -39,7 +39,7 @@
     },
     {
       "package": "@deepseek-ai/dsh-subagent",
-      "version": "0.1.5-rc.2",
+      "version": "0.1.5-rc.3",
       "file": "lib/index.js",
       "beforeSha256": "b8ea0e37bd6f1d9c4bd870c4ca03839f6d0e42f648a83578e31a448f6dffe4ef",
       "afterSha256": "21d5796babd59b0a0531770beb73fae49337d622975f585c3e99279a62792670",
@@ -52,7 +52,7 @@
     },
     {
       "package": "@deepseek-ai/dsh-subagent",
-      "version": "0.1.5-rc.2",
+      "version": "0.1.5-rc.3",
       "file": "lib/types/descriptor.js",
       "beforeSha256": "c4be859381a6100f6a529c2f614454a5b50f9aae269f35bc6021bd6bf60cfcb4",
       "afterSha256": "87adb477fef669e6f14c0fa26cc06c29e366e9ddc8eb5452f41903799a792f60",

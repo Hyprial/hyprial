@@ -7,11 +7,11 @@ import json
 from pathlib import Path
 from threading import Lock
 import time
-from typing import Any
+from typing import Any, Final
 
 from hyprial.transport import KeySpace, Registration, TransportSample, TransportSession
 
-from .api import OrgFsError, SpaceInfo
+from .api import OrgFsError, SpaceInfo, SpaceStatus
 from .blobs import BlobStore
 from .checkout import CheckoutManager
 from .docs import LocalOrgFs
@@ -21,7 +21,10 @@ from .mesh import (
     OrgFsMesh,
 )
 from .replica import FsReplicaBackend, MemoryReplicaBackend, ReplicaStore
-from .store import LocalSpaceStore, StoreError
+from .store import LocalSpaceStore, StoreError, state_covers
+
+
+ORGFS_CONTENT_WAIT_S: Final[float] = 10.0
 
 
 class _StoreRegistry(dict[str, LocalSpaceStore]):
@@ -89,6 +92,7 @@ class OrgFsRuntime:
         self._liveliness_registration: Registration | None = None
         self._holders: dict[str, set[str]] = {}
         self._known_holders: dict[str, set[str]] = {}
+        self._lively_peers: set[str] = set()
         self._pending_announces: dict[str, dict[str, Any]] = {}
         self._pending_announces_lock = Lock()
         self._announce_buffer_dropped = 0
@@ -122,48 +126,74 @@ class OrgFsRuntime:
     def _on_peer_liveliness(self, sample: TransportSample) -> None:
         """F5/F6: admit buffered discovery and schedule bounded anti-entropy."""
 
-        if sample.kind == "delete":
+        peer, pending = self._settle_peer_liveliness(sample)
+        if not peer or sample.kind == "delete":
             return
+        self._announce_all()
+        if pending is not None:
+            self._apply_announce(peer, pending)
+        # An announce can race the first pop while the liveliness callback
+        # is applying the previous buffered value.  Recheck once after the
+        # presence verdict has flipped so that value cannot be stranded
+        # until a later liveliness transition.
+        with self._pending_announces_lock:
+            landed_during_flip = self._pending_announces.pop(peer, None)
+        if landed_during_flip is not None:
+            self._apply_announce(peer, landed_during_flip)
+        for space_id, checkout in tuple(self._checkouts.items()):
+            try:
+                checkout.reconcile()
+            except Exception as exc:  # noqa: BLE001 - holder retry is best effort
+                if self.logger is not None:
+                    self.logger(
+                        "warn",
+                        "orgfs.checkout.reconcile-failed",
+                        spaceId=space_id,
+                        detail=str(exc),
+                    )
+        for space_id in tuple(self.stores):
+            # F6: only schedule anti-entropy for spaces the peer actually
+            # announced when holder hints exist.  A freshly restarted
+            # node has no in-memory hints yet, so it retains the P1
+            # liveliness fallback until the first announce arrives.
+            holders = self._holders.get(space_id, set())
+            if holders and peer not in holders:
+                continue
+            mesh = self._mesh(space_id)
+            if mesh is not None:
+                mesh.schedule_sync_from(peer)
+
+    def _settle_peer_liveliness(
+        self, sample: TransportSample
+    ) -> tuple[str | None, dict[str, Any] | None]:
+        """Track host presence and settle holder hints on liveliness delete."""
+
+        peer = self._host_peer_from_liveliness(sample)
+        if not peer or peer == self.node_id:
+            return None, None
+        with self._pending_announces_lock:
+            if sample.kind == "delete":
+                self._lively_peers.discard(peer)
+                for holders in self._holders.values():
+                    holders.discard(peer)
+                return peer, None
+            self._lively_peers.add(peer)
+            return peer, self._pending_announces.pop(peer, None)
+
+    @staticmethod
+    def _host_peer_from_liveliness(sample: TransportSample) -> str | None:
         prefix = f"{KeySpace().prefix}/liveliness/actor/"
         if not sample.key.startswith(prefix):
-            return
+            return None
         peer = KeySpace().decode_identity(sample.key[len(prefix) :])
-        if peer and peer != self.node_id:
-            self._announce_all()
-            with self._pending_announces_lock:
-                pending = self._pending_announces.pop(peer, None)
-            if pending is not None:
-                self._apply_announce(peer, pending)
-            # An announce can race the first pop while the liveliness callback
-            # is applying the previous buffered value.  Recheck once after the
-            # presence verdict has flipped so that value cannot be stranded
-            # until a later liveliness transition.
-            with self._pending_announces_lock:
-                landed_during_flip = self._pending_announces.pop(peer, None)
-            if landed_during_flip is not None:
-                self._apply_announce(peer, landed_during_flip)
-            for space_id, checkout in tuple(self._checkouts.items()):
-                try:
-                    checkout.reconcile()
-                except Exception as exc:  # noqa: BLE001 - holder retry is best effort
-                    if self.logger is not None:
-                        self.logger(
-                            "warn",
-                            "orgfs.checkout.reconcile-failed",
-                            spaceId=space_id,
-                            detail=str(exc),
-                        )
-            for space_id in tuple(self.stores):
-                # F6: only schedule anti-entropy for spaces the peer actually
-                # announced when holder hints exist.  A freshly restarted
-                # node has no in-memory hints yet, so it retains the P1
-                # liveliness fallback until the first announce arrives.
-                holders = self._holders.get(space_id, set())
-                if holders and peer not in holders:
-                    continue
-                mesh = self._mesh(space_id)
-                if mesh is not None:
-                    mesh.schedule_sync_from(peer)
+        # Import here to avoid making the orgfs module initialize the daemon
+        # package while DaemonApplication is importing OrgFsRuntime.
+        from hyprial.daemon.identity import classify_target_identity
+        from hyprial.uri import TARGET_KIND_HOST
+
+        if classify_target_identity(peer) != TARGET_KIND_HOST:
+            return None
+        return peer
 
     def _announcement_spaces(self) -> tuple[dict[str, object], ...]:
         spaces: list[dict[str, object]] = []
@@ -309,9 +339,10 @@ class OrgFsRuntime:
             return None
         if space_id not in self._meshes:
 
-            def applied(envelope: bytes) -> None:
+            def applied(envelope: bytes) -> tuple[str, ...]:
                 self.facade.apply_envelope(space_id, envelope)
                 self._reconcile_retirements(space_id)
+                return self.facade.retained_blob_digests(space_id)
 
             def replacement(
                 old_doc_id: str, new_doc_id: str, snapshot_bytes: bytes
@@ -331,6 +362,10 @@ class OrgFsRuntime:
                 supplier_online=self._supplier_online,
                 announcement_source=self._announcement_spaces,
                 holder_discovery=self._holders.setdefault(space_id, set()),
+                recovery_candidates=lambda: (
+                    *self._holders.get(space_id, ()),
+                    *self._holder_candidates(),
+                ),
                 on_applied=applied,
                 on_replacement=replacement,
                 logger=self.logger,
@@ -406,6 +441,54 @@ class OrgFsRuntime:
         mesh = self._mesh(space_id)
         return 0 if mesh is None else mesh.broadcast_pending()
 
+    def reconcile_replica_blobs(self, space_id: str) -> tuple[str, ...]:
+        """Reconcile retained local blob refs into the serving replica."""
+
+        replica = self._replicas.get(space_id)
+        if replica is None:
+            return ()
+        reconciled = replica.reconcile_blobs(self.blobs)
+        for digest in reconciled:
+            self.blobs.pin(space_id, digest, "replica")
+        return reconciled
+
+    def status(self, space_id: str) -> SpaceStatus:
+        """Live holder view: durable probe history plus current presence.
+
+        ``holders_online`` is the sorted, de-duplicated union of this node
+        when it currently serves the space and the announced holders that
+        are online now per the runtime's liveliness and presence view.
+        ``durable_holders_seen`` keeps its probe-recorded meaning.
+        """
+
+        base = self.facade.status(space_id)
+        with self._pending_announces_lock:
+            announced = set(self._holders.get(space_id, ()))
+            lively = set(self._lively_peers)
+        # When this runtime observes host liveliness, presence is exactly that
+        # view: an announce applied after a peer's liveliness delete must not
+        # make it look online again.  The supplier predicate is only the
+        # fallback for sessions without a liveliness view.
+        observes_liveliness = self._liveliness_registration is not None
+        online = {
+            node
+            for node in announced
+            if node != self.node_id
+            and (
+                node in lively
+                if observes_liveliness
+                else self._supplier_online(node)
+            )
+        }
+        if space_id in self._replicas:
+            online.add(self.node_id)
+        return SpaceStatus(
+            base.space_id,
+            base.unconfirmed_commits,
+            base.durable_holders_seen,
+            tuple(sorted(online)),
+        )
+
     def writer_attributions(self, space_id: str) -> dict[str, tuple[str, ...]]:
         """Return the space's replicated node -> author attribution table."""
 
@@ -449,6 +532,83 @@ class OrgFsRuntime:
                 break
         return refreshed
 
+    def known_holders(
+        self,
+        space_id: str,
+        *,
+        doc_id: str | None = None,
+        required_frontier: bytes | None = None,
+    ) -> tuple[str, ...]:
+        """Return in-memory holder hints, preferring proven doc coverage."""
+
+        online = {
+            node
+            for node in self._holders.get(space_id, ())
+            if node != self.node_id and self._supplier_online(node)
+        }
+        known = {
+            node
+            for node in self._known_holders.get(space_id, ())
+            if node != self.node_id
+        }
+        candidates = online | known
+        frontiers = self.stores.get(space_id).holder_frontiers()
+
+        def key(node: str) -> tuple[bool, bool, str]:
+            covers = False
+            if doc_id is not None and required_frontier is not None:
+                actual = frontiers.get(node, {}).get(doc_id)
+                covers = actual is not None and state_covers(
+                    actual, required_frontier
+                )
+            return (not covers, node not in online, node)
+
+        return tuple(sorted(candidates, key=key))
+
+    def await_content(
+        self, space_id: str, node_id: str, *, deadline_monotonic: float
+    ) -> bool:
+        """Actively provision one node's content without holding the facade lock."""
+
+        remaining = deadline_monotonic - time.monotonic()
+        if remaining <= 0:
+            return False
+        info = self.facade.stat(space_id, f"id:{node_id}")
+        if info.kind == "blob":
+            if info.content_state == "arrived":
+                return True
+            if not info.blob_hash:
+                return False
+            mesh = self._mesh(space_id)
+            if mesh is None:
+                return False
+            event = mesh.request_blob(info.blob_hash)
+            event.wait(max(0.0, deadline_monotonic - time.monotonic()))
+            return self.blobs.contains(info.blob_hash)
+        if info.kind == "doc":
+            if info.content_state in {"arrived", "unverifiable"}:
+                return True
+            self.refresh_space(
+                space_id,
+                timeout=max(0.0, deadline_monotonic - time.monotonic()),
+            )
+            refreshed = self.facade.stat(space_id, f"id:{node_id}")
+            if refreshed.doc_id:
+                snapshot = self.stores.get(space_id).snapshot(
+                    refreshed.doc_id, shallow_since=None
+                )
+                self.facade.hydrate_content_snapshot(
+                    space_id,
+                    f"id:{node_id}",
+                    snapshot.snapshot_bytes,
+                    expected_doc_id=snapshot.doc_id,
+                )
+            return (
+                self.facade.stat(space_id, f"id:{node_id}").content_state
+                == "arrived"
+            )
+        return True
+
     def fetch_blob(self, space_id: str, digest: str) -> bytes:
         """Fetch a facade-referenced blob from any currently online holder."""
 
@@ -476,6 +636,10 @@ class OrgFsRuntime:
                             "blob-unavailable",
                             "fetched blob did not match requested digest",
                         )
+                    replica = self._replicas.get(space_id)
+                    if replica is not None:
+                        replica.store_blob(digest, payload)
+                        self.blobs.pin(space_id, digest, "replica")
                     return payload
                 except StoreError as exc:
                     last_error = exc
@@ -556,6 +720,7 @@ class OrgFsRuntime:
                         "backend": existing_backend,
                     },
                 )
+            existing.reconcile_blobs(self.blobs)
             for digest in existing.pinned_blobs():
                 self.blobs.pin(space_id, digest, "replica")
             self._reconcile_retirements(space_id)
@@ -730,6 +895,7 @@ class OrgFsRuntime:
         self._replicas.clear()
         with self._pending_announces_lock:
             self._pending_announces.clear()
+            self._lively_peers.clear()
         self._session = None
         for store in tuple(self.stores.values()):
             store.close()

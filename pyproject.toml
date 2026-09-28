@@ -54,6 +54,9 @@ pattern = "^(?P<version>[^\\s]+)"
 [tool.hatch.build.targets.wheel]
 packages = ["src/hyprial"]
 
+[tool.hatch.build.hooks.custom]
+path = "src/hyprial/gui_build_hook.py"
+
 [tool.ruff]
 target-version = "py312"
 # Repro artifacts under notes/repro are kept VERBATIM on purpose: their

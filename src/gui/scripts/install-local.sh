@@ -114,7 +114,12 @@ npm --prefix "$repo_root" run build:static
 node "$repo_root/scripts/gui-source.mjs"
 
 printf 'Running the isolated repository test suite...\n'
-npm --prefix "$repo_root" test
+# Product payloads omit development tests; those run before the product build.
+# The actual installed DSH/browser compatibility gate below remains mandatory.
+product_payload="$(cd "$repo_root" && node --input-type=module -e 'import {inspectGuiSource} from "./scripts/gui-source.mjs"; console.log(inspectGuiSource(process.cwd()).distribution === "product" ? "yes" : "no")')"
+if [[ "$product_payload" != "yes" ]]; then
+  npm --prefix "$repo_root" test
+fi
 node "$repo_root/scripts/gui-source.mjs"
 
 if ((check_only)); then
@@ -146,6 +151,14 @@ node "$repo_root/scripts/hyprial-plugin-package.mjs" install \
 node "$repo_root/scripts/gui-layout-package.mjs" migrate-profile \
   || fail "could not migrate the legacy GUI profile rows; original user configuration was preserved"
 
+# Declare the Hyprial API route in the user settings layer, which merges per
+# provider route: a bundle patch would replace the shared llm-pi-ai config and
+# drop the providers the other bundles declare there. An existing route is left
+# as the user left it, and no credential is written.
+printf 'Adding the Hyprial API provider route to the DSH settings...\n'
+node "$repo_root/scripts/hyprial-provider-seed.mjs" \
+  || fail "could not add the Hyprial API provider route to the DSH settings"
+
 # Do not print the composed configuration: it can include private user settings.
 printf 'Validating the DSH web profile configuration...\n'
 dsh --profile web --dump-config | node "$repo_root/scripts/gui-layout-package.mjs" verify-profile \
@@ -159,6 +172,7 @@ cat <<EOF
 
 The Hyprial GUI plugin (versioned artifact), GUI layout and dsh-codex are installed for the web profile.
 In DSH, open Settings -> OpenAI Codex to sign in with ChatGPT if needed.
+The Hyprial API route is declared in Settings -> Models: paste its sk- key there, then fetch its models.
 Existing login, proxy, and saved model settings are preserved; setup does not start OAuth.
 
 Development iteration against a checkout uses the link form instead:

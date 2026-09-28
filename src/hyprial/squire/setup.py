@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import pwd
 import re
 import secrets
 import shutil
@@ -81,6 +80,12 @@ def platform_login_name() -> str:
     violate — but the same discipline applies: read the current UID, not the
     spoofable ``USER`` env, mirroring ``transfer.orchestrator``.
     """
+
+    if os.name == "nt":
+        raise OSError(
+            "SSH same-path user inference is unavailable on Windows; pass --cwd"
+        )
+    import pwd
 
     return pwd.getpwuid(os.getuid()).pw_name
 

@@ -11,7 +11,6 @@ migration itself.
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import uuid
@@ -21,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from hyprial.platform.file_lock import lock_exclusive, unlock
 from hyprial.contracts import ipc_errors
 
 _STATE_DATABASES = (
@@ -257,7 +257,7 @@ def _legacy_daemon_stopped(source: Path) -> Iterator[None]:
         ) from error
     try:
         try:
-            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            lock_exclusive(stream.fileno(), blocking=False)
         except BlockingIOError as error:
             raise _failure(
                 "daemon-running",
@@ -278,7 +278,7 @@ def _legacy_daemon_stopped(source: Path) -> Iterator[None]:
         yield
     finally:
         try:
-            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+            unlock(stream.fileno())
         finally:
             stream.close()
 

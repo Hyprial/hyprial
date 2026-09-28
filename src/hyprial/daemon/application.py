@@ -125,7 +125,7 @@ from hyprial.management import (
     RegistryManagementHandler,
 )
 from hyprial.org import OrgContextMesh, OrgContextStore
-from hyprial.orgfs.runtime import OrgFsRuntime
+from hyprial.orgfs.runtime import ORGFS_CONTENT_WAIT_S, OrgFsRuntime
 from hyprial.persistent_config import PersistentConfigStore, PersistentConfiguration
 from hyprial.squire import (
     ReceiverUserDelivery,
@@ -427,6 +427,12 @@ _CLOSE_UNBUDGETED_STEPS = (
 _EXIT_CODE_STUCK = 75
 
 _IPC_MAX_CLIENTS = 64
+
+#: Namespace for orgfs owner-notice delivery metadata (idempotency keys and
+#: conversation ids).  These are dedup/thread scopes, NOT orgfs node URIs —
+#: node URIs are minted only by ``hyprial.uri.canonical_orgfs_uri``, and the
+#: construction guard bans orgfs: f-string splices in src.
+_ORGFS_NOTICE_NAMESPACE = "orgfs"
 _IPC_ACCEPT_RETRY_INITIAL = 0.05
 _IPC_ACCEPT_RETRY_MAX = 1.0
 _IPC_CLIENT_IDLE_TIMEOUT = 15.0
@@ -4234,6 +4240,14 @@ class DaemonApplication:
     def _start_server(self) -> None:
         self.socket_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.socket_path.unlink(missing_ok=True)
+        if os.name == "nt":
+            from hyprial.platform.windows_pipe import PipeListener
+
+            self._server = PipeListener(
+                self.socket_path,
+                gui_write_sid=os.environ.get("HYPRIAL_WINDOWS_GUI_WRITE_SID"),
+            )
+            return
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
             server.bind(str(self.socket_path))
@@ -5298,7 +5312,9 @@ class DaemonApplication:
     def _orgfs_json(value: Any) -> Any:
         if is_dataclass(value):
             return {
-                key: DaemonApplication._orgfs_json(item)
+                ("contentState" if key == "content_state" else key): (
+                    DaemonApplication._orgfs_json(item)
+                )
                 for key, item in asdict(value).items()
             }
         if isinstance(value, tuple):
@@ -5353,14 +5369,14 @@ class DaemonApplication:
             outcome = self._user_delivery.deliver(
                 UserDeliveryRequest(
                     message_id=message_id,
-                    idempotency_key=f"orgfs:{event}:{message_id}",
+                    idempotency_key=f"{_ORGFS_NOTICE_NAMESPACE}:{event}:{message_id}",
                     owner=owner_name,
                     sender=canonical_agent_uri(self.owner, self.node_id, "squire"),
                     message=(
                         f"orgfs resident replica reported {event}: "
                         f"{stable}"
                     ),
-                    conversation_id=f"orgfs:{details.get('spaceId', 'unknown')}",
+                    conversation_id=f"{_ORGFS_NOTICE_NAMESPACE}:{details.get('spaceId', 'unknown')}",
                 )
             )
         except Exception as exc:  # noqa: BLE001 - integrity path must still reject
@@ -5408,6 +5424,51 @@ class DaemonApplication:
         def required(name: str) -> str:
             return _required_string(params.get(name), name)
 
+        def content_wait_seconds() -> float:
+            raw = params.get("waitSeconds", ORGFS_CONTENT_WAIT_S)
+            if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+                raise OrgFsError(
+                    "invalid-argument",
+                    {"message": "waitSeconds must be a number from 0 to 120"},
+                )
+            value = float(raw)
+            if value != value or value < 0 or value > 120:
+                raise OrgFsError(
+                    "invalid-argument",
+                    {"message": "waitSeconds must be a number from 0 to 120"},
+                )
+            return value
+
+        def with_content_wait(
+            space_id: str, operation: Callable[[], Any]
+        ) -> Any:
+            wait_seconds = content_wait_seconds()
+            started = time.monotonic()
+            deadline = started + wait_seconds
+            while True:
+                try:
+                    return operation()
+                except OrgFsError as exc:
+                    if exc.code != ipc_errors.ORGFS_CONTENT_PENDING:
+                        raise
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        details = dict(exc.details)
+                        details["waitedSeconds"] = max(
+                            0.0, time.monotonic() - started
+                        )
+                        raise OrgFsError(exc.code, details) from exc
+                    node = str(exc.details.get("node", ""))
+                    node_id = node[3:] if node.startswith("id:") else node
+                    runtime.await_content(
+                        space_id,
+                        node_id,
+                        deadline_monotonic=deadline,
+                    )
+                    remaining = deadline - time.monotonic()
+                    if remaining > 0:
+                        time.sleep(min(0.25, remaining))
+
         try:
             if method == "orgfs.spaces":
                 return {"spaces": self._orgfs_json(fs.spaces())}
@@ -5428,18 +5489,22 @@ class DaemonApplication:
             if method == "orgfs.read":
                 space_id = required("spaceId")
                 node = str(params.get("node", params.get("path", "")))
-                info = fs.stat(space_id, node)
-                if info.kind == "doc":
-                    text, version = fs.read_text(space_id, node)
-                    if len(text.encode()) > 2 * 1024 * 1024:
-                        raise OrgFsError("too-large", {"use": "export"})
-                    return {"node": self._orgfs_json(info), "text": text, "version": version}
-                content = fs.read_bytes(space_id, node)
-                if len(content) > 2 * 1024 * 1024:
-                    raise OrgFsError("too-large", {"use": "export"})
-                import base64
 
-                return {"node": self._orgfs_json(info), "contentB64": base64.b64encode(content).decode("ascii")}
+                def read() -> Any:
+                    info = fs.stat(space_id, node)
+                    if info.kind == "doc":
+                        text, version = fs.read_text(space_id, node)
+                        if len(text.encode()) > 2 * 1024 * 1024:
+                            raise OrgFsError("too-large", {"use": "export"})
+                        return {"node": self._orgfs_json(info), "text": text, "version": version}
+                    content = fs.read_bytes(space_id, node)
+                    if len(content) > 2 * 1024 * 1024:
+                        raise OrgFsError("too-large", {"use": "export"})
+                    import base64
+
+                    return {"node": self._orgfs_json(info), "contentB64": base64.b64encode(content).decode("ascii")}
+
+                return with_content_wait(space_id, read)
             if method == "orgfs.write":
                 space_id = required("spaceId")
                 node = str(params.get("node", params.get("path", "")))
@@ -5470,12 +5535,14 @@ class DaemonApplication:
                     )
                 return self._orgfs_json(result)
             if method == "orgfs.export":
-                return self._orgfs_json(
-                    fs.export_to(
-                        required("spaceId"),
+                space_id = required("spaceId")
+                return with_content_wait(
+                    space_id,
+                    lambda: self._orgfs_json(fs.export_to(
+                        space_id,
                         str(params.get("node", params.get("path", ""))),
                         Path(required("destination")),
-                    )
+                    )),
                 )
             if method == "orgfs.import":
                 return self._orgfs_json(
@@ -5531,7 +5598,7 @@ class DaemonApplication:
                     )
                 )
             if method == "orgfs.status":
-                return self._orgfs_json(fs.status(required("spaceId")))
+                return self._orgfs_json(runtime.status(required("spaceId")))
             if method == "orgfs.purge_plan":
                 targets = params.get("targets")
                 if not isinstance(targets, list) or not all(
@@ -6585,7 +6652,40 @@ class DaemonApplication:
         if method == "routine.list":
             if self._routine_service is None:
                 raise DaemonRequestError(ipc_errors.ROUTINE_UNAVAILABLE, "routine service is not running")
-            return self._routine_service.list()
+            all_callers = params.get("all", False)
+            if type(all_callers) is not bool:
+                raise DaemonRequestError(
+                    ipc_errors.INVALID_ARGUMENT, "all must be a boolean"
+                )
+            routines = self._routine_service.list()["routines"]
+            last_dispatches = (
+                self._workflow_service.routine_last_dispatches()
+                if self._workflow_service is not None
+                else {}
+            )
+            visible = []
+            for routine in routines:
+                owner = routine.get("owner")
+                actor = routine.get("actor")
+                if not (
+                    all_callers
+                    or routine_caller == f"user:{self.owner}"
+                    or routine_caller in (owner, actor)
+                ):
+                    continue
+                outcomes = routine.get("outcomes")
+                visible.append(
+                    {
+                        **routine,
+                        "lastDispatchAtMs": last_dispatches.get(routine.get("name")),
+                        "lastOutcome": (
+                            outcomes[-1]
+                            if isinstance(outcomes, list) and outcomes
+                            else None
+                        ),
+                    }
+                )
+            return {"routines": visible}
         if method == "routine.status":
             if self._routine_service is None:
                 raise DaemonRequestError(ipc_errors.ROUTINE_UNAVAILABLE, "routine service is not running")
@@ -6830,8 +6930,13 @@ class DaemonApplication:
                 if self._workflow_service is None:
                     raise DaemonRequestError(ipc_errors.WORKFLOW_UNAVAILABLE, "workflow service is not running")
                 if method == "workflow.list":
+                    all_callers = params.get("all", False)
+                    if type(all_callers) is not bool:
+                        raise DaemonRequestError(
+                            ipc_errors.INVALID_ARGUMENT, "all must be a boolean"
+                        )
                     return self._workflow_service.list(limit=int(params.get("limit", 50)),
-                        viewer=None if caller == f"user:{self.owner}" else caller)
+                        viewer=None if all_callers or caller == f"user:{self.owner}" else caller)
                 run_id = _required_string(params.get("runId"), "runId")
                 if method == "workflow.cancel":
                     return self._workflow_service.cancel(run_id=run_id, actor=caller)

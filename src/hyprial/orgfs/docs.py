@@ -24,6 +24,14 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from pycrdt import Array, Doc, Map, Text
 
+from hyprial.contracts.ipc_errors import ORGFS_CONTENT_PENDING
+from hyprial.uri import (
+    ORGFS_URI_PREFIX,
+    canonical_orgfs_uri,
+    parse_orgfs_uri,
+    parse_user_uri,
+)
+
 from .api import (
     ChangeEvent,
     HistoryEntry,
@@ -36,6 +44,7 @@ from .api import (
     SpaceInfo,
     SpaceStatus,
 )
+from .blobs import BlobIntegrityError
 from .purge import (
     PurgeBlob,
     PurgeDocument,
@@ -47,6 +56,7 @@ from .purge import (
     utc_now,
 )
 from .replica import encode_snapshot_frontier
+from .store import _EMPTY_UPDATE, state_covers
 from .structured import StructuredOrgDoc
 
 ORGFS_TEXT_MAX = 4 * 1024 * 1024
@@ -87,6 +97,19 @@ def _version_number(value: str) -> int:
         return -1
 
 
+def _encode_content_frontier(value: bytes) -> str:
+    return base64.b64encode(value).decode("ascii")
+
+
+def _decode_content_frontier(value: object) -> bytes | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return base64.b64decode(value, validate=True)
+    except ValueError:
+        return None
+
+
 @dataclass
 class _Node:
     node_id: str
@@ -95,6 +118,10 @@ class _Node:
     kind: NodeKind
     doc_id: str | None = None
     blob_hash: str | None = None
+    size: int | None = None
+    required_content_frontier: bytes | None = None
+    ref_size: int | None = None
+    ref_sha256: str | None = None
     deleted: bool = False
     version: str = ""
     modified_by: str = ""
@@ -110,6 +137,10 @@ class _NodeSnapshot:
     kind: NodeKind
     doc_id: str | None
     blob_hash: str | None
+    size: int | None
+    required_content_frontier: bytes | None
+    ref_size: int | None
+    ref_sha256: str | None
     deleted: bool
     version: str
     modified_by: str
@@ -175,8 +206,7 @@ class TreeDocument:
         self.nodes[str(node["node_id"])] = self._wire_node(node)
 
     def record_node(self, node: _Node) -> None:
-        self._write_node(
-            {
+        value = {
                 "node_id": node.node_id,
                 "parent": node.parent,
                 "name": node.name,
@@ -184,8 +214,19 @@ class TreeDocument:
                 "doc_id": getattr(node, "doc_id", None),
                 "blob_hash": getattr(node, "blob_hash", None),
                 "deleted": getattr(node, "deleted", False),
-            }
-        )
+        }
+        if node.kind == "blob" and node.size is not None:
+            value["size"] = node.size
+        if node.kind == "doc":
+            if node.required_content_frontier is not None:
+                value["contentFrontier"] = _encode_content_frontier(
+                    node.required_content_frontier
+                )
+            if node.ref_size is not None:
+                value["refSize"] = node.ref_size
+            if node.ref_sha256 is not None:
+                value["refSha256"] = node.ref_sha256
+        self._write_node(value)
 
     def record_move(
         self,
@@ -409,6 +450,24 @@ class _OrgDoc:
         )
 
 
+def _node_uri(info: SpaceInfo, node_id: str) -> str:
+    """The one NodeInfo.uri producer (design notes/orgfs-uri/design.md §3).
+
+    The owner comes from the authoritative SpaceInfo only, with the
+    ``user:`` prefix stripped (the URI carries the bare identity — a
+    segment may never contain ``:``).  A non-user owner fails loud with a
+    typed error instead of minting a malformed URI.
+    """
+
+    owner = parse_user_uri(info.owner)
+    if owner is None:
+        raise OrgFsError(
+            "invalid-argument",
+            {"message": "space owner is not a user: identity"},
+        )
+    return canonical_orgfs_uri(owner, info.space_id, node_id)
+
+
 class LocalOrgFs:
     """Reference local facade used by the daemon and by isolated tests.
 
@@ -505,9 +564,12 @@ class LocalOrgFs:
                 details = dict(getattr(exc, "details", {}) or {})
                 details.setdefault("message", str(exc))
                 raise OrgFsError(str(code), details) from exc
+            self._absorb_committed_update(space, store, doc_id)
             if hasattr(store, "take_drained"):
                 for envelope in store.take_drained():
                     self.apply_envelope(space.info.space_id, envelope)
+            if doc_id == space.tree_doc_id:
+                self._reconcile_serving_replica(space.info.space_id)
             if (
                 broadcast
                 and self.mesh is not None
@@ -531,6 +593,7 @@ class LocalOrgFs:
             space.meta.get_update(),
             {node_id: replace(node) for node_id, node in space.nodes.items()},
             {doc_id: document.export() for doc_id, document in space.contents.items()},
+            dict(space.contents),
             dict(space.members),
             set(space.removed_members),
         )
@@ -556,15 +619,26 @@ class LocalOrgFs:
                 )
             store.commit_many(mutations, author=self.author, actor=self.actor)
         except Exception as exc:
-            tree_update, meta_update, nodes, contents, members, removed = rollback
+            (
+                tree_update,
+                meta_update,
+                nodes,
+                contents,
+                content_objects,
+                members,
+                removed,
+            ) = rollback
             space.tree = TreeDocument(update=tree_update)
             restored_meta = Doc()
             restored_meta.apply_update(meta_update)
             space.meta = restored_meta
             space.nodes = nodes
-            space.contents = {
-                key: _ContentDocument(update=value) for key, value in contents.items()
-            }
+            for key, value in contents.items():
+                restored = _ContentDocument(update=value)
+                original = content_objects[key]
+                original.doc = restored.doc
+                original.text = restored.text
+            space.contents = content_objects
             space.members = members
             space.removed_members = removed
             if hasattr(store, "take_drained"):
@@ -574,11 +648,35 @@ class LocalOrgFs:
             details = dict(getattr(exc, "details", {}) or {})
             details.setdefault("message", str(exc))
             raise OrgFsError(str(code), details) from exc
+        for doc_id, _operation in items:
+            self._absorb_committed_update(space, store, doc_id)
         if hasattr(store, "take_drained"):
             for envelope in store.take_drained():
                 self.apply_envelope(space.info.space_id, envelope)
+        if any(doc_id == space.tree_doc_id for doc_id, _operation in items):
+            self._reconcile_serving_replica(space.info.space_id)
         if self.mesh is not None and hasattr(self.mesh, "broadcast_pending"):
             self.mesh.broadcast_pending(space.info.space_id)
+
+    @staticmethod
+    def _absorb_committed_update(space: _Space, store: Any, doc_id: str) -> None:
+        """Fold the store's committed ops for a content doc back into the facade.
+
+        The store adds a reserved coverage-clock op under its writer client to
+        every commit.  Peers receive it in the envelope, so a content frontier a
+        peer records after editing covers it; the writer's own facade must hold
+        it too or it can never satisfy that frontier (D4 x D1 seam).  The delta
+        is just that op, and the merge is idempotent.
+        """
+
+        if doc_id in ("meta", space.tree_doc_id):
+            return
+        document = space.contents.get(doc_id)
+        if document is None:
+            return
+        delta = store.committed_update(doc_id, document.doc.get_state())
+        if delta and delta != _EMPTY_UPDATE:
+            document.update(delta)
 
     def _ensure_writable(self, space: _Space) -> None:
         member = space.members.get(self.author)
@@ -595,6 +693,27 @@ class LocalOrgFs:
         except KeyError as exc:
             raise OrgFsError("unknown-space", {"spaceId": space_id}) from exc
 
+    def _reconcile_serving_replica(self, space_id: str) -> None:
+        """Post-commit trigger: pull retained blob refs into a serving replica."""
+
+        mesh = self.mesh
+        if mesh is not None and hasattr(mesh, "reconcile_replica_blobs"):
+            mesh.reconcile_replica_blobs(space_id)
+
+    def retained_blob_digests(self, space_id: str) -> tuple[str, ...]:
+        """Snapshot current and trash blob references for inbound materialization."""
+
+        with self._lock:
+            space = self._spaces.get(space_id)
+            if space is None:
+                return ()
+            digests = {
+                node.blob_hash
+                for node in space.nodes.values()
+                if node.blob_hash is not None
+            }
+        return tuple(sorted(digests))
+
     @staticmethod
     def _validate_path(path: str) -> list[str]:
         if not isinstance(path, str) or not path:
@@ -609,6 +728,33 @@ class LocalOrgFs:
     def _resolve_ids(
         self, space: _Space, path: str, *, include_deleted: bool = False
     ) -> list[str]:
+        if path.startswith(ORGFS_URI_PREFIX):
+            # The one URI reader (design §4): every facade NodeRef funnels
+            # through here, so this single branch makes the URI accepted at
+            # every surface.  A mismatch rejects before any side effect.
+            parsed = parse_orgfs_uri(path)
+            if parsed is None:
+                raise OrgFsError("invalid-uri", {"node": path})
+            owner, uri_space, node_id = parsed
+            if uri_space != space.info.space_id or owner != (
+                parse_user_uri(space.info.owner) or ""
+            ):
+                raise OrgFsError(
+                    "cross-space-uri",
+                    {
+                        "node": path,
+                        "expectedSpaceId": space.info.space_id,
+                        "uriSpaceId": uri_space,
+                        "expectedOwner": space.info.owner,
+                        "uriOwner": owner,
+                    },
+                )
+            # From here identical to the id:<nodeId> branch.
+            if node_id not in space.nodes or (
+                space.nodes[node_id].deleted and not include_deleted
+            ):
+                raise OrgFsError("unknown-doc", {"node": path})
+            return [node_id]
         if path.startswith("id:"):
             node_id = path[3:]
             if node_id not in space.nodes or (
@@ -689,13 +835,31 @@ class LocalOrgFs:
         node = source[node_id]
         content = space.contents.get(node.doc_id or "")
         size = None
+        content_state = None
         if node.kind == "doc" and content is not None:
             size = len(content.value().encode())
-        elif node.kind == "blob" and node.blob_hash and self.blobs is not None:
-            try:
-                size = len(self.blobs.get(space.info.space_id, node.blob_hash))
-            except Exception:
-                size = None
+            if node.required_content_frontier is None:
+                content_state = "unverifiable"
+            else:
+                content_state = (
+                    "arrived"
+                    if state_covers(
+                        content.doc.get_state(), node.required_content_frontier
+                    )
+                    else "pending"
+                )
+        elif node.kind == "blob" and node.blob_hash:
+            size = node.size
+            content_state = (
+                "arrived"
+                if self.blobs is not None
+                and (
+                    self.blobs.contains(node.blob_hash)
+                    if hasattr(self.blobs, "contains")
+                    else self.blobs.has(node.blob_hash)
+                )
+                else "pending"
+            )
         return NodeInfo(
             space_id=space.info.space_id,
             node_id=node.node_id,
@@ -710,7 +874,60 @@ class LocalOrgFs:
             modified_via=node.modified_via,
             name_conflict=self._name_conflict(space, node, source),
             deleted=node.deleted,
+            content_state=content_state,
+            uri=_node_uri(space.info, node_id),
         )
+
+    def _content_pending(
+        self,
+        space: _Space,
+        node: _Node,
+        *,
+        local_state: str | None = None,
+    ) -> OrgFsError:
+        required = node.required_content_frontier
+        holders: list[str] = []
+        if self.mesh is not None and hasattr(self.mesh, "known_holders"):
+            holders = list(
+                self.mesh.known_holders(
+                    space.info.space_id,
+                    doc_id=node.doc_id if node.kind == "doc" else None,
+                    required_frontier=required,
+                )
+            )
+        details: dict[str, object] = {
+            "kind": node.kind,
+            "spaceId": space.info.space_id,
+            "node": f"id:{node.node_id}",
+            "path": self._path(space, node.node_id),
+            "suggestedHolders": holders,
+            "waitedSeconds": 0.0,
+        }
+        if node.kind == "blob":
+            details.update(
+                {
+                    "expectedSize": node.size,
+                    "expectedSha256": node.blob_hash,
+                    "localState": local_state or "absent",
+                }
+            )
+        else:
+            content = space.contents.get(node.doc_id or "")
+            details.update(
+                {
+                    "requiredFrontier": (
+                        _encode_content_frontier(required)
+                        if required is not None
+                        else None
+                    ),
+                    "localFrontier": (
+                        _encode_content_frontier(content.doc.get_state())
+                        if content is not None
+                        else _encode_content_frontier(b"\x00")
+                    ),
+                }
+            )
+        return OrgFsError(ORGFS_CONTENT_PENDING, details)
 
     def _snapshot(self, space: _Space) -> dict[str, _NodeSnapshot]:
         return {
@@ -721,6 +938,10 @@ class LocalOrgFs:
                 kind=node.kind,
                 doc_id=node.doc_id,
                 blob_hash=node.blob_hash,
+                size=node.size,
+                required_content_frontier=node.required_content_frontier,
+                ref_size=node.ref_size,
+                ref_sha256=node.ref_sha256,
                 deleted=node.deleted,
                 version=node.version,
                 modified_by=node.modified_by,
@@ -779,7 +1000,11 @@ class LocalOrgFs:
                 watcher.callback(event)
 
     def _parent_for_new(self, space: _Space, path: str) -> tuple[_Node, str]:
-        if path.startswith("id:"):
+        if path.startswith("id:") or path.startswith(ORGFS_URI_PREFIX):
+            # A URI names an existing node; you cannot create by URI.  This
+            # guard is essential for mutations: without it a write to the
+            # URI of a nonexistent node would CREATE a doc literally named
+            # ``orgfs:…`` (dispatcher.md hot-fixer answer 1).
             raise OrgFsError("unknown-doc", {"node": path})
         parts = self._validate_path(path)
         if not parts:
@@ -1008,12 +1233,24 @@ class LocalOrgFs:
         contents: dict[str, _ContentDocument] = {}
         for node_id, raw in tree.materialize().items():
             node = _Node(
-                node_id,
-                raw.get("parent"),
-                str(raw.get("name", "")),
-                raw.get("kind", "doc"),
+                node_id=node_id,
+                parent=raw.get("parent"),
+                name=str(raw.get("name", "")),
+                kind=raw.get("kind", "doc"),
                 doc_id=raw.get("doc_id"),
                 blob_hash=raw.get("blob_hash"),
+                size=raw.get("size") if type(raw.get("size")) is int else None,
+                required_content_frontier=_decode_content_frontier(
+                    raw.get("contentFrontier")
+                ),
+                ref_size=(
+                    raw.get("refSize") if type(raw.get("refSize")) is int else None
+                ),
+                ref_sha256=(
+                    raw.get("refSha256")
+                    if isinstance(raw.get("refSha256"), str)
+                    else None
+                ),
                 deleted=bool(raw.get("deleted", False)),
                 modified_by=info.owner,
             )
@@ -1165,13 +1402,31 @@ class LocalOrgFs:
                 for node_id, raw in materialized.items():
                     if node_id not in space.nodes:
                         space.nodes[node_id] = _Node(
-                            node_id,
-                            raw.get("parent"),
-                            str(raw.get("name", "")),
-                            raw.get("kind", "doc"),
-                            raw.get("doc_id"),
-                            raw.get("blob_hash"),
-                            bool(raw.get("deleted", False)),
+                            node_id=node_id,
+                            parent=raw.get("parent"),
+                            name=str(raw.get("name", "")),
+                            kind=raw.get("kind", "doc"),
+                            doc_id=raw.get("doc_id"),
+                            blob_hash=raw.get("blob_hash"),
+                            size=(
+                                raw.get("size")
+                                if type(raw.get("size")) is int
+                                else None
+                            ),
+                            required_content_frontier=_decode_content_frontier(
+                                raw.get("contentFrontier")
+                            ),
+                            ref_size=(
+                                raw.get("refSize")
+                                if type(raw.get("refSize")) is int
+                                else None
+                            ),
+                            ref_sha256=(
+                                raw.get("refSha256")
+                                if isinstance(raw.get("refSha256"), str)
+                                else None
+                            ),
+                            deleted=bool(raw.get("deleted", False)),
                             modified_by=origin_author,
                             modified_via=origin_actor,
                         )
@@ -1182,6 +1437,24 @@ class LocalOrgFs:
                         node.kind = raw.get("kind", node.kind)
                         node.doc_id = raw.get("doc_id", node.doc_id)
                         node.blob_hash = raw.get("blob_hash", node.blob_hash)
+                        node.size = (
+                            raw.get("size")
+                            if type(raw.get("size")) is int
+                            else None
+                        )
+                        node.required_content_frontier = _decode_content_frontier(
+                            raw.get("contentFrontier")
+                        )
+                        node.ref_size = (
+                            raw.get("refSize")
+                            if type(raw.get("refSize")) is int
+                            else None
+                        )
+                        node.ref_sha256 = (
+                            raw.get("refSha256")
+                            if isinstance(raw.get("refSha256"), str)
+                            else None
+                        )
                         node.deleted = bool(raw.get("deleted", node.deleted))
                     node = space.nodes[node_id]
                     if node.doc_id and node.doc_id not in space.contents:
@@ -1261,13 +1534,29 @@ class LocalOrgFs:
             for node_id, raw in space.tree.materialize().items():
                 old = previous.get(node_id)
                 rebuilt[node_id] = _Node(
-                    node_id,
-                    raw.get("parent"),
-                    str(raw.get("name", "")),
-                    raw.get("kind", "doc"),
-                    raw.get("doc_id"),
-                    raw.get("blob_hash"),
-                    bool(raw.get("deleted", False)),
+                    node_id=node_id,
+                    parent=raw.get("parent"),
+                    name=str(raw.get("name", "")),
+                    kind=raw.get("kind", "doc"),
+                    doc_id=raw.get("doc_id"),
+                    blob_hash=raw.get("blob_hash"),
+                    size=(
+                        raw.get("size") if type(raw.get("size")) is int else None
+                    ),
+                    required_content_frontier=_decode_content_frontier(
+                        raw.get("contentFrontier")
+                    ),
+                    ref_size=(
+                        raw.get("refSize")
+                        if type(raw.get("refSize")) is int
+                        else None
+                    ),
+                    ref_sha256=(
+                        raw.get("refSha256")
+                        if isinstance(raw.get("refSha256"), str)
+                        else None
+                    ),
+                    deleted=bool(raw.get("deleted", False)),
                     version=old.version if old is not None else "",
                     modified_by=(old.modified_by if old is not None else self.author),
                     modified_via=old.modified_via if old is not None else self.actor,
@@ -1326,7 +1615,15 @@ class LocalOrgFs:
         item = self._one(space, node)
         if item.kind != "doc" or item.doc_id not in space.contents:
             raise OrgFsError("invalid-argument", {"message": "not a text document"})
-        return space.contents[item.doc_id].value(), item.version
+        content = space.contents[item.doc_id]
+        if (
+            item.required_content_frontier is not None
+            and not state_covers(
+                content.doc.get_state(), item.required_content_frontier
+            )
+        ):
+            raise self._content_pending(space, item)
+        return content.value(), item.version
 
     def _three_way(self, base: str, current: str, requested: str) -> str:
         if current == base:
@@ -1391,16 +1688,31 @@ class LocalOrgFs:
             parent, name = self._parent_for_new(space, node)
             created = self._new_node(space, parent, name, "doc")
 
+            created_doc = space.contents[created.doc_id or ""]
+
             def initialize() -> None:
-                space.contents[created.doc_id or ""].set(content)
+                created_doc.set(content)
+
+            def record_requirement() -> None:
+                created.required_content_frontier = created_doc.doc.get_state()
+                raw = content.encode()
+                created.ref_size = len(raw)
+                created.ref_sha256 = hashlib.sha256(raw).hexdigest()
+                space.tree.record(created)
 
             try:
-                self._commit(space, created.doc_id or "", initialize)
+                self._commit_many(
+                    space,
+                    [
+                        (created.doc_id or "", initialize),
+                        (space.tree_doc_id, record_requirement),
+                    ],
+                )
             except Exception:
                 space.nodes.pop(created.node_id, None)
                 space.contents.pop(created.doc_id or "", None)
                 raise
-            self._write_tree(space, lambda: None, [created.node_id], "created")
+            self._finish(space, [created.node_id], "created")
             return self._node_info(space, created.node_id)
         if existing.kind != "doc":
             raise OrgFsError(
@@ -1421,14 +1733,41 @@ class LocalOrgFs:
             base = snapshot[existing.node_id].content.decode(errors="replace")
         value = self._three_way(base, current, content)
         if value == current:
+            if existing.required_content_frontier is None:
+                raw = value.encode()
+
+                def heal_requirement() -> None:
+                    existing.required_content_frontier = current_doc.doc.get_state()
+                    existing.ref_size = len(raw)
+                    existing.ref_sha256 = hashlib.sha256(raw).hexdigest()
+
+                self._write_tree(
+                    space,
+                    heal_requirement,
+                    [existing.node_id],
+                    "content",
+                )
             return self._node_info(space, existing.node_id)
         old_path = self._path(space, existing.node_id)
 
-        def operation() -> None:
+        def content_operation() -> None:
             current_doc.set(value)
             existing.content_frontier += 1
 
-        self._commit(space, existing.doc_id or "", operation)
+        def tree_operation() -> None:
+            existing.required_content_frontier = current_doc.doc.get_state()
+            raw = value.encode()
+            existing.ref_size = len(raw)
+            existing.ref_sha256 = hashlib.sha256(raw).hexdigest()
+            space.tree.record(existing)
+
+        self._commit_many(
+            space,
+            [
+                (existing.doc_id or "", content_operation),
+                (space.tree_doc_id, tree_operation),
+            ],
+        )
         self._finish(
             space, [existing.node_id], "content", old_paths={existing.node_id: old_path}
         )
@@ -1439,28 +1778,29 @@ class LocalOrgFs:
         space = self._space(space_id)
         item = self._one(space, node)
         if item.kind == "doc":
-            return space.contents[item.doc_id or ""].value().encode()
+            content = space.contents[item.doc_id or ""]
+            if (
+                item.required_content_frontier is not None
+                and not state_covers(
+                    content.doc.get_state(), item.required_content_frontier
+                )
+            ):
+                raise self._content_pending(space, item)
+            return content.value().encode()
         if item.kind != "blob" or not item.blob_hash:
             raise OrgFsError("invalid-argument", {"message": "not a file"})
         if self.blobs is None:
-            raise OrgFsError("blob-unavailable", {"digest": item.blob_hash})
+            raise self._content_pending(space, item)
         try:
             return self.blobs.get(space_id, item.blob_hash)
+        except BlobIntegrityError as exc:
+            raise self._content_pending(space, item, local_state="corrupt") from exc
         except Exception as exc:
             if getattr(exc, "code", None) == "purged":
                 raise OrgFsError(
                     "purged", dict(getattr(exc, "details", {}) or {})
                 ) from exc
-            if self.mesh is not None and hasattr(self.mesh, "fetch_blob"):
-                try:
-                    return self.mesh.fetch_blob(space_id, item.blob_hash)
-                except OrgFsError:
-                    raise
-                except Exception as fetch_exc:
-                    raise OrgFsError(
-                        "blob-unavailable", {"digest": item.blob_hash}
-                    ) from fetch_exc
-            raise OrgFsError("blob-unavailable", {"digest": item.blob_hash}) from exc
+            raise self._content_pending(space, item) from exc
 
     @_facade_locked
     def write_bytes(
@@ -1516,6 +1856,10 @@ class LocalOrgFs:
             existing.kind = "blob"
             existing.doc_id = None
             existing.blob_hash = digest
+            existing.size = len(content)
+            existing.required_content_frontier = None
+            existing.ref_size = None
+            existing.ref_sha256 = None
             existing.deleted = False
 
         try:
@@ -1689,6 +2033,10 @@ class LocalOrgFs:
                 kind=value.kind,
                 doc_id=value.doc_id,
                 blob_hash=value.blob_hash,
+                size=value.size,
+                required_content_frontier=value.required_content_frontier,
+                ref_size=value.ref_size,
+                ref_sha256=value.ref_sha256,
                 deleted=value.deleted,
                 version=value.version,
                 modified_by=value.modified_by,
@@ -1702,7 +2050,13 @@ class LocalOrgFs:
             snapshot.kind,
             snapshot.name,
             self._path(space, snapshot.node_id, nodes),
-            len(snapshot.content) if snapshot.kind == "doc" else None,
+            (
+                len(snapshot.content)
+                if snapshot.kind == "doc"
+                else snapshot.size
+                if snapshot.kind == "blob"
+                else None
+            ),
             snapshot.blob_hash,
             snapshot.doc_id,
             snapshot.version,
@@ -1710,6 +2064,24 @@ class LocalOrgFs:
             snapshot.modified_via,
             self._name_conflict(space, nodes[snapshot.node_id], nodes),
             snapshot.deleted,
+            (
+                "unverifiable"
+                if snapshot.kind == "doc"
+                and snapshot.required_content_frontier is None
+                else "arrived"
+                if snapshot.kind == "doc"
+                else (
+                    "arrived"
+                    if snapshot.kind == "blob"
+                    and snapshot.blob_hash is not None
+                    and self.blobs is not None
+                    and self.blobs.contains(snapshot.blob_hash)
+                    else "pending"
+                )
+                if snapshot.kind == "blob"
+                else None
+            ),
+            uri=_node_uri(space.info, snapshot.node_id),
         )
 
     @_facade_locked
@@ -1723,12 +2095,47 @@ class LocalOrgFs:
             return snapshot.content
         if snapshot.kind == "blob" and snapshot.blob_hash:
             if self.blobs is None:
-                raise OrgFsError("blob-unavailable", {"digest": snapshot.blob_hash})
+                raise self._content_pending(
+                    space,
+                    _Node(
+                        snapshot.node_id,
+                        snapshot.parent,
+                        snapshot.name,
+                        snapshot.kind,
+                        blob_hash=snapshot.blob_hash,
+                        size=snapshot.size,
+                    ),
+                )
             try:
                 return self.blobs.get(space_id, snapshot.blob_hash)
+            except BlobIntegrityError as exc:
+                raise self._content_pending(
+                    space,
+                    _Node(
+                        snapshot.node_id,
+                        snapshot.parent,
+                        snapshot.name,
+                        snapshot.kind,
+                        blob_hash=snapshot.blob_hash,
+                        size=snapshot.size,
+                    ),
+                    local_state="corrupt",
+                ) from exc
             except Exception as exc:
-                raise OrgFsError(
-                    "blob-unavailable", {"digest": snapshot.blob_hash}
+                if getattr(exc, "code", None) == "purged":
+                    raise OrgFsError(
+                        "purged", dict(getattr(exc, "details", {}) or {})
+                    ) from exc
+                raise self._content_pending(
+                    space,
+                    _Node(
+                        snapshot.node_id,
+                        snapshot.parent,
+                        snapshot.name,
+                        snapshot.kind,
+                        blob_hash=snapshot.blob_hash,
+                        size=snapshot.size,
+                    ),
                 ) from exc
         raise OrgFsError("invalid-argument", {"message": "node has no bytes"})
 
@@ -1825,6 +2232,18 @@ class LocalOrgFs:
 
             operations.append((snap.doc_id, restore_content))
 
+        content_restores = {
+            affected_id
+            for affected_id in affected
+            if (snap := snapshots.get(affected_id)) is not None
+            and snap.kind == "doc"
+            and snap.doc_id is not None
+            and snap.doc_id in space.contents
+            and space.contents[snap.doc_id].value()
+            != snap.content.decode(errors="replace")
+        }
+        restores_content = bool(content_restores)
+
         tree_changed = any(
             snapshots.get(affected_id) is not None
             and (
@@ -1833,6 +2252,7 @@ class LocalOrgFs:
                 space.nodes[affected_id].kind,
                 space.nodes[affected_id].doc_id,
                 space.nodes[affected_id].blob_hash,
+                space.nodes[affected_id].size,
                 space.nodes[affected_id].deleted,
             )
             != (
@@ -1841,6 +2261,7 @@ class LocalOrgFs:
                 snapshots[affected_id].kind,
                 snapshots[affected_id].doc_id,
                 snapshots[affected_id].blob_hash,
+                snapshots[affected_id].size,
                 False,
             )
             for affected_id in affected
@@ -1857,10 +2278,25 @@ class LocalOrgFs:
                 restored.kind = snap.kind
                 restored.doc_id = snap.doc_id
                 restored.blob_hash = snap.blob_hash
+                restored.size = snap.size
+                if (
+                    restored.kind == "doc"
+                    and affected_id in content_restores
+                    and restored.doc_id
+                ):
+                    document = space.contents[restored.doc_id]
+                    raw = document.value().encode()
+                    restored.required_content_frontier = document.doc.get_state()
+                    restored.ref_size = len(raw)
+                    restored.ref_sha256 = hashlib.sha256(raw).hexdigest()
+                elif restored.kind == "blob":
+                    restored.required_content_frontier = None
+                    restored.ref_size = None
+                    restored.ref_sha256 = None
                 restored.deleted = False
                 space.tree.record(restored)
 
-        if tree_changed:
+        if tree_changed or restores_content:
             operations.append((space.tree_doc_id, restore_tree))
         if not operations:
             return self._node_info(space, item.node_id)
@@ -1926,6 +2362,7 @@ class LocalOrgFs:
         node_id = item.node_id
         doc_id = item.doc_id
         document = space.contents[doc_id]
+        handle_ref: list[StructuredOrgDoc] = []
 
         def commit(mutate: Callable[[Doc], None]) -> NodeInfo:
             with self._lock:
@@ -1944,27 +2381,30 @@ class LocalOrgFs:
                 before = live.doc.get_state()
                 mutate(working.doc)
                 update = working.doc.get_update(before)
-                store = self._store(space_id)
-                if store is not None:
-                    try:
-                        store.commit(
-                            doc_id,
-                            lambda doc: doc.apply_update(update),
-                            author=self.author,
-                            actor=self.actor,
-                        )
-                    except Exception as exc:
-                        code = getattr(exc, "code", "invalid-argument")
-                        details = dict(getattr(exc, "details", {}) or {})
-                        details.setdefault("message", str(exc))
-                        raise OrgFsError(str(code), details) from exc
-                live.doc.apply_update(update)
-                current.content_frontier += 1
-                if store is not None and hasattr(store, "take_drained"):
-                    for envelope in store.take_drained():
-                        self.apply_envelope(space_id, envelope)
-                if self.mesh is not None and hasattr(self.mesh, "broadcast_pending"):
-                    self.mesh.broadcast_pending(space_id)
+
+                def apply_content() -> None:
+                    live.doc.apply_update(update)
+                    current.content_frontier += 1
+
+                def record_requirement() -> None:
+                    current.required_content_frontier = live.doc.get_state()
+                    raw = live.value().encode()
+                    current.ref_size = len(raw)
+                    current.ref_sha256 = hashlib.sha256(raw).hexdigest()
+                    current_space.tree.record(current)
+
+                try:
+                    self._commit_many(
+                        current_space,
+                        [
+                            (doc_id, apply_content),
+                            (current_space.tree_doc_id, record_requirement),
+                        ],
+                    )
+                except Exception:
+                    if handle_ref:
+                        handle_ref[0]._doc = document.doc  # noqa: SLF001
+                    raise
                 self._finish(current_space, [node_id], "content")
                 return self._node_info(current_space, node_id)
 
@@ -1973,7 +2413,9 @@ class LocalOrgFs:
                 current_space = self._space(space_id)
                 return self._node_info(current_space, node_id).version
 
-        return StructuredOrgDoc(document, doc_id, commit, version=version)
+        handle = StructuredOrgDoc(document, doc_id, commit, version=version)
+        handle_ref.append(handle)
+        return handle
 
     def _require_purge_owner(self, space: _Space) -> None:
         if self.author != space.info.owner:
@@ -2225,6 +2667,41 @@ class LocalOrgFs:
                 hashlib.sha256(snapshot_bytes).hexdigest(),
             )
 
+        replacement_metadata: dict[str, tuple[bytes, int, str]] = {}
+        for old_doc_id, (new_doc_id, snapshot_bytes, _snapshot_id) in replacements.items():
+            if old_doc_id == space.tree_doc_id:
+                continue
+            document = _ContentDocument(update=snapshot_bytes)
+            raw = document.value().encode()
+            replacement_metadata[new_doc_id] = (
+                document.doc.get_state(),
+                len(raw),
+                hashlib.sha256(raw).hexdigest(),
+            )
+        if old_tree_replacement := replacements.get(space.tree_doc_id):
+            new_tree_id, _old_snapshot, _old_snapshot_id = old_tree_replacement
+            rebuilt_tree = TreeDocument(client_id=space.tree.doc.client_id)
+            for node in space.nodes.values():
+                if node.deleted:
+                    continue
+                new_doc_id = content_nodes.get(node.node_id, node.doc_id)
+                rebuilt_node = replace(node, doc_id=new_doc_id)
+                if new_doc_id in replacement_metadata:
+                    frontier, ref_size, ref_sha256 = replacement_metadata[new_doc_id]
+                    rebuilt_node = replace(
+                        rebuilt_node,
+                        required_content_frontier=frontier,
+                        ref_size=ref_size,
+                        ref_sha256=ref_sha256,
+                    )
+                rebuilt_tree.record(rebuilt_node)
+            tree_snapshot = rebuilt_tree.get_update()
+            replacements[space.tree_doc_id] = (
+                new_tree_id,
+                tree_snapshot,
+                hashlib.sha256(tree_snapshot).hexdigest(),
+            )
+
         retired_at = _now()
 
         def commit_retirements() -> None:
@@ -2315,7 +2792,13 @@ class LocalOrgFs:
 
             def rewrite_pointers() -> None:
                 for node_id, new_doc_id in content_nodes.items():
-                    space.nodes[node_id].doc_id = new_doc_id
+                    node = space.nodes[node_id]
+                    node.doc_id = new_doc_id
+                    (
+                        node.required_content_frontier,
+                        node.ref_size,
+                        node.ref_sha256,
+                    ) = replacement_metadata[new_doc_id]
 
             self._write_tree(
                 space,
@@ -2326,7 +2809,13 @@ class LocalOrgFs:
             )
         else:
             for node_id, new_doc_id in content_nodes.items():
-                space.nodes[node_id].doc_id = new_doc_id
+                node = space.nodes[node_id]
+                node.doc_id = new_doc_id
+                (
+                    node.required_content_frontier,
+                    node.ref_size,
+                    node.ref_sha256,
+                ) = replacement_metadata[new_doc_id]
 
         def publish_snapshot_frontiers() -> None:
             snapshot_points = space.meta.get("snapshotPoints", type=Map)
@@ -2474,13 +2963,29 @@ class LocalOrgFs:
         for node_id, raw in materialized.items():
             if node_id not in space.nodes:
                 space.nodes[node_id] = _Node(
-                    node_id,
-                    raw.get("parent"),
-                    raw.get("name", ""),
-                    raw.get("kind", "doc"),
-                    raw.get("doc_id"),
-                    raw.get("blob_hash"),
-                    raw.get("deleted", False),
+                    node_id=node_id,
+                    parent=raw.get("parent"),
+                    name=raw.get("name", ""),
+                    kind=raw.get("kind", "doc"),
+                    doc_id=raw.get("doc_id"),
+                    blob_hash=raw.get("blob_hash"),
+                    size=(
+                        raw.get("size") if type(raw.get("size")) is int else None
+                    ),
+                    required_content_frontier=_decode_content_frontier(
+                        raw.get("contentFrontier")
+                    ),
+                    ref_size=(
+                        raw.get("refSize")
+                        if type(raw.get("refSize")) is int
+                        else None
+                    ),
+                    ref_sha256=(
+                        raw.get("refSha256")
+                        if isinstance(raw.get("refSha256"), str)
+                        else None
+                    ),
+                    deleted=bool(raw.get("deleted", False)),
                     modified_by=self.author,
                 )
                 if raw.get("doc_id") and raw["doc_id"] not in space.contents:
@@ -2492,6 +2997,22 @@ class LocalOrgFs:
                 node.kind = raw.get("kind", node.kind)
                 node.doc_id = raw.get("doc_id", node.doc_id)
                 node.blob_hash = raw.get("blob_hash", node.blob_hash)
+                node.size = (
+                    raw.get("size") if type(raw.get("size")) is int else None
+                )
+                node.required_content_frontier = _decode_content_frontier(
+                    raw.get("contentFrontier")
+                )
+                node.ref_size = (
+                    raw.get("refSize")
+                    if type(raw.get("refSize")) is int
+                    else None
+                )
+                node.ref_sha256 = (
+                    raw.get("refSha256")
+                    if isinstance(raw.get("refSha256"), str)
+                    else None
+                )
                 node.deleted = raw.get("deleted", node.deleted)
 
     def export_content_update(self, space_id: str, node: NodeRef) -> bytes:
@@ -2500,6 +3021,25 @@ class LocalOrgFs:
         if item.kind != "doc":
             raise OrgFsError("invalid-argument")
         return space.contents[item.doc_id or ""].export()
+
+    @_facade_locked
+    def hydrate_content_snapshot(
+        self, space_id: str, node: NodeRef, snapshot: bytes, *, expected_doc_id: str
+    ) -> None:
+        """Merge a fetched snapshot only into its captured document incarnation."""
+
+        space = self._space(space_id)
+        item = self._one(space, node)
+        if item.kind != "doc":
+            raise OrgFsError("invalid-argument", {"message": "not a text document"})
+        if item.doc_id != expected_doc_id:
+            raise OrgFsError(
+                "snapshot-barrier",
+                {"retiredDocId": expected_doc_id, "replacementDocId": item.doc_id},
+            )
+        if item.doc_id not in space.contents:
+            raise OrgFsError("invalid-argument", {"message": "not a text document"})
+        space.contents[item.doc_id].doc.apply_update(snapshot)
 
     @_facade_locked
     def apply_content_update(

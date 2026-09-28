@@ -1,7 +1,8 @@
 # Native GUI design focus admission
 
 This audited compatibility patch adds an explicit extension to the pinned DSH
-`@deepseek-ai/dsh-client-ui-conversation@0.1.5-rc.2` native composer. It does not
+`@deepseek-ai/dsh-client-ui-conversation` (audited at `0.1.5-rc.2`, byte-identical
+in the `0.1.5-rc.3` baseline) native composer. It does not
 replace `session.prompt`, intercept DOM input, or change the host protocol.
 
 Before `ConversationController.sendSession` prepares attachments or creates a
@@ -24,8 +25,10 @@ listener means no added context. Programmatic `session.prompt` calls do not pass
 this seam; GUI's explicit design-request action already owns its own context.
 
 Apply `node scripts/dsh-gui-focus-compat.mjs <candidate-runtime>` only to an
-isolated runtime. Both pinned version and complete input/output hashes are
-checked before writes. The release verifier applies this patch and runs
+isolated runtime. Complete input/output hashes are checked before writes, and the
+audited source bytes — not the package version — decide whether the patch still
+applies, so a patch release that ships the file unchanged does not break the gate
+while real source drift fails closed. The release verifier applies this patch and runs
 `verify-dsh-gui-focus.mjs`, which executes the actual native send method with
 real Cordis event dispatch and a substituted host prompt boundary, without
 sending any model request.

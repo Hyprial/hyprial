@@ -70,8 +70,10 @@ try {
   await copyFile(join(runtime, 'package.json'), join(artifacts, 'runtime-package.json'));
   await copyFile(join(runtime, 'package-lock.json'), join(artifacts, 'runtime-package-lock.json'));
   env.DSH_HISTORY_TEST_RUNTIME = runtime;
-  console.log(run(process.execPath, ['--test', 'tests/remote-history-api.test.mjs']));
-  report.checks.push('host-public-session-history-api');
+  if (inspectGuiSource(root).distribution !== 'product') {
+    console.log(run(process.execPath, ['--test', 'tests/remote-history-api.test.mjs']));
+    report.checks.push('host-public-session-history-api');
+  }
   delete env.DSH_HISTORY_TEST_RUNTIME;
   const { applyDshHistoryCompatibility } = await import('./dsh-history-compat.mjs');
   const { verifyDshHistoryCompatibility } = await import('./verify-dsh-history.mjs');
@@ -94,6 +96,10 @@ try {
   run(process.execPath, ['scripts/codex-package.mjs', 'install']);
   run(process.execPath, ['scripts/gui-layout-package.mjs', 'install']);
   run('dsh', ['plugin', '--profile', 'web', 'add', '--ignore-scripts', root]);
+  run(process.execPath, ['scripts/hyprial-provider-seed.mjs']);
+  const providerSettings = parse(await readFile(join(env.DSH_HOME, 'settings.yaml'), 'utf8'));
+  assert.equal(providerSettings['llm-pi-ai'].providers.hyprial.baseURL, 'https://api.hyprial.ai/v1');
+  report.checks.push('fresh-profile-hyprial-api-provider');
   report.checks.push('fresh-profile-plugin-install');
   // This headless gate must use the browser picker even on an attended Mac.
   // Pin both sides of the real picker in this disposable profile only; never
@@ -148,6 +154,11 @@ try {
   async function openPage() {
     const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
     page.setDefaultTimeout(20000);
+    // Onboarding can appear after the first Session baseline arrives, not
+    // just after page load. Dismiss its real controls on both fresh contexts.
+    for (const name of [/^(Continue|继续)$/, /^(Configure later|稍后配置)$/]) {
+      await page.addLocatorHandler(page.getByRole('button', { name }), async button => { await button.click(); });
+    }
     page.on('pageerror', error => report.browserErrors.push(sanitize(error.message)));
     page.on('console', message => {
       // Network failures are validated below with their exact request and body;

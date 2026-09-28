@@ -1,4 +1,43 @@
 // This source is injected inside the vendored ModuleLoader factory by build.mjs.
+// build.mjs prepends HYPPRIAL_BRAND_MARK_SRC so this source also remains
+// directly readable by focused tests that execute only the workspace helpers.
+const HYPPRIAL_BRAND_NAME = 'HyprialOS';
+const HYPPRIAL_BRAND_NAME_STYLE = Object.freeze({
+  display: 'inline-block', minWidth: 0, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap', fontSize: '16px', fontWeight: 600, lineHeight: '24px', letterSpacing: 0
+});
+
+function HyprialBrandMark({ size = 24 }) {
+  const px = Number.isFinite(size) ? size : 24;
+  return react_jsx_runtime.jsx('img', {
+    src: HYPPRIAL_BRAND_MARK_SRC,
+    alt: '',
+    width: px,
+    height: px,
+    draggable: false,
+    decoding: 'async',
+    'aria-hidden': 'true',
+    'data-hyprial-brand-mark': '1',
+    style: { display: 'block', flex: 'none', width: px + 'px', height: px + 'px', objectFit: 'contain' }
+  });
+}
+
+function HyprialBrandName() {
+  return react_jsx_runtime.jsx('span', {
+    'data-hyprial-brand-name': '1',
+    style: HYPPRIAL_BRAND_NAME_STYLE,
+    children: HYPPRIAL_BRAND_NAME
+  });
+}
+
+// Priority -1 wins over the official brand occupant's default priority 0.
+function installHyprialBrand(ctx) {
+  return ctx.slots.inject('sidebar.brand.mark', () => ctx.slots.inject('sidebar.brand.name', function* () {
+    yield ctx.slots.register({ name: 'sidebar.brand.mark', priority: -1 }, HyprialBrandMark);
+    yield ctx.slots.register({ name: 'sidebar.brand.name', priority: -1 }, HyprialBrandName);
+  }));
+}
+
 function freezeWorkspaceValue(value) {
   if (value && typeof value === 'object') { Object.values(value).forEach(freezeWorkspaceValue); Object.freeze(value); }
   return value;
