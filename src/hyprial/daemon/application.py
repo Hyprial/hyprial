@@ -1397,36 +1397,17 @@ class DaemonApplication:
         # A `begin` with no `end` names the step; the elapsed time on each
         # `end` is what turns "slow startup" into a number that can be
         # compared against that timeout.
-        def step(operation: Callable[[], Any], phase: DaemonStartupPhase) -> None:
-            if not isinstance(phase, DaemonStartupPhase):
-                raise TypeError("daemon startup phases must use DaemonStartupPhase")
-            phase_name = phase.value
-            self._log_trace("info", "daemon.start.begin", phase=phase_name)
-            started = time.monotonic()
+        def step(operation: Callable[[], Any], phase: DaemonStartupPhase) -> Any:
             try:
-                operation()
-            except BaseException as error:
-                self._log_trace(
-                    "warn",
-                    "daemon.start.failed",
-                    phase=phase_name,
-                    errorType=type(error).__name__,
-                    error=str(error)[:500],
-                    elapsedMs=int((time.monotonic() - started) * 1000),
-                )
+                return self._startup_step(operation, phase)
+            except BaseException:
                 # The launch summary reads the launch capture (stderr), not
                 # daemon.jsonl -- mirror the failure name there or a failed
                 # `hyprial init` reports `daemonEvents: []`.
                 _mirror_startup_event_to_stderr(
-                    "daemon.start.failed", phase=phase_name
+                    "daemon.start.failed", phase=phase.value
                 )
                 raise
-            self._log_trace(
-                "info",
-                "daemon.start.end",
-                phase=phase_name,
-                elapsedMs=int((time.monotonic() - started) * 1000),
-            )
 
         run_failed = False
         try:
@@ -1549,6 +1530,36 @@ class DaemonApplication:
                     raise BaseExceptionGroup(
                         "daemon shutdown steps failed", list(shutdown_errors)
                     )
+
+    def _startup_step(
+        self, operation: Callable[[], Any], phase: DaemonStartupPhase
+    ) -> Any:
+        """Run one bounded startup phase through the shared event contract."""
+
+        if not isinstance(phase, DaemonStartupPhase):
+            raise TypeError("daemon startup phases must use DaemonStartupPhase")
+        phase_name = phase.value
+        self._log_trace("info", "daemon.start.begin", phase=phase_name)
+        started = time.monotonic()
+        try:
+            result = operation()
+        except BaseException as error:
+            self._log_trace(
+                "warn",
+                "daemon.start.failed",
+                phase=phase_name,
+                errorType=type(error).__name__,
+                error=str(error)[:500],
+                elapsedMs=int((time.monotonic() - started) * 1000),
+            )
+            raise
+        self._log_trace(
+            "info",
+            "daemon.start.end",
+            phase=phase_name,
+            elapsedMs=int((time.monotonic() - started) * 1000),
+        )
+        return result
 
     def owns_process_exit(self) -> None:
         """Declare that this daemon *is* the process, so it may force the exit.
@@ -1985,6 +1996,13 @@ class DaemonApplication:
             )
 
     def _start_runtime(self) -> None:
+        # AgentSessionDomains opens agents.sqlite3 during composition, before
+        # startup logging is allowed.  Record the completed open as the first
+        # actor-runtime checkpoint once the inherited-log migration boundary
+        # has passed.
+        self._startup_step(
+            lambda: None, DaemonStartupPhase.ACTOR_RUNTIME_AGENTS_STORE
+        )
         # U0c ordering: the previous generation's receipts must be gone
         # before ANY lifecycle consumer of this daemon is constructed.
         self._expire_previous_generation_lifecycle_state()
@@ -2102,10 +2120,13 @@ class DaemonApplication:
             # everyone and the spokes see only themselves and the hub.
             gossip_scouting=self._gossip_for_startup(),
         )
-        transport, forwarding_listen, derived_error = _open_transport(
-            config,
-            forwarding_listen,
-            derived_listen=derived_listen,
+        transport, forwarding_listen, derived_error = self._startup_step(
+            lambda: _open_transport(
+                config,
+                forwarding_listen,
+                derived_listen=derived_listen,
+            ),
+            DaemonStartupPhase.ACTOR_RUNTIME_TRANSPORT,
         )
         # Retain what the opened session actually uses.  Only a forwarding-port
         # re-pick or the derived-listener fallback can change the config, so
@@ -2231,20 +2252,23 @@ class DaemonApplication:
         inbox_database = self.state_dir / "inbox.sqlite3"
         shared_inbox_events = CorrelatedInboxEventRouter()
         hold_policy = HoldPolicy.from_environment()
-        inbox_coordinator = DeliveryCustodyCoordinator(
-            inbox_database,
-            delivery,
-            shared_inbox_events,
-            node_id=self.node_id,
-            service_options={
-                "hold_policy": hold_policy,
-                "logger": self._logger,
-                "alarm_human_delivery": deliver_human_alarm,
-                # Resolve the actor projection live; session mutations no
-                # longer require rebuilding delivery policy.
-                "interactive_recipient": lambda recipient: recipient
-                in self._registered_interactive_actors(),
-            },
+        inbox_coordinator = self._startup_step(
+            lambda: DeliveryCustodyCoordinator(
+                inbox_database,
+                delivery,
+                shared_inbox_events,
+                node_id=self.node_id,
+                service_options={
+                    "hold_policy": hold_policy,
+                    "logger": self._logger,
+                    "alarm_human_delivery": deliver_human_alarm,
+                    # Resolve the actor projection live; session mutations no
+                    # longer require rebuilding delivery policy.
+                    "interactive_recipient": lambda recipient: recipient
+                    in self._registered_interactive_actors(),
+                },
+            ),
+            DaemonStartupPhase.ACTOR_RUNTIME_INBOX_STORE,
         )
         inbox = DeliveryCustodyFacade(inbox_coordinator, inbox_database)
         # The actor-liveliness observer runs off Zenoh's receive thread. It
@@ -2552,11 +2576,14 @@ class DaemonApplication:
         self._actor_token = actor_token
         self._duplicate_watch = duplicate_watch
         self._runtime = runtime
-        self._start_lifecycle_manager(
-            transport=transport,
-            inbox=inbox,
-            local_delivery=local_delivery,
-            harnesses=harnesses,
+        self._startup_step(
+            lambda: self._start_lifecycle_manager(
+                transport=transport,
+                inbox=inbox,
+                local_delivery=local_delivery,
+                harnesses=harnesses,
+            ),
+            DaemonStartupPhase.ACTOR_RUNTIME_LIFECYCLE_STORE,
         )
         from .pac_actor import (
             DaemonActorRuntime,

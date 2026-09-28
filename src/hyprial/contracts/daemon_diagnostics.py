@@ -14,6 +14,10 @@ class DaemonStartupPhase(StrEnum):
     """
 
     ACTOR_RUNTIME = "actor-runtime"
+    ACTOR_RUNTIME_AGENTS_STORE = "actor-runtime-agents-store"
+    ACTOR_RUNTIME_TRANSPORT = "actor-runtime-transport"
+    ACTOR_RUNTIME_INBOX_STORE = "actor-runtime-inbox-store"
+    ACTOR_RUNTIME_LIFECYCLE_STORE = "actor-runtime-lifecycle-store"
     IPC_SERVER = "ipc-server"
     PID_FILE = "pid-file"
     USAGE_CACHE = "usage-cache"
@@ -24,4 +28,3 @@ class DaemonStartupPhase(StrEnum):
 
 
 DAEMON_STARTUP_PHASES = frozenset(phase.value for phase in DaemonStartupPhase)
-
