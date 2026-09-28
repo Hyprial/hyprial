@@ -1,0 +1,845 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>PAC 总览</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+<style>
+:root {
+  --ground: #e9eeeb;
+  --ground-2: #dfe6e2;
+  --surface: #fbfcfa;
+  --surface-2: #f1f5f2;
+  --ink: #17211d;
+  --muted: #5b6a64;
+  --faint: #8b9994;
+  --line: #cfd9d3;
+  --accent: #1f6f8b;
+  --accent-soft: rgba(31, 111, 139, 0.12);
+  --glow: rgba(31, 111, 139, 0.22);
+  --running: #b87708;
+  --done: #2f7a4b;
+  --failed: #b23b3b;
+  --cancelled: #85908b;
+  --waiting: #7a6fb0;
+  --shadow: 0 1px 2px rgba(23, 33, 29, 0.06), 0 8px 24px rgba(23, 33, 29, 0.07);
+  --display: "Bricolage Grotesque", "Noto Sans SC", system-ui, sans-serif;
+  --body: "IBM Plex Sans", "Noto Sans SC", "PingFang SC", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --ground: #0d1311;
+    --ground-2: #121a17;
+    --surface: #17211d;
+    --surface-2: #1d2924;
+    --ink: #e2e9e5;
+    --muted: #9aa9a3;
+    --faint: #6d7c76;
+    --line: #2a3832;
+    --accent: #6bb6cf;
+    --accent-soft: rgba(107, 182, 207, 0.14);
+    --glow: rgba(107, 182, 207, 0.16);
+    --running: #e0a33a;
+    --done: #5fb07d;
+    --failed: #e06a6a;
+    --cancelled: #7e8a85;
+    --waiting: #a89be0;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 10px 28px rgba(0, 0, 0, 0.35);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --ground: #0d1311;
+  --ground-2: #121a17;
+  --surface: #17211d;
+  --surface-2: #1d2924;
+  --ink: #e2e9e5;
+  --muted: #9aa9a3;
+  --faint: #6d7c76;
+  --line: #2a3832;
+  --accent: #6bb6cf;
+  --accent-soft: rgba(107, 182, 207, 0.14);
+  --glow: rgba(107, 182, 207, 0.16);
+  --running: #e0a33a;
+  --done: #5fb07d;
+  --failed: #e06a6a;
+  --cancelled: #7e8a85;
+  --waiting: #a89be0;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 10px 28px rgba(0, 0, 0, 0.35);
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--ground);
+  background-image: radial-gradient(1200px 520px at 45% -120px, var(--glow), transparent 70%);
+  background-repeat: no-repeat;
+  color: var(--ink);
+  font: 14px/1.55 var(--body);
+  padding-inline: 20px;
+  padding-block: 18px 40px;
+}
+button { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+/* ---------- header ---------- */
+.top {
+  display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 16px 28px;
+  max-width: 1480px; margin: 0 auto 14px;
+}
+.eyebrow { font-size: 11.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); display: flex; gap: 10px; align-items: center; }
+.eyebrow b { color: var(--accent); font-weight: 600; }
+.clock { font-family: var(--display); font-weight: 700; font-size: clamp(30px, 4.2vw, 46px); line-height: 1.05; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; margin-top: 4px; }
+.clock small { font-size: 0.42em; font-weight: 500; color: var(--muted); margin-left: 10px; letter-spacing: 0; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-right: 8px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px; font-size: 12px; background: var(--surface); border: 1px solid var(--line); white-space: nowrap; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--c, var(--faint)); flex: none; }
+.chip.running .dot, .s-running { --c: var(--running); }
+.s-completed, .s-done { --c: var(--done); }
+.s-failed { --c: var(--failed); }
+.s-cancelled { --c: var(--cancelled); }
+.s-waiting, .s-pending, .s-requested { --c: var(--waiting); }
+.btn { border: 1px solid var(--line); background: var(--surface); padding: 6px 11px; border-radius: 8px; cursor: pointer; font-size: 13px; }
+.btn:hover { border-color: var(--accent); color: var(--accent); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--surface); }
+.btn.primary:hover { color: var(--surface); filter: brightness(1.08); }
+.btn[disabled] { opacity: 0.45; cursor: default; }
+
+/* ---------- stage + rail ---------- */
+.frame { display: grid; grid-template-columns: minmax(0, 1fr) 156px; gap: 18px; max-width: 1480px; margin: 0 auto; }
+.stage { position: relative; padding-top: 62px; min-width: 0; }
+.ghost {
+  position: absolute; left: 0; right: 0; top: 0; height: 120px;
+  border-radius: 14px; background: var(--surface); border: 1px solid var(--line);
+  transform-origin: 50% 0; cursor: pointer; text-align: left;
+  display: flex; align-items: flex-start; padding: 3px 16px; font-size: 11.5px; line-height: 1.3; color: var(--muted);
+  transition: transform 0.25s ease, opacity 0.25s ease;
+}
+.ghost:hover { color: var(--accent); border-color: var(--accent); }
+.ghost .mono { margin-left: 8px; color: var(--ink); }
+.panel {
+  min-width: 0; overflow-wrap: anywhere;
+  position: relative; z-index: 5; background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
+  box-shadow: var(--shadow); padding: 18px 20px 24px; min-height: 60vh;
+}
+.crumbs { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 13px; color: var(--muted); margin-bottom: 10px; }
+.crumbs button { border: 0; background: none; padding: 2px 4px; border-radius: 6px; cursor: pointer; color: var(--accent); }
+.crumbs button:hover { background: var(--accent-soft); }
+.crumbs .here { color: var(--ink); font-weight: 600; }
+.note { font-size: 12.5px; color: var(--muted); background: var(--surface-2); border: 1px dashed var(--line); border-radius: 10px; padding: 8px 12px; margin-bottom: 16px; max-width: 110ch; }
+.note b { color: var(--ink); font-weight: 600; }
+.content { position: relative; }
+svg.arrows { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; z-index: 0; }
+svg.arrows.over { z-index: 3; }
+svg.arrows.over text { paint-order: stroke; stroke: var(--surface); stroke-width: 3px; }
+svg.arrows path { fill: none; stroke: var(--accent); stroke-width: 1.4; opacity: 0.55; }
+svg.arrows path.rerun { stroke-dasharray: 4 4; }
+svg.arrows path.hot { opacity: 1; stroke-width: 2.2; }
+svg.arrows text { font: 10.5px var(--mono); fill: var(--accent); }
+svg.arrows .arrowhead { fill: var(--accent); }
+
+.rail { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 12px); height: calc(100vh - 40px); max-height: 900px; user-select: none; display: flex; flex-direction: column; gap: 6px; }
+.railbox { flex: 1; min-height: 0; touch-action: none; }
+.rail svg { width: 100%; height: 100%; cursor: ns-resize; display: block; }
+.legend { display: flex; flex-wrap: wrap; gap: 2px 10px; font-size: 11px; color: var(--muted); line-height: 1.4; }
+.legend i { display: inline-block; width: 10px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 4px; background: var(--c); }
+.legend i.area { height: 8px; opacity: 0.4; }
+.rail .conc { fill: var(--accent); opacity: 0.22; }
+.rail .conc-line { fill: none; stroke: var(--accent); stroke-width: 1.2; opacity: 0.8; }
+.rail .done-line { fill: none; stroke: var(--done); stroke-width: 1.4; }
+.rail .fail { fill: var(--failed); }
+.rail .window { fill: var(--accent-soft); }
+.rail .future { fill: var(--ground); opacity: 0.62; }
+.win { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--surface); }
+.win span { padding: 6px 8px; font-size: 12px; color: var(--muted); }
+.win button { border: 0; border-left: 1px solid var(--line); background: none; padding: 6px 9px; font-size: 12.5px; cursor: pointer; }
+.win button[aria-pressed="true"] { background: var(--accent); color: var(--surface); }
+.chips .note-inline { font-size: 12px; color: var(--muted); align-self: center; }
+.rail .tick { stroke: var(--line); }
+.rail .daytick { stroke: var(--muted); }
+.rail .spine { stroke: var(--faint); stroke-width: 1; }
+.rail .past { fill: var(--accent-soft); }
+.rail text { font: 10.5px var(--mono); fill: var(--muted); }
+.rail .cursor-line { stroke: var(--accent); stroke-width: 2; }
+.rail .cursor-knob { fill: var(--accent); }
+.rail .cursor-label { fill: var(--accent); font-weight: 600; }
+
+/* ---------- line cards ---------- */
+.grid { position: relative; z-index: 1; display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); }
+.card {
+  position: relative; text-align: left; display: flex; flex-direction: column; gap: 10px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px;
+  cursor: pointer; transition: border-color 0.15s, transform 0.15s;
+  min-width: 0; overflow-wrap: anywhere;
+}
+.card:hover { border-color: var(--accent); transform: translateY(-1px); }
+.card.dim { opacity: 0.45; }
+.card h3 { font: 700 17px/1.25 var(--display); margin: 0; text-wrap: balance; }
+.card .who { font-size: 12px; color: var(--muted); display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.tag { font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; padding: 1px 6px; border-radius: 4px; background: var(--accent-soft); color: var(--accent); }
+.kv { display: grid; grid-template-columns: 3.2em 1fr; gap: 3px 10px; font-size: 13px; }
+.kv dt { color: var(--faint); }
+.kv dd { margin: 0; }
+.bar-stack { display: flex; height: 7px; border-radius: 4px; overflow: hidden; background: var(--surface-2); }
+.bar-stack span { background: var(--c); }
+.counts { display: flex; flex-wrap: wrap; gap: 10px; font-size: 12px; color: var(--muted); }
+.counts span { display: inline-flex; gap: 5px; align-items: center; }
+.now-line { font-size: 12.5px; color: var(--ink); min-height: 1.5em; }
+.now-line .mono { font-size: 11.5px; }
+.spark { width: 100%; height: 26px; display: block; }
+.spark rect { fill: var(--accent); opacity: 0.5; }
+.spark line { stroke: var(--running); stroke-width: 1.5; }
+
+/* ---------- line view ---------- */
+.linehead { display: grid; gap: 14px; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); margin-bottom: 18px; align-items: start; }
+.linehead h2 { font: 700 26px/1.15 var(--display); margin: 0 0 6px; text-wrap: balance; }
+.linehead p { margin: 0; max-width: 62ch; color: var(--muted); }
+.linehead .box { background: var(--surface-2); border-radius: 10px; padding: 12px 14px; display: grid; gap: 8px; }
+.pacs { position: relative; z-index: 1; display: grid; gap: 14px 18px; grid-template-columns: repeat(auto-fill, minmax(min(230px, 100%), 1fr)); }
+.pacs.compact { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.pac { gap: 6px; padding: 11px 13px; border-left: 3px solid var(--c, var(--line)); }
+.pac h4 { margin: 0; font: 600 13.5px/1.3 var(--mono); word-break: break-word; }
+.pac .meta { font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px 10px; }
+.pac .rel { font-size: 11.5px; color: var(--accent); }
+.pacs.compact .pac h4 { font-size: 11.5px; }
+.empty { color: var(--muted); padding: 40px 0; text-align: center; }
+.section-label { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); font-weight: 600; margin: 4px 0 8px; display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
+.section-label span { text-transform: none; letter-spacing: 0; font-weight: 400; }
+.beats { display: grid; gap: 10px; margin-bottom: 22px; position: relative; z-index: 1; }
+.beat { background: var(--surface-2); border-radius: 10px; padding: 10px 12px 8px; display: grid; gap: 6px; }
+.beat-head { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; font-size: 12.5px; color: var(--muted); }
+.beat-head b { font: 600 13px var(--mono); color: var(--ink); }
+.cycle { color: var(--accent); font-size: 14px; line-height: 1; }
+.beat svg { width: 100%; height: 22px; display: block; overflow: visible; }
+.beat .base { stroke: var(--line); stroke-width: 1; }
+.beat .tick { stroke-width: 3; stroke: var(--c); cursor: pointer; }
+.beat g:hover .tick { stroke-width: 5; }
+.beat .hit { fill: transparent; cursor: pointer; }
+.beat .winband { fill: var(--accent-soft); }
+.beat .now { stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 2 2; }
+.beat-axis { position: relative; height: 14px; font: 10px var(--mono); color: var(--faint); }
+.beat-axis span { position: absolute; top: 0; transform: translateX(2px); white-space: nowrap; }
+.beat .quiet { font-size: 12px; color: var(--faint); }
+.routine-row { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; font-size: 12.5px; padding-top: 8px; border-top: 1px dashed var(--line); }
+.routine-row .cycle { font-size: 13px; }
+.routine-row.bad { color: var(--failed); }
+
+/* ---------- graph view ---------- */
+.gv { display: grid; gap: 18px; grid-template-columns: minmax(0, 1fr) minmax(260px, 340px); align-items: start; }
+.gv h2 { font: 700 22px/1.2 var(--mono); margin: 0 0 4px; word-break: break-word; }
+.dag-wrap { overflow-x: auto; background: var(--surface-2); border-radius: 12px; padding: 12px; }
+.dag rect.node { fill: var(--surface); stroke: var(--line); stroke-width: 1; cursor: pointer; }
+.dag g.sel rect.node { stroke: var(--accent); stroke-width: 2; }
+.dag rect.stripe { fill: var(--c); }
+.dag text { font: 12px var(--body); fill: var(--ink); }
+.dag text.small { font: 10.5px var(--mono); fill: var(--muted); }
+.dag path { fill: none; stroke: var(--faint); stroke-width: 1.4; }
+.dag .ah { fill: var(--faint); }
+.side { display: grid; gap: 12px; }
+.side .box { background: var(--surface-2); border-radius: 10px; padding: 12px 14px; font-size: 13px; }
+.side h5 { margin: 0 0 6px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.side pre { white-space: pre-wrap; word-break: break-word; font: 12px/1.5 var(--mono); margin: 0; max-height: 320px; overflow: auto; }
+.side ul { margin: 0; padding-left: 18px; }
+.side li button { border: 0; background: none; padding: 0; color: var(--accent); cursor: pointer; text-align: left; font: 12px var(--mono); }
+
+@media (max-width: 860px) {
+  .frame { grid-template-columns: minmax(0, 1fr); }
+  .panel { padding: 14px 12px 18px; }
+  .card { padding: 12px 13px; }
+  .controls { width: 100%; }
+  .rail { position: relative; top: 0; height: 170px; order: -1; }
+  .linehead, .gv { grid-template-columns: minmax(0, 1fr); }
+  .stage { padding-top: 40px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ghost, .card { transition: none; }
+}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div>
+    <div class="eyebrow"><b>PAC 总览</b><span id="nodes-label"></span><span id="observed"></span></div>
+    <div class="clock" id="clock"></div>
+  </div>
+  <div class="controls">
+    <div class="chips" id="chips"></div>
+    <div class="win" role="group" aria-label="统计窗口"><span>统计窗口</span><button data-win="1">1h</button><button data-win="6">6h</button><button data-win="24">24h</button><button data-win="168">7d</button></div>
+    <button class="btn" id="back6" title="往回 6 小时（Shift+[）">−6h</button>
+    <button class="btn" id="back1" title="往回 1 小时（[）">−1h</button>
+    <button class="btn" id="fwd1" title="往前 1 小时（]）">+1h</button>
+    <button class="btn primary" id="now">回到现在</button>
+  </div>
+</header>
+
+<div class="frame">
+  <section class="stage" id="stage">
+    <div id="ghosts"></div>
+    <div class="panel">
+      <nav class="crumbs" id="crumbs"></nav>
+      <div class="note" id="note"></div>
+      <div class="content" id="content"></div>
+    </div>
+  </section>
+  <aside class="rail" aria-label="时间轴：拖动或滚动选择查看的时刻">
+    <div class="legend"><span><i class="area" style="--c:var(--accent)"></i>同时在跑</span><span><i style="--c:var(--done)"></i>每小时完成</span><span><i style="--c:var(--failed)"></i>每小时失败</span></div>
+    <div class="railbox" id="rail"></div>
+  </aside>
+</div>
+
+<!--NODE_SCRIPTS-->
+<script>
+(() => {
+  // Every node publishes nodes/<node>.js into the same orgfs folder; each
+  // file registers itself in window.PAC_NODES.  Merge them into one model.
+  const PARTS = Object.values(window.PAC_NODES || {}).filter(p => p && Array.isArray(p.runs));
+  // Node files are written by other members: states end up in class names
+  // and text, so anything outside the known set renders as "unknown".
+  const GRAPH_STATES = new Set(["running", "completed", "failed", "cancelled"]);
+  const NODE_STATES = new Set(["done", "failed", "pending", "requested", "running", "cancelled", "waiting"]);
+  for (const p of PARTS) for (const r of p.runs) {
+    if (!GRAPH_STATES.has(r.state)) r.state = "unknown";
+    if (r.current && !NODE_STATES.has(r.current.state)) r.current.state = "unknown";
+    for (const n of r.nodes || []) if (!NODE_STATES.has(n.state)) n.state = "unknown";
+  }
+  const DATA = {
+    nodes: PARTS.map(p => ({ node: p.node, observedAt: p.observedAt })),
+    observedAt: Math.max(0, ...PARTS.map(p => p.observedAt || 0)) || Date.now(),
+    lines: PARTS.flatMap(p => p.lines),
+    runs: PARTS.flatMap(p => p.runs),
+    links: PARTS.flatMap(p => p.links),
+    visibleNodeGraphs: PARTS.reduce((n, p) => n + (p.visibleNodeGraphs || 0), 0),
+  };
+  const MULTI = PARTS.length > 1;
+  const RUNS = new Map(DATA.runs.map(r => [r.id, r]));
+  const LINES = new Map(DATA.lines.map(l => [l.id, l]));
+  const HOUR = 3600e3;
+  const NOW = DATA.observedAt;
+  const T0 = Math.floor(Math.min(NOW - 24 * HOUR, ...DATA.runs.map(r => r.created)) / HOUR) * HOUR;
+  // The page reloads itself every minute to pick up newly synced node files;
+  // what the viewer was looking at survives the reload.
+  const saved = (() => { try { return JSON.parse(sessionStorage.getItem("pac-overview") || "null"); } catch { return null; } })();
+  let T = saved && !saved.followNow && saved.T >= T0 && saved.T <= NOW ? saved.T : NOW;
+  let WIN = saved?.WIN || 24;
+  let view = saved?.view && (saved.view.level === "lines" || (saved.view.level === "line" && DATA.lines.some(l => l.id === saved.view.id)) || (saved.view.level === "pac" && DATA.runs.some(r => r.id === saved.view.id))) ? saved.view : { level: "lines" };
+  let selectedNode = null;
+  let hotId = null;
+  let showOlder = false;
+
+  const tz = { timeZone: "Asia/Shanghai", hour12: false };
+  const fmtFull = new Intl.DateTimeFormat("zh-CN", { ...tz, month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  const fmtHM = new Intl.DateTimeFormat("zh-CN", { ...tz, hour: "2-digit", minute: "2-digit" });
+  const fmtDay = new Intl.DateTimeFormat("zh-CN", { ...tz, month: "numeric", day: "numeric" });
+  const full = t => fmtFull.format(t).replace(/\//g, "月").replace(/月(\d+)\s/, "月$1日 ");
+  const dur = ms => {
+    const s = Math.max(0, Math.round(ms / 1000));
+    if (s < 60) return s + "秒";
+    if (s < 3600) return Math.round(s / 60) + "分钟";
+    if (s < 86400) return (s / 3600).toFixed(s < 36000 ? 1 : 0).replace(/\.0$/, "") + "小时";
+    return (s / 86400).toFixed(1).replace(/\.0$/, "") + "天";
+  };
+  const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const STATE_ZH = { unknown: "未知", running: "运行中", completed: "完成", done: "完成", failed: "失败", cancelled: "取消", waiting: "等待中", pending: "等待中", requested: "已派发" };
+
+  function stateAt(r, t) {
+    if (r.created > t) return null;
+    const end = r.closed ?? (r.state !== "running" ? r.progress : null);
+    if (end != null && end <= t) return r.state;
+    return "running";
+  }
+  function nodeStateAt(r, n, t) {
+    if (n.flagAt && n.flagAt <= t) return n.state;
+    const g = stateAt(r, t);
+    if (g && g !== "running") return n.state;
+    return n.state === "done" || n.state === "failed" ? "waiting" : n.state;
+  }
+  const visibleRuns = ids => ids.map(id => RUNS.get(id)).filter(r => r.created <= T);
+  const endOf = r => r.closed ?? (r.state !== "running" ? r.progress : null);
+  // Hourly macro series for the timeline: runs closed per hour by outcome,
+  // and how many were running at the end of each hour.
+  const HOURS = Math.ceil((NOW - T0) / HOUR);
+  const SERIES = Array.from({ length: HOURS }, (_, i) => ({ t: T0 + i * HOUR, done: 0, failed: 0, running: 0 }));
+  for (const r of DATA.runs) {
+    const end = endOf(r);
+    if (end != null && end <= NOW) {
+      const b = SERIES[Math.min(HOURS - 1, Math.floor((end - T0) / HOUR))];
+      if (r.state === "failed") b.failed++; else if (r.state === "completed") b.done++;
+    }
+    for (const b of SERIES) { const edge = b.t + HOUR; if (r.created <= edge && (end == null || end > edge)) b.running++; }
+  }
+  // Windowed counts: what closed inside (T - WIN, T], and what is running at T.
+  function windowCounts(runs) {
+    const from = T - WIN * HOUR, c = { running: 0, completed: 0, failed: 0, cancelled: 0 };
+    for (const r of runs) {
+      const s = stateAt(r, T);
+      if (!s) continue;
+      if (s === "running") { c.running++; continue; }
+      const end = endOf(r);
+      if (end != null && end > from && end <= T && s in c) c[s]++;
+    }
+    return c;
+  }
+  // In the window: running at T, or started or finished inside (T - WIN, T].
+  function inWindow(r) {
+    const s = stateAt(r, T);
+    if (!s) return false;
+    if (s === "running") return true;
+    const from = T - WIN * HOUR, end = endOf(r);
+    return r.created > from || (end != null && end > from);
+  }
+  const winLabel = () => WIN >= 168 ? "过去 7 天" : `过去 ${WIN} 小时`;
+
+  /* ---------- header ---------- */
+  function renderHeader() {
+    const atNow = NOW - T < 60e3;
+    document.getElementById("clock").innerHTML = esc(full(T)) + `<small>${atNow ? "现在" : "距现在 " + dur(NOW - T)}</small>`;
+    const stale = DATA.nodes.filter(n => Date.now() - (n.observedAt || 0) > 30 * 60e3);
+    document.getElementById("nodes-label").textContent = DATA.nodes.length ? DATA.nodes.map(n => n.node).join(" · ") : "还没有节点发布数据";
+    document.getElementById("observed").textContent = "数据更新于 " + full(NOW) + (stale.length ? `（${stale.map(n => n.node).join("、")} 超过 30 分钟没有更新）` : "");
+    const c = windowCounts(DATA.runs);
+    const closed = c.completed + c.failed + c.cancelled;
+    document.getElementById("chips").innerHTML =
+      `<span class="chip s-running"><span class="dot"></span>此刻运行中 <b class="mono">${c.running}</b></span>` +
+      ["completed", "failed", "cancelled"].map(k => `<span class="chip s-${k}"><span class="dot"></span>${STATE_ZH[k]} <b class="mono">${c[k]}</b></span>`).join("") +
+      `<span class="note-inline">${winLabel()}${closed ? ` · 失败率 ${Math.round(c.failed / closed * 100)}%` : ""}</span>`;
+    document.querySelectorAll(".win button").forEach(b => b.setAttribute("aria-pressed", String(+b.dataset.win === WIN)));
+    document.getElementById("now").disabled = atNow;
+    document.getElementById("fwd1").disabled = atNow;
+    document.getElementById("back1").disabled = T - HOUR < T0;
+    document.getElementById("back6").disabled = T - HOUR < T0;
+  }
+
+  /* ---------- ghosts: earlier snapshots stacked behind the panel ---------- */
+  function renderGhosts() {
+    const steps = [24, 12, 6];
+    document.getElementById("ghosts").innerHTML = steps.map((h, i) => {
+      const t = T - h * HOUR;
+      if (t < T0) return "";
+      const depth = steps.length - i;
+      const scale = 1 - depth * 0.03;
+      const y = (steps.length - depth) * 19;
+      return `<button class="ghost" data-t="${t}" style="transform: translateY(${y}px) scale(${scale}); opacity:${0.35 + i * 0.2}; z-index:${i}">
+        ${h} 小时前<span class="mono">${esc(full(t))}</span></button>`;
+    }).join("");
+  }
+
+  /* ---------- rail ---------- */
+  const rail = document.getElementById("rail");
+  function railGeom() {
+    const h = rail.clientHeight, w = rail.clientWidth;
+    const horizontal = w > h;
+    return { h, w, horizontal, pad: 16 };
+  }
+  function tToPos(t, g) {
+    const len = (g.horizontal ? g.w : g.h) - g.pad * 2;
+    const f = (t - T0) / (NOW - T0);
+    return g.pad + f * len;
+  }
+  function posToT(p, g) {
+    const len = (g.horizontal ? g.w : g.h) - g.pad * 2;
+    const f = Math.min(1, Math.max(0, (p - g.pad) / len));
+    return T0 + f * (NOW - T0);
+  }
+  function renderRail() {
+    const g = railGeom();
+    const parts = [];
+    const maxV = Math.max(1, ...SERIES.map(b => Math.max(b.running, b.done + b.failed)));
+    if (!g.horizontal) {
+      const cx = g.w - 36, span = cx - 10;          // values grow leftwards from the spine
+      const v = n => cx - 6 - (n / maxV) * (span - 6);
+      const y = t => tToPos(t, g);
+      const wy1 = y(Math.max(T0, T - WIN * HOUR)), wy2 = y(T);
+      parts.push(`<rect class="window" x="4" y="${wy1}" width="${cx - 4}" height="${Math.max(1, wy2 - wy1)}"/>`);
+      const mid = b => y(b.t + HOUR / 2);
+      const area = [`${cx - 6},${y(T0)}`, ...SERIES.map(b => `${v(b.running).toFixed(1)},${mid(b).toFixed(1)}`), `${cx - 6},${y(NOW)}`];
+      parts.push(`<polygon class="conc" points="${area.join(" ")}"/>`);
+      parts.push(`<polyline class="conc-line" points="${SERIES.map(b => `${v(b.running).toFixed(1)},${mid(b).toFixed(1)}`).join(" ")}"/>`);
+      parts.push(`<polyline class="done-line" points="${SERIES.map(b => `${v(b.done).toFixed(1)},${mid(b).toFixed(1)}`).join(" ")}"/>`);
+      for (const b of SERIES) if (b.failed) parts.push(`<rect class="fail" x="${v(b.failed).toFixed(1)}" y="${(mid(b) - 1.2).toFixed(1)}" width="${(cx - 6 - v(b.failed)).toFixed(1)}" height="2.4"/>`);
+      parts.push(`<line class="spine" x1="${cx}" x2="${cx}" y1="${g.pad}" y2="${g.h - g.pad}"/>`);
+      for (let t = Math.ceil((T0 + 8 * HOUR) / (6 * HOUR)) * 6 * HOUR - 8 * HOUR; t <= NOW; t += 6 * HOUR) {
+        const yy = y(t), hh = fmtHM.format(t), isDay = hh.startsWith("00") || hh.startsWith("24");
+        parts.push(`<line class="${isDay ? "daytick" : "tick"}" x1="${cx}" x2="${cx + (isDay ? 12 : 6)}" y1="${yy}" y2="${yy}"/>`);
+        if (isDay) parts.push(`<text x="${cx + 5}" y="${yy - 4}">${esc(fmtDay.format(t))}</text>`);
+      }
+      const yc = y(T);
+      if (yc < g.h - g.pad) parts.push(`<rect class="future" x="0" y="${yc}" width="${cx}" height="${g.h - g.pad - yc}"/>`);
+      parts.push(`<line class="cursor-line" x1="4" x2="${cx + 8}" y1="${yc}" y2="${yc}"/><circle class="cursor-knob" cx="${cx}" cy="${yc}" r="5"/>`);
+      parts.push(`<text class="cursor-label" x="4" y="${yc - 6}">${esc(fmtHM.format(T))}</text>`);
+      parts.push(`<text x="4" y="${g.pad - 4}">峰值 ${maxV}</text>`);
+    } else {
+      const cy = g.h - 22, span = cy - 8;
+      const v = n => cy - 4 - (n / maxV) * (span - 4);
+      const x = t => tToPos(t, g);
+      const wx1 = x(Math.max(T0, T - WIN * HOUR)), wx2 = x(T);
+      parts.push(`<rect class="window" x="${wx1}" y="4" width="${Math.max(1, wx2 - wx1)}" height="${cy - 4}"/>`);
+      const mid = b => x(b.t + HOUR / 2);
+      const area = [`${x(T0)},${cy - 4}`, ...SERIES.map(b => `${mid(b).toFixed(1)},${v(b.running).toFixed(1)}`), `${x(NOW)},${cy - 4}`];
+      parts.push(`<polygon class="conc" points="${area.join(" ")}"/>`);
+      parts.push(`<polyline class="conc-line" points="${SERIES.map(b => `${mid(b).toFixed(1)},${v(b.running).toFixed(1)}`).join(" ")}"/>`);
+      parts.push(`<polyline class="done-line" points="${SERIES.map(b => `${mid(b).toFixed(1)},${v(b.done).toFixed(1)}`).join(" ")}"/>`);
+      for (const b of SERIES) if (b.failed) parts.push(`<rect class="fail" x="${(mid(b) - 1.2).toFixed(1)}" y="${v(b.failed).toFixed(1)}" width="2.4" height="${(cy - 4 - v(b.failed)).toFixed(1)}"/>`);
+      parts.push(`<line class="spine" x1="${g.pad}" x2="${g.w - g.pad}" y1="${cy}" y2="${cy}"/>`);
+      for (let t = Math.ceil((T0 + 8 * HOUR) / (24 * HOUR)) * 24 * HOUR - 8 * HOUR; t <= NOW; t += 24 * HOUR) {
+        if (t < T0) continue;
+        const xx = x(t);
+        parts.push(`<line class="daytick" x1="${xx}" x2="${xx}" y1="${cy}" y2="${cy + 6}"/><text x="${xx + 3}" y="${cy + 16}">${esc(fmtDay.format(t))}</text>`);
+      }
+      const xc = x(T);
+      if (xc < g.w - g.pad) parts.push(`<rect class="future" x="${xc}" y="0" width="${g.w - g.pad - xc}" height="${cy}"/>`);
+      parts.push(`<line class="cursor-line" x1="${xc}" x2="${xc}" y1="4" y2="${cy + 4}"/><circle class="cursor-knob" cx="${xc}" cy="${cy}" r="5"/>`);
+    }
+    rail.innerHTML = `<svg role="slider" tabindex="0" aria-valuemin="${T0}" aria-valuemax="${NOW}" aria-valuenow="${Math.round(T)}" aria-valuetext="${esc(full(T))}">${parts.join("")}</svg>`;
+  }
+  function setT(t) {
+    T = Math.min(NOW, Math.max(T0, Math.round(t)));
+    render();
+  }
+  let dragging = false;
+  rail.addEventListener("pointerdown", e => { dragging = true; rail.setPointerCapture(e.pointerId); pick(e); });
+  rail.addEventListener("pointermove", e => { if (dragging) pick(e); });
+  rail.addEventListener("pointerup", () => { dragging = false; });
+  function pick(e) {
+    const g = railGeom(), box = rail.getBoundingClientRect();
+    setT(posToT(g.horizontal ? e.clientX - box.left : e.clientY - box.top, g));
+  }
+  const wheelStep = e => { e.preventDefault(); setT(T + Math.sign(e.deltaY) * HOUR * (e.shiftKey ? 6 : 1)); };
+  rail.addEventListener("wheel", wheelStep, { passive: false });
+  document.getElementById("ghosts").addEventListener("wheel", wheelStep, { passive: false });
+  document.getElementById("ghosts").addEventListener("click", e => {
+    const b = e.target.closest(".ghost"); if (b) setT(+b.dataset.t);
+  });
+  document.getElementById("back6").onclick = () => setT(T - 6 * HOUR);
+  document.getElementById("back1").onclick = () => setT(T - HOUR);
+  document.getElementById("fwd1").onclick = () => setT(T + HOUR);
+  document.getElementById("now").onclick = () => setT(NOW);
+  document.querySelector(".win").onclick = e => { const b = e.target.closest("[data-win]"); if (b) { WIN = +b.dataset.win; render(); } };
+  document.addEventListener("keydown", e => {
+    if (e.target.closest("input, textarea")) return;
+    if (e.key === "[") setT(T - HOUR * (e.shiftKey ? 6 : 1));
+    else if (e.key === "{") setT(T - 6 * HOUR);
+    else if (e.key === "]") setT(T + HOUR);
+    else if (e.key === "}") setT(T + 6 * HOUR);
+    else if (e.key === "Escape") up();
+  });
+
+  /* ---------- navigation ---------- */
+  function go(v) { view = v; selectedNode = null; hotId = null; showOlder = false; render(); document.getElementById("stage").scrollIntoView({ block: "start", behavior: "smooth" }); }
+  function up() {
+    if (view.level === "pac") go(view.from ? { level: "line", id: view.from } : { level: "lines" });
+    else if (view.level === "line") go({ level: "lines" });
+  }
+  function renderCrumbs() {
+    const parts = [`<button data-go="lines">全部任务线</button>`];
+    if (view.level === "line") parts.push(`<span>›</span><span class="here">${esc(LINES.get(view.id).title)}</span>`);
+    if (view.level === "pac") {
+      const r = RUNS.get(view.id), line = LINES.get(r.line);
+      parts.push(`<span>›</span><button data-go="line" data-id="${esc(line.id)}">${esc(line.title)}</button>`);
+      parts.push(`<span>›</span><span class="here mono">${esc(r.name)}</span>`);
+    }
+    const el = document.getElementById("crumbs");
+    el.innerHTML = parts.join("");
+    el.onclick = e => {
+      const b = e.target.closest("button"); if (!b) return;
+      go(b.dataset.go === "line" ? { level: "line", id: b.dataset.id } : { level: "lines" });
+    };
+  }
+  function renderNote() {
+    const n = document.getElementById("note");
+    if (view.level === "lines") n.innerHTML = `任务线的标题、背景、目标是按“谁发起的 / 哪个 routine”推断的，PAC 里还没有声明任务线的地方；箭头是按名字里的 PR 号和主题词推断的。卡片是一次性任务（Workflow），↻ 是例行（Routine）。拖动时间轴，或在面板上方的叠层上滚动，可以回看任意时刻。`;
+    else if (view.level === "line") n.innerHTML = `上面是例行：每条心跳条是一个 routine，每一格是它产生的一次运行。下面是一次性任务，卡片按创建时间排列。实线箭头：名字里有同一个 PR 号或主题词；虚线：同名重跑。点开卡片看这张 PAC 图的节点。`;
+    else {
+      const r = RUNS.get(view.id);
+      n.innerHTML = r.nodes.length ? `节点状态按所选时刻回放：节点在完成时刻之前显示为“等待中”。点节点看它的输出。`
+        : `<b>这张图的节点详情看不到。</b>发布这台机器数据的会话不是这张图的参与者，daemon 不让它读节点；列表里的状态和时间仍然准确。`;
+    }
+  }
+
+  /* ---------- arrows ---------- */
+  function drawArrows(container, pairs) {
+    container.querySelectorAll("svg.arrows").forEach(x => x.remove());
+    const box = container.getBoundingClientRect();
+    const pos = new Map();
+    container.querySelectorAll("[data-key]").forEach(el => {
+      const b = el.getBoundingClientRect();
+      pos.set(el.dataset.key, { x: b.left - box.left, y: b.top - box.top, w: b.width, h: b.height });
+    });
+    const paths = [], over = [];
+    for (const p of pairs) {
+      const a = pos.get(p.from), b = pos.get(p.to);
+      if (!a || !b || p.from === p.to) continue;
+      let x1, y1, x2, y2, c1x, c1y, c2x, c2y;
+      if (b.x >= a.x + a.w - 4) { x1 = a.x + a.w; y1 = a.y + a.h / 2; x2 = b.x - 2; y2 = b.y + b.h / 2; const dx = Math.max(30, (x2 - x1) / 2); c1x = x1 + dx; c1y = y1; c2x = x2 - dx; c2y = y2; }
+      else if (b.x + b.w <= a.x + 4) { x1 = a.x; y1 = a.y + a.h / 2; x2 = b.x + b.w + 2; y2 = b.y + b.h / 2; const dx = Math.max(30, (x1 - x2) / 2); c1x = x1 - dx; c1y = y1; c2x = x2 + dx; c2y = y2; }
+      else { const down = b.y > a.y; x1 = a.x + a.w * 0.62; y1 = down ? a.y + a.h : a.y; x2 = b.x + b.w * 0.38; y2 = down ? b.y - 2 : b.y + b.h + 2; const dy = Math.max(24, Math.abs(y2 - y1) / 2) * (down ? 1 : -1); c1x = x1; c1y = y1 + dy; c2x = x2; c2y = y2 - dy; }
+      const hot = hotId && (p.from === hotId || p.to === hotId);
+      const d = `<path class="${p.kind === "rerun" ? "rerun" : ""}${hot ? " hot" : ""}" d="M${x1},${y1} C${c1x},${c1y} ${c2x},${c2y} ${x2},${y2}" marker-end="url(#ah)"/>`;
+      const label = p.label ? `<text x="${(x1 + x2) / 2 + 4}" y="${(y1 + y2) / 2 - 4}">${esc(p.label)}</text>` : "";
+      if (hot) over.push(d + label); else paths.push(d);
+    }
+    const defs = `<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrowhead" d="M0,0 L10,5 L0,10 z"/></marker></defs>`;
+    container.insertAdjacentHTML("afterbegin", `<svg class="arrows" aria-hidden="true">${defs}${paths.join("")}</svg>`);
+    if (over.length) container.insertAdjacentHTML("beforeend", `<svg class="arrows over" aria-hidden="true">${over.join("")}</svg>`);
+  }
+
+  /* ---------- level 0: task lines ---------- */
+  function lineStats(line) {
+    const runs = visibleRuns(line.runs);
+    const c = { running: 0, completed: 0, failed: 0, cancelled: 0 };
+    let last = null;
+    for (const r of runs) {
+      const s = stateAt(r, T); c[s] = (c[s] || 0) + 1;
+      const act = Math.min(T, Math.max(r.created, (r.closed && r.closed <= T) ? r.closed : r.created));
+      if (!last || act > last.at) last = { at: act, run: r, state: s };
+    }
+    return { runs, c, last };
+  }
+  function spark(line) {
+    const n = 32, w = 300, h = 26, bins = new Array(n).fill(0);
+    for (const id of line.runs) { const r = RUNS.get(id); bins[Math.min(n - 1, Math.floor((r.created - T0) / (NOW - T0) * n))]++; }
+    const max = Math.max(1, ...bins), bw = w / n;
+    const x = (T - T0) / (NOW - T0) * w;
+    return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">${bins.map((v, i) => v ? `<rect x="${i * bw + 1}" y="${h - 2 - (v / max) * (h - 4)}" width="${bw - 2}" height="${(v / max) * (h - 4)}"/>` : "").join("")}<line x1="${x}" x2="${x}" y1="0" y2="${h}"/></svg>`;
+  }
+  function crossAgg() {
+    const agg = new Map();
+    for (const k of DATA.links) {
+      const a = RUNS.get(k.from), b = RUNS.get(k.to);
+      if (a.line === b.line || b.created > T) continue;
+      const key = a.line + "→" + b.line; agg.set(key, { from: a.line, to: b.line, n: (agg.get(key)?.n || 0) + 1 });
+    }
+    return [...agg.values()];
+  }
+  function relChips(id) {
+    const rows = crossAgg().filter(v => v.from === id || v.to === id);
+    if (!rows.length) return "";
+    return `<div class="counts" style="color:var(--accent)">${rows.map(v => `<span>${v.from === id ? "→" : "←"} ${esc(LINES.get(v.from === id ? v.to : v.from).title)} <span class="mono">${v.n}</span></span>`).join("")}</div>`;
+  }
+  function routineLast(rt) {
+    let last = null;
+    for (const id of rt.runs) {
+      const r = RUNS.get(id), s = stateAt(r, T);
+      if (!s) continue;
+      if (!last || r.created > last.run.created) last = { run: r, state: s };
+    }
+    return last;
+  }
+  function routineRow(line) {
+    if (!line.routines.length) return "";
+    const lasts = line.routines.map(routineLast).filter(Boolean).sort((a, b) => b.run.created - a.run.created);
+    const failing = line.routines.filter(rt => routineLast(rt)?.state === "failed").length;
+    const latest = lasts[0];
+    const text = latest
+      ? `最近 <span class="mono">${esc(latest.run.routine)}</span> ${STATE_ZH[latest.state] || latest.state} · ${dur(T - latest.run.created)}前`
+      : "还没有运行过";
+    return `<div class="routine-row${failing ? " bad" : ""}"><span class="cycle" aria-hidden="true">↻</span>
+      <span>${line.routines.length} 个例行${failing ? `，<b>${failing} 个最近一次失败</b>` : ""}</span><span>${text}</span></div>`;
+  }
+  function beatStrip(rt) {
+    const W = 1000, H = 30, y = 11;
+    const x = t => ((t - T0) / (NOW - T0)) * W;
+    const seen = rt.runs.map(id => RUNS.get(id)).filter(r => r.created <= T);
+    const inWin = seen.filter(inWindow);
+    const c = {};
+    for (const r of inWin) { const st = stateAt(r, T); c[st] = (c[st] || 0) + 1; }
+    const ticks = seen.map(r => {
+      const st = stateAt(r, T), xx = x(r.created);
+      return `<g data-run="${esc(r.id)}"${inWindow(r) ? "" : ` opacity="0.3"`}><title>${esc(full(r.created))} · ${STATE_ZH[st] || st}</title>
+        <rect class="hit" x="${(xx - 6).toFixed(1)}" y="0" width="12" height="${H - 8}"/>
+        <line class="tick s-${st}" x1="${xx.toFixed(1)}" x2="${xx.toFixed(1)}" y1="${y - 8}" y2="${y + 8}"/></g>`;
+    }).join("");
+    const days = [];
+    for (let t = Math.ceil((T0 + 8 * HOUR) / (24 * HOUR)) * 24 * HOUR - 8 * HOUR; t <= NOW; t += 24 * HOUR) {
+      if (t >= T0) days.push(`<span style="left:${(x(t) / W * 100).toFixed(2)}%">${esc(fmtDay.format(t))}</span>`);
+    }
+    const atNow = NOW - T < 60e3;
+    const next = atNow && rt.nextDue ? (rt.nextDue >= NOW ? `下次 ${dur(rt.nextDue - NOW)}后` : "下次：等来源事件") : "";
+    const mode = rt.mode === "scheduled" ? "定时" : rt.mode === "source" ? "事件源触发" : "未登记";
+    return `<div class="beat">
+      <div class="beat-head"><span class="cycle" aria-hidden="true">↻</span><b>${esc(rt.name)}</b><span>${mode}</span>
+        <span>${winLabel()} ${inWin.length} 次${["completed", "failed", "running", "cancelled"].filter(k => c[k]).map(k => ` · ${STATE_ZH[k]} ${c[k]}`).join("")}</span>
+        ${next ? `<span>${next}</span>` : ""}${atNow && rt.inFlight ? `<span>在跑 ${rt.inFlight}</span>` : ""}${rt.enabled === false ? `<span>已停用</span>` : ""}</div>
+      ${seen.length ? `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="group" aria-label="${esc(rt.name)} 的运行记录">
+        <rect class="winband" x="${x(Math.max(T0, T - WIN * HOUR))}" y="0" width="${Math.max(1, x(T) - x(Math.max(T0, T - WIN * HOUR)))}" height="${H - 8}"/>
+        <line class="base" x1="0" x2="${W}" y1="${y}" y2="${y}"/>${ticks}
+        <line class="now" x1="${x(T)}" x2="${x(T)}" y1="0" y2="${H - 8}"/></svg><div class="beat-axis">${days.join("")}</div>`
+      : `<div class="quiet">${rt.runs.length ? "所选时刻之前还没有运行。" : "已登记，还没有运行过。"}</div>`}
+    </div>`;
+  }
+  function renderLines(el) {
+    const cards = DATA.lines.map(line => ({ line, st: lineStats(line) }))
+      .sort((a, b) => (b.st.c.running - a.st.c.running) || ((b.st.last?.at || 0) - (a.st.last?.at || 0)));
+    el.innerHTML = `<div class="grid">${cards.map(({ line, st }) => {
+      const total = st.runs.length;
+      const w = windowCounts(st.runs), wsum = w.running + w.completed + w.failed + w.cancelled;
+      const seg = ["completed", "running", "failed", "cancelled"].map(k => w[k] ? `<span class="s-${k}" style="flex:${w[k]}"></span>` : "").join("");
+      const running = st.runs.filter(r => stateAt(r, T) === "running");
+      const nowText = running.length
+        ? `进行中：${running.slice(0, 2).map(r => `<span class="mono">${esc(r.name)}</span>`).join("、")}${running.length > 2 ? ` 等 ${running.length} 个` : ""}`
+        : st.last ? `最近：<span class="mono">${esc(st.last.run.name)}</span> ${STATE_ZH[st.last.state] || ""} · ${dur(T - st.last.at)}前` : (line.routines.length ? "没有一次性任务，只有例行" : "此时还没有 PAC");
+      const beatsAtT = line.routines.reduce((n, rt) => n + rt.runs.filter(id => RUNS.get(id).created <= T).length, 0);
+      return `<button class="card${total || beatsAtT ? "" : " dim"}" data-key="${esc(line.id)}" data-line="${esc(line.id)}">
+        <div class="who"><span class="tag">任务线</span><span class="tag">推断</span><span>${MULTI ? esc(line.node) + " · " : ""}${esc(line.owner)}</span></div>
+        <h3>${esc(line.title)}</h3>
+        <dl class="kv"><dt>背景</dt><dd>${esc(line.background)}</dd><dt>目标</dt><dd>${esc(line.goal)}</dd></dl>
+        <div class="bar-stack" title="${winLabel()}结束的，加上此刻在跑的">${seg}</div>
+        <div class="counts"><span>${winLabel()}</span>${wsum ? ["running", "completed", "failed", "cancelled"].filter(k => w[k]).map(k => `<span class="s-${k}"><span class="dot"></span>${STATE_ZH[k]} <span class="mono">${w[k]}</span></span>`).join("") : "<span>没有活动</span>"}</div>
+        <div class="now-line">${nowText}</div>
+        ${relChips(line.id)}
+        ${total ? spark(line) : ""}
+        ${routineRow(line)}
+      </button>`;
+    }).join("")}</div>`;
+    const grid = el.querySelector(".grid");
+    grid.onclick = e => { const c = e.target.closest("[data-line]"); if (c) go({ level: "line", id: c.dataset.line }); };
+    const draw = () => drawArrows(el, crossAgg().map(v => ({ ...v, kind: "topic", label: v.n + " 处关联" })));
+    grid.onmouseover = e => { const c = e.target.closest("[data-line]"); const next = c ? c.dataset.line : null; if (next !== hotId) { hotId = next; draw(); } };
+    grid.onmouseleave = () => { hotId = null; draw(); };
+    draw();
+  }
+
+  /* ---------- level 1: one line's PAC cards ---------- */
+  function relatedOf(id) {
+    return DATA.links.filter(k => k.from === id || k.to === id);
+  }
+  function renderLine(el, id) {
+    const line = LINES.get(id), st = lineStats(line);
+    const runs = st.runs;
+    const older = runs.filter(r => !inWindow(r));
+    const shown = showOlder ? runs : runs.filter(inWindow);
+    const cross = DATA.links.filter(k => { const a = RUNS.get(k.from), b = RUNS.get(k.to); return (a.line === id) !== (b.line === id) && b.created <= T; });
+    el.innerHTML = `<div class="linehead">
+        <div><div class="who" style="margin-bottom:6px"><span class="tag">任务线</span><span class="tag">推断</span><span>${esc(line.owner)}</span></div>
+          <h2>${esc(line.title)}</h2><p>${esc(line.background)}</p></div>
+        <div class="box"><dl class="kv"><dt>目标</dt><dd>${esc(line.goal)}</dd><dt>进度</dt><dd>${(() => { const w = windowCounts(runs); const parts = ["running", "completed", "failed", "cancelled"].filter(k => w[k]).map(k => `${STATE_ZH[k]} ${w[k]}`); return `${winLabel()}：${parts.join("，") || "没有活动"}`; })()}</dd>
+          ${line.routines.length ? `<dt>例行</dt><dd>${line.routines.length} 个，见下方心跳条</dd>` : ""}
+          ${cross.length ? `<dt>跨线</dt><dd>${cross.length} 处关联到其他任务线</dd>` : ""}</dl></div>
+      </div>
+      ${line.routines.length ? `<div class="section-label">↻ 例行<span>每一格是一次运行，颜色是结果；点一格打开那次的 PAC 图</span></div><div class="beats">${line.routines.map(beatStrip).join("")}</div>` : ""}
+      <div class="section-label">一次性任务<span>${winLabel()}有活动的 ${shown.length} 个</span></div>
+      ${shown.length ? `<div class="pacs">${shown.map(r => pacCard(r, false)).join("")}</div>` : `<div class="empty">${winLabel()}没有一次性任务的活动。</div>`}
+      ${older.length ? `<button class="btn" id="older" style="margin-top:14px">${showOlder ? "只看窗口内的" : `显示更早的 ${older.length} 个`}</button>` : ""}`;
+    const olderBtn = el.querySelector("#older");
+    if (olderBtn) olderBtn.onclick = () => { showOlder = !showOlder; renderLine(el, id); };
+    const beats = el.querySelector(".beats");
+    if (beats) beats.onclick = e => { const g = e.target.closest("[data-run]"); if (g) go({ level: "pac", id: g.dataset.run, from: id }); };
+    const grid = el.querySelector(".pacs");
+    if (!grid) return;
+    grid.onclick = e => { const c = e.target.closest("[data-run]"); if (c) go({ level: "pac", id: c.dataset.run, from: id }); };
+    grid.onmouseover = e => { const c = e.target.closest("[data-run]"); const next = c ? c.dataset.run : null; if (next !== hotId) { hotId = next; arrowsForLine(el, id); } };
+    grid.onmouseleave = () => { hotId = null; arrowsForLine(el, id); };
+    arrowsForLine(el, id);
+  }
+  function arrowsForLine(el, id) {
+    drawArrows(el, DATA.links.filter(k => RUNS.get(k.from).line === id && RUNS.get(k.to).line === id && RUNS.get(k.to).created <= T));
+  }
+  function pacCard(r, compact) {
+    const s = stateAt(r, T);
+    const rel = relatedOf(r.id).filter(k => RUNS.get(k.from).created <= T && RUNS.get(k.to).created <= T);
+    const crossN = rel.filter(k => RUNS.get(k.from).line !== RUNS.get(k.to).line).length;
+    const endAt = r.closed && r.closed <= T ? r.closed : null;
+    return `<button class="card pac s-${s}" data-key="${esc(r.id)}" data-run="${esc(r.id)}">
+      <h4>${esc(compact ? fmtHM.format(r.created) : r.name)}</h4>
+      <div class="meta"><span class="s-${s}" style="display:inline-flex;gap:5px;align-items:center"><span class="dot"></span>${STATE_ZH[s] || s}</span>
+        ${compact ? "" : `<span class="mono">${esc(full(r.created))}</span><span>${endAt ? "用时 " + dur(endAt - r.created) : "已运行 " + dur(T - r.created)}</span>`}</div>
+      ${!compact && r.current && s === "running" && NOW - T < 60e3 ? `<div class="meta">当前节点 <span class="mono">${esc(r.current.nodeId)}:${esc(STATE_ZH[r.current.state] || r.current.state)}</span></div>` : ""}
+      ${!compact && (rel.length || r.nodes.length) ? `<div class="rel">${[r.nodes.length ? r.nodes.length + " 个节点" : "", rel.length ? rel.length + " 处关联" + (crossN ? `（${crossN} 处跨线）` : "") : ""].filter(Boolean).join(" · ")}</div>` : ""}
+    </button>`;
+  }
+
+  /* ---------- level 2: one PAC graph ---------- */
+  function renderPac(el, id) {
+    const r = RUNS.get(id), s = stateAt(r, T);
+    const rel = relatedOf(id);
+    const relList = rel.map(k => { const other = RUNS.get(k.from === id ? k.to : k.from); return `<li><button data-open="${esc(other.id)}">${k.from === id ? "→" : "←"} ${esc(other.name)}</button> <span style="color:var(--muted);font-size:12px">${esc(k.label)}${other.line !== r.line ? " · " + esc(LINES.get(other.line).title) : ""}</span></li>`; }).join("");
+    el.innerHTML = `<div class="gv">
+      <div>
+        <h2>${esc(r.name)}</h2>
+        ${r.routine ? `<div class="who" style="margin-bottom:6px"><span class="cycle" aria-hidden="true">↻</span><span>例行 <span class="mono">${esc(r.routine)}</span> 的第 ${LINES.get(r.line).routines.find(x => x.name === r.routine).runs.indexOf(r.id) + 1} 次运行</span></div>` : ""}
+        <div class="meta pac" style="border:0;padding:0;margin-bottom:12px"><span class="s-${s || "pending"}" style="display:inline-flex;gap:5px;align-items:center"><span class="dot"></span>${s ? STATE_ZH[s] || s : "所选时刻尚未创建"}</span>
+          <span>发起：${esc(r.sender)}</span><span class="mono">${esc(r.id)}</span></div>
+        ${r.nodes.length ? `<div class="dag-wrap">${dag(r)}</div>` : `<div class="empty">节点详情不可见（见上方说明）。${r.current ? `列表里记录的当前节点：<span class="mono">${esc(r.current.nodeId)}:${esc(r.current.state)}</span>` : ""}</div>`}
+      </div>
+      <div class="side">
+        <div class="box"><h5>时间</h5><dl class="kv" style="grid-template-columns:4.5em 1fr"><dt>创建</dt><dd class="mono">${esc(full(r.created))}</dd>
+          <dt>结束</dt><dd class="mono">${r.closed ? esc(full(r.closed)) : "—"}</dd><dt>最后进展</dt><dd class="mono">${r.progress ? esc(full(r.progress)) : "—"}</dd>
+          ${r.routine ? `<dt>routine</dt><dd class="mono">${esc(r.routine)}</dd>` : ""}</dl></div>
+        ${r.reason ? `<div class="box"><h5>结果引用</h5><pre>${esc(r.reason)}</pre></div>` : ""}
+        <div class="box" id="nodebox"><h5>节点</h5>${r.nodes.length ? "点左侧节点查看输出。" : "—"}</div>
+        ${rel.length ? `<div class="box"><h5>关联的 PAC</h5><ul>${relList}</ul></div>` : ""}
+      </div></div>`;
+    el.querySelector(".side").onclick = e => { const b = e.target.closest("[data-open]"); if (b) go({ level: "pac", id: b.dataset.open, from: view.from }); };
+    const svg = el.querySelector(".dag");
+    if (svg) svg.onclick = e => { const g = e.target.closest("[data-node]"); if (g) { selectedNode = g.dataset.node; renderPac(el, id); } };
+    if (selectedNode) {
+      const n = r.nodes.find(x => x.id === selectedNode);
+      const ns = nodeStateAt(r, n, T);
+      document.getElementById("nodebox").innerHTML = `<h5>节点 ${esc(n.id)}</h5><dl class="kv" style="grid-template-columns:4.5em 1fr;margin-bottom:8px">
+        <dt>状态</dt><dd>${esc(STATE_ZH[ns] || ns)}</dd><dt>类型</dt><dd>${esc(n.kind)}${n.role ? " · " + esc(n.role) : ""}</dd><dt>负责</dt><dd class="mono" style="word-break:break-all">${esc(n.owner)}</dd>
+        ${n.flagAt ? `<dt>完成于</dt><dd class="mono">${esc(full(n.flagAt))}</dd>` : ""}${n.timeoutMs ? `<dt>时限</dt><dd>${dur(n.timeoutMs)}</dd>` : ""}</dl>
+        ${n.reason ? `<pre style="margin-bottom:8px">${esc(n.reason)}</pre>` : ""}${n.output ? `<pre>${esc(n.output)}</pre>` : `<span style="color:var(--muted)">没有输出文本。</span>`}`;
+    }
+  }
+  function dag(r) {
+    const ids = r.nodes.map(n => n.id), preds = new Map(ids.map(i => [i, []]));
+    for (const [a, b] of r.edges) if (preds.has(a) && preds.has(b)) preds.get(b).push(a);
+    const depth = new Map();
+    const d = i => depth.has(i) ? depth.get(i) : (depth.set(i, 0), depth.set(i, Math.max(0, ...preds.get(i).map(p => d(p) + 1))), depth.get(i));
+    ids.forEach(d);
+    const cols = new Map();
+    for (const i of ids) { const k = depth.get(i); cols.set(k, [...(cols.get(k) || []), i]); }
+    const W = 200, H = 70, GX = 70, GY = 22;
+    const maxRows = Math.max(...[...cols.values()].map(c => c.length));
+    const pos = new Map();
+    for (const [k, list] of cols) list.forEach((i, j) => pos.set(i, { x: 10 + k * (W + GX), y: 10 + (j + (maxRows - list.length) / 2) * (H + GY) }));
+    const width = 20 + cols.size * (W + GX) - GX, height = 20 + maxRows * (H + GY) - GY;
+    const edges = r.edges.filter(([a, b]) => pos.has(a) && pos.has(b)).map(([a, b]) => {
+      const p = pos.get(a), q = pos.get(b);
+      const x1 = p.x + W, y1 = p.y + H / 2, x2 = q.x - 3, y2 = q.y + H / 2;
+      return `<path d="M${x1},${y1} C${x1 + GX / 2},${y1} ${x2 - GX / 2},${y2} ${x2},${y2}" marker-end="url(#dah)"/>`;
+    }).join("");
+    const nodes = r.nodes.map(n => {
+      const p = pos.get(n.id), ns = nodeStateAt(r, n, T);
+      return `<g data-node="${esc(n.id)}" class="${selectedNode === n.id ? "sel" : ""}" tabindex="0" role="button" aria-label="节点 ${esc(n.id)}">
+        <rect class="node" x="${p.x}" y="${p.y}" width="${W}" height="${H}" rx="9"/>
+        <rect class="stripe s-${ns}" x="${p.x}" y="${p.y + 8}" width="4" height="${H - 16}" rx="2"/>
+        <text x="${p.x + 14}" y="${p.y + 22}" font-weight="600">${esc(n.id)}</text>
+        <text class="small" x="${p.x + 14}" y="${p.y + 40}">${esc(n.kind)}${n.role ? " · " + esc(n.role) : ""} · ${esc(STATE_ZH[ns] || ns)}</text>
+        <text class="small" x="${p.x + 14}" y="${p.y + 57}">${esc(n.owner.length > 26 ? "…" + n.owner.slice(-25) : n.owner)}</text></g>`;
+    }).join("");
+    return `<svg class="dag" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><defs><marker id="dah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ah" d="M0,0 L10,5 L0,10 z"/></marker></defs>${edges}${nodes}</svg>`;
+  }
+
+  /* ---------- render ---------- */
+  function render() {
+    renderHeader(); renderGhosts(); renderRail(); renderCrumbs(); renderNote();
+    const el = document.getElementById("content");
+    if (view.level === "lines") renderLines(el);
+    else if (view.level === "line") renderLine(el, view.id);
+    else renderPac(el, view.id);
+  }
+  let resizeTimer;
+  window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(render, 120); });
+  function remember() {
+    try { sessionStorage.setItem("pac-overview", JSON.stringify({ T, followNow: NOW - T < 60e3, WIN, view })); } catch {}
+  }
+  setInterval(() => { remember(); location.reload(); }, 60e3);
+  if (!PARTS.length) {
+    document.getElementById("content").innerHTML = `<div class="empty">还没有节点发布数据。在一台机器上运行 hyprial workflow overview publish &lt;space&gt;，一分钟内这里会自动出现。</div>`;
+    document.getElementById("clock").textContent = "—";
+    return;
+  }
+  document.fonts?.ready?.then(render);
+  render();
+})();
+</script>
+</body>
+</html>

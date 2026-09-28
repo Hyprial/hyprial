@@ -34,7 +34,12 @@ history_app = typer.Typer(
 worker_app = typer.Typer(help="Control workers owned by a workflow.", no_args_is_help=True)
 notify_app = typer.Typer(help="Workflow notification maintenance.", no_args_is_help=True)
 migration_app = typer.Typer(help="Read-only workflow migration reports.", no_args_is_help=True)
+overview_app = typer.Typer(
+    help="PAC overview page: this node's task lines, workflows and routines.",
+    no_args_is_help=True,
+)
 workflow_app.add_typer(history_app, name="history")
+workflow_app.add_typer(overview_app, name="overview")
 workflow_app.add_typer(worker_app, name="worker")
 workflow_app.add_typer(notify_app, name="notify")
 workflow_app.add_typer(migration_app, name="migration")
@@ -158,6 +163,139 @@ def status(
 ):
     """Read graph state, nodes, requests and evidence references."""
     _call("workflow.status", {"runId": run_id}, json_output=json_output)
+
+
+def _overview_model(json_output: bool, window_days: int) -> tuple[dict[str, Any], Any]:
+    """Collect this node's PAC data as the caller sees it, as a page model."""
+
+    import time as _time
+
+    from hyprial.cli import CliError, _daemon_request
+    from hyprial.pac import overview
+
+    try:
+        identity = _identity(json_output)
+    except PacError as error:
+        raise CliError(error.code, str(error)) from error
+
+    def request(method: str, params: Any) -> Any:
+        result = _daemon_request(method, {**params, **identity})
+        if not isinstance(result, dict):
+            raise CliError("INVALID_RESPONSE", f"{method} returned a non-object")
+        return result
+
+    status = _daemon_request("ps", {})
+    daemon = status.get("daemon") if isinstance(status, dict) else None
+    node = daemon.get("nodeId") if isinstance(daemon, dict) else None
+    if not isinstance(node, str) or not node:
+        raise CliError("INVALID_RESPONSE", "daemon ps did not report a node id")
+    snapshot = overview.collect(
+        request, now_ms=int(_time.time() * 1000), window_days=window_days
+    )
+    return overview.build_model(snapshot, node=node), overview
+
+
+@overview_app.command("show")
+def overview_show(
+    window_days: int = typer.Option(
+        7, "--window-days", min=1, max=60, help="Include graphs created within this many days."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+):
+    """Print this node's overview model (what publish would write)."""
+    from hyprial.cli import _execute
+
+    def operation():
+        model, _ = _overview_model(json_output, window_days)
+        if json_output:
+            return {"ok": True, **model}
+        runs = len(model["runs"])
+        strips = sum(len(line["routines"]) for line in model["lines"])
+        return (
+            f"hyprial workflow overview   node {model['node']}: "
+            f"{len(model['lines'])} task lines, {runs} graphs, {strips} routines, "
+            f"{len(model['links'])} inferred links"
+        )
+
+    _execute(operation, json_output=json_output)
+
+
+@overview_app.command("publish")
+def overview_publish(
+    space_id: str = typer.Argument(..., help="orgfs space UUID to publish into."),
+    path: str = typer.Option(
+        "pac-overview", "--path", help="Folder in the space for index.html and nodes/."
+    ),
+    window_days: int = typer.Option(
+        7, "--window-days", min=1, max=60, help="Include graphs created within this many days."
+    ),
+    force: bool = typer.Option(
+        False, "--force", help="Write even when nothing changed since the last publish."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+):
+    """Write this node's data (and the page) into an orgfs space, if it changed.
+
+    Open <checkout>/<path>/index.html from `hyprial fs checkout <space>` to view
+    every publishing node together; the page reloads itself every minute.
+    Publishing enables this node's read-only checkout of the space and leaves
+    it on (`hyprial fs checkout <space> --disable` turns it off).  Every member
+    who can write the space can put scripts on the page: publish only into a
+    space whose writers you trust.
+    """
+    import tempfile
+
+    from hyprial.cli import CliError, _daemon_request, _execute, _state_dir
+
+    def operation():
+        model, overview = _overview_model(json_output, window_days)
+
+        def fs_request(method: str, params: Any) -> Any:
+            result = _daemon_request(method, dict(params))
+            if not isinstance(result, dict):
+                raise CliError("INVALID_RESPONSE", f"{method} returned a non-object")
+            return result
+
+        record_path = _state_dir() / "pac-overview-publish.json"
+        try:
+            records = json.loads(record_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            records = {}
+        records = records if isinstance(records, dict) else {}
+        # One record per destination: publishing the same space to another
+        # --path must write there, not be skipped as unchanged.
+        record_key = f"{space_id}:{path.strip('/')}"
+        with tempfile.TemporaryDirectory(prefix="pac-overview-") as staging:
+            result = overview.publish(
+                fs_request,
+                space_id=space_id,
+                base=path,
+                model=model,
+                staging=Path(staging),
+                last=records.get(record_key) or {},
+                force=force,
+            )
+        records[record_key] = result.pop("keys")
+        record_path.parent.mkdir(parents=True, exist_ok=True)
+        record_path.write_text(json.dumps(records, indent=2) + "\n", encoding="utf-8")
+        payload = {"ok": True, **result}
+        if json_output:
+            return payload
+        what = ", ".join(result["written"]) or "nothing (unchanged since the last publish)"
+        lines = [
+            f"published node {result['node']} to {space_id}: wrote {what}",
+            f"page lists {len(result['nodes'])} node(s): {', '.join(result['nodes'])}",
+        ]
+        if result.get("unavailable"):
+            lines.append(
+                "not yet on this node (their holders are offline): "
+                + ", ".join(result["unavailable"])
+            )
+        if result.get("page"):
+            lines.append(f"open in a browser: file://{result['page']}")
+        return "\n".join(lines)
+
+    _execute(operation, json_output=json_output)
 
 
 @workflow_app.command("list")

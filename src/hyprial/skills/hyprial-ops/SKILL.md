@@ -114,6 +114,7 @@ hyprial <域> <子命令> --help   # 参数面
 - routine format 2 显式选择 mode: scheduled/source。定时模式串行、跳过重叠与错过周期，source 模式按任务 UUID 去重。
 - routine 默认创建并持有常驻协调 agent，也可执行工作；rm 回收自己拥有的 actor，pause 不回收。
 - `hyprial workflow list [--all]` / `hyprial routine list [--all]`：不加 --json 时输出人读的表格。agent 默认只看到自己派的（或自己拥有的），加 --all 看本节点全部，不需要额外授权；主人在终端里直接运行，默认就能看到全部。--json 每行带 `lastProgressAtMs`（该图最新一条 journal 事件的时间，包括 `workflow progress` 发出的显式心跳）、`currentNode {nodeId,state}`（按依赖顺序第一个未完成的节点）（workflow），以及 `lastDispatchAtMs`、`lastOutcome`（routine）。判断是不是卡住，看这两个字段，别只看 state=running。
+- `hyprial workflow overview show|publish <space>`：PAC 总览页。`publish` 把本机的任务线、Workflow 和 Routine 写成 orgfs 空间里的 `pac-overview/nodes/<节点>.js`（blob，只在内容变化时写），并维护合并所有节点的 `pac-overview/index.html`；它还会拉取其他节点尚未到达的文件、刷新本机 checkout，最后输出可以直接用浏览器打开的 `file://…/index.html`。页面每分钟自动重载。数据只包含运行这条命令的调用方看得到的图，节点输出会脱敏并截断。⚠️ 信任边界：空间里任何有写权限的成员都能往页面上放脚本，所以只发布到所有写入者都可信的空间；`publish` 会开启并保持本机对该空间的只读 checkout（`hyprial fs checkout <space> --disable` 关闭）。
 - workflow history list/status 只读查询旧任务。切换会终止并归档未结束旧任务；空 home 也有旧写入屏障，不代表存在历史任务。
 
 最小任务书示例（先替换工作目录与任务，再 plan/run）：
