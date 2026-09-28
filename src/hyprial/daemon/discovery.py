@@ -352,6 +352,7 @@ def local_tailnet_endpoint(
     port: int = DEFAULT_PEER_PORT,
     timeout: float = DISCOVERY_TIMEOUT_SECONDS,
     runner: object | None = None,
+    reason_sink: Callable[[str], None] | None = None,
 ) -> str | None:
     """This node's own tailnet address as a listen endpoint, or None.
 
@@ -366,21 +367,45 @@ def local_tailnet_endpoint(
     and the whole security argument here rests on the tailnet being the only
     way in.  A default that quietly widened that would be worse than no
     default at all.
+
+    The official client can retain its last addresses while stopped or logged
+    out.  Those values describe history, not an interface this process can
+    bind.  ``reason_sink`` lets the daemon make that best-effort refusal
+    visible without changing the endpoint-or-None contract used by callers.
     """
+
+    def unavailable(reason: str) -> None:
+        if reason_sink is not None:
+            reason_sink(reason)
 
     status = TailscaleEndpoints(
         port=port, timeout=timeout, runner=runner
     )._read_status()
     if status is None:
+        unavailable("TAILSCALE_STATUS_UNAVAILABLE")
+        return None
+    backend_state = status.get("BackendState")
+    if backend_state != "Running":
+        state = (
+            backend_state.upper()
+            if isinstance(backend_state, str) and backend_state
+            else "UNKNOWN"
+        )
+        unavailable(f"TAILSCALE_BACKEND_{state}")
         return None
     own = status.get("Self")
     if not isinstance(own, dict):
+        unavailable("TAILSCALE_SELF_UNAVAILABLE")
+        return None
+    if own.get("Online") is False:
+        unavailable("TAILSCALE_SELF_OFFLINE")
         return None
     for address in own.get("TailscaleIPs") or ():
         if not isinstance(address, str) or not address:
             continue
         host = f"[{address}]" if ":" in address else address
         return f"tcp/{host}:{port}"
+    unavailable("TAILSCALE_ADDRESS_UNAVAILABLE")
     return None
 
 

@@ -2041,16 +2041,17 @@ class DaemonApplication:
                     "or usage fetch"
                 ),
             )
+        derived_listen: str | None = None
         if not listen and not self.network_isolated:
-            derived = self._derive_listen_endpoint()
-            if derived is not None:
-                listen = (derived,)
+            derived_listen = self._derive_listen_endpoint()
+            if derived_listen is not None:
+                listen = (derived_listen,)
                 self._startup_network["listenDerived"] = True
                 self._log(
                     "info",
                     "zenoh",
                     "zenoh.listen.derived",
-                    endpoint=derived,
+                    endpoint=derived_listen,
                     detail=(
                         "no listen endpoint was configured; derived this "
                         "node's tailnet address so other nodes can reach it"
@@ -2090,10 +2091,45 @@ class DaemonApplication:
             discovered=len(discovered),
             effective=len(connect),
         )
-        # Retain the effective endpoints so `ps` reports what this daemon
-        # actually uses after the desired-state fallback merge.
-        self.zenoh_listen, self.zenoh_connect = listen, connect
-        if not listen:
+        self.zenoh_connect = connect
+        config = ZenohConfig.from_environment(
+            listen=listen,
+            connect=connect,
+            mode="peer",
+            # Off by default, and opt-in per node.  With discovery disabled a
+            # node reaches exactly the endpoints it was configured with, so
+            # peers sharing a hub never learn about each other: the hub sees
+            # everyone and the spokes see only themselves and the hub.
+            gossip_scouting=self._gossip_for_startup(),
+        )
+        transport, forwarding_listen, derived_error = _open_transport(
+            config,
+            forwarding_listen,
+            derived_listen=derived_listen,
+        )
+        # Retain what the opened session actually uses.  Only a forwarding-port
+        # re-pick or the derived-listener fallback can change the config, so
+        # read it back only then; otherwise the requested listen set stands.
+        self.zenoh_listen = (
+            transport.config.listen
+            if forwarding_listen or derived_error is not None
+            else listen
+        )
+        if derived_error is not None:
+            self._startup_network["listenDerived"] = False
+            self._log(
+                "warn",
+                "zenoh",
+                "zenoh.listen.derived_unavailable",
+                endpoint=derived_listen,
+                error=derived_error,
+                reason="DERIVED_LISTEN_OPEN_FAILED",
+                detail=(
+                    "the session could not open with the best-effort derived "
+                    "listener; reopened once without it"
+                ),
+            )
+        if not self.zenoh_listen:
             # Distinct from the isolation warning below, which asks whether
             # this node can reach out.  Nothing previously asked whether
             # anyone can reach IN, and that is the question whose silence
@@ -2110,7 +2146,7 @@ class DaemonApplication:
                     "observable from here"
                 ),
             )
-        if not listen and not connect:
+        if not self.zenoh_listen and not connect:
             # Fail loudly at the log level without blocking startup:
             # single-node local development without endpoints is legitimate,
             # but an endpoint-less node in a mesh is silently isolated.
@@ -2124,19 +2160,6 @@ class DaemonApplication:
                     "until endpoints are configured"
                 ),
             )
-        config = ZenohConfig.from_environment(
-            listen=listen,
-            connect=connect,
-            mode="peer",
-            # Off by default, and opt-in per node.  With discovery disabled a
-            # node reaches exactly the endpoints it was configured with, so
-            # peers sharing a hub never learn about each other: the hub sees
-            # everyone and the spokes see only themselves and the hub.
-            gossip_scouting=self._gossip_for_startup(),
-        )
-        transport, forwarding_listen = _open_transport(config, forwarding_listen)
-        if forwarding_listen:
-            self.zenoh_listen = transport.config.listen
         directory = LivelinessDirectory(transport)
         presence = _LocalPresence(
             directory,
@@ -10831,16 +10854,45 @@ class DaemonApplication:
             return None
         if os.environ.get("HYPRIAL_SERVICE_MANAGED") != "1" and _custom_home_or_state():
             return None
+        reasons: list[str] = []
         try:
-            return local_tailnet_endpoint()
+            endpoint = local_tailnet_endpoint(reason_sink=reasons.append)
         except Exception as error:  # noqa: BLE001 - startup must not depend on it
             self._log(
                 "warn",
                 "zenoh",
                 "zenoh.listen.derive_failed",
+                reason="TAILSCALE_STATUS_ERROR",
                 detail=str(error),
             )
             return None
+        if endpoint is None:
+            if reasons:
+                self._log(
+                    "warn",
+                    "zenoh",
+                    "zenoh.listen.derive_failed",
+                    reason=reasons[-1],
+                    detail="the official tailscale client has no current local address",
+                )
+            return None
+        bind_error = _probe_derived_listen_endpoint(endpoint)
+        if bind_error is not None:
+            self._log(
+                "warn",
+                "zenoh",
+                "zenoh.listen.derive_failed",
+                endpoint=endpoint,
+                error=str(bind_error),
+                reason="ADDRESS_NOT_LOCAL",
+                detail="the derived address is not bindable on this host",
+            )
+            return None
+        # Never derive from the tsnet sidecar's address: it belongs to a
+        # userspace network stack, not an OS interface, and cannot be bound by
+        # this process. Headscale-joined inbound traffic reaches forwarding's
+        # loopback listener instead.
+        return endpoint
 
     def _discover_peer_endpoints(self) -> tuple[str, ...]:
         """Endpoints from forwarding and the peer directory, combined.
@@ -12888,6 +12940,26 @@ def _endpoint_host(endpoint: str) -> str | None:
         return None
 
 
+def _probe_derived_listen_endpoint(endpoint: str) -> OSError | None:
+    """Return why ``endpoint`` is not local, without claiming its real port.
+
+    Port zero asks the OS only whether the derived address belongs to a local
+    interface.  The real port can still race or already be occupied; session
+    open handles that separately by dropping only a derived listener.
+    """
+
+    host = _endpoint_host(endpoint)
+    if host is None:
+        return OSError(errno.EINVAL, f"invalid derived endpoint: {endpoint}")
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    try:
+        with socket.socket(family, socket.SOCK_STREAM) as probe:
+            probe.bind((host, 0))
+    except OSError as error:
+        return error
+    return None
+
+
 def compose_daemon_worker_launch(
     *,
     registry: Any,
@@ -12996,34 +13068,54 @@ def _reserve_loopback_endpoint() -> str:
 
 
 def _open_transport(
-    config: ZenohConfig, forwarding_listen: tuple[str, ...]
-) -> tuple[ZenohTransport, tuple[str, ...]]:
+    config: ZenohConfig,
+    forwarding_listen: tuple[str, ...],
+    *,
+    derived_listen: str | None = None,
+) -> tuple[ZenohTransport, tuple[str, ...], str | None]:
     """Open the session; re-pick ONLY the forwarding loopback port on a bind
-    collision on that exact endpoint. Any other failure -- including the
-    node's own tailnet listener being held -- surfaces unchanged. The number
-    of re-picks is the registered external-I/O restart budget."""
+    collision on that exact endpoint. A best-effort derived listener gets one
+    fallback open without that endpoint; configured listeners still surface
+    every failure unchanged. Forwarding re-picks use the registered external-
+    I/O restart budget."""
 
     rebinds = DEFAULT_POLICIES[EXTERNAL_IO].max_restarts
+    derived_error: str | None = None
     while True:
         try:
-            return ZenohTransport(config), forwarding_listen
+            return ZenohTransport(config), forwarding_listen, derived_error
         except Exception as error:
+            error_text = str(error)
             if (
-                not forwarding_listen
-                or rebinds <= 0
-                or forwarding_listen[0] not in str(error)
+                forwarding_listen
+                and rebinds > 0
+                and forwarding_listen[0] in error_text
             ):
+                rebinds -= 1
+                replacement = (_reserve_loopback_endpoint(),)
+                config = replace(
+                    config,
+                    listen=tuple(
+                        replacement[0]
+                        if endpoint == forwarding_listen[0]
+                        else endpoint
+                        for endpoint in config.listen
+                    ),
+                )
+                forwarding_listen = replacement
+                continue
+            if derived_listen is None or derived_listen not in config.listen:
                 raise
-        rebinds -= 1
-        replacement = (_reserve_loopback_endpoint(),)
-        config = replace(
-            config,
-            listen=tuple(
-                replacement[0] if endpoint == forwarding_listen[0] else endpoint
-                for endpoint in config.listen
-            ),
-        )
-        forwarding_listen = replacement
+            derived_error = error_text
+            config = replace(
+                config,
+                listen=tuple(
+                    endpoint
+                    for endpoint in config.listen
+                    if endpoint != derived_listen
+                ),
+            )
+            derived_listen = None
 
 
 def _resolve_forwarding_environment(node_id: str) -> dict[str, str]:

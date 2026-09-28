@@ -2821,6 +2821,7 @@ _SAFE_DAEMON_STARTUP_EVENTS = frozenset(
         "zenoh.forwarding.exited",
         "zenoh.forwarding.failed",
         "zenoh.forwarding.start_failed",
+        "zenoh.listen.derived_unavailable",
         "zenoh.endpoints.unset",
         "workflow.remote_unavailable",
         # Degraded workflow startup (#708): the daemon stays up with the
