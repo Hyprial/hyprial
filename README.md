@@ -23,6 +23,7 @@ adapter 再把 Lark 等外部平台接到相同的消息面。
 
 ```sh
 uv tool install git+https://github.com/Hyprial/hyprial.git@internal
+hyprial upgrade --tag internal
 hyprial version --json
 hyprial init
 hyprial doctor
@@ -34,6 +35,7 @@ hyprial doctor
 
 ```sh
 uv tool install git+https://github.com/Hyprial/hyprial.git@internal
+hyprial upgrade --tag internal
 hyprial login
 hyprial doctor
 ```
@@ -50,6 +52,11 @@ hyprial doctor
 它是一个**会随发布移动**的轨道 tag，所以这条命令不会过期；⛔ 不要把 `dev` 当作来源
 （`dev` 在本仓同时是分支和标签，裸名解析会命中标签）。可执行文件 `hyprial` 默认安装到 `~/.local/bin`，
 请确保该目录在 `PATH` 中。
+
+首条 `uv tool install` 只负责引导 CLI；紧接着运行 `hyprial upgrade --tag internal`
+会从同一公网 ref 取得 `uv.lock`、导出约束并重装，避免依赖版本随当天的 PyPI 状态漂移。
+之后普通 `hyprial upgrade` 和自动更新始终回到公网发布仓。开发者如需一次性验证
+Forgejo ref，可用 `hyprial upgrade --source forgejo --ref <完整提交或标签>`；该选择不持久化。
 
 当前没有需要迁移的旧 TypeScript 主机，也不再提供旧状态迁移。若意外发现仍装有
 旧版的机器，不要覆盖安装：先停止并删除旧版、归档其状态目录，再按全新主机安装。

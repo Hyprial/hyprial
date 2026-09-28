@@ -3148,12 +3148,17 @@ def _version_result() -> JsonObject:
     installation = updates.read_installation()
     installed = installation.version or __version__
     local = _semantic_version(installed)
-    url = updates.installation_git_url(installation)
+    update_source = updates.installation_git_url(installation)
     result: JsonObject = {
         "ok": True,
         "packageVersion": installed,
         "localVersion": local,
-        "registry": url,
+        "registry": update_source,
+        "persistentUpdateSource": update_source,
+        "installOrigin": updates.installation_origin(installation),
+        "dependencyLock": updates.dependency_lock_report(
+            _hyprial_home(), installation
+        ),
     }
     warning = updates.retired_track_warning(_hyprial_home())
     if warning is not None:
@@ -9638,11 +9643,149 @@ def _perform_upgrade_and_report(*args: object, **kwargs: object) -> JsonObject:
     return result
 
 
+def _install_locked_requirement(
+    *,
+    url: str,
+    requirement: str,
+    resolution: Any,
+    resolved: JsonObject,
+    resolved_suffix: str,
+) -> tuple[subprocess.CompletedProcess[str], Any]:
+    """Install one resolved commit using only constraints exported from its lock."""
+
+    from hyprial import updates
+
+    with tempfile.TemporaryDirectory(prefix="hyprial-upgrade-") as raw:
+        constraints = Path(raw) / "constraints.txt"
+        try:
+            updates.export_locked_constraints(url, resolution.commit, constraints)
+        except updates.UpdateProbeError as error:
+            raise CliError("UPGRADE_CHECK_FAILED", str(error), resolved) from error
+        try:
+            completed = subprocess.run(
+                [
+                    "uv",
+                    "tool",
+                    "install",
+                    "--force",
+                    "--compile-bytecode",
+                    "--constraints",
+                    str(constraints),
+                    requirement,
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+                env=updates.git_env(),
+                timeout=updates.UV_INSTALL_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise CliError(
+                "UPGRADE_FAILED",
+                f"uv tool install timed out after {updates.UV_INSTALL_TIMEOUT:g}s; "
+                f"{resolved_suffix}",
+                resolved,
+            ) from error
+        except OSError as error:
+            raise CliError(
+                "UPGRADE_FAILED",
+                f"cannot run uv: {error}; {resolved_suffix}",
+                resolved,
+            ) from error
+        if completed.returncode != 0:
+            detail = (
+                completed.stderr.strip()
+                or completed.stdout.strip()
+                or "uv tool install failed"
+            )
+            raise CliError(
+                "UPGRADE_FAILED", f"{detail}; {resolved_suffix}", resolved
+            )
+        installed = updates.read_installation()
+        _require_installed_commit(installed, resolution, resolved, resolved_suffix)
+        try:
+            updates.write_lock_receipt(
+                _hyprial_home(),
+                source=url,
+                commit=resolution.commit,
+                constraints=constraints,
+            )
+        except OSError as error:
+            raise CliError(
+                "UPGRADE_REPORT_FAILED",
+                f"installed the resolved commit but could not save its lock receipt: {error}",
+                resolved,
+            ) from error
+    return completed, installed
+
+
+def _resolve_upgrade_target(
+    *, source: str, ref: str | None, tag: str | None
+) -> tuple[str, str | None, Any, JsonObject]:
+    """Resolve one persistent-official or explicit one-shot upgrade target."""
+
+    from hyprial import updates
+
+    if source not in updates.UPGRADE_SOURCES:
+        raise CliError(
+            ipc_errors.INVALID_ARGUMENT,
+            f"--source must be one of {', '.join(sorted(updates.UPGRADE_SOURCES))}",
+        )
+    if source == "forgejo" and ref is None:
+        raise CliError(
+            ipc_errors.INVALID_ARGUMENT,
+            "--source forgejo requires --ref with a full commit or tag",
+        )
+    if source == "official" and ref is not None:
+        raise CliError(
+            ipc_errors.INVALID_ARGUMENT,
+            "--ref is reserved for --source forgejo; use --tag for an official tag",
+        )
+    if tag is not None and (source != "official" or ref is not None):
+        raise CliError(
+            ipc_errors.INVALID_ARGUMENT,
+            "--tag cannot be combined with --source forgejo or --ref",
+        )
+    url = updates.UPGRADE_SOURCES[source]
+    try:
+        track = (
+            updates.read_update_track(_hyprial_home())
+            if tag is None and ref is None
+            else None
+        )
+        if ref is not None and re.fullmatch(r"[0-9a-fA-F]{40}", ref):
+            resolution = updates.RemoteResolution(tag=ref, commit=ref.lower())
+        else:
+            resolution = updates.resolve_remote(
+                url,
+                tag=ref or tag or track,
+                timeout=updates.read_ls_remote_timeout(_hyprial_home()),
+            )
+    except updates.UpdateProbeError as error:
+        raise CliError("UPGRADE_CHECK_FAILED", str(error)) from error
+    resolved: JsonObject = {
+        "resolvedTag": resolution.tag,
+        "resolvedCommit": resolution.commit,
+        "source": source,
+        "persistentUpdateSource": updates.OFFICIAL_GIT_URL,
+    }
+    if source != "official":
+        resolved["oneShotSource"] = True
+    if track is not None:
+        resolved["track"] = track
+    warning = updates.retired_track_warning(_hyprial_home())
+    if warning is not None:
+        resolved["warning"] = warning
+    return url, track, resolution, resolved
+
+
 
 def _perform_upgrade(
     force: bool,
     tag: str | None = None,
     *,
+    source: str = "official",
+    ref: str | None = None,
     restart: bool = True,
     before_restart: Callable[[JsonObject, str, str, str], JsonObject] | None = None,
     awaiting_confirmation: bool = False,
@@ -9682,29 +9825,13 @@ def _perform_upgrade(
                 "installationUrl": installation.url,
             },
         )
-    url = updates.installation_git_url(installation)
-    try:
-        # An explicit --tag is the operator's escape hatch and always wins;
-        # otherwise an explicit settings.json updateTrack selects its movable
-        # track tag, and no track keeps the legacy latest-version-tag probe.
-        track = updates.read_update_track(_hyprial_home()) if tag is None else None
-        ls_remote_timeout = updates.read_ls_remote_timeout(_hyprial_home())
-        resolution = updates.resolve_remote(
-            url, tag=tag or track, timeout=ls_remote_timeout
-        )
-    except updates.UpdateProbeError as error:
-        raise CliError("UPGRADE_CHECK_FAILED", str(error)) from error
-    warning = updates.retired_track_warning(_hyprial_home())
-    resolved: JsonObject = {
-        "resolvedTag": resolution.tag,
-        "resolvedCommit": resolution.commit,
-    }
-    if track is not None:
-        resolved["track"] = track
-    if warning is not None:
-        resolved["warning"] = warning
+    url, track, resolution, resolved = _resolve_upgrade_target(
+        source=source, ref=ref, tag=tag
+    )
     if not force and not updates.upgrade_available(
-        installation, resolution, operator_chose_the_tag=tag is not None
+        installation,
+        resolution,
+        operator_chose_the_tag=tag is not None or ref is not None,
     ):
         # ⚠️ Two different reasons land here and they must not share a sentence.
         # "already at the resolved tag's commit" is simply false when the track
@@ -9712,8 +9839,10 @@ def _perform_upgrade(
         # it. And a guard that leaves no trace is unobservable: "the protection
         # fired" and "no rollback ever happened" would read identically, and we
         # want to know whether it has ever actually caught anything.
-        declined_downgrade = tag is None and updates.resolution_is_a_downgrade(
-            installation, resolution
+        declined_downgrade = (
+            tag is None
+            and ref is None
+            and updates.resolution_is_a_downgrade(installation, resolution)
         )
         return {
             "ok": True,
@@ -9739,7 +9868,11 @@ def _perform_upgrade(
     # name on a track would make every later upgrade see a changed ref and
     # restart the daemon on every timer tick.  The legacy and explicit-tag
     # paths keep their exact @tag requirement.
-    requested = resolution.commit if track is not None else resolution.tag
+    requested = (
+        resolution.commit
+        if track is not None or ref is not None
+        else resolution.tag
+    )
     # A moved tag keeps its name: compare the commit too (see _require_installed_commit).
     ref_changed = installation.requested_revision != requested or (
         installation.commit is not None
@@ -9773,47 +9906,13 @@ def _perform_upgrade(
             "is part of may be upgraded in place",
             {**resolved, **tool_guard},
         )
-    try:
-        completed = subprocess.run(
-            # --compile-bytecode: pay the ~11.5k-file compile here, inside
-            # UV_INSTALL_TIMEOUT, not in the restarted daemon's first import.
-            # Without it the new daemon spent ~15 s compiling before it could
-            # serve, the fixed 15 s readiness wait below expired, and a
-            # healthy upgrade was reported UPGRADE_RESTART_FAILED with a false
-            # owner alert (hyprial-hq, 2026-09-24 07:08Z: 11,447 .pyc written
-            # 07:08:00-07:08:19, ipc-server up at 07:08:18.859).
-            ["uv", "tool", "install", "--force", "--compile-bytecode", requirement],
-            text=True,
-            capture_output=True,
-            check=False,
-            # The timer (and any headless caller) must never hang on a git
-            # credential prompt inside uv's own fetch.
-            env=updates.git_env(),
-            timeout=updates.UV_INSTALL_TIMEOUT,
-        )
-    except subprocess.TimeoutExpired as error:
-        raise CliError(
-            "UPGRADE_FAILED",
-            f"uv tool install timed out after {updates.UV_INSTALL_TIMEOUT:g}s; "
-            f"{resolved_suffix}",
-            resolved,
-        ) from error
-    except OSError as error:
-        # e.g. uv was uninstalled after the timer was installed.
-        raise CliError(
-            "UPGRADE_FAILED",
-            f"cannot run uv: {error}; {resolved_suffix}",
-            resolved,
-        ) from error
-    if completed.returncode != 0:
-        detail = (
-            completed.stderr.strip()
-            or completed.stdout.strip()
-            or "uv tool install failed"
-        )
-        raise CliError("UPGRADE_FAILED", f"{detail}; {resolved_suffix}", resolved)
-    installed = updates.read_installation()
-    _require_installed_commit(installed, resolution, resolved, resolved_suffix)
+    completed, installed = _install_locked_requirement(
+        url=url,
+        requirement=requirement,
+        resolution=resolution,
+        resolved=resolved,
+        resolved_suffix=resolved_suffix,
+    )
     installed_version = installed.version or resolution.version or resolution.tag
     result: JsonObject = {
         "ok": True,
@@ -10393,6 +10492,16 @@ def upgrade(
         "--tag",
         help="Install this exact remote tag instead of the latest version tag.",
     ),
+    source: str = typer.Option(
+        "official",
+        "--source",
+        help="Use the official release, or a one-shot Forgejo test source.",
+    ),
+    ref: str | None = typer.Option(
+        None,
+        "--ref",
+        help="One-shot Forgejo full commit or tag; requires --source forgejo.",
+    ),
     force: bool = typer.Option(
         False,
         "--force",
@@ -10405,10 +10514,16 @@ def upgrade(
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
-    """Upgrade the uv-managed hyprial tool to an exact Forgejo tag."""
+    """Upgrade the uv-managed hyprial tool from the official release."""
 
     _execute(
-        lambda: _perform_upgrade_and_report(force, tag, restart=not no_restart),
+        lambda: _perform_upgrade_and_report(
+            force,
+            tag,
+            source=source,
+            ref=ref,
+            restart=not no_restart,
+        ),
         json_output=json_output,
         allow_missing_home=True,
     )
@@ -11449,6 +11564,7 @@ def autoupdate_run(
         try:
             result = _perform_upgrade_and_report(
                 force=False,
+                source="official",
                 restart=False,
                 awaiting_confirmation=True,
             )
@@ -11489,6 +11605,9 @@ def autoupdate_run(
                 "restartRequired": result.get("restartRequired", False),
             }
         )
+        if result.get("declinedDowngrade") is True:
+            record["declinedDowngrade"] = True
+            record["reason"] = result.get("reason")
         if "warning" in result:
             record["warning"] = result["warning"]
         if "restart" in result:

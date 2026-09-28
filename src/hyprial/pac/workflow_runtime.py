@@ -65,10 +65,19 @@ def _request_expires_at_ms(row: sqlite3.Row) -> int | None:
 
 
 def close_workflow(
-    store: PacGraphStore, graph: dict, *, state: str, reason: str, at: int
+    store: PacGraphStore,
+    graph: dict,
+    *,
+    state: str,
+    reason: str | None,
+    at: int,
+    cancelled_reason: str | None = None,
+    closed_by: str | None = None,
 ) -> None:
     """Caller owns the transaction; close and cancellation are one fact."""
     db = store._db
+    cancellation = reason if cancelled_reason is None else cancelled_reason
+    closer = graph["created_by"] if closed_by is None else closed_by
     db.execute(
         "UPDATE workflow_graphs SET state=?,reason_ref=? WHERE graph_id=?",
         (state, reason, graph["graph_id"]),
@@ -88,7 +97,7 @@ def close_workflow(
             "UPDATE workflow_nodes SET state=?,reason_ref=? WHERE graph_id=? AND node_id=?",
             (
                 "done" if accepted else "cancelled",
-                node.flag_reason_ref if accepted else reason,
+                node.flag_reason_ref if accepted else cancellation,
                 graph["graph_id"],
                 row["node_id"],
             ),
@@ -126,7 +135,7 @@ def close_workflow(
     if graph["closed_at"] is None:
         db.execute(
             "UPDATE graphs SET closed_at=?,closed_by=? WHERE graph_id=?",
-            (at, graph["created_by"], graph["graph_id"]),
+            (at, closer, graph["graph_id"]),
         )
         append_event(
             db,
@@ -136,7 +145,7 @@ def close_workflow(
             at=at,
             data={
                 "at": at,
-                "by": graph["created_by"],
+                "by": closer,
                 "state": state,
                 "reasonRef": reason,
             },

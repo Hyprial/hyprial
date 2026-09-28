@@ -565,7 +565,14 @@ class PacReactor:
                          type=f"flag_{action}", at=at, event_id=event_id,
                          data={"nodeId": node_id, "action": action, "actor": actor,
                                "reasonRef": reason_ref})
-            if action == "set" and node.kind == "end":
+            from .workflow_graph import managed_graph
+
+            managed_end = (
+                action == "set"
+                and node.kind == "end"
+                and managed_graph(self._store, graph_id)
+            )
+            if action == "set" and node.kind == "end" and not managed_end:
                 db.execute(
                     "UPDATE graphs SET closed_at=?, closed_by=? "
                     "WHERE graph_id=? AND closed_at IS NULL",
@@ -595,9 +602,23 @@ class PacReactor:
             )
             if action == "reset":
                 db.execute("UPDATE workflow_nodes SET request_id=NULL,input_token=NULL WHERE graph_id=? AND node_id=?", (graph_id, node_id))
-            if action == "set" and node.kind == "end":
-                db.execute("UPDATE workflow_graphs SET state=CASE WHEN EXISTS (SELECT 1 FROM workflow_nodes WHERE graph_id=? AND state='failed') THEN 'failed' ELSE 'completed' END,reason_ref=? WHERE graph_id=?", (graph_id, reason_ref, graph_id))
-                db.execute("UPDATE workflow_nodes SET state='cancelled',reason_ref='pac:end-flag' WHERE graph_id=? AND state IN ('pending','requested')", (graph_id,))
+            if managed_end:
+                from .workflow_runtime import close_workflow
+
+                failed = db.execute(
+                    "SELECT 1 FROM workflow_nodes "
+                    "WHERE graph_id=? AND state='failed' LIMIT 1",
+                    (graph_id,),
+                ).fetchone()
+                close_workflow(
+                    self._store,
+                    graph,
+                    state="failed" if failed is not None else "completed",
+                    reason=reason_ref,
+                    at=at,
+                    cancelled_reason="pac:end-flag",
+                    closed_by=node_id,
+                )
             planned = (
                 self._plan_set(graph_id, node_id, event_id, actor)
                 if action == "set"

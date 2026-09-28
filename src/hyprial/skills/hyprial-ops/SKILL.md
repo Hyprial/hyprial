@@ -29,8 +29,18 @@ hyprial <域> <子命令> --help   # 参数面
 - `hyprial ps [--json]` — daemon/connectors/interactiveSessions/pendingMessages
 - `hyprial log --name <worker> / --actor / --since / --conversation / --correlation-id`
   — daemon 结构化日志查询;原始日志 `~/.hyprial/state/logs/daemon.jsonl`
-- `hyprial upgrade` — 升级并自动平滑重启（操作员显式动作，不受
-  autoUpgrade 开关约束）
+- `hyprial upgrade` — 普通升级的持久源固定为公网
+  `https://github.com/Hyprial/hyprial.git`，与当前安装回执里的来源无关；升级成功后
+  自动平滑重启（操作员显式动作，不受 autoUpgrade 开关约束）。每次安装前从同一
+  来源抓取解析到的确切 commit，要求其中存在 `uv.lock`，导出 pins 后以
+  `uv tool install --constraints` 安装；抓取、锁文件或导出失败都会响亮终止，绝不
+  回退到未锁定安装。开发者一次性验证内网 ref 用
+  `hyprial upgrade --source forgejo --ref <完整提交或标签>`；该选择不持久化，下一次
+  普通升级和自动升级仍回公网。若已装的早期测试版本高于公网版本，普通/自动升级
+  都返回 `declinedDowngrade` 并跳过；确需回退时由操作员显式指定公网 `--tag`。
+- `hyprial version --json` — 除版本外分别报告 `persistentUpdateSource`（固定公网）、
+  `installOrigin`（PEP 610 当前安装来源）和 `dependencyLock`（`match`、带逐包差异的
+  `mismatch`，或旧安装/回执不匹配时的 `unknown`）。
 - `hyprial config set autoUpgrade true|false` — 自动升级总开关（2026-09-15
   Allen 定案：**缺省 = 关**）。未开启时 daemon 调度器到点只记
   `autoupdate.run.skipped`(reason=disabled)不起子进程，`autoupdate run`
@@ -186,7 +196,9 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
   不写收件人 ⇒ 不转,回一条格式说明,⛔ 不猜。收件人解析不到 ⇒ `FORWARD_TARGET_UNKNOWN`(不重投,
   原发送者收到失败通知);发送故障照常重投。`--route` 的 adapter 必须是**该人专用**的 adapter
   (它发来的消息才算"本人")。不开飞书时用 `hyprial query <user-proxy> inbox` 看。
-- 自动升级(03:17/15:17)只安装、**不重启**:装好后 daemon 仍跑旧代码,主人会收到"新版本已安装,等待确认后重启"。
+- 自动升级(03:17/15:17)固定检查公网源，并与手动升级共用上述 exact-commit
+  `uv.lock` 约束路径；缺锁/导出失败不做未锁定安装，高于公网的版本以
+  `declinedDowngrade` 跳过。需要升级时它只安装、**不重启**:装好后 daemon 仍跑旧代码,主人会收到"新版本已安装,等待确认后重启"。
   确认切换:`hyprial autoupdate restart [--json]`(主人自己运行,或让任一 agent 代为运行);没有待重启时它什么都不做。
   `hyprial autoupdate status --json` 的 `pendingRestart` 是待重启记录，`pendingRestartState` 表示这条记录现在是否还需要处理：
   `waiting` = 还在跑旧代码，需要重启；`applied` = daemon 在安装之后已经重启过，不用再重启；

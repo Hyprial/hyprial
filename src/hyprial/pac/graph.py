@@ -566,13 +566,33 @@ def close_graph(store: PacGraphStore, graph_id: str, *, actor: str) -> dict[str,
             )
         if graph["closed_at"] is None:
             at = time_ns() // 1_000_000
-            db.execute("UPDATE graphs SET closed_at=?, closed_by=? WHERE graph_id=?", (at, actor, graph_id))
-            append_event(db, graph_id=graph_id, version=graph["version"], type="graph_closed",
-                         at=at, data={"at": at, "by": actor})
-            db.execute("UPDATE workflow_graphs SET state='cancelled',reason_ref='pac:graph-closed' "
-                       "WHERE graph_id=? AND state NOT IN ('completed','failed','cancelled')", (graph_id,))
-            db.execute("UPDATE workflow_nodes SET state='cancelled',reason_ref='pac:graph-closed' "
-                       "WHERE graph_id=? AND state IN ('pending','requested')", (graph_id,))
+            managed = db.execute(
+                "SELECT 1 FROM workflow_graphs WHERE graph_id=?", (graph_id,)
+            ).fetchone()
+            if managed is not None:
+                from .workflow_runtime import close_workflow
+
+                close_workflow(
+                    store,
+                    graph,
+                    state="cancelled",
+                    reason="pac:graph-closed",
+                    at=at,
+                    closed_by=actor,
+                )
+            else:
+                db.execute(
+                    "UPDATE graphs SET closed_at=?, closed_by=? WHERE graph_id=?",
+                    (at, actor, graph_id),
+                )
+                append_event(
+                    db,
+                    graph_id=graph_id,
+                    version=graph["version"],
+                    type="graph_closed",
+                    at=at,
+                    data={"at": at, "by": actor},
+                )
     return show_graph(store, graph_id)
 
 

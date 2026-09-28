@@ -1,8 +1,9 @@
 """Tag-governed Git update resolution with opt-in upgrade tracks.
 
 Distribution is deliberately Git/uv based (``uv tool install git+...@<ref>``)
-with no package registry.  The remote release decision is the set of Forgejo
-tags.  Two resolution modes share one probe:
+with no package registry. The persistent remote release is the public GitHub
+repository; PEP 610 installation origin is reporting data only. Two resolution
+modes share one probe:
 
 - Legacy (default): the highest parseable ``vX.Y.Z...`` tag by PEP 440
   ordering, including development and release-candidate tags.  This is the
@@ -34,27 +35,30 @@ import re
 import subprocess
 import sys
 import time
+import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from importlib.metadata import PackageNotFoundError
+from importlib.metadata import PackageNotFoundError, version as package_version
 from importlib.metadata import distribution as package_distribution
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
 Json = dict[str, Any]
 
 _LOG = logging.getLogger(__name__)
 
-DEFAULT_GIT_URL = "ssh://git@git.internal.hyprial.com/HyprialOS/harness-bridge.git"
-_PRE_RENAME_GIT_HOST = "git.internal.hyprial.com"
-_PRE_RENAME_GIT_PATHS = {
-    "/HyprialOS/harness-bridge-py",
-    "/HyprialOS/harness-bridge-py.git",
-}
-
+OFFICIAL_GIT_URL = "https://github.com/Hyprial/hyprial.git"
+FORGEJO_GIT_URL = "ssh://git@git.internal.hyprial.com/HyprialOS/harness-bridge.git"
+# Shared repository consumers (notably the generated agent Git profile) use the
+# internal SSH endpoint. Upgrade policy has its own official-source constant
+# above and must not change this compatibility default.
+DEFAULT_GIT_URL = FORGEJO_GIT_URL
+UPGRADE_SOURCES = {"official": OFFICIAL_GIT_URL, "forgejo": FORGEJO_GIT_URL}
 # One cold SSH handshake on the hq Mac took 21.0s on 2026-09-27. Keep enough
 # headroom for that first connection while bounding both attempts to 90s total.
 LS_REMOTE_TIMEOUT = 45.0
@@ -136,51 +140,22 @@ class RemoteResolution:
     version: str | None = None
 
 
-def _is_pre_rename_git_url(url: str) -> bool:
-    """Match only known spellings of the retired Python repository.
-
-    PEP 610 normally records the canonical ``ssh://`` URL, while Git also
-    accepts the scp-like form and installers may retain a ``git+ssh`` prefix.
-    Hostname case, default port 22, a missing ``.git``, and one trailing slash
-    are transport-equivalent.  Credentials, repository owner/path, query, and
-    fragment must match exactly enough that custom registries are never
-    silently retargeted.
-    """
-
-    scp_match = re.fullmatch(
-        r"git@([^:]+):(HyprialOS/harness-bridge-py(?:\.git)?)/?", url
-    )
-    if scp_match is not None:
-        return scp_match.group(1).lower() == _PRE_RENAME_GIT_HOST
-
-    try:
-        parsed = urlsplit(url)
-        port = parsed.port
-    except ValueError:
-        return False
-    return (
-        parsed.scheme.lower() in {"ssh", "git+ssh"}
-        and parsed.username == "git"
-        and parsed.password is None
-        and parsed.hostname is not None
-        and parsed.hostname.lower() == _PRE_RENAME_GIT_HOST
-        and port in {None, 22}
-        and parsed.path.rstrip("/") in _PRE_RENAME_GIT_PATHS
-        and not parsed.query
-        and not parsed.fragment
-    )
-
-
 def installation_git_url(installation: Installation) -> str:
-    """Return the effective update source, healing the repository rename.
+    """Return the persistent update source.
 
-    Old installed wheels retain their source in ``direct_url.json``.  Rewrite
-    only the known retired HyprialOS Python repository; every custom source is
-    returned byte-for-byte unchanged.
+    ``direct_url.json`` describes where the currently installed bytes came
+    from. It is reporting data, never an update-policy input. Plain upgrades
+    always return to the official public release.
     """
 
-    url = installation.url or DEFAULT_GIT_URL
-    return DEFAULT_GIT_URL if _is_pre_rename_git_url(url) else url
+    del installation
+    return OFFICIAL_GIT_URL
+
+
+def installation_origin(installation: Installation) -> str | None:
+    """Return the PEP 610 origin exactly as recorded for reporting."""
+
+    return installation.url
 
 
 def installation_is_local(installation: Installation) -> bool:
@@ -188,11 +163,10 @@ def installation_is_local(installation: Installation) -> bool:
 
     Guard 2 of spec autoupdate-isolated-home-2026-09-15: a ``file://`` (or
     bare-path, or ``git+file://``, or editable) install source means this
-    process runs from a working tree, so an upgrade would resolve tags
-    against that tree and then overwrite the USER'S GLOBAL uv tool
-    directory with it.  The check reads the raw PEP 610 url BEFORE
-    :func:`installation_git_url` heals the repository rename -- healing
-    must not turn a local source into an apparently remote one.
+    process runs from a working tree. The persistent remote is still official,
+    but self-replacing a developer checkout's interpreter would overwrite the
+    user's global uv tool directory. This safety guard reads the raw origin;
+    it never chooses the remote.
     """
 
     url = installation.url
@@ -624,6 +598,177 @@ def _run_git(
     return completed.stdout
 
 
+def export_locked_constraints(
+    url: str,
+    commit: str,
+    destination: Path,
+    *,
+    runner: object = None,
+) -> Path:
+    """Fetch one exact source commit and export its lock as constraints.
+
+    The checkout is disposable and source-specific. The local checkout's
+    lockfile is never consulted, and every subprocess is injectable so tests
+    can prove the install path without network access.
+    """
+
+    run = runner if runner is not None else subprocess.run
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="hyprial-upgrade-lock-") as raw:
+        checkout = Path(raw) / "source"
+        checkout.mkdir()
+        _run_git(["init", "--quiet"], timeout=UV_INSTALL_TIMEOUT, cwd=checkout, runner=run)
+        _run_git(
+            ["remote", "add", "origin", url],
+            timeout=UV_INSTALL_TIMEOUT,
+            cwd=checkout,
+            runner=run,
+        )
+        _run_git(
+            ["fetch", "--quiet", "--depth", "1", "origin", commit],
+            timeout=UV_INSTALL_TIMEOUT,
+            cwd=checkout,
+            runner=run,
+        )
+        _run_git(
+            ["checkout", "--quiet", "--detach", "FETCH_HEAD"],
+            timeout=UV_INSTALL_TIMEOUT,
+            cwd=checkout,
+            runner=run,
+        )
+        fetched = _run_git(
+            ["rev-parse", "HEAD"],
+            timeout=UV_INSTALL_TIMEOUT,
+            cwd=checkout,
+            runner=run,
+        ).strip()
+        if fetched.lower() != commit.lower():
+            raise UpdateProbeError(
+                "fetched source commit did not match the resolved commit"
+            )
+        if not (checkout / "uv.lock").is_file():
+            raise UpdateProbeError(
+                "resolved source commit does not contain uv.lock; "
+                "refusing an unpinned install"
+            )
+        argv = [
+            "uv",
+            "export",
+            "--frozen",
+            "--no-hashes",
+            "--no-emit-project",
+            "--no-dev",
+            "--project",
+            str(checkout),
+            "--output-file",
+            str(destination),
+        ]
+        try:
+            completed = run(  # type: ignore[operator]
+                argv,
+                text=True,
+                capture_output=True,
+                check=False,
+                env=git_env(),
+                timeout=UV_INSTALL_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise UpdateProbeError(
+                f"uv export timed out after {UV_INSTALL_TIMEOUT:g}s"
+            ) from error
+        except OSError as error:
+            raise UpdateProbeError(f"cannot run uv export: {error}") from error
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout or "").strip()
+            raise UpdateProbeError(f"uv export failed: {detail}")
+        if not destination.is_file():
+            raise UpdateProbeError("uv export did not create the constraints file")
+    return destination
+
+
+_LOCK_RECEIPT_FILENAME = "installed-lock.json"
+
+
+def write_lock_receipt(
+    hyprial_home: Path,
+    *,
+    source: str,
+    commit: str,
+    constraints: Path,
+) -> Path:
+    """Persist the exact exported pins used for the successful install."""
+
+    path = Path(hyprial_home) / _LOCK_RECEIPT_FILENAME
+    pins = Path(constraints).read_text(encoding="utf-8")
+    path.write_text(
+        json.dumps(
+            {"version": 1, "source": source, "commit": commit, "pins": pins},
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def _applicable_exact_pins(text: str) -> dict[str, str]:
+    pins: dict[str, str] = {}
+    logical = text.replace("\\\n", " ")
+    for raw in logical.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            requirement = Requirement(line)
+        except InvalidRequirement:
+            continue
+        if requirement.marker is not None and not requirement.marker.evaluate():
+            continue
+        exact = [
+            spec.version
+            for spec in requirement.specifier
+            if spec.operator in {"==", "==="} and "*" not in spec.version
+        ]
+        if len(exact) == 1:
+            pins[canonicalize_name(requirement.name)] = exact[0]
+    return pins
+
+
+def dependency_lock_report(
+    hyprial_home: Path, installation: Installation
+) -> Json:
+    """Compare installed distributions with the pins used for this commit."""
+
+    path = Path(hyprial_home) / _LOCK_RECEIPT_FILENAME
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {"status": "unknown", "reason": "lock receipt not available"}
+    except (OSError, json.JSONDecodeError):
+        return {"status": "unknown", "reason": "lock receipt unreadable"}
+    if not isinstance(record, dict) or record.get("commit") != installation.commit:
+        return {"status": "unknown", "reason": "lock receipt does not match installed commit"}
+    raw_pins = record.get("pins")
+    if not isinstance(raw_pins, str):
+        return {"status": "unknown", "reason": "lock receipt has no pins"}
+    mismatches: list[Json] = []
+    for name, expected in sorted(_applicable_exact_pins(raw_pins).items()):
+        try:
+            installed = package_version(name)
+        except PackageNotFoundError:
+            installed = None
+        if installed != expected:
+            mismatches.append(
+                {"name": name, "expected": expected, "installed": installed}
+            )
+    return {
+        "status": "match" if not mismatches else "mismatch",
+        "mismatches": mismatches,
+    }
+
+
 def _parse_ls_remote(output: str) -> dict[str, str]:
     refs: dict[str, str] = {}
     for line in output.splitlines():
@@ -681,7 +826,7 @@ def select_latest_version_tag(candidates: dict[str, str]) -> tuple[str, str, Ver
     if not parsed:
         raise UpdateProbeError(
             "found no parseable vX.Y.Z PEP 440 version tags; "
-            "Forgejo must publish a version tag before hyprial can upgrade"
+            "the release source must publish a version tag before hyprial can upgrade"
         )
     version, tag, commit = max(parsed, key=lambda item: (item[0], item[1]))
     return tag, commit, version
