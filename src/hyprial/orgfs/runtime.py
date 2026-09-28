@@ -43,6 +43,10 @@ class _StoreRegistry(dict[str, LocalSpaceStore]):
         return self[key]
 
 
+#: Backoff between await_content provisioning attempts for one blob.
+ORGFS_AWAIT_RETRY_SECONDS = 0.1
+
+
 class OrgFsRuntime:
     """Own all orgfs resources for one daemon generation."""
 
@@ -582,9 +586,19 @@ class OrgFsRuntime:
             mesh = self._mesh(space_id)
             if mesh is None:
                 return False
-            event = mesh.request_blob(info.blob_hash)
-            event.wait(max(0.0, deadline_monotonic - time.monotonic()))
-            return self.blobs.contains(info.blob_hash)
+            # request_blob's event only means "this attempt ended"; a holder
+            # that is not routable yet makes an attempt end without the blob.
+            # Keep provisioning until the caller's deadline, with a short
+            # backoff so an already-set event cannot spin.
+            while True:
+                event = mesh.request_blob(info.blob_hash)
+                event.wait(max(0.0, deadline_monotonic - time.monotonic()))
+                if self.blobs.contains(info.blob_hash):
+                    return True
+                remaining = deadline_monotonic - time.monotonic()
+                if remaining <= 0:
+                    return False
+                time.sleep(min(ORGFS_AWAIT_RETRY_SECONDS, remaining))
         if info.kind == "doc":
             if info.content_state in {"arrived", "unverifiable"}:
                 return True
