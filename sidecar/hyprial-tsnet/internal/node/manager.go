@@ -22,6 +22,7 @@ import (
 const (
 	CodeControlUnreachable  = "CONTROL_UNREACHABLE"
 	CodeAuthDenied          = "AUTH_DENIED"
+	CodeAuthURLUnavailable  = "AUTH_URL_UNAVAILABLE"
 	CodeAuthKeyInvalid      = "AUTHKEY_INVALID"
 	CodeAuthKeyUnexpected   = "AUTHKEY_UNEXPECTED"
 	CodeAuthKeyMissing      = "AUTHKEY_MISSING"
@@ -29,7 +30,39 @@ const (
 	CodeStateDir            = "STATE_DIR_UNWRITABLE"
 	CodeForwardStateMissing = "FORWARD_STATE_MISSING"
 	CodeForwardUnavailable  = "FORWARD_UNAVAILABLE"
+
+	budgetAuthURLPollInterval     = "auth_url_poll_interval"
+	budgetAuthURLStatusTimeout    = "auth_url_status_timeout"
+	budgetAuthURLUnavailable      = "auth_url_unavailable_timeout"
+	budgetReadyStatusTimeout      = "ready_status_timeout"
+	budgetReadyStatusPollInterval = "ready_status_poll_interval"
 )
+
+var registeredManagerBudgets = map[string]time.Duration{
+	budgetAuthURLPollInterval:     250 * time.Millisecond,
+	budgetAuthURLStatusTimeout:    time.Second,
+	budgetAuthURLUnavailable:      30 * time.Second,
+	budgetReadyStatusTimeout:      5 * time.Second,
+	budgetReadyStatusPollInterval: 50 * time.Millisecond,
+}
+
+type managerBudgets struct {
+	authURLPollInterval     time.Duration
+	authURLStatusTimeout    time.Duration
+	authURLUnavailable      time.Duration
+	readyStatusTimeout      time.Duration
+	readyStatusPollInterval time.Duration
+}
+
+func defaultManagerBudgets() managerBudgets {
+	return managerBudgets{
+		authURLPollInterval:     registeredManagerBudgets[budgetAuthURLPollInterval],
+		authURLStatusTimeout:    registeredManagerBudgets[budgetAuthURLStatusTimeout],
+		authURLUnavailable:      registeredManagerBudgets[budgetAuthURLUnavailable],
+		readyStatusTimeout:      registeredManagerBudgets[budgetReadyStatusTimeout],
+		readyStatusPollInterval: registeredManagerBudgets[budgetReadyStatusPollInterval],
+	}
+}
 
 type Failure struct {
 	Code    string
@@ -60,10 +93,15 @@ type Manager struct {
 	wireVersion   int
 	forwarder     *forward.Forwarder
 	forwardConfig proto.UpRequest
+	budgets       managerBudgets
 }
 
 func NewManager(factory BackendFactory, emit func(proto.Event) error, fatal func(Failure)) *Manager {
-	return &Manager{factory: factory, emit: emit, fatal: fatal, restartForPromotion: runtime.GOOS == "windows"}
+	return &Manager{
+		factory: factory, emit: emit, fatal: fatal,
+		restartForPromotion: runtime.GOOS == "windows",
+		budgets:             defaultManagerBudgets(),
+	}
 }
 
 func (m *Manager) Start(request proto.UpRequest) error {
@@ -106,6 +144,10 @@ func (m *Manager) Start(request proto.UpRequest) error {
 		config.AuthKey = *request.AuthKey
 	}
 	backend := m.factory(config)
+	// Start is the first point where tsnet can contact control, while its
+	// LocalClient does not exist until Start returns. An AuthURL can therefore
+	// be set before WatchIPNBus subscribes and before NeedsLogin makes it
+	// replayable; run's bounded Status.AuthURL poll closes that unavoidable gap.
 	if err := backend.Start(); err != nil {
 		removePending(statePath, pending)
 		failure := classifyFailure(err, config.HasAuthKey, "")
@@ -145,11 +187,12 @@ func (m *Manager) Start(request proto.UpRequest) error {
 		timer = time.NewTimer(time.Duration(*request.TimeoutSeconds) * time.Second)
 		timeout = timer.C
 	}
-	go m.run(ctx, watcher, timeout, timer, config.HasAuthKey, request.Proxy != "", request.ControlURL != "")
+	interactive := request.Join == "interactive" && !config.HasAuthKey
+	go m.run(ctx, watcher, timeout, timer, config.HasAuthKey, request.Proxy != "", request.ControlURL != "", interactive)
 	return nil
 }
 
-func (m *Manager) run(ctx context.Context, watcher Watcher, timeout <-chan time.Time, timer *time.Timer, hasAuthKey, hasProxy, customControl bool) {
+func (m *Manager) run(ctx context.Context, watcher Watcher, timeout <-chan time.Time, timer *time.Timer, hasAuthKey, hasProxy, customControl, interactive bool) {
 	defer func() {
 		if timer != nil {
 			timer.Stop()
@@ -169,6 +212,47 @@ func (m *Manager) run(ctx context.Context, watcher Watcher, timeout <-chan time.
 	lastState := ""
 	ready := false
 	sawBrowse := false
+	var authURLPollTicker *time.Ticker
+	var authURLPoll <-chan time.Time
+	var authURLUnavailableTimer *time.Timer
+	var authURLUnavailable <-chan time.Time
+	stopAuthURLPolling := func() {
+		if authURLPollTicker != nil {
+			authURLPollTicker.Stop()
+			authURLPollTicker = nil
+			authURLPoll = nil
+		}
+		if authURLUnavailableTimer != nil {
+			if !authURLUnavailableTimer.Stop() {
+				select {
+				case <-authURLUnavailableTimer.C:
+				default:
+				}
+			}
+			authURLUnavailableTimer = nil
+			authURLUnavailable = nil
+		}
+	}
+	defer stopAuthURLPolling()
+	startAuthURLPolling := func() {
+		stopAuthURLPolling()
+		authURLPollTicker = time.NewTicker(m.budgets.authURLPollInterval)
+		authURLPoll = authURLPollTicker.C
+		authURLUnavailableTimer = time.NewTimer(m.budgets.authURLUnavailable)
+		authURLUnavailable = authURLUnavailableTimer.C
+	}
+	emitBrowse := func(url string) error {
+		if url == "" {
+			return nil
+		}
+		if _, seen := seenURLs[url]; seen {
+			return nil
+		}
+		seenURLs[url] = struct{}{}
+		sawBrowse = true
+		stopAuthURLPolling()
+		return m.emit(proto.BrowseToURL(url))
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -184,6 +268,32 @@ func (m *Manager) run(ctx context.Context, watcher Watcher, timeout <-chan time.
 			}
 			m.fail(failure)
 			return
+		case <-authURLUnavailable:
+			m.fail(Failure{
+				Code:    CodeAuthURLUnavailable,
+				Message: "control server did not provide an authorization link",
+			})
+			return
+		case <-authURLPoll:
+			m.mu.Lock()
+			backend := m.backend
+			m.mu.Unlock()
+			statusCtx, cancel := context.WithTimeout(ctx, m.budgets.authURLStatusTimeout)
+			status, err := backend.Status(statusCtx)
+			cancel()
+			if err != nil || status == nil {
+				continue
+			}
+			if status.BackendState == ipn.Running.String() {
+				stopAuthURLPolling()
+				continue
+			}
+			if lastState == ipn.NeedsLogin.String() && !sawBrowse && status.AuthURL != "" {
+				if err := emitBrowse(status.AuthURL); err != nil {
+					m.fail(Failure{Code: CodeControlUnreachable, Message: "stdout is unavailable"})
+					return
+				}
+			}
 		case item := <-results:
 			if item.err != nil {
 				if ctx.Err() != nil {
@@ -193,6 +303,7 @@ func (m *Manager) run(ctx context.Context, watcher Watcher, timeout <-chan time.
 				return
 			}
 			if item.notify.State != nil {
+				wasNeedsLogin := lastState == ipn.NeedsLogin.String()
 				lastState = item.notify.State.String()
 				stateEvent := proto.State(lastState)
 				if m.forwardingVersion() {
@@ -201,6 +312,11 @@ func (m *Manager) run(ctx context.Context, watcher Watcher, timeout <-chan time.
 				if err := m.emit(stateEvent); err != nil {
 					m.fail(Failure{Code: CodeControlUnreachable, Message: "stdout is unavailable"})
 					return
+				}
+				if interactive && *item.notify.State == ipn.NeedsLogin && !sawBrowse && !wasNeedsLogin {
+					startAuthURLPolling()
+				} else if *item.notify.State != ipn.NeedsLogin {
+					stopAuthURLPolling()
 				}
 				if *item.notify.State == ipn.Running && !ready {
 					m.mu.Lock()
@@ -229,14 +345,9 @@ func (m *Manager) run(ctx context.Context, watcher Watcher, timeout <-chan time.
 				}
 			}
 			if item.notify.BrowseToURL != nil {
-				sawBrowse = true
-				url := *item.notify.BrowseToURL
-				if _, seen := seenURLs[url]; !seen {
-					seenURLs[url] = struct{}{}
-					if err := m.emit(proto.BrowseToURL(url)); err != nil {
-						m.fail(Failure{Code: CodeControlUnreachable, Message: "stdout is unavailable"})
-						return
-					}
+				if err := emitBrowse(*item.notify.BrowseToURL); err != nil {
+					m.fail(Failure{Code: CodeControlUnreachable, Message: "stdout is unavailable"})
+					return
 				}
 			}
 			if item.notify.ErrMessage != nil {
@@ -360,7 +471,8 @@ func (m *Manager) promoteAndReady(ctx context.Context) *Failure {
 // IPN's Running notification can precede the LocalAPI's complete status snapshot.
 // Keep the strict ready contract, but allow that snapshot to converge after resume.
 func waitReadyStatus(ctx context.Context, backend Backend, controlURL string) (*ipnstate.Status, proto.Event, error) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	budgets := defaultManagerBudgets()
+	ctx, cancel := context.WithTimeout(ctx, budgets.readyStatusTimeout)
 	defer cancel()
 	for {
 		if err := ctx.Err(); err != nil {
@@ -376,7 +488,7 @@ func waitReadyStatus(ctx context.Context, backend Backend, controlURL string) (*
 				return status, event, nil
 			}
 		}
-		timer := time.NewTimer(50 * time.Millisecond)
+		timer := time.NewTimer(budgets.readyStatusPollInterval)
 		select {
 		case <-ctx.Done():
 			timer.Stop()

@@ -155,6 +155,11 @@ anchors the value)."""
 _SIDECAR_LOG = "state/logs/tsnet.log"
 """Where the sidecar's stderr is appended verbatim (protocol §1)."""
 
+_SIDECAR_ERROR_MESSAGES = {
+    "AUTH_URL_UNAVAILABLE": "control server did not provide an authorization link",
+}
+"""Stable user-facing messages for sidecar failures that need operator action."""
+
 _SIDECAR_ARGS = ("serve",)
 """The sidecar is a subcommand binary (``hyprial-tsnet serve|version``); ``serve`` is
 the protocol-v1 stdio mode (``cmd/hyprial-tsnet/main.go`` — the fake test fixture
@@ -697,7 +702,11 @@ def run_join(
                 )
                 sidecar.shutdown()
                 _assert_no_residue(outcome, tsnet, state_before)
-                notify("failed", {"reason": outcome.reason})
+                failure = {"reason": outcome.reason}
+                message = _SIDECAR_ERROR_MESSAGES.get(outcome.reason)
+                if message is not None:
+                    failure["message"] = message
+                notify("failed", failure)
                 return outcome
             if kind == "ready":
                 break

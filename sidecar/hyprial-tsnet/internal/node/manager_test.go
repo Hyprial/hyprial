@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/netip"
 	"os"
@@ -102,6 +103,34 @@ func (b *fakeBackend) closeCount() int {
 	b.closeMu.Lock()
 	defer b.closeMu.Unlock()
 	return b.closed
+}
+
+// startSubscribeGapBackend reproduces the real tsnet ordering: Start contacts
+// control and makes the authorization URL available before LocalClient-backed
+// WatchIPNBus can subscribe. The watcher then delivers NeedsLogin without the
+// earlier BrowseToURL broadcast.
+type startSubscribeGapBackend struct {
+	*fakeBackend
+	authURL        string
+	calls          []string
+	authURLAtWatch string
+}
+
+func (b *startSubscribeGapBackend) Start() error {
+	b.calls = append(b.calls, "Start")
+	b.status = &ipnstate.Status{
+		BackendState: ipn.Starting.String(),
+		AuthURL:      b.authURL,
+	}
+	return b.fakeBackend.Start()
+}
+
+func (b *startSubscribeGapBackend) WatchIPNBus(ctx context.Context, mask ipn.NotifyWatchOpt) (Watcher, error) {
+	b.calls = append(b.calls, "WatchIPNBus")
+	if b.status != nil {
+		b.authURLAtWatch = b.status.AuthURL
+	}
+	return b.fakeBackend.WatchIPNBus(ctx, mask)
 }
 
 func notifyState(state ipn.State) *ipn.Notify { return &ipn.Notify{State: &state} }
@@ -319,6 +348,154 @@ func TestBrowseToURLIsDeduplicated(t *testing.T) {
 	defer mu.Unlock()
 	if len(events) != 1 || events[0].URL != url {
 		t.Fatalf("events = %#v", events)
+	}
+}
+
+func TestAuthURLSetDuringStartBeforeWatchIsRecoveredFromStatus(t *testing.T) {
+	url := "https://login.tailscale.com/a/status-fallback"
+	watcher := newFakeWatcher()
+	backend := &startSubscribeGapBackend{
+		fakeBackend: &fakeBackend{watcher: watcher},
+		authURL:     url,
+	}
+	if backend.status != nil {
+		t.Fatal("test precondition violated: AuthURL existed before Start")
+	}
+	log := &eventLog{}
+	one := 1
+	manager := NewManager(
+		func(Config) Backend { return backend },
+		log.emit,
+		func(Failure) {},
+	)
+	manager.budgets.authURLPollInterval = 5 * time.Millisecond
+	manager.budgets.authURLUnavailable = 100 * time.Millisecond
+	if err := manager.Start(proto.UpRequest{
+		Hostname: "short", Dir: t.TempDir(), Join: "interactive", TimeoutSeconds: &one,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(backend.calls) != 2 || backend.calls[0] != "Start" || backend.calls[1] != "WatchIPNBus" {
+		t.Fatalf("backend calls = %v, want [Start WatchIPNBus]", backend.calls)
+	}
+	if backend.authURLAtWatch != url {
+		t.Fatalf("AuthURL at subscription = %q, want %q", backend.authURLAtWatch, url)
+	}
+	// No BrowseToURL is delivered: this NeedsLogin notification arrives after
+	// subscription, when NotifyInitialState cannot replay the earlier URL.
+	watcher.items <- notifyState(ipn.NeedsLogin)
+	waitFor(t, func() bool {
+		for _, event := range log.snapshot() {
+			if event.Event == "browse_to_url" && event.URL == url {
+				return true
+			}
+		}
+		return false
+	})
+	manager.Stop()
+	if got := log.countOf("browse_to_url", ""); got != 1 {
+		t.Fatalf("browse_to_url events = %d, want exactly 1", got)
+	}
+}
+
+func TestStatusAndBusAuthURLAreDeduplicatedTogether(t *testing.T) {
+	url := "https://login.tailscale.com/a/shared-url"
+	watcher := newFakeWatcher()
+	backend := &fakeBackend{
+		watcher: watcher,
+		status:  &ipnstate.Status{BackendState: ipn.NeedsLogin.String(), AuthURL: url},
+	}
+	log := &eventLog{}
+	one := 1
+	manager := NewManager(
+		func(Config) Backend { return backend },
+		log.emit,
+		func(Failure) {},
+	)
+	manager.budgets.authURLPollInterval = 5 * time.Millisecond
+	manager.budgets.authURLUnavailable = 100 * time.Millisecond
+	if err := manager.Start(proto.UpRequest{
+		Hostname: "short", Dir: t.TempDir(), Join: "interactive", TimeoutSeconds: &one,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	watcher.items <- notifyState(ipn.NeedsLogin)
+	waitFor(t, func() bool { return log.countOf("browse_to_url", "") == 1 })
+	watcher.items <- &ipn.Notify{BrowseToURL: &url}
+	time.Sleep(20 * time.Millisecond)
+	manager.Stop()
+	if got := log.countOf("browse_to_url", ""); got != 1 {
+		t.Fatalf("browse_to_url events = %d, want exactly 1", got)
+	}
+}
+
+func TestNeedsLoginWithoutAuthURLFailsClearly(t *testing.T) {
+	watcher := newFakeWatcher()
+	backend := &fakeBackend{
+		watcher: watcher,
+		status:  &ipnstate.Status{BackendState: ipn.NeedsLogin.String()},
+	}
+	fatal := make(chan Failure, 1)
+	one := 1
+	manager := NewManager(
+		func(Config) Backend { return backend },
+		func(proto.Event) error { return nil },
+		func(failure Failure) { fatal <- failure },
+	)
+	manager.budgets.authURLPollInterval = 5 * time.Millisecond
+	manager.budgets.authURLUnavailable = 25 * time.Millisecond
+	if err := manager.Start(proto.UpRequest{
+		Hostname: "short", Dir: t.TempDir(), Join: "interactive", TimeoutSeconds: &one,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	watcher.items <- notifyState(ipn.NeedsLogin)
+	select {
+	case failure := <-fatal:
+		if failure.Code != CodeAuthURLUnavailable {
+			t.Fatalf("failure = %#v, want AUTH_URL_UNAVAILABLE", failure)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("NeedsLogin without an authorization URL did not fail")
+	}
+	manager.Stop()
+}
+
+func TestTSNetUserLogWritesOnlyStderrAndRedactsKeys(t *testing.T) {
+	stdoutRead, stdoutWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderrRead, stderrWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalStdout, originalStderr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = stdoutWrite, stderrWrite
+	defer func() { os.Stdout, os.Stderr = originalStdout, originalStderr }()
+
+	backend := TSNetFactory(Config{}).(*tsBackend)
+	backend.server.UserLogf("go to: %s", "https://login.tailscale.com/a/from-user-log")
+	backend.server.UserLogf("auth key: %s", "tskey-auth-sensitive-fixture")
+	_ = stdoutWrite.Close()
+	_ = stderrWrite.Close()
+	stdout, readErr := io.ReadAll(stdoutRead)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	stderr, readErr := io.ReadAll(stderrRead)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if len(stdout) != 0 {
+		t.Fatalf("UserLogf wrote protocol stdout: %q", stdout)
+	}
+	text := string(stderr)
+	if !strings.Contains(text, "https://login.tailscale.com/a/from-user-log") {
+		t.Fatalf("stderr = %q, want authorization URL", text)
+	}
+	if strings.Contains(text, "tskey-auth-sensitive-fixture") || !strings.Contains(text, "[REDACTED]") {
+		t.Fatalf("stderr did not redact key material: %q", text)
 	}
 }
 
