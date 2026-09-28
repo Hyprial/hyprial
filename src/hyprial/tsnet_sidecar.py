@@ -12,10 +12,12 @@ extracting its bytes, and computing sha256 locally; the release's
 ``SHA256SUMS`` was consulted only afterward for reconciliation — hyprial does
 **not** recompute or re-derive the pins at runtime):
 
-- ``tsnet-v0.1.4`` (target 4e6cef63; bin repo tag pushed by
-  ``hyprial-ci``).  This build emits ``error`` before its slow
-  ``backend.Close()`` (card 6cdcc406), which is what lets
-  hyprial's join margin be 5 again.  ``tsnet-v0.1.2`` is the superseded
+- ``tsnet-v0.1.6`` (target a0e18e12; bin repo tag pushed by CI).  Adds the
+  auth-URL fallback and ``AUTH_URL_UNAVAILABLE`` (#951) on top of
+  ``tsnet-v0.1.4`` (target 4e6cef63), which emits ``error`` before its slow
+  ``backend.Close()`` (card 6cdcc406) -- what lets hyprial's join margin be 5.
+  ``tsnet-v0.1.5`` was released 2026-09-16 but never pinned.
+  ``tsnet-v0.1.2`` is the superseded
   Close-first build (kept in the bin repo by retention); ``tsnet-v0.1.0``
   was never published and ``tsnet-v0.1.1`` misreported ``0.1.0`` in
   hello — none of those may be pinned.
@@ -117,36 +119,30 @@ __all__ = [
     "verify_installed_sidecar",
 ]
 
-SIDECAR_VERSION = "0.1.4"
+SIDECAR_VERSION = "0.1.6"
 """The pinned hyprial-tsnet sidecar version (harness-bridge tag
-``tsnet-v0.1.4`` — target 4e6cef63; emits ``error`` before its slow Close,
-card 6cdcc406).
+``tsnet-v0.1.6`` — target a0e18e12; surfaces the node auth URL from
+``Status().AuthURL`` when the IPN bus missed it, and fails with
+``AUTH_URL_UNAVAILABLE`` instead of hanging in NeedsLogin, #951).
 
 ``hello.sidecar`` must equal this exactly before the join proceeds
 (spec §1.1 / protocol §5)."""
 
 SIDECAR_SHA256: dict[str, str] = {
-    "darwin-amd64": "c05faf11d6df6083e9ea2afad46574a067fff560581f5dbdf14de985caecd92e",
-    "darwin-arm64": "fdbcd151ff68254562ccaae470e59c3441a49c4b41cd0534a5b7c729e41cb9a2",
-    "linux-amd64": "10abb550c59ce439a83ddbed579311ae5b074ec66c4cd985497f2aa8d1569bc4",
-    "linux-arm64": "1b499cb0d2d66b1cff27a70c42cd44a08369ef18ab37b09b9a8475672ce1afd9",
-    "windows-amd64": "c388684ad0c310638718892093119e46407e76e6ae34d8a39759bc501de31aa7",
+    "darwin-amd64": "2544affe2f6d14a7476678ebaea7ab219be339267b8531692cc8a20fd629aa7a",
+    "darwin-arm64": "9ce778902a6b244c0568ddea1e65a0d1db6d5dae6f4d9cd9db6489519ab05a56",
+    "linux-amd64": "c292bafafda4ab9b31bb9eff68915f9a564ca328ccebb1cbfc77799d15fff17c",
+    "linux-arm64": "800dce6123c7ff7cbf13e9791c783cb7760135419d877f8248546f2183c8a6ae",
+    "windows-amd64": "7d35086dfc0143869e82d70b9b287d0336d65bda89d83fe3edbe25ce39a1aa8a",
 }
-"""Per-platform sha256 measured from assets fetched on 2026-09-10 with
-acquisition's then-current ``git archive --remote`` transport and computed
-locally; the release's ``SHA256SUMS`` was checked only afterward for
-reconciliation.  hyprial never recomputes these at runtime.
-
-⭐ The 2026-09-17 move to HTTPS release assets changed **how the bytes
-travel**, ⛔ not what they must hash to: these values are unchanged and
-remain the sole trust root.
-
-``windows-amd64`` (added 2026-09-25, Allen: keep 0.1.4, add Windows) was built
-from the tsnet-v0.1.4 tag's own source -- a real clone at 4e6cef63 with
-go1.26.8, CGO_ENABLED=0, -trimpath and the tag's version ldflags -- after that
-same recipe reproduced all four pins above byte-for-byte.  It was then
-published to the existing tsnet-v0.1.4 release and this value re-measured
-from the public download."""
+"""Per-platform sha256 for tsnet-v0.1.6, measured 2026-09-28 three ways that
+agree byte-for-byte: (1) an independent local build from a real clone at
+a0e18e12 with go1.26.8, CGO_ENABLED=0, -trimpath and the tag's version
+ldflags; (2) the CI-built assets in the internal bin repo (orphan commit
+97d0527); (3) anonymous HTTPS downloads of the public
+``Hyprial/hyprial-tsnet-bin`` release.  The release's ``SHA256SUMS`` is for
+reconciliation only.  hyprial never recomputes these at runtime; they are the
+sole trust root."""
 
 _SUPPORTED_PLATFORM_KEYS = frozenset((*SIDECAR_SHA256, "windows-amd64"))
 """Platforms the client knows how to name and launch.

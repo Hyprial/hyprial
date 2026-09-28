@@ -28,11 +28,11 @@ def test_windows_amd64_coordinates_use_exe_and_the_published_pin(tmp_path: Path)
     assert tsnet_sidecar.sidecar_binary_path(tmp_path).name == "hyprial-tsnet.exe"
     assert tsnet_sidecar.sidecar_asset_name() == "hyprial-tsnet-windows-amd64.exe"
     assert tsnet_sidecar.sidecar_asset_url().endswith(
-        "/tsnet-v0.1.4/hyprial-tsnet-windows-amd64.exe"
+        "/tsnet-v0.1.6/hyprial-tsnet-windows-amd64.exe"
     )
-    # Measured from the public tsnet-v0.1.4 asset on 2026-09-25.
+    # Measured from the public tsnet-v0.1.6 asset on 2026-09-28.
     assert tsnet_sidecar.expected_sha256("windows-amd64") == (
-        "c388684ad0c310638718892093119e46407e76e6ae34d8a39759bc501de31aa7"
+        "7d35086dfc0143869e82d70b9b287d0336d65bda89d83fe3edbe25ce39a1aa8a"
     )
 
 
