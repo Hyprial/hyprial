@@ -266,6 +266,11 @@ func TestWatchIPNBusForwardsEveryStateInOrder(t *testing.T) {
 		events = append(events, event)
 		return nil
 	}, func(Failure) {})
+	// This test pins state ordering, not promotion. On Windows the manager
+	// restarts the backend to promote the pending state directory, and this
+	// single fake backend would hand back its already-closed watcher. The
+	// promotion path has its own tests in promotion_restart_test.go.
+	manager.restartForPromotion = false
 	dir := t.TempDir()
 	if err := manager.Start(proto.UpRequest{Hostname: "short", Dir: dir, Join: "interactive"}); err != nil {
 		t.Fatal(err)

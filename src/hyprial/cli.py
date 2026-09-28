@@ -6434,6 +6434,81 @@ def fs_join(
     _fs_run("orgfs.join", {"spaceId": space_id}, json_output=json_output)
 
 
+@fs_app.command("web")
+def fs_web(
+    listen: str = typer.Option(
+        ...,
+        "--listen",
+        help=(
+            "host:port (loopback or an explicit non-wildcard address; "
+            "wildcards are refused) or unix:/absolute/path."
+        ),
+    ),
+    host: str = typer.Option(
+        ..., "--host", help="The host name this service answers as (never guessed)."
+    ),
+    cert: Path = typer.Option(..., "--cert", help="TLS certificate chain (PEM)."),
+    key: Path = typer.Option(..., "--key", help="TLS private key (PEM)."),
+    client_address: str = typer.Option(
+        "proxy-v2",
+        "--client-address",
+        help=(
+            "socket: the TCP peer is the client (tailscale-container front). "
+            "proxy-v2: require a PROXY v2 header (forwarding sidecar front; "
+            "pair with a unix listener — loopback TCP is spoofable by "
+            "same-OS-user processes)."
+        ),
+    ),
+    whois_socket: Path | None = typer.Option(
+        None,
+        "--whois-socket",
+        help=(
+            "socket mode only: tailscaled local API unix socket for WhoIs. "
+            "In proxy-v2 mode identity comes from the front's TLV 0xE0. "
+            "Without an identity source every request is 403 (fail closed)."
+        ),
+    ),
+    retry_after: int = typer.Option(
+        5, "--retry-after", help="Retry-After seconds on 503 content-pending."
+    ),
+    check: bool = typer.Option(
+        False, "--check", help="Verify listen address, cert/key readability and expiry, then exit."
+    ),
+) -> None:
+    """Run the read-only orgfs HTTPS web service (notes/orgfs-web/brief.md)."""
+
+    from hyprial.orgfs.webserver import (
+        TailscaledWhoisResolver,
+        WebServiceConfig,
+        check_config,
+        serve,
+    )
+
+    config = WebServiceConfig(
+        host=host,
+        listen=listen,
+        cert=cert,
+        key=key,
+        client_address=client_address,
+        retry_after_seconds=retry_after,
+        whois_socket=whois_socket,
+    )
+    if check:
+        problems = check_config(config)
+        if problems:
+            for problem in problems:
+                typer.echo(f"not ok: {problem}", err=True)
+            raise typer.Exit(1)
+        typer.echo("ok: listen address, certificate and key verified")
+        return
+    resolver = (
+        TailscaledWhoisResolver(whois_socket, cache_seconds=config.whois_cache_seconds)
+        if whois_socket is not None
+        else None
+    )
+    raise typer.Exit(serve(config, resolver=resolver))
+
+
 @fs_app.command("trash")
 def fs_trash(
     space_id: str = typer.Argument(..., help="Space UUID."),
