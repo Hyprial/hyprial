@@ -423,7 +423,6 @@ _TURN_HOOK_CLOSE_TIMEOUT = TURN_HOOK_CLOSE_TIMEOUT_SECONDS
 #: it: a new step belongs to neither table, the suite goes red, and the author
 #: has to decide which one it is rather than say nothing at all.
 _CLOSE_UNBUDGETED_STEPS = (
-    ("autoupdate", "cancels a timer; no I/O"),
     ("ipc-server", "closes a listening socket"),
     ("reserve-fd", "a single os.close"),
     ("ipc-clients", "closes accepted sockets already marked closing"),
@@ -6599,7 +6598,9 @@ class DaemonApplication:
             if method == "orgfs.create":
                 info = fs.create_space(required("name"))
                 runtime.broadcast_pending(info.space_id)
-                if info.name == "org-context":
+                from hyprial.org.orgfs_migration import ORG_CONTEXT_SPACE_NAME
+
+                if info.name == ORG_CONTEXT_SPACE_NAME:
                     self._require_org_context_bridge().publish_accepted()
                 return self._orgfs_json(info)
             if method == "orgfs.resolve":
@@ -6784,7 +6785,9 @@ class DaemonApplication:
                 return {"members": self._orgfs_json(fs.members(required("spaceId")))}
             if method == "orgfs.join":
                 info = fs.join(required("spaceId"))
-                if info.name == "org-context":
+                from hyprial.org.orgfs_migration import ORG_CONTEXT_SPACE_NAME
+
+                if info.name == ORG_CONTEXT_SPACE_NAME:
                     self._require_org_context_bridge().publish_accepted()
                 return self._orgfs_json(info)
         except OrgFsError as exc:
@@ -14493,8 +14496,16 @@ class DaemonApplication:
                     elapsedMs=int((time.monotonic() - started) * 1000),
                 )
 
-        if not self._autoupdate.stop(timeout=0.25):
-            errors.append(RuntimeError("auto-update authority did not drain"))
+        def close_autoupdate() -> None:
+            if not self._autoupdate.stop(
+                timeout=dict(_CLOSE_STEP_BUDGETS)["autoupdate"]
+            ):
+                stage = getattr(self._autoupdate, "stop_incomplete_stage", None)
+                raise RuntimeError(
+                    f"auto-update authority did not drain: {stage or 'unknown'}"
+                )
+
+        attempt(close_autoupdate, "autoupdate")
         # Before any collaborator the restore thread might be inside is torn
         # down.  Bounded on purpose -- see the join method's docstring.
         attempt(self._join_restore_thread, "restore-thread")

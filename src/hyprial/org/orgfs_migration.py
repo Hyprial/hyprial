@@ -1,7 +1,8 @@
 """M0/M1 org-context candidate distribution through orgfs.
 
 The accepted slot remains :file:`$HYPRIAL_HOME/org-context.md`.  This module
-only mirrors those accepted bytes into an ``org-context`` space and stages
+only mirrors those accepted bytes into the ``context`` space
+(:data:`ORG_CONTEXT_SPACE_NAME`) and stages
 candidate files back through :class:`OrgContextStore`.
 """
 
@@ -22,7 +23,8 @@ from .document import OrgDocumentError, parse_document
 from .store import OrgContextStore, OrgStoreError, OrgVersionError, PendingRecord
 
 
-ORG_CONTEXT_SPACE_NAME = "org-context"
+#: Allen 2026-09-29: the orgfs space holding org context is named ``context``.
+ORG_CONTEXT_SPACE_NAME = "context"
 ORG_FETCH_SOURCE_SETTINGS_KEY = "org"
 ORG_FETCH_SOURCE_FIELD = "fetchSource"
 OrgFetchSource = Literal["mesh", "orgfs"]

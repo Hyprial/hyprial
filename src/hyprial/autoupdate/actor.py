@@ -78,6 +78,7 @@ class AutoUpdateAuthority:
         self._run_operation = None
         self._policy_operation = None
         self._queued_trigger = None
+        self.stop_incomplete_stage: str | None = None
         self._runtime = ActorRuntime()
         self._scheduler = GenerationScheduler()
         handle = None
@@ -353,6 +354,7 @@ class AutoUpdateAuthority:
             }
 
     def stop(self, *, timeout=0.25):
+        self.stop_incomplete_stage = None
         deadline = time.monotonic() + max(0.0, timeout)
         with self._guard:
             self._closed = True
@@ -360,6 +362,7 @@ class AutoUpdateAuthority:
                 self._queued_trigger = None
                 self._reserved = False
         if not self._scheduler.shutdown(max(0.0, deadline - time.monotonic())):
+            self.stop_incomplete_stage = "scheduler"
             return False
         while True:
             snapshot = self._runtime.snapshot(self._handle)
@@ -368,8 +371,15 @@ class AutoUpdateAuthority:
             if not active and snapshot.queued == snapshot.in_flight == 0:
                 break
             if time.monotonic() >= deadline:
+                self.stop_incomplete_stage = "queue"
                 return False
             time.sleep(0.005)
         if not self._effects.close(max(0.0, deadline - time.monotonic())):
+            self.stop_incomplete_stage = "effects"
             return False
-        return self._runtime.stop(self._handle, max(0.0, deadline - time.monotonic()))
+        if not self._runtime.stop(
+            self._handle, max(0.0, deadline - time.monotonic())
+        ):
+            self.stop_incomplete_stage = "runtime"
+            return False
+        return True

@@ -15,6 +15,7 @@ TURN_HOOK_CLOSE_TIMEOUT_SECONDS = 5.0
 # Every bounded close step is named here so shutdown waiters and observers can
 # derive their windows from the same contract as the production close path.
 DAEMON_CLOSE_STEP_BUDGETS = (
+    ("autoupdate", 5.0),
     ("maintenance-scheduler", 5.0),
     ("lifecycle-manager", 5.0),
     ("lifecycle-port:agent", 5.0),
