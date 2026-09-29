@@ -7,10 +7,11 @@ import os
 import queue
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Collection, Protocol
-from uuid import NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from hyprial.inbox import (
     DEFAULT_HOLD_TTL_MS,
@@ -40,6 +41,21 @@ from .api import (
 from .desired_state import DesiredStateError, DesiredStateStore, InteractiveSession
 from .supervisor import ManagedHarnessRuntime
 from .turn_hooks import is_hook_request
+from .dispatch_state import (
+    DispatchOwnedMap,
+    DispatchOwnedSet,
+    DispatchStateAuthority,
+    DispatchStateProjection,
+    DispatchTable,
+)
+from .dispatch_offers import DispatchOfferCoordinator, DispatchOfferProjection
+from .dispatch_holds import HoldRefreshCoordinator, HoldRefreshProjection
+from .dispatch_progress import ProgressPublishCoordinator, ProgressPublishProjection
+from .bounded_cadence import BoundedCadence, CadenceCompleted
+from .result_settlement import ResultSettlementCoordinator, SettlementProjection
+from .harness_ports import ClaimedHarnessResult, HarnessResultsClaimed
+from hyprial.actor_runtime import ActorRuntime, ActorSpec, AdmissionResult
+from hyprial.actor_runtime.effects import EffectCompleted, EffectLane, EffectRequest
 
 if TYPE_CHECKING:
     from hyprial.inbox.api import DeliveryTransport, InboxPort
@@ -49,6 +65,7 @@ if TYPE_CHECKING:
 
 HARNESS_FAILURE_MAX_ATTEMPTS = 3
 HARNESS_FAILURE_BACKOFF_MS = (1_000, 5_000)
+BLOCKING_FAILURE_CUSTODY_CAPACITY = 10_000
 #: Settlement code when a harness asks for a forward on a daemon that was
 #: composed without a forwarder.  Not permanent: it is a wiring fault that a
 #: restart fixes, and the sender hears about every attempt.
@@ -73,6 +90,275 @@ class ForwardOutcome:
 #: application, which owns the one send boundary (agent/route/user targets);
 #: the runtime only decides WHEN and settles the original row afterwards.
 Forwarder = Callable[[InboxMessage, str, str], ForwardOutcome]
+
+
+@dataclass(frozen=True, slots=True)
+class ForwardRequest:
+    operation_id: str
+    generation: int
+    decision_token: str
+    original: InboxMessage
+    result: HarnessResult
+    attempt: _InflightAttempt | None
+
+
+@dataclass(frozen=True, slots=True)
+class ForwardCompleted:
+    operation_id: str
+    generation: int
+    decision_token: str
+    delivery_id: str
+    outcome: ForwardOutcome
+    attempt: _InflightAttempt | None
+
+
+@dataclass(frozen=True, slots=True)
+class RetireForwardDecision:
+    operation_id: str
+    generation: int
+    delivery_id: str
+    decision_token: str
+
+
+class _ForwardControlReply:
+    def __init__(self) -> None:
+        self.ready = threading.Event()
+        self.value: bool | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ForwardSettlementProjection:
+    active: int
+    decisions: int
+    completed: int
+    overloaded: int
+    closing: bool
+
+
+class ForwardSettlementCoordinator:
+    """Run ordered forwarding effects outside terminal result settlement.
+
+    A Harness claim remains durable while an accepted forward is active.  The
+    completed decision stays in this owner until inbox settlement confirms it,
+    so an ACK timeout retries only settlement rather than the native send.
+    """
+
+    def __init__(
+        self,
+        forward: Forwarder,
+        *,
+        capacity: int = 64,
+        runtime: ActorRuntime | None = None,
+    ) -> None:
+        if capacity < 1:
+            raise ValueError("forward capacity must be positive")
+        self._forward = forward
+        self._capacity = capacity
+        self._runtime = runtime or ActorRuntime()
+        self._guard = threading.Lock()
+        self._generation = 1
+        self._active: dict[str, ForwardRequest] = {}
+        self._active_operations: dict[tuple[str, int], ForwardRequest] = {}
+        self._completed: dict[str, ForwardCompleted] = {}
+        self._control_replies: dict[str, _ForwardControlReply] = {}
+        self._closing = self._closed = False
+        self._completed_count = self._overloaded = 0
+        self._handle = self._runtime.start(
+            ActorSpec(
+                name="harness-forward-settlement",
+                handler_factory=lambda: self._receive,
+                mailbox_capacity=capacity,
+            )
+        )
+        # One worker preserves the order in which Harness turns finished.
+        self._effects: EffectLane[ForwardRequest, ForwardCompleted] = EffectLane(
+            name="harness-forward-io",
+            execute=self._execute,
+            complete=lambda event: self._runtime.tell(self._handle, event),
+            capacity=capacity,
+        )
+
+    def submit(
+        self,
+        original: InboxMessage,
+        result: HarnessResult,
+        attempt: _InflightAttempt | None,
+    ) -> AdmissionResult:
+        delivery_id = result.delivery_id
+        with self._guard:
+            if self._closing:
+                return AdmissionResult.CLOSED
+            if delivery_id in self._active or delivery_id in self._completed:
+                return AdmissionResult.ACCEPTED
+            if len(self._active) + len(self._completed) >= self._capacity:
+                self._overloaded += 1
+                return AdmissionResult.OVERLOADED
+            request = ForwardRequest(
+                uuid4().hex,
+                self._generation,
+                uuid4().hex,
+                original,
+                result,
+                attempt,
+            )
+            self._active[delivery_id] = request
+            self._active_operations[
+                (request.operation_id, request.generation)
+            ] = request
+            admitted = self._runtime.tell(self._handle, request)
+            if admitted is not AdmissionResult.ACCEPTED:
+                self._active.pop(delivery_id, None)
+                self._active_operations.pop(
+                    (request.operation_id, request.generation), None
+                )
+                self._overloaded += 1
+            return admitted
+
+    def completed(self, delivery_id: str) -> ForwardCompleted | None:
+        with self._guard:
+            return self._completed.get(delivery_id)
+
+    def retire(
+        self, delivery_id: str, decision_token: str, *, timeout: float = 5.0
+    ) -> bool:
+        command = RetireForwardDecision(
+            uuid4().hex, self._generation, delivery_id, decision_token
+        )
+        reply = _ForwardControlReply()
+        with self._guard:
+            if self._closed or len(self._control_replies) >= self._capacity:
+                raise TimeoutError("forward retirement authority unavailable")
+            self._control_replies[command.operation_id] = reply
+            admitted = self._runtime.tell(self._handle, command)
+            if admitted is not AdmissionResult.ACCEPTED:
+                self._control_replies.pop(command.operation_id, None)
+                raise TimeoutError(f"forward retirement admission {admitted.value}")
+        if not reply.ready.wait(max(0.0, timeout)):
+            raise TimeoutError(
+                f"forward retirement {command.operation_id} remains accepted"
+            )
+        return bool(reply.value)
+
+    def projection(self) -> ForwardSettlementProjection:
+        with self._guard:
+            return ForwardSettlementProjection(
+                len(self._active), len(self._completed), self._completed_count,
+                self._overloaded, self._closing,
+            )
+
+    def close(self, timeout: float = 5.0) -> bool:
+        deadline = time.monotonic() + max(0.0, timeout)
+        with self._guard:
+            if self._closed:
+                return True
+            self._closing = True
+        while True:
+            with self._guard:
+                pending = bool(self._active or self._control_replies)
+            if not pending:
+                break
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.005)
+        if not self._effects.close(max(0.0, deadline - time.monotonic())):
+            return False
+        stopped = self._runtime.stop(
+            self._handle, max(0.0, deadline - time.monotonic())
+        )
+        with self._guard:
+            self._closed = stopped
+            if stopped:
+                self._generation += 1
+        return stopped
+
+    def _execute(self, request: ForwardRequest) -> ForwardCompleted:
+        result = request.result
+        assert result.forward_to is not None
+        try:
+            outcome = self._forward(
+                request.original, result.forward_to, result.output
+            )
+        except Exception as error:  # noqa: BLE001 - one send never kills the lane
+            outcome = ForwardOutcome(
+                False,
+                "HARNESS_TRANSIENT_FAILURE",
+                f"forward raised {type(error).__name__}",
+            )
+        return ForwardCompleted(
+            request.operation_id,
+            request.generation,
+            request.decision_token,
+            result.delivery_id,
+            outcome,
+            request.attempt,
+        )
+
+    def _receive(self, command: object) -> None:
+        if isinstance(command, ForwardRequest):
+            admitted = self._effects.submit(
+                EffectRequest(command.operation_id, command.generation, command)
+            )
+            if admitted is not AdmissionResult.ACCEPTED:
+                with self._guard:
+                    incumbent = self._active.get(command.result.delivery_id)
+                    if incumbent == command:
+                        self._active.pop(command.result.delivery_id, None)
+                        self._active_operations.pop(
+                            (command.operation_id, command.generation), None
+                        )
+                    self._overloaded += 1
+            return
+        if isinstance(command, RetireForwardDecision):
+            with self._guard:
+                completed = self._completed.get(command.delivery_id)
+                retired = bool(
+                    command.generation == self._generation
+                    and completed is not None
+                    and completed.decision_token == command.decision_token
+                )
+                if retired:
+                    self._completed.pop(command.delivery_id, None)
+                reply = self._control_replies.pop(command.operation_id, None)
+                if reply is not None:
+                    reply.value = retired
+                    reply.ready.set()
+            return
+        if isinstance(command, EffectCompleted):
+            result = command.result
+            with self._guard:
+                request = self._active_operations.pop(
+                    (command.operation_id, command.generation), None
+                )
+                if request is not None:
+                    incumbent = self._active.get(request.result.delivery_id)
+                    if incumbent == request:
+                        self._active.pop(request.result.delivery_id, None)
+                    if not (
+                        isinstance(result, ForwardCompleted)
+                        and result.operation_id == request.operation_id
+                        and result.generation == request.generation
+                        and result.decision_token == request.decision_token
+                        and result.delivery_id == request.result.delivery_id
+                        and isinstance(result.outcome, ForwardOutcome)
+                    ):
+                        result = ForwardCompleted(
+                            request.operation_id,
+                            request.generation,
+                            request.decision_token,
+                            request.result.delivery_id,
+                            ForwardOutcome(
+                                False,
+                                "HARNESS_TRANSIENT_FAILURE",
+                                "forward effect failed: "
+                                f"{command.error or 'invalid completion'}",
+                            ),
+                            request.attempt,
+                        )
+                    self._completed[result.delivery_id] = result
+                    self._completed_count += 1
+            self._effects.acknowledge(command.operation_id, command.generation)
+            return
+        raise TypeError(f"unsupported forward command {type(command).__name__}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,7 +536,7 @@ class HarnessActorRegistration(Protocol):
     ) -> None: ...
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class _InflightAttempt:
     """One request currently handed to (or waiting for) a worker.
 
@@ -262,6 +548,7 @@ class _InflightAttempt:
     """
 
     identity: AttemptIdentity
+    agent_entity_token: str | None
     budget_ms: int
     last_progress_ms: int
     reported: bool = False
@@ -295,7 +582,11 @@ class DaemonEventBridge:
         logger: Callable[..., None] | None = None,
         clock_ms: Callable[[], int] | None = None,
         usage_limit_observer: Callable[[str], None] | None = None,
-        blocking_failure_observer: Callable[[str, str], None] | None = None,
+        blocking_failure_observer: (
+            Callable[[str, str, str], AdmissionResult | None]
+            | Callable[[str, str], None] | None
+        ) = None,
+        blocking_failure_identity: Callable[[str], str | None] | None = None,
         blocked_actor: Callable[[str], bool] | None = None,
         workflow_outcome: Callable[[HarnessResult], bool] | None = None,
         forwarder: Forwarder | None = None,
@@ -303,6 +594,7 @@ class DaemonEventBridge:
         owner_requester_addresses: Collection[str] = (),
         hold_ttl_ms: int = DEFAULT_HOLD_TTL_MS,
         turn_hooks: "TurnHookService | None" = None,
+        actor_mode: bool = False,
     ) -> None:
         if hold_ttl_ms <= 0:
             raise ValueError("hold TTL must be positive")
@@ -334,7 +626,13 @@ class DaemonEventBridge:
         # agents keep today's handling).
         self._usage_limit_observer = usage_limit_observer
         self._blocking_failure_observer = blocking_failure_observer
+        self._blocking_failure_identity = blocking_failure_identity
         self._blocked_actor = blocked_actor
+        self._blocking_failure_capacity = BLOCKING_FAILURE_CUSTODY_CAPACITY
+        self._blocking_failure_lock = threading.Lock()
+        self._pending_blocking_failures: OrderedDict[
+            tuple[str, str, str], None
+        ] = OrderedDict()
         self._workflow_outcome = workflow_outcome
         self._pending_workflow_results: dict[str, HarnessResult] = {}
         self._pending_workflow_attempts: dict[str, _InflightAttempt] = {}
@@ -343,6 +641,7 @@ class DaemonEventBridge:
         # never re-dispatched meanwhile: the answer exists, asking the model
         # again is what looped wangshuo-sprite on 2026-09-24.
         self._pending_reply_results: dict[str, HarnessResult] = {}
+        self._pending_forward_outcomes: dict[str, ForwardOutcome] = {}
         self._clock_ms = clock_ms or (lambda: time.time_ns() // 1_000_000)
         # Refresh halfway through the existing hold budget.  This leaves one
         # half-budget of scheduler delay while avoiding a write on every tick.
@@ -354,7 +653,9 @@ class DaemonEventBridge:
         self._marker = _RunMarker(self.state_dir / "daemon-run.json")
         self._mailbox_registration = None
         self._actor_registrations: dict[str, HarnessActorRegistration] = {}
+        self._actor_registration_generations: dict[str, int] = {}
         self._started = False
+        self._startup_in_progress = False
         self._retry_pump_kick = threading.Event()
         self._retry_pump_halt = threading.Event()
         self._retry_pump_thread: threading.Thread | None = None
@@ -395,12 +696,61 @@ class DaemonEventBridge:
             ]
         ] = queue.Queue()
         self._forward_thread: threading.Thread | None = None
+        self._actor_mode = actor_mode
+        self._dispatch_state: DispatchStateAuthority | None = None
+        self._dispatch_offers: DispatchOfferCoordinator | None = None
+        self._hold_refresh: HoldRefreshCoordinator | None = None
+        self._progress_publish: ProgressPublishCoordinator | None = None
+        self._result_settlement: ResultSettlementCoordinator | None = None
+        self._forward_settlement: ForwardSettlementCoordinator | None = None
+        self._result_claim_lane: BoundedCadence[HarnessResultsClaimed] | None = None
+        self._last_result_completed = 0
+        self._availability_lane: BoundedCadence[int] | None = None
+        self._completed_availability_notices = 0
+        self._harness_reconcile_lane: BoundedCadence[int] | None = None
+        self._session_ref_lane: BoundedCadence[None] | None = None
+        self._prune_lane: BoundedCadence[tuple[InboxPruneItem, ...]] | None = None
+        self._cadence_results_lock = threading.Lock()
+        self._completed_harness_restarts = 0
+
+    @property
+    def dispatch_state_projection(self) -> DispatchStateProjection | None:
+        owner = self._dispatch_state
+        return owner.projection() if owner is not None else None
+
+    @property
+    def dispatch_offer_projection(self) -> DispatchOfferProjection | None:
+        owner = self._dispatch_offers
+        return owner.projection() if owner is not None else None
+
+    @property
+    def hold_refresh_projection(self) -> HoldRefreshProjection | None:
+        owner = self._hold_refresh
+        return owner.projection() if owner is not None else None
+
+    @property
+    def progress_publish_projection(self) -> ProgressPublishProjection | None:
+        owner = self._progress_publish
+        return owner.projection() if owner is not None else None
+
+    @property
+    def result_settlement_projection(self) -> SettlementProjection | None:
+        owner = self._result_settlement
+        return owner.projection() if owner is not None else None
+
+    @property
+    def forward_settlement_projection(self) -> ForwardSettlementProjection | None:
+        owner = self._forward_settlement
+        return owner.projection() if owner is not None else None
 
     def start(self) -> DaemonRecoverySummary:
         if self._started:
             raise RuntimeError("daemon runtime is already started")
         state = self.desired_state.load()
         previous_unclean = self._marker.begin()
+        # Composition below starts actors before the runtime is ready to tick.
+        # A failure in that window still owns them and must make stop() drain.
+        self._startup_in_progress = True
         try:
             if state.as_mailbox:
                 self._mailbox_registration = self.transport.declare_liveliness(
@@ -413,6 +763,81 @@ class DaemonEventBridge:
                     "daemon startup and cleanup failed", [error, *cleanup_errors]
                 ) from error
             raise
+        if self._actor_mode:
+            owner = DispatchStateAuthority()
+            self._dispatch_state = owner
+            self._inflight = DispatchOwnedMap(owner, DispatchTable.INFLIGHT)
+            self._attempt_generation = DispatchOwnedMap(
+                owner, DispatchTable.ATTEMPT_GENERATION
+            )
+            self._queued_delivery_holds = DispatchOwnedMap(
+                owner, DispatchTable.QUEUED_HOLDS
+            )
+            self._pending_workflow_results = DispatchOwnedMap(
+                owner, DispatchTable.PENDING_WORKFLOW_RESULTS
+            )
+            self._pending_workflow_attempts = DispatchOwnedMap(
+                owner, DispatchTable.PENDING_WORKFLOW_ATTEMPTS
+            )
+            self._pending_reply_results = DispatchOwnedMap(
+                owner, DispatchTable.PENDING_REPLY_RESULTS
+            )
+            self._pending_forward_outcomes = DispatchOwnedMap(
+                owner, DispatchTable.PENDING_FORWARD_OUTCOMES
+            )
+            self._pending_notices = DispatchOwnedMap(
+                owner, DispatchTable.PENDING_NOTICES
+            )
+            self._notice_failures_logged = DispatchOwnedSet(
+                owner, DispatchTable.NOTICE_FAILURES_LOGGED
+            )
+            self._dispatch_offers = DispatchOfferCoordinator(
+                self.harnesses.dispatch
+            )
+            refresh_hold = getattr(self.inbox, "refresh_hold", None)
+            if callable(refresh_hold):
+                self._hold_refresh = HoldRefreshCoordinator(
+                    refresh_hold, owner
+                )
+            submit_progress = getattr(self.inbox, "submit_progress_event", None)
+            if callable(submit_progress):
+                self._progress_publish = ProgressPublishCoordinator(
+                    submit_progress
+                )
+            claim_results = getattr(self.harnesses, "claim_result_batch", None)
+            settle_result = getattr(self.harnesses, "settle_result", None)
+            if callable(claim_results) and callable(settle_result):
+                self._result_settlement = ResultSettlementCoordinator(
+                    self._settle_claimed_result
+                )
+                if self._forwarder is not None:
+                    self._forward_settlement = ForwardSettlementCoordinator(
+                        self._forwarder
+                    )
+                self._result_claim_lane = BoundedCadence(
+                    "harness-result-claim",
+                    lambda _at_ms: claim_results(),
+                    self._claimed_results_available,
+                )
+            self._harness_reconcile_lane = BoundedCadence(
+                "harness-reconcile",
+                lambda _at_ms: self.harnesses.reconcile(),
+                self._harness_reconcile_completed,
+            )
+            self._session_ref_lane = BoundedCadence(
+                "harness-session-refs",
+                lambda _at_ms: self._sync_harness_session_refs(),
+                self._session_ref_completed,
+            )
+            self._prune_lane = BoundedCadence(
+                "inbox-prune", lambda _at_ms: self._prune_inbox(),
+                self._prune_completed,
+            )
+            self._availability_lane = BoundedCadence(
+                "availability-notices",
+                lambda _at_ms: self._report_stalled_deliveries(),
+                self._availability_completed,
+            )
         self._started = True
         self._retry_pump_halt.clear()
         self._retry_pump_kick.clear()
@@ -428,6 +853,7 @@ class DaemonEventBridge:
             # memory.  The terminal settlement rows are durable, so re-derive
             # from them rather than leaving that failure silent forever.
             self._recover_owed_notices(self._marker.previous_started_ms)
+        self._startup_in_progress = False
         return DaemonRecoverySummary(
             attempted=0,
             restored=0,
@@ -456,21 +882,52 @@ class DaemonEventBridge:
             finally:
                 phases.append((name, int((time.monotonic() - started_at) * 1000)))
 
+        _timed("agent.block.retry", self._retry_blocking_failures)
+
         collect_orphans = getattr(self.harnesses, "collect_orphans", None)
         harness_orphans_retired = (
             _timed("harnesses.collect_orphans", collect_orphans)
             if callable(collect_orphans)
             else 0
         )
-        harness_restarts = _timed("harnesses.reconcile", self.harnesses.reconcile)
-        _timed("harnesses.sync_session_refs", self._sync_harness_session_refs)
+        if self._harness_reconcile_lane is None:
+            harness_restarts = _timed(
+                "harnesses.reconcile", self.harnesses.reconcile
+            )
+            _timed("harnesses.sync_session_refs", self._sync_harness_session_refs)
+        else:
+            reconcile_admission = self._harness_reconcile_lane.submit(self._clock_ms())
+            assert self._session_ref_lane is not None
+            refs_admission = self._session_ref_lane.submit(self._clock_ms())
+            if self._logger is not None:
+                for domain, admission in (
+                    ("harnesses.reconcile", reconcile_admission),
+                    ("harnesses.sync_session_refs", refs_admission),
+                ):
+                    if admission is AdmissionResult.OVERLOADED:
+                        self._logger(
+                            "warn", "daemon", "dispatch.cadence_overloaded",
+                            domain=domain,
+                        )
+            with self._cadence_results_lock:
+                harness_restarts = self._completed_harness_restarts
+                self._completed_harness_restarts = 0
         _timed("harnesses.reconcile_actors", self._reconcile_harness_actors)
         published_progress = _timed(
             "harnesses.publish_progress", self._publish_harness_progress
         )
-        completed_results = _timed(
-            "harnesses.complete_results", self._complete_harness_results
-        )
+        if self._result_claim_lane is None:
+            completed_results = _timed(
+                "harnesses.complete_results", self._complete_harness_results
+            )
+        else:
+            admission = self._result_claim_lane.submit(self._clock_ms())
+            if admission is AdmissionResult.OVERLOADED and self._logger is not None:
+                self._logger("warn", "daemon", "harness.result_claim_overloaded")
+            assert self._result_settlement is not None
+            current_completed = self._result_settlement.projection().completed
+            completed_results = max(0, current_completed - self._last_result_completed)
+            self._last_result_completed = current_completed
         harness_deliveries = _timed(
             "harnesses.dispatch_deliveries", self._dispatch_harness_deliveries
         )
@@ -480,9 +937,19 @@ class DaemonEventBridge:
         # reported here, and notices the inbox did not accept are retried.
         # Runs after dispatch so a delivery that just started its first
         # attempt has its clock registered before it is judged.
-        availability_notices = _timed(
-            "availability.report_stalled", self._report_stalled_deliveries
-        )
+        if self._availability_lane is None:
+            availability_notices = _timed(
+                "availability.report_stalled", self._report_stalled_deliveries
+            )
+        else:
+            admission = self._availability_lane.submit(self._clock_ms())
+            if admission is AdmissionResult.OVERLOADED and self._logger is not None:
+                self._logger(
+                    "warn", "daemon", "availability.cadence_overloaded"
+                )
+            with self._cadence_results_lock:
+                availability_notices = self._completed_availability_notices
+                self._completed_availability_notices = 0
         drain_failed = getattr(self.harnesses, "drain_failed_events", None)
         failed = drain_failed() if callable(drain_failed) else ()
         drain_readiness = getattr(self.harnesses, "drain_readiness_reports", None)
@@ -501,7 +968,14 @@ class DaemonEventBridge:
         # unconsumed rows past their deadline are evicted here, once per
         # reconcile, instead of a timer of their own.  Items are surfaced so
         # the daemon can log per-message ``inbox.pruned`` trajectory events.
-        inbox_pruned_items = _timed("inbox.prune", self._prune_inbox)
+        if self._prune_lane is None:
+            inbox_pruned_items = _timed("inbox.prune", self._prune_inbox)
+        else:
+            admission = self._prune_lane.submit(self._clock_ms())
+            if admission is AdmissionResult.OVERLOADED and self._logger is not None:
+                self._logger("warn", "daemon", "inbox.prune_overloaded")
+            assert self._dispatch_state is not None
+            inbox_pruned_items = self._dispatch_state.take_pruned()
         return ReconcileSummary(
             harness_restarts=harness_restarts,
             inbox_results=inbox_results,
@@ -515,6 +989,48 @@ class DaemonEventBridge:
             phase_ms=tuple(phases),
             availability_notices=availability_notices,
         )
+
+    def _harness_reconcile_completed(self, completion: CadenceCompleted[int]) -> None:
+        if completion.error is not None:
+            if self._logger is not None:
+                self._logger(
+                    "error", "daemon", "harness.reconcile_failed",
+                    errorType=completion.error, detail=completion.detail,
+                )
+            return
+        with self._cadence_results_lock:
+            self._completed_harness_restarts += completion.result or 0
+
+    def _session_ref_completed(self, completion: CadenceCompleted[None]) -> None:
+        if completion.error is not None and self._logger is not None:
+            self._logger(
+                "warn", "daemon", "harness.session_ref.persist_failed",
+                errorType=completion.error, detail=completion.detail,
+            )
+
+    def _prune_completed(
+        self, completion: CadenceCompleted[tuple[InboxPruneItem, ...]]
+    ) -> None:
+        if completion.error is not None:
+            if self._logger is not None:
+                self._logger(
+                    "warn", "daemon", "inbox.prune_failed",
+                    errorType=completion.error, detail=completion.detail,
+                )
+            return
+        if completion.result and self._dispatch_state is not None:
+            self._dispatch_state.append_pruned(completion.result)
+
+    def _availability_completed(self, completion: CadenceCompleted[int]) -> None:
+        if completion.error is not None:
+            if self._logger is not None:
+                self._logger(
+                    "warn", "daemon", "availability.cadence_failed",
+                    errorType=completion.error, detail=completion.detail,
+                )
+            return
+        with self._cadence_results_lock:
+            self._completed_availability_notices += completion.result or 0
 
     def _prune_inbox(self) -> tuple[InboxPruneItem, ...]:
         try:
@@ -642,6 +1158,8 @@ class DaemonEventBridge:
         """
 
         active = set(self.harnesses.streaming_actors())
+        generation_reader = getattr(self.harnesses, "streaming_generations", None)
+        generations = generation_reader() if callable(generation_reader) else {}
         active_workers = {self.harness_actor_uri(name) for name in active}
         for attempt in tuple(self._inflight.values()):
             if attempt.identity.worker not in active_workers:
@@ -650,6 +1168,21 @@ class DaemonEventBridge:
             return
         for name in sorted(active):
             registration = self._actor_registrations.get(name)
+            generation = generations.get(name)
+            if (
+                registration is not None
+                and generation is not None
+                and self._actor_registration_generations.get(name) != generation
+            ):
+                # The original token belongs to a different process. Close
+                # it now and declare the replacement only on a later tick so
+                # the network observes an offline gap even for a fast restart.
+                self._actor_registrations.pop(name)
+                self._actor_registration_generations.pop(name, None)
+                registration.close(
+                    reason="actor-inactive", initiator="daemon-runtime"
+                )
+                continue
             if registration is not None and registration.healthy:
                 continue
             if registration is not None:
@@ -657,6 +1190,7 @@ class DaemonEventBridge:
                 # operation fails, the next reconcile sees a missing key and
                 # retries instead of preserving a permanently deaf entry.
                 self._actor_registrations.pop(name)
+                self._actor_registration_generations.pop(name, None)
                 registration.close(
                     reason="reconcile-unhealthy",
                     initiator="daemon-runtime",
@@ -664,15 +1198,21 @@ class DaemonEventBridge:
             self._actor_registrations[name] = self.harness_actor_registrar(
                 self.harness_actor_uri(name)
             )
+            if generation is not None:
+                self._actor_registration_generations[name] = generation
         for name in tuple(self._actor_registrations.keys() - active):
             registration = self._actor_registrations.pop(name)
+            self._actor_registration_generations.pop(name, None)
             registration.close(
                 reason="actor-inactive",
                 initiator="daemon-runtime",
             )
 
     def _dispatch_harness_deliveries(self) -> int:
-        accepted = 0
+        accepted = self._drain_dispatch_offer_outcomes()
+        pending_result_ids = getattr(
+            self.harnesses, "pending_result_delivery_ids", lambda: frozenset()
+        )()
         dispatchable = getattr(self.inbox, "dispatchable_messages", None)
         notice_reader = getattr(self.inbox, "system_notices", None)
         dismiss_notice = getattr(self.inbox, "dismiss_system_notice", None)
@@ -705,6 +1245,11 @@ class DaemonEventBridge:
                     # Keep scanning only for mechanism-owned hook requests.
                     # They must be able to reach a dedicated handler even
                     # when an older ordinary row is waiting on its own hook.
+                    continue
+                if message.message_id in pending_result_ids:
+                    # The Harness authority owns a native result claim or an
+                    # accepted enqueue, even if TurnRuntime already released
+                    # its own admission during drain_results().
                     continue
                 if message.message_id in self._pending_reply_results:
                     # Already answered; only its reply is still settling.
@@ -740,6 +1285,16 @@ class DaemonEventBridge:
                             actor_held = True
                             continue
                         delivery = prepared
+                offers = self._dispatch_offers
+                if offers is not None:
+                    if offers.offer(
+                        actor, delivery, original=message,
+                        retry=is_retry, notice=False,
+                    ):
+                        # One in-flight offer per worker keeps that worker's
+                        # ordinary inbox order while other workers continue.
+                        break
+                    continue
                 if self.harnesses.dispatch(actor, delivery):
                     if self._turn_hooks is not None:
                         self._turn_hooks.mark_dispatched(message.message_id)
@@ -777,6 +1332,14 @@ class DaemonEventBridge:
                             if prepared is None:
                                 break
                             delivery = prepared
+                    offers = self._dispatch_offers
+                    if offers is not None:
+                        if offers.offer(
+                            actor, delivery, original=notice,
+                            retry=False, notice=True,
+                        ):
+                            break
+                        continue
                     if self.harnesses.dispatch(actor, delivery):
                         if self._turn_hooks is not None:
                             self._turn_hooks.mark_dispatched(notice.message_id)
@@ -785,6 +1348,41 @@ class DaemonEventBridge:
                         # acknowledgement, receipt, or FIFO settlement duty.
                         dismiss_notice(notice.message_id)
                         accepted += 1
+        return accepted
+
+    def _drain_dispatch_offer_outcomes(self) -> int:
+        offers = self._dispatch_offers
+        if offers is None:
+            return 0
+        accepted = 0
+        for outcome in offers.completed():
+            if outcome.error is not None and self._logger is not None:
+                self._logger(
+                    "warn", "daemon", "dispatch.offer_failed",
+                    deliveryId=outcome.delivery_id,
+                    worker=outcome.worker,
+                    detail=outcome.error,
+                )
+            if not outcome.accepted:
+                continue
+            if self._turn_hooks is not None:
+                self._turn_hooks.mark_dispatched(outcome.delivery_id)
+            if outcome.notice:
+                dismiss_notice = getattr(self.inbox, "dismiss_system_notice", None)
+                if callable(dismiss_notice):
+                    dismiss_notice(outcome.delivery_id)
+                if self._turn_hooks is not None:
+                    self._turn_hooks.forget_delivery(outcome.delivery_id)
+            else:
+                if outcome.retry:
+                    self._note_delivery_seen(outcome.worker, outcome.original)
+                self._refresh_queued_hold(
+                    outcome.delivery_id,
+                    worker=outcome.recipient,
+                    now_ms=self._clock_ms(),
+                    force=True,
+                )
+            accepted += 1
         return accepted
 
     def _refresh_queued_hold(
@@ -806,6 +1404,19 @@ class DaemonEventBridge:
         refresh_hold = getattr(self.inbox, "refresh_hold", None)
         if not callable(refresh_hold):
             return False
+        hold_owner = self._hold_refresh
+        if hold_owner is not None:
+            admitted = hold_owner.submit(
+                message_id,
+                expected=previous,
+                replacement=_QueuedDeliveryHold(worker, now_ms),
+            )
+            if admitted is AdmissionResult.OVERLOADED and self._logger is not None:
+                self._logger(
+                    "warn", "daemon", "inbox.hold_refresh_overloaded",
+                    messageId=message_id,
+                )
+            return admitted is AdmissionResult.ACCEPTED
         # Keep the established inbox-owned clock boundary.  The runtime clock
         # below controls only throttling; forwarding it into an inbox backed
         # by another clock domain can shorten the durable deadline.
@@ -842,7 +1453,11 @@ class DaemonEventBridge:
             self._logger(
                 "debug",
                 "daemon",
-                "inbox.live_holds_refreshed",
+                (
+                    "inbox.live_holds_refresh_submitted"
+                    if self._hold_refresh is not None
+                    else "inbox.live_holds_refreshed"
+                ),
                 count=refreshed,
             )
         return refreshed
@@ -858,15 +1473,16 @@ class DaemonEventBridge:
         submit = getattr(self.inbox, "submit_progress_event", None)
         if not callable(submit):
             return 0
+        progress_owner = self._progress_publish
+        published = progress_owner.take_published() if progress_owner is not None else 0
         events = tuple(
             event
             for event in self.harnesses.drain_progress()
             if isinstance(event, ProgressEvent)
         )
         if not events:
-            return 0
+            return published
         by_actor: dict[str, dict[str, InboxMessage]] = {}
-        published = 0
         for event in _coalesce_progress_events(events):
             originals = by_actor.get(event.actor)
             if originals is None:
@@ -895,9 +1511,243 @@ class DaemonEventBridge:
                 worker=event.actor,
                 now_ms=now_ms,
             )
-            if submit(event, recipient=original.sender):
+            if progress_owner is not None:
+                admitted = progress_owner.submit(event, original.sender)
+                if admitted is AdmissionResult.OVERLOADED and self._logger is not None:
+                    self._logger(
+                        "warn", "daemon", "harness.progress_overloaded",
+                        deliveryId=event.delivery_id,
+                    )
+            elif submit(event, recipient=original.sender):
                 published += 1
         return published
+
+    def _claimed_results_available(
+        self, completion: CadenceCompleted[HarnessResultsClaimed]
+    ) -> None:
+        if completion.error is not None or completion.result is None:
+            if self._logger is not None:
+                self._logger(
+                    "warn", "daemon", "harness.result_claim_failed",
+                    error=completion.error,
+                    detail=completion.detail,
+                )
+            return
+        owner = self._result_settlement
+        if owner is None:
+            return
+        for claim in completion.result.claims:
+            admitted = owner.submit(claim)
+            if admitted is AdmissionResult.OVERLOADED and self._logger is not None:
+                self._logger(
+                    "warn", "daemon", "harness.result_settlement_overloaded",
+                    deliveryId=claim.result.delivery_id,
+                )
+        if completion.result.errors and self._logger is not None:
+            self._logger(
+                "warn", "daemon", "harness.result_claim_partial",
+                errors=completion.result.errors,
+            )
+
+    def _settle_claimed_result(self, claim: ClaimedHarnessResult) -> bool:
+        """Settle one claimed turn on a bounded effect worker.
+
+        The Harness claim remains authoritative until both the inbox/PAC
+        decision and the token-fenced Harness settle command confirm.
+        """
+
+        result = claim.result
+        try:
+            terminal = self._settle_claimed_result_business(result)
+            if not terminal:
+                return False
+            settle = getattr(self.harnesses, "settle_result")
+            settled = bool(settle(claim.claim_token, result.delivery_id))
+            if settled and result.forward_to is not None:
+                self._pending_forward_outcomes.pop(result.delivery_id, None)
+                if self._forward_settlement is not None:
+                    decision = self._forward_settlement.completed(
+                        result.delivery_id
+                    )
+                    if decision is not None:
+                        self._forward_settlement.retire(
+                            result.delivery_id, decision.decision_token
+                        )
+            return settled
+        except (NameError, ImportError):
+            raise
+        except Exception as error:
+            if self._logger is not None:
+                self._logger(
+                    "warn", "daemon", "harness.result_settlement_deferred",
+                    deliveryId=result.delivery_id,
+                    errorType=type(error).__name__,
+                    detail=str(error)[:300],
+                )
+            return False
+
+    def _settle_claimed_result_business(self, result: HarnessResult) -> bool:
+        self._queued_delivery_holds.pop(result.delivery_id, None)
+        terminal_attempt = self._finish_attempt(result.delivery_id)
+        if terminal_attempt is None:
+            terminal_attempt = self._pending_workflow_attempts.get(result.delivery_id)
+        self._pending_reply_results.pop(result.delivery_id, None)
+        if self._workflow_outcome is not None:
+            try:
+                if self._workflow_outcome(result):
+                    acknowledged = self.inbox.ack(
+                        result.recipient, result.delivery_id
+                    ).acknowledged
+                    if acknowledged:
+                        self._forget_turn_hook_delivery(result.delivery_id)
+                        self._pending_workflow_results.pop(result.delivery_id, None)
+                        self._pending_workflow_attempts.pop(result.delivery_id, None)
+                    return acknowledged
+                self._pending_workflow_results.pop(result.delivery_id, None)
+                self._pending_workflow_attempts.pop(result.delivery_id, None)
+            except (NameError, ImportError):
+                raise
+            except Exception as error:
+                self._pending_workflow_results[result.delivery_id] = result
+                if terminal_attempt is not None:
+                    self._pending_workflow_attempts[result.delivery_id] = terminal_attempt
+                if self._logger is not None:
+                    self._logger(
+                        "warn", "pac", "workflow.outcome_deferred",
+                        messageId=result.delivery_id, detail=str(error),
+                    )
+                return False
+        from hyprial.pac.delivery_guard import WITHDRAWN, delivery_current
+
+        if result.failure_code == WITHDRAWN and not delivery_current(
+            self.state_dir, result.delivery_id, now_ms=self._clock_ms()
+        ):
+            acknowledged = self.inbox.ack(
+                result.recipient, result.delivery_id
+            ).acknowledged
+            if acknowledged:
+                self._forget_turn_hook_delivery(result.delivery_id)
+            return acknowledged
+        if result.status is HarnessResultStatus.INTERRUPTED:
+            return True
+        if (
+            result.forward_to is not None
+            and self._forward_settlement is not None
+            and result.delivery_id in self._pending_forward_outcomes
+        ):
+            # Native forwarding and its inbox decision already settled.  The
+            # retained Harness claim is retrying only its token-fenced retire.
+            return True
+        original = next(
+            (
+                message
+                for message in self.inbox.pending_messages(result.recipient)
+                if message.message_id == result.delivery_id
+            ),
+            None,
+        )
+        if original is None:
+            self._forget_turn_hook_delivery(result.delivery_id)
+            if result.status is HarnessResultStatus.FAILED:
+                fallback = self._failure_original(result.delivery_id)
+                if fallback is not None:
+                    self._loud_harness_failure(
+                        result, fallback, attempt=terminal_attempt
+                    )
+                else:
+                    self._log_missing_failure_route(result)
+            return True
+        if result.status is HarnessResultStatus.FAILED:
+            settled = self._settle_failed_result(
+                result, original, attempt=terminal_attempt
+            )
+            if not settled and terminal_attempt is not None:
+                # The Harness authority still owns the frozen result claim.
+                # Restore its process-custody identity so the next bounded
+                # settlement attempt uses the same incarnation fence.
+                self._inflight[result.delivery_id] = terminal_attempt
+            return settled
+        if result.forward_to is not None:
+            if self._forwarder is None:
+                self._settle_failed_result(
+                    replace(
+                        result,
+                        status=HarnessResultStatus.FAILED,
+                        error="this daemon cannot forward",
+                        failure_code=FORWARD_UNAVAILABLE,
+                    ),
+                    original,
+                    attempt=terminal_attempt,
+                )
+                return True
+            forward_owner = self._forward_settlement
+            completed_forward = (
+                forward_owner.completed(result.delivery_id)
+                if forward_owner is not None else None
+            )
+            if forward_owner is not None and completed_forward is None:
+                admission = forward_owner.submit(original, result, terminal_attempt)
+                if admission is AdmissionResult.OVERLOADED and self._logger is not None:
+                    self._logger(
+                        "warn", "daemon", "harness.forward_overloaded",
+                        deliveryId=result.delivery_id,
+                    )
+                return False
+            if completed_forward is not None:
+                outcome = completed_forward.outcome
+                terminal_attempt = completed_forward.attempt or terminal_attempt
+            else:
+                # Compatibility for directly constructed bridges without the
+                # production actor composition.
+                outcome = self._pending_forward_outcomes.get(result.delivery_id)
+                if outcome is None:
+                    try:
+                        outcome = self._forwarder(
+                            original, result.forward_to, result.output
+                        )
+                    except Exception as error:
+                        outcome = ForwardOutcome(
+                            False, "HARNESS_TRANSIENT_FAILURE",
+                            f"forward raised {type(error).__name__}",
+                        )
+                    if outcome.accepted:
+                        self._pending_forward_outcomes[result.delivery_id] = outcome
+            if outcome.accepted:
+                acknowledged = self.inbox.ack(
+                    original.recipient, original.message_id
+                ).acknowledged
+                if acknowledged:
+                    self._pending_forward_outcomes[result.delivery_id] = outcome
+                    self._forget_turn_hook_delivery(result.delivery_id)
+                return acknowledged
+            failed = replace(
+                result,
+                status=HarnessResultStatus.FAILED,
+                output="",
+                error=outcome.error or outcome.failure_code,
+                failure_code=outcome.failure_code or "HARNESS_TRANSIENT_FAILURE",
+            )
+            self._settle_failed_result(failed, original, attempt=terminal_attempt)
+            if forward_owner is not None:
+                self._pending_forward_outcomes[result.delivery_id] = outcome
+            return True
+        try:
+            if original.intent == "reply":
+                acknowledged = self.inbox.ack(
+                    original.recipient, original.message_id
+                ).acknowledged
+            else:
+                acknowledged = self._reply_and_ack(original, result)
+        except (InboxAuthorityTimeout, InboxAuthorityUnavailable) as error:
+            acknowledged = (
+                self.inbox.ack(original.recipient, original.message_id).acknowledged
+                if self._reply_already_settled(original, result, error)
+                else False
+            )
+        if acknowledged:
+            self._pending_reply_results.pop(result.delivery_id, None)
+            self._forget_turn_hook_delivery(result.delivery_id)
+        return acknowledged
 
     def _complete_harness_results(self) -> int:
         settled = 0
@@ -1107,6 +1957,17 @@ class DaemonEventBridge:
         """Settle one FAILED turn against its still-pending inbox row."""
 
         failure_code = result.failure_code or classify_harness_failure(result.error)
+        if failure_code in {
+            "PROVIDER_USAGE_LIMIT",
+            "PROVIDER_AUTHENTICATION_FAILED",
+        }:
+            admission = self._observe_blocking_failure(
+                original.recipient,
+                failure_code,
+                None if attempt is None else attempt.agent_entity_token,
+            )
+            if admission is not AdmissionResult.ACCEPTED:
+                return False
         try:
             failure = self.inbox.settle_harness_failure(
                 original.recipient,
@@ -1164,7 +2025,10 @@ class DaemonEventBridge:
             failure.failure_code
             in {"PROVIDER_USAGE_LIMIT", "PROVIDER_AUTHENTICATION_FAILED"}
             and self._blocking_failure_observer is not None
+            and self._blocking_failure_identity is None
         ):
+            # Legacy explicitly injected observers have no identity port.
+            # Actor composition supplies it and uses the retained three-argument path.
             try:
                 self._blocking_failure_observer(
                     failure.recipient, failure.failure_code
@@ -1188,6 +2052,82 @@ class DaemonEventBridge:
         if failure.terminal:
             self._forget_turn_hook_delivery(result.delivery_id)
         return True
+
+    def _observe_blocking_failure(
+        self, recipient: str, code: str, entity_token: str | None
+    ) -> AdmissionResult:
+        observer = self._blocking_failure_observer
+        if observer is None:
+            return AdmissionResult.ACCEPTED
+        if not entity_token:
+            if self._logger is not None:
+                self._logger(
+                    "error",
+                    "daemon",
+                    "agent.block.identity_unavailable",
+                    recipient=recipient,
+                )
+            return AdmissionResult.ACCEPTED
+        key = (recipient, code, entity_token)
+        try:
+            admission = observer(recipient, code, entity_token)
+        except Exception as error:  # noqa: BLE001 - settlement already committed
+            admission = AdmissionResult.OVERLOADED
+            if self._logger is not None:
+                self._logger(
+                    "error",
+                    "daemon",
+                    "agent.block.observe_failed",
+                    recipient=recipient,
+                    error=type(error).__name__,
+                )
+        if admission in {None, AdmissionResult.ACCEPTED}:
+            with self._blocking_failure_lock:
+                self._pending_blocking_failures.pop(key, None)
+            return AdmissionResult.ACCEPTED
+        if admission is AdmissionResult.CLOSED:
+            return AdmissionResult.CLOSED
+        with self._blocking_failure_lock:
+            if key in self._pending_blocking_failures:
+                self._pending_blocking_failures.move_to_end(key)
+                return AdmissionResult.ACCEPTED
+            full = (
+                len(self._pending_blocking_failures)
+                >= self._blocking_failure_capacity
+            )
+            if not full:
+                self._pending_blocking_failures[key] = None
+                return AdmissionResult.ACCEPTED
+        if full:
+            if self._logger is not None:
+                self._logger(
+                    "error",
+                    "daemon",
+                    "agent.block.observer_capacity_exhausted",
+                    capacity=self._blocking_failure_capacity,
+                    recipient=recipient,
+                )
+            return AdmissionResult.OVERLOADED
+        return AdmissionResult.OVERLOADED
+
+    def _retry_blocking_failures(self) -> None:
+        observer = self._blocking_failure_observer
+        if observer is None:
+            with self._blocking_failure_lock:
+                self._pending_blocking_failures.clear()
+            return
+        with self._blocking_failure_lock:
+            pending = tuple(self._pending_blocking_failures)
+        for recipient, code, entity_token in pending:
+            try:
+                admission = observer(recipient, code, entity_token)
+            except Exception:
+                admission = AdmissionResult.OVERLOADED
+            if admission in {None, AdmissionResult.ACCEPTED}:
+                with self._blocking_failure_lock:
+                    self._pending_blocking_failures.pop(
+                        (recipient, code, entity_token), None
+                    )
 
     def _forget_turn_hook_delivery(self, delivery_id: str) -> None:
         if self._turn_hooks is not None:
@@ -1275,6 +2215,20 @@ class DaemonEventBridge:
         # an in-flight attempt a fresh budget.
         started = now
         generation = self._attempt_generation.get(message.message_id, 0) + 1
+        entity_token: str | None = None
+        identity = self._blocking_failure_identity
+        if self._blocking_failure_observer is not None and identity is not None:
+            try:
+                entity_token = identity(message.recipient)
+            except Exception as error:  # noqa: BLE001 - dispatch remains available
+                if self._logger is not None:
+                    self._logger(
+                        "error",
+                        "daemon",
+                        "agent.block.identity_failed",
+                        recipient=message.recipient,
+                        error=type(error).__name__,
+                    )
         self._inflight[message.message_id] = _InflightAttempt(
             identity=AttemptIdentity(
                 delivery_id=message.message_id,
@@ -1285,6 +2239,7 @@ class DaemonEventBridge:
                 generation=generation,
                 observed_at_ms=now,
             ),
+            agent_entity_token=entity_token,
             budget_ms=no_progress_budget_seconds(harness) * 1_000,
             last_progress_ms=started,
         )
@@ -1292,7 +2247,9 @@ class DaemonEventBridge:
     def _note_delivery_progress(self, delivery_id: str, now_ms: int) -> None:
         attempt = self._inflight.get(delivery_id)
         if attempt is not None:
-            attempt.last_progress_ms = now_ms
+            self._inflight[delivery_id] = replace(
+                attempt, last_progress_ms=now_ms
+            )
 
     def _finish_attempt(self, delivery_id: str) -> _InflightAttempt | None:
         attempt = self._inflight.pop(delivery_id, None)
@@ -1719,7 +2676,9 @@ class DaemonEventBridge:
             )
             if self._submit_loud(message):
                 reported += 1
-            attempt.reported = True
+            self._inflight[attempt.identity.delivery_id] = replace(
+                attempt, reported=True
+            )
         return reported
 
     def _reply_and_ack(self, original: InboxMessage, result: HarnessResult) -> bool:
@@ -1764,16 +2723,65 @@ class DaemonEventBridge:
                 return value
         return message.payload.decode("utf-8", errors="replace")
 
-    def stop(self) -> None:
+    def stop(self, timeout: float = 5.0) -> None:
         if not self._started:
-            return
+            if not self._startup_in_progress:
+                return
+            self._started = True
+        # A failed stop, including a normal run's failed registration close,
+        # retains its exact owner references and may be retried.
+        self._startup_in_progress = True
+        # No notice effect may still be mutating retry custody when the final
+        # shutdown flush reads it.
+        if self._availability_lane is not None:
+            if not self._availability_lane.close(5.0):
+                raise RuntimeError("availability notice effects did not drain")
+            self._availability_lane = None
         # Give held notices their last in-process chance before the port closes,
         # and make any that still cannot go out explicit in the log.
         self._flush_pending_notices_on_stop()
+        for lane in (
+            self._harness_reconcile_lane, self._session_ref_lane, self._prune_lane,
+            self._result_claim_lane,
+        ):
+            if lane is not None and not lane.close(5.0):
+                raise RuntimeError("Harness maintenance effect did not drain")
+        self._harness_reconcile_lane = None
+        self._session_ref_lane = None
+        self._prune_lane = None
+        self._result_claim_lane = None
+        if self._result_settlement is not None:
+            if not self._result_settlement.close(5.0):
+                raise RuntimeError("Harness result settlements did not drain")
+            self._result_settlement = None
+        if self._forward_settlement is not None:
+            if not self._forward_settlement.close(5.0):
+                raise RuntimeError("accepted Harness forwards did not drain")
+            self._forward_settlement = None
+        if self._dispatch_offers is not None:
+            offers = self._dispatch_offers
+            if not offers.drain(5.0):
+                raise RuntimeError("accepted Harness dispatch offers did not drain")
+            self._drain_dispatch_offer_outcomes()
+            if not offers.close(5.0):
+                raise RuntimeError("Harness dispatch offer owner did not stop")
+            self._dispatch_offers = None
+        if self._hold_refresh is not None:
+            if not self._hold_refresh.close(5.0):
+                raise RuntimeError("accepted inbox hold refreshes did not drain")
+            self._hold_refresh = None
+        if self._progress_publish is not None:
+            if not self._progress_publish.close(5.0):
+                raise RuntimeError("accepted progress publications did not drain")
+            self._progress_publish = None
         # Halt the retry pump before owned resources close, so its blocking
         # facade call cannot race teardown.
         self._halt_retry_pump()
         self._halt_forward_thread()
+        if not self._drain_blocking_failures_on_stop(timeout):
+            raise RuntimeError(
+                "accepted blocking failure observations did not transfer"
+            )
         errors = self._close_owned_resources()
         try:
             self._marker.finish()
@@ -1781,9 +2789,35 @@ class DaemonEventBridge:
             errors.append(error)
         finally:
             self._started = False
-            self._queued_delivery_holds.clear()
+            if not errors:
+                try:
+                    self._queued_delivery_holds.clear()
+                except (OSError, RuntimeError) as error:
+                    errors.append(error)
+            if not errors and self._dispatch_state is not None:
+                owner = self._dispatch_state
+                if not owner.close(5.0):
+                    errors.append(RuntimeError("dispatch state actor did not drain"))
+                else:
+                    self._dispatch_state = None
         if errors:
             raise ExceptionGroup("daemon shutdown failed", errors)
+        self._startup_in_progress = False
+
+    def _drain_blocking_failures_on_stop(self, timeout: float) -> bool:
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            with self._blocking_failure_lock:
+                if not self._pending_blocking_failures:
+                    return True
+            self._retry_blocking_failures()
+            with self._blocking_failure_lock:
+                if not self._pending_blocking_failures:
+                    return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(0.01, remaining))
 
     def _close_owned_resources(self) -> list[Exception]:
         """Close only route registrations and the run marker owned here.
@@ -1795,18 +2829,26 @@ class DaemonEventBridge:
 
         errors: list[Exception] = []
         operations: list[Callable[[], Any]] = []
-        for name in tuple(self._actor_registrations):
-            registration = self._actor_registrations.pop(name)
-            operations.append(
-                lambda registration=registration: registration.close(
-                    reason="daemon-stop",
-                    initiator="daemon-runtime",
+        for name, registration in tuple(self._actor_registrations.items()):
+            def close_actor_registration(
+                *, name: str = name, registration: HarnessActorRegistration = registration
+            ) -> None:
+                registration.close(
+                    reason="daemon-stop", initiator="daemon-runtime"
                 )
-            )
+                if self._actor_registrations.get(name) is registration:
+                    self._actor_registrations.pop(name, None)
+
+            operations.append(close_actor_registration)
         if self._mailbox_registration is not None:
             registration = self._mailbox_registration
-            self._mailbox_registration = None
-            operations.append(registration.close)
+
+            def close_mailbox_registration() -> None:
+                registration.close()
+                if self._mailbox_registration is registration:
+                    self._mailbox_registration = None
+
+            operations.append(close_mailbox_registration)
         for operation in operations:
             try:
                 operation()

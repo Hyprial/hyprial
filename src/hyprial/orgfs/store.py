@@ -30,6 +30,7 @@ ORGFS_PAGE_BYTES = 1_048_576
 ORGFS_INLINE_UPDATE_BYTES = 512_000
 PYCRDT_CLIENT_ID_BITS = 53
 PYCRDT_CLIENT_ID_MAX = (1 << PYCRDT_CLIENT_ID_BITS) - 1
+_MAX_PENDING_IMPORTS = 512
 
 _SAFE_WRITER = re.compile(r"^[A-Za-z0-9._:-]+$")
 _EMPTY_UPDATE = b"\x00\x00"
@@ -427,9 +428,11 @@ class LocalSpaceStore:
         self._replay_journal()
         self._rebuild_meta_frontiers()
         if self.blob_store is not None and hasattr(
-            self.blob_store, "register_purge_checker"
+            self.blob_store, "register_purge_projection"
         ):
-            self.blob_store.register_purge_checker(self.space_id, self.purge_listed)
+            self.blob_store.register_purge_projection(
+                self.space_id, self.purge_projection()
+            )
 
     @property
     def root(self) -> Path:
@@ -608,6 +611,24 @@ class LocalSpaceStore:
             values = _doc_roots(self._docs["meta"]).get("purgeList")
         raw = values.get(sha) if isinstance(values, dict) else None
         return isinstance(raw, dict) and raw.get("unbannedAt") is None
+
+    def purge_projection(self) -> frozenset[str]:
+        """Return the current immutable set of active replicated blob bans."""
+
+        values = _doc_roots(self._docs["meta"]).get("purgeList")
+        return frozenset(
+            sha
+            for sha, entry in (values.items() if isinstance(values, dict) else ())
+            if isinstance(entry, dict) and entry.get("unbannedAt") is None
+        )
+
+    def _publish_blob_purge_projection(self) -> None:
+        if self.blob_store is not None and hasattr(
+            self.blob_store, "register_purge_projection"
+        ):
+            self.blob_store.register_purge_projection(
+                self.space_id, self.purge_projection()
+            )
 
     def snapshot_point(self, doc_id: str) -> bytes | None:
         with self._lock:
@@ -1344,6 +1365,7 @@ class LocalSpaceStore:
             self._fault("before_state")
             self._persist_all_documents()
             if doc_id == "meta":
+                self._publish_blob_purge_projection()
                 token = self._meta_frontier_for_commit()
                 if token:
                     self._record_meta_frontier(token)
@@ -1410,6 +1432,20 @@ class LocalSpaceStore:
             return self._commit_one(
                 doc_id, mutate, author=author, actor=actor, writer=writer
             )
+
+    def commit_with_outbox(
+        self, doc_id: str, mutate: DocMutator, *, author: str, actor: str | None
+    ) -> tuple[CommitRecord, tuple[CommitRecord, ...]]:
+        """Return this transaction's exact newly journaled publications."""
+
+        with self._lock:
+            before = int(
+                self._db.execute(
+                    "SELECT COALESCE(MAX(rowid), 0) FROM commits"
+                ).fetchone()[0]
+            )
+            record = self.commit(doc_id, mutate, author=author, actor=actor)
+            return record, self._unbroadcast_after_locked(before)
 
     def commit_many(
         self,
@@ -1516,6 +1552,47 @@ class LocalSpaceStore:
             self._fault("after_state")
             return tuple(records)
 
+    def commit_many_with_outbox(
+        self,
+        operations: Iterable[tuple[str, DocMutator]],
+        *,
+        author: str,
+        actor: str | None,
+    ) -> tuple[tuple[CommitRecord, ...], tuple[CommitRecord, ...]]:
+        """Return the exact newly journaled publications for a batch."""
+
+        with self._lock:
+            before = int(
+                self._db.execute(
+                    "SELECT COALESCE(MAX(rowid), 0) FROM commits"
+                ).fetchone()[0]
+            )
+            records = self.commit_many(operations, author=author, actor=actor)
+            return records, self._unbroadcast_after_locked(before)
+
+    def _unbroadcast_after_locked(self, rowid: int) -> tuple[CommitRecord, ...]:
+        rows = self._db.execute(
+            "SELECT * FROM commits "
+            "WHERE rowid > ? AND broadcast_at IS NULL ORDER BY rowid",
+            (rowid,),
+        ).fetchall()
+        return tuple(self._record_from_row(row) for row in rows)
+
+    def committed_update(self, doc_id: str, since: bytes) -> bytes:
+        """Return this node's committed ops for ``doc_id`` past ``since``.
+
+        The per-space authority folds this back into the caller's content doc
+        after a commit, so the writer's own facade carries the reserved
+        coverage-clock op that ``_advance_commit_clock`` writes under the
+        store's writer client.  Every outgoing envelope carries that op;
+        without it the originating writer can never cover a content frontier
+        a peer records after receiving it.
+        """
+
+        with self._lock:
+            self._raise_if_retired(doc_id)
+            return self._doc(doc_id).get_update(since)
+
     def frontier(self, doc_id: str) -> bytes:
         with self._lock:
             self._raise_if_retired(doc_id)
@@ -1523,19 +1600,6 @@ class LocalSpaceStore:
                 _decode_state_vector(self._doc(doc_id).get_state())
             )
 
-    def committed_update(self, doc_id: str, since: bytes) -> bytes:
-        """Return this node's committed ops for ``doc_id`` past ``since``.
-
-        The facade folds this back into its content doc after a commit, so the
-        writer's own facade carries the reserved coverage-clock op that
-        ``_advance_commit_clock`` writes under the store's writer client.  Every
-        outgoing envelope carries that op; without it the originating writer can
-        never cover a content frontier a peer records after receiving it.
-        """
-
-        with self._lock:
-            self._raise_if_retired(doc_id)
-            return self._doc(doc_id).get_update(since)
 
     @staticmethod
     def _covered(version: bytes, vv: bytes) -> bool:
@@ -1652,6 +1716,7 @@ class LocalSpaceStore:
         probe = Doc()
         try:
             probe.apply_update(baseline.get_update())
+            before_state = probe.get_state()
             before = _doc_roots(probe)
             probe.apply_update(update)
         except (TypeError, ValueError):
@@ -1676,7 +1741,7 @@ class LocalSpaceStore:
             ("purgeAcks", str(origin["node"])),
             ("__orgfs__", "c"),
         }
-        changed_ids = self._changed_client_ids(baseline.get_state(), probe.get_state())
+        changed_ids = self._changed_client_ids(before_state, probe.get_state())
         return (
             bool(touched)
             and (author == owner or touched <= allowed)
@@ -1765,19 +1830,89 @@ class LocalSpaceStore:
             return "ok"
         return "not-a-member"
 
-    def _pending(self, envelope: bytes, supplier: str) -> None:
+    def _pending(self, envelope: bytes, supplier: str) -> bool:
         value = self._decode_envelope(envelope)
-        self._db.execute(
-            "INSERT OR REPLACE INTO pending(writer, seq, doc_id, envelope_bytes, supplier) VALUES (?, ?, ?, ?, ?)",
-            (
-                str(value["origin"]["writer"]),
-                int(value["seq"]),
-                str(value["docId"]),
-                envelope,
-                supplier,
-            ),
+        writer = str(value["origin"]["writer"])
+        seq = int(value["seq"])
+        doc_id = str(value["docId"])
+        with self._db:
+            existing = self._db.execute(
+                "SELECT 1 FROM pending WHERE writer = ? AND seq = ? AND doc_id = ?",
+                (writer, seq, doc_id),
+            ).fetchone()
+            if existing is None:
+                count = int(self._db.execute("SELECT COUNT(*) FROM pending").fetchone()[0])
+                if count >= _MAX_PENDING_IMPORTS:
+                    return False
+            self._db.execute(
+                "INSERT OR REPLACE INTO pending(writer, seq, doc_id, envelope_bytes, supplier) VALUES (?, ?, ?, ?, ?)",
+                (writer, seq, doc_id, envelope, supplier),
+            )
+        return True
+
+    def _is_active_member_at_envelope_frontier(
+        self, value: Mapping[str, Any]
+    ) -> bool:
+        origin = value.get("origin")
+        if not isinstance(origin, Mapping):
+            return False
+        token_text = origin.get("metaFrontier")
+        if not isinstance(token_text, str):
+            return False
+        try:
+            snapshot = self._membership_at(_unb64(token_text))
+        except StoreError:
+            return False
+        if snapshot is None:
+            return False
+        owner, members, _baseline = snapshot
+        author = str(origin.get("author", ""))
+        member = members.get(author)
+        return author == owner or (
+            isinstance(member, dict)
+            and member.get("mode") == "rw"
+            and not member.get("removedAt")
         )
-        self._db.commit()
+
+    def _meta_update_waits_for_causal_prefix(
+        self, value: Mapping[str, Any], update: bytes
+    ) -> bool:
+        """Detect a missing member-authored meta prefix without accepting it."""
+
+        if (
+            str(value.get("docId")) != "meta"
+            or not self._is_active_member_at_envelope_frontier(value)
+        ):
+            return False
+        origin = value.get("origin")
+        if not isinstance(origin, Mapping):
+            return False
+        try:
+            token = _unb64(str(origin["metaFrontier"]))
+        except (KeyError, StoreError, TypeError):
+            return False
+        snapshot = self._membership_at(token)
+        if snapshot is None:
+            return False
+        probe = Doc()
+        try:
+            probe.apply_update(snapshot[2].get_update())
+            before = _doc_roots(probe).get("__orgfs__")
+            prior_clock = before.get("c") if isinstance(before, dict) else None
+            if (
+                isinstance(prior_clock, bool)
+                or not isinstance(prior_clock, (int, float))
+                or not float(prior_clock).is_integer()
+            ):
+                return False
+            probe.apply_update(update)
+        except (TypeError, ValueError):
+            return False
+        after = _doc_roots(probe).get("__orgfs__")
+        # Only a missing reserved clock can signal a causal prefix gap.
+        # Explicit malformed values (bool, string, fractional number) are
+        # semantic violations and must be rejected immediately by shape policy.
+        return not isinstance(after, dict) or "c" not in after
 
     def _apply_import(
         self, value: Mapping[str, Any], envelope: bytes, supplier: str
@@ -1842,6 +1977,7 @@ class LocalSpaceStore:
         doc.apply_update(update)
         self._persist_all_documents()
         if doc_id == "meta":
+            self._publish_blob_purge_projection()
             token = self._meta_frontier_for_commit()
             if token:
                 self._record_meta_frontier(token)
@@ -1856,6 +1992,7 @@ class LocalSpaceStore:
             progressed = False
             for row in rows:
                 envelope = bytes(row["envelope_bytes"])
+                value: dict[str, Any] | None = None
                 try:
                     try:
                         value = self._decode_envelope(envelope)
@@ -1870,6 +2007,18 @@ class LocalSpaceStore:
                             else "not-a-member"
                         )
                     if decision == "pending-meta":
+                        continue
+                    if (
+                        decision == "not-a-member"
+                        and value is not None
+                        and self._meta_update_waits_for_causal_prefix(
+                            value, self._update_bytes(value)
+                        )
+                    ):
+                        # A separate active member writer lane can carry a
+                        # required meta predecessor. Keep the bounded durable
+                        # row until that lane advances the reconstructed causal
+                        # baseline; re-run full admission after each meta import.
                         continue
                     if decision == "ok":
                         result = self._apply_import(
@@ -1940,13 +2089,21 @@ class LocalSpaceStore:
                 return ImportResult("rejected", exc.code, details=exc.details)
             decision = self.admission(bytes(envelope))
             if decision == "pending-meta":
-                self._pending(bytes(envelope), supplier)
+                if not self._pending(bytes(envelope), supplier):
+                    return ImportResult("rejected", "resource-exhausted")
                 return ImportResult("pending", "pending-meta")
             if decision != "ok":
+                if decision == "not-a-member" and self._meta_update_waits_for_causal_prefix(
+                    value, self._update_bytes(value)
+                ):
+                    if not self._pending(bytes(envelope), supplier):
+                        return ImportResult("rejected", "resource-exhausted")
+                    return ImportResult("pending", "pending-dependency")
                 return ImportResult("rejected", decision)
             result = self._apply_import(value, bytes(envelope), supplier)
             if result.status == "pending":
-                self._pending(bytes(envelope), supplier)
+                if not self._pending(bytes(envelope), supplier):
+                    return ImportResult("rejected", "resource-exhausted")
                 return result
             if result.status == "applied":
                 drained = self._drain_pending()
@@ -1971,6 +2128,31 @@ class LocalSpaceStore:
         with self._lock:
             rows = self._db.execute(
                 "SELECT * FROM commits WHERE broadcast_at IS NULL ORDER BY rowid"
+            ).fetchall()
+            return tuple(self._record_from_row(row) for row in rows)
+
+    def unbroadcast_through(
+        self, keys: tuple[tuple[str, int, str], ...]
+    ) -> tuple[CommitRecord, ...]:
+        """Return unpublished durable rows through a transaction's journal frontier."""
+
+        if not keys:
+            return ()
+        with self._lock:
+            rowids = []
+            for writer, seq, doc_id in keys:
+                row = self._db.execute(
+                    "SELECT rowid FROM commits WHERE writer = ? AND seq = ? AND doc_id = ?",
+                    (writer, seq, doc_id),
+                ).fetchone()
+                if row is not None:
+                    rowids.append(int(row[0]))
+            if not rowids:
+                return ()
+            rows = self._db.execute(
+                "SELECT * FROM commits WHERE broadcast_at IS NULL AND rowid <= ? "
+                "ORDER BY rowid",
+                (max(rowids),),
             ).fetchall()
             return tuple(self._record_from_row(row) for row in rows)
 

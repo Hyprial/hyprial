@@ -28,6 +28,7 @@ import tempfile
 import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, NoReturn
@@ -2830,6 +2831,7 @@ _SAFE_DAEMON_STARTUP_EVENTS = frozenset(
         "workflow.cutover_failed",
         "workflow.recovery_unavailable",
         "workflow.pac_actor_unavailable",
+        "pac.graph_authority_unavailable",
         "workflow.degrade_cleanup_failed",
         "routine.recovery_unavailable",
     }
@@ -8107,7 +8109,8 @@ def _runtime_context_projection(
 
     ``None`` is the explicit legacy mode.  The response is intentionally a
     string map: entity tokens, grants, credential values, and receipts never
-    cross this CLI IPC seam.
+    cross this CLI IPC seam. An opaque launch token authorizes only a final
+    current-incarnation check and a short spawn lease.
     """
 
     result = _daemon_request(
@@ -8154,6 +8157,50 @@ def _runtime_context_projection(
                     f"daemon returned an invalid shared credential {field}",
                 )
     return result
+
+
+@contextmanager
+def _runtime_launch_custody(projection: JsonObject | None):
+    if projection is None or projection.get("authorityPrepared") is not True:
+        yield
+        return
+    launch_token = projection.get("launchToken")
+    if not isinstance(launch_token, str) or not launch_token:
+        raise CliError(
+            ipc_errors.INVALID_ARGUMENT,
+            "authority-prepared runtime context is missing launchToken",
+        )
+    operation_id = f"cli:runtime-launch:{uuid4().hex}"
+    acquired = _daemon_request(
+        "agent.runtime-launch.acquire",
+        {"launchToken": launch_token, "operationId": operation_id},
+    )
+    if acquired.get("operationId") != operation_id:
+        raise CliError(
+            ipc_errors.INVALID_ARGUMENT,
+            "daemon returned a mismatched Agent runtime launch operation",
+        )
+    lease_token = acquired.get("leaseToken")
+    if not isinstance(lease_token, str) or not lease_token:
+        raise CliError(
+            ipc_errors.INVALID_ARGUMENT,
+            "daemon returned an invalid Agent runtime launch lease",
+        )
+    body_failed = False
+    try:
+        yield
+    except BaseException:
+        body_failed = True
+        raise
+    finally:
+        try:
+            _daemon_request(
+                "agent.runtime-launch.release",
+                {"leaseToken": lease_token, "operationId": operation_id},
+            )
+        except Exception:
+            if not body_failed:
+                raise
 
 
 def _start_interactive_claude(
@@ -8205,8 +8252,19 @@ def _start_interactive_claude(
             model=model,
         )
     )
-    runtime_environment = _runtime_context_environment(
-        name=name, harness="claude", cwd=cwd
+    runtime_payload = _runtime_context_environment(
+        name=name, harness="claude", cwd=cwd, include_projection=True
+    )
+    runtime_projection = (
+        runtime_payload
+        if runtime_payload is not None
+        and isinstance(runtime_payload.get("environment"), dict)
+        else None
+    )
+    runtime_environment = (
+        runtime_payload
+        if runtime_projection is None
+        else dict(runtime_projection["environment"])
     )
     from hyprial.agents.environment import apply_runtime_environment_profile
     from hyprial.harnesses.claude_runtime import (
@@ -8443,34 +8501,36 @@ def _start_interactive_claude(
     ]
     process: subprocess.Popen[Any] | None = None
     if tmux_session_name is not None:
-        return _launch_detached_tui(
-            argv=argv,
-            env=launch_environment,
-            cwd=cwd,
-            actor=actor,
-            session_ref=session_ref,
-            session_name=tmux_session_name,
-            harness="claude",
-            registration_deadline_seconds=60.0,
-            is_session_registered=lambda status: _channel_registration_confirmed(
-                actor, session_ref, status
-            ),
-            registration_failure=(
-                f"Claude exited or timed out before Channel registration for {actor}"
-            ),
-            config=config,
-            config_path=config_path,
-            recovery_path=recovery_path,
-            warnings=plugin_warnings,
-        )
+        with _runtime_launch_custody(runtime_projection):
+            return _launch_detached_tui(
+                argv=argv,
+                env=launch_environment,
+                cwd=cwd,
+                actor=actor,
+                session_ref=session_ref,
+                session_name=tmux_session_name,
+                harness="claude",
+                registration_deadline_seconds=60.0,
+                is_session_registered=lambda status: _channel_registration_confirmed(
+                    actor, session_ref, status
+                ),
+                registration_failure=(
+                    f"Claude exited or timed out before Channel registration for {actor}"
+                ),
+                config=config,
+                config_path=config_path,
+                recovery_path=recovery_path,
+                warnings=plugin_warnings,
+            )
     try:
         _write_launch_config(config_path, config)
-        process = subprocess.Popen(
-            argv,
-            cwd=cwd,
-            env=launch_environment,
-            stdout=sys.stderr if json_output else None,
-        )
+        with _runtime_launch_custody(runtime_projection):
+            process = subprocess.Popen(
+                argv,
+                cwd=cwd,
+                env=launch_environment,
+                stdout=sys.stderr if json_output else None,
+            )
         registered = False
         deadline = time.monotonic() + 60.0
         while time.monotonic() < deadline:
@@ -8909,36 +8969,38 @@ def _start_interactive_pi(
 
         session_name = session_name_for_actor(actor)
         environment["HYPRIAL_WORKER_TMUX_SESSION"] = session_name
-        return _launch_detached_tui(
-            argv=argv,
-            env=environment,
-            cwd=cwd,
-            actor=actor,
-            session_ref=session_ref,
-            session_name=session_name,
-            harness="pi",
-            # An attended launch may stall on pi's project-trust prompt
-            # before the extension ever runs: the deadline is generous, and
-            # the error names that exact cause (research finding E8).
-            registration_deadline_seconds=180.0,
-            is_session_registered=lambda status: _pi_attach_registration(
-                actor, session_ref, status
-            ),
-            registration_failure=(
-                "pi exited or timed out before attach registration for "
-                f"{actor}; if the project-trust prompt was showing, trust "
-                "the project and retry"
-            ),
-            warnings=plugin_warnings,
-        )
+        with _runtime_launch_custody(runtime_projection):
+            return _launch_detached_tui(
+                argv=argv,
+                env=environment,
+                cwd=cwd,
+                actor=actor,
+                session_ref=session_ref,
+                session_name=session_name,
+                harness="pi",
+                # An attended launch may stall on pi's project-trust prompt
+                # before the extension ever runs: the deadline is generous, and
+                # the error names that exact cause (research finding E8).
+                registration_deadline_seconds=180.0,
+                is_session_registered=lambda status: _pi_attach_registration(
+                    actor, session_ref, status
+                ),
+                registration_failure=(
+                    "pi exited or timed out before attach registration for "
+                    f"{actor}; if the project-trust prompt was showing, trust "
+                    "the project and retry"
+                ),
+                warnings=plugin_warnings,
+            )
     process: subprocess.Popen[Any] | None = None
     try:
-        process = subprocess.Popen(
-            argv,
-            cwd=cwd,
-            env=environment,
-            stdout=sys.stderr if json_output else None,
-        )
+        with _runtime_launch_custody(runtime_projection):
+            process = subprocess.Popen(
+                argv,
+                cwd=cwd,
+                env=environment,
+                stdout=sys.stderr if json_output else None,
+            )
         registered = False
         # An attended launch may stall on pi's project-trust prompt before
         # the extension ever runs: the deadline is generous, and the error
@@ -9120,6 +9182,10 @@ def _start_interactive_codex(
             else Path(str(runtime_projection["sessionRoot"]))
         ),
         shared_credential=shared_credential,
+        authority_prepared=(
+            runtime_projection is not None
+            and runtime_projection.get("authorityPrepared") is True
+        ),
     )
     process: subprocess.Popen[Any] | None = None
     carrier: CodexInteractiveCarrier | None = None
@@ -9141,8 +9207,9 @@ def _start_interactive_codex(
         provider_environment,
     )
     try:
-        server.start()
-        process = subprocess.Popen(argv, cwd=cwd, env=environment)
+        with _runtime_launch_custody(runtime_projection):
+            server.start()
+            process = subprocess.Popen(argv, cwd=cwd, env=environment)
         deadline = time.monotonic() + 180.0
         while time.monotonic() < deadline:
             if process.poll() is not None:

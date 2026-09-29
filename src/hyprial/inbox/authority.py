@@ -10,6 +10,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from hyprial.alarm import Alarm, AlarmDelivery, AlarmResult
+from hyprial.contracts.ports import PortAdmission
 
 from .actor import DeliveryCustodyCoordinator, InboxAuthorityTimeout
 from .api import (
@@ -313,6 +314,22 @@ class InboxReadProjection:
             )
             for row in rows
         )
+
+    def outbox_recipient_page(
+        self, *, after: str | None = None, limit: int = 64
+    ) -> tuple[str, ...]:
+        """Bounded stable recipient page for overflow wake recovery."""
+
+        if limit < 1 or limit > 256:
+            raise ValueError("outbox recipient page limit must be in 1..256")
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT DISTINCT recipient FROM outbox
+                     WHERE (? IS NULL OR recipient > ?)
+                     ORDER BY recipient LIMIT ?""",
+                (after, after, limit),
+            ).fetchall()
+        return tuple(str(row["recipient"]) for row in rows)
 
     def outbox_item(self, message_id: str) -> OutboxItem:
         for item in self.outbox_items():
@@ -764,6 +781,25 @@ class DeliveryCustodyFacade:
         assert isinstance(event, ReceiveCompleted)
         return event.result
 
+    def admit_ingress(
+        self,
+        command: ReceiveMessageCommand | AcceptCustodyCommand
+        | ReceiveSystemNoticeCommand | ReceiveProgressCommand
+        | RetireOutboxReceiptCommand,
+    ) -> PortAdmission:
+        """Admit immutable RX input without waiting for commit on the RX lane.
+
+        Admission never signs a receipt. The sender retains durable custody
+        until the existing receipt query observes the writer's committed row.
+        Overload/closing is returned explicitly so the adapter can report it.
+        """
+        if not isinstance(command, (
+            ReceiveMessageCommand, AcceptCustodyCommand, ReceiveSystemNoticeCommand,
+            ReceiveProgressCommand, RetireOutboxReceiptCommand,
+        )):
+            raise TypeError("unsupported inbox ingress command")
+        return self._coordinator.submit(command)
+
     def ack(self, recipient: str, message_id: str) -> AckResult:
         event = self._call(
             AcknowledgeMessageCommand(
@@ -868,6 +904,16 @@ class DeliveryCustodyFacade:
         results.extend(self.retry_custody_due(now_ms=now))
         return results
 
+    def wake_outbox_recipient(
+        self, recipient: str, *, now_ms: int | None = None
+    ) -> bool:
+        now = time.time_ns() // 1_000_000 if now_ms is None else now_ms
+        return self._bool(
+            WakeOutboxRecipientCommand(
+                self._correlation("wake-outbox-recipient"), recipient, now
+            )
+        )
+
     def retry_custody_due(
         self, *, now_ms: int | None = None
     ) -> list[SubmissionResult]:
@@ -884,14 +930,6 @@ class DeliveryCustodyFacade:
         assert isinstance(event, SubmissionBatchCompleted)
         return [self._submission(item) for item in event.results]
 
-    def wake_outbox_recipient(
-        self, recipient: str, *, now_ms: int | None = None
-    ) -> bool:
-        return self._bool(
-            WakeOutboxRecipientCommand(
-                self._correlation("wake-outbox-recipient"), recipient, now_ms
-            )
-        )
 
     def retire_outbox_receipt(
         self,
@@ -1092,6 +1130,11 @@ class DeliveryCustodyFacade:
     def outbox_items(self) -> tuple[OutboxItem, ...]:
         return self._reads.outbox_items()
 
+    def outbox_recipient_page(
+        self, *, after: str | None = None, limit: int = 64
+    ) -> tuple[str, ...]:
+        return self._reads.outbox_recipient_page(after=after, limit=limit)
+
     def outbox_count(self) -> int:
         return self._reads.outbox_count()
 
@@ -1113,7 +1156,9 @@ class DeliveryCustodyFacade:
         return self._reads.pending_count(recipient)
 
     def has_pending_work(self, recipient: str) -> bool:
-        return self._reads.has_pending_work(recipient)
+        """Cache-only actor projection; never opens SQLite on its caller."""
+
+        return self._coordinator.has_pending_work(recipient)
 
     def pending_recipient_counts(self) -> tuple[tuple[str, int], ...]:
         return self._reads.pending_recipient_counts()

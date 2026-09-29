@@ -11,6 +11,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Self
 
+from .store_lock import json_store_mutation
+
 
 class UserProfileError(ValueError):
     pass
@@ -390,7 +392,7 @@ class UserProfileStore:
         machine_key: str,
     ) -> tuple[UserProfile, tuple[str, ...]]:
         _validate_identity(owner, owner_key, login_name, machine, machine_key)
-        with self._lock:
+        with self._lock, json_store_mutation(self.path):
             profiles = list(self._load())
             existing = next(
                 (profile for profile in profiles if profile.owner_key == owner_key),
@@ -512,7 +514,7 @@ class UserProfileStore:
         operation: Callable[[UserProfile], UserProfile],
         changed_field: str,
     ) -> tuple[UserProfile, tuple[str, ...]]:
-        with self._lock:
+        with self._lock, json_store_mutation(self.path):
             profiles = list(self._load())
             for index, profile in enumerate(profiles):
                 if profile.owner_key != owner_key:

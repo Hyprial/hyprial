@@ -240,29 +240,24 @@ class OrgContextOrgFsBridge:
         username = source.removeprefix("user:")
         path = self._candidate_path(username)
         try:
-            # Resolve the path once and read that node by id, so the staged
-            # text, its version and the provenance URI all name one node even
-            # if the path is moved or recreated meanwhile.
-            info = self.runtime.facade.stat(space_id, path)
-            content, version = self.runtime.facade.read_text(
-                space_id, f"id:{info.node_id}"
-            )
+            snapshot = self.runtime.facade.read_text_snapshot(space_id, path)
         except OrgFsError as error:
             if error.code == "unknown-doc":
                 return None
             raise
-        document = parse_document(content)
+        document = parse_document(snapshot.content)
         accepted = self.store.load_accepted()
         if accepted is not None and document.meta.version <= accepted.meta.version:
             raise OrgVersionError(
                 f"incoming version {document.meta.version} must be newer than "
                 f"accepted version {accepted.meta.version}"
             )
-        # Provenance is the canonical node URI plus @<version> (Q4=A): the
-        # orgfs:<owner>:<spaceId>:<nodeId> identity, never a string splice.
+        # The owner snapshot binds accepted bytes, version, and canonical URI;
+        # a concurrent move/recreate cannot splice a replacement identity into
+        # provenance after the content read.
         return self.store.stage(
             document,
-            source=f"{info.uri}@{version}",
+            source=f"{snapshot.node.uri}@{snapshot.version}",
         )
 
     def fetch(self, *, source: str | None, timeout: float) -> dict[str, object]:

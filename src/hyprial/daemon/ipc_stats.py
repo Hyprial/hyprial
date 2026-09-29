@@ -32,6 +32,14 @@ only ``time.thread_time()`` of its own thread:
 * **Effect-admission side** (``effectAdmission``): the
   ``hyprial-session-agent-effects`` thread, around admitting one effect,
   keyed by operation.  Everything it does is session-originated.
+* **Session-persistence I/O side** (``sessionPersistenceIo``): the
+  ``desired-state-io`` worker around one immutable storage request, keyed by
+  ``<operation>/<origin>``.  ``/ipc`` means an external session command and
+  its exact retained completion; lease/lifecycle/replay work is
+  ``/background``.
+* **State-persistence side** (``statePersistence``): the
+  ``state-persistence-authority`` actor around one typed command, keyed by
+  ``<CommandType>/<origin>`` propagated from the immutable I/O request.
 
 Partition rule: each side counts only CPU inside its marked span on its own
 thread.  CPU on a side's thread outside that span is uncovered, not the
@@ -53,11 +61,12 @@ Take two ``ps --json`` snapshots over one window.  Definitions:
   cross-check, allowed display error ±0.02 s per window).  Δ is the
   denominator for EVERY check below, including the upper bound.
 * **Instrumented CPU** (``instrumentedCpuMs`` delta) = IPC + session actor +
-  Agent actor + effect admission.
+  Agent actor + effect admission + session-persistence I/O + state persistence.
 * **IPC-path CPU** (``ipcPathCpuMs`` delta) = IPC + session actor + the
   session-originated Agent-actor share (``*/session`` keys) + effect
-  admission.  Agent-actor work with ``/other`` origin is instrumented but not
-  IPC path.
+  admission + the ``*/ipc`` shares of both persistence sides. Agent-actor
+  work with ``/other`` and persistence ``/background`` rows are instrumented
+  but not IPC path.
 * **Coverage** = instrumented CPU / Δ.  **IPC-path fraction** = IPC-path
   CPU / Δ.
 
@@ -77,7 +86,7 @@ Checks:
   - coverage ≥ 70 % and 0.40–0.80 ⇒ no conclusion; extend coverage or
     lengthen the window.
 
-Known uncovered categories, named up front (disjoint from the four sides
+Known uncovered categories, named up front (disjoint from the six sides
 above): maintenance/runtime timer ticks, lark worker threads, the PAC actor,
 the lifecycle process manager, IPC framing outside the handler (accept,
 per-connection thread start, ``recv``, JSON parse and serialise,
@@ -110,6 +119,7 @@ __all__ = [
 #: The Agent-actor key suffix for work a SessionActor effect asked for; the
 #: session-originated share is part of the IPC path (calibration contract).
 _SESSION_ORIGIN_SUFFIX = "/session"
+_IPC_ORIGIN_SUFFIX = "/ipc"
 
 
 def _cpu_ms(block: dict[str, dict[str, Any]], *, suffix: str = "") -> float:
@@ -124,6 +134,8 @@ def ipc_stats_payload(
     session_actor: CallCostCounters,
     agent_actor: CallCostCounters,
     effect_admission: CallCostCounters,
+    session_persistence_io: CallCostCounters,
+    state_persistence: CallCostCounters,
 ) -> dict[str, Any]:
     """The additive ``daemon.ipcStats`` block of ``ps``.
 
@@ -131,9 +143,10 @@ def ipc_stats_payload(
     yields Δ for the calibration contract without a second instrument.  The
     two totals are derived from the same snapshot's rows, so a reader can
     difference them across two snapshots instead of re-summing by hand:
-    ``instrumentedCpuMs`` (all four sides; numerator of coverage) and
+    ``instrumentedCpuMs`` (all six sides; numerator of coverage) and
     ``ipcPathCpuMs`` (IPC + session actor + session-originated Agent actor
-    work + effect admission; numerator of the IPC-path fraction).
+    work + effect admission + IPC-origin persistence work; numerator of the
+    IPC-path fraction).
     """
 
     process_cpu = time.process_time()
@@ -141,6 +154,8 @@ def ipc_stats_payload(
     session_rows = session_actor.snapshot()
     agent_rows = agent_actor.snapshot()
     admission_rows = effect_admission.snapshot()
+    session_io_rows = session_persistence_io.snapshot()
+    state_rows = state_persistence.snapshot()
     common = _cpu_ms(method_rows) + _cpu_ms(session_rows) + _cpu_ms(admission_rows)
     return {
         "sinceMs": methods.since_ms,
@@ -149,8 +164,20 @@ def ipc_stats_payload(
         "sessionActor": session_rows,
         "agentActor": agent_rows,
         "effectAdmission": admission_rows,
-        "instrumentedCpuMs": round(common + _cpu_ms(agent_rows), 3),
+        "sessionPersistenceIo": session_io_rows,
+        "statePersistence": state_rows,
+        "instrumentedCpuMs": round(
+            common
+            + _cpu_ms(agent_rows)
+            + _cpu_ms(session_io_rows)
+            + _cpu_ms(state_rows),
+            3,
+        ),
         "ipcPathCpuMs": round(
-            common + _cpu_ms(agent_rows, suffix=_SESSION_ORIGIN_SUFFIX), 3
+            common
+            + _cpu_ms(agent_rows, suffix=_SESSION_ORIGIN_SUFFIX)
+            + _cpu_ms(session_io_rows, suffix=_IPC_ORIGIN_SUFFIX)
+            + _cpu_ms(state_rows, suffix=_IPC_ORIGIN_SUFFIX),
+            3,
         ),
     }

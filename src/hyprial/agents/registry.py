@@ -65,6 +65,12 @@ from .home import (
     HomeReceipt,
     WorkspaceSummary,
 )
+from .home_effects import (
+    CleanupHome,
+    HomeFilesystemPlan,
+    ProvisionHome,
+    ReplaceHome,
+)
 from .grants import CapabilityGrant, GrantJournalEntry, principal, single_line
 
 #: This module's single logging seam, deliberately narrow: filesystem
@@ -139,6 +145,14 @@ class AgentExistsError(AgentError):
 
 class AgentNotFoundError(AgentError):
     code = ipc_errors.AGENT_NOT_FOUND
+
+
+class AgentDestroySettlementUnknown(AgentError):
+    code = "AGENT_DESTROY_SETTLEMENT_UNKNOWN"
+
+
+class AgentEntityConflict(AgentError):
+    code = "AGENT_VERSION_CONFLICT"
 
 
 class InvalidAgentNameError(AgentError):
@@ -404,30 +418,8 @@ class Agent:
         )
 
 
-@dataclass(frozen=True, slots=True)
-class RestoreDisposition:
-    """Restart suppression fenced to one agent and desired-harness generation."""
-
-    actor: str
-    entity_token: str
-    desired_generation: str
-    status: str
-    last_active_at_ms: int | None
-    idle_age_ms: int | None
-    restore_threshold_ms: int
-    restore_override: str
-    activity_unknown: bool
-    recorded_at_ms: int
 
 
-@dataclass(frozen=True, slots=True)
-class AgentBlock:
-    """A durable human-release gate fenced to one agent incarnation."""
-
-    actor: str
-    entity_token: str
-    reason: str
-    blocked_at_ms: int
 
 
 def _string(value: object, label: str) -> str:
@@ -442,6 +434,40 @@ def _optional_string(value: object, label: str) -> str | None:
     if not isinstance(value, str):
         raise AgentError(f"{label} must be a string when present")
     return value or None
+
+
+@dataclass(frozen=True, slots=True)
+class AgentHomeReservation:
+    operation: str
+    agent: Agent | None
+    plan: HomeFilesystemPlan | None
+    claim_key: str | None = None
+    claim_payload: str | None = None
+    lifecycle_attempt: str | None = None
+    changed: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class RestoreDisposition:
+    actor: str
+    entity_token: str
+    desired_generation: str
+    disposition_token: str
+    status: str
+    last_active_at_ms: int | None
+    idle_age_ms: int | None
+    restore_threshold_ms: int
+    restore_override: str
+    activity_unknown: bool
+    recorded_at_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class AgentBlock:
+    actor: str
+    entity_token: str
+    reason: str
+    blocked_at_ms: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -541,6 +567,7 @@ _SCHEMA = "\n".join(
     actor TEXT PRIMARY KEY REFERENCES agents(actor) ON DELETE CASCADE,
     entity_token TEXT NOT NULL,
     desired_generation TEXT NOT NULL,
+    disposition_token TEXT NOT NULL,
     status TEXT NOT NULL CHECK(status = 'idle-suppressed'),
     last_active_at_ms INTEGER,
     idle_age_ms INTEGER,
@@ -762,6 +789,22 @@ def _connect(database: Path) -> sqlite3.Connection:
             "CREATE UNIQUE INDEX IF NOT EXISTS agents_actor_entity_token "
             "ON agents(actor, entity_token)"
         )
+        disposition_columns = {
+            row["name"]
+            for row in connection.execute(
+                "PRAGMA table_info(agent_restore_dispositions)"
+            )
+        }
+        if "disposition_token" not in disposition_columns:
+            connection.execute(
+                "ALTER TABLE agent_restore_dispositions ADD COLUMN "
+                "disposition_token TEXT NOT NULL DEFAULT ''"
+            )
+        connection.execute(
+            "UPDATE agent_restore_dispositions "
+            "SET disposition_token = lower(hex(randomblob(16))) "
+            "WHERE disposition_token = ''"
+        )
         # CREATE TABLE ran before the old agents table was upgraded, so an old
         # database needs the grants table created once more after the composite
         # parent key exists.
@@ -879,6 +922,18 @@ class AgentRegistry:
         self._clock = clock
         self._lock = threading.RLock()
         self._db = _connect(self.database)
+        self._restore_dispositions = {
+            item.actor: item
+            for row in self._db.execute(
+                "SELECT * FROM agent_restore_dispositions"
+            )
+            if (item := self._restore_disposition_row(row)) is not None
+        }
+        self._agent_blocks = {
+            item.actor: item
+            for row in self._db.execute("SELECT * FROM agent_blocks")
+            if (item := self._agent_block_row(row)) is not None
+        }
         self._last_activity_write: dict[str, int] = {}
         self._home = (
             None
@@ -898,6 +953,12 @@ class AgentRegistry:
     @property
     def home_enabled(self) -> bool:
         return self._home is not None
+
+    @property
+    def home_provisioner(self) -> AgentHomeProvisioner:
+        if self._home is None:
+            raise AgentHomeError("not-configured", "(registry)", "provisioner")
+        return self._home
 
     def close(self) -> None:
         with self._lock:
@@ -1090,6 +1151,25 @@ class AgentRegistry:
         if not isinstance(request, LifecycleMutationRequest):
             raise TypeError("request must be LifecycleMutationRequest")
         payload = request.payload
+        if self._home is not None and isinstance(
+            payload, (CreateAgentCommand, DestroyAgentCommand)
+        ):
+            reservation, settled, operation, replayed = (
+                self.prepare_home_lifecycle(request)
+            )
+            if reservation is None:
+                assert settled is not None
+                return settled, operation, replayed
+            receipt = (
+                None
+                if reservation.plan is None
+                else self._execute_home_plan(reservation.plan)
+            )
+            return (
+                self.complete_home_lifecycle(reservation, receipt),
+                operation,
+                False,
+            )
         agent_name: str | None = None
         if isinstance(payload, (CreateAgentCommand, DestroyAgentCommand)):
             agent_name = (
@@ -1282,6 +1362,400 @@ class AgentRegistry:
             )
             return MutationProvenance(created, changed, token), operation, False
 
+    def _begin_home_lifecycle(
+        self, request: object
+    ) -> tuple[dict[str, object] | None, Any | None, str, bool]:
+        """Durably claim Agent-home I/O without holding SQLite across it."""
+
+        from hyprial.agents.ports import CreateAgentCommand, DestroyAgentCommand
+        from hyprial.daemon.lifecycle_receipts import (
+            LifecycleMutationRequest,
+            MutationProvenance,
+        )
+
+        assert isinstance(request, LifecycleMutationRequest)
+        payload = request.payload
+        assert isinstance(payload, (CreateAgentCommand, DestroyAgentCommand))
+        operation = "create" if isinstance(payload, CreateAgentCommand) else "destroy"
+        name = (
+            self.native_actor(payload.name)
+            if operation == "create"
+            else self.normalize_actor(payload.name)
+        )
+        key = f"agent-record:{name}"
+        effect_key = f"agent-home-effect:{request.attempt_token}"
+        with self._lock, self._db:
+            self._db.execute("BEGIN IMMEDIATE")
+            prior = self._db.execute(
+                "SELECT * FROM lifecycle_receipts WHERE attempt_token = ?",
+                (request.attempt_token,),
+            ).fetchone()
+            if prior is not None:
+                if (
+                    prior["operation_id"] != request.operation_id
+                    or prior["resource_key"] != key
+                    or prior["expected_resource_token"]
+                    != request.expected_resource_token
+                ):
+                    raise ValueError("lifecycle attempt token was reused")
+                return (
+                    None,
+                    MutationProvenance(
+                        bool(prior["created_by_operation"]),
+                        bool(prior["changed"]),
+                        str(prior["resource_token"]),
+                    ),
+                    operation,
+                    True,
+                )
+            pending = self._db.execute(
+                "SELECT payload FROM lifecycle_resources WHERE resource_key = ?",
+                (effect_key,),
+            ).fetchone()
+            if pending is not None:
+                claim = json.loads(str(pending["payload"]))
+                if not isinstance(claim, dict) or any(
+                    claim.get(field) != expected
+                    for field, expected in (
+                        ("attemptToken", request.attempt_token),
+                        ("operationId", request.operation_id),
+                        ("expectedResourceToken", request.expected_resource_token),
+                    )
+                ):
+                    raise ValueError("lifecycle attempt token was reused")
+                return claim, None, operation, False
+
+            row = self._db.execute(
+                "SELECT resource_token, active, payload FROM lifecycle_resources "
+                "WHERE resource_key = ?",
+                (key,),
+            ).fetchone()
+            agent_row = self._db.execute(
+                "SELECT * FROM agents WHERE actor = ?", (name,)
+            ).fetchone()
+            actual_active = agent_row is not None
+            actual_payload: dict[str, object] = {}
+            if agent_row is not None:
+                actual_payload = self._row_agent(
+                    agent_row, self._pinned_adapters_locked(name)
+                ).to_json()
+            if row is None or bool(row["active"]) != actual_active or (
+                actual_active and json.loads(str(row["payload"])) != actual_payload
+            ):
+                token = uuid.uuid4().hex
+            else:
+                token = str(row["resource_token"])
+            expected = request.expected_resource_token
+            changed = created = False
+            stored_payload = actual_payload
+            if operation == "create":
+                if expected is None and not actual_active:
+                    token = uuid.uuid4().hex
+                    changed = created = True
+                    stored_payload = self._lifecycle_create_payload(payload, row)
+                elif not actual_active and token == expected:
+                    changed = created = True
+                    stored_payload = self._lifecycle_create_payload(
+                        payload, row, reuse_resource_payload=True
+                    )
+            elif actual_active and (expected is None or token == expected):
+                changed = created = True
+
+            if not changed:
+                self._db.execute(
+                    "INSERT INTO lifecycle_resources VALUES(?, ?, ?, ?) "
+                    "ON CONFLICT(resource_key) DO UPDATE SET "
+                    "resource_token=excluded.resource_token, active=excluded.active, "
+                    "payload=excluded.payload",
+                    (key, token, int(actual_active), json.dumps(stored_payload, sort_keys=True)),
+                )
+                self._db.execute(
+                    "INSERT INTO lifecycle_receipts VALUES(?, ?, ?, ?, ?, ?, ?, 0)",
+                    (
+                        request.attempt_token, request.operation_id, key, expected,
+                        0, 0, token,
+                    ),
+                )
+                return None, MutationProvenance(False, False, token), operation, False
+
+            revoked_home: HomeReceipt | None = None
+            replacement_home: HomeReceipt | None = None
+            prior_home: HomeReceipt | None = None
+            prior_home_active: bool | None = None
+            if operation == "create":
+                assert self._home is not None
+                desired_agent = Agent.from_json(stored_payload, "lifecycle.agent")
+                home_row = self._db.execute(
+                    "SELECT active, payload FROM lifecycle_resources "
+                    "WHERE resource_key = ?",
+                    (f"agent-home:{name}",),
+                ).fetchone()
+                if home_row is not None:
+                    prior_home = HomeReceipt.from_json(
+                        json.loads(str(home_row["payload"]))
+                    )
+                    prior_home_active = bool(home_row["active"])
+                    if bool(home_row["active"]):
+                        raise AgentHomeError(
+                            "create-fenced", name, "lifecycle-claim"
+                        )
+                    if prior_home.status == "revoked":
+                        revoked_home = prior_home
+                    elif (
+                        prior_home.status == "ready"
+                        and prior_home.entity_token == desired_agent.entity_token
+                    ):
+                        replacement_home = prior_home
+                    elif prior_home.status != "cleaned":
+                        raise AgentHomeError(
+                            "operation-pending", name, "lifecycle-claim"
+                        )
+                if replacement_home is None:
+                    replacement_home = self._home.claim_receipt(
+                        actor=name, entity_token=desired_agent.entity_token
+                    )
+            if operation == "destroy":
+                assert agent_row is not None
+                prior_agent = self._row_agent(
+                    agent_row, self._pinned_adapters_locked(name)
+                )
+                revoked_home = self._revoke_home_locked(prior_agent)
+                self._db.execute("DELETE FROM agents WHERE actor = ?", (name,))
+            self._db.execute(
+                "INSERT INTO lifecycle_resources VALUES(?, ?, ?, ?) "
+                "ON CONFLICT(resource_key) DO UPDATE SET "
+                "resource_token=excluded.resource_token, active=excluded.active, "
+                "payload=excluded.payload",
+                (key, token, 0, json.dumps(stored_payload, sort_keys=True)),
+            )
+            claim: dict[str, object] = {
+                "attemptToken": request.attempt_token,
+                "operationId": request.operation_id,
+                "expectedResourceToken": expected,
+                "operation": operation,
+                "actor": name,
+                "resourceToken": token,
+                "createdByOperation": created,
+                "payload": stored_payload,
+                "homeReplacement": (
+                    None
+                    if replacement_home is None
+                    else replacement_home.to_json()
+                ),
+                "homeRevoked": (
+                    None if revoked_home is None else revoked_home.to_json()
+                ),
+                "priorHome": (
+                    None if prior_home is None else prior_home.to_json()
+                ),
+                "priorHomeActive": prior_home_active,
+            }
+            self._db.execute(
+                "INSERT INTO lifecycle_resources VALUES(?, ?, 1, ?)",
+                (effect_key, uuid.uuid4().hex, json.dumps(claim, sort_keys=True)),
+            )
+            return claim, None, operation, False
+
+    def prepare_home_lifecycle(
+        self, request: object
+    ) -> tuple[AgentHomeReservation | None, Any | None, str, bool]:
+        claim, settled, operation, replayed = self._begin_home_lifecycle(request)
+        if operation == "destroy" and claim is not None:
+            actor = str(claim["actor"])
+            with self._lock:
+                self._restore_dispositions.pop(actor, None)
+                self._agent_blocks.pop(actor, None)
+        if claim is None:
+            return None, settled, operation, replayed
+        payload = claim.get("payload")
+        if not isinstance(payload, dict):
+            raise ValueError("invalid Agent home lifecycle payload")
+        actor = str(claim["actor"])
+        raw_replacement = claim.get("homeReplacement")
+        raw_revoked = claim.get("homeRevoked")
+        replacement = (
+            None
+            if raw_replacement is None
+            else HomeReceipt.from_json(raw_replacement)
+        )
+        revoked = (
+            None if raw_revoked is None else HomeReceipt.from_json(raw_revoked)
+        )
+        plan: HomeFilesystemPlan | None
+        agent: Agent | None
+        if operation == "create":
+            if replacement is None:
+                raise AgentHomeError(
+                    "invalid-registry-receipt", actor, "lifecycle-claim"
+                )
+            plan = (
+                ProvisionHome(replacement)
+                if revoked is None
+                else ReplaceHome(revoked, replacement)
+            )
+            agent = Agent.from_json(payload, "lifecycle.agent")
+        else:
+            plan = None if revoked is None else CleanupHome(revoked)
+            agent = Agent.from_json(payload, "lifecycle.agent")
+        encoded = json.dumps(claim, sort_keys=True)
+        return (
+            AgentHomeReservation(
+                operation,
+                agent,
+                plan,
+                f"agent-home-effect:{claim['attemptToken']}",
+                encoded,
+                str(claim["attemptToken"]),
+                changed=True,
+            ),
+            None,
+            operation,
+            replayed,
+        )
+
+    def _execute_home_plan(self, plan: HomeFilesystemPlan) -> HomeReceipt:
+        home = self.home_provisioner
+        if isinstance(plan, ProvisionHome):
+            return home.provision_claimed(plan.receipt).receipt
+        if isinstance(plan, ReplaceHome):
+            try:
+                return home.provision_claimed(plan.replacement).receipt
+            except AgentHomeError as error:
+                if error.category not in {"receipt-mismatch", "unowned-residue"}:
+                    raise
+                home.cleanup(
+                    plan.revoked, expected_token=plan.revoked.resource_token
+                )
+                return home.provision_claimed(plan.replacement).receipt
+        if isinstance(plan, CleanupHome):
+            return home.cleanup(
+                plan.receipt, expected_token=plan.receipt.resource_token
+            )
+        raise TypeError("unsupported Agent home filesystem plan")
+
+    def complete_home_lifecycle(
+        self,
+        reservation: AgentHomeReservation,
+        receipt: HomeReceipt | None,
+    ) -> Any:
+        from hyprial.daemon.lifecycle_receipts import MutationProvenance
+
+        if reservation.claim_payload is None:
+            raise TypeError("lifecycle home reservation is not durable")
+        claim = json.loads(reservation.claim_payload)
+        if not isinstance(claim, dict):
+            raise TypeError("invalid lifecycle home reservation")
+        attempt = str(claim["attemptToken"])
+        operation_id = str(claim["operationId"])
+        operation = str(claim["operation"])
+        actor = str(claim["actor"])
+        token = str(claim["resourceToken"])
+        expected = claim.get("expectedResourceToken")
+        payload = claim.get("payload")
+        if not isinstance(payload, dict):
+            raise ValueError("invalid Agent home lifecycle payload")
+        key = f"agent-record:{actor}"
+        effect_key = f"agent-home-effect:{attempt}"
+        with self._lock, self._db:
+            self._db.execute("BEGIN IMMEDIATE")
+            pending = self._db.execute(
+                "SELECT payload FROM lifecycle_resources WHERE resource_key = ?",
+                (effect_key,),
+            ).fetchone()
+            if pending is None or json.loads(str(pending["payload"])) != dict(claim):
+                raise AgentHomeError("create-fenced", actor, "lifecycle-commit")
+            incumbent = self._db.execute(
+                "SELECT * FROM agents WHERE actor = ?", (actor,)
+            ).fetchone()
+            if operation == "create":
+                if incumbent is not None or reservation.agent is None:
+                    raise AgentHomeError("create-fenced", actor, "lifecycle-commit")
+                replacement = (
+                    reservation.plan.receipt
+                    if isinstance(reservation.plan, ProvisionHome)
+                    else reservation.plan.replacement
+                    if isinstance(reservation.plan, ReplaceHome)
+                    else None
+                )
+                if receipt is None or receipt != replacement:
+                    raise AgentHomeError("create-fenced", actor, "lifecycle-commit")
+                expected_home = claim.get("priorHome")
+                expected_active = claim.get("priorHomeActive")
+                current_home = self._db.execute(
+                    "SELECT active,payload FROM lifecycle_resources "
+                    "WHERE resource_key=?",
+                    (f"agent-home:{actor}",),
+                ).fetchone()
+                if expected_home is None:
+                    if current_home is not None:
+                        raise AgentHomeError(
+                            "create-fenced", actor, "lifecycle-commit"
+                        )
+                elif (
+                    current_home is None
+                    or bool(current_home["active"]) != bool(expected_active)
+                    or json.loads(str(current_home["payload"])) != expected_home
+                ):
+                    raise AgentHomeError(
+                        "create-fenced", actor, "lifecycle-commit"
+                    )
+                agent = reservation.agent
+                self._db.execute(*self._insert_statement(agent))
+                self._record_home_resource_locked(receipt, True)
+                for adapter in agent.pinned_adapters:
+                    self._db.execute(
+                        "INSERT INTO pins(adapter, agent) VALUES(?, ?)",
+                        (adapter, agent.actor),
+                    )
+            elif incumbent is not None:
+                raise AgentHomeError("cleanup-fenced", actor, "lifecycle-commit")
+            elif isinstance(reservation.plan, CleanupHome):
+                if receipt is None or receipt.status != "cleaned":
+                    raise AgentHomeError(
+                        "cleanup-fenced", actor, "lifecycle-commit"
+                    )
+                current_home = self._db.execute(
+                    "SELECT active,payload FROM lifecycle_resources "
+                    "WHERE resource_key=?",
+                    (f"agent-home:{actor}",),
+                ).fetchone()
+                if current_home is None or bool(current_home["active"]):
+                    raise AgentHomeError(
+                        "cleanup-fenced", actor, "lifecycle-commit"
+                    )
+                if HomeReceipt.from_json(
+                    json.loads(str(current_home["payload"]))
+                ) != reservation.plan.receipt:
+                    raise AgentHomeError(
+                        "cleanup-fenced", actor, "lifecycle-commit"
+                    )
+                self._record_home_resource_locked(receipt, False)
+            self._db.execute(
+                "INSERT INTO lifecycle_resources VALUES(?, ?, ?, ?) "
+                "ON CONFLICT(resource_key) DO UPDATE SET "
+                "resource_token=excluded.resource_token, active=excluded.active, "
+                "payload=excluded.payload",
+                (key, token, int(operation == "create"), json.dumps(payload, sort_keys=True)),
+            )
+            self._db.execute(
+                "INSERT INTO lifecycle_receipts VALUES(?, ?, ?, ?, ?, 1, ?, 0)",
+                (
+                    attempt,
+                    operation_id,
+                    key,
+                    expected,
+                    int(bool(claim["createdByOperation"])),
+                    token,
+                ),
+            )
+            self._db.execute(
+                "DELETE FROM lifecycle_resources WHERE resource_key = ?",
+                (effect_key,),
+            )
+        return MutationProvenance(
+            bool(claim["createdByOperation"]), True, token
+        )
+
     def _lifecycle_create_payload(
         self,
         payload: object,
@@ -1311,10 +1785,10 @@ class AgentRegistry:
                 owner=self.owner,
                 machine=self.machine,
                 cwd=payload.cwd,
-                config=payload.config,
+                config=payload.config_payload(),
                 provider=payload.provider,
                 model=payload.model,
-                capabilities=dict(payload.capabilities),
+                capabilities=payload.capabilities_payload(),
                 harness_args=dict(payload.harness_args),
                 preferred_harness=payload.preferred_harness,
                 created_at_ms=int(self._clock()),
@@ -1355,7 +1829,7 @@ class AgentRegistry:
 
     def confirm_lifecycle_receipt_retired(
         self, attempt_token: str, resource_token: str
-    ) -> None:
+    ) -> bool:
         with self._lock, self._db:
             row = self._db.execute(
                 "SELECT resource_token, retired FROM lifecycle_receipts "
@@ -1363,13 +1837,14 @@ class AgentRegistry:
                 (attempt_token,),
             ).fetchone()
             if row is None:
-                return
+                return False
             if str(row["resource_token"]) != resource_token or not bool(row["retired"]):
                 raise ValueError("lifecycle receipt retirement mismatch")
             self._db.execute(
                 "DELETE FROM lifecycle_receipts WHERE attempt_token = ?",
                 (attempt_token,),
             )
+            return True
 
     def lifecycle_effect_claims(self) -> list["DomainEffectClaim"]:
         """Every registry receipt as a U0c backfill claim.
@@ -1530,47 +2005,913 @@ class AgentRegistry:
                 phase,
             )
 
+    def prepare_create_record(self, agent: Agent) -> AgentHomeReservation:
+        """Commit a durable create claim and return a filesystem-only plan."""
+
+        self._validate_config_location(agent)
+        home = self.home_provisioner
+        claim_key = f"agent-home-effect:create:{agent.actor}"
+        with self._lock, self._db:
+            self._db.execute("BEGIN IMMEDIATE")
+            if self._db.execute(
+                "SELECT 1 FROM agents WHERE actor = ?", (agent.actor,)
+            ).fetchone() is not None:
+                if agent.hosted_by == "host-invite":
+                    # The public invitation path historically refuses an
+                    # already-owned home with AGENT_ERROR. Actor preflight
+                    # must preserve that code while rejecting before effects.
+                    raise AgentError(
+                        f"host invitation cannot adopt existing agent {agent.actor!r}"
+                    )
+                self._raise_agent_exists(agent)
+            pending = self._db.execute(
+                "SELECT payload FROM lifecycle_resources WHERE resource_key = ?",
+                (claim_key,),
+            ).fetchone()
+            if pending is not None:
+                payload = json.loads(str(pending["payload"]))
+                if not isinstance(payload, dict):
+                    raise AgentHomeError(
+                        "invalid-registry-receipt", agent.actor, "create-replay"
+                    )
+                return self._create_reservation_from_payload(claim_key, payload)
+
+            home_row = self._db.execute(
+                "SELECT active, payload FROM lifecycle_resources WHERE resource_key = ?",
+                (f"agent-home:{agent.actor}",),
+            ).fetchone()
+            revoked: HomeReceipt | None = None
+            prior_home: HomeReceipt | None = None
+            prior_home_active: bool | None = None
+            replacement: HomeReceipt
+            record_row = self._db.execute(
+                "SELECT active, payload FROM lifecycle_resources WHERE resource_key = ?",
+                (f"agent-record:{agent.actor}",),
+            ).fetchone()
+            if home_row is not None:
+                try:
+                    prior = HomeReceipt.from_json(json.loads(str(home_row["payload"])))
+                except (ValueError, json.JSONDecodeError) as error:
+                    raise AgentHomeError(
+                        "invalid-registry-receipt", agent.actor, "create-claim"
+                    ) from error
+                prior_home = prior
+                prior_home_active = bool(home_row["active"])
+                if bool(home_row["active"]):
+                    raise AgentHomeError(
+                        "operation-pending", agent.actor, "create-claim"
+                    )
+                if prior.status == "revoked":
+                    revoked = prior
+                    replacement = home.claim_receipt(
+                        actor=agent.actor, entity_token=agent.entity_token
+                    )
+                elif prior.status == "ready" and record_row is not None:
+                    pending_agent = Agent.from_json(
+                        json.loads(str(record_row["payload"])), "agent create replay"
+                    )
+                    if prior.entity_token != pending_agent.entity_token:
+                        raise AgentHomeError(
+                            "receipt-mismatch", agent.actor, "create-replay"
+                        )
+                    agent = pending_agent
+                    replacement = prior
+                elif prior.status == "cleaned":
+                    replacement = home.claim_receipt(
+                        actor=agent.actor, entity_token=agent.entity_token
+                    )
+                else:
+                    raise AgentHomeError(
+                        "operation-pending", agent.actor, "create-claim"
+                    )
+            else:
+                replacement = home.claim_receipt(
+                    actor=agent.actor, entity_token=agent.entity_token
+                )
+            payload = {
+                "operation": "create",
+                "agent": agent.to_json(),
+                "replacement": replacement.to_json(),
+                "revoked": None if revoked is None else revoked.to_json(),
+                "priorHome": (
+                    None if prior_home is None else prior_home.to_json()
+                ),
+                "priorHomeActive": prior_home_active,
+            }
+            encoded = json.dumps(payload, sort_keys=True)
+            self._record_external_resource_locked(
+                f"agent-record:{agent.actor}", False, agent.to_json()
+            )
+            self._db.execute(
+                "INSERT INTO lifecycle_resources VALUES(?, ?, 1, ?)",
+                (claim_key, uuid.uuid4().hex, encoded),
+            )
+        plan: HomeFilesystemPlan = (
+            ProvisionHome(replacement)
+            if revoked is None
+            else ReplaceHome(revoked, replacement)
+        )
+        return AgentHomeReservation(
+            "create", agent, plan, claim_key, encoded, changed=True
+        )
+
+    def prepare_create_command(self, command: object) -> AgentHomeReservation:
+        from .ports import (
+            CreateAgentCommand,
+            CreateHostInvitedAgentCommand,
+            CreateTransferHostedAgentCommand,
+        )
+
+        if isinstance(command, CreateAgentCommand):
+            name = self.native_actor(command.name)
+            existing = self.get(name)
+            if existing is not None:
+                if not command.reuse_existing:
+                    self._raise_agent_exists(existing)
+                return self.prepare_existing_home(existing)
+            agent = Agent(
+                uri=self.uri_for(name),
+                actor=name,
+                owner=self.owner,
+                machine=self.machine,
+                cwd=command.cwd,
+                config=command.config_payload(),
+                provider=command.provider,
+                model=command.model,
+                capabilities=command.capabilities_payload(),
+                harness_args=dict(command.harness_args),
+                preferred_harness=(
+                    command.preferred_harness or command.launch_harness
+                ),
+                created_at_ms=int(self._clock()),
+            )
+        elif isinstance(command, CreateTransferHostedAgentCommand):
+            name = self.normalize_actor(command.name)
+            agent = Agent(
+                uri=_uri().canonical_agent_uri(
+                    command.pinned_owner, self.machine, name
+                ),
+                actor=name,
+                owner=command.pinned_owner,
+                machine=self.machine,
+                hosted_by="transfer-receive",
+                cwd=command.cwd,
+                harness_args=normalize_harness_args(dict(command.harness_args)),
+                preferred_harness=command.preferred_harness,
+                created_at_ms=int(self._clock()),
+            )
+        elif isinstance(command, CreateHostInvitedAgentCommand):
+            if (
+                not command.pinned_owner
+                or command.pinned_owner != command.pinned_owner.strip()
+                or ":" in command.pinned_owner
+                or command.pinned_owner == self.owner
+                or not command.entity_token
+            ):
+                raise ValueError("invalid host-invited owner")
+            name = self.normalize_actor(command.name)
+            agent = Agent(
+                uri=_uri().canonical_agent_uri(
+                    command.pinned_owner, self.machine, name
+                ),
+                actor=name,
+                owner=command.pinned_owner,
+                machine=self.machine,
+                entity_token=command.entity_token,
+                hosted_by="host-invite",
+                cwd=command.cwd,
+                harness_args=normalize_harness_args(dict(command.harness_args)),
+                preferred_harness=command.preferred_harness,
+                created_at_ms=int(self._clock()),
+            )
+        else:
+            raise TypeError("unsupported Agent create command")
+        return self.prepare_create_record(agent)
+
+    def prepare_existing_home(self, agent: Agent) -> AgentHomeReservation:
+        home = self.home_provisioner
+        claim_key = f"agent-home-effect:ensure:{agent.actor}"
+        with self._lock, self._db:
+            current = self.require(agent.actor)
+            if current.entity_token != agent.entity_token:
+                raise AgentHomeError("create-fenced", agent.actor, "ensure-claim")
+            row = self._db.execute(
+                "SELECT active,payload FROM lifecycle_resources WHERE resource_key=?",
+                (f"agent-home:{agent.actor}",),
+            ).fetchone()
+            if row is not None and bool(row["active"]):
+                receipt = HomeReceipt.from_json(json.loads(str(row["payload"])))
+                if receipt.status != "ready" or receipt.entity_token != agent.entity_token:
+                    raise AgentHomeError(
+                        "receipt-mismatch", agent.actor, "ensure-claim"
+                    )
+                return AgentHomeReservation(
+                    "create", agent, ProvisionHome(receipt), changed=False
+                )
+            pending = self._db.execute(
+                "SELECT payload FROM lifecycle_resources WHERE resource_key=?",
+                (claim_key,),
+            ).fetchone()
+            if pending is not None:
+                payload = json.loads(str(pending["payload"]))
+                if not isinstance(payload, dict):
+                    raise AgentHomeError(
+                        "invalid-registry-receipt", agent.actor, "ensure-replay"
+                    )
+                receipt = HomeReceipt.from_json(payload.get("replacement"))
+                encoded = json.dumps(payload, sort_keys=True)
+                return AgentHomeReservation(
+                    "create", agent, ProvisionHome(receipt), claim_key, encoded
+                )
+            if row is not None:
+                prior = HomeReceipt.from_json(json.loads(str(row["payload"])))
+                if prior.status != "cleaned":
+                    raise AgentHomeError(
+                        "operation-pending", agent.actor, "ensure-claim"
+                    )
+            receipt = home.claim_receipt(
+                actor=agent.actor, entity_token=agent.entity_token
+            )
+            payload = {
+                "operation": "ensure",
+                "actor": agent.actor,
+                "entityToken": agent.entity_token,
+                "replacement": receipt.to_json(),
+                "priorHome": (
+                    None
+                    if row is None
+                    else json.loads(str(row["payload"]))
+                ),
+                "priorHomeActive": (
+                    None if row is None else bool(row["active"])
+                ),
+            }
+            encoded = json.dumps(payload, sort_keys=True)
+            self._db.execute(
+                "INSERT INTO lifecycle_resources VALUES(?, ?, 1, ?)",
+                (claim_key, uuid.uuid4().hex, encoded),
+            )
+        return AgentHomeReservation(
+            "create", agent, ProvisionHome(receipt), claim_key, encoded
+        )
+
+    def commit_existing_home(
+        self, reservation: AgentHomeReservation, receipt: HomeReceipt
+    ) -> Agent:
+        agent = reservation.agent
+        if agent is None or not isinstance(reservation.plan, ProvisionHome):
+            raise TypeError("not an Agent ensure-home reservation")
+        if receipt != reservation.plan.receipt:
+            raise AgentHomeError("create-fenced", agent.actor, "ensure-completion")
+        with self._lock, self._db:
+            current = self.require(agent.actor)
+            if current.entity_token != agent.entity_token:
+                raise AgentHomeError("create-fenced", agent.actor, "ensure-commit")
+            row = self._db.execute(
+                "SELECT active,payload FROM lifecycle_resources WHERE resource_key=?",
+                (f"agent-home:{agent.actor}",),
+            ).fetchone()
+            if reservation.claim_key is None:
+                if (
+                    row is None
+                    or not bool(row["active"])
+                    or HomeReceipt.from_json(json.loads(str(row["payload"])))
+                    != receipt
+                ):
+                    raise AgentHomeError(
+                        "create-fenced", agent.actor, "ensure-commit"
+                    )
+                return current
+            pending = self._db.execute(
+                "SELECT payload FROM lifecycle_resources WHERE resource_key=?",
+                (reservation.claim_key,),
+            ).fetchone()
+            if pending is None or str(pending["payload"]) != reservation.claim_payload:
+                raise AgentHomeError("create-fenced", agent.actor, "ensure-commit")
+            claim_payload = json.loads(reservation.claim_payload)
+            expected_home = claim_payload.get("priorHome")
+            expected_active = claim_payload.get("priorHomeActive")
+            if expected_home is None:
+                if row is not None:
+                    raise AgentHomeError(
+                        "create-fenced", agent.actor, "ensure-commit"
+                    )
+            elif (
+                row is None
+                or bool(row["active"]) != bool(expected_active)
+                or json.loads(str(row["payload"])) != expected_home
+            ):
+                raise AgentHomeError("create-fenced", agent.actor, "ensure-commit")
+            self._record_home_resource_locked(receipt, True)
+            self._db.execute(
+                "DELETE FROM lifecycle_resources WHERE resource_key=?",
+                (reservation.claim_key,),
+            )
+            return current
+
+    @staticmethod
+    def _create_reservation_from_payload(
+        claim_key: str, payload: Mapping[str, object]
+    ) -> AgentHomeReservation:
+        agent = Agent.from_json(payload.get("agent"), "agent create claim")
+        replacement = HomeReceipt.from_json(payload.get("replacement"))
+        raw_revoked = payload.get("revoked")
+        revoked = None if raw_revoked is None else HomeReceipt.from_json(raw_revoked)
+        plan: HomeFilesystemPlan = (
+            ProvisionHome(replacement)
+            if revoked is None
+            else ReplaceHome(revoked, replacement)
+        )
+        return AgentHomeReservation(
+            "create",
+            agent,
+            plan,
+            claim_key,
+            json.dumps(dict(payload), sort_keys=True),
+            changed=True,
+        )
+
+    def commit_create_record(
+        self, reservation: AgentHomeReservation, receipt: HomeReceipt
+    ) -> Agent:
+        if reservation.operation != "create" or reservation.agent is None:
+            raise TypeError("not an Agent create reservation")
+        if reservation.claim_key is None or reservation.claim_payload is None:
+            raise TypeError("Agent create reservation is not durable")
+        agent = reservation.agent
+        replacement = (
+            reservation.plan.receipt
+            if isinstance(reservation.plan, ProvisionHome)
+            else reservation.plan.replacement
+        )
+        if receipt != replacement:
+            raise AgentHomeError("create-fenced", agent.actor, "create-completion")
+        with self._lock, self._db:
+            self._db.execute("BEGIN IMMEDIATE")
+            pending = self._db.execute(
+                "SELECT payload FROM lifecycle_resources WHERE resource_key = ?",
+                (reservation.claim_key,),
+            ).fetchone()
+            if pending is None or str(pending["payload"]) != reservation.claim_payload:
+                raise AgentHomeError("create-fenced", agent.actor, "create-commit")
+            if self._db.execute(
+                "SELECT 1 FROM agents WHERE actor = ?", (agent.actor,)
+            ).fetchone() is not None:
+                raise AgentHomeError("create-fenced", agent.actor, "create-commit")
+            claim_payload = json.loads(reservation.claim_payload)
+            expected_home = claim_payload.get("priorHome")
+            expected_active = claim_payload.get("priorHomeActive")
+            home_row = self._db.execute(
+                "SELECT active,payload FROM lifecycle_resources WHERE resource_key=?",
+                (f"agent-home:{agent.actor}",),
+            ).fetchone()
+            if expected_home is None:
+                if home_row is not None:
+                    raise AgentHomeError(
+                        "create-fenced", agent.actor, "create-commit"
+                    )
+            elif (
+                home_row is None
+                or bool(home_row["active"]) != bool(expected_active)
+                or json.loads(str(home_row["payload"])) != expected_home
+            ):
+                raise AgentHomeError("create-fenced", agent.actor, "create-commit")
+            self._db.execute(*self._insert_statement(agent))
+            self._record_external_resource_locked(
+                f"agent-record:{agent.actor}", True, agent.to_json()
+            )
+            self._record_home_resource_locked(receipt, True)
+            for adapter in agent.pinned_adapters:
+                self._db.execute(
+                    "INSERT INTO pins(adapter, agent) VALUES(?, ?)",
+                    (adapter, agent.actor),
+                )
+            if agent.hosted_by == "host-invite":
+                self._record_host_invite_locked(agent)
+            self._db.execute(
+                "DELETE FROM lifecycle_resources WHERE resource_key = ?",
+                (reservation.claim_key,),
+            )
+        return agent
+
+    def revoke_failed_create_record(
+        self, reservation: AgentHomeReservation, receipt: HomeReceipt
+    ) -> None:
+        """Keep a failed commit's exact home under durable destroy custody.
+
+        The create claim stays until ``commit_cleanup_home`` settles the
+        filesystem effect.  No agent or grant-journal row is written here.
+        """
+
+        agent = reservation.agent
+        expected_receipt = (
+            reservation.plan.receipt
+            if isinstance(reservation.plan, ProvisionHome)
+            else reservation.plan.replacement
+            if isinstance(reservation.plan, ReplaceHome)
+            else None
+        )
+        if (
+            reservation.operation != "create" or agent is None
+            or reservation.claim_key is None or reservation.claim_payload is None
+            or receipt != expected_receipt
+            or receipt.actor != agent.actor or receipt.entity_token != agent.entity_token
+        ):
+            raise AgentHomeError("create-fenced", receipt.actor, "failed-create")
+        with self._lock, self._db:
+            self._db.execute("BEGIN IMMEDIATE")
+            claim = self._db.execute(
+                "SELECT payload FROM lifecycle_resources WHERE resource_key=?",
+                (reservation.claim_key,),
+            ).fetchone()
+            record = self._db.execute(
+                "SELECT active,payload FROM lifecycle_resources WHERE resource_key=?",
+                (f"agent-record:{agent.actor}",),
+            ).fetchone()
+            incumbent = self._db.execute(
+                "SELECT 1 FROM agents WHERE actor=?", (agent.actor,)
+            ).fetchone()
+            if (
+                claim is None or str(claim["payload"]) != reservation.claim_payload
+                or record is None or bool(record["active"])
+                or json.loads(str(record["payload"])) != agent.to_json()
+                or incumbent is not None
+            ):
+                raise AgentHomeError("create-fenced", agent.actor, "failed-create")
+            prior = json.loads(reservation.claim_payload).get("priorHome")
+            home_row = self._db.execute(
+                "SELECT active,payload FROM lifecycle_resources WHERE resource_key=?",
+                (f"agent-home:{agent.actor}",),
+            ).fetchone()
+            if prior is None:
+                if home_row is not None:
+                    raise AgentHomeError("create-fenced", agent.actor, "failed-create")
+            elif (
+                home_row is None or bool(home_row["active"])
+                or json.loads(str(home_row["payload"])) != prior
+            ):
+                raise AgentHomeError("create-fenced", agent.actor, "failed-create")
+            self._record_home_resource_locked(
+                replace(receipt, status="revoked"), False
+            )
+
+    def abort_create_record(self, reservation: AgentHomeReservation) -> None:
+        if reservation.claim_key is None or reservation.claim_payload is None:
+            return
+        agent = reservation.agent
+        if agent is None:
+            return
+        with self._lock, self._db:
+            pending = self._db.execute(
+                "SELECT payload FROM lifecycle_resources WHERE resource_key = ?",
+                (reservation.claim_key,),
+            ).fetchone()
+            if pending is None or str(pending["payload"]) != reservation.claim_payload:
+                return
+            self._db.execute(
+                "DELETE FROM lifecycle_resources WHERE resource_key = ?",
+                (reservation.claim_key,),
+            )
+            row = self._db.execute(
+                "SELECT active, payload FROM lifecycle_resources WHERE resource_key = ?",
+                (f"agent-record:{agent.actor}",),
+            ).fetchone()
+            if (
+                row is not None
+                and not bool(row["active"])
+                and json.loads(str(row["payload"])) == agent.to_json()
+            ):
+                self._db.execute(
+                    "DELETE FROM lifecycle_resources WHERE resource_key = ?",
+                    (f"agent-record:{agent.actor}",),
+                )
+
+    def prepare_destroy_record(
+        self, actor: str, expected_entity_token: str | None = None
+    ) -> tuple[bool, AgentHomeReservation | None]:
+        name = self.local_actor(actor)
+        if name is None:
+            return False, None
+        with self._lock, self._db:
+            previous = self._db.execute(
+                "SELECT * FROM agents WHERE actor = ?", (name,)
+            ).fetchone()
+            if previous is None:
+                return False, None
+            prior_agent = self._row_agent(
+                previous, self._pinned_adapters_locked(name)
+            )
+            if (
+                expected_entity_token is not None
+                and prior_agent.entity_token != expected_entity_token
+            ):
+                raise AgentEntityConflict(
+                    f"agent {actor!r} changed since destroy was requested"
+                )
+            self._db.execute("DELETE FROM agents WHERE actor = ?", (name,))
+            revoked = self._revoke_home_locked(prior_agent)
+            self._record_external_resource_locked(
+                f"agent-record:{name}", False, prior_agent.to_json()
+            )
+        with self._lock:
+            self._restore_dispositions.pop(name, None)
+            self._agent_blocks.pop(name, None)
+        if revoked is None:
+            return True, None
+        return True, AgentHomeReservation(
+            "destroy", prior_agent, CleanupHome(revoked), changed=True
+        )
+
+    def prepare_destroy_settlement(
+        self, actor: str, expected_entity_token: str
+    ) -> tuple[str | None, AgentHomeReservation | None]:
+        """Settle one exact destroy from live identity or durable revoke facts.
+
+        ``None`` disposition means CleanupHome still owns settlement.  A bare
+        missing Agent is never success: replay requires the inactive
+        ``agent-record`` for the expected incarnation and, when a home existed,
+        its exact revoked/cleaned receipt.
+        """
+
+        current = self.get(actor)
+        if current is not None:
+            if current.entity_token != expected_entity_token:
+                return "stale-incarnation", None
+            changed, reservation = self.prepare_destroy_record(
+                actor, expected_entity_token
+            )
+            assert changed
+            return ("destroyed", None) if reservation is None else (None, reservation)
+
+        name = self.local_actor(actor)
+        if name is None:
+            raise AgentDestroySettlementUnknown(
+                f"no local Agent settlement identity for {actor!r}"
+            )
+        claim_key = f"agent-home-effect:create:{name}"
+        with self._lock:
+            record = self._db.execute(
+                "SELECT active,payload FROM lifecycle_resources "
+                "WHERE resource_key=?",
+                (f"agent-record:{name}",),
+            ).fetchone()
+            home = self._db.execute(
+                "SELECT active,payload FROM lifecycle_resources "
+                "WHERE resource_key=?",
+                (f"agent-home:{name}",),
+            ).fetchone()
+            claim = self._db.execute(
+                "SELECT payload FROM lifecycle_resources WHERE resource_key=?",
+                (claim_key,),
+            ).fetchone()
+        if record is None or bool(record["active"]):
+            raise AgentDestroySettlementUnknown(
+                f"no durable destroy settlement for {name!r}"
+            )
+        try:
+            prior_agent = Agent.from_json(
+                json.loads(str(record["payload"])), "destroy settlement"
+            )
+        except (ValueError, json.JSONDecodeError) as error:
+            raise AgentHomeError(
+                "invalid-registry-receipt", name, "destroy-settlement"
+            ) from error
+        if prior_agent.entity_token != expected_entity_token:
+            return "stale-incarnation", None
+        if claim is not None and home is None and prior_agent.hosted_by == "host-invite":
+            # A process can die after the filesystem effect but before the
+            # owner promotes its create claim to a revoked home receipt. The
+            # claim is the durable identity; cleanup handles either a still
+            # matching mirror or an absent, never-created home.
+            payload = json.loads(str(claim["payload"]))
+            if not isinstance(payload, dict) or payload.get("priorHome") is not None:
+                raise AgentDestroySettlementUnknown(
+                    f"Agent {name!r} failed create claim is not a fresh invite"
+                )
+            reservation = self._create_reservation_from_payload(claim_key, payload)
+            replacement = (
+                reservation.plan.receipt
+                if isinstance(reservation.plan, ProvisionHome)
+                else None
+            )
+            if replacement is None or reservation.agent is None or (
+                reservation.agent.entity_token != expected_entity_token
+            ):
+                raise AgentDestroySettlementUnknown(
+                    f"Agent {name!r} failed create claim changed incarnation"
+                )
+            self.revoke_failed_create_record(reservation, replacement)
+            return self.prepare_destroy_settlement(actor, expected_entity_token)
+        if home is None:
+            return "already-cleaned", None
+        if bool(home["active"]):
+            raise AgentDestroySettlementUnknown(
+                f"Agent {name!r} has an active home without a live identity"
+            )
+        try:
+            receipt = HomeReceipt.from_json(json.loads(str(home["payload"])))
+        except (ValueError, json.JSONDecodeError) as error:
+            raise AgentHomeError(
+                "invalid-registry-receipt", name, "destroy-settlement"
+            ) from error
+        if receipt.entity_token != expected_entity_token:
+            raise AgentHomeError(
+                "cleanup-fenced", name, "destroy-settlement"
+            )
+        if receipt.status == "cleaned":
+            return "already-cleaned", None
+        if receipt.status != "revoked":
+            raise AgentDestroySettlementUnknown(
+                f"Agent {name!r} home is not revoked or cleaned"
+            )
+        claim_payload = None if claim is None else str(claim["payload"])
+        if claim_payload is not None:
+            payload = json.loads(claim_payload)
+            if (
+                not isinstance(payload, dict)
+                or Agent.from_json(payload.get("agent"), "failed create claim").entity_token
+                != expected_entity_token
+                or HomeReceipt.from_json(payload.get("replacement")).resource_token
+                != receipt.resource_token
+            ):
+                raise AgentDestroySettlementUnknown(
+                    f"Agent {name!r} create claim does not own home cleanup"
+                )
+        return None, AgentHomeReservation(
+            "settle-destroy", prior_agent, CleanupHome(receipt),
+            claim_key if claim_payload is not None else None,
+            claim_payload,
+            changed=True,
+        )
+
+    def prepare_cleanup_revoked_home(
+        self, actor: str
+    ) -> AgentHomeReservation | None:
+        if self._home is None:
+            return None
+        name = self.local_actor(actor)
+        if name is None:
+            return None
+        with self._lock:
+            row = self._db.execute(
+                "SELECT active, payload FROM lifecycle_resources WHERE resource_key = ?",
+                (f"agent-home:{name}",),
+            ).fetchone()
+            incumbent = self._db.execute(
+                "SELECT 1 FROM agents WHERE actor = ?", (name,)
+            ).fetchone()
+        if row is None or bool(row["active"]) or incumbent is not None:
+            return None
+        try:
+            receipt = HomeReceipt.from_json(json.loads(str(row["payload"])))
+        except (ValueError, json.JSONDecodeError) as error:
+            raise AgentHomeError(
+                "invalid-registry-receipt", name, "cleanup-registry"
+            ) from error
+        if receipt.actor != name:
+            raise AgentHomeError("receipt-mismatch", name, "cleanup-registry")
+        if receipt.status != "revoked":
+            return None
+        return AgentHomeReservation(
+            "cleanup-home", None, CleanupHome(receipt), changed=True
+        )
+
+    def commit_cleanup_home(
+        self, reservation: AgentHomeReservation, cleaned: HomeReceipt
+    ) -> None:
+        plan = reservation.plan
+        if not isinstance(plan, CleanupHome):
+            raise TypeError("not an Agent cleanup reservation")
+        prior = plan.receipt
+        if (
+            cleaned.actor != prior.actor or cleaned.status != "cleaned"
+            or cleaned.entity_token != prior.entity_token
+            or cleaned.path != prior.path or cleaned.owner_uid != prior.owner_uid
+        ):
+            raise AgentHomeError("cleanup-fenced", prior.actor, "cleanup-completion")
+        with self._lock, self._db:
+            self._db.execute("BEGIN IMMEDIATE")
+            row = self._db.execute(
+                "SELECT active, payload FROM lifecycle_resources WHERE resource_key = ?",
+                (f"agent-home:{prior.actor}",),
+            ).fetchone()
+            incumbent = self._db.execute(
+                "SELECT 1 FROM agents WHERE actor = ?", (prior.actor,)
+            ).fetchone()
+            if row is None or bool(row["active"]) or incumbent is not None:
+                raise AgentHomeError("cleanup-fenced", prior.actor, "cleanup-commit")
+            current = HomeReceipt.from_json(json.loads(str(row["payload"])))
+            if current != prior:
+                raise AgentHomeError("cleanup-fenced", prior.actor, "cleanup-commit")
+            if reservation.claim_key is not None:
+                claim = self._db.execute(
+                    "SELECT payload FROM lifecycle_resources WHERE resource_key=?",
+                    (reservation.claim_key,),
+                ).fetchone()
+                if (
+                    claim is None
+                    or str(claim["payload"]) != reservation.claim_payload
+                ):
+                    raise AgentHomeError(
+                        "cleanup-fenced", prior.actor, "cleanup-commit"
+                    )
+            self._record_home_resource_locked(cleaned, False)
+            if reservation.claim_key is not None:
+                self._db.execute(
+                    "DELETE FROM lifecycle_resources WHERE resource_key=?",
+                    (reservation.claim_key,),
+                )
+
     def _create_record(self, agent: Agent) -> Agent:
         self._validate_config_location(agent)
+        resume_claim: HomeReceipt | None = None
+        if self._home is not None:
+            with self._lock:
+                home_row = self._db.execute(
+                    "SELECT active, payload FROM lifecycle_resources "
+                    "WHERE resource_key = ?",
+                    (f"agent-home:{agent.actor}",),
+                ).fetchone()
+                record_row = self._db.execute(
+                    "SELECT active, payload FROM lifecycle_resources "
+                    "WHERE resource_key = ?",
+                    (f"agent-record:{agent.actor}",),
+                ).fetchone()
+                incumbent = self._db.execute(
+                    "SELECT 1 FROM agents WHERE actor = ?", (agent.actor,)
+                ).fetchone()
+            if (
+                incumbent is None
+                and home_row is not None
+                and not bool(home_row["active"])
+                and record_row is not None
+                and not bool(record_row["active"])
+            ):
+                try:
+                    pending_home = HomeReceipt.from_json(
+                        json.loads(str(home_row["payload"]))
+                    )
+                    pending_agent_payload = json.loads(str(record_row["payload"]))
+                    pending_agent = Agent.from_json(
+                        pending_agent_payload, "agent create replay"
+                    )
+                except (ValueError, json.JSONDecodeError):
+                    pending_home = None
+                if (
+                    pending_home is not None
+                    and pending_home.status == "ready"
+                    and pending_home.actor == agent.actor
+                    and pending_home.entity_token == pending_agent.entity_token
+                ):
+                    # Admission succeeded before a crash/timeout. Replays
+                    # converge that exact incarnation instead of allocating a
+                    # new token or deleting the already-created filesystem.
+                    agent = pending_agent
+                    resume_claim = pending_home
         # A daemon may have crashed after committing destroy's durable revoke
         # but before finishing filesystem retirement.  The revoked receipt,
         # not the requested name, authorizes this retry cleanup.
-        self.cleanup_revoked_home(agent.actor)
+        if resume_claim is None:
+            self.cleanup_revoked_home(agent.actor)
+        if self._home is None:
+            with self._lock:
+                try:
+                    with self._db:
+                        self._db.execute(*self._insert_statement(agent))
+                        self._record_external_resource_locked(
+                            f"agent-record:{agent.actor}", True, agent.to_json()
+                        )
+                        for adapter in agent.pinned_adapters:
+                            self._db.execute(
+                                "INSERT INTO pins(adapter, agent) VALUES(?, ?)",
+                                (adapter, agent.actor),
+                            )
+                        if agent.hosted_by == "host-invite":
+                            self._record_host_invite_locked(agent)
+                except sqlite3.IntegrityError as error:
+                    self._raise_agent_exists(agent, error)
+            return agent
+
+        claim = resume_claim or self._home.claim_receipt(
+            actor=agent.actor, entity_token=agent.entity_token
+        )
+        if resume_claim is None:
+            with self._lock:
+                try:
+                    with self._db:
+                        self._db.execute("BEGIN IMMEDIATE")
+                        if self._db.execute(
+                            "SELECT 1 FROM agents WHERE actor = ?", (agent.actor,)
+                        ).fetchone() is not None:
+                            self._raise_agent_exists(agent)
+                        row = self._db.execute(
+                            "SELECT active, payload FROM lifecycle_resources "
+                            "WHERE resource_key = ?",
+                            (f"agent-home:{agent.actor}",),
+                        ).fetchone()
+                        if row is not None:
+                            try:
+                                prior = HomeReceipt.from_json(
+                                    json.loads(str(row["payload"]))
+                                )
+                            except (ValueError, json.JSONDecodeError) as error:
+                                raise AgentHomeError(
+                                    "invalid-registry-receipt",
+                                    agent.actor,
+                                    "create-claim",
+                                ) from error
+                            if bool(row["active"]) or prior.status != "cleaned":
+                                raise AgentHomeError(
+                                    "operation-pending", agent.actor, "create-claim"
+                                )
+                        # The inactive exact receipt is the durable authority for
+                        # the filesystem lane. A retry cannot allocate a new token
+                        # or delete a newer incarnation behind this fence.
+                        self._record_home_resource_locked(claim, False)
+                        self._record_external_resource_locked(
+                            f"agent-record:{agent.actor}", False, agent.to_json()
+                        )
+                except sqlite3.IntegrityError as error:
+                    self._raise_agent_exists(agent, error)
+
         home_attempt: HomeProvisioningAttempt | None = None
-        with self._lock:
-            try:
-                with self._db:
-                    # Reserve before touching the filesystem.  This serializes
-                    # separate registry connections as well as this process.
-                    self._db.execute("BEGIN IMMEDIATE")
-                    home_attempt = self._provision_home_locked(agent)
-                    self._db.execute(*self._insert_statement(agent))
-                    self._record_external_resource_locked(
-                        f"agent-record:{agent.actor}", True, agent.to_json()
+        try:
+            home_attempt = self._home.provision_claimed(claim)
+            with self._lock, self._db:
+                self._db.execute("BEGIN IMMEDIATE")
+                row = self._db.execute(
+                    "SELECT active, payload FROM lifecycle_resources "
+                    "WHERE resource_key = ?",
+                    (f"agent-home:{agent.actor}",),
+                ).fetchone()
+                incumbent = self._db.execute(
+                    "SELECT 1 FROM agents WHERE actor = ?", (agent.actor,)
+                ).fetchone()
+                if row is None or bool(row["active"]) or incumbent is not None:
+                    raise AgentHomeError(
+                        "create-fenced", agent.actor, "create-commit"
                     )
-                    if home_attempt is not None:
-                        self._record_home_resource_locked(home_attempt.receipt, True)
-                    if agent.hosted_by == "host-invite":
-                        self._record_host_invite_locked(agent)
-            except sqlite3.IntegrityError as error:
-                if home_attempt is not None:
-                    self._compensate_home_fs(home_attempt, "create-duplicate")
-                # The PRIMARY KEY spoke: A1 lives in the schema now.
-                raise AgentExistsError(
-                    f"the name {agent.actor!r} is already taken on this node "
-                    f"({self.owner}@{self.machine}) — {agent.uri} exists "
-                    f"({self.database}). One name is one agent, whether or "
-                    f"not anything is currently running under it. To reuse "
-                    f"the name, destroy that agent first ('hyprial agent destroy "
-                    f"{agent.actor}', which is irreversible); to run this "
-                    f"agent on a different harness, just start it there — "
-                    f"that is a rebinding of the same agent, not a new one."
-                ) from error
-            except BaseException:
-                if home_attempt is not None:
-                    self._compensate_home_fs(home_attempt, "create-failed")
-                raise
+                try:
+                    current = HomeReceipt.from_json(json.loads(str(row["payload"])))
+                except (ValueError, json.JSONDecodeError) as error:
+                    raise AgentHomeError(
+                        "invalid-registry-receipt", agent.actor, "create-commit"
+                    ) from error
+                if current != claim:
+                    raise AgentHomeError(
+                        "create-fenced", agent.actor, "create-commit"
+                    )
+                self._db.execute(*self._insert_statement(agent))
+                self._record_external_resource_locked(
+                    f"agent-record:{agent.actor}", True, agent.to_json()
+                )
+                self._record_home_resource_locked(claim, True)
+                for adapter in agent.pinned_adapters:
+                    self._db.execute(
+                        "INSERT INTO pins(adapter, agent) VALUES(?, ?)",
+                        (adapter, agent.actor),
+                    )
+                if agent.hosted_by == "host-invite":
+                    self._record_host_invite_locked(agent)
+        except BaseException as error:
+            if home_attempt is not None:
+                self._compensate_home_fs(home_attempt, "create-commit")
+            with self._lock, self._db:
+                row = self._db.execute(
+                    "SELECT active, payload FROM lifecycle_resources "
+                    "WHERE resource_key = ?",
+                    (f"agent-home:{agent.actor}",),
+                ).fetchone()
+                if row is not None and not bool(row["active"]):
+                    try:
+                        current = HomeReceipt.from_json(json.loads(str(row["payload"])))
+                    except (ValueError, json.JSONDecodeError):
+                        current = None
+                    if current == claim:
+                        self._record_home_resource_locked(
+                            replace(claim, status="revoked"), False
+                        )
+            if isinstance(error, sqlite3.IntegrityError):
+                self._raise_agent_exists(agent, error)
+            raise
         return agent
+
+    def _raise_agent_exists(
+        self, agent: Agent, error: BaseException | None = None
+    ) -> None:
+        message = (
+            f"the name {agent.actor!r} is already taken on this node "
+            f"({self.owner}@{self.machine}) — {agent.uri} exists "
+            f"({self.database}). One name is one agent, whether or "
+            f"not anything is currently running under it. To reuse "
+            f"the name, destroy that agent first ('hyprial agent destroy "
+            f"{agent.actor}', which is irreversible); to run this "
+            f"agent on a different harness, just start it there — "
+            f"that is a rebinding of the same agent, not a new one."
+        )
+        if error is None:
+            raise AgentExistsError(message)
+        raise AgentExistsError(message) from error
 
     def _validate_config_location(self, agent: Agent) -> None:
         agent_home = (
@@ -1585,25 +2926,96 @@ class AgentRegistry:
         )
 
     def ensure_home(self, actor: str) -> HomeReceipt:
-        """Provision or validate the current entity's home under registry lock."""
+        """Provision or validate the current entity's home in two phases."""
 
         agent = self.require(actor)
         if self._home is None:
             raise AgentHomeError("not-configured", agent.actor, "provision")
+        with self._lock:
+            row = self._db.execute(
+                "SELECT active, payload FROM lifecycle_resources WHERE resource_key = ?",
+                (f"agent-home:{agent.actor}",),
+            ).fetchone()
+        if row is not None:
+            try:
+                receipt = HomeReceipt.from_json(json.loads(str(row["payload"])))
+            except (ValueError, json.JSONDecodeError) as error:
+                raise AgentHomeError(
+                    "invalid-registry-receipt", agent.actor, "ensure"
+                ) from error
+            if bool(row["active"]) and receipt.status == "ready":
+                self._home.validate(receipt)
+                return receipt
+            raise AgentHomeError("operation-pending", agent.actor, "ensure")
+
+        claim = self._home.claim_receipt(
+            actor=agent.actor, entity_token=agent.entity_token
+        )
+        with self._lock, self._db:
+            current = self.require(agent.actor)
+            if current.entity_token != agent.entity_token:
+                raise AgentHomeError("create-fenced", agent.actor, "ensure-claim")
+            row = self._db.execute(
+                "SELECT 1 FROM lifecycle_resources WHERE resource_key = ?",
+                (f"agent-home:{agent.actor}",),
+            ).fetchone()
+            if row is not None:
+                raise AgentHomeError("operation-pending", agent.actor, "ensure-claim")
+            self._record_home_resource_locked(claim, False)
         attempt: HomeProvisioningAttempt | None = None
         try:
+            attempt = self._home.provision_claimed(claim)
             with self._lock, self._db:
-                self._db.execute("BEGIN IMMEDIATE")
-                attempt = self._provision_home_locked(agent)
-                assert attempt is not None
-                self._record_home_resource_locked(attempt.receipt, True)
-            return attempt.receipt
+                current = self.require(agent.actor)
+                row = self._db.execute(
+                    "SELECT active, payload FROM lifecycle_resources "
+                    "WHERE resource_key = ?",
+                    (f"agent-home:{agent.actor}",),
+                ).fetchone()
+                if current.entity_token != agent.entity_token or row is None or bool(row["active"]):
+                    raise AgentHomeError("create-fenced", agent.actor, "ensure-commit")
+                stored = HomeReceipt.from_json(json.loads(str(row["payload"])))
+                if stored != claim:
+                    raise AgentHomeError("create-fenced", agent.actor, "ensure-commit")
+                self._record_home_resource_locked(claim, True)
+            return claim
         except BaseException:
+            removed = False
             if attempt is not None:
-                self._compensate_home_fs(attempt, "ensure")
+                removed = self._home.compensate(attempt)
+                if not removed:
+                    _LOG.warning(
+                        "agent-home compensation left a residue: actor=%s "
+                        "resource_token=%s phase=ensure; it surfaces as "
+                        "unowned-residue on the next create until cleaned",
+                        attempt.receipt.actor,
+                        attempt.receipt.resource_token,
+                    )
+            with self._lock, self._db:
+                row = self._db.execute(
+                    "SELECT active, payload FROM lifecycle_resources "
+                    "WHERE resource_key = ?",
+                    (f"agent-home:{agent.actor}",),
+                ).fetchone()
+                if row is not None and not bool(row["active"]):
+                    try:
+                        stored = HomeReceipt.from_json(json.loads(str(row["payload"])))
+                    except (ValueError, json.JSONDecodeError):
+                        stored = None
+                    if stored == claim:
+                        self._record_home_resource_locked(
+                            replace(claim, status="cleaned" if removed else "revoked"),
+                            False,
+                        )
             raise
 
-    def home_receipt(self, actor: str, *, require_ready: bool = True) -> HomeReceipt:
+    def home_receipt(
+        self,
+        actor: str,
+        *,
+        require_ready: bool = True,
+        validate_mirror: bool = True,
+    ) -> HomeReceipt:
         """Read home authority from SQLite, optionally validating its mirror."""
 
         agent = self.require(actor)
@@ -1622,7 +3034,7 @@ class AgentRegistry:
             raise AgentHomeError("receipt-mismatch", agent.actor, "read-registry")
         if require_ready and (not bool(row["active"]) or receipt.status != "ready"):
             raise AgentHomeError("revoked", agent.actor, "read-registry")
-        if require_ready:
+        if require_ready and validate_mirror:
             if self._home is None:
                 # Not ``assert``: this is control flow (a registry opened
                 # without a provisioner can still hold home rows), and an
@@ -1631,6 +3043,21 @@ class AgentRegistry:
                 raise AgentHomeError("not-configured", agent.actor, "validate")
             self._home.validate(receipt)
         return receipt
+
+    def confirm_home_authority(self, receipt: HomeReceipt) -> None:
+        """Fence publication against entity or resource-token replacement."""
+
+        current = self.home_receipt(
+            receipt.actor, require_ready=True, validate_mirror=False
+        )
+        if (
+            current.entity_token != receipt.entity_token
+            or current.resource_token != receipt.resource_token
+            or current.path != receipt.path
+        ):
+            raise AgentHomeError(
+                "receipt-mismatch", receipt.actor, "confirm-home-authority"
+            )
 
     def workspace_path(self, actor: str) -> Path:
         """Return the private default workspace path without creating it."""
@@ -1645,18 +3072,16 @@ class AgentRegistry:
 
         if self._home is None:
             raise AgentHomeError("not-configured", actor, "workspace")
-        with self._lock:
-            receipt = self.home_receipt(actor)
-            return self._home.ensure_workspace(receipt)
+        receipt = self.home_receipt(actor)
+        return self._home.ensure_workspace(receipt)
 
     def workspace_summary(self, actor: str) -> WorkspaceSummary:
         """Inventory the current incarnation's workspace without following links."""
 
         if self._home is None:
             raise AgentHomeError("not-configured", actor, "workspace-summary")
-        with self._lock:
-            receipt = self.home_receipt(actor)
-            return self._home.workspace_summary(receipt)
+        receipt = self.home_receipt(actor)
+        return self._home.workspace_summary(receipt)
 
     def cleanup_home(self, actor: str, *, expected_token: str) -> HomeReceipt:
         """Clean a destroyed/revoked home only under its durable token fence."""
@@ -1666,8 +3091,11 @@ class AgentRegistry:
         name = self.local_actor(actor)
         if name is None:
             raise AgentHomeError("cleanup-fenced", actor, "cleanup-registry")
-        with self._lock, self._db:
-            self._db.execute("BEGIN IMMEDIATE")
+        # Phase 1 is a read-only durable claim check.  Filesystem traversal is
+        # deliberately outside both the registry lock and SQLite transaction;
+        # phase 2 below revalidates the exact token and absent incarnation
+        # before publishing the cleaned receipt.
+        with self._lock:
             row = self._db.execute(
                 "SELECT active, payload FROM lifecycle_resources WHERE resource_key = ?",
                 (f"agent-home:{name}",),
@@ -1683,7 +3111,26 @@ class AgentRegistry:
                 raise AgentHomeError("invalid-registry-receipt", name, "cleanup-registry") from error
             if receipt.actor != name:
                 raise AgentHomeError("receipt-mismatch", name, "cleanup-registry")
-            cleaned = self._home.cleanup(receipt, expected_token=expected_token)
+        cleaned = self._home.cleanup(receipt, expected_token=expected_token)
+        with self._lock, self._db:
+            self._db.execute("BEGIN IMMEDIATE")
+            row = self._db.execute(
+                "SELECT active, payload FROM lifecycle_resources WHERE resource_key = ?",
+                (f"agent-home:{name}",),
+            ).fetchone()
+            incumbent = self._db.execute(
+                "SELECT 1 FROM agents WHERE actor = ?", (name,)
+            ).fetchone()
+            if row is None or bool(row["active"]) or incumbent is not None:
+                raise AgentHomeError("cleanup-fenced", name, "cleanup-commit")
+            try:
+                current = HomeReceipt.from_json(json.loads(str(row["payload"])))
+            except (ValueError, json.JSONDecodeError) as error:
+                raise AgentHomeError(
+                    "invalid-registry-receipt", name, "cleanup-commit"
+                ) from error
+            if current != receipt or current.resource_token != expected_token:
+                raise AgentHomeError("cleanup-fenced", name, "cleanup-commit")
             self._record_home_resource_locked(cleaned, False)
             return cleaned
 
@@ -1969,25 +3416,20 @@ class AgentRegistry:
             return True
 
     def restore_disposition(
-        self, actor: str, *, desired_generation: str | None = None
+        self, actor: str | Agent, *, desired_generation: str | None = None
     ) -> RestoreDisposition | None:
-        """Return only a suppression owned by the current incarnation/generation."""
-
-        agent = self.get(actor)
+        agent = actor if isinstance(actor, Agent) else self.get(actor)
         if agent is None:
             return None
         with self._lock:
-            row = self._db.execute(
-                "SELECT * FROM agent_restore_dispositions WHERE actor = ?",
-                (agent.actor,),
-            ).fetchone()
-            if row is None:
+            disposition = self._restore_dispositions.get(agent.actor)
+            if disposition is None:
                 return None
             if (
-                str(row["entity_token"]) != agent.entity_token
+                disposition.entity_token != agent.entity_token
                 or (
                     desired_generation is not None
-                    and str(row["desired_generation"]) != desired_generation
+                    and disposition.desired_generation != desired_generation
                 )
             ):
                 with self._db:
@@ -1995,27 +3437,9 @@ class AgentRegistry:
                         "DELETE FROM agent_restore_dispositions WHERE actor = ?",
                         (agent.actor,),
                     )
+                self._restore_dispositions.pop(agent.actor, None)
                 return None
-            return RestoreDisposition(
-                actor=agent.actor,
-                entity_token=str(row["entity_token"]),
-                desired_generation=str(row["desired_generation"]),
-                status=str(row["status"]),
-                last_active_at_ms=(
-                    int(row["last_active_at_ms"])
-                    if row["last_active_at_ms"] is not None
-                    else None
-                ),
-                idle_age_ms=(
-                    int(row["idle_age_ms"])
-                    if row["idle_age_ms"] is not None
-                    else None
-                ),
-                restore_threshold_ms=int(row["restore_threshold_ms"]),
-                restore_override=str(row["restore_override"]),
-                activity_unknown=bool(row["activity_unknown"]),
-                recorded_at_ms=int(row["recorded_at_ms"]),
-            )
+            return disposition
 
     def suppress_restore(
         self,
@@ -2031,14 +3455,24 @@ class AgentRegistry:
         agent = self.require(actor)
         recorded_at_ms = self.now_ms()
         with self._lock, self._db:
+            prior = self._restore_dispositions.get(agent.actor)
+            disposition_token = (
+                prior.disposition_token
+                if prior is not None
+                and prior.entity_token == agent.entity_token
+                and prior.desired_generation == desired_generation
+                else uuid.uuid4().hex
+            )
             self._db.execute(
                 "INSERT INTO agent_restore_dispositions "
-                "(actor,entity_token,desired_generation,status,last_active_at_ms,"
+                "(actor,entity_token,desired_generation,disposition_token,status,last_active_at_ms,"
                 "idle_age_ms,restore_threshold_ms,restore_override,activity_unknown,"
-                "recorded_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?) "
+                "recorded_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(actor) DO UPDATE SET "
                 "entity_token=excluded.entity_token,"
-                "desired_generation=excluded.desired_generation,status=excluded.status,"
+                "desired_generation=excluded.desired_generation,"
+                "disposition_token=excluded.disposition_token,"
+                "status=excluded.status,"
                 "last_active_at_ms=excluded.last_active_at_ms,"
                 "idle_age_ms=excluded.idle_age_ms,"
                 "restore_threshold_ms=excluded.restore_threshold_ms,"
@@ -2049,6 +3483,7 @@ class AgentRegistry:
                     agent.actor,
                     agent.entity_token,
                     desired_generation,
+                    disposition_token,
                     "idle-suppressed",
                     last_active_at_ms,
                     idle_age_ms,
@@ -2058,27 +3493,100 @@ class AgentRegistry:
                     recorded_at_ms,
                 ),
             )
-        disposition = self.restore_disposition(
-            agent.actor, desired_generation=desired_generation
-        )
-        assert disposition is not None
+            disposition = RestoreDisposition(
+                agent.actor,
+                agent.entity_token,
+                desired_generation,
+                disposition_token,
+                "idle-suppressed",
+                last_active_at_ms,
+                idle_age_ms,
+                restore_threshold_ms,
+                restore_override,
+                activity_unknown,
+                recorded_at_ms,
+            )
+            self._restore_dispositions[agent.actor] = disposition
         return disposition
 
-    def clear_restore_disposition(self, actor: str) -> bool:
+    @staticmethod
+    def _restore_disposition_row(row: sqlite3.Row) -> RestoreDisposition:
+        return RestoreDisposition(
+            actor=str(row["actor"]),
+            entity_token=str(row["entity_token"]),
+            desired_generation=str(row["desired_generation"]),
+            disposition_token=str(row["disposition_token"]),
+            status=str(row["status"]),
+            last_active_at_ms=(
+                None
+                if row["last_active_at_ms"] is None
+                else int(row["last_active_at_ms"])
+            ),
+            idle_age_ms=(
+                None if row["idle_age_ms"] is None else int(row["idle_age_ms"])
+            ),
+            restore_threshold_ms=int(row["restore_threshold_ms"]),
+            restore_override=str(row["restore_override"]),
+            activity_unknown=bool(row["activity_unknown"]),
+            recorded_at_ms=int(row["recorded_at_ms"]),
+        )
+
+    @staticmethod
+    def _agent_block_row(row: sqlite3.Row) -> AgentBlock:
+        return AgentBlock(
+            actor=str(row["actor"]),
+            entity_token=str(row["entity_token"]),
+            reason=str(row["reason"]),
+            blocked_at_ms=int(row["blocked_at_ms"]),
+        )
+
+    def clear_restore_disposition(
+        self,
+        actor: str,
+        *,
+        expected_entity_token: str | None = None,
+        expected_desired_generation: str | None = None,
+        expected_disposition_token: str | None = None,
+    ) -> bool:
         name = self.local_actor(actor)
         if name is None:
             return False
+        clauses = ["actor = ?"]
+        values: list[object] = [name]
+        if expected_entity_token is not None:
+            clauses.append("entity_token = ?")
+            values.append(expected_entity_token)
+        if expected_desired_generation is not None:
+            clauses.append("desired_generation = ?")
+            values.append(expected_desired_generation)
+        if expected_disposition_token is not None:
+            clauses.append("disposition_token = ?")
+            values.append(expected_disposition_token)
         with self._lock, self._db:
-            return self._db.execute(
-                "DELETE FROM agent_restore_dispositions WHERE actor = ?", (name,)
+            changed = self._db.execute(
+                "DELETE FROM agent_restore_dispositions WHERE "
+                + " AND ".join(clauses),
+                tuple(values),
             ).rowcount == 1
+            if changed:
+                self._restore_dispositions.pop(name, None)
+            return changed
 
-    def block_agent(self, actor: str, *, reason: str) -> tuple[AgentBlock, bool]:
-        """Enter blocked once; a repeated signal preserves the first timestamp."""
-
+    def block_agent(
+        self,
+        actor: str,
+        *,
+        reason: str,
+        expected_entity_token: str | None = None,
+    ) -> tuple[AgentBlock | None, bool]:
         if reason not in {"provider-quota", "credential-invalid"}:
             raise ValueError(f"unsupported agent block reason: {reason}")
         agent = self.require(actor)
+        if (
+            expected_entity_token is not None
+            and agent.entity_token != expected_entity_token
+        ):
+            return None, False
         now_ms = self.now_ms()
         with self._lock, self._db:
             cursor = self._db.execute(
@@ -2086,50 +3594,51 @@ class AgentRegistry:
                 "VALUES (?,?,?,?) ON CONFLICT(actor) DO NOTHING",
                 (agent.actor, agent.entity_token, reason, now_ms),
             )
-        block = self.agent_block(agent.actor)
-        assert block is not None
-        return block, cursor.rowcount == 1
+            cleared = self._db.execute(
+                "DELETE FROM agent_restore_dispositions WHERE actor = ?",
+                (agent.actor,),
+            )
+            self._restore_dispositions.pop(agent.actor, None)
+            block = self._agent_blocks.get(agent.actor)
+            if block is None:
+                block = AgentBlock(
+                    agent.actor, agent.entity_token, reason, now_ms
+                )
+                self._agent_blocks[agent.actor] = block
+        return block, cursor.rowcount == 1 or cleared.rowcount == 1
 
-    def agent_block(self, actor: str) -> AgentBlock | None:
-        agent = self.get(actor)
+    def agent_block(self, actor: str | Agent) -> AgentBlock | None:
+        agent = actor if isinstance(actor, Agent) else self.get(actor)
         if agent is None:
             return None
         with self._lock:
-            row = self._db.execute(
-                "SELECT * FROM agent_blocks WHERE actor = ?", (agent.actor,)
-            ).fetchone()
-            if row is None:
+            block = self._agent_blocks.get(agent.actor)
+            if block is None:
                 return None
-            if str(row["entity_token"]) != agent.entity_token:
+            if block.entity_token != agent.entity_token:
                 with self._db:
                     self._db.execute(
                         "DELETE FROM agent_blocks WHERE actor = ?", (agent.actor,)
                     )
+                self._agent_blocks.pop(agent.actor, None)
                 return None
-            return AgentBlock(
-                actor=agent.actor,
-                entity_token=str(row["entity_token"]),
-                reason=str(row["reason"]),
-                blocked_at_ms=int(row["blocked_at_ms"]),
-            )
+            return block
 
     def is_blocked(self, actor: str) -> bool:
-        """Stable query for lifecycle and the later collector phase."""
-
         return self.agent_block(actor) is not None
 
     def unblock_agent(self, actor: str) -> bool:
-        name = self.local_actor(actor)
-        if name is None:
-            return False
-        agent = self.get(name)
+        agent = self.get(actor)
         if agent is None:
             return False
         with self._lock, self._db:
-            return self._db.execute(
+            changed = self._db.execute(
                 "DELETE FROM agent_blocks WHERE actor = ? AND entity_token = ?",
-                (name, agent.entity_token),
+                (agent.actor, agent.entity_token),
             ).rowcount == 1
+            if changed:
+                self._agent_blocks.pop(agent.actor, None)
+            return changed
 
     def update(self, actor: str, **changes: Any) -> Agent:
         return self.save(replace(self.require(actor), **changes))
@@ -2195,6 +3704,10 @@ class AgentRegistry:
                     f"agent-record:{name}", False, prior_agent.to_json()
                 )
             removed = cursor.rowcount > 0
+        if removed:
+            with self._lock:
+                self._restore_dispositions.pop(name, None)
+                self._agent_blocks.pop(name, None)
         if revoked is not None:
             # The revoke/delete transaction is the crash fence.  Cleanup is
             # synchronous for the successful API contract, while a crash in
@@ -2375,6 +3888,7 @@ class AgentRegistry:
         field_name: str | None,
         environment_names: Iterable[str],
         revision: int,
+        prevalidated_home_token: str | None = None,
     ) -> "SecretGrant":
         """Bind one exact entry to the current agent incarnation."""
 
@@ -2391,9 +3905,34 @@ class AgentRegistry:
             environment_names=tuple(environment_names),
             revision=revision,
         )
+        validated_home_token = None
         if grant.source is SecretSource.AGENT_PRIVATE:
-            self.home_receipt(agent.actor)
+            validated_home_token = (
+                self.home_receipt(agent.actor).entity_token
+                if prevalidated_home_token is None
+                else prevalidated_home_token
+            )
         with self._lock, self._db:
+            self._db.execute("BEGIN IMMEDIATE")
+            incumbent = self._db.execute(
+                "SELECT entity_token FROM agents WHERE actor=?", (agent.actor,)
+            ).fetchone()
+            if incumbent is None or str(incumbent["entity_token"]) != grant.entity_token:
+                raise AgentError("agent incarnation changed during secret grant")
+            if validated_home_token is not None:
+                row = self._db.execute(
+                    "SELECT active,payload FROM lifecycle_resources WHERE resource_key=?",
+                    (f"agent-home:{agent.actor}",),
+                ).fetchone()
+                if row is None or not bool(row["active"]):
+                    raise AgentHomeError("revoked", agent.actor, "grant-secret")
+                receipt = HomeReceipt.from_json(json.loads(str(row["payload"])))
+                if (
+                    receipt.status != "ready"
+                    or receipt.entity_token != validated_home_token
+                    or receipt.entity_token != grant.entity_token
+                ):
+                    raise AgentHomeError("receipt-mismatch", agent.actor, "grant-secret")
             prior = self._db.execute(
                 "SELECT revision FROM agent_secret_grants "
                 "WHERE agent = ? AND grant_id = ?",

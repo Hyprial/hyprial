@@ -6,12 +6,20 @@ import base64
 import json
 import time
 from dataclasses import replace
+from uuid import uuid4
 
 from hyprial.transport import KeySpace, PresenceView, Registration, TransportSession
+from hyprial.contracts.ports import PortAdmission
 
 from .api import DeliveryLifecycle, InboxMessage
 from .pull import TerminalState, merge_delivery_status, query_delivery_status
 from .service import InboxService
+from .authority import DeliveryCustodyFacade
+from .actor import InboxAuthorityUnavailable
+from .ports import (
+    ReceiveMessageCommand, AcceptCustodyCommand, ReceiveSystemNoticeCommand,
+    ReceiveProgressCommand, RetireOutboxReceiptCommand,
+)
 
 
 def publish_fetch_receipt(
@@ -274,19 +282,33 @@ class ZenohInboxEndpoint:
         message = decode_delivery_frame(payload)
         if message.recipient != self._actor:
             return
-        self._service.receive(message)
+        if isinstance(self._service, DeliveryCustodyFacade):
+            self._admit(ReceiveMessageCommand(uuid4().hex, message))
+        else:
+            self._service.receive(message)
 
     def _on_custody(self, sample: object) -> None:
         assert self._mailbox_node is not None
         payload = sample.payload
         message = decode_delivery_frame(payload)
-        self._service.accept_custody(message, mailbox_node=self._mailbox_node)
+        if isinstance(self._service, DeliveryCustodyFacade):
+            self._admit(AcceptCustodyCommand(uuid4().hex, message, self._mailbox_node))
+        else:
+            self._service.accept_custody(message, mailbox_node=self._mailbox_node)
 
     def _on_system_notice(self, sample: object) -> None:
-        self._service.receive_system_notice(decode_delivery_frame(sample.payload))
+        message = decode_delivery_frame(sample.payload)
+        if isinstance(self._service, DeliveryCustodyFacade):
+            self._admit(ReceiveSystemNoticeCommand(uuid4().hex, message))
+        else:
+            self._service.receive_system_notice(message)
 
     def _on_progress_event(self, sample: object) -> None:
-        self._service.receive_progress_event(decode_delivery_frame(sample.payload))
+        message = decode_delivery_frame(sample.payload)
+        if isinstance(self._service, DeliveryCustodyFacade):
+            self._admit(ReceiveProgressCommand(uuid4().hex, message))
+        else:
+            self._service.receive_progress_event(message)
 
     def _on_fetch_receipt(self, sample: object) -> None:
         if sample.payload != b"ack":
@@ -301,7 +323,15 @@ class ZenohInboxEndpoint:
         sender, message_id = (
             self._keys.decode_identity(segment) for segment in segments
         )
-        self._service.retire_outbox_receipt(sender, message_id)
+        if isinstance(self._service, DeliveryCustodyFacade):
+            self._admit(RetireOutboxReceiptCommand(uuid4().hex, sender, message_id))
+        else:
+            self._service.retire_outbox_receipt(sender, message_id)
+
+    def _admit(self, command: object) -> None:
+        result = self._service.admit_ingress(command)
+        if result is not PortAdmission.ACCEPTED:
+            raise InboxAuthorityUnavailable(f"inbox ingress rejected: {result.value}")
 
     def _receipt(self, selector: str) -> bytes | None:
         message_id = self._message_id(selector)

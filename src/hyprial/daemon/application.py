@@ -12,7 +12,6 @@ import queue
 import shlex
 import signal
 import socket
-import sqlite3
 import sys
 import threading
 import time
@@ -23,16 +22,34 @@ from dataclasses import asdict, is_dataclass, replace
 from pathlib import Path
 from urllib.parse import urlsplit
 from types import FrameType
-from typing import Any
+from typing import Any, Protocol, TYPE_CHECKING
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from hyprial import __version__
 from hyprial.actor_runtime.policies import DEFAULT_POLICIES, EXTERNAL_IO
 from hyprial.actor_runtime.scheduler import GenerationScheduler
+from hyprial.actor_runtime import AdmissionResult
+from hyprial.pac.restore_facts import PacRestoreFacts
+
+if TYPE_CHECKING:
+    from hyprial.watchdog_actor import AlertDeliveryOutcome
+
+from .bounded_cadence import BoundedCadence, CadenceCompleted
+from .state_persistence import StatePersistenceAuthority
+from .ipc_request_owner import IpcRequestOwner
+from .dispatch_diagnostics import DispatchDiagnostics
+from .session_route_coordinator import (
+    SessionRouteCoordinator,
+    SessionRouteKind,
+    SessionRouteRequest,
+    SessionRouteOverloaded,
+)
 from hyprial.adapters.lark import LarkSdkGateway
+from hyprial.adapters.lark.gateway_actor import GatewayIoAuthority
 from hyprial.adapters.lark import lifecycle as lark_lifecycle
 from hyprial.alarm import Alarm
-from hyprial.autoupdate import SCHEDULE, InProcessAutoUpdateScheduler
+from hyprial.autoupdate import SCHEDULE
+from hyprial.autoupdate.actor import AutoUpdateAuthority as InProcessAutoUpdateScheduler
 from hyprial.agents import (
     AGENT_HEARTBEAT_TTL_SECONDS,
     RUNTIME_HEADLESS,
@@ -46,14 +63,13 @@ from hyprial.agents import (
     normalize_capabilities,
     normalize_harness_args,
 )
-from hyprial.agents.activity import AgentKeepList, AgentKeepListError
+from hyprial.agents.activity import AgentKeepListError
+from hyprial.agents.keep_actor import AgentKeepListAuthority as AgentKeepList
 from hyprial.agents.worker_state import (
-    RESTORE_THRESHOLD_MS,
-    RestorePolicy,
+    BlockingFailureAuthority,
+    RestorePolicyAuthority,
     RestorePolicyError,
-    RestorePolicyStore,
     desired_generation,
-    pac_restore_facts,
 )
 from hyprial.adapters.lark.sdk import LarkApiError
 from hyprial.transfer.container import CONTAINER_PYTHON as _CONTAINER_PYTHON
@@ -107,6 +123,7 @@ from hyprial.inbox import (
     InboxMessage,
     LocalFirstDeliveryTransport,
     OutboxItem,
+    RecipientWakeCoordinator,
     StatusQueryReport,
     StatusQueryServed,
     TerminalState,
@@ -115,15 +132,15 @@ from hyprial.inbox import (
     conflicting_message_ids,
     merge_delivery_status,
     query_delivery_status,
-    publish_fetch_receipt,
 )
 from hyprial.inbox.progress import decode_progress_event
+from hyprial.inbox.fetch_receipts import FetchReceiptPublisher
 from hyprial.home import configured_hyprial_home
 from hyprial.log import Logger, migrate_pre_trajectory_logs
 from hyprial.management import (
     EnsureSquireRegistryCommand,
-    RegistryManagementHandler,
 )
+from hyprial.management_actor import RegistryManagementAuthority as RegistryManagementHandler
 from hyprial.org import OrgContextMesh, OrgContextStore
 from hyprial.orgfs.runtime import ORGFS_CONTENT_WAIT_S, OrgFsRuntime
 from hyprial.persistent_config import PersistentConfigStore, PersistentConfiguration
@@ -134,7 +151,6 @@ from hyprial.squire import (
     UserDeliveryRequest,
     UserDeliveryResult,
     UserDeliveryTarget,
-    UserProfileStore,
     ZenohUserDeliveryEndpoint,
     ZenohUserDeliveryTransport,
     is_user_target,
@@ -167,13 +183,18 @@ from hyprial.transport import (
     ZenohTransport,
     zenoh_environment_flag,
 )
-from hyprial.quota_watchdog import QuotaWatchdog
+from hyprial.transport.session_actor import TransportSessionAuthority
+from hyprial.transport.presence_actor import ActorOnlineTransition
+from hyprial.watchdog_actor import AsyncQuotaWatchdog as QuotaWatchdog
 from hyprial.peer_reachability import tailnet_status_projection
 from hyprial.inbox.api import InboxPruneItem
-from hyprial.inbox_watchdog import InboxWatchdog
-from hyprial.daemon.maintenance_watchdog import MaintenanceWatchdog
-from hyprial.usage import UsageCache, usage_collection_disabled
-from .duplicate_watch import DUPLICATE_INSTANCE_EVENT, DuplicateInstanceWatch
+from hyprial.watchdog_actor import AsyncInboxWatchdog as InboxWatchdog
+from hyprial.squire.profile_actor import UserProfileAuthority
+from hyprial.usage_actor import UsageAuthority as UsageCache
+from hyprial.usage import usage_collection_disabled
+from .duplicate_watch import DUPLICATE_INSTANCE_EVENT
+from .duplicate_actor import DuplicateInstanceAuthority as DuplicateInstanceWatch
+from hyprial.daemon.maintenance_watchdog import ActorMaintenanceWatchdog as MaintenanceWatchdog
 from hyprial.contracts.agent_task import (
     AgentTaskError,
     validate_activity as validate_agent_task_activity,
@@ -215,6 +236,7 @@ from .shutdown_stall import (
 from .ownership import DaemonOwnershipBusy, DaemonStateOwnershipFence
 from .composition import (
     AgentSessionDomains,
+    AgentIdentityProjectionView,
     CorrelatedDomainEvents,
     DomainCommandError,
     HarnessPortClient,
@@ -222,6 +244,7 @@ from .composition import (
     LarkPortClient,
     harness_launch_projection,
 )
+from .harness_ports import RestoreEligibilityProjection
 from .atomic_lifecycle_ports import (
     AtomicLifecycleDomainPort,
     HarnessLifecycleDomainPort,
@@ -245,13 +268,18 @@ from .lifecycle_manager import (
     LifecycleKind,
     LifecycleOperation,
     LifecyclePorts,
-    LifecycleProcessManager,
     LifecycleSpec,
     LifecycleState,
-    backfill_domain_attested_effects,
 )
-from .route_ports import RouteSpec
-from .route_registration import RouteRegistrationClient, RouteRegistrationIo
+from .lifecycle_coordinator import LifecycleCoordinator
+from .lifecycle_receipts import LifecycleMutationRequest
+from .route_ports import DropRouteCommand, EnsureRouteCommand, RouteSpec
+from .route_registration import (
+    RouteCommandError,
+    RoutePreparationFailed,
+    RouteRegistrationClient,
+    RouteRegistrationIo,
+)
 from .session_actor import owner_only_relocation
 from .session_ports import (
     HeartbeatSessionCommand,
@@ -286,7 +314,8 @@ from hyprial.uri import (
     parse_channel_uri,
 )
 from .ipc_stats import CallCostCounters, ipc_stats_payload
-from .home_guard import ActiveDaemonHeartbeat, keepalive_duration_from_environment
+from .home_guard import keepalive_duration_from_environment
+from .home_lease_actor import HomeLeaseAuthority as ActiveDaemonHeartbeat
 from .route_delivery import (
     RouteDeliveryError,
     RouteResource,
@@ -297,7 +326,7 @@ from .route_delivery import (
     parse_route_resources,
     resolve_gateway_routes,
 )
-from .runtime import DaemonEventBridge, ForwardOutcome
+from .runtime import DaemonEventBridge, ForwardOutcome, ReconcileSummary
 from .turn_hooks import (
     HOOK_CONFIG_NAME,
     InboxTurnHookInvoker,
@@ -306,6 +335,22 @@ from .turn_hooks import (
 )
 from .top import build_top_snapshot
 from .harness_actor import HarnessRuntimeActor
+
+
+class _IpcStream(Protocol):
+    def settimeout(self, timeout: float | None) -> None: ...
+    def recv(self, size: int) -> bytes: ...
+    def sendall(self, data: bytes) -> None: ...
+    def shutdown(self, how: int) -> None: ...
+    def close(self) -> None: ...
+    def __enter__(self) -> "_IpcStream": ...
+    def __exit__(self, *_error: object) -> None: ...
+
+
+class _IpcListener(Protocol):
+    def accept(self) -> tuple[_IpcStream, object]: ...
+    def close(self) -> None: ...
+
 
 JsonObject = dict[str, Any]
 
@@ -384,6 +429,7 @@ _CLOSE_UNBUDGETED_STEPS = (
     ("ipc-clients", "closes accepted sockets already marked closing"),
     ("socket-file", "one unlink"),
     ("daemon-json", "one unlink"),
+    ("recipient-wake-observer", "clears the committed-presence observer under an in-memory lock; no I/O or worker join"),
     ("routine-service", "joins a queue the step before it drained"),
     ("workflow-service", "same shape as routine-service"),
     (
@@ -433,10 +479,18 @@ _IPC_MAX_CLIENTS = 64
 #: node URIs are minted only by ``hyprial.uri.canonical_orgfs_uri``, and the
 #: construction guard bans orgfs: f-string splices in src.
 _ORGFS_NOTICE_NAMESPACE = "orgfs"
+# Operation/custody identifiers retain their existing bytes; these are not URIs.
+_AGENT_OPERATION_NAMESPACE = "agent"
 _IPC_ACCEPT_RETRY_INITIAL = 0.05
 _IPC_ACCEPT_RETRY_MAX = 1.0
 _IPC_CLIENT_IDLE_TIMEOUT = 15.0
 _IPC_CLIENT_POLL_INTERVAL = 0.1
+
+
+def _windows_ipc_enabled() -> bool:
+    return os.name == "nt"
+
+
 _IPC_CLIENT_SHUTDOWN_GRACE = 0.1
 _IPC_CLIENT_SHUTDOWN_TIMEOUT = 2.0
 
@@ -484,6 +538,9 @@ _IPC_STATS_METHODS = frozenset(
         "agent.restore-threshold",
         "agent.revoke",
         "agent.runtime-context",
+        "agent.runtime-launch.acquire",
+        "agent.runtime-launch.custody",
+        "agent.runtime-launch.release",
         "agent.secret.grant",
         "agent.secret.list",
         # Spelled split exactly like its dispatch site (term lint).
@@ -588,6 +645,32 @@ _IPC_STATS_METHODS = frozenset(
         "workflow.worker.stop",
     }
 )
+
+
+class _ContextBoundProviderAuthRunner:
+    """Hold Agent home custody for one complete model-vendor auth invocation."""
+
+    def __init__(
+        self,
+        context: Any,
+        runner: Callable[..., Any],
+        custody: Callable[[Any], Any],
+    ) -> None:
+        self._context = context
+        self._runner = runner
+        self._custody = custody
+
+    def __call__(
+        self,
+        model_vendor: str,
+        on_device_code: Callable[[Any], None],
+        *,
+        stop: threading.Event | None = None,
+    ) -> Any:
+        with self._custody(self._context):
+            return self._runner(model_vendor, on_device_code, stop=stop)
+
+
 # How long `_close` waits for the restore thread before moving on.  The
 # thread is a daemon and the loops it drives poll `stop_event`, so a join
 # that outlasts this is the exit backstop's case, not a reason to hold
@@ -648,8 +731,12 @@ class _HarnessActorRegistration:
         self._layer = layer
         self._event_sink = event_sink
         self._closed = False
+        self._token_closed = False
+        self._endpoint_closed = False
+        self._close_reported = False
         self._invalidation_reported = False
         self._lock = threading.Lock()
+        self._close_lock = threading.Lock()
 
     @property
     def healthy(self) -> bool:
@@ -708,26 +795,58 @@ class _HarnessActorRegistration:
         reason: str = "unspecified",
         initiator: str = "external-caller",
     ) -> None:
-        with self._lock:
-            if self._closed:
-                return
-            self._closed = True
-        attribution: dict[str, Any] = {}
-        if reason == "unspecified":
-            caller = traceback.extract_stack(limit=2)[0]
-            attribution["caller"] = (
-                f"{Path(caller.filename).name}:{caller.name}:{caller.lineno}"
-            )
-        self._emit(
-            "warn" if reason == "unspecified" else "info",
-            "harness.actor.registration.closed",
-            reason=reason,
-            initiator=initiator,
-            origin="explicit-close",
-            **attribution,
-        )
-        self._close_child(self._endpoint, reason=reason, initiator=initiator)
-        self._close_child(self._token, reason=reason, initiator=initiator)
+        with self._close_lock:
+            with self._lock:
+                if self._closed:
+                    return
+                report = not self._close_reported
+                self._close_reported = True
+            if report:
+                attribution: dict[str, Any] = {}
+                if reason == "unspecified":
+                    caller = traceback.extract_stack(limit=2)[0]
+                    attribution["caller"] = (
+                        f"{Path(caller.filename).name}:{caller.name}:{caller.lineno}"
+                    )
+                self._emit(
+                    "warn" if reason == "unspecified" else "info",
+                    "harness.actor.registration.closed",
+                    reason=reason,
+                    initiator=initiator,
+                    origin="explicit-close",
+                    **attribution,
+                )
+            errors: list[str] = []
+            with self._lock:
+                endpoint_closed = self._endpoint_closed
+                token_closed = self._token_closed
+            if not endpoint_closed:
+                try:
+                    self._close_child(
+                        self._endpoint, reason=reason, initiator=initiator
+                    )
+                except BaseException as error:
+                    errors.append(f"endpoint:{type(error).__name__}:{error}")
+                else:
+                    with self._lock:
+                        self._endpoint_closed = True
+            if not token_closed:
+                try:
+                    self._close_child(
+                        self._token, reason=reason, initiator=initiator
+                    )
+                except BaseException as error:
+                    errors.append(f"token:{type(error).__name__}:{error}")
+                else:
+                    with self._lock:
+                        self._token_closed = True
+            with self._lock:
+                self._closed = self._endpoint_closed and self._token_closed
+            if errors:
+                raise RuntimeError(
+                    "partial harness actor registration cleanup: "
+                    + "; ".join(errors)
+                )
 
 
 class _LocalPresence:
@@ -806,6 +925,14 @@ class _LocalPresence:
         return tuple(sorted({self.actor, *self.inner.online_actors()}))
 
 
+class _InteractiveRouteEffectGate:
+    """Reference-counted per-actor exclusion for route I/O phases."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.users = 0
+
+
 class _RouteGatewayCache:
     """Thread-safe cache for outbound route SDK resources.
 
@@ -816,22 +943,68 @@ class _RouteGatewayCache:
     the daemon restarted (2026-09-26).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, retirement_capacity: int = 128, entry_capacity: int = 256) -> None:
+        if retirement_capacity < 1 or entry_capacity < 1:
+            raise ValueError("gateway cache capacities must be positive")
         self._lock = threading.Lock()
-        self._gateways: dict[str, tuple[str, LarkSdkGateway]] = {}
+        self._gateways: dict[str, tuple[str, object]] = {}
+        self._retiring: dict[int, object] = {}
+        self._retirement_capacity = retirement_capacity
+        self._entry_capacity = entry_capacity
+        self._closed = False
 
-    def get(self, name: str, fingerprint: str) -> LarkSdkGateway | None:
+    def get(self, name: str, fingerprint: str) -> object | None:
         with self._lock:
             entry = self._gateways.get(name)
             return entry[1] if entry is not None and entry[0] == fingerprint else None
 
-    def put(self, name: str, fingerprint: str, gateway: LarkSdkGateway) -> LarkSdkGateway:
+    def put(self, name: str, fingerprint: str, gateway: object) -> object:
+        # Cache values are opaque I/O-owner ports, not shared native SDKs.
+        # The caller retains a new port if admission fails.
+        self._drain_retired(0.0)
         with self._lock:
+            if self._closed:
+                raise RuntimeError("gateway cache is closed")
             entry = self._gateways.get(name)
-            if entry is not None and entry[0] == fingerprint:
-                return entry[1]  # a concurrent builder won; keep one gateway
-            self._gateways[name] = (fingerprint, gateway)
-            return gateway
+            if entry is None and len(self._gateways) >= self._entry_capacity:
+                raise RuntimeError("gateway cache entry capacity exhausted")
+            same = entry is not None and entry[0] == fingerprint
+            winner = entry[1] if same else gateway
+            retired = gateway if same else (entry[1] if entry is not None else None)
+            retires = retired is not None and retired is not winner and not any(
+                key != name and value[1] is retired for key, value in self._gateways.items()
+            )
+            if retires and id(retired) not in self._retiring and len(self._retiring) >= self._retirement_capacity:
+                raise RuntimeError("gateway cache retirement capacity exhausted")
+            if not same:
+                self._gateways[name] = (fingerprint, gateway)
+            if retires:
+                self._retiring[id(retired)] = retired
+        self._drain_retired(0.0)
+        return winner
+
+    def _drain_retired(self, timeout: float) -> bool:
+        deadline = time.monotonic() + max(0.0, timeout)
+        with self._lock:
+            owners = tuple(self._retiring.items())
+        for token, owner in owners:
+            close = getattr(owner, "close", None)
+            try:
+                drained = close(max(0.0, deadline - time.monotonic())) if callable(close) else True
+            except Exception:
+                drained = False
+            if drained is not False:
+                with self._lock:
+                    self._retiring.pop(token, None)
+        with self._lock:
+            return not self._retiring
+
+    def close(self, timeout: float = 5.0) -> bool:
+        with self._lock:
+            self._closed = True
+            self._retiring.update((id(entry[1]), entry[1]) for entry in self._gateways.values())
+            self._gateways.clear()
+        return self._drain_retired(timeout)
 
 
 class _WorkerStatusSnapshot:
@@ -919,8 +1092,58 @@ class _BoundedRecipientWakes:
                 self._overflowed or overflowed or len(recipients) > available
             )
 
+class _StopRequestTrace:
+    """One diagnostic observation, with no stop policy or application reference."""
+
+    def __init__(self) -> None:
+        self.last: tuple[str, int | None] | None = None
+
+    def request(
+        self, event: threading.Event, source: str, signal_number: int | None = None
+    ) -> None:
+        # One immutable assignment keeps source/signal coherent. This is the
+        # most recently observed request, not a cross-thread causality claim.
+        self.last = (source, signal_number)
+        event.set()
+
+    def bind(self, event: threading.Event, source: str) -> Callable[[], None]:
+        # Keep the same Event identity the old bound event.set callback held;
+        # retaining this recorder must not keep a whole application alive.
+        return lambda: self.request(event, source)
+
+
 class DaemonApplication:
     """Own the real runtime graph and expose it through newline-delimited IPC."""
+
+    def _abort_initialization(self) -> None:
+        """Release already-started authorities after a constructor failure."""
+
+        for attribute, close_operation in (
+            ("_maintenance_watchdog", "close"),
+            ("_inbox_watchdog", "close"),
+            ("_quota_watchdog", "close"),
+            ("_blocking_failures", "close"),
+            ("_restore_policy", "close"),
+            ("_agent_keep", "close"),
+            ("_agent_session_domains", "close"),
+            ("user_profiles", "close"),
+            ("_state_persistence", "close"),
+            ("_gateway_logger", "close"),
+            ("_logger", "close"),
+        ):
+            resource = getattr(self, attribute, None)
+            if resource is not None:
+                try:
+                    getattr(resource, close_operation)()
+                except BaseException:
+                    pass
+
+    def _construct_or_rollback(self, factory: Callable[[], Any]) -> Any:
+        try:
+            return factory()
+        except BaseException:
+            self._abort_initialization()
+            raise
 
     def __init__(
         self,
@@ -1037,27 +1260,40 @@ class DaemonApplication:
         # owner, so in-process contention between the two is gone by
         # construction.
         self.state_db = StateDatabase(self.state_dir / "lifecycle-operations.sqlite3")
-        self.desired_state = DesiredStateStore(
+        desired_store = DesiredStateStore(
             self.state_dir / "desired-state.json", state_db=self.state_db
         )
+        self._state_persistence = self._construct_or_rollback(
+            lambda: StatePersistenceAuthority(desired_store)
+        )
+        self.desired_state = self._state_persistence.desired
         self.persistent_config = PersistentConfigStore(self.hyprial_home, self.state_dir)
-        self.user_profiles = UserProfileStore(self.state_dir / "users.json")
+        self._profile_refresh_due = 0.0
+        self._keep_refresh_due = 0.0
         self.user_adapters = UserAdapterRegistry()
         self.stop_event = threading.Event()
+        self._stop_request_trace = _StopRequestTrace()
+        self._trace_presence_enabled = os.environ.get("HYPRIAL_E2E_TRACE_PRESENCE") == "1"
         self.epoch = uuid4().hex
         self._workflow_service: GraphWorkflowService | None = None
         self._routine_service: RoutineService | None = None
-        self._routine_coordinator_lock = threading.RLock()
+        self._routine_coordinator: Any | None = None
+        self._routine_legacy_lock = threading.RLock()
         self._pac_notification_io: InboxDeliveryIoAdapter | None = None
         self._pac_actor_service: Any | None = None
-        self._lifecycle_manager: LifecycleProcessManager | None = None
+        self._pac_graph_authority: Any | None = None
+        self._lifecycle_manager: LifecycleCoordinator | None = None
         self._lifecycle_domain_ports: tuple[AtomicLifecycleDomainPort, ...] = ()
         self._route_registration: RouteRegistrationIo | None = None
         self._routes: RouteRegistrationClient | None = None
         self._lifecycle_router: CorrelationEventRouter | None = None
         self._runtime: DaemonEventBridge | None = None
+        self._dispatch_cadence: BoundedCadence[ReconcileSummary] | None = None
+        self._forwarding_cadence: BoundedCadence[None] | None = None
+        self._session_route_coordinator: SessionRouteCoordinator | None = None
         self._turn_hooks: TurnHookService | None = None
-        self._transport: ZenohTransport | None = None
+        self._transport: TransportSessionAuthority | None = None
+        self._fetch_receipt_publisher: FetchReceiptPublisher | None = None
         self._remote_workflow = None
         self._degraded_workflow_handles: list[Any] = []
         self._presence: _LocalPresence | None = None
@@ -1067,6 +1303,8 @@ class DaemonApplication:
         self._inbox: DeliveryCustodyFacade | None = None
         self._outbox_recipient_wakes = _BoundedRecipientWakes()
         self._inbox_coordinator: DeliveryCustodyCoordinator | None = None
+        self._recipient_wakes: RecipientWakeCoordinator | None = None
+        self._stop_recipient_wake_observer: Callable[[], None] | None = None
         self._harnesses: HarnessPortClient | None = None
         self._registry_management: RegistryManagementHandler | None = None
         self._registry_management_lock = threading.Lock()
@@ -1084,16 +1322,23 @@ class DaemonApplication:
         # record detail when this home was started from a live daemon's copy.
         self._startup_duplicate: JsonObject | None = None
         self._route_gateway_cache = _RouteGatewayCache()
+        self._outbound_gateway_owners: set[GatewayIoAuthority] = set()
         self._interactive_route_lock = threading.RLock()
+        self._interactive_route_actor_versions: dict[str, int] = {}
+        self._interactive_route_versions: dict[tuple[str, str | None], int] = {}
+        self._interactive_route_effect_gates: dict[
+            str, _InteractiveRouteEffectGate
+        ] = {}
+        self._interactive_route_resource_tokens: dict[tuple[str, str], str] = {}
         self._clock: Callable[[], float] = time.monotonic
         self._maintenance_scheduler = GenerationScheduler()
         # Sees the tick that never returns, which reconcile_overrun cannot.
-        self._maintenance_watchdog = MaintenanceWatchdog(
+        self._maintenance_watchdog = self._construct_or_rollback(lambda: MaintenanceWatchdog(
             log=lambda level, event, **fields: self._log(
                 level, "daemon", event, **fields
             ),
             diagnostics=self._transport_lock_holder,
-        )
+        ))
         self._maintenance_generation = 0
         self._owns_process_exit = False
         # The daemon.readiness projection (phase ③): one entry per connector
@@ -1123,7 +1368,7 @@ class DaemonApplication:
             application = application_ref()
             return time.monotonic() if application is None else application._clock()
 
-        self._agent_session_domains = AgentSessionDomains(
+        self._agent_session_domains = self._construct_or_rollback(lambda: AgentSessionDomains(
             database=self.state_dir / "agents.sqlite3",
             desired_state=self.desired_state,
             owner=self.owner,
@@ -1132,7 +1377,11 @@ class DaemonApplication:
             hyprial_home=self.hyprial_home,
             worker_running=actor_worker_running,
             clock=actor_clock,
-        )
+            persistence_late_result=self._state_persistence.result,
+            session_desired_state=getattr(
+                self._state_persistence, "settled_desired", self.desired_state
+            ),
+        ))
         self.agents = self._agent_session_domains.agents
         self._agent_liveness = self._agent_session_domains.liveness
         # P1b B1: the compose path needs the registry's grant/receipt
@@ -1140,32 +1389,84 @@ class DaemonApplication:
         # expose — mutations go through Agent commands; the daemon-side
         # environment composition is a read, not a mutation.
         self._agent_registry = self._agent_session_domains._registry  # noqa: SLF001
-        # Agent-home migrations are filesystem transactions.  Serialize their
-        # daemon entry point so two IPC clients cannot execute or roll back the
-        # same agent concurrently while still allowing unrelated IPC work.
         self._agent_migration_lock = threading.Lock()
-        self._agent_keep = AgentKeepList(
+        self._agent_keep = self._construct_or_rollback(lambda: AgentKeepList(
             self.state_dir / "agent-keep.json",
             normalize=self.agents.normalize_actor,
+        ))
+        self._restore_policy = self._construct_or_rollback(
+            lambda: RestorePolicyAuthority(
+                self.state_dir / "agent-restore-policy.json",
+                normalize=self.agents.normalize_actor,
+            )
         )
-        self._restore_policy = RestorePolicyStore(
-            self.state_dir / "agent-restore-policy.json",
-            normalize=self.agents.normalize_actor,
+        self._restore_activity_unknown: set[str] = set()
+        self._restore_policy_degraded_version = -1
+        self._restore_eligibility_version = 0
+        self._restore_eligibility_lock = threading.Lock()
+        self._pending_restore_eligibility: dict[
+            str, RestoreEligibilityProjection
+        ] = {}
+        self._restore_eligibility_capacity = 10_000
+        self._restore_eligibility_batch = 64
+        self._restore_classifying = False
+        self._restore_wake_cadence: BoundedCadence[None] | None = None
+        self._restore_wake_cursor = 0
+        self._restore_wake_batch = 64
+        self._restore_wake_lock = threading.Lock()
+        self._restore_wake_requests: dict[str, str] = {}
+        self._restore_wake_capacity = 10_000
+        blocking_application_ref = weakref.ref(self)
+
+        def commit_block(
+            recipient: str, reason: str, expected_entity_token: str
+        ):
+            application = blocking_application_ref()
+            if application is None:
+                raise RuntimeError("daemon application is gone")
+            return application._commit_blocking_failure(
+                recipient, reason, expected_entity_token
+            )
+
+        def notify_block(text: str, *, idempotency_key: str):
+            application = blocking_application_ref()
+            if application is None:
+                raise RuntimeError("daemon application is gone")
+            return application._owner_alert_notifier(
+                text, idempotency_key=idempotency_key
+            )
+
+        self._blocking_failures = self._construct_or_rollback(
+            lambda: BlockingFailureAuthority(
+                block=commit_block,
+                notify=notify_block,
+                capacity=10_000,
+            )
         )
+        self._restore_policy_finalizer = weakref.finalize(
+            self, self._restore_policy.close
+        )
+        self._blocking_failures_finalizer = weakref.finalize(
+            self, self._blocking_failures.close
+        )
+        # Preserve the authority constructed above; the legacy standalone store
+        # must not overwrite the object whose close finalizer is registered.
         self._restore_policy_degraded: str | None = None
         self._restore_activity_unknown: set[str] = set()
         self._agent_activity_queue: queue.SimpleQueue[str] = queue.SimpleQueue()
         self._agent_domains_finalizer = weakref.finalize(
             self, self._agent_session_domains.close
         )
-        self._server: socket.socket | None = None
+        self._server: _IpcListener | None = None
         self._accept_reserve_fd: int | None = None
         self._ipc_client_slots = threading.BoundedSemaphore(_IPC_MAX_CLIENTS)
+        self._ipc_request_owner: IpcRequestOwner | None = None
+        self._dispatch_diagnostics: DispatchDiagnostics | None = None
         # Per-method handler cost (see ipc_stats for the attribution rule and
         # the calibration contract).  Owned here, not per connection: the
         # client threads are short-lived and the totals must outlive them.
         self._ipc_stats = CallCostCounters(_IPC_STATS_METHODS, wall=True)
-        self._ipc_clients: set[socket.socket] = set()
+        self._ipc_clients: set[_IpcStream] = set()
         self._ipc_client_threads: set[threading.Thread] = set()
         self._ipc_clients_lock = threading.Lock()
         self._ipc_closing = False
@@ -1200,7 +1501,12 @@ class DaemonApplication:
         # concurrent request's verdicts.
         self._worker_snapshot_local = threading.local()
         self._lock_stream: Any | None = None
-        self._logger = Logger.daemon(self.state_dir, name=self.node_id)
+        self._logger = self._construct_or_rollback(lambda: Logger.daemon(
+            self.state_dir, name=self.node_id, asynchronous=True, capacity=4096
+        ))
+        self._gateway_logger = self._construct_or_rollback(lambda: Logger.adapter(
+            self.state_dir, name=self.node_id, asynchronous=True, capacity=4096
+        ))
         self._orgfs_runtime: OrgFsRuntime | None = None
         self._org_context_bridge: Any | None = None
         # A3 dispatch gate (design-dispatch-always-pac-2026-09-03 §三②): the
@@ -1229,12 +1535,16 @@ class DaemonApplication:
         self._quota_watchdog: QuotaWatchdog | None = None
         if usage_cache is not None:
             try:
-                self._quota_watchdog = QuotaWatchdog(
+                self._quota_watchdog = self._construct_or_rollback(lambda: QuotaWatchdog(
                     state_dir=self.state_dir,
                     deliver=self._quota_watchdog_deliver,
                     readings=usage_cache.snapshots,
                     clock_ms=lambda: time.time_ns() // 1_000_000,
-                )
+                    on_alert=lambda alert: self._log(
+                        "info", "daemon", "quota_watchdog.alerted",
+                        kind=alert.kind, key=alert.key,
+                    ),
+                ))
             except (OSError, ValueError) as error:
                 # An unreadable state file disables the watchdog loudly; it
                 # never blocks the daemon from starting.
@@ -1253,11 +1563,15 @@ class DaemonApplication:
         self._inbox_watchdog: InboxWatchdog | None = None
         self._inbox_watchdog_checked_at_ms = 0
         try:
-            self._inbox_watchdog = InboxWatchdog(
+            self._inbox_watchdog = self._construct_or_rollback(lambda: InboxWatchdog(
                 state_dir=self.state_dir,
                 deliver=self._inbox_watchdog_deliver,
                 clock_ms=lambda: time.time_ns() // 1_000_000,
-            )
+                on_alert=lambda alert: self._log(
+                    "warn", "daemon", "inbox_watchdog.alerted",
+                    kind=alert.kind, key=alert.key,
+                ),
+            ))
         except (OSError, ValueError) as error:
             self._log(
                 "error",
@@ -1265,19 +1579,24 @@ class DaemonApplication:
                 "inbox_watchdog.disabled",
                 error=f"{type(error).__name__}: {error}",
             )
-        self._home_guard = ActiveDaemonHeartbeat(
+        self._home_guard = self._construct_or_rollback(lambda: ActiveDaemonHeartbeat(
             self.hyprial_home,
             keepalive_duration=keepalive_duration,
-            ownership_lost=self.stop_event.set,
+            ownership_lost=self._stop_request_trace.bind(
+                self.stop_event, "home-ownership-lost"
+            ),
             duplicate_detected=self._on_startup_duplicate_detected,
             duplicate_check_failed=self._on_duplicate_check_failed,
-        )
-        self._autoupdate = InProcessAutoUpdateScheduler(
+        ))
+        self._autoupdate = self._construct_or_rollback(lambda: InProcessAutoUpdateScheduler(
             state_dir=self.state_dir,
             hyprial_home=self.hyprial_home,
             logger=lambda level, event, **fields: self._log(
                 level, "autoupdate", event, **fields
             ),
+        ))
+        self.user_profiles = self._construct_or_rollback(
+            lambda: UserProfileAuthority(self.state_dir / "users.json")
         )
 
     def _on_startup_duplicate_detected(self, detail: dict[str, Any]) -> None:
@@ -1410,6 +1729,8 @@ class DaemonApplication:
                 raise
 
         run_failed = False
+        failure_type: str | None = None
+        failure_site: str | None = None
         try:
             # ⚠️ Nothing above `_migrate_logs_at_startup` may write a log line.
             # Migration decides what to archive by looking at what this home
@@ -1498,19 +1819,44 @@ class DaemonApplication:
             # stop path now that the accept loop owns the main thread.
             if self._restore_error is not None:
                 raise self._restore_error
-        except BaseException:
+        except BaseException as error:
             # Cleanup success must not erase the failure that sent us here.
             # Production leaves from the finally block below via os._exit, so
             # the exception itself never reaches the parent process; carry its
             # existence into the status chosen after every shutdown step runs.
             run_failed = True
+            failure_type = type(error).__name__
+            frame = error.__traceback__
+            for _ in range(32):
+                if frame is None:
+                    break
+                code = frame.tb_frame.f_code
+                failure_site = f"{Path(code.co_filename).name}:{frame.tb_lineno}:{code.co_name}"
+                frame = frame.tb_next
+            # Do not retain traceback frames or log exception values/locals.
+            frame = None
             raise
         finally:
             if identity_transaction_stream is not None:
                 identity_transaction_stream.close()
                 identity_transaction_stream = None
             try:
-                self._log("info", "daemon", "daemon.stopping", nodeId=self.node_id)
+                trace = getattr(self, "_stop_request_trace", None)
+                observed = trace.last if trace is not None else None
+                lease_status = getattr(getattr(self, "_home_guard", None), "status", None)
+                try:
+                    lease_observation = lease_status() if callable(lease_status) else None
+                except Exception:
+                    # A diagnostic must not replace shutdown or its failure.
+                    lease_observation = None
+                self._log(
+                    "info", "daemon", "daemon.stopping", nodeId=self.node_id,
+                    stopRequestSource=observed[0] if observed else "unrecorded",
+                    stopSignal=observed[1] if observed else None,
+                    runFailed=run_failed, failureType=failure_type,
+                    failureSite=failure_site,
+                    homeLease=lease_observation,
+                )
                 self._close()
             finally:
                 # Armed *before* the closing steps rather than after them.
@@ -1704,7 +2050,7 @@ class DaemonApplication:
 
         return finish_shutdown(
             steps=(
-                self._home_guard.close,
+                self._close_home_lease,
                 lambda: self._restore_signal_handlers(previous_handlers),
                 record_departure,
                 flush_records,
@@ -1714,6 +2060,10 @@ class DaemonApplication:
             ),
             failed=failed,
         )
+
+    def _close_home_lease(self) -> None:
+        if not self._home_guard.close(5.0):
+            raise RuntimeError("home lease authority did not release before deadline")
 
     def _arm_exit_backstop(self) -> None:
         """Guarantee the process dies once it has finished dying.
@@ -1899,7 +2249,7 @@ class DaemonApplication:
         adapter_configs = {
             adapter.name: adapter for adapter in configuration.channels.gateways
         }
-        instances: dict[str, LarkSdkGateway] = {}
+        instances: dict[str, GatewayIoAuthority] = {}
         configured: list[str] = []
         for profile in self.user_profiles.list():
             adapter_uri = profile.squire_adapter
@@ -1931,7 +2281,8 @@ class DaemonApplication:
                         f"credential {adapter_config.credential_ref} is missing appSecret"
                     )
                 adapter = self._lark_gateway_with_scope_recovery(
-                    adapter_config, app_secret, self.state_dir
+                    adapter_config, app_secret, self.state_dir, owned=True,
+                    logger=self._gateway_logger,
                 )
                 instances[adapter_config.name] = adapter
             self.user_adapters.register(adapter_uri, adapter)
@@ -1970,7 +2321,9 @@ class DaemonApplication:
             *self._agent_session_domains.lifecycle_effect_claims(),
         ]
         backfilled = (
-            backfill_domain_attested_effects(self.state_db, claims)
+            self._state_persistence.settled_journal.backfill_domain_attested_effects(
+                tuple(claims)
+            )
             if claims
             else ()
         )
@@ -2181,7 +2534,11 @@ class DaemonApplication:
                     "until endpoints are configured"
                 ),
             )
-        directory = LivelinessDirectory(transport)
+        trace_options = (
+            {"observation_sink": self._trace_presence_observation}
+            if getattr(self, "_trace_presence_enabled", False) else {}
+        )
+        directory = LivelinessDirectory(transport, **trace_options)
         presence = _LocalPresence(
             directory,
             self.node_id,
@@ -2271,10 +2628,6 @@ class DaemonApplication:
             DaemonStartupPhase.ACTOR_RUNTIME_INBOX_STORE,
         )
         inbox = DeliveryCustodyFacade(inbox_coordinator, inbox_database)
-        # The actor-liveliness observer runs off Zenoh's receive thread. It
-        # only records a bounded, duplicate-free hint; the maintenance owner
-        # applies the actor-owned UPDATE before kicking the delivery pump.
-        self._bind_outbox_recipient_wake(directory, inbox)
         local_delivery.bind_receiver(inbox.receive)
         # PAC owns this outbound path independently of WorkflowService.  The
         # v1 service may share the same typed inbox authority while it exists,
@@ -2307,7 +2660,7 @@ class DaemonApplication:
 
         turn_hooks = TurnHookService(
             home_for_agent=lambda actor: Path(
-                self._agent_registry.home_receipt(actor).path
+                self._agent_session_domains.agent.prevalidate_home(actor).path
             ),
             invoker=InboxTurnHookInvoker(
                 inbox,
@@ -2320,10 +2673,11 @@ class DaemonApplication:
             ),
             before_delivery_supported=before_delivery_supported,
             config_path_for_agent=lambda actor: (
-                self._agent_registry.workspace_path(actor).parent
+                Path(self._agent_session_domains.agent.resolve_workspace_path(actor)).parent
                 / "config"
                 / HOOK_CONFIG_NAME
             ),
+            actor_mode=True,
         )
         self._turn_hooks = turn_hooks
         # Deferred import: hyprial.harnesses eagerly imports .agent_sdk, which
@@ -2341,17 +2695,13 @@ class DaemonApplication:
             # worker's MCP inbox key never drifts from where deliveries land.
             actor = self._canonical_harness_uri(spec.name, spec)
             session_ref = uuid4().hex
-            from hyprial.agents.runtime import (
-                DEFAULT_AGENT_TOOL_PROFILE,
-                resolve_agent_runtime_context,
-            )
+            from hyprial.agents.runtime import DEFAULT_AGENT_TOOL_PROFILE
 
-            runtime_context = resolve_agent_runtime_context(
-                registry=self._agent_registry,
-                agent_name=spec.name,
-                harness=spec.harness,
-                cwd=spec.cwd,
-                tool_profile=DEFAULT_AGENT_TOOL_PROFILE,
+            runtime_context = self._agent_session_domains.agent.prepare_runtime_context(
+                actor,
+                spec.harness,
+                spec.cwd,
+                DEFAULT_AGENT_TOOL_PROFILE,
                 containerized=spec.containerized,
             )
             return build_worker_channel(
@@ -2396,6 +2746,7 @@ class DaemonApplication:
             HarnessLauncher(
                 worker_channel_factory=worker_channel,
                 child_environment_factory=child_environment,
+                runtime_launch_custody=self._agent_runtime_launch_custody,
                 state_dir=self.state_dir,
                 turn_failure_observer=(
                     provider_auth.handle_turn_failure
@@ -2412,9 +2763,12 @@ class DaemonApplication:
             orphan_state_path=self.state_dir / "orphan-processes.json",
             orphan_logger=self._log,
             event_sink=harness_events,
-            desired_state=self.desired_state,
-            automatic_restore_allowed=lambda spec: not self._is_restore_suppressed_spec(
-                spec
+            desired_state=getattr(
+                self._state_persistence, "settled_desired", self.desired_state
+            ),
+            persistence_late_result=self._state_persistence.result,
+            agent_identity=AgentIdentityProjectionView(
+                self._agent_session_domains
             ),
         )
         harnesses = HarnessPortClient(harness_actor, harness_events)
@@ -2500,20 +2854,78 @@ class DaemonApplication:
                 if self._quota_watchdog is not None
                 else None
             ),
-            blocking_failure_observer=self._on_blocking_failure,
-            blocked_actor=self._agent_is_blocked,
+            blocking_failure_observer=self._blocking_failures.submit,
+            blocking_failure_identity=self._blocking_failure_entity_token,
+            blocked_actor=self.agents.is_blocked,
             forwarder=self._forward_as_actor,
             owner_notifier=self._owner_alert_notifier,
             owner_requester_addresses=self._owner_requester_addresses(),
             hold_ttl_ms=hold_policy.ttl_ms,
             turn_hooks=turn_hooks,
+            actor_mode=True,
         )
+        recipient_wakes: RecipientWakeCoordinator | None = None
+        stop_recipient_wake_observer: Callable[[], None] | None = None
+        wake_admission_lock = threading.Lock()
+        wake_admission_open = True
+
+        def submit_recipient_wake(transition: ActorOnlineTransition) -> PortAdmission:
+            with wake_admission_lock:
+                if not wake_admission_open:
+                    return PortAdmission.CLOSING
+                assert recipient_wakes is not None
+                return recipient_wakes.submit(transition)
+
+        def stop_recipient_wake_observer_if_bound() -> None:
+            nonlocal wake_admission_open
+            with wake_admission_lock:
+                wake_admission_open = False
+            if stop_recipient_wake_observer is not None:
+                stop_recipient_wake_observer()
+
+        def retain_runtime_composition() -> None:
+            """Keep constructed owners reachable for the normal _close retry."""
+
+            self._transport = transport
+            self._directory = directory
+            self._presence = presence
+            self._inbox = inbox
+            self._inbox_coordinator = inbox_coordinator
+            self._recipient_wakes = recipient_wakes
+            self._stop_recipient_wake_observer = stop_recipient_wake_observer
+            self._harnesses = harnesses
+            self._turn_hooks = turn_hooks
+            self._adapters = adapters
+            self._lark_events = lark_events
+            self._lark_client = lark_client
+            self._endpoint = endpoint
+            self._status_endpoint = status_endpoint
+            self._user_endpoint = user_endpoint
+            self._user_delivery = user_delivery
+            self._org_endpoint = org_endpoint
+            self._actor_token = actor_token
+            self._duplicate_watch = duplicate_watch
+            self._runtime = runtime
+
         duplicate_watch: DuplicateInstanceWatch | None = None
+        actor_token = None
         try:
+            recipient_wakes = RecipientWakeCoordinator(
+                inbox_coordinator,
+                shared_inbox_events,
+                inbox,
+                directory.presence_projection,
+            )
+            # One typed ingress coalesces committed online transitions. It
+            # advances eligible due times; the Inbox pump performs delivery.
+            stop_recipient_wake_observer = directory.bind_actor_online(
+                submit_recipient_wake
+            )
             recovery = runtime.start()
             actor_token = transport.declare_liveliness(
                 KeySpace().actor_liveliness(self.node_id)
             )
+            self._trace_presence_announcement()
             # The watch's own constructor closes its token if observing
             # fails, so a raised construction leaves nothing behind.
             duplicate_watch = DuplicateInstanceWatch(
@@ -2525,32 +2937,22 @@ class DaemonApplication:
                 ),
             )
         except BaseException as startup_error:
-            cleanup_errors: list[BaseException] = []
-            for cleanup in (
-                harnesses.stop,
-                turn_hooks.close,
-                adapters.stop,
-                lark_events.close,
-                org_endpoint.close,
-                user_endpoint.close,
-                status_endpoint.close,
-                endpoint.close,
-                directory.close,
-                inbox.close,
-                *(() if duplicate_watch is None else (duplicate_watch.close,)),
-                transport.close,
-            ):
-                try:
-                    cleanup()
-                except BaseException as error:
-                    cleanup_errors.append(error)
-            if cleanup_errors:
+            # Production run() reaches its finally/_close after this raise.
+            # Publish every constructed owner first so that one established
+            # dependency order handles both successful and partial starts.
+            retain_runtime_composition()
+            try:
+                stop_recipient_wake_observer_if_bound()
+            except BaseException as error:
                 raise BaseExceptionGroup(
-                    "daemon startup and composition cleanup failed",
-                    [startup_error, *cleanup_errors],
+                    "daemon startup and observer rollback failed",
+                    [startup_error, error],
                 ) from startup_error
             raise
+        assert recipient_wakes is not None
+        assert stop_recipient_wake_observer is not None
         self._transport = transport
+        self._fetch_receipt_publisher = FetchReceiptPublisher(transport, logger=self._log)
         if self._forwarding_automatic is not None and forwarding_listen:
             # Only now is the inbound port certainly this daemon's: the
             # session bound it.  The first dial rides the reconciler's redial
@@ -2564,6 +2966,8 @@ class DaemonApplication:
         self._presence = presence
         self._inbox = inbox
         self._inbox_coordinator = inbox_coordinator
+        self._recipient_wakes = recipient_wakes
+        self._stop_recipient_wake_observer = stop_recipient_wake_observer
         self._harnesses = harnesses
         self._adapters = adapters
         self._lark_events = lark_events
@@ -2590,6 +2994,8 @@ class DaemonApplication:
             DaemonPacNotificationSender,
             PacActorService,
         )
+        from hyprial.pac.authority import PacGraphAuthority
+        from hyprial.pac.store import default_database_path
 
         # U0BRACE: nothing else may live here.  This used to be the call site
         # of ``_bootstrap_lifecycle_harnesses``, which submitted one create
@@ -2653,6 +3059,7 @@ class DaemonApplication:
             "workflow.dispatch",
             "workflow.mutation",
             "workflow.recovery",
+            "workflow.remote",
             "routine.dispatch",
             "pac.actor.cadence",
         )
@@ -2678,6 +3085,19 @@ class DaemonApplication:
 
         def degrade_workflow_components() -> None:
             suspend_pac_actor()
+            graph_authority = self._pac_graph_authority
+            self._pac_graph_authority = None
+            if graph_authority is not None:
+                try:
+                    if not graph_authority.close(5.0):
+                        raise RuntimeError("PAC graph authority did not drain")
+                except Exception as error:
+                    self._log(
+                        "error", "pac", "workflow.degrade_cleanup_failed",
+                        phase="pac-graph", exceptionClass=type(error).__name__,
+                        detail=str(error),
+                    )
+                    self._degraded_workflow_handles.append(graph_authority)
             remote = self._remote_workflow
             self._remote_workflow = None
             if remote is not None:
@@ -2712,7 +3132,23 @@ class DaemonApplication:
 
         from hyprial.dispatch.remote_workflow import RemoteWorkflow
         dispatch_alarm = DispatchAlarm(inbox.alarm_emitter, self._workflow_deliver_user, self._logger)
+        pac_graph_ready = False
         if workflow_cutover_ok:
+            try:
+                self._pac_graph_authority = PacGraphAuthority(
+                    default_database_path(self.state_dir),
+                    DaemonPacNotificationSender(self),
+                    logger=self._log,
+                )
+            except Exception as error:
+                self._log(
+                    "error", "pac", "pac.graph_authority_unavailable",
+                    errorType=type(error).__name__, detail=str(error)[:500],
+                    disabledCapabilities=workflow_disabled,
+                )
+            else:
+                pac_graph_ready = True
+        if pac_graph_ready:
             try:
                 self._pac_actor_service = PacActorService(
                     state_dir=self.state_dir,
@@ -2721,6 +3157,7 @@ class DaemonApplication:
                     sender=DaemonPacNotificationSender(self),
                     daemon_epoch=self.epoch,
                     logger=self._log,
+                    graph_authority=self._pac_graph_authority,
                 )
             except Exception as error:  # noqa: BLE001 - cadence is optional
                 self._pac_actor_service = None
@@ -2733,12 +3170,14 @@ class DaemonApplication:
                     detail=str(error),
                     disabledCapabilities=workflow_disabled,
                 )
-        if workflow_cutover_ok:
+        if pac_graph_ready:
             try:
                 self._workflow_service = GraphWorkflowService(
                     state_dir=self.state_dir, owner=self.owner, machine=self.node_id,
                     sender=DaemonPacNotificationSender(self),
                     admit=self._workflow_admit, logger=self._log,
+                    delivery_receipt=self._pac_graph_authority,
+                    graph_authority=self._pac_graph_authority,
                 )
             except Exception as error:  # noqa: BLE001 - autoupdate must remain reachable
                 self._log(
@@ -2801,6 +3240,7 @@ class DaemonApplication:
                         deliver=self._deliver_routine_task,
                         clock_ms=lambda: time.time_ns() // 1_000_000,
                         resolve_principal=self._resolve_routine_principal,
+                        graph_authority=self._pac_graph_authority,
                     ),
                     alarm=dispatch_alarm,
                     state_dir=self.state_dir,
@@ -2812,6 +3252,21 @@ class DaemonApplication:
                 )
                 adopted_routines = self._routine_service.recover()
                 self._reconcile_routine_coordinators()
+                if self._pac_graph_authority is not None:
+                    from hyprial.routine.coordinator import RoutineCoordinator
+
+                    self._routine_coordinator = RoutineCoordinator(
+                        state_dir=self.state_dir,
+                        routines=self._routine_service,
+                        ensure_coordinator=lambda routine: self._ensure_routine_coordinator(
+                            routine, recovering=False
+                        ),
+                        retire_coordinator=self._retire_routine_coordinator,
+                        close_graph=lambda graph_id, actor: self._pac_graph_authority.close_graph(
+                            graph_id, actor=actor
+                        ),
+                        compensate_agent=self._compensate_default_agent_incarnation,
+                    )
             except Exception as error:  # noqa: BLE001 - routine is optional
                 routine = self._routine_service
                 self._routine_service = None
@@ -2871,6 +3326,10 @@ class DaemonApplication:
                 )
             self._require_org_context_bridge().publish_accepted()
             self._clean_dead_interactive_sessions()
+            # Startup restoration is part of the same Session/route domain as
+            # live heartbeat and expiry.  Create its owner before replay so
+            # production never falls back to the legacy application lock.
+            self._ensure_session_route_coordinator()
             self._restore_interactive_routes()
             # Bindings are per daemon generation; re-derive them from desired
             # state so the A1 uniqueness gate survives a restart.
@@ -2918,7 +3377,7 @@ class DaemonApplication:
     def _start_lifecycle_manager(
         self,
         *,
-        transport: ZenohTransport,
+        transport: TransportSessionAuthority,
         inbox: DeliveryCustodyFacade,
         local_delivery: LocalFirstDeliveryTransport,
         harnesses: HarnessPortClient,
@@ -2948,15 +3407,9 @@ class DaemonApplication:
             version=lambda: self._agent_session_domains.session.version,
             submit_domain=self._agent_session_domains.session.submit,
             wait_domain=self._agent_session_domains.wait_session_lifecycle,
-            retire_receipt=lambda attempt, token: (
-                self.desired_state.retire_lifecycle_receipt(
-                    "session", attempt, token
-                )
-            ),
-            confirm_receipt_retired=lambda attempt, token: (
-                self.desired_state.confirm_lifecycle_receipt_retired(
-                    "session", attempt, token
-                )
+            retire_receipt=self._agent_session_domains.retire_session_lifecycle_receipt,
+            confirm_receipt_retired=(
+                self._agent_session_domains.confirm_session_lifecycle_receipt
             ),
         )
         harness_port = HarnessLifecycleDomainPort(
@@ -2967,21 +3420,14 @@ class DaemonApplication:
             version=lambda: harnesses.version,
             submit_domain=harnesses.submit_lifecycle,
             wait_domain=harnesses.wait_lifecycle,
-            retire_receipt=lambda attempt, token: (
-                self.desired_state.retire_lifecycle_receipt(
-                    "harness", attempt, token
-                )
-            ),
-            confirm_receipt_retired=lambda attempt, token: (
-                self.desired_state.confirm_lifecycle_receipt_retired(
-                    "harness", attempt, token
-                )
-            ),
+            retire_receipt=harnesses.retire_lifecycle_receipt,
+            confirm_receipt_retired=harnesses.confirm_lifecycle_receipt_retired,
             release_replay_claim=harnesses.actor.release_lifecycle_replay,
         )
 
         def register_route(spec: RouteSpec) -> tuple[Any, Any]:
             local = local_delivery.register_actor(spec.route_id)
+            combined: _HarnessActorRegistration | None = None
             try:
                 network = (
                     transport.declare_liveliness(spec.liveliness_key)
@@ -3004,15 +3450,36 @@ class DaemonApplication:
                         spec.route_id,
                         declare_receipts=False,
                     )
-                except BaseException:
-                    combined.close(
-                        reason="route-endpoint-start-failed",
-                        initiator="lifecycle-manager",
-                    )
+                except BaseException as prepare_error:
+                    try:
+                        combined.close(
+                            reason="route-endpoint-start-failed",
+                            initiator="lifecycle-manager",
+                        )
+                    except BaseException as cleanup_error:
+                        raise RoutePreparationFailed(
+                            f"{type(prepare_error).__name__}: {prepare_error}; "
+                            "compound rollback remains pending: "
+                            f"{type(cleanup_error).__name__}: {cleanup_error}",
+                            liveliness=combined,
+                            inbox_closed=True,
+                        ) from cleanup_error
                     raise
                 return combined, endpoint
-            except BaseException:
-                local.close()
+            except RoutePreparationFailed:
+                raise
+            except BaseException as prepare_error:
+                if combined is None:
+                    try:
+                        local.close()
+                    except BaseException as cleanup_error:
+                        raise RoutePreparationFailed(
+                            f"{type(prepare_error).__name__}: {prepare_error}; "
+                            "local rollback remains pending: "
+                            f"{type(cleanup_error).__name__}: {cleanup_error}",
+                            liveliness=local,
+                            inbox_closed=True,
+                        ) from cleanup_error
                 raise
 
         route_port = RouteRegistrationIo(
@@ -3021,11 +3488,13 @@ class DaemonApplication:
             router,
             registration_factory=register_route,
         )
-        manager = LifecycleProcessManager(
+        manager = LifecycleCoordinator(
             self.state_db,
             LifecyclePorts(agent_port, session_port, harness_port, route_port),
             router,
             event_sink=self._lifecycle_thread_event,
+            journal_store=self._state_persistence.settled_journal,
+            combined_shared_receipts=True,
         )
         self._lifecycle_router = router
         self._lifecycle_domain_ports = (agent_port, session_port, harness_port)
@@ -3201,7 +3670,7 @@ class DaemonApplication:
             "lastError": manager.last_error,
         }
 
-    def _route_lark_gateway(self, gateway_config: Any) -> LarkSdkGateway:
+    def _route_lark_gateway(self, gateway_config: Any) -> Any:
         """Return a cached SDK facade for one configured Lark adapter."""
 
         secret_path = (
@@ -3224,85 +3693,124 @@ class DaemonApplication:
                 f"credential {gateway_config.credential_ref} is missing appSecret",
                 {"adapter": gateway_config.name},
             )
-        gateway = self._lark_gateway_with_scope_recovery(
-            gateway_config, app_secret, self.state_dir
+        owners = getattr(self, "_outbound_gateway_owners", None)
+        gateway = (
+            self._lark_gateway_with_scope_recovery(
+                gateway_config, app_secret, self.state_dir, owned=True,
+                logger=self._gateway_logger,
+            )
+            if owners is not None
+            else self._lark_gateway_with_scope_recovery(
+                gateway_config, app_secret, self.state_dir
+            )
         )
-        return self._route_gateway_cache.put(gateway_config.name, fingerprint, gateway)
+        try:
+            return self._route_gateway_cache.put(gateway_config.name, fingerprint, gateway)
+        except BaseException:
+            # The cache did not adopt this fresh SDK owner. It has never been
+            # exposed to senders; close its idle mailbox before propagating.
+            close = getattr(gateway, "close", None)
+            if callable(close):
+                close(2.0)
+            raise
 
     @staticmethod
     def _lark_gateway_with_scope_recovery(
-        gateway_config: Any, app_secret: str, state_dir: Path
-    ) -> LarkSdkGateway:
+        gateway_config: Any, app_secret: str, state_dir: Path, *, owned: bool = False,
+        logger: Logger | None = None,
+    ) -> LarkSdkGateway | GatewayIoAuthority:
         """Build a gateway whose permission notification cannot recurse."""
 
         # Send outcomes (code + msg + native message id) belong on the
         # adapter log so a route send answers "what did Feishu return for
         # this om_" after the fact, in the same file the worker writes.
         gateway_name = getattr(gateway_config, "name", None)
+        owns_logger = owned and logger is None
         gateway_logger = (
-            Logger.adapter(state_dir, name=gateway_name)
-            if isinstance(gateway_name, str) and gateway_name
-            else None
-        )
-        gateway = LarkSdkGateway.from_credentials(gateway_config.app_id, app_secret)
-        configure_logger = getattr(gateway, "set_logger", None)
-        if callable(configure_logger):
-            configure_logger(gateway_logger, gateway_name=gateway_name)
-        default_route = next(
-            (
-                item
-                for item in gateway_config.routes
-                if item.name == gateway_config.default_route
-            ),
-            None,
-        )
-        notification_routes = (
-            (default_route,)
-            if default_route is not None and default_route.type == "direct"
-            else tuple(
-                item
-                for item in gateway_config.routes
-                if default_route is not None
-                and default_route.type == "fanout"
-                and item.name in default_route.members
-                and item.type == "direct"
-            )
-        )
-        notification_gateway = (
-            LarkSdkGateway.from_credentials(gateway_config.app_id, app_secret)
-            if notification_routes
-            else None
-        )
-        if notification_gateway is not None:
-            configure_logger = getattr(notification_gateway, "set_logger", None)
+            logger.bind(name=gateway_name) if logger is not None
+            else Logger.adapter(state_dir, name=gateway_name, asynchronous=owned)
+        ) if isinstance(gateway_name, str) and gateway_name else None
+        notification_owner = None
+        try:
+            gateway = LarkSdkGateway.from_credentials(gateway_config.app_id, app_secret)
+            configure_logger = getattr(gateway, "set_logger", None)
             if callable(configure_logger):
                 configure_logger(gateway_logger, gateway_name=gateway_name)
+            default_route = next(
+                (
+                    item
+                    for item in gateway_config.routes
+                    if item.name == gateway_config.default_route
+                ),
+                None,
+            )
+            notification_routes = (
+                (default_route,)
+                if default_route is not None and default_route.type == "direct"
+                else tuple(
+                    item
+                    for item in gateway_config.routes
+                    if default_route is not None
+                    and default_route.type == "fanout"
+                    and item.name in default_route.members
+                    and item.type == "direct"
+                )
+            )
+            notification_gateway = (
+                LarkSdkGateway.from_credentials(gateway_config.app_id, app_secret)
+                if notification_routes
+                else None
+            )
+            if notification_gateway is not None:
+                configure_logger = getattr(notification_gateway, "set_logger", None)
+                if callable(configure_logger):
+                    configure_logger(gateway_logger, gateway_name=gateway_name)
+            notification_owner = (
+                GatewayIoAuthority(notification_gateway)
+                if owned and notification_gateway is not None else None
+            )
 
-        def notify(text: str) -> None:
-            if notification_gateway is None:
-                return
-            digest = hashlib.sha256(text.encode()).hexdigest()[:16]
-            for route in notification_routes:
-                if route.native_id is not None:
-                    notification_gateway.send_chat(
-                        route.native_id,
-                        text,
-                        idempotency_key=(f"scope-authorization:{route.name}:{digest}"),
-                    )
+            def notify(text: str) -> None:
+                target = notification_owner or notification_gateway
+                if target is None:
+                    return
+                digest = hashlib.sha256(text.encode()).hexdigest()[:16]
+                for route in notification_routes:
+                    if route.native_id is not None:
+                        target.send_chat(
+                            route.native_id,
+                            text,
+                            idempotency_key=(f"scope-authorization:{route.name}:{digest}"),
+                        )
 
-        client = LarkScopeClient(gateway_config.app_id, app_secret)
-        recovery = LarkScopeRecovery(
-            app_id=gateway_config.app_id,
-            apply=client.apply_scopes,
-            notify=notify,
-            throttle=LarkScopeThrottleStore(
-                state_dir / "adapters" / "lark" / "scope-authorization.json"
-            ),
-        )
-        configure = getattr(gateway, "set_permission_recovery", None)
-        if callable(configure):
-            configure(recovery.handle)
-        return gateway
+            client = LarkScopeClient(gateway_config.app_id, app_secret)
+            recovery = LarkScopeRecovery(
+                app_id=gateway_config.app_id,
+                apply=client.apply_scopes,
+                notify=notify,
+                throttle=LarkScopeThrottleStore(
+                    state_dir / "adapters" / "lark" / "scope-authorization.json"
+                ),
+            )
+            configure = getattr(gateway, "set_permission_recovery", None)
+            if callable(configure):
+                configure(recovery.handle)
+            return (
+                GatewayIoAuthority(
+                    gateway,
+                    dependents=(
+                        *((notification_owner,) if notification_owner is not None else ()),
+                        *((gateway_logger,) if owns_logger and gateway_logger is not None else ()),
+                    ),
+                )
+                if owned else gateway
+            )
+        except BaseException:
+            if notification_owner is not None:
+                notification_owner.close(2.0)
+            if owns_logger and gateway_logger is not None:
+                gateway_logger.close(2.0)
+            raise
 
     def _workflow_deliver_user(self, recipient: str, text: str, message_id: str) -> bool:
         """Escalation delivery to a ``user:<owner>`` target via the Squire
@@ -3373,11 +3881,15 @@ class DaemonApplication:
         candidate = agent.uri
         return candidate if parse_agent_uri(candidate) is not None else None
 
-    def _quota_watchdog_deliver(self, idempotency_key: str, text: str) -> bool:
+    def _quota_watchdog_deliver(
+        self, idempotency_key: str, text: str
+    ) -> "AlertDeliveryOutcome":
         """Watchdog alerts go to this daemon's owner through Squire."""
 
+        from hyprial.watchdog_actor import AlertDeliveryOutcome
+
         if self._user_delivery is None:
-            return False
+            return AlertDeliveryOutcome(False, True)
         outcome = self._user_delivery.deliver(
             UserDeliveryRequest(
                 message_id=f"quota-watchdog-{uuid4().hex[:12]}",
@@ -3388,13 +3900,19 @@ class DaemonApplication:
                 conversation_id="quota-watchdog",
             )
         )
-        return outcome.accepted
+        return AlertDeliveryOutcome(
+            outcome.accepted, outcome.definitely_not_sent
+        )
 
-    def _inbox_watchdog_deliver(self, idempotency_key: str, text: str) -> bool:
+    def _inbox_watchdog_deliver(
+        self, idempotency_key: str, text: str
+    ) -> "AlertDeliveryOutcome":
         """Mail-collection alerts go to this daemon's owner through Squire."""
 
+        from hyprial.watchdog_actor import AlertDeliveryOutcome
+
         if self._user_delivery is None:
-            return False
+            return AlertDeliveryOutcome(False, True)
         outcome = self._user_delivery.deliver(
             UserDeliveryRequest(
                 message_id=f"inbox-watchdog-{uuid4().hex[:12]}",
@@ -3405,7 +3923,9 @@ class DaemonApplication:
                 conversation_id="inbox-watchdog",
             )
         )
-        return outcome.accepted
+        return AlertDeliveryOutcome(
+            outcome.accepted, outcome.definitely_not_sent
+        )
 
     def _deliver_to_live_user_proxy(
         self, agent: str, request: UserDeliveryRequest
@@ -3513,48 +4033,94 @@ class DaemonApplication:
         if alert is not None:
             self._log("info", "daemon", "quota_watchdog.alerted", kind=alert.kind, key=alert.key)
 
+    def _blocking_failure_entity_token(self, recipient: str) -> str | None:
+        projection = self.agents.projection(recipient)
+        return None if projection is None else projection.entity_token
+
+    def _commit_blocking_failure(
+        self, recipient: str, reason: str, expected_entity_token: str
+    ):
+        projection = self.agents.projection(recipient)
+        if (
+            projection is None
+            or projection.entity_token != expected_entity_token
+        ):
+            return None
+        try:
+            blocked, changed = self.agents.block_agent(
+                projection.actor,
+                reason=reason,
+                expected_entity_token=expected_entity_token,
+            )
+        except DomainCommandError as error:
+            if error.code == ipc_errors.AGENT_NOT_FOUND:
+                return None
+            raise
+        if blocked.entity_token != expected_entity_token:
+            return None
+        projection = self.agents.projection(blocked.actor)
+        block = None if projection is None else projection.block
+        spec = next(
+            (
+                item
+                for item in self.desired_state.load().harnesses
+                if item.name == blocked.actor and item.harness != "lark"
+            ),
+            None,
+        )
+        if spec is not None:
+            self._publish_restore_eligibility(
+                spec=spec,
+                entity_token=expected_entity_token,
+                suppressed=False,
+            )
+        if changed:
+            self._log(
+                "warn",
+                "daemon",
+                "agent.blocked",
+                actor=blocked.uri,
+                reason=reason,
+                **(
+                    {"blockedAtMs": block.blocked_at_ms}
+                    if block is not None
+                    else {}
+                ),
+            )
+        return blocked, changed, reason if block is None else block.reason
+
     def _agent_is_blocked(self, actor: str) -> bool:
-        return self._agent_registry.is_blocked(actor)
+        """Compatibility query; the Agent owner supplies the committed fact."""
+        return self.agents.is_blocked(actor)
 
     def _on_blocking_failure(self, recipient: str, failure_code: str) -> None:
+        """Preserve the synchronous legacy entry through typed Agent commands.
+
+        Production delivery uses BlockingFailureAuthority and its captured
+        incarnation; this direct entry resolves the current incarnation at call.
+        """
         reason = {
             "PROVIDER_USAGE_LIMIT": "provider-quota",
             "PROVIDER_AUTHENTICATION_FAILED": "credential-invalid",
         }.get(failure_code)
         if reason is None:
             return
-        agent = self.agents.get(recipient)
-        if agent is None:
+        projection = self.agents.projection(recipient)
+        if projection is None:
             return
-        block, changed = self._agent_registry.block_agent(
-            agent.actor, reason=reason
-        )
-        self._agent_registry.clear_restore_disposition(agent.actor)
-        if not changed:
+        result = self._commit_blocking_failure(recipient, reason, projection.entity_token)
+        if result is None or not result[1]:
             return
-        self._log(
-            "warn",
-            "daemon",
-            "agent.blocked",
-            actor=agent.uri,
-            reason=reason,
-            blockedAtMs=block.blocked_at_ms,
-        )
+        agent = result[0]
         try:
             self._owner_alert_notifier(
                 f"Agent {agent.actor} is blocked and needs human action: {reason}.",
-                idempotency_key=(
-                    f"agent-blocked:{agent.entity_token}:{reason}"
-                ),
+                idempotency_key=f"agent-blocked:{agent.entity_token}:{reason}",
             )
-        except Exception as error:  # noqa: BLE001 - notice cannot break settlement
+        except Exception as error:  # noqa: BLE001 - preserve committed block
             self._log(
-                "error",
-                "daemon",
-                "agent.block.notice_failed",
-                actor=agent.uri,
-                reason=reason,
-                errorType=type(error).__name__,
+                "error", "daemon", "agent.block.notice_failed",
+                actor=agent.uri, reason=reason, errorType=type(error).__name__,
             )
 
     def _deliver_routine_task(
@@ -3903,132 +4469,246 @@ class DaemonApplication:
             and (pending(agent.uri) or pending(agent.actor))
         )
 
-    def _wake_dormant_agent(self, actor: str, *, reason: str) -> bool:
-        agent = self.agents.get(actor)
-        if agent is None or self._agent_registry.restore_disposition(agent.actor) is None:
+    def _pac_restore_fact(self, actor: str) -> PacRestoreFacts | None:
+        authority = self._pac_graph_authority
+        reader = getattr(authority, "restore_facts", None)
+        if not callable(reader):
+            return None
+        try:
+            return reader(actor)
+        except Exception as error:  # noqa: BLE001 - unavailable facts fail open
+            self._log(
+                "warn",
+                "daemon",
+                "restore-pac-facts-degraded",
+                actor=actor,
+                errorType=type(error).__name__,
+            )
+            return None
+
+    def _publish_restore_eligibility(
+        self,
+        *,
+        spec: HarnessLaunchSpec,
+        entity_token: str,
+        suppressed: bool,
+    ) -> None:
+        harnesses = self._harnesses
+        if harnesses is None:
+            return
+        submit = getattr(harnesses, "submit_restore_eligibility", None)
+        if not callable(submit):
+            return
+        current_agent = self.agents.projection(spec.name)
+        if current_agent is None or current_agent.entity_token != entity_token:
+            return
+        current_spec = next(
+            (
+                item
+                for item in self.desired_state.load().harnesses
+                if item.harness == spec.harness and item.name == spec.name
+            ),
+            None,
+        )
+        if (
+            current_spec is None
+            or desired_generation(current_spec) != desired_generation(spec)
+        ):
+            return
+        with self._restore_eligibility_lock:
+            self._restore_eligibility_version += 1
+            version = self._restore_eligibility_version
+        eligibility = RestoreEligibilityProjection(
+            actor=spec.name,
+            entity_token=entity_token,
+            desired_generation=desired_generation(spec),
+            suppressed=suppressed,
+            source_generation=self._agent_session_domains.agent.generation,
+            source_version=version,
+        )
+        if self._restore_classifying:
+            with self._restore_eligibility_lock:
+                if (
+                    spec.name in self._pending_restore_eligibility
+                    or len(self._pending_restore_eligibility)
+                    < self._restore_eligibility_capacity
+                ):
+                    self._pending_restore_eligibility[spec.name] = eligibility
+            return
+        admission = submit(eligibility)
+        with self._restore_eligibility_lock:
+            if admission is PortAdmission.ACCEPTED:
+                self._pending_restore_eligibility.pop(spec.name, None)
+            elif (
+                spec.name in self._pending_restore_eligibility
+                or len(self._pending_restore_eligibility)
+                < self._restore_eligibility_capacity
+            ):
+                self._pending_restore_eligibility[spec.name] = eligibility
+        if admission is PortAdmission.OVERLOADED:
+            self._log(
+                "warn",
+                "daemon",
+                "harness.restore_eligibility_overloaded",
+                actor=spec.name,
+            )
+
+    def _retry_restore_eligibility(self) -> None:
+        harnesses = self._harnesses
+        if harnesses is None:
+            return
+        submit = getattr(harnesses, "submit_restore_eligibility", None)
+        if not callable(submit):
+            return
+        with self._restore_eligibility_lock:
+            pending = tuple(self._pending_restore_eligibility.items())[
+                : self._restore_eligibility_batch
+            ]
+        for actor, eligibility in pending:
+            if not self._restore_eligibility_current(eligibility):
+                with self._restore_eligibility_lock:
+                    if self._pending_restore_eligibility.get(actor) == eligibility:
+                        self._pending_restore_eligibility.pop(actor, None)
+                continue
+            admission = submit(eligibility)
+            if admission is PortAdmission.ACCEPTED:
+                with self._restore_eligibility_lock:
+                    if self._pending_restore_eligibility.get(actor) == eligibility:
+                        self._pending_restore_eligibility.pop(actor, None)
+            elif admission is PortAdmission.OVERLOADED:
+                break
+
+    def _restore_eligibility_current(
+        self, eligibility: RestoreEligibilityProjection
+    ) -> bool:
+        agent = self.agents.projection(eligibility.actor)
+        if agent is None or agent.entity_token != eligibility.entity_token:
             return False
         spec = next(
             (
                 item
                 for item in self.desired_state.load().harnesses
-                if item.harness != "lark" and item.name == agent.actor
+                if item.name == eligibility.actor and item.harness != "lark"
             ),
             None,
         )
-        self._agent_registry.clear_restore_disposition(agent.actor)
-        if spec is None:
-            return False
-        try:
-            if self._lifecycle_manager is not None:
-                self._run_lifecycle_operation(
-                    LifecycleOperation.create(
-                        f"restore-wake:{reason}:{uuid4().hex}",
-                        self._lifecycle_spec(spec),
-                    )
-                )
-            elif self._harnesses is not None:
-                self._harnesses.start(spec)
-        except Exception as error:  # noqa: BLE001 - pending work stays durable
-            self._log(
-                "warn",
-                "daemon",
-                "harness.restore.wake_failed",
-                actor=agent.uri,
-                reason=reason,
-                errorType=type(error).__name__,
-                detail=str(error)[:500],
-            )
-            return False
-        self._log(
-            "info",
-            "daemon",
-            "harness.restore.woken",
-            actor=agent.uri,
-            reason=reason,
+        return bool(
+            spec is not None
+            and desired_generation(spec) == eligibility.desired_generation
         )
-        return True
 
-    def _restore_policy_or_degraded(self) -> RestorePolicy | None:
+    def _restore_policy_or_degraded(self):
+        """Retain the dev refresh entry through the policy storage owner."""
         try:
-            policy = self._restore_policy.load()
+            self._restore_policy.refresh(wait=True)
+            projection = self._restore_policy.projection()
             self._agent_keep.list()
-        except (OSError, RestorePolicyError, AgentKeepListError) as error:
+            if projection.degraded is not None:
+                raise RestorePolicyError(projection.degraded)
+        except (OSError, RestorePolicyError, AgentKeepListError, TimeoutError) as error:
             self._restore_policy_degraded = str(error)
-            self._log(
-                "warn",
-                "daemon",
-                "restore-policy-degraded",
-                errorType=type(error).__name__,
-                detail=str(error)[:500],
-            )
+            self._log("warn", "daemon", "restore-policy-degraded",
+                      errorType=type(error).__name__, detail=str(error)[:500])
             return None
         self._restore_policy_degraded = None
-        return policy
+        return projection.policy
+
+    def _restore_threshold_for_status(self) -> int:
+        return self._restore_policy.projection().policy.threshold_ms
 
     def _is_restore_suppressed_spec(self, spec: HarnessLaunchSpec) -> bool:
-        """Reconcile-side fence: degraded policy and stale incarnations restore."""
-
+        """Legacy query entry, with incarnation-fenced owner mutations."""
         agent = self.agents.get(spec.name)
-        if agent is None:
+        projection = self.agents.projection(spec.name)
+        if agent is None or projection is None or projection.restore_disposition is None:
             return False
-        generation = desired_generation(spec)
-        disposition = self._agent_registry.restore_disposition(
-            agent.actor, desired_generation=generation
-        )
-        if disposition is None:
-            return False
+        disposition = projection.restore_disposition
         policy = self._restore_policy_or_degraded()
-        if policy is None:
-            self._agent_registry.clear_restore_disposition(agent.actor)
-            return False
         try:
-            kept = agent.actor in self._agent_keep.list()
-            pending = self._pending_restore_work(agent)
+            allowed = (
+                policy is None
+                or disposition.desired_generation != desired_generation(spec)
+                or agent.actor in self._agent_keep.list()
+                or self._pending_restore_work(agent)
+                or policy.policy_for(agent.actor) == "always"
+                or projection.block is not None
+            )
         except Exception as error:  # noqa: BLE001 - unreadable override restores
             self._restore_policy_degraded = str(error)
-            self._agent_registry.clear_restore_disposition(agent.actor)
-            return False
-        if (
-            kept
-            or pending
-            or policy.policy_for(agent.actor) == "always"
-            or self._agent_registry.is_blocked(agent.actor)
-        ):
-            self._agent_registry.clear_restore_disposition(agent.actor)
+            allowed = True
+        if allowed:
+            self.agents.clear_restore_disposition(
+                agent.actor, expected_entity_token=agent.entity_token,
+                expected_desired_generation=disposition.desired_generation,
+                expected_disposition_token=disposition.disposition_token,
+            )
             return False
         return True
 
     def _classify_restore_specs(
         self, specs: tuple[HarnessLaunchSpec, ...]
     ) -> tuple[HarnessLaunchSpec, ...]:
-        policy = self._restore_policy_or_degraded()
-        if policy is None:
+        self._restore_policy_or_degraded()
+        policy_projection = self._restore_policy.projection()
+        if policy_projection.degraded is not None or self._restore_policy_degraded is not None:
+            if self._restore_policy_degraded_version != policy_projection.version:
+                self._restore_policy_degraded_version = policy_projection.version
+                self._log(
+                    "warn",
+                    "daemon",
+                    "restore-policy-degraded",
+                    detail=policy_projection.degraded or self._restore_policy_degraded,
+                )
+            for spec in specs:
+                agent = self.agents.get(spec.name)
+                if agent is None:
+                    continue
+                self.agents.clear_restore_disposition(
+                    agent.actor,
+                    expected_entity_token=agent.entity_token,
+                )
+                self._publish_restore_eligibility(
+                    spec=spec,
+                    entity_token=agent.entity_token,
+                    suppressed=False,
+                )
             return specs
-        now_ms = self._restore_now_ms()
-        try:
-            kept = frozenset(self._agent_keep.list())
-        except AgentKeepListError:
-            return specs
+        policy = policy_projection.policy
+        kept = frozenset(self._agent_keep.list())
         restored: list[HarnessLaunchSpec] = []
         self._restore_activity_unknown.clear()
+        now_ms = self._restore_now_ms()
         for spec in specs:
             agent = self.agents.get(spec.name)
-            if agent is None:
+            projection = self.agents.projection(spec.name)
+            if agent is None or projection is None:
                 restored.append(spec)
                 continue
-            try:
-                pac = pac_restore_facts(
-                    self.state_dir / "pac-graph.sqlite3", agent.actor
+            pac = self._pac_restore_fact(agent.actor)
+            if pac is None:
+                restored.append(spec)
+                self._publish_restore_eligibility(
+                    spec=spec,
+                    entity_token=agent.entity_token,
+                    suppressed=False,
                 )
-            except (OSError, sqlite3.Error):
-                restored.append(spec)
                 continue
-            if pac.terminal:
-                self._agent_registry.clear_restore_disposition(agent.actor)
+            if bool(getattr(pac, "terminal", False)):
+                self.agents.clear_restore_disposition(
+                    agent.actor,
+                    expected_entity_token=agent.entity_token,
+                )
+                self._publish_restore_eligibility(
+                    spec=spec,
+                    entity_token=agent.entity_token,
+                    suppressed=False,
+                )
                 continue
             agent_policy = policy.policy_for(agent.actor)
-            pending = self._pending_restore_work(agent) or pac.pending_work
-            blocked = self._agent_registry.is_blocked(agent.actor)
+            pending = self._pending_restore_work(agent) or bool(
+                getattr(pac, "pending_work", False)
+            )
+            blocked = projection.block is not None
             override = (
                 "keep-list"
                 if agent.actor in kept
@@ -4054,30 +4734,206 @@ class DaemonApplication:
                 )
             )
             if should_restore:
-                self._agent_registry.clear_restore_disposition(agent.actor)
+                self.agents.clear_restore_disposition(
+                    agent.actor,
+                    expected_entity_token=agent.entity_token,
+                )
                 restored.append(spec)
                 if activity_unknown:
                     self._restore_activity_unknown.add(agent.actor)
                     self.agents.record_activity(agent.actor)
+                self._publish_restore_eligibility(
+                    spec=spec,
+                    entity_token=agent.entity_token,
+                    suppressed=False,
+                )
                 continue
-            self._agent_registry.suppress_restore(
+            self.agents.suppress_restore(
                 agent.actor,
                 desired_generation=desired_generation(spec),
                 last_active_at_ms=agent.last_active_at_ms,
                 idle_age_ms=idle_age_ms,
                 restore_threshold_ms=policy.threshold_ms,
-                restore_override=("per-agent" if agent_policy == "never" else "none"),
+                restore_override=(
+                    "per-agent" if agent_policy == "never" else "none"
+                ),
                 activity_unknown=False,
             )
+            self._publish_restore_eligibility(
+                spec=spec,
+                entity_token=agent.entity_token,
+                suppressed=True,
+            )
             self._log(
-                "info",
-                "daemon",
-                "harness.restore.idle_suppressed",
-                actor=agent.uri,
-                idleAgeMs=idle_age_ms,
+                "info", "daemon", "harness.restore.idle_suppressed",
+                actor=agent.uri, idleAgeMs=idle_age_ms,
                 restoreThresholdMs=policy.threshold_ms,
             )
         return tuple(restored)
+
+    def _wake_dormant_agent(self, actor: str, *, reason: str) -> bool:
+        agent = self.agents.get(actor)
+        projection = self.agents.projection(actor)
+        if (
+            agent is None
+            or projection is None
+            or projection.restore_disposition is None
+        ):
+            return False
+        disposition = projection.restore_disposition
+        spec = next(
+            (
+                item
+                for item in self.desired_state.load().harnesses
+                if item.harness != "lark" and item.name == agent.actor
+            ),
+            None,
+        )
+        if spec is None:
+            self.agents.clear_restore_disposition(
+                agent.actor,
+                expected_entity_token=agent.entity_token,
+                expected_desired_generation=disposition.desired_generation,
+                expected_disposition_token=disposition.disposition_token,
+            )
+            return True
+        if disposition.desired_generation != desired_generation(spec):
+            cleared_stale = self.agents.clear_restore_disposition(
+                agent.actor,
+                expected_entity_token=agent.entity_token,
+                expected_desired_generation=disposition.desired_generation,
+                expected_disposition_token=disposition.disposition_token,
+            )
+            if cleared_stale:
+                self._publish_restore_eligibility(
+                    spec=spec,
+                    entity_token=agent.entity_token,
+                    suppressed=False,
+                )
+        try:
+            if self._lifecycle_manager is not None:
+                self._run_lifecycle_operation(
+                    LifecycleOperation.create(
+                        (
+                            f"restore-wake:{agent.actor}:"
+                            f"{agent.entity_token}:"
+                            f"{disposition.disposition_token}:"
+                            f"{desired_generation(spec)}"
+                        ),
+                        self._lifecycle_spec(spec),
+                    )
+                )
+            elif self._harnesses is not None:
+                self._harnesses.start(spec)
+        except Exception as error:  # noqa: BLE001 - durable intent remains
+            self._log(
+                "warn",
+                "daemon",
+                "harness.restore.wake_failed",
+                actor=agent.uri,
+                reason=reason,
+                errorType=type(error).__name__,
+            )
+            return False
+        self.agents.clear_restore_disposition(
+            agent.actor,
+            expected_entity_token=agent.entity_token,
+            expected_desired_generation=disposition.desired_generation,
+            expected_disposition_token=disposition.disposition_token,
+        )
+        current = self.agents.projection(agent.actor)
+        if current is not None and current.restore_disposition is None:
+            self._publish_restore_eligibility(
+                spec=spec,
+                entity_token=agent.entity_token,
+                suppressed=False,
+            )
+        self._log(
+            "info", "daemon", "harness.restore.woken",
+            actor=agent.uri, reason=reason,
+        )
+        return True
+
+    def _restore_wake_scan(self, _observed_at_ms: int) -> None:
+        policy = self._restore_policy.projection()
+        with self._restore_wake_lock:
+            requested = tuple(self._restore_wake_requests.items())[
+                : self._restore_wake_batch
+            ]
+        requested_actors = {actor for actor, _reason in requested}
+        for actor, reason in requested:
+            projection = self.agents.projection(actor)
+            settled = (
+                projection is None
+                or projection.restore_disposition is None
+                or self._wake_dormant_agent(actor, reason=reason)
+            )
+            if settled:
+                with self._restore_wake_lock:
+                    if self._restore_wake_requests.get(actor) == reason:
+                        self._restore_wake_requests.pop(actor, None)
+        agents = self.agents.list()
+        if not agents:
+            return
+        start = self._restore_wake_cursor % len(agents)
+        ordered = (*agents[start:], *agents[:start])
+        selected = ordered[: self._restore_wake_batch]
+        self._restore_wake_cursor = (start + len(selected)) % len(agents)
+        if policy.degraded is not None:
+            if self._restore_policy_degraded_version != policy.version:
+                self._restore_policy_degraded_version = policy.version
+                self._log(
+                    "warn",
+                    "daemon",
+                    "restore-policy-degraded",
+                    detail=policy.degraded,
+                )
+            for agent in selected:
+                projection = self.agents.projection(agent.actor)
+                if (
+                    projection is not None
+                    and projection.restore_disposition is not None
+                ):
+                    self._wake_dormant_agent(agent.actor, reason="policy-degraded")
+            return
+        kept = frozenset(self._agent_keep.list())
+        for agent in selected:
+            if agent.actor in requested_actors:
+                continue
+            projection = self.agents.projection(agent.actor)
+            if projection is None or projection.restore_disposition is None:
+                continue
+            pac = self._pac_restore_fact(agent.actor)
+            if pac is not None and bool(getattr(pac, "terminal", False)):
+                cleared = self.agents.clear_restore_disposition(
+                    agent.actor,
+                    expected_entity_token=agent.entity_token,
+                    expected_desired_generation=(
+                        projection.restore_disposition.desired_generation
+                    ),
+                    expected_disposition_token=(
+                        projection.restore_disposition.disposition_token
+                    ),
+                )
+                if cleared:
+                    self._publish_agent_restore_allow(agent)
+                continue
+            pending = self._pending_restore_work(agent) or bool(
+                pac is not None and getattr(pac, "pending_work", False)
+            )
+            reason = (
+                "blocked"
+                if projection.block is not None
+                else "keep-list"
+                if agent.actor in kept
+                else "pending-work"
+                if pending
+                else "per-agent-always"
+                if policy.policy.policy_for(agent.actor) == "always"
+                else None
+            )
+            if reason is not None:
+                self._wake_dormant_agent(agent.actor, reason=reason)
 
     def _restore_harnesses(self) -> None:
         """Bring back every non-Lark harness this node declared.
@@ -4142,7 +4998,11 @@ class DaemonApplication:
             for spec in state.harnesses
             if spec.harness != "lark" and spec.status == "running"
         )
-        declared = self._classify_restore_specs(candidates)
+        self._restore_classifying = True
+        try:
+            declared = self._classify_restore_specs(candidates)
+        finally:
+            self._restore_classifying = False
         # The phase-③ expectation: every declared connector owes one first
         # readiness report.  Recorded before restore runs so the maintenance
         # loop (which starts only after restore completes) never reads a
@@ -4250,7 +5110,7 @@ class DaemonApplication:
             )
         except BaseException as error:
             self._restore_error = error
-            self.stop_event.set()
+            self._request_stop("restore-failed")
             return
         if self.stop_event.is_set():
             # Stopped mid-restore: the gate stays closed and `daemon.ready`
@@ -4290,28 +5150,39 @@ class DaemonApplication:
     def _start_server(self) -> None:
         self.socket_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.socket_path.unlink(missing_ok=True)
-        if os.name == "nt":
+        posix_listener = not _windows_ipc_enabled()
+        if posix_listener:
+            server: _IpcListener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        else:
             from hyprial.platform.windows_pipe import PipeListener
 
-            self._server = PipeListener(
+            server = PipeListener(
                 self.socket_path,
                 gui_write_sid=os.environ.get("HYPRIAL_WINDOWS_GUI_WRITE_SID"),
             )
-            return
-        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
-            server.bind(str(self.socket_path))
-            os.chmod(self.socket_path, 0o600)
-            server.listen(32)
-            server.settimeout(0.25)
+            if posix_listener:
+                server.bind(str(self.socket_path))  # type: ignore[attr-defined]
+                os.chmod(self.socket_path, 0o600)
+                server.listen(32)  # type: ignore[attr-defined]
+                server.settimeout(0.25)  # type: ignore[attr-defined]
+            self._ipc_request_owner = IpcRequestOwner(capacity=_IPC_MAX_CLIENTS)
+            self._dispatch_diagnostics = DispatchDiagnostics()
         except BaseException:
             server.close()
+            if self._dispatch_diagnostics is not None:
+                self._dispatch_diagnostics.close(1.0)
+                self._dispatch_diagnostics = None
+            if self._ipc_request_owner is not None:
+                self._ipc_request_owner.close(1.0)
+                self._ipc_request_owner = None
             raise
         self._server = server
         # Keep one descriptor in reserve so an EMFILE accept can discard one
         # queued peer and return to bounded retrying instead of spinning or
         # permanently terminating the dispatcher.
-        self._accept_reserve_fd = os.open(os.devnull, os.O_RDONLY)
+        if posix_listener:
+            self._accept_reserve_fd = os.open(os.devnull, os.O_RDONLY)
 
     def _serve(self) -> None:
         assert self._server is not None
@@ -4357,8 +5228,79 @@ class DaemonApplication:
 
     def _start_maintenance_scheduler(self) -> None:
         self._maintenance_watchdog.start(self.stop_event)
+        self._ensure_session_route_coordinator()
+        if self._restore_wake_cadence is None:
+            self._restore_wake_cadence = BoundedCadence(
+                "restore-wake",
+                self._restore_wake_scan,
+            )
+        if self._dispatch_cadence is None:
+            self._dispatch_cadence = BoundedCadence(
+                "dispatch-runtime",
+                self._runtime_timer,
+                self._on_dispatch_tick_completed,
+            )
+        if self._forwarding_cadence is None and self._forwarding_supervisor is not None:
+            self._forwarding_cadence = BoundedCadence(
+                "forwarding-reconcile",
+                lambda _observed_at_ms: self._reconcile_forwarding_endpoints(),
+                self._on_forwarding_tick_completed,
+            )
         self._maintenance_generation += 1
         self._schedule_maintenance(self._maintenance_generation, delay=1.0)
+
+    def _submit_restore_wake(
+        self, actor: str | None = None, *, reason: str = "scan"
+    ) -> AdmissionResult:
+        if actor is not None:
+            with self._restore_wake_lock:
+                if (
+                    actor in self._restore_wake_requests
+                    or len(self._restore_wake_requests) < self._restore_wake_capacity
+                ):
+                    self._restore_wake_requests[actor] = reason
+        if self._restore_wake_cadence is None:
+            self._restore_wake_cadence = BoundedCadence(
+                "restore-wake",
+                self._restore_wake_scan,
+            )
+        return self._restore_wake_cadence.submit(time.time_ns() // 1_000_000)
+
+    def _ensure_session_route_coordinator(self) -> SessionRouteCoordinator:
+        coordinator = self._session_route_coordinator
+        if coordinator is None:
+            coordinator = SessionRouteCoordinator(self._apply_session_route_request)
+            self._session_route_coordinator = coordinator
+        return coordinator
+
+    def _on_dispatch_tick_completed(
+        self, completion: CadenceCompleted[ReconcileSummary]
+    ) -> None:
+        if completion.error is not None:
+            self._log(
+                "error", "daemon", "daemon.reconcile_failed",
+                phase="runtime.timer",
+                errorType=completion.error,
+                detail=completion.detail or completion.error,
+                durationMs=completion.duration_ms,
+            )
+            return
+        if completion.result is not None:
+            self._record_maintenance_outcome(
+                completion.started_at, completion.result, (), 0,
+                (("runtime.timer", completion.duration_ms),),
+            )
+
+    def _on_forwarding_tick_completed(
+        self, completion: CadenceCompleted[None]
+    ) -> None:
+        if completion.error is not None:
+            self._log(
+                "error", "daemon", "forwarding.reconcile_failed",
+                errorType=completion.error,
+                detail=completion.detail or completion.error,
+                durationMs=completion.duration_ms,
+            )
 
     def _schedule_maintenance(self, generation: int, *, delay: float) -> None:
         if self.stop_event.is_set():
@@ -4382,7 +5324,13 @@ class DaemonApplication:
         try:
             watchdog.phase("agent-activity")
             self._flush_agent_activity()
-            self._wake_pending_dormant_agents()
+            self._retry_restore_eligibility()
+            if self._restore_wake_cadence is not None:
+                admission = self._restore_wake_cadence.submit(
+                    time.time_ns() // 1_000_000
+                )
+                if admission is AdmissionResult.OVERLOADED:
+                    self._log("warn", "daemon", "restore.wake_tick_overloaded")
             outcome, adapter_events, adapter_restarts, phases = (
                 self._run_scheduled_domains(started)
             )
@@ -4538,17 +5486,21 @@ class DaemonApplication:
                 else "info"
             )
             self._log(level, "lark-adapter", event, **fields)
-        if outcome.harness_restarts or outcome.inbox_results or adapter_restarts:
+        if (
+            getattr(outcome, "harness_restarts", 0)
+            or getattr(outcome, "inbox_results", 0)
+            or adapter_restarts
+        ):
             self._log(
                 "info",
                 "daemon",
                 "daemon.reconciled",
-                harnessRestarts=outcome.harness_restarts,
-                inboxResults=outcome.inbox_results,
-                inboxPruned=outcome.inbox_pruned,
+                harnessRestarts=getattr(outcome, "harness_restarts", 0),
+                inboxResults=getattr(outcome, "inbox_results", 0),
+                inboxPruned=getattr(outcome, "inbox_pruned", 0),
                 adapterRestarts=adapter_restarts,
             )
-        for item in outcome.inbox_pruned_items:
+        for item in getattr(outcome, "inbox_pruned_items", ()):
             self._record_pruned_workflow_request(item)
             self._log(
                 "info",
@@ -4562,7 +5514,8 @@ class DaemonApplication:
                 createdAtMs=item.created_at_ms,
                 receivedAtMs=item.received_at_ms,
             )
-        self._watch_inbox_collection(outcome.inbox_pruned_items)
+        if outcome is not None:
+            self._watch_inbox_collection(outcome.inbox_pruned_items)
 
     def _record_pruned_workflow_request(self, item: InboxPruneItem) -> None:
         """Route an inbox prune to the local or remote PAC authority."""
@@ -4719,13 +5672,49 @@ class DaemonApplication:
                 phases.append((name, int((time.monotonic() - started_at) * 1000)))
 
         _timed("routes.expire", lambda: self._expire_stale_channel_routes(now))
-        _timed("forwarding.timer", self._reconcile_forwarding_endpoints)
+        if now >= self._profile_refresh_due:
+            self._profile_refresh_due = now + 30.0
+            try:
+                self.user_profiles.refresh(wait=False)
+            except Exception as error:
+                self._log(
+                    "warn", "daemon", "profile.refresh_overloaded",
+                    errorType=type(error).__name__,
+                )
+        if now >= self._keep_refresh_due:
+            self._keep_refresh_due = now + 30.0
+            try:
+                self._agent_keep.refresh(wait=False)
+            except Exception as error:
+                self._log(
+                    "warn", "daemon", "agent.keep_refresh_overloaded",
+                    errorType=type(error).__name__,
+                )
+            try:
+                self._restore_policy.refresh(wait=False)
+            except Exception as error:
+                self._log(
+                    "warn",
+                    "daemon",
+                    "restore.policy_refresh_overloaded",
+                    errorType=type(error).__name__,
+                )
+        forwarding = self._forwarding_cadence
+        if forwarding is None:
+            _timed("forwarding.timer", self._reconcile_forwarding_endpoints)
+        else:
+            admission = forwarding.submit(int(time.time_ns() // 1_000_000))
+            if admission is AdmissionResult.OVERLOADED:
+                self._log("warn", "daemon", "forwarding.tick_overloaded")
         observed_at_ms = int(time.time_ns() // 1_000_000)
-        _timed(
-            "inbox.wake_online_recipients",
-            lambda: self._flush_outbox_recipient_wakes(now_ms=observed_at_ms),
-        )
-        outcome = _timed("runtime.timer", lambda: self._runtime_timer(observed_at_ms))
+        cadence = self._dispatch_cadence
+        if cadence is None:
+            outcome = _timed("runtime.timer", lambda: self._runtime_timer(observed_at_ms))
+        else:
+            admission = cadence.submit(observed_at_ms)
+            if admission is AdmissionResult.OVERLOADED:
+                self._log("warn", "daemon", "dispatch.tick_overloaded")
+            outcome = None
 
         # Timer admission is bounded and never shares ownership with local IPC.
         # Each domain actor serializes its own cadence with its business commands.
@@ -4831,7 +5820,7 @@ class DaemonApplication:
                 # prevents restoring the reserve immediately.
                 self._accept_reserve_fd = None
 
-    def _start_ipc_client(self, connection: socket.socket) -> None:
+    def _start_ipc_client(self, connection: _IpcStream) -> None:
         """Admit one peer atomically with shutdown, within a fixed cap.
 
         Capacity is an explicit local IPC contract: when all 64 client slots
@@ -4879,7 +5868,7 @@ class DaemonApplication:
                     raise
 
     def _new_ipc_client_worker(
-        self, connection: socket.socket
+        self, connection: _IpcStream
     ) -> threading.Thread:
         """Build the worker whose registration/start are admission-locked."""
 
@@ -4946,7 +5935,7 @@ class DaemonApplication:
                 f"{_IPC_CLIENT_SHUTDOWN_TIMEOUT:g}s"
             )
 
-    def _serve_client(self, connection: socket.socket) -> None:
+    def _serve_client(self, connection: _IpcStream) -> None:
         """Serve one local client without letting it terminate the daemon."""
 
         try:
@@ -4967,7 +5956,7 @@ class DaemonApplication:
                 fields["errorCode"] = error.code
             self._log("warn", "daemon", "daemon.ipc.client_error", **fields)
 
-    def _serve_connection(self, connection: socket.socket) -> None:
+    def _serve_connection(self, connection: _IpcStream) -> None:
         buffer = bytearray()
         idle_deadline = time.monotonic() + _IPC_CLIENT_IDLE_TIMEOUT
         while len(buffer) <= 8 * 1024 * 1024:
@@ -5053,23 +6042,39 @@ class DaemonApplication:
         uncovered category.
         """
 
+        owner = self._ipc_request_owner
+        started_request = owner.start(method) if owner is not None else None
+        if owner is not None and started_request is None:
+            raise ipc_errors.DaemonUnavailableError(
+                "IPC request authority is closed or overloaded",
+            )
         stats = self._ipc_stats
-        if not stats.enabled:
-            return self.handle(method, params)
         failed = True
+        error_code: str | None = None
         started_cpu = time.thread_time()
         started_wall = time.perf_counter()
         try:
             result = self.handle(method, params)
             failed = False
             return result
+        except BaseException as error:
+            error_code = str(getattr(error, "code", type(error).__name__))
+            raise
         finally:
-            stats.record(
-                method,
-                cpu_seconds=time.thread_time() - started_cpu,
-                wall_seconds=time.perf_counter() - started_wall,
-                error=failed,
-            )
+            if stats.enabled:
+                stats.record(
+                    method,
+                    cpu_seconds=time.thread_time() - started_cpu,
+                    wall_seconds=time.perf_counter() - started_wall,
+                    error=failed,
+                )
+            if owner is not None and started_request is not None:
+                admission = owner.complete(started_request, error_code)
+                if admission is not AdmissionResult.ACCEPTED:
+                    self._log(
+                        "error", "daemon", "daemon.ipc.completion_overloaded",
+                        reason=admission.value,
+                    )
 
     def _registry_management_handler(self) -> RegistryManagementHandler:
         with self._registry_management_lock:
@@ -5120,13 +6125,7 @@ class DaemonApplication:
     def _register_default_agent_routine(
         self, agent: Agent
     ) -> dict[str, object] | None:
-        """Bind one deterministic setup routine, or return a visible warning.
-
-        The no-service case is the daemon's existing degraded mode.  It leaves
-        the agent usable but observable through both this warning and
-        ``agent list --json``.  Once registration begins, any failure is
-        propagated so the caller can roll the just-created identity back.
-        """
+        """Bind the default routine, retaining accepted timeout custody."""
 
         if self._routine_service is None:
             warning = {
@@ -5138,103 +6137,178 @@ class DaemonApplication:
                 ),
             }
             self._log(
-                "info",
-                "agents",
-                "agent.default_routine.unavailable",
-                actor=agent.uri,
-                **warning,
+                "info", "agents", "agent.default_routine.unavailable",
+                actor=agent.uri, **warning,
             )
             return warning
+        if self._routines_bound_to(agent.uri):
+            return None
         from hyprial.routine.schema import load_routine_text
         from hyprial.routine.templates import render_template
 
-        with self._routine_coordinator_lock:
-            if self._routines_bound_to(agent.uri):
-                return None
-            name = self._default_agent_routine_name(agent.uri)
-            yaml_text = render_template(
-                "agent-home-setup",
-                owner=agent.uri,
-                escalate_to=f"user:{agent.owner}",
-                name=name,
-            )
-            spec = load_routine_text(yaml_text)
-            self._routine_admit(spec)
+        name = self._default_agent_routine_name(agent.uri)
+        yaml_text = render_template(
+            "agent-home-setup",
+            owner=agent.uri,
+            escalate_to=f"user:{agent.owner}",
+            name=name,
+        )
+        spec = load_routine_text(yaml_text)
+        self._routine_admit(spec)
+        coordinator = self._routine_coordinator
+        if coordinator is None:
+            if self._transport is not None:
+                raise DaemonRequestError(
+                    ipc_errors.ROUTINE_UNAVAILABLE,
+                    "routine coordinator is not running",
+                )
             self._routine_service.add(
                 yaml_text=yaml_text,
                 owner=f"user:{agent.owner}",
                 enabled=True,
             )
+            return None
+        from hyprial.routine.coordinator import (
+            AgentCreationCompensation,
+            add_command,
+        )
+
+        operation_id = f"agent-default-routine:{agent.entity_token}"
+        admission = coordinator.begin(
+            add_command(
+                operation_id=operation_id,
+                name=name,
+                yaml_text=yaml_text,
+                owner=f"user:{agent.owner}",
+                produces=None,
+                agent_compensation=AgentCreationCompensation(
+                    actor=agent.actor,
+                    expected_entity_token=agent.entity_token,
+                    settlement_id=(
+                        f"agent-default-compensation:{agent.entity_token}"
+                    ),
+                ),
+            )
+        )
+        if admission is not PortAdmission.ACCEPTED:
+            raise DaemonRequestError(
+                ipc_errors.ROUTINE_UNAVAILABLE,
+                f"default routine admission {admission.value}",
+            )
+        coordinator.wait(operation_id, timeout=70.0)
         return None
 
     def _finish_resident_agent_creation(
         self, agent: Agent
     ) -> dict[str, object] | None:
+        from hyprial.routine.coordinator import (
+            RoutineCoordinatorTimeout,
+        )
+
         try:
             return self._register_default_agent_routine(agent)
+        except RoutineCoordinatorTimeout as error:
+            raise DaemonRequestError(
+                ipc_errors.AGENT_DEFAULT_ROUTINE_PENDING,
+                f"agent default routine remains accepted: {error.operation_id}",
+                {"actor": agent.uri, "operationId": error.operation_id},
+            ) from error
+        except RoutineServiceError as error:
+            if error.code == "ROUTINE_COMMAND_TIMEOUT":
+                raise DaemonRequestError(
+                    ipc_errors.AGENT_DEFAULT_ROUTINE_PENDING,
+                    "agent default routine remains accepted",
+                    {"actor": agent.uri},
+                ) from error
+            self._compensate_default_agent_creation(agent)
+            raise DaemonRequestError(
+                ipc_errors.AGENT_DEFAULT_ROUTINE_FAILED,
+                f"agent creation rolled back because its default routine "
+                f"could not be registered ({error.code}): {error}",
+                {"actor": agent.uri, "routineError": error.code},
+            ) from error
         except Exception as error:
-            self.agents.destroy(agent.actor)
+            # Only a terminal refusal compensates. Entity CAS protects a
+            # same-name successor if the caller raced recreation.
+            self._compensate_default_agent_creation(agent)
             code = getattr(error, "code", type(error).__name__)
             raise DaemonRequestError(
-                "AGENT_DEFAULT_ROUTINE_FAILED",
+                ipc_errors.AGENT_DEFAULT_ROUTINE_FAILED,
                 f"agent creation rolled back because its default routine "
                 f"could not be registered ({code}): {error}",
                 {"actor": agent.uri, "routineError": str(code)},
             ) from error
 
-    def _remove_registered_routine(
-        self, name: str, *, enforce_last: bool
-    ) -> JsonObject:
-        assert self._routine_service is not None
-        with self._routine_coordinator_lock:
-            try:
-                routine = {
-                    **self._routine_service.status(name=name),
-                    "name": name,
-                }
-                binding = self._routine_binding(routine)
-                if (
-                    enforce_last
-                    and binding is not None
-                    and len(self._routines_bound_to(binding)) == 1
-                ):
-                    raise DaemonRequestError(
-                        "ROUTINE_LAST_BINDING",
-                        f"routine {name!r} is the last routine bound to {binding}; "
-                        "bind a new one first with `hyprial routine add`, or "
-                        "modify this one with `hyprial routine set`",
-                        {"routine": name, "actor": binding},
-                    )
-                if routine.get("enabled") is True:
-                    self._routine_service.pause(name=name)
-                from hyprial.pac.graph import close_graph
-                from hyprial.pac.store import PacGraphStore, default_database_path
+    def _compensate_default_agent_creation(self, agent: Agent) -> bool:
+        return self._compensate_default_agent_incarnation(
+            f"agent-default-compensation:{agent.entity_token}",
+            agent.actor,
+            agent.entity_token,
+        )
 
-                store = PacGraphStore(default_database_path(self.state_dir))
-                try:
-                    for task in routine.get("inFlight", []):
-                        graph_id = task["runId"]
-                        graph = store.graph(graph_id)
-                        if graph is not None:
-                            close_graph(
-                                store,
-                                graph_id,
-                                actor=str(routine["owner"]),
-                            )
-                finally:
-                    store.close()
+    def _compensate_default_agent_incarnation(
+        self, settlement_id: str, actor: str, expected_entity_token: str
+    ) -> bool:
+        settled = self.agents.settle_destroy(
+            settlement_id,
+            actor,
+            expected_entity_token=expected_entity_token,
+        )
+        return settled.disposition != "stale-incarnation"
+
+    def _remove_registered_routine(self, name: str, *, enforce_last: bool, operation_id: str | None = None) -> JsonObject:
+        """Keep the dev entry point through the same typed removal saga."""
+        if self._routine_service is None:
+            raise DaemonRequestError(ipc_errors.ROUTINE_UNAVAILABLE, 'routine service is not running')
+        coordinator = self._routine_coordinator
+        if coordinator is not None:
+            from hyprial.routine.coordinator import RoutineCoordinatorError, RoutineCoordinatorTimeout, remove_command
+            operation_id = operation_id or uuid4().hex
+            try:
+                admitted = coordinator.begin(remove_command(operation_id=operation_id, name=name, enforce_last=enforce_last))
+                if admitted is not PortAdmission.ACCEPTED:
+                    raise DaemonRequestError(ipc_errors.ROUTINE_UNAVAILABLE, f'routine admission {admitted.value}')
+                return coordinator.wait(operation_id, timeout=70.0)
+            except RoutineCoordinatorError as error:
+                raise DaemonRequestError(
+                    error.code, str(error), dict(error.data) if error.data else None
+                ) from error
+            except RoutineCoordinatorTimeout as error:
+                raise DaemonRequestError(ipc_errors.ROUTINE_UNAVAILABLE, f'routine operation {error.operation_id} remains accepted') from error
+        if self._transport is not None:
+            raise DaemonRequestError(ipc_errors.ROUTINE_UNAVAILABLE, 'routine coordinator is not running')
+        with self._routine_legacy_lock:
+            reservation_id = f'legacy-routine-remove:{uuid4().hex}'
+            reserved = False
+            try:
+                routine = {**self._routine_service.reserve_remove(name=name, reservation_id=reservation_id, enforce_last=enforce_last), 'name': name}
+                reserved = True
+                if routine.get('enabled') is True:
+                    self._routine_service.pause(name=name)
+                in_flight = tuple(routine.get('inFlight', []))
+                authority = self._pac_graph_authority
+                if in_flight and authority is None:
+                    raise DaemonRequestError(ipc_errors.ROUTINE_UNAVAILABLE, 'PAC graph authority is not running')
+                from hyprial.pac.errors import PAC_GRAPH_NOT_FOUND, PacError
+
+                for task in in_flight:
+                    graph_id = task['runId']
+                    try:
+                        authority.close_graph(graph_id, actor=str(routine['owner']))
+                    except PacError as error:
+                        if error.code != PAC_GRAPH_NOT_FOUND:
+                            raise
                 coordinator = self._retire_routine_coordinator(routine)
-                result = self._routine_service.remove(name=name)
-                return {
-                    **result,
-                    **(
-                        {"coordinator": coordinator}
-                        if coordinator is not None
-                        else {}
-                    ),
-                }
+                result = self._routine_service.remove(name=name, reservation_id=reservation_id)
+                reserved = False
+                return {**result, **({'coordinator': coordinator} if coordinator is not None else {})}
             except RoutineServiceError as error:
-                raise DaemonRequestError(error.code, str(error)) from error
+                raise DaemonRequestError(
+                    error.code, str(error), dict(error.data) if error.data else None
+                ) from error
+            finally:
+                if reserved:
+                    self._routine_service.cancel_remove(name=name, reservation_id=reservation_id)
 
     def _reconcile_routine_coordinators(self) -> None:
         """Isolate persisted routine faults so daemon startup remains operable."""
@@ -5854,6 +6928,7 @@ class DaemonApplication:
         if method == "autoupdate.notify":
             return self._deliver_autoupdate_restart_notification(params)
         if method == "ps":
+            self._trace_presence_snapshot(None)
             now = time.monotonic()
             restore_now_ms = self._restore_now_ms()
             # Read the session projections once for the whole request and hand
@@ -5952,6 +7027,119 @@ class DaemonApplication:
                         "lifecycle": self._lifecycle_status(),
                         "dispatchWithoutPacCount": self._dispatch_without_pac_snapshot(),
                         "dispatchConversationCount": self._dispatch_conversation_snapshot(),
+                        "fetchReceiptHints": (
+                            {
+                                "accepted": receipt_status.accepted,
+                                "published": receipt_status.published,
+                                "failed": receipt_status.failed,
+                                "rejected": receipt_status.rejected,
+                                "closed": receipt_status.closed,
+                            }
+                            if self._fetch_receipt_publisher is not None
+                            and (receipt_status := self._fetch_receipt_publisher.projection())
+                            else None
+                        ),
+                        "dispatchCadence": (
+                            {
+                                "accepted": cadence_status.accepted,
+                                "overloaded": cadence_status.overloaded,
+                                "coalesced": cadence_status.coalesced,
+                                "completed": cadence_status.completed,
+                                "failed": cadence_status.failed,
+                                "active": cadence_status.active,
+                            }
+                            if self._dispatch_cadence is not None
+                            and (cadence_status := self._dispatch_cadence.projection())
+                            else None
+                        ),
+                        "dispatchState": (
+                            {
+                                "version": dispatch_state.version,
+                                "tables": dict(dispatch_state.table_sizes),
+                            }
+                            if self._runtime is not None
+                            and (dispatch_state := getattr(
+                                self._runtime, "dispatch_state_projection", None
+                            )) is not None
+                            else None
+                        ),
+                        "dispatchOffers": (
+                            {
+                                "pending": offer_status.pending,
+                                "completed": offer_status.completed,
+                                "overloaded": offer_status.overloaded,
+                                "failed": offer_status.failed,
+                                "closing": offer_status.closing,
+                            }
+                            if self._runtime is not None
+                            and (offer_status := getattr(
+                                self._runtime, "dispatch_offer_projection", None
+                            )) is not None
+                            else None
+                        ),
+                        "holdRefresh": (
+                            {
+                                "pending": hold_status.pending,
+                                "rejected": hold_status.rejected,
+                                "completed": hold_status.completed,
+                                "failed": hold_status.failed,
+                            }
+                            if self._runtime is not None
+                            and (hold_status := getattr(
+                                self._runtime, "hold_refresh_projection", None
+                            )) is not None
+                            else None
+                        ),
+                        "progressPublish": (
+                            {
+                                "pending": progress_status.pending,
+                                "published": progress_status.published,
+                                "rejected": progress_status.rejected,
+                                "failed": progress_status.failed,
+                            }
+                            if self._runtime is not None
+                            and (progress_status := getattr(
+                                self._runtime, "progress_publish_projection", None
+                            )) is not None
+                            else None
+                        ),
+                        "orphanCollection": (
+                            self._harnesses.orphan_collection_status()
+                            if self._harnesses is not None
+                            and callable(getattr(self._harnesses, "orphan_collection_status", None))
+                            else None
+                        ),
+                        "ipcRequests": (
+                            {
+                                "accepted": request_status.accepted,
+                                "overloaded": request_status.overloaded,
+                                "completed": request_status.completed,
+                                "failed": request_status.failed,
+                                "active": request_status.active,
+                            }
+                            if self._ipc_request_owner is not None
+                            and (request_status := self._ipc_request_owner.projection())
+                            else None
+                        ),
+                        "routineCoordinator": (
+                            self._routine_coordinator.stats()
+                            if self._routine_coordinator is not None else None
+                        ),
+                        "logWriter": (
+                            {
+                                "accepted": log_status.accepted,
+                                "written": log_status.written,
+                                "failed": log_status.failed,
+                                "rejected": log_status.rejected,
+                                **(
+                                    {"lastError": log_status.last_error}
+                                    if log_status.last_error is not None
+                                    else {}
+                                ),
+                            }
+                            if (log_status := self._logger.writer_status()) is not None
+                            else None
+                        ),
                         # Additive and read-only: the per-method cost
                         # counters plus processCpuSeconds read at the same
                         # moment, so two ps snapshots reconcile the
@@ -5965,6 +7153,10 @@ class DaemonApplication:
                             effect_admission=(
                                 self._agent_session_domains.session.effect_admission_costs
                             ),
+                            session_persistence_io=(
+                                self._agent_session_domains.session.persistence_io_costs
+                            ),
+                            state_persistence=self._state_persistence.command_costs,
                         ),
                     },
                     "zenoh": {
@@ -6342,6 +7534,7 @@ class DaemonApplication:
                     if classify_target_identity(actor) == TARGET_KIND_HOST
                     and self._presence.liveness_keeps(actor)
                 )
+                self._trace_presence_snapshot(nodes)
                 return {
                     "hosts": [
                         {"nodeId": node, "status": "online"} for node in nodes
@@ -6442,42 +7635,31 @@ class DaemonApplication:
                 and agent.last_harness != harness
                 else None
             )
-            completed = self._call_session(
-                RegisterSessionCommand(
-                    correlation_id=f"session:register:{uuid4().hex}",
-                    actor=actor,
-                    cwd=session.cwd,
-                    command=session.command,
-                    source=session.source,
-                    session_ref=session_ref,
-                    runtime=session.runtime or "claude_interactive",
-                    channel_confirmed=session.channel_confirmed,
-                    channel_build_version=session.channel_build_version,
-                    channel_protocol_version=session.channel_protocol_version,
-                    owner_fence=session.owner_fence,
-                    channel_lease_token=params.get("channelLeaseToken")
-                    if isinstance(params.get("channelLeaseToken"), str)
-                    else None,
-                    tmux_session=session.tmux_session,
-                    process_pid=session.process_pid,
-                    process_identity=session.process_identity,
-                    manage_agent=agent is not None,
-                )
+            completed = self._call_session_route(
+                SessionRouteKind.REGISTER,
+                actor=actor,
+                session_ref=session_ref,
+                command=RegisterSessionCommand(
+                            correlation_id=f"session:register:{uuid4().hex}",
+                            actor=actor,
+                            cwd=session.cwd,
+                            command=session.command,
+                            source=session.source,
+                            session_ref=session_ref,
+                            runtime=session.runtime or "claude_interactive",
+                            channel_confirmed=session.channel_confirmed,
+                            channel_build_version=session.channel_build_version,
+                            channel_protocol_version=session.channel_protocol_version,
+                            owner_fence=session.owner_fence,
+                            channel_lease_token=params.get("channelLeaseToken")
+                            if isinstance(params.get("channelLeaseToken"), str)
+                            else None,
+                            tmux_session=session.tmux_session,
+                            process_pid=session.process_pid,
+                            process_identity=session.process_identity,
+                            manage_agent=agent is not None,
+                ),
             )
-            result_actor = completed.result.actor
-            with self._interactive_route_lock:
-                if self._accept_interactive_route_observation_locked(
-                    result_actor, session_ref, completed.version
-                ):
-                    self._close_other_interactive_routes_locked(
-                        result_actor, session_ref
-                    )
-                    self._ensure_interactive_route_locked(result_actor, session_ref)
-                    for superseded_actor in completed.result.superseded_actors:
-                        if self._accept_interactive_route_observation_locked(
-                            superseded_actor, session_ref, completed.version
-                        ):
-                            self._close_interactive_route_locked(superseded_actor)
             result = completed.result.to_payload()
             return {
                 **result,
@@ -6490,76 +7672,57 @@ class DaemonApplication:
         if method == "session.refresh":
             actor = self._mcp_actor(params)
             session_ref = _required_string(params.get("sessionRef"), "sessionRef")
-            completed = self._call_session(
-                RefreshSessionCommand(
-                    correlation_id=f"session:refresh:{uuid4().hex}",
-                    actor=actor,
-                    session_ref=session_ref,
-                    channel_lease_token=(
-                        params.get("channelLeaseToken")
-                        if isinstance(params.get("channelLeaseToken"), str)
-                        else None
-                    ),
-                    manage_agent=self.agents.get(actor) is not None,
-                )
+            completed = self._call_session_route(
+                SessionRouteKind.REFRESH,
+                actor=actor,
+                session_ref=session_ref,
+                command=RefreshSessionCommand(
+                        correlation_id=f"session:refresh:{uuid4().hex}",
+                        actor=actor,
+                        session_ref=session_ref,
+                        channel_lease_token=(
+                            params.get("channelLeaseToken")
+                            if isinstance(params.get("channelLeaseToken"), str)
+                            else None
+                        ),
+                        manage_agent=self.agents.get(actor) is not None,
+                ),
             )
-            with self._interactive_route_lock:
-                # The result carries the canonical actor: after an owner-only
-                # relocation the route is ensured under the migrated spelling,
-                # never the caller's stale one.
-                if self._accept_interactive_route_observation_locked(
-                    completed.result.actor, session_ref, completed.version
-                ):
-                    self._ensure_interactive_route_locked(
-                        completed.result.actor, session_ref
-                    )
             return completed.result.to_payload()
         if method == "session.heartbeat":
             actor = self._mcp_actor(params)
             session_ref = _required_string(params.get("sessionRef"), "sessionRef")
-            completed = self._call_session(
-                HeartbeatSessionCommand(
-                    correlation_id=f"session:heartbeat:{uuid4().hex}",
-                    actor=actor,
-                    session_ref=session_ref,
-                    channel_lease_token=(
-                        params.get("channelLeaseToken")
-                        if isinstance(params.get("channelLeaseToken"), str)
-                        else None
-                    ),
-                    manage_agent=self.agents.get(actor) is not None,
-                )
+            completed = self._call_session_route(
+                SessionRouteKind.HEARTBEAT,
+                actor=actor,
+                session_ref=session_ref,
+                command=HeartbeatSessionCommand(
+                        correlation_id=f"session:heartbeat:{uuid4().hex}",
+                        actor=actor,
+                        session_ref=session_ref,
+                        channel_lease_token=(
+                            params.get("channelLeaseToken")
+                            if isinstance(params.get("channelLeaseToken"), str)
+                            else None
+                        ),
+                        manage_agent=self.agents.get(actor) is not None,
+                ),
             )
-            with self._interactive_route_lock:
-                # Canonical actor, same rule as session.refresh.
-                if self._accept_interactive_route_observation_locked(
-                    completed.result.actor, session_ref, completed.version
-                ):
-                    self._ensure_interactive_route_locked(
-                        completed.result.actor, session_ref
-                    )
             return completed.result.to_payload()
         if method == "session.unregister":
             actor = self._mcp_actor(params)
             session_ref = _required_string(params.get("sessionRef"), "sessionRef")
-            completed = self._call_session(
-                UnregisterSessionCommand(
-                    correlation_id=f"session:unregister:{uuid4().hex}",
-                    actor=actor,
-                    session_ref=session_ref,
-                    manage_agent=self.agents.get(actor) is not None,
-                )
+            completed = self._call_session_route(
+                SessionRouteKind.UNREGISTER,
+                actor=actor,
+                session_ref=session_ref,
+                command=UnregisterSessionCommand(
+                        correlation_id=f"session:unregister:{uuid4().hex}",
+                        actor=actor,
+                        session_ref=session_ref,
+                        manage_agent=self.agents.get(actor) is not None,
+                ),
             )
-            with self._interactive_route_lock:
-                if (
-                    completed.result.unregistered
-                    and self._accept_interactive_route_observation_locked(
-                        completed.result.actor, session_ref, completed.version
-                    )
-                ):
-                    self._close_interactive_route_locked(
-                        completed.result.actor, session_ref
-                    )
             return completed.result.to_payload()
         if method == "message.query":
             return self._message_query(params)
@@ -6599,24 +7762,13 @@ class DaemonApplication:
                             seen.add(item.message_id)
                             pending_list.append(item)
                 pending = tuple(pending_list)
-            if is_session_fetch(params) and self._transport is not None:
-                for index, message in enumerate(pending):
-                    try:
-                        publish_fetch_receipt(self._transport, message)
-                    except Exception as error:  # noqa: BLE001 - the receipt queryable still answers
-                        # The messages are already fetched; failing the call
-                        # would hand them to nobody.  The sender converges via
-                        # the fetch-receipt queryable, and one bounded failure
-                        # means the transport is wedged, so skip the rest
-                        # instead of paying the wait once per message.
+            if is_session_fetch(params) and self._fetch_receipt_publisher is not None:
+                for message in pending:
+                    admitted = self._fetch_receipt_publisher.submit(message)
+                    if admitted is not AdmissionResult.ACCEPTED:
                         self._log(
-                            "warn",
-                            "inbox",
-                            "inbox.fetch_receipt.publish_failed",
-                            messageId=message.message_id,
-                            skipped=len(pending) - index - 1,
-                            errorType=type(error).__name__,
-                            detail=str(error)[:500],
+                            "warn", "daemon", "inbox.fetch_receipt_hint_rejected",
+                            reason=admitted.value,
                         )
                         break
             for message in (*notices, *pending):
@@ -6679,7 +7831,40 @@ class DaemonApplication:
                 yaml_text = yaml.safe_dump(document, allow_unicode=True, sort_keys=False)
                 spec = load_routine_text(yaml_text)
             self._routine_admit(spec)
-            with self._routine_coordinator_lock:
+            coordinator = self._routine_coordinator
+            if coordinator is not None:
+                from hyprial.routine.coordinator import (
+                    RoutineCoordinatorError, RoutineCoordinatorTimeout, add_command,
+                )
+
+                operation_id = str(params.get("operationId") or uuid4().hex)
+                try:
+                    admitted = coordinator.begin(add_command(
+                        operation_id=operation_id,
+                        name=spec.name,
+                        yaml_text=yaml_text,
+                        owner=source,
+                        produces=spec.produces,
+                    ))
+                    if admitted is not PortAdmission.ACCEPTED:
+                        raise DaemonRequestError(
+                            ipc_errors.ROUTINE_UNAVAILABLE,
+                            f"routine admission {admitted.value}",
+                        )
+                    return coordinator.wait(operation_id, timeout=70.0)
+                except RoutineCoordinatorError as error:
+                    raise DaemonRequestError(error.code, str(error)) from error
+                except RoutineCoordinatorTimeout as error:
+                    raise DaemonRequestError(
+                        ipc_errors.ROUTINE_UNAVAILABLE,
+                        f"routine operation {error.operation_id} remains accepted",
+                    ) from error
+            if self._transport is not None:
+                raise DaemonRequestError(
+                    ipc_errors.ROUTINE_UNAVAILABLE,
+                    "routine coordinator is not running",
+                )
+            with self._routine_legacy_lock:
                 if spec.produces is not None and any(
                     item.get("produces") == spec.produces
                     for item in self._routine_service.list()["routines"]
@@ -6762,7 +7947,85 @@ class DaemonApplication:
             if self._routine_service is None:
                 raise DaemonRequestError(ipc_errors.ROUTINE_UNAVAILABLE, "routine service is not running")
             name = _required_string(params.get("name"), "name")
-            return self._remove_registered_routine(name, enforce_last=True)
+            coordinator = self._routine_coordinator
+            if coordinator is not None:
+                from hyprial.routine.coordinator import (
+                    RoutineCoordinatorError, RoutineCoordinatorTimeout, remove_command,
+                )
+
+                operation_id = str(params.get("operationId") or uuid4().hex)
+                try:
+                    admitted = coordinator.begin(remove_command(
+                        operation_id=operation_id, name=name, enforce_last=True,
+                    ))
+                    if admitted is not PortAdmission.ACCEPTED:
+                        raise DaemonRequestError(
+                            ipc_errors.ROUTINE_UNAVAILABLE,
+                            f"routine admission {admitted.value}",
+                        )
+                    return coordinator.wait(operation_id, timeout=70.0)
+                except RoutineCoordinatorError as error:
+                    raise DaemonRequestError(
+                        error.code, str(error), dict(error.data) if error.data else None
+                    ) from error
+                except RoutineCoordinatorTimeout as error:
+                    raise DaemonRequestError(
+                        ipc_errors.ROUTINE_UNAVAILABLE,
+                        f"routine operation {error.operation_id} remains accepted",
+                    ) from error
+            if self._transport is not None:
+                raise DaemonRequestError(
+                    ipc_errors.ROUTINE_UNAVAILABLE,
+                    "routine coordinator is not running",
+                )
+            with self._routine_legacy_lock:
+                reservation_id = f"legacy-routine-remove:{uuid4().hex}"
+                reserved = False
+                try:
+                    routine = {
+                        **self._routine_service.reserve_remove(
+                            name=name,
+                            reservation_id=reservation_id,
+                            enforce_last=True,
+                        ),
+                        "name": name,
+                    }
+                    reserved = True
+                    if routine.get("enabled") is True:
+                        self._routine_service.pause(name=name)
+                    in_flight = tuple(routine.get("inFlight", []))
+                    authority = self._pac_graph_authority
+                    if in_flight and authority is None:
+                        raise DaemonRequestError(
+                            ipc_errors.ROUTINE_UNAVAILABLE,
+                            "PAC graph authority is not running",
+                        )
+                    from hyprial.pac.errors import PAC_GRAPH_NOT_FOUND, PacError
+
+                    for task in in_flight:
+                        graph_id = task["runId"]
+                        try:
+                            authority.close_graph(
+                                graph_id, actor=str(routine["owner"])
+                            )
+                        except PacError as error:
+                            if error.code != PAC_GRAPH_NOT_FOUND:
+                                raise
+                    coordinator = self._retire_routine_coordinator(routine)
+                    result = self._routine_service.remove(
+                        name=name, reservation_id=reservation_id
+                    )
+                    reserved = False
+                    return {**result, **({"coordinator": coordinator} if coordinator is not None else {})}
+                except RoutineServiceError as error:
+                    raise DaemonRequestError(
+                        error.code, str(error), dict(error.data) if error.data else None
+                    ) from error
+                finally:
+                    if reserved:
+                        self._routine_service.cancel_remove(
+                            name=name, reservation_id=reservation_id
+                        )
         if method == "routine.set":
             if self._routine_service is None:
                 raise DaemonRequestError(
@@ -6778,23 +8041,21 @@ class DaemonApplication:
             except RoutineSchemaError as error:
                 raise DaemonRequestError("ROUTINE_SCHEMA_ERROR", str(error)) from error
             current = self._routine_service.status(name=name)
-            current_binding = self._routine_binding(current)
             if spec.name != name:
                 raise DaemonRequestError(
-                    "ROUTINE_NAME_IMMUTABLE",
+                    ipc_errors.ROUTINE_NAME_IMMUTABLE,
                     f"replacement name must remain {name!r}",
                 )
-            if (spec.actor or spec.produces) != current_binding:
+            if (spec.actor or spec.produces) != self._routine_binding(current):
                 raise DaemonRequestError(
-                    "ROUTINE_BINDING_IMMUTABLE",
+                    ipc_errors.ROUTINE_BINDING_IMMUTABLE,
                     "routine set keeps the existing actor/produces binding",
                 )
             self._routine_admit(spec)
-            with self._routine_coordinator_lock:
-                try:
-                    return self._routine_service.set(name=name, yaml_text=yaml_text)
-                except RoutineServiceError as error:
-                    raise DaemonRequestError(error.code, str(error)) from error
+            try:
+                return self._routine_service.set(name=name, yaml_text=yaml_text)
+            except RoutineServiceError as error:
+                raise DaemonRequestError(error.code, str(error)) from error
         if method == "routine.pause":
             if self._routine_service is None:
                 raise DaemonRequestError(ipc_errors.ROUTINE_UNAVAILABLE, "routine service is not running")
@@ -6888,6 +8149,20 @@ class DaemonApplication:
                     return self._workflow_service.fail(graph_id=graph_id, node_id=node_id,
                                                        actor=source, request_id=request, reason_ref=reason,
                                                        output_text=output_text)
+                authority = self._pac_graph_authority
+                if authority is not None:
+                    result = authority.set_flag(
+                        graph_id, node_id, actor=source,
+                        reason_ref=reason, expected_request=request,
+                        output_text=output_text,
+                    )
+                    self._workflow_service.submit_timer(time.time_ns() // 1_000_000)
+                    return {"ok": True, "event": result["event"]}
+                if self._transport is not None:
+                    raise DaemonRequestError(
+                        ipc_errors.WORKFLOW_UNAVAILABLE,
+                        "PAC graph authority is not running",
+                    )
                 from hyprial.pac.reactor import PacReactor
                 from hyprial.pac.store import PacGraphStore, default_database_path
                 store = PacGraphStore(default_database_path(self.state_dir))
@@ -7121,13 +8396,24 @@ class DaemonApplication:
             # it.  Keyed by the establishing operation id so an idempotent
             # replay of the opening send still counts as opening, while a
             # different send reusing the id does not.
-            with self._dispatch_without_pac_lock:
-                establisher = self._dispatch_gate_conversations.get(conversation)
-                conversation_is_new = (
-                    establisher is None or establisher == operation_id
-                )
-                if establisher is None:
-                    self._dispatch_gate_conversations[conversation] = operation_id
+            diagnostics = self._dispatch_diagnostics
+            if diagnostics is None:
+                with self._dispatch_without_pac_lock:
+                    establisher = self._dispatch_gate_conversations.get(conversation)
+                    conversation_is_new = (
+                        establisher is None or establisher == operation_id
+                    )
+                    if establisher is None:
+                        self._dispatch_gate_conversations[conversation] = operation_id
+            else:
+                try:
+                    conversation_is_new = diagnostics.open_conversation(
+                        conversation, operation_id
+                    )
+                except TimeoutError as error:
+                    raise ipc_errors.DaemonUnavailableError(
+                        "dispatch diagnostic authority is overloaded",
+                    ) from error
             deliveries: list[JsonObject] = []
             for index, target_value in enumerate(requested_targets):
                 target = self._resolve_agent_alias(
@@ -7726,7 +9012,17 @@ class DaemonApplication:
                 params.get("operationId")
                 or f"lifecycle-start:{uuid4().hex}"
             )
-            self._agent_registry.clear_restore_disposition(spec.name)
+            agent_for_restore = self.agents.get(spec.name)
+            if agent_for_restore is not None:
+                self.agents.clear_restore_disposition(
+                    spec.name,
+                    expected_entity_token=agent_for_restore.entity_token,
+                )
+                self._publish_restore_eligibility(
+                    spec=spec,
+                    entity_token=agent_for_restore.entity_token,
+                    suppressed=False,
+                )
             result = self._run_lifecycle_operation(
                 LifecycleOperation.create(
                     operation_id,
@@ -8006,7 +9302,7 @@ class DaemonApplication:
             except RegistryHomeError as error:
                 raise DaemonRequestError(AgentError.code, str(error)) from error
         if method == "shutdown":
-            self.stop_event.set()
+            self._request_stop("ipc-shutdown")
             return {
                 "ok": True,
                 "stopping": True,
@@ -8061,68 +9357,34 @@ class DaemonApplication:
 
     def _handle_agent_migration(self, method: str, params: JsonObject) -> Any:
         from hyprial.agents.migration_entry import (
-            AgentMigrationPlanStore,
             MigrationAuthorizationWindow,
             MigrationPreflightManifest,
         )
 
         requested = _required_string(params.get("agent"), "agent")
         try:
-            actor = self._agent_registry.require(requested).actor
-        except AgentError as error:
-            raise DaemonRequestError(error.code, str(error)) from error
-        store = AgentMigrationPlanStore(self.state_dir)
-        try:
-            with self._agent_migration_lock:
-                coordinator = self._agent_migration_coordinator()
-                if method == "agent.migrate.preflight":
-                    manifest = MigrationPreflightManifest.from_json(
-                        params.get("manifest")
-                    )
-                    authorization = manifest.authorization_window.bind(
-                        self._agent_registry, actor
-                    )
-                    plan = coordinator.preflight(
-                        authorization,
-                        manifest.entries,
-                        required_support=manifest.required_support,
-                        bindings=self._agent_migration_bindings(
-                            manifest.required_support
-                        ),
-                    )
-                    store.save(plan)
-                    return {
-                        "ok": True,
-                        "agent": plan.agent_uri,
-                        "migrationId": plan.migration_id,
-                        "planDigest": plan.digest,
-                        "createdAtMs": plan.created_at_ms,
-                        "persisted": True,
-                    }
-                migration_id = _required_string(
-                    params.get("migrationId"), "migrationId"
-                )
-                plan = store.load(actor, migration_id)
-                if method == "agent.migrate.execute":
-                    record = coordinator.execute(
-                        plan, bindings=self._agent_migration_bindings(plan.support)
-                    )
-                    return {"ok": True, "migration": record.to_json()}
+            actor = self.agents.require(requested).actor
+            manifest = None
+            migration_id = None
+            authorization_window = None
+            if method == "agent.migrate.preflight":
+                manifest = MigrationPreflightManifest.from_json(params.get("manifest"))
+            elif method in {"agent.migrate.execute", "agent.migrate.rollback"}:
+                migration_id = _required_string(params.get("migrationId"), "migrationId")
                 if method == "agent.migrate.rollback":
-                    window = MigrationAuthorizationWindow.from_json(
+                    authorization_window = MigrationAuthorizationWindow.from_json(
                         params.get("authorizationWindow")
                     )
-                    record = coordinator.rollback(
-                        plan,
-                        authorization=window.bind(self._agent_registry, actor),
-                        bindings=self._agent_migration_bindings(plan.support),
-                    )
-                    return {"ok": True, "migration": record.to_json()}
+            else:
+                raise DaemonRequestError(
+                    ipc_errors.METHOD_NOT_FOUND, f"unknown daemon method {method}"
+                )
+            return self._agent_session_domains.agent.run_migration(
+                method, actor, manifest=manifest, migration_id=migration_id,
+                authorization_window=authorization_window,
+            )
         except (TypeError, ValueError, OSError) as error:
             raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
-        raise DaemonRequestError(
-            ipc_errors.METHOD_NOT_FOUND, f"unknown daemon method {method}"
-        )
 
     def _handle_agent(self, method: str, params: JsonObject) -> Any:
         if method.startswith("agent.migrate."):
@@ -8132,31 +9394,60 @@ class DaemonApplication:
             # not a caller-authentication or runtime enforcement boundary.
             try:
                 if method == "agent.grant":
+                    from hyprial.agents.ports import (
+                        AgentCapabilityGrantCompleted,
+                        GrantAgentCapabilityCommand,
+                    )
+
                     revision = _optional_positive_integer(params.get("revision"), "revision")
                     if revision is None:
                         raise ValueError("revision is required")
-                    grant = self._agent_registry.grant_capability(
+                    generation = self._agent_session_domains.agent.generation
+                    event = self._agent_session_domains.call_agent(
+                        GrantAgentCapabilityCommand(
+                            f"{_AGENT_OPERATION_NAMESPACE}:grant:{uuid4().hex}",
                         _required_string(params.get("actor"), "actor"),
-                        grant_id=_required_string(params.get("grantId"), "grantId"),
-                        capability=_required_string(params.get("capability"), "capability"),
-                        scope=_required_string(params.get("scope"), "scope"),
-                        granted_by=f"user:{self.owner}", revision=revision,
+                            _required_string(params.get("grantId"), "grantId"),
+                            _required_string(params.get("capability"), "capability"),
+                            _required_string(params.get("scope"), "scope"),
+                            f"user:{self.owner}", revision,
+                        ),
+                        AgentCapabilityGrantCompleted,
                     )
-                    return {"ok": True, "grant": grant.to_json()}
+                    if event.generation != generation or event.operation != "grant":
+                        raise DomainCommandError(
+                            "STALE_AGENT_GRANT", "agent grant completion fence mismatch"
+                        )
+                    assert event.grant is not None
+                    return {"ok": True, "grant": event.grant.to_json()}
                 if method == "agent.revoke":
-                    revoked = self._agent_registry.revoke_capability(
-                        _required_string(params.get("actor"), "actor"),
-                        _required_string(params.get("grantId"), "grantId"),
-                        revoked_by=f"user:{self.owner}",
+                    from hyprial.agents.ports import (
+                        AgentCapabilityGrantCompleted,
+                        RevokeAgentCapabilityCommand,
                     )
-                    return {"ok": True, "revoked": revoked}
+
+                    generation = self._agent_session_domains.agent.generation
+                    event = self._agent_session_domains.call_agent(
+                        RevokeAgentCapabilityCommand(
+                            f"{_AGENT_OPERATION_NAMESPACE}:revoke:{uuid4().hex}",
+                            _required_string(params.get("actor"), "actor"),
+                            _required_string(params.get("grantId"), "grantId"),
+                            f"user:{self.owner}",
+                        ),
+                        AgentCapabilityGrantCompleted,
+                    )
+                    if event.generation != generation or event.operation != "revoke":
+                        raise DomainCommandError(
+                            "STALE_AGENT_GRANT", "agent revoke completion fence mismatch"
+                        )
+                    return {"ok": True, "revoked": event.changed}
                 actor = _optional_string_param(params.get("actor"), "actor")
                 if params.get("audit") is True:
                     if actor is None:
                         raise ValueError("actor is required for audit")
-                    entries = self._agent_registry.grant_journal(actor)
+                    entries = self._agent_session_domains.agent.read_grant_journal(actor)
                     return {"ok": True, "journal": [entry.to_json() for entry in entries]}
-                grants = self._agent_registry.capability_grants(actor)
+                grants = self._agent_session_domains.agent.read_capability_grants(actor)
                 return {"ok": True, "grants": [grant.to_json() for grant in grants]}
             except (ValueError, TypeError, AgentError) as error:
                 raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
@@ -8186,6 +9477,9 @@ class DaemonApplication:
             return {"ok": True, "entryId": entry_id, "fieldNames": [field_name]}
         if method == "agent.secret.grant":
             from hyprial.agents.secrets import SecretSource
+            from hyprial.agents.ports import (
+                AgentSecretGrantCompleted, GrantAgentSecretCommand,
+            )
 
             actor = _required_string(params.get("actor"), "actor")
             grant_id = _required_string(params.get("grantId"), "grantId")
@@ -8205,15 +9499,26 @@ class DaemonApplication:
                 raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, "revision is required")
             try:
                 source = SecretSource(source_raw)
-                grant = self._agent_registry.grant_secret(
-                    actor,
-                    grant_id=grant_id,
-                    source=source,
-                    entry_id=entry_id,
-                    field_name=field_name,
-                    environment_names=tuple(raw_names),
-                    revision=revision,
+                home_token = (
+                    self._agent_session_domains.agent.prevalidate_home(actor).entity_token
+                    if source is SecretSource.AGENT_PRIVATE else None
                 )
+                generation = self._agent_session_domains.agent.generation
+                event = self._agent_session_domains.call_agent(
+                    GrantAgentSecretCommand(
+                        f"{_AGENT_OPERATION_NAMESPACE}:secret-grant:{uuid4().hex}", actor, grant_id,
+                        source, entry_id, field_name, tuple(raw_names), revision,
+                        home_token,
+                    ),
+                    AgentSecretGrantCompleted,
+                )
+                if event.generation != generation or event.operation != "grant":
+                    raise DomainCommandError(
+                        "STALE_AGENT_SECRET_GRANT",
+                        "agent secret grant completion fence mismatch",
+                    )
+                assert event.grant is not None
+                grant = event.grant
             except (ValueError, TypeError, AgentError) as error:
                 raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
             return {
@@ -8232,7 +9537,7 @@ class DaemonApplication:
             actor = params.get("actor")
             if actor is not None and (not isinstance(actor, str) or not actor):
                 raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, "actor must be a non-empty string")
-            grants = self._agent_registry.secret_inventory(actor)
+            grants = self._agent_session_domains.agent.read_secret_inventory(actor)
             return {
                 "ok": True,
                 "grants": [
@@ -8249,10 +9554,26 @@ class DaemonApplication:
                 ],
             }
         if method == "agent.secret.revoke":
+            from hyprial.agents.ports import (
+                AgentSecretGrantCompleted, RevokeAgentSecretCommand,
+            )
+
             actor = _required_string(params.get("actor"), "actor")
             grant_id = _required_string(params.get("grantId"), "grantId")
             try:
-                revoked = self._agent_registry.revoke_secret_grant(actor, grant_id)
+                generation = self._agent_session_domains.agent.generation
+                event = self._agent_session_domains.call_agent(
+                    RevokeAgentSecretCommand(
+                        f"{_AGENT_OPERATION_NAMESPACE}:secret-revoke:{uuid4().hex}", actor, grant_id,
+                    ),
+                    AgentSecretGrantCompleted,
+                )
+                if event.generation != generation or event.operation != "revoke":
+                    raise DomainCommandError(
+                        "STALE_AGENT_SECRET_GRANT",
+                        "agent secret revoke completion fence mismatch",
+                    )
+                revoked = event.changed
             except AgentError as error:
                 raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
             return {"ok": True, "revoked": revoked}
@@ -8306,7 +9627,7 @@ class DaemonApplication:
             requested_cwd = _optional_string_param(params.get("cwd"), "cwd")
             effective_cwd = requested_cwd
             if harness_name is not None and effective_cwd is None:
-                effective_cwd = str(self._agent_registry.workspace_path(name))
+                effective_cwd = self._agent_session_domains.agent.resolve_workspace_path(name)
             if existing is None:
                 agent = self.agents.create(
                     name,
@@ -8351,10 +9672,10 @@ class DaemonApplication:
                     model=_optional_string_param(params.get("model"), "model"),
                 )
                 assert agent is not None
-                if effective_cwd == str(
-                    self._agent_registry.workspace_path(agent.actor)
+                if effective_cwd == self._agent_session_domains.agent.resolve_workspace_path(
+                    agent.actor
                 ):
-                    self._agent_registry.ensure_workspace(agent.actor)
+                    self._agent_session_domains.agent.prepare_workspace(agent.actor)
             if (
                 harness_name is not None
                 and agent.last_harness is not None
@@ -8406,7 +9727,9 @@ class DaemonApplication:
                 for agent in self.agents.list():
                     if params.get("excludeWf") is True and agent.actor.startswith("wf-"):
                         continue
-                    hints = self._agent_registry.activity_hints(agent)
+                    hints = self._agent_session_domains.agent.read_activity_hints(
+                        agent.actor
+                    ).to_payload()
                     if cutoff_ms is not None and not self._agent_is_inactive(
                         agent, hints, cutoff_ms=cutoff_ms, kept=kept
                     ):
@@ -8442,7 +9765,7 @@ class DaemonApplication:
                 else self._agent_keep.remove(name)
             )
             if method == "agent.keep.add":
-                self._wake_dormant_agent(name, reason="keep-list")
+                self._submit_restore_wake(name, reason="keep-list")
             return {
                 "ok": True,
                 "agent": name,
@@ -8461,7 +9784,7 @@ class DaemonApplication:
                     ipc_errors.INVALID_ARGUMENT, str(error)
                 ) from error
             if policy_name == "always":
-                self._wake_dormant_agent(name, reason="per-agent-always")
+                self._submit_restore_wake(name, reason="per-agent-always")
             return {
                 "ok": True,
                 "actor": name,
@@ -8489,7 +9812,7 @@ class DaemonApplication:
                 _required_string(params.get("name"), "name")
             )
             self.agents.require(name)
-            changed = self._agent_registry.unblock_agent(name)
+            changed = self.agents.unblock_agent(name)
             if changed:
                 self.agents.record_activity(name)
             return {"actor": name, "changed": changed}
@@ -8505,31 +9828,23 @@ class DaemonApplication:
             from hyprial.agents.runtime import (
                 DEFAULT_AGENT_TOOL_PROFILE,
                 AgentRuntimeError,
-                resolve_agent_runtime_context,
             )
             from hyprial.agents.config import AgentConfigError
             from hyprial.agents.home import AgentHomeError
-            from hyprial.harnesses.claude_runtime import (
-                ClaudeRuntimeError,
-                prepare_claude_runtime_context,
-            )
 
             try:
-                context = resolve_agent_runtime_context(
-                    registry=self._agent_registry,
-                    agent_name=name,
-                    harness=harness,
-                    cwd=cwd,
-                    tool_profile=DEFAULT_AGENT_TOOL_PROFILE,
+                context = self._agent_session_domains.agent.prepare_runtime_context(
+                    name,
+                    harness,
+                    cwd,
+                    DEFAULT_AGENT_TOOL_PROFILE,
                     containerized=False,
                 )
-                if context is not None and context.harness == "claude":
-                    prepare_claude_runtime_context(context)
             except (
+                AgentError,
                 AgentRuntimeError,
                 AgentConfigError,
                 AgentHomeError,
-                ClaudeRuntimeError,
             ) as error:
                 raise DaemonRequestError(
                     getattr(error, "code", None) or ipc_errors.INVALID_ARGUMENT,
@@ -8538,6 +9853,60 @@ class DaemonApplication:
             if context is None:
                 return {"ok": True, "mode": "legacy", "environment": {}}
             return {"ok": True, **context.public_projection()}
+        if method == "agent.runtime-launch.acquire":
+            launch_token = _required_string(
+                params.get("launchToken"), "launchToken"
+            )
+            operation_id = _optional_string_param(
+                params.get("operationId"), "operationId"
+            ) or f"{_AGENT_OPERATION_NAMESPACE}:runtime-launch:acquire:{uuid4().hex}"
+            lease = self._acquire_agent_runtime_launch(
+                launch_token, operation_id=operation_id
+            )
+            return {
+                "ok": True,
+                "operationId": operation_id,
+                "actor": lease.actor,
+                "leaseToken": lease.lease_token,
+                "expiresAtMs": lease.expires_at_ms,
+            }
+        if method == "agent.runtime-launch.custody":
+            # Recovery view for an IPC caller that disconnected after the
+            # Agent accepted acquire but before its response was delivered.
+            # Custody is never expired here: the exact lease token remains
+            # visible for explicit compensation.
+            operation_id = _optional_string_param(
+                params.get("operationId"), "operationId"
+            )
+            entries = self._agent_session_domains.agent.read_runtime_launch_custody()
+            return {
+                "ok": True,
+                "custody": [
+                    {
+                        "operationId": item.operation_id,
+                        "actor": item.actor,
+                        "leaseToken": item.lease_token,
+                    }
+                    for item in entries
+                    if operation_id is None or item.operation_id == operation_id
+                ],
+            }
+        if method == "agent.runtime-launch.release":
+            lease_token = _required_string(
+                params.get("leaseToken"), "leaseToken"
+            )
+            operation_id = _required_string(
+                params.get("operationId"), "operationId"
+            )
+            released = self._release_agent_runtime_launch(
+                lease_token, operation_id=operation_id
+            )
+            return {
+                "ok": True,
+                "actor": released.actor,
+                "leaseToken": released.lease_token,
+                "released": not released.acquired,
+            }
         if method == "agent.get":
             name = self.agents.normalize_actor(
                 _required_string(params.get("name"), "name")
@@ -8578,7 +9947,7 @@ class DaemonApplication:
                 "ok": True,
                 "actor": agent.uri,
                 "agent": agent.actor,
-                "workspace": self._agent_registry.workspace_summary(
+                "workspace": self._agent_session_domains.agent.read_workspace_summary(
                     agent.actor
                 ).to_json(),
             }
@@ -8588,14 +9957,33 @@ class DaemonApplication:
             requested = _required_string(params.get("name"), "name")
             agent = self.agents.get(requested)
             if agent is None:
-                try:
-                    cleaned = self._agent_registry.cleanup_revoked_home(requested)
-                except RegistryHomeError as error:
-                    raise DaemonRequestError(AgentError.code, str(error)) from error
-                if cleaned is None:
+                from hyprial.agents.ports import (
+                    AgentMutationCompleted,
+                    CleanupRevokedAgentHomeCommand,
+                )
+
+                generation = self._agent_session_domains.agent.generation
+                cleaned = self._agent_session_domains.call_agent(
+                    CleanupRevokedAgentHomeCommand(
+                        f"{_AGENT_OPERATION_NAMESPACE}:cleanup-home:{uuid4().hex}", requested
+                    ),
+                    AgentMutationCompleted,
+                )
+                if (
+                    cleaned.generation != generation
+                    or cleaned.operation != "cleanup-home"
+                ):
+                    raise DomainCommandError(
+                        "STALE_AGENT_HOME_CLEANUP",
+                        "agent home cleanup completion fence mismatch",
+                    )
+                if not cleaned.changed:
                     self.agents.require(requested)
                     raise AssertionError("require() returned for a missing agent")
-                actor = canonical_agent_uri(self.owner, self.node_id, cleaned.actor)
+                cleaned_actor = self.agents.normalize_actor(requested)
+                actor = canonical_agent_uri(
+                    self.owner, self.node_id, cleaned_actor
+                )
                 self._log(
                     "warn",
                     "agents",
@@ -8611,7 +9999,7 @@ class DaemonApplication:
                     "destroyed": False,
                     "cleanupResumed": True,
                     "actor": actor,
-                    "agent": cleaned.actor,
+                    "agent": cleaned_actor,
                     "stopped": [],
                     "destroyedMessages": 0,
                     "unpinnedAdapters": [],
@@ -8619,6 +10007,101 @@ class DaemonApplication:
                 }
             return self._destroy_agent(agent.actor)
         raise DaemonRequestError(ipc_errors.METHOD_NOT_FOUND, f"unknown daemon method {method}")
+
+    def _acquire_agent_runtime_launch(
+        self, launch_token: str, *, operation_id: str | None = None
+    ) -> Any:
+        from hyprial.agents.ports import (
+            AcquireAgentRuntimeLaunchCommand,
+            AgentRuntimeLaunchLeaseCompleted,
+        )
+
+        event = self._agent_session_domains.call_agent_settled(
+            AcquireAgentRuntimeLaunchCommand(
+                operation_id or f"{_AGENT_OPERATION_NAMESPACE}:runtime-launch:acquire:{uuid4().hex}",
+                launch_token,
+            ),
+            AgentRuntimeLaunchLeaseCompleted,
+        )
+        if not event.acquired or not event.lease_token:
+            raise DomainCommandError(
+                "AGENT_RUNTIME_LAUNCH_NOT_ACQUIRED",
+                "Agent runtime launch lease was not acquired",
+            )
+        return event
+
+    def _release_agent_runtime_launch(
+        self, lease_token: str, *, operation_id: str
+    ) -> Any:
+        from hyprial.agents.ports import (
+            AgentRuntimeLaunchLeaseCompleted,
+            ReleaseAgentRuntimeLaunchCommand,
+        )
+
+        return self._agent_session_domains.call_agent_settled(
+            ReleaseAgentRuntimeLaunchCommand(
+                f"{_AGENT_OPERATION_NAMESPACE}:runtime-launch:release:{uuid4().hex}",
+                lease_token,
+                operation_id,
+            ),
+            AgentRuntimeLaunchLeaseCompleted,
+        )
+
+    def _reserve_agent_destroy(self, actor: str) -> Any:
+        from hyprial.agents.ports import (
+            AgentDestroyReservationCompleted,
+            ReserveAgentDestroyCommand,
+        )
+
+        return self._agent_session_domains.call_agent_settled(
+            ReserveAgentDestroyCommand(
+                f"{_AGENT_OPERATION_NAMESPACE}:destroy:reserve:{uuid4().hex}", actor
+            ),
+            AgentDestroyReservationCompleted,
+        )
+
+    def _release_agent_destroy_reservation(self, token: str) -> Any:
+        from hyprial.agents.ports import (
+            AgentDestroyReservationCompleted,
+            ReleaseAgentDestroyReservationCommand,
+        )
+
+        return self._agent_session_domains.call_agent_settled(
+            ReleaseAgentDestroyReservationCommand(
+                f"{_AGENT_OPERATION_NAMESPACE}:destroy:release:{uuid4().hex}", token
+            ),
+            AgentDestroyReservationCompleted,
+        )
+
+    @contextlib.contextmanager
+    def _agent_runtime_launch_custody(self, context: Any) -> Iterator[None]:
+        if not getattr(context, "authority_prepared", False):
+            yield
+            return
+        launch_token = getattr(context, "launch_token", None)
+        if not isinstance(launch_token, str) or not launch_token:
+            raise DomainCommandError(
+                "AGENT_RUNTIME_CONTEXT_STALE",
+                "authority-prepared runtime context has no launch token",
+            )
+        lease = self._acquire_agent_runtime_launch(launch_token)
+        try:
+            yield
+        finally:
+            try:
+                self._release_agent_runtime_launch(
+                    lease.lease_token,
+                    operation_id=lease.correlation_id,
+                )
+            except Exception as error:  # noqa: BLE001 - custody remains visible
+                self._log(
+                    "error",
+                    "agents",
+                    "agent.runtime_launch.release_failed",
+                    actor=lease.actor,
+                    errorType=type(error).__name__,
+                    detail=str(error),
+                )
 
     def _require_adapter(self, raw: object) -> str:
         """Validate an adapter name against the configured gateways.
@@ -8776,8 +10259,12 @@ class DaemonApplication:
                 legacyValue=value,
             )
         if remaining != dict(state.channel_pins):
-            self.desired_state.save(
-                replace(state, channel_pins=tuple(sorted(remaining.items())))
+            self.desired_state.remove_matching_channel_pins(
+                tuple(
+                    (adapter, value)
+                    for adapter, value in state.channel_pins
+                    if adapter not in remaining
+                )
             )
 
     def _host_invited_owner(self, name: str) -> str | None:
@@ -8949,6 +10436,9 @@ class DaemonApplication:
     def _dispatch_without_pac_snapshot(self) -> int:
         """Dispatch-without-PAC count for this daemon epoch (ps/top read this)."""
 
+        diagnostics = self._dispatch_diagnostics
+        if diagnostics is not None:
+            return diagnostics.projection().without_pac
         with self._dispatch_without_pac_lock:
             return self._dispatch_without_pac_count
 
@@ -8961,6 +10451,9 @@ class DaemonApplication:
         counting.
         """
 
+        diagnostics = self._dispatch_diagnostics
+        if diagnostics is not None:
+            return diagnostics.projection().conversation
         with self._dispatch_without_pac_lock:
             return self._dispatch_conversation_count
 
@@ -9093,8 +10586,15 @@ class DaemonApplication:
             recipient=message.recipient,
             messageId=message.message_id,
         )
-        with self._dispatch_without_pac_lock:
-            self._dispatch_without_pac_count += 1
+        diagnostics = self._dispatch_diagnostics
+        if diagnostics is not None:
+            try:
+                diagnostics.classify(True)
+            except TimeoutError:
+                self._log("warn", "daemon", "dispatch.diagnostic_overloaded")
+        else:
+            with self._dispatch_without_pac_lock:
+                self._dispatch_without_pac_count += 1
 
     def _record_dispatch_conversation(
         self, message: InboxMessage, *, reason: str
@@ -9116,8 +10616,15 @@ class DaemonApplication:
             messageId=message.message_id,
             reason=reason,
         )
-        with self._dispatch_without_pac_lock:
-            self._dispatch_conversation_count += 1
+        diagnostics = self._dispatch_diagnostics
+        if diagnostics is not None:
+            try:
+                diagnostics.classify(False)
+            except TimeoutError:
+                self._log("warn", "daemon", "dispatch.diagnostic_overloaded")
+        else:
+            with self._dispatch_without_pac_lock:
+                self._dispatch_conversation_count += 1
 
     def _resolve_send_sender(self, actor: str) -> str:
         """Resolve an unfenced (CLI) sender to a registered identity — or refuse.
@@ -9440,9 +10947,12 @@ class DaemonApplication:
 
         state = self.desired_state.load()
         normalized: dict[str, InteractiveSession] = {}
+        rewrites: list[tuple[str, str | None, str]] = []
         changed = False
         for session in state.interactive_sessions:
             actor = self._canonical_interactive_actor(session.actor)
+            if actor != session.actor:
+                rewrites.append((session.actor, session.session_ref, actor))
             candidate = (
                 session
                 if actor == session.actor
@@ -9456,7 +10966,9 @@ class DaemonApplication:
                 changed = True
         sessions = tuple(normalized[actor] for actor in sorted(normalized))
         if changed or sessions != state.interactive_sessions:
-            self.desired_state.save(replace(state, interactive_sessions=sessions))
+            self.desired_state.normalize_interactive_sessions(
+                rewrites=tuple(rewrites)
+            )
 
     def _resolve_agent_alias(self, target: str) -> str:
         """Resolve a bare short name to one canonical agent URI **by lookup**.
@@ -9583,11 +11095,163 @@ class DaemonApplication:
             return
         routes.drop(actor_uri, owner_lease=f"persona:{actor_uri}")
 
+    def _call_session_route(
+        self,
+        kind: SessionRouteKind,
+        *,
+        actor: str,
+        session_ref: str | None,
+        command: object | None = None,
+    ) -> object:
+        coordinator = self._session_route_coordinator
+        if coordinator is None:
+            return self._apply_session_route_request(
+                SessionRouteRequest(
+                    uuid4().hex, 0, kind, actor, session_ref,
+                    command,  # type: ignore[arg-type]
+                )
+            )
+        try:
+            return coordinator.call(
+                kind, actor=actor, session_ref=session_ref,
+                session_command=command, timeout=65.0,
+            )
+        except SessionRouteOverloaded as error:
+            raise ipc_errors.DaemonUnavailableError(str(error)) from error
+
+    def _apply_session_route_request(self, request: SessionRouteRequest) -> object:
+        kind = request.kind
+        actor = request.actor
+        session_ref = request.session_ref
+        if kind is SessionRouteKind.EXPIRE:
+            self._expire_stale_channel_routes_owned(
+                request.observed_at if request.observed_at is not None else self._clock(),
+                operation_id=request.operation_id,
+                generation=request.epoch,
+            )
+            return None
+        if kind is SessionRouteKind.ENSURE:
+            with self._interactive_route_effect(actor):
+                return self._ensure_interactive_route_effect(
+                    actor,
+                    session_ref,
+                    operation_id=request.operation_id,
+                    generation=request.epoch,
+                    version=0,
+                )
+        if kind is SessionRouteKind.DROP:
+            with self._interactive_route_effect(actor):
+                self._close_interactive_route_effect(
+                    actor,
+                    session_ref,
+                    operation_id=request.operation_id,
+                    generation=request.epoch,
+                    version=0,
+                )
+            return None
+        command = request.session_command
+        if command is None:
+            raise TypeError("session route mutation requires a session command")
+        if kind is SessionRouteKind.REGISTER:
+            completed = self._call_session(command)
+            result_actor = completed.result.actor
+            with self._interactive_route_effect(result_actor):
+                with self._interactive_route_lock:
+                    accepted = self._accept_interactive_route_observation_locked(
+                        result_actor, session_ref, completed.version
+                    )
+                if accepted:
+                    self._close_other_interactive_routes_effect(
+                        result_actor,
+                        session_ref,
+                        operation_id=f"{request.operation_id}:supersede-current",
+                        generation=request.epoch,
+                        version=completed.version,
+                    )
+                    self._ensure_interactive_route_effect(
+                        result_actor,
+                        session_ref,
+                        operation_id=f"{request.operation_id}:register",
+                        generation=request.epoch,
+                        version=completed.version,
+                    )
+                    with self._interactive_route_lock:
+                        self._retire_interactive_route_versions_locked(
+                            result_actor,
+                            keep_session_ref=session_ref,
+                            keep=True,
+                        )
+            for superseded_actor in completed.result.superseded_actors:
+                with self._interactive_route_effect(superseded_actor):
+                    with self._interactive_route_lock:
+                        accepted = self._accept_interactive_route_observation_locked(
+                            superseded_actor, session_ref, completed.version
+                        )
+                    if accepted:
+                        self._close_interactive_route_effect(
+                            superseded_actor,
+                            None,
+                            operation_id=(
+                                f"{request.operation_id}:superseded:"
+                                f"{superseded_actor}"
+                            ),
+                            generation=request.epoch,
+                            version=completed.version,
+                        )
+            return completed
+        completed = self._call_session(command)
+        if kind in {SessionRouteKind.REFRESH, SessionRouteKind.HEARTBEAT}:
+            result_actor = completed.result.actor
+            with self._interactive_route_effect(result_actor):
+                with self._interactive_route_lock:
+                    accepted = self._accept_interactive_route_observation_locked(
+                        result_actor, session_ref, completed.version
+                    )
+                if accepted:
+                    self._ensure_interactive_route_effect(
+                        result_actor,
+                        session_ref,
+                        operation_id=f"{request.operation_id}:{kind.value}",
+                        generation=request.epoch,
+                        version=completed.version,
+                    )
+        elif kind is SessionRouteKind.UNREGISTER:
+            result_actor = completed.result.actor
+            with self._interactive_route_effect(result_actor):
+                with self._interactive_route_lock:
+                    accepted = (
+                        completed.result.unregistered
+                        and self._accept_interactive_route_observation_locked(
+                            result_actor, session_ref, completed.version
+                        )
+                    )
+                if accepted:
+                    self._close_interactive_route_effect(
+                        result_actor,
+                        session_ref,
+                        operation_id=f"{request.operation_id}:unregister",
+                        generation=request.epoch,
+                        version=completed.version,
+                    )
+        else:
+            raise TypeError(f"unsupported session route operation {kind}")
+        return completed
+
     def _ensure_interactive_route(
         self, actor: str, session_ref: str | None = None
     ) -> bool:
-        with self._interactive_route_lock:
-            return self._ensure_interactive_route_locked(actor, session_ref)
+        if self._session_route_coordinator is not None:
+            return bool(self._call_session_route(
+                SessionRouteKind.ENSURE, actor=actor, session_ref=session_ref,
+            ))
+        with self._interactive_route_effect(actor):
+            return self._ensure_interactive_route_effect(
+                actor,
+                session_ref,
+                operation_id=f"session-route:ensure:{uuid4().hex}",
+                generation=0,
+                version=0,
+            )
 
     def _accept_interactive_route_observation_locked(
         self, actor: str, session_ref: str | None, version: int
@@ -9611,8 +11275,68 @@ class DaemonApplication:
         self._interactive_route_versions[key] = version
         return True
 
-    def _ensure_interactive_route_locked(
-        self, actor: str, session_ref: str | None = None
+    def _retire_interactive_route_versions_locked(
+        self,
+        actor: str,
+        *,
+        keep_session_ref: str | None = None,
+        keep: bool = False,
+    ) -> None:
+        for key in tuple(self._interactive_route_versions):
+            if key[0] == actor and (not keep or key[1] != keep_session_ref):
+                del self._interactive_route_versions[key]
+
+    @contextlib.contextmanager
+    def _interactive_route_effect(self, actor: str) -> Iterator[None]:
+        with self._interactive_route_lock:
+            gate = self._interactive_route_effect_gates.get(actor)
+            if gate is None:
+                gate = _InteractiveRouteEffectGate()
+                self._interactive_route_effect_gates[actor] = gate
+            gate.users += 1
+        gate.lock.acquire()
+        try:
+            yield
+        finally:
+            gate.lock.release()
+            with self._interactive_route_lock:
+                gate.users -= 1
+                if (
+                    gate.users == 0
+                    and self._interactive_route_effect_gates.get(actor) is gate
+                ):
+                    del self._interactive_route_effect_gates[actor]
+
+    @contextlib.contextmanager
+    def _try_interactive_route_effect(self, actor: str) -> Iterator[bool]:
+        with self._interactive_route_lock:
+            gate = self._interactive_route_effect_gates.get(actor)
+            if gate is None:
+                gate = _InteractiveRouteEffectGate()
+                self._interactive_route_effect_gates[actor] = gate
+            gate.users += 1
+        acquired = gate.lock.acquire(blocking=False)
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                gate.lock.release()
+            with self._interactive_route_lock:
+                gate.users -= 1
+                if (
+                    gate.users == 0
+                    and self._interactive_route_effect_gates.get(actor) is gate
+                ):
+                    del self._interactive_route_effect_gates[actor]
+
+    def _ensure_interactive_route_effect(
+        self,
+        actor: str,
+        session_ref: str | None = None,
+        *,
+        operation_id: str,
+        generation: int,
+        version: int,
     ) -> bool:
         """Publish and receive for a CC actor distinct from this daemon node."""
 
@@ -9623,9 +11347,14 @@ class DaemonApplication:
             return False
         lease = self._interactive_route_lease(actor, session_ref)
         canonical = classify_target_identity(actor) == TARGET_KIND_AGENT
-        completed = routes.ensure(
-            self._actor_route_spec(actor, advertise=canonical),
+        completed = self._settled_route_mutation(
+            routes,
+            operation_id=operation_id,
+            generation=generation,
+            version=version,
+            actor=actor,
             owner_lease=lease,
+            ensure_spec=self._actor_route_spec(actor, advertise=canonical),
         )
         if not canonical:
             # Admission gate, downgrade-don't-reject: a pre-canonical
@@ -9716,12 +11445,26 @@ class DaemonApplication:
     def _expire_stale_channel_routes(
         self, now: float, sessions: tuple[SessionProjection, ...] | None = None
     ) -> None:
-        # Session reads can touch durable state and runtime projections, so all
-        # observation work stays outside the route lock.  The locked section
-        # admits only the matching in-memory version comparison and route drop.
-        # A heartbeat/refresh that applied a newer Session version therefore
-        # fences a delayed expiry observation without making either wait on
-        # the other's domain call.
+        coordinator = self._session_route_coordinator
+        if coordinator is not None:
+            admission, _operation_id = coordinator.request(
+                SessionRouteKind.EXPIRE, observed_at=now
+            )
+            if admission is AdmissionResult.OVERLOADED:
+                self._log("warn", "daemon", "session_route.expiry_overloaded")
+            return
+        self._expire_stale_channel_routes_owned(now, sessions)
+
+    def _expire_stale_channel_routes_owned(
+        self,
+        now: float,
+        sessions: tuple[SessionProjection, ...] | None = None,
+        *,
+        operation_id: str | None = None,
+        generation: int = 0,
+    ) -> None:
+        # Reads can touch durable projections, so observe outside the route
+        # lock. Only the version comparison and route mutation are serialized.
         observed_sessions = (
             self._agent_session_domains.session.read_sessions()
             if sessions is None
@@ -9733,17 +11476,35 @@ class DaemonApplication:
             if session.source == "claude-channel"
             and session.channel_lease_backed
         )
-        with self._interactive_route_lock:
-            for session, alive in observations:
-                if (
-                    not alive
-                    and self._accept_interactive_route_observation_locked(
-                        session.actor, session.session_ref, session.version
-                    )
-                ):
-                    self._close_interactive_route_locked(
-                        session.actor, session.session_ref
-                    )
+        root_operation = operation_id or f"session-route:expire:{uuid4().hex}"
+        pending = [session for session, alive in observations if not alive]
+        while pending:
+            retained: list[SessionProjection] = []
+            progressed = False
+            for session in pending:
+                with self._try_interactive_route_effect(session.actor) as acquired:
+                    if not acquired:
+                        retained.append(session)
+                        continue
+                    progressed = True
+                    with self._interactive_route_lock:
+                        accepted = self._accept_interactive_route_observation_locked(
+                            session.actor, session.session_ref, session.version
+                        )
+                    if accepted:
+                        self._close_interactive_route_effect(
+                            session.actor,
+                            session.session_ref,
+                            operation_id=(
+                                f"{root_operation}:{session.actor}:"
+                                f"{session.session_ref or 'legacy'}"
+                            ),
+                            generation=generation,
+                            version=session.version,
+                        )
+            pending = retained
+            if pending and not progressed:
+                time.sleep(0.005)
 
     def _channel_alive(self, session: InteractiveSession, now: float) -> bool:
         del now
@@ -9765,25 +11526,60 @@ class DaemonApplication:
     def _close_interactive_route(
         self, actor: str, session_ref: str | None = None
     ) -> None:
-        with self._interactive_route_lock:
-            self._close_interactive_route_locked(actor, session_ref)
+        if self._session_route_coordinator is not None:
+            self._call_session_route(
+                SessionRouteKind.DROP, actor=actor, session_ref=session_ref,
+            )
+            return
+        with self._interactive_route_effect(actor):
+            self._close_interactive_route_effect(
+                actor,
+                session_ref,
+                operation_id=f"session-route:drop:{uuid4().hex}",
+                generation=0,
+                version=0,
+            )
 
-    def _close_other_interactive_routes_locked(
-        self, actor: str, session_ref: str
+    def _close_other_interactive_routes_effect(
+        self,
+        actor: str,
+        session_ref: str,
+        *,
+        operation_id: str,
+        generation: int,
+        version: int,
     ) -> None:
         routes = self._routes
         if routes is None:
             return
         current_owner = self._interactive_route_lease(actor, session_ref)
-        for owner in tuple(routes.owners(actor)):
+        for index, owner in enumerate(tuple(routes.owners(actor))):
             if owner.startswith("session:") and owner != current_owner:
-                routes.drop(actor, owner_lease=owner)
+                self._settled_route_mutation(
+                    routes,
+                    operation_id=f"{operation_id}:{index}",
+                    generation=generation,
+                    version=version,
+                    actor=actor,
+                    owner_lease=owner,
+                )
 
-    def _close_interactive_route_locked(
-        self, actor: str, session_ref: str | None = None
+    def _close_interactive_route_effect(
+        self,
+        actor: str,
+        session_ref: str | None = None,
+        *,
+        operation_id: str,
+        generation: int,
+        version: int,
     ) -> None:
         routes = self._routes
         if routes is None:
+            with self._interactive_route_lock:
+                if session_ref is None:
+                    self._retire_interactive_route_versions_locked(actor)
+                else:
+                    self._interactive_route_versions.pop((actor, session_ref), None)
             return
         if session_ref is not None:
             owners = (self._interactive_route_lease(actor, session_ref),)
@@ -9793,8 +11589,98 @@ class DaemonApplication:
                 for owner in routes.owners(actor)
                 if owner.startswith("session:")
             )
-        for owner in owners:
-            routes.drop(actor, owner_lease=owner)
+        for index, owner in enumerate(owners):
+            self._settled_route_mutation(
+                routes,
+                operation_id=f"{operation_id}:{index}",
+                generation=generation,
+                version=version,
+                actor=actor,
+                owner_lease=owner,
+            )
+        with self._interactive_route_lock:
+            if session_ref is None:
+                self._retire_interactive_route_versions_locked(actor)
+            else:
+                self._interactive_route_versions.pop((actor, session_ref), None)
+
+    def _settled_route_mutation(
+        self,
+        routes: RouteRegistrationClient,
+        *,
+        operation_id: str,
+        generation: int,
+        version: int,
+        actor: str,
+        owner_lease: str,
+        ensure_spec: RouteSpec | None = None,
+    ) -> Any:
+        if not isinstance(routes, RouteRegistrationClient):
+            if ensure_spec is not None:
+                return routes.ensure(ensure_spec, owner_lease=owner_lease)
+            return routes.drop(actor, owner_lease=owner_lease)
+        key = (actor, owner_lease)
+        with self._interactive_route_lock:
+            expected_token = self._interactive_route_resource_tokens.get(key)
+        attempt_token = f"{operation_id}:attempt:0"
+        correlation_id = f"{attempt_token}:completion"
+        payload = (
+            EnsureRouteCommand(
+                correlation_id,
+                attempt_token,
+                generation,
+                version,
+                ensure_spec,
+                owner_lease,
+            )
+            if ensure_spec is not None
+            else DropRouteCommand(
+                correlation_id,
+                attempt_token,
+                generation,
+                version,
+                actor,
+                owner_lease,
+            )
+        )
+        request = LifecycleMutationRequest(
+            correlation_id,
+            attempt_token,
+            operation_id,
+            expected_token if ensure_spec is None else None,
+            payload,
+        )
+        retry = 0
+        while True:
+            try:
+                completed = routes.call_settled(request)
+                break
+            except RouteCommandError as error:
+                if error.code == "PORT_CLOSING":
+                    raise
+                self._log(
+                    "warn",
+                    "daemon",
+                    "session_route.route_retry",
+                    actor=actor,
+                    ownerLease=owner_lease,
+                    operationId=operation_id,
+                    attemptToken=attempt_token,
+                    retry=retry,
+                    errorCode=error.code,
+                    detail=error.detail,
+                )
+                retry += 1
+                time.sleep(min(0.005 * (2 ** min(retry, 7)), 0.5))
+        token = completed.provenance.resource_token
+        with self._interactive_route_lock:
+            if ensure_spec is not None:
+                self._interactive_route_resource_tokens[key] = token
+            elif expected_token is None or token == expected_token:
+                self._interactive_route_resource_tokens.pop(key, None)
+            else:
+                self._interactive_route_resource_tokens[key] = token
+        return completed
 
     @staticmethod
     def _interactive_route_lease(actor: str, session_ref: str | None) -> str:
@@ -9887,6 +11773,7 @@ class DaemonApplication:
                 state_dir=self.state_dir,
                 service_actor=self._dispatch_service_actor,
                 delivery_io=self._pac_notification_io,
+                graph_authority=self._pac_graph_authority,
             )
         except PacAgentTaskError as error:
             raise DaemonRequestError(error.code, str(error), error.data) from error
@@ -9932,6 +11819,7 @@ class DaemonApplication:
         from hyprial.pac.lifecycle import request_actor_stop
         from hyprial.pac.reactor import PacReactor, planned_to_json
         from hyprial.pac.store import PacGraphStore, default_database_path
+        from hyprial.pac.authority import PacGraphOverloaded, PacGraphTimeout
 
         from .pac_actor import DaemonPacNotificationSender
 
@@ -9951,6 +11839,46 @@ class DaemonApplication:
                         return forwarded
                 except PacError as error:
                     raise DaemonRequestError(error.code, str(error)) from error
+        authority = self._pac_graph_authority
+        if authority is not None:
+            graph_id = _required_string(params.get("graphId"), "graphId")
+            try:
+                if method == "pac.flag.set":
+                    return authority.set_flag(
+                        graph_id,
+                        _required_string(params.get("nodeId"), "nodeId"),
+                        actor=caller,
+                        reason_ref=params.get("reasonRef"),
+                        expected_request=params.get("expectedRequest"),
+                    )
+                if method == "pac.flag.reset":
+                    return authority.reset_flag(
+                        graph_id,
+                        _required_string(params.get("nodeId"), "nodeId"),
+                        actor=caller,
+                        reason_ref=params.get("reasonRef"),
+                    )
+                if method == "pac.graph.activate":
+                    return authority.activate_graph(graph_id, actor=caller)
+                if method == "pac.graph.close":
+                    return authority.close_graph(graph_id, actor=caller)
+                if method == "pac.actor.stop":
+                    return authority.stop_actor(
+                        graph_id,
+                        _required_string(params.get("actorName"), "actorName"),
+                        actor=caller,
+                    )
+            except PacError as error:
+                raise DaemonRequestError(error.code, str(error), error.data) from error
+            except (PacGraphOverloaded, PacGraphTimeout) as error:
+                raise DaemonRequestError(
+                    ipc_errors.WORKFLOW_UNAVAILABLE, str(error)
+                ) from error
+        if self._transport is not None:
+            raise DaemonRequestError(
+                ipc_errors.WORKFLOW_UNAVAILABLE,
+                "PAC graph authority is not running",
+            )
         store = PacGraphStore(default_database_path(self.state_dir))
         try:
             if method in ("pac.flag.set", "pac.flag.reset"):
@@ -10362,7 +12290,8 @@ class DaemonApplication:
                 harness_args={harness: args} if args else None,
                 preferred_harness=harness,
             )
-            self._finish_resident_agent_creation(agent)
+            if not agent.actor.startswith("wf-"):
+                self._finish_resident_agent_creation(agent)
             self._log(
                 "info", "agents", "agent.created", actor=agent.uri, harness=harness
             )
@@ -10370,6 +12299,7 @@ class DaemonApplication:
             # A legacy pin naming this agent becomes migratable the moment
             # the record exists (see _migrate_legacy_channel_pins).
             self._migrate_legacy_channel_pins()
+            self._publish_agent_restore_allow(agent)
             return agent
         changes: dict[str, Any] = {
             "capabilities": {**agent.capabilities, **facts},
@@ -10382,7 +12312,24 @@ class DaemonApplication:
             changes["harness_args"] = {**agent.harness_args, harness: args}
         if changes:
             agent = self.agents.save(replace(agent, **changes))
+        self._publish_agent_restore_allow(agent)
         return agent
+
+    def _publish_agent_restore_allow(self, agent: Agent) -> None:
+        spec = next(
+            (
+                item
+                for item in self.desired_state.load().harnesses
+                if item.name == agent.actor and item.harness != "lark"
+            ),
+            None,
+        )
+        if spec is not None:
+            self._publish_restore_eligibility(
+                spec=spec,
+                entity_token=agent.entity_token,
+                suppressed=False,
+            )
 
     def _bind_agent(
         self,
@@ -10565,15 +12512,19 @@ class DaemonApplication:
             keep is None or keep != (_session_harness(interactive), RUNTIME_INTERACTIVE)
         ):
             if interactive.session_ref is not None:
-                self._call_session(
-                    UnregisterSessionCommand(
+                self._call_session_route(
+                    SessionRouteKind.UNREGISTER,
+                    actor=actor,
+                    session_ref=interactive.session_ref,
+                    command=UnregisterSessionCommand(
                         correlation_id=f"session:stop-runtime:{uuid4().hex}",
                         actor=actor,
                         session_ref=interactive.session_ref,
                         manage_agent=self.agents.get(actor) is not None,
-                    )
+                    ),
                 )
-            self._close_interactive_route(actor, interactive.session_ref)
+            else:
+                self._close_interactive_route(actor, None)
             stopped.append(f"interactive:{actor}")
         return stopped
 
@@ -10720,35 +12671,16 @@ class DaemonApplication:
             ),
         }
 
-    def _restore_threshold_for_status(self) -> int:
-        try:
-            return self._restore_policy.load().threshold_ms
-        except RestorePolicyError as error:
-            self._restore_policy_degraded = str(error)
-            return RESTORE_THRESHOLD_MS
-
-    def _restore_now_ms(self) -> int:
-        return time.time_ns() // 1_000_000
-
-    @staticmethod
-    def _restore_age_text(value_ms: int | None) -> str:
-        if value_ms is None:
-            return "unknown"
-        hours = max(0, value_ms) // (60 * 60 * 1_000)
-        if hours:
-            return f"{hours}h"
-        minutes = max(0, value_ms) // (60 * 1_000)
-        return f"{minutes}m"
-
     def _restore_agent_projection(
-        self,
-        agent: Agent,
-        *,
-        now_ms: int,
+        self, agent: Agent, *, now_ms: int | None = None,
         spec: HarnessLaunchSpec | None = None,
     ) -> JsonObject:
-        block = self._agent_registry.agent_block(agent.actor)
-        if block is not None:
+        now_ms = self._restore_now_ms() if now_ms is None else now_ms
+        projection = self.agents.projection(agent.actor)
+        if projection is None:
+            return {}
+        if projection.block is not None:
+            block = projection.block
             age_ms = max(0, now_ms - block.blocked_at_ms)
             return {
                 "workerState": "blocked",
@@ -10758,26 +12690,24 @@ class DaemonApplication:
                 "blockedAgeMs": age_ms,
                 "lastActiveAtMs": agent.last_active_at_ms,
                 "idleAgeMs": None,
-                "restoreThresholdMs": self._restore_threshold_for_status(),
+                "restoreThresholdMs": (
+                    self._restore_policy.projection().policy.threshold_ms
+                ),
                 "restoreOverride": "none",
                 "activityUnknown": agent.actor in self._restore_activity_unknown,
                 "status": (
-                    f"blocked ({block.reason}; "
-                    f"{self._restore_age_text(age_ms)})"
+                    f"blocked ({block.reason}; {self._restore_age_text(age_ms)})"
                 ),
             }
-        generation = desired_generation(spec) if spec is not None else None
-        disposition = self._agent_registry.restore_disposition(
-            agent.actor, desired_generation=generation
-        )
+        disposition = projection.restore_disposition
+        if disposition is not None and spec is not None and disposition.desired_generation != desired_generation(spec):
+            disposition = None
         if disposition is None:
             if agent.actor in self._restore_activity_unknown:
                 return {
-                    "lastActiveAtMs": None,
-                    "idleAgeMs": None,
+                    "lastActiveAtMs": None, "idleAgeMs": None,
                     "restoreThresholdMs": self._restore_threshold_for_status(),
-                    "restoreOverride": "none",
-                    "activityUnknown": True,
+                    "restoreOverride": "none", "activityUnknown": True,
                 }
             return {}
         idle_age_ms = (
@@ -10799,6 +12729,63 @@ class DaemonApplication:
                 f"{self._restore_age_text(disposition.restore_threshold_ms)})"
             ),
         }
+
+    def _restore_status_summary(self) -> JsonObject:
+        projections = self.agents.projections()
+        dispositions = tuple(
+            item.restore_disposition
+            for item in projections
+            if item.restore_disposition is not None
+        )
+        blocks = tuple(
+            item.block for item in projections if item.block is not None
+        )
+        policy = self._restore_policy.projection()
+        now_ms = self._restore_now_ms()
+        idle_ages = tuple(
+            (
+                max(0, now_ms - item.last_active_at_ms)
+                if item.last_active_at_ms is not None
+                else item.idle_age_ms
+            )
+            for item in dispositions
+        )
+        return {
+            "restoreThresholdMs": policy.policy.threshold_ms,
+            "suppressedCount": len(dispositions),
+            "oldestIdleAgeMs": max(
+                (value for value in idle_ages if value is not None),
+                default=None,
+            ),
+            "unknownActivityCount": len(self._restore_activity_unknown),
+            "blockedCount": len(blocks),
+            "oldestBlockedAgeMs": max(
+                (
+                    max(0, now_ms - item.blocked_at_ms)
+                    for item in blocks
+                ),
+                default=None,
+            ),
+            "degraded": policy.degraded is not None,
+            **(
+                {"degradedReason": policy.degraded}
+                if policy.degraded is not None
+                else {}
+            ),
+        }
+
+    @staticmethod
+    def _restore_now_ms() -> int:
+        return time.time_ns() // 1_000_000
+
+    @staticmethod
+    def _restore_age_text(value_ms: int | None) -> str:
+        if value_ms is None:
+            return "unknown"
+        hours = max(0, value_ms) // (60 * 60 * 1_000)
+        if hours:
+            return f"{hours}h"
+        return f"{max(0, value_ms) // (60 * 1_000)}m"
 
     def _gossip_for_startup(self) -> bool:
         gossip = not self.network_isolated and zenoh_environment_flag(
@@ -11043,6 +13030,7 @@ class DaemonApplication:
                 level, "zenoh", event, **fields
             ),
             scheduler=self._maintenance_scheduler,
+            own_io=True,
         )
         self._forwarding_supervisor = supervisor
         supervisor.ensure_started()
@@ -11594,7 +13582,7 @@ class DaemonApplication:
             cwd = spec.cwd
         else:
             try:
-                cwd = str(self._agent_registry.ensure_workspace(spec.name))
+                cwd = self._agent_session_domains.agent.prepare_workspace(spec.name)
             except RegistryHomeError as error:
                 raise DaemonRequestError(
                     ipc_errors.INVALID_ARGUMENT,
@@ -11608,19 +13596,22 @@ class DaemonApplication:
             from hyprial.agents.runtime import (
                 DEFAULT_AGENT_TOOL_PROFILE,
                 AgentRuntimeError,
-                resolve_agent_runtime_context,
             )
 
             try:
-                runtime_context = resolve_agent_runtime_context(
-                    registry=self._agent_registry,
-                    agent_name=agent.actor,
-                    harness=spec.harness,
-                    cwd=cwd,
-                    tool_profile=DEFAULT_AGENT_TOOL_PROFILE,
+                runtime_context = self._agent_session_domains.agent.prepare_runtime_context(
+                    agent.actor,
+                    spec.harness,
+                    cwd,
+                    DEFAULT_AGENT_TOOL_PROFILE,
                     containerized=spec.containerized,
                 )
-            except (AgentConfigError, AgentHomeError, AgentRuntimeError) as error:
+            except (
+                AgentError,
+                AgentConfigError,
+                AgentHomeError,
+                AgentRuntimeError,
+            ) as error:
                 raise DaemonRequestError(
                     ipc_errors.INVALID_ARGUMENT,
                     f"cannot resolve agent-home P2 session root for "
@@ -11884,22 +13875,37 @@ class DaemonApplication:
         """
 
         agent = self.agents.require(name)
+        reservation = self._reserve_agent_destroy(agent.actor)
         actor = agent.uri
-        workspace = self._agent_registry.workspace_summary(name)
-        stopped = self._stop_agent_runtime(actor, keep=None)
-        self._drop_persona_route(actor)
-        self._release_agent_binding(actor)
-        removed_routines = []
-        for routine in self._routines_bound_to(actor):
-            routine_name = str(routine["name"])
-            self._remove_registered_routine(routine_name, enforce_last=False)
-            removed_routines.append(routine_name)
-        destroyed_messages = self._destroy_agent_messages(agent)
-        # Snapshot the pins for the report; the deletion itself needs no pin
-        # code at all -- ON DELETE CASCADE erases them in the same
-        # transaction that removes the agent row.
-        unpinned = sorted(agent.pinned_adapters)
-        removed = self.agents.destroy(name)
+        try:
+            workspace = self._agent_session_domains.agent.read_workspace_summary(name)
+            stopped = self._stop_agent_runtime(actor, keep=None)
+            self._drop_persona_route(actor)
+            self._release_agent_binding(actor)
+            removed_routines = self._remove_agent_routines(agent)
+            destroyed_messages = self._destroy_agent_messages(agent)
+            # Snapshot the pins for the report; the deletion itself needs no pin
+            # code at all -- ON DELETE CASCADE erases them in the same
+            # transaction that removes the agent row.
+            unpinned = sorted(agent.pinned_adapters)
+            removed = self.agents.destroy(
+                name, expected_entity_token=agent.entity_token
+            )
+        except BaseException:
+            try:
+                self._release_agent_destroy_reservation(
+                    reservation.reservation_token
+                )
+            except Exception as error:  # noqa: BLE001 - retain original failure
+                self._log(
+                    "error",
+                    "agents",
+                    "agent.destroy_reservation.release_failed",
+                    actor=actor,
+                    errorType=type(error).__name__,
+                    detail=str(error),
+                )
+            raise
         workspace_deleted = workspace.exists and not Path(workspace.path).exists()
         self._log(
             "warn",
@@ -11926,6 +13932,41 @@ class DaemonApplication:
                 "deleted": workspace_deleted,
             },
         }
+
+    def _remove_agent_routines(self, agent: Agent) -> list[str]:
+        routines = self._routines_bound_to(agent.uri)
+        if not routines:
+            return []
+        coordinator = self._routine_coordinator
+        if coordinator is None:
+            raise DaemonRequestError(
+                ipc_errors.ROUTINE_UNAVAILABLE,
+                "routine coordinator is not running",
+            )
+        from hyprial.routine.coordinator import remove_command
+
+        removed: list[str] = []
+        for routine in routines:
+            name = str(routine["name"])
+            operation_id = (
+                f"agent-routine-remove:{agent.entity_token}:"
+                f"{hashlib.sha256(name.encode()).hexdigest()[:16]}"
+            )
+            admission = coordinator.begin(
+                remove_command(
+                    operation_id=operation_id,
+                    name=name,
+                    enforce_last=False,
+                )
+            )
+            if admission is not PortAdmission.ACCEPTED:
+                raise DaemonRequestError(
+                    ipc_errors.ROUTINE_UNAVAILABLE,
+                    f"routine removal admission {admission.value}",
+                )
+            coordinator.wait(operation_id, timeout=70.0)
+            removed.append(name)
+        return removed
 
     def _destroy_agent_messages(self, agent: Agent) -> int:
         """Discard this agent's undelivered messages through the inbox's own API.
@@ -12452,7 +14493,8 @@ class DaemonApplication:
                     elapsedMs=int((time.monotonic() - started) * 1000),
                 )
 
-        attempt(self._autoupdate.stop, "autoupdate")
+        if not self._autoupdate.stop(timeout=0.25):
+            errors.append(RuntimeError("auto-update authority did not drain"))
         # Before any collaborator the restore thread might be inside is torn
         # down.  Bounded on purpose -- see the join method's docstring.
         attempt(self._join_restore_thread, "restore-thread")
@@ -12465,7 +14507,29 @@ class DaemonApplication:
             reserve_fd = self._accept_reserve_fd
             self._accept_reserve_fd = None
             attempt(lambda: os.close(reserve_fd), "reserve-fd")
-        attempt(self._close_ipc_clients, "ipc-clients")
+        # A socket close cannot interrupt a handler already inside a domain
+        # wait. If any worker remains, keep every domain it may still touch
+        # alive and let a later close retry after the worker settles.
+        try:
+            self._close_ipc_clients()
+        except BaseException as error:
+            self._log_trace(
+                "warn", "daemon.close.failed", resource="ipc-clients",
+                errorType=type(error).__name__, error=str(error)[:500],
+            )
+            raise
+        if self._ipc_request_owner is not None:
+            request_owner = self._ipc_request_owner
+            if not request_owner.close(5.0):
+                raise RuntimeError(
+                    "IPC requests did not settle before domain teardown"
+                )
+            self._ipc_request_owner = None
+        if self._dispatch_diagnostics is not None:
+            diagnostics = self._dispatch_diagnostics
+            if not diagnostics.close(5.0):
+                raise RuntimeError("dispatch diagnostics did not drain")
+            self._dispatch_diagnostics = None
         attempt(lambda: self.socket_path.unlink(missing_ok=True), "socket-file")
         attempt(lambda: (self.state_dir / "daemon.json").unlink(missing_ok=True), "daemon-json")
         self._maintenance_generation += 1
@@ -12473,38 +14537,94 @@ class DaemonApplication:
             raise RuntimeError(
                 "maintenance callback did not stop; refusing unsafe domain teardown"
             )
+        if getattr(self, "_stop_recipient_wake_observer", None) is not None:
+            stop_recipient_wake_observer = self._stop_recipient_wake_observer
+            self._stop_recipient_wake_observer = None
+            attempt(stop_recipient_wake_observer, "recipient-wake-observer")
+        if self._dispatch_cadence is not None:
+            cadence = self._dispatch_cadence
+            if not cadence.close(5.0):
+                raise RuntimeError(
+                    "dispatch runtime did not drain; refusing unsafe domain teardown"
+                )
+            self._dispatch_cadence = None
+        if self._forwarding_cadence is not None:
+            cadence = self._forwarding_cadence
+            if not cadence.close(5.0):
+                raise RuntimeError(
+                    "forwarding effects did not drain; refusing unsafe sidecar teardown"
+                )
+            self._forwarding_cadence = None
+        if self._restore_wake_cadence is not None:
+            cadence = self._restore_wake_cadence
+            if not cadence.close(5.0):
+                raise RuntimeError("restore wake effects did not drain")
+            self._restore_wake_cadence = None
+        if self._session_route_coordinator is not None:
+            coordinator = self._session_route_coordinator
+            if not coordinator.close(5.0):
+                raise RuntimeError(
+                    "session route effects did not drain; refusing unsafe route teardown"
+                )
+            self._session_route_coordinator = None
+        if self._runtime is not None:
+            runtime = self._runtime
+            try:
+                if runtime.stop() is False:
+                    raise RuntimeError("dispatch runtime did not drain")
+            except BaseException as error:
+                raise RuntimeError(
+                    "dispatch runtime did not drain; refusing unsafe domain teardown"
+                ) from error
+            self._runtime = None
+        for attribute in ("_quota_watchdog", "_inbox_watchdog"):
+            watchdog = getattr(self, attribute)
+            if watchdog is not None:
+                if not watchdog.close(5.0):
+                    raise RuntimeError(
+                        f"{attribute[1:]} did not drain before delivery teardown"
+                    )
+                setattr(self, attribute, None)
         attempt(self._flush_agent_activity, "agent-activity")
         if self._routine_service is not None:
+            if self._routine_coordinator is not None:
+                coordinator = self._routine_coordinator
+                if not coordinator.close(5.0):
+                    raise RuntimeError("routine coordinator did not drain")
+                self._routine_coordinator = None
             routine_service = self._routine_service
             self._routine_service = None
             attempt(routine_service.close, "routine-service")
         if self._remote_workflow is not None:
             remote_workflow = self._remote_workflow
+            remote_workflow.close_registrations()
+            if not remote_workflow.shutdown(5.0):
+                raise RuntimeError("remote workflow handlers did not drain before deadline")
             self._remote_workflow = None
-            attempt(remote_workflow.close_registrations, "remote-workflow-registrations")
-            def close_remote_workflow():
-                if not remote_workflow.shutdown(5.0):
-                    raise RuntimeError("remote workflow handlers did not drain before deadline")
-            attempt(close_remote_workflow, "remote-workflow")
         if self._workflow_service is not None:
             workflow_service = self._workflow_service
+            workflow_service.close()
             self._workflow_service = None
-            attempt(workflow_service.close, "workflow-service")
         for handle in self._degraded_workflow_handles:
             attempt(handle.close, "degraded-workflow-component")
         self._degraded_workflow_handles.clear()
         if self._pac_actor_service is not None:
             pac_actor_service = self._pac_actor_service
-            self._pac_actor_service = None
             if not pac_actor_service.close(5.0):
-                errors.append(RuntimeError("PAC actor service did not drain before deadline"))
+                raise RuntimeError("PAC actor service did not drain before deadline")
+            self._pac_actor_service = None
+        if self._pac_graph_authority is not None:
+            graph_authority = self._pac_graph_authority
+            if not graph_authority.close(5.0):
+                raise RuntimeError(
+                    "PAC graph authority did not drain before sender teardown"
+                )
+            self._pac_graph_authority = None
         if self._lifecycle_manager is not None:
             lifecycle_manager = self._lifecycle_manager
-            self._lifecycle_manager = None
             if not lifecycle_manager.drain(5.0):
-                errors.append(
-                    RuntimeError("lifecycle manager did not drain before deadline")
-                )
+                raise RuntimeError("lifecycle manager did not drain before deadline")
+            self._lifecycle_manager = None
         for lifecycle_port in self._lifecycle_domain_ports:
             if not lifecycle_port.drain(5.0):
                 errors.append(
@@ -12515,36 +14635,29 @@ class DaemonApplication:
         self._lifecycle_domain_ports = ()
         if self._route_registration is not None:
             route_registration = self._route_registration
+            route_registration.close_registrations()
+            if not route_registration.drain(5.0):
+                raise RuntimeError("route registration did not drain before deadline")
             self._route_registration = None
             self._routes = None
-            attempt(route_registration.close_registrations, "route-registrations")
-            if not route_registration.drain(5.0):
-                errors.append(
-                    RuntimeError("route registration did not drain before deadline")
-                )
         if self._lifecycle_router is not None:
             lifecycle_router = self._lifecycle_router
             self._lifecycle_router = None
             lifecycle_router.close()
-        if self._agent_session_domains is not None:
-            agent_session_domains = self._agent_session_domains
-            if not agent_session_domains.close():
-                errors.append(
-                    RuntimeError("session/agent domains did not drain before deadline")
-                )
-            self._agent_domains_finalizer.detach()
+        if not self._agent_keep.close(5.0):
+            raise RuntimeError("agent keep authority did not drain")
+        if not self._restore_policy.close(5.0):
+            raise RuntimeError("restore policy authority did not drain")
+        self._restore_policy_finalizer.detach()
+        if not self._blocking_failures.close(5.0):
+            raise RuntimeError("blocking failure authority did not drain")
+        self._blocking_failures_finalizer.detach()
+        self._close_harnesses_before_agent_domains()
         with self._registry_management_lock:
+            management = self._registry_management
             self._registry_management = None
-        if self._harnesses is not None:
-            harnesses = self._harnesses
-            self._harnesses = None
-            stop_harnesses = getattr(harnesses, "stop", None)
-            if callable(stop_harnesses):
-                attempt(stop_harnesses, "harnesses")
-            if getattr(harnesses, "drain_complete", True) is False:
-                errors.append(
-                    RuntimeError("harness domain did not drain before deadline")
-                )
+        if management is not None and not management.close(5.0):
+            raise RuntimeError("management authority did not drain")
         if self._turn_hooks is not None:
             turn_hooks = self._turn_hooks
             self._turn_hooks = None
@@ -12562,6 +14675,13 @@ class DaemonApplication:
         if self._lark_events is not None:
             self._lark_events.close()
             self._lark_events = None
+        if getattr(self, "_recipient_wakes", None) is not None:
+            recipient_wakes = self._recipient_wakes
+            if not recipient_wakes.close(5.0):
+                raise RuntimeError(
+                    "recipient wakes did not settle before inbox teardown"
+                )
+            self._recipient_wakes = None
         if self._inbox is not None:
             inbox = self._inbox
             self._inbox = None
@@ -12581,7 +14701,8 @@ class DaemonApplication:
         if self._usage_cache is not None:
             usage_cache = self._usage_cache
             self._usage_cache = None
-            attempt(usage_cache.stop, "usage-cache")
+            if usage_cache.stop(timeout=2.0) is False:
+                errors.append(RuntimeError("usage authority did not drain"))
         if self._orgfs_runtime is not None:
             orgfs_runtime = self._orgfs_runtime
             self._orgfs_runtime = None
@@ -12598,22 +14719,36 @@ class DaemonApplication:
         ):
             resource = getattr(self, resource_name)
             if resource is not None:
+                if resource_name == "_duplicate_watch":
+                    resource.close()
+                else:
+                    resource.close()
                 setattr(self, resource_name, None)
-                attempt(resource.close, resource_name.lstrip("_"))
-        if self._runtime is not None:
-            runtime = self._runtime
-            self._runtime = None
-            attempt(runtime.stop, "actor-runtime")
+        if not self.user_adapters.close(5.0):
+            raise RuntimeError("user adapter gateways did not drain")
+        if not self._route_gateway_cache.close(5.0):
+            raise RuntimeError("outbound route gateways did not drain")
+        for gateway_owner in tuple(self._outbound_gateway_owners):
+            if not gateway_owner.close(5.0):
+                raise RuntimeError("outbound Lark gateway did not drain")
+        self._outbound_gateway_owners.clear()
         self._presence = None
         self._user_delivery = None
+        if self._fetch_receipt_publisher is not None:
+            publisher = self._fetch_receipt_publisher
+            if not publisher.close(5.0):
+                raise RuntimeError(
+                    "fetch receipt hints did not drain before transport teardown"
+                )
+            self._fetch_receipt_publisher = None
         if self._transport is not None:
             transport = self._transport
+            transport.close()
             self._transport = None
-            attempt(transport.close, "zenoh-transport")
         if self._forwarding_supervisor is not None:
             supervisor = self._forwarding_supervisor
+            supervisor.close()
             self._forwarding_supervisor = None
-            attempt(supervisor.close, "forwarding-sidecar")
         if self._forwarding_discovery is not None:
             forwarding_discovery = self._forwarding_discovery
             self._forwarding_discovery = None
@@ -12622,16 +14757,110 @@ class DaemonApplication:
             lock_stream = self._lock_stream
             self._lock_stream = None
             attempt(lock_stream.close, "home-lock")
+        if not self.user_profiles.close(5.0):
+            errors.append(RuntimeError("user profile authority did not drain"))
+        if not self._state_persistence.close(5.0):
+            errors.append(RuntimeError("state persistence authority did not drain"))
+        if not self._maintenance_watchdog.close(timeout=5.0):
+            raise RuntimeError("maintenance watchdog still owns reporting work")
+        if not self._gateway_logger.close(timeout=5.0):
+            errors.append(RuntimeError("gateway log writer did not drain"))
+        if not self._logger.close(timeout=5.0):
+            errors.append(RuntimeError("daemon log writer did not drain"))
         if len(errors) == 1:
             raise errors[0]
         if errors:
             raise BaseExceptionGroup("daemon shutdown failed", errors)
 
+    def _close_harnesses_before_agent_domains(self) -> None:
+        """Retire launch users before their Agent settlement dependency."""
+
+        if self._harnesses is not None:
+            harnesses = self._harnesses
+            stop_harnesses = getattr(harnesses, "stop", None)
+            if callable(stop_harnesses):
+                stop_harnesses()
+            if getattr(harnesses, "drain_complete", True) is False:
+                raise RuntimeError("harness domain did not drain before deadline")
+            self._harnesses = None
+        provider_auth = getattr(self, "_provider_auth", None)
+        if provider_auth is not None:
+            if not provider_auth.close(5.0):
+                raise RuntimeError("provider auth authority did not drain")
+            self._provider_auth = None
+        if self._agent_session_domains is not None:
+            agent_session_domains = self._agent_session_domains
+            if not agent_session_domains.close():
+                raise RuntimeError(
+                    "session/agent domains did not drain before deadline"
+                )
+            self._agent_domains_finalizer.detach()
+
+    def _trace_presence_announcement(self) -> None:
+        if not getattr(self, "_trace_presence_enabled", False):
+            return
+        try:
+            self._log(
+                "info", "zenoh", "zenoh.presence.announced", nodeId=self.node_id,
+                key=KeySpace().actor_liveliness(self.node_id),
+            )
+        except Exception:
+            pass
+
+    def _trace_presence_observation(self, event: Any) -> None:
+        # The existing logger admits bytes without waiting for file I/O.
+        self._log(
+            "info", "zenoh", "zenoh.presence.observed",
+            nodeId=self.node_id, key=event.key, kind=event.kind,
+            change=event.change, sampleGeneration=event.sample_generation,
+            presenceGeneration=event.presence_generation,
+            transportGeneration=event.transport_generation,
+            callbackHistoryComplete=event.history_complete,
+            admission=event.admission,
+        )
+
+    def _trace_presence_snapshot(self, hosts: list[str] | None) -> None:
+        if not getattr(self, "_trace_presence_enabled", False):
+            return
+        try:
+            transport = self._transport.projection()
+            presence = self._presence.inner.presence_projection()
+            presence_hosts = sorted(
+                actor for actor in presence.actors
+                if classify_target_identity(actor) == TARGET_KIND_HOST
+            )
+            self._log(
+                "info", "zenoh", "zenoh.presence.snapshot", nodeId=self.node_id,
+                hosts=[host[:512] for host in hosts[:32]] if hosts is not None else None,
+                hostsTruncated=len(hosts) > 32 if hosts is not None else False,
+                transportGeneration=transport.generation,
+                callbackHistoryComplete=transport.callbacks_complete,
+                pending=transport.pending, registrations=transport.registrations,
+                rejected=transport.rejected, staleCallbacks=transport.stale_callbacks,
+                presenceGeneration=presence.generation,
+                presenceComplete=presence.complete,
+                presenceRejected=presence.rejected,
+                presenceActors=[actor[:512] for actor in sorted(presence.actors)[:32]],
+                presenceActorsTruncated=len(presence.actors) > 32,
+                presenceHosts=[host[:512] for host in presence_hosts[:32]],
+                presenceHostsTruncated=len(presence_hosts) > 32,
+            )
+        except Exception:
+            # Diagnostics are best effort; they must not change hosts output.
+            pass
+
+    def _request_stop(self, source: str, signal_number: int | None = None) -> None:
+        trace = getattr(self, "_stop_request_trace", None)
+        if trace is None:
+            self.stop_event.set()
+        else:
+            trace.request(self.stop_event, source, signal_number)
+
     def _install_signal_handlers(self) -> dict[int, Any]:
         previous: dict[int, Any] = {}
 
         def stop(_signum: int, _frame: FrameType | None) -> None:
-            self.stop_event.set()
+            self._request_stop("signal", _signum)
 
         if threading.current_thread() is threading.main_thread():
             for signum in (signal.SIGINT, signal.SIGTERM):
@@ -12644,12 +14873,12 @@ class DaemonApplication:
         for signum, handler in previous.items():
             signal.signal(signum, handler)
 
-    def _owner_alert_notifier(self, text: str, *, idempotency_key: str) -> None:
+    def _owner_alert_notifier(self, text: str, *, idempotency_key: str):
         """The owner-DM channel for alerts (autoupdate.alert.notify_owner)."""
 
         from hyprial.autoupdate.alert import notify_owner
 
-        notify_owner(
+        return notify_owner(
             hyprial_home=self.hyprial_home,
             state_dir=self.state_dir,
             text=text,
@@ -12739,11 +14968,9 @@ class DaemonApplication:
             from hyprial.autoupdate.alert import notify_owner
             from hyprial.provider_auth import (
                 DeviceLoginRunner,
-                ProviderAuthCoordinator,
             )
-            from hyprial.squire.profile import UserProfileStore
-
-            store = UserProfileStore(self.state_dir / "users.json")
+            from hyprial.provider_auth.actor import ProviderAuthAuthority as ProviderAuthCoordinator
+            store = self.user_profiles
             profile = (
                 store.get_by_owner(self.owner) if store.path.exists() else None
             )
@@ -12757,7 +14984,7 @@ class DaemonApplication:
 
             def runtime_context_valid(context: Any) -> bool:
                 try:
-                    current = self._agent_registry.require(context.actor)
+                    current = self.agents.require(context.actor)
                 except Exception:  # noqa: BLE001 -- stale context is rejection
                     return False
                 return (
@@ -12773,9 +15000,13 @@ class DaemonApplication:
                 environment = apply_runtime_environment_profile(
                     os.environ, context.environment()
                 )
-                return DeviceLoginRunner(
-                    pi_command=(pi_binary,) if pi_binary else ("pi",),
-                    environment=environment,
+                return _ContextBoundProviderAuthRunner(
+                    context,
+                    DeviceLoginRunner(
+                        pi_command=(pi_binary,) if pi_binary else ("pi",),
+                        environment=environment,
+                    ),
+                    self._agent_runtime_launch_custody,
                 )
 
             return ProviderAuthCoordinator(
@@ -13099,7 +15330,7 @@ def _open_transport(
     forwarding_listen: tuple[str, ...],
     *,
     derived_listen: str | None = None,
-) -> tuple[ZenohTransport, tuple[str, ...], str | None]:
+) -> tuple[TransportSessionAuthority, tuple[str, ...], str | None]:
     """Open the session; re-pick ONLY the forwarding loopback port on a bind
     collision on that exact endpoint. A best-effort derived listener gets one
     fallback open without that endpoint; configured listeners still surface
@@ -13110,7 +15341,7 @@ def _open_transport(
     derived_error: str | None = None
     while True:
         try:
-            return ZenohTransport(config), forwarding_listen, derived_error
+            native = ZenohTransport(config)
         except Exception as error:
             error_text = str(error)
             if (
@@ -13143,6 +15374,20 @@ def _open_transport(
                 ),
             )
             derived_listen = None
+            continue
+        # Only native-open errors can justify removing a derived listener.
+        # Actor construction is a separate acquisition and keeps its error.
+        try:
+            return TransportSessionAuthority(native), forwarding_listen, derived_error
+        except BaseException as error:
+            try:
+                native.close()
+            except BaseException as cleanup_error:
+                error.add_note(
+                    "native transport close after authority construction raised "
+                    f"{type(cleanup_error).__name__}: {cleanup_error}"
+                )
+            raise
 
 
 def _resolve_forwarding_environment(node_id: str) -> dict[str, str]:

@@ -64,7 +64,9 @@ CREATE TABLE IF NOT EXISTS routine_effects (
     routine_name TEXT NOT NULL,
     generation INTEGER NOT NULL,
     version INTEGER NOT NULL,
-    payload_json TEXT NOT NULL
+    payload_json TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    available_at_ms INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS routine_effects_parent
 ON routine_effects(parent_correlation_id);
@@ -78,6 +80,11 @@ CREATE TABLE IF NOT EXISTS routine_schedule_events (
     reason TEXT NOT NULL,
     recorded_at_ms INTEGER NOT NULL,
     PRIMARY KEY(routine,slot_ms,disposition)
+);
+CREATE TABLE IF NOT EXISTS routine_removal_reservations (
+    routine_name TEXT PRIMARY KEY,
+    reservation_id TEXT NOT NULL UNIQUE,
+    registration_id TEXT
 );
 """
 
@@ -137,12 +144,21 @@ class RoutineEffectRow:
     generation: int
     version: int
     payload: dict[str, Any]
+    attempts: int = 0
+    available_at_ms: int = 0
 
 
 @dataclass(frozen=True, slots=True)
 class RoutineSnapshot:
     routine: RoutineRow
     in_flight: tuple[InFlightRow, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RoutineRemovalReservation:
+    routine_name: str
+    reservation_id: str
+    registration_id: str | None
 
 
 class RoutineStore:
@@ -196,6 +212,37 @@ class RoutineStore:
                 self._db.execute(
                     "ALTER TABLE routine_cycles ADD COLUMN occurrence_slot_ms INTEGER"
                 )
+            effect_columns = {
+                str(row[1])
+                for row in self._db.execute("PRAGMA table_info(routine_effects)")
+            }
+            if "attempts" not in effect_columns:
+                self._db.execute(
+                    "ALTER TABLE routine_effects ADD COLUMN attempts INTEGER "
+                    "NOT NULL DEFAULT 0"
+                )
+            if "available_at_ms" not in effect_columns:
+                self._db.execute(
+                    "ALTER TABLE routine_effects ADD COLUMN available_at_ms INTEGER "
+                    "NOT NULL DEFAULT 0"
+                )
+            reservation_columns = {
+                str(row[1])
+                for row in self._db.execute(
+                    "PRAGMA table_info(routine_removal_reservations)"
+                )
+            }
+            if "registration_id" not in reservation_columns:
+                self._db.execute(
+                    "ALTER TABLE routine_removal_reservations "
+                    "ADD COLUMN registration_id TEXT"
+                )
+            self._db.execute(
+                "UPDATE routine_removal_reservations SET registration_id=("
+                "SELECT registration_id FROM routines "
+                "WHERE routines.name=routine_removal_reservations.routine_name"
+                ") WHERE registration_id IS NULL"
+            )
         self.migrated_u3 = self._migrate_u3()
 
     def _migrate_u3(self) -> dict[str, tuple[str, ...]]:
@@ -276,6 +323,10 @@ class RoutineStore:
                 )
                 self._db.execute(
                     "DELETE FROM routine_effects WHERE routine_name = ?", (remove_routine,)
+                )
+                self._db.execute(
+                    "DELETE FROM routine_removal_reservations WHERE routine_name = ?",
+                    (remove_routine,),
                 )
             if clear_work_for is not None:
                 self._db.execute(
@@ -382,8 +433,9 @@ class RoutineStore:
                 self._db.execute(
                     """INSERT OR REPLACE INTO routine_effects
                        (effect_id, parent_correlation_id, routine_name,
-                        generation, version, payload_json)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
+                        generation, version, payload_json, attempts,
+                        available_at_ms)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         effect.effect_id,
                         effect.parent_correlation_id,
@@ -391,8 +443,20 @@ class RoutineStore:
                         effect.generation,
                         effect.version,
                         json.dumps(payload, sort_keys=True),
+                        effect.attempts,
+                        effect.available_at_ms,
                     ),
                 )
+
+    def retry_effect(
+        self, effect_id: str, *, attempts: int, available_at_ms: int
+    ) -> None:
+        with self._lock, self._db:
+            self._db.execute(
+                "UPDATE routine_effects SET attempts=?,available_at_ms=? "
+                "WHERE effect_id=?",
+                (attempts, available_at_ms, effect_id),
+            )
 
     def schedule_events(self, routine: str, limit: int = 100) -> list[dict[str, Any]]:
         with self._lock:
@@ -433,6 +497,52 @@ class RoutineStore:
             return False
         self.apply(remove_routine=name)
         return True
+
+    def removal_reservation(self, name: str) -> RoutineRemovalReservation | None:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT routine_name,reservation_id,registration_id "
+                "FROM routine_removal_reservations "
+                "WHERE routine_name = ?",
+                (name,),
+            ).fetchone()
+            return (
+                None
+                if row is None
+                else RoutineRemovalReservation(
+                    routine_name=str(row[0]),
+                    reservation_id=str(row[1]),
+                    registration_id=None if row[2] is None else str(row[2]),
+                )
+            )
+
+    def reserved_removals(self) -> frozenset[str]:
+        with self._lock:
+            return frozenset(
+                str(row[0])
+                for row in self._db.execute(
+                    "SELECT routine_name FROM routine_removal_reservations"
+                )
+            )
+
+    def reserve_removal(
+        self, name: str, reservation_id: str, registration_id: str | None
+    ) -> None:
+        with self._lock, self._db:
+            self._db.execute(
+                "INSERT INTO routine_removal_reservations "
+                "(routine_name,reservation_id,registration_id) VALUES (?,?,?)",
+                (name, reservation_id, registration_id),
+            )
+
+    def cancel_removal_reservation(self, name: str, reservation_id: str) -> bool:
+        with self._lock, self._db:
+            cursor = self._db.execute(
+                "DELETE FROM routine_removal_reservations "
+                "WHERE routine_name = ? AND reservation_id = ?",
+                (name, reservation_id),
+            )
+            return cursor.rowcount == 1
 
     def put_in_flight(
         self,
@@ -546,12 +656,29 @@ class RoutineStore:
             ).fetchone()
             return None if row is None else self._effect_row(row)
 
-    def pending_effects(self, *, limit: int = 256) -> tuple[RoutineEffectRow, ...]:
+    def pending_effects(
+        self, *, limit: int = 256, now_ms: int | None = None
+    ) -> tuple[RoutineEffectRow, ...]:
         with self._lock:
-            rows = self._db.execute(
-                "SELECT * FROM routine_effects ORDER BY rowid LIMIT ?", (limit,)
-            ).fetchall()
+            rows = (
+                self._db.execute(
+                    "SELECT * FROM routine_effects ORDER BY rowid LIMIT ?", (limit,)
+                ).fetchall()
+                if now_ms is None
+                else self._db.execute(
+                    "SELECT * FROM routine_effects WHERE available_at_ms<=? "
+                    "ORDER BY rowid LIMIT ?",
+                    (now_ms, limit),
+                ).fetchall()
+            )
             return tuple(self._effect_row(row) for row in rows)
+
+    def pending_effect_ids(self) -> frozenset[str]:
+        with self._lock:
+            return frozenset(
+                str(row[0])
+                for row in self._db.execute("SELECT effect_id FROM routine_effects")
+            )
 
     def max_version(self) -> int:
         with self._lock:
@@ -676,4 +803,6 @@ class RoutineStore:
             generation=int(row["generation"]),
             version=int(row["version"]),
             payload=json.loads(str(row["payload_json"])),
+            attempts=int(row["attempts"]),
+            available_at_ms=int(row["available_at_ms"]),
         )

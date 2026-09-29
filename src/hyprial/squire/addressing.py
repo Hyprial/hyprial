@@ -17,6 +17,9 @@ from hyprial.contracts import ipc_errors
 from hyprial.uri import parse_user_uri
 
 from .profile import UserProfileStore
+from .delivery_actor import UserDeliveryActor
+from hyprial.actor_runtime import AdmissionResult
+from hyprial.adapters.lark.gateway_actor import GatewayIoAuthority
 
 UNCONFIGURED_SQUIRE_MESSAGE = (
     "目标用户尚未配置侍从；请在其接收机上运行 hyprial squire setup 完成 "
@@ -72,6 +75,7 @@ class UserDeliveryResult:
     duplicate: bool = False
     code: str | None = None
     message: str | None = None
+    definitely_not_sent: bool = False
 
 
 @runtime_checkable
@@ -92,22 +96,73 @@ class UserAdapterRegistry:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._adapters: dict[str, OwnerDmAdapter] = {}
+        self._retired: dict[int, GatewayIoAuthority] = {}
+        self._closed = False
 
     def register(self, adapter_uri: str, adapter: OwnerDmAdapter) -> None:
         if not adapter_uri:
             raise ValueError("adapter URI must not be empty")
         if not isinstance(adapter, OwnerDmAdapter):
             raise TypeError("adapter must implement send_owner_dm")
+        self._drain_retired(0.0)
         with self._lock:
-            self._adapters[adapter_uri] = adapter
+            previous = self._adapters.get(adapter_uri)
+            already_owned = any(value is adapter for value in self._adapters.values())
+            retires_previous = (
+                isinstance(previous, GatewayIoAuthority)
+                and previous is not adapter
+                and not any(
+                    key != adapter_uri and value is previous
+                    for key, value in self._adapters.items()
+                )
+            )
+            rejected = self._closed or (retires_previous and len(self._retired) >= 128)
+            if not rejected:
+                self._adapters[adapter_uri] = adapter
+                if isinstance(previous, GatewayIoAuthority) and not any(
+                    value is previous for value in self._adapters.values()
+                ):
+                    self._retired[id(previous)] = previous
+        if rejected:
+            if isinstance(adapter, GatewayIoAuthority) and not already_owned:
+                adapter.close(0.0)
+            raise RuntimeError(
+                "user adapter registry closed or retirement capacity exhausted"
+            )
+        self._drain_retired(0.0)
 
     def unregister(self, adapter_uri: str) -> None:
         with self._lock:
-            self._adapters.pop(adapter_uri, None)
+            previous = self._adapters.pop(adapter_uri, None)
+            if isinstance(previous, GatewayIoAuthority) and not any(
+                value is previous for value in self._adapters.values()
+            ):
+                self._retired[id(previous)] = previous
+        self._drain_retired(0.0)
 
     def get(self, adapter_uri: str) -> OwnerDmAdapter | None:
         with self._lock:
             return self._adapters.get(adapter_uri)
+
+    def _drain_retired(self, timeout: float) -> bool:
+        deadline = time.monotonic() + max(0.0, timeout)
+        with self._lock:
+            retired = tuple(self._retired.items())
+        for token, owner in retired:
+            if owner.close(max(0.0, deadline - time.monotonic())):
+                with self._lock:
+                    self._retired.pop(token, None)
+        with self._lock:
+            return not self._retired
+
+    def close(self, timeout: float = 5.0) -> bool:
+        with self._lock:
+            self._closed = True
+            for adapter in self._adapters.values():
+                if isinstance(adapter, GatewayIoAuthority):
+                    self._retired[id(adapter)] = adapter
+            self._adapters.clear()
+        return self._drain_retired(timeout)
 
 
 class UserDeliveryLedger:
@@ -198,6 +253,7 @@ class UserDeliveryLedger:
             duplicate=value.get("duplicate") is True,
             code=_optional_string(value.get("code")),
             message=_optional_string(value.get("message")),
+            definitely_not_sent=value.get("definitely_not_sent") is True,
         )
 
 
@@ -229,7 +285,8 @@ class ReceiverUserDelivery:
     def owns(self, owner: str) -> bool:
         # `resolve`, not `get_by_owner`: callers hold either vocabulary -- an
         # owner key from `resolve_node_owner()`, or an owner typed by a human.
-        profile = self.profiles.resolve(owner)
+        resolve = getattr(self.profiles, "resolve_current", self.profiles.resolve)
+        profile = resolve(owner)
         return (
             profile is not None
             and profile.preferred_receiver.machine == self.node_id
@@ -237,90 +294,102 @@ class ReceiverUserDelivery:
 
     def handle(self, request: UserDeliveryRequest) -> UserDeliveryResult:
         with self._lock:
-            previous = self.ledger.get(request.idempotency_key)
-            if previous is not None:
-                duplicate = self.ledger.mark_duplicate(request.idempotency_key)
-                assert duplicate is not None
-                return duplicate
+            return self._handle_owned(request)
 
-            profile = self.profiles.resolve(request.owner)
-            if profile is None or profile.preferred_receiver.machine != self.node_id:
-                return self._record(
-                    request,
-                    code=ipc_errors.TARGET_SQUIRE_UNCONFIGURED,
-                    message=UNCONFIGURED_SQUIRE_MESSAGE,
-                )
-            fallback_reason = "not-configured"
-            if profile.delivery_agent is not None:
-                fallback_reason = "not-live"
-                if self.delivery_agent_delivery is not None:
-                    proxy_result = self.delivery_agent_delivery(
-                        profile.delivery_agent, request
-                    )
-                    if proxy_result is not None:
-                        self._log_path(
-                            "user-delivery.proxy",
-                            request,
-                            deliveryAgent=profile.delivery_agent,
-                            accepted=proxy_result.accepted,
-                        )
-                        return self.ledger.record(
-                            request.idempotency_key, proxy_result
-                        )
-            binding = profile.owner_open_id
-            adapter_uri = profile.squire_adapter
-            if (
-                adapter_uri is None
-                or binding is None
-                or binding.channel != adapter_uri
-            ):
-                return self._record(
-                    request,
-                    code=ipc_errors.TARGET_SQUIRE_UNCONFIGURED,
-                    message=UNCONFIGURED_SQUIRE_MESSAGE,
-                )
-            adapter = self.adapters.get(adapter_uri)
-            if adapter is None and self.reload_adapters is not None:
-                # Profiles and channels.json may have been completed (for
-                # example by `hyprial squire setup`) after this daemon started.
-                # Refresh the registry once before declaring the adapter
-                # unavailable so a fresh install never needs a daemon restart
-                # to gain outbound delivery.
-                self.reload_adapters()
-                adapter = self.adapters.get(adapter_uri)
-            if adapter is None:
-                return self._record(
-                    request,
-                    code=ipc_errors.TARGET_SQUIRE_ADAPTER_UNAVAILABLE,
-                    message=UNAVAILABLE_ADAPTER_MESSAGE,
-                )
-            rendered = (
-                f"来自我的侍从，转述自 {request.sender}：\n\n{request.message}"
-            )
-            self._log_path(
-                "user-delivery.squire",
+    def _handle_owned(self, request: UserDeliveryRequest) -> UserDeliveryResult:
+        result = self._deliver_unrecorded(request)
+        return self.ledger.record(request.idempotency_key, result)
+
+    def _deliver_unrecorded(self, request: UserDeliveryRequest) -> UserDeliveryResult:
+        """Stateless flow used after UserDeliveryActor claims the idempotency key.
+
+        The composed receiver holds actor ports for the ledger and native SDK;
+        independent requests do not share this compatibility receiver lock.
+        """
+        previous = self.ledger.get(request.idempotency_key)
+        if previous is not None:
+            duplicate = self.ledger.mark_duplicate(request.idempotency_key)
+            assert duplicate is not None
+            return duplicate
+
+        profile = self.profiles.resolve(request.owner)
+        if profile is None or profile.preferred_receiver.machine != self.node_id:
+            return self._refusal(
                 request,
-                fallbackReason=fallback_reason,
-                adapter=adapter_uri,
+                code=ipc_errors.TARGET_SQUIRE_UNCONFIGURED,
+                message=UNCONFIGURED_SQUIRE_MESSAGE,
             )
-            try:
-                native_message_id = adapter.send_owner_dm(
-                    binding.open_id,
-                    rendered,
-                    idempotency_key=request.idempotency_key,
+        fallback_reason = "not-configured"
+        if profile.delivery_agent is not None:
+            fallback_reason = "not-live"
+            if self.delivery_agent_delivery is not None:
+                proxy_result = self.delivery_agent_delivery(
+                    profile.delivery_agent, request
                 )
-            except Exception as error:  # noqa: BLE001 - adapter failure boundary
-                return self._record(
-                    request,
-                    code=ipc_errors.TARGET_SQUIRE_ADAPTER_UNAVAILABLE,
-                    message=f"{UNAVAILABLE_ADAPTER_MESSAGE} ({error})",
-                )
-            result = UserDeliveryResult(
-                message_id=request.message_id,
-                accepted=True,
-                native_message_id=native_message_id,
+                if proxy_result is not None:
+                    self._log_path(
+                        "user-delivery.proxy",
+                        request,
+                        deliveryAgent=profile.delivery_agent,
+                        accepted=proxy_result.accepted,
+                    )
+                    return proxy_result
+        binding = profile.owner_open_id
+        adapter_uri = profile.squire_adapter
+        if (
+            adapter_uri is None
+            or binding is None
+            or binding.channel != adapter_uri
+        ):
+            return self._refusal(
+                request,
+                code=ipc_errors.TARGET_SQUIRE_UNCONFIGURED,
+                message=UNCONFIGURED_SQUIRE_MESSAGE,
             )
-            return self.ledger.record(request.idempotency_key, result)
+        adapter = self.adapters.get(adapter_uri)
+        if adapter is None and self.reload_adapters is not None:
+            # Profiles and channels.json may have been completed (for
+            # example by `hyprial squire setup`) after this daemon started.
+            # Refresh the registry once before declaring the adapter
+            # unavailable so a fresh install never needs a daemon restart
+            # to gain outbound delivery.
+            self.reload_adapters()
+            adapter = self.adapters.get(adapter_uri)
+        if adapter is None:
+            return self._refusal(
+                request,
+                code=ipc_errors.TARGET_SQUIRE_ADAPTER_UNAVAILABLE,
+                message=UNAVAILABLE_ADAPTER_MESSAGE,
+            )
+        rendered = (
+            f"来自我的侍从，转述自 {request.sender}：\n\n{request.message}"
+        )
+        self._log_path(
+            "user-delivery.squire",
+            request,
+            fallbackReason=fallback_reason,
+            adapter=adapter_uri,
+        )
+        try:
+            send = getattr(adapter, "send_owner_dm_settled", adapter.send_owner_dm)
+            native_message_id = send(
+                binding.open_id,
+                rendered,
+                idempotency_key=request.idempotency_key,
+            )
+        except Exception as error:  # noqa: BLE001 - adapter failure boundary
+            return self._refusal(
+                request,
+                code=ipc_errors.TARGET_SQUIRE_ADAPTER_UNAVAILABLE,
+                message=f"{UNAVAILABLE_ADAPTER_MESSAGE} ({error})",
+                definitely_not_sent=False,
+            )
+        result = UserDeliveryResult(
+            message_id=request.message_id,
+            accepted=True,
+            native_message_id=native_message_id,
+        )
+        return result
 
     def _log_path(
         self, event: str, request: UserDeliveryRequest, **fields: object
@@ -337,17 +406,16 @@ class ReceiverUserDelivery:
             **fields,
         )
 
-    def _record(
-        self, request: UserDeliveryRequest, *, code: str, message: str
+    def _refusal(
+        self, request: UserDeliveryRequest, *, code: str, message: str,
+        definitely_not_sent: bool = True,
     ) -> UserDeliveryResult:
-        return self.ledger.record(
-            request.idempotency_key,
-            UserDeliveryResult(
-                message_id=request.message_id,
-                accepted=False,
-                code=code,
-                message=message,
-            ),
+        return UserDeliveryResult(
+            message_id=request.message_id,
+            accepted=False,
+            code=code,
+            message=message,
+            definitely_not_sent=definitely_not_sent,
         )
 
 
@@ -395,6 +463,7 @@ def decode_user_result(payload: bytes) -> UserDeliveryResult:
         duplicate=raw.get("duplicate") is True,
         code=_optional_string(raw.get("code")),
         message=_optional_string(raw.get("message")),
+        definitely_not_sent=raw.get("definitely_not_sent") is True,
     )
 
 
@@ -410,33 +479,44 @@ class ZenohUserDeliveryEndpoint:
     ) -> None:
         self._keys = keys or KeySpace()
         self._receiver = receiver
-        self._attempt_lock = threading.RLock()
-        self._attempt_results: dict[str, UserDeliveryResult] = {}
-        self._registrations: list[Registration] = [
-            session.subscribe(self._keys.user_delivery_any(), self._on_delivery),
-            session.declare_queryable(
+        self._authority = UserDeliveryActor(receiver)
+        self._registrations: list[Registration] = []
+        try:
+            # Expose ingress last: every accepted request needs an observable
+            # receipt and an owner whose shutdown the application can reach.
+            self._registrations.append(session.declare_queryable(
                 self._keys.user_receipt_any(), self._receipt
-            ),
-        ]
+            ))
+            self._registrations.append(session.subscribe(
+                self._keys.user_delivery_any(), self._on_delivery
+            ))
+        except BaseException as error:
+            for registration in reversed(self._registrations):
+                try:
+                    registration.close()
+                except Exception as cleanup_error:
+                    error.add_note(f"user delivery registration cleanup: {type(cleanup_error).__name__}")
+            if not self._authority.close():
+                error.add_note("user delivery accepted effects still draining")
+            raise
 
     def _on_delivery(self, sample: object) -> None:
         request = decode_user_delivery(sample.payload)
-        if self._receiver.owns(request.owner):
-            result = self._receiver.handle(request)
-            if request.attempt_id is not None:
-                with self._attempt_lock:
-                    self._attempt_results[request.attempt_id] = result
+        admission = self._authority.admit(request)
+        if admission is not AdmissionResult.ACCEPTED:
+            raise RuntimeError(f"user delivery ingress rejected: {admission.value}")
 
     def _receipt(self, selector: str) -> bytes | None:
         key = selector.split("?", 1)[0]
         attempt_id = self._keys.decode_identity(key.rsplit("/", 1)[-1])
-        with self._attempt_lock:
-            result = self._attempt_results.get(attempt_id)
+        result = self._authority.receipt(attempt_id)
         return encode_user_result(result) if result is not None else None
 
     def close(self) -> None:
         for registration in reversed(self._registrations):
             registration.close()
+        if not self._authority.close():
+            raise TimeoutError("user delivery effects still hold accepted requests")
 
 
 class ZenohUserDeliveryTransport:

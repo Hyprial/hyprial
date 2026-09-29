@@ -16,6 +16,8 @@ class TransportSample:
     key: str
     payload: bytes
     kind: str = "put"
+    # Local adapter metadata, never part of the wire payload.
+    generation: int | None = None
 
 
 @runtime_checkable

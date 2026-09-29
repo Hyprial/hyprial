@@ -13,6 +13,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Protocol, Self
 from uuid import uuid4
 
+from hyprial.actor_runtime import AdmissionResult
 from hyprial.backoff import capped_exponential
 from hyprial.contracts.ports import PortAdmission
 from hyprial.daemon.api import (
@@ -55,7 +56,7 @@ class TurnFailureSpecObserver(Protocol):
         model: str | None,
         worker: str,
         runtime_context: "AgentRuntimeContext | None" = None,
-    ) -> None: ...
+    ) -> AdmissionResult | None: ...
 
 
 class TurnCompletedObserver(Protocol):
@@ -227,7 +228,7 @@ class SequentialTurnProcess(BaseTurnProcess):
         force_stop_join_seconds: float = 1.0,
         liveness_probe: Callable[[], ProcessLiveness] | None = None,
         on_turn_started: TurnStartedObserver | None = None,
-        on_turn_failure: Callable[[str], None] | None = None,
+        on_turn_failure: Callable[[str], AdmissionResult | None] | None = None,
         on_turn_completed: TurnCompletedObserver | None = None,
     ) -> None:
         if reconnect_delay_seconds < 0:
@@ -273,6 +274,8 @@ class SequentialTurnProcess(BaseTurnProcess):
         # one dedicated drain thread; excess is dropped and counted.
         self._observer_queue: queue.Queue[object] | None = None
         self._observer_thread: threading.Thread | None = None
+        self._observer_admission_lock = threading.Lock()
+        self._observer_stop_requested = threading.Event()
         if on_turn_failure is not None:
             self._observer_queue = queue.Queue(
                 maxsize=_TURN_FAILURE_OBSERVER_QUEUE_MAX
@@ -439,7 +442,7 @@ class SequentialTurnProcess(BaseTurnProcess):
                 self._turn_tool_names.setdefault(delivery.delivery_id, [])
         return accepted
 
-    def drain_results(self) -> tuple[HarnessResult, ...]:
+    def drain_results(self, limit: int | None = None) -> tuple[HarnessResult, ...]:
         results = tuple(
             HarnessResult(
                 result.delivery_id,
@@ -449,7 +452,7 @@ class SequentialTurnProcess(BaseTurnProcess):
                 error=result.error,
                 failure_code=result.failure_code,
             )
-            for result in self._turn_runtime.drain_results()
+            for result in self._turn_runtime.drain_results(limit)
         )
         observer = self._on_turn_completed
         if observer is None:
@@ -659,6 +662,21 @@ class SequentialTurnProcess(BaseTurnProcess):
             assert self._force_stopped is not None
             if self._thread.is_alive() or not self._force_stopped():
                 raise RuntimeError(f"{self.label} did not stop after forced cleanup")
+        self._turn_runtime.drain(max(0.0, deadline - time.monotonic()))
+        # Closing admission is independent of queue space. A sentinel cannot
+        # be relied on when a blocked observer has filled its bounded queue.
+        with self._observer_admission_lock:
+            self._observer_stop_requested.set()
+        observer_thread = self._observer_thread
+        if observer_thread is not None:
+            observer_thread.join(max(0.0, deadline - time.monotonic()))
+            if observer_thread.is_alive():
+                raise RuntimeError(
+                    f"{self.label} failure observer did not drain"
+                )
+        # Accepted observer custody has settled. Only now retire the remaining
+        # process-local retry/wait handles; a failed stop can be called again
+        # even though the native process thread already exited.
         with self._lock:
             for timer in self._abort_timers.values():
                 timer.cancel()
@@ -675,15 +693,6 @@ class SequentialTurnProcess(BaseTurnProcess):
         for completed, outcome in interrupt_waiters:
             outcome.append(False)
             completed.set()
-        self._turn_runtime.drain(self._stop_timeout_seconds)
-        observer_queue = self._observer_queue
-        if observer_queue is not None:
-            try:
-                observer_queue.put_nowait(_OBSERVER_STOP)
-            except queue.Full:
-                # A full queue is actively draining; the daemon thread exits
-                # with the process.
-                pass
 
     def _dispatch_turn_failure(self, failure: str) -> None:
         """Enqueue a turn failure for the observer; never blocks, never raises.
@@ -697,12 +706,17 @@ class SequentialTurnProcess(BaseTurnProcess):
         observer_queue = self._observer_queue
         if observer_queue is None:
             return
-        try:
-            observer_queue.put_nowait(failure)
-        except queue.Full:
-            self._log_observer_event(
-                "turn-failure-observer.dropped", reason="queue full"
-            )
+        reason = None
+        with self._observer_admission_lock:
+            if self._observer_stop_requested.is_set():
+                reason = "observer closed"
+            else:
+                try:
+                    observer_queue.put_nowait(failure)
+                except queue.Full:
+                    reason = "queue full"
+        if reason is not None:
+            self._log_observer_event("turn-failure-observer.dropped", reason=reason)
 
     def _observer_drain(self) -> None:
         """The observer's single dedicated thread; swallows every raise."""
@@ -710,19 +724,38 @@ class SequentialTurnProcess(BaseTurnProcess):
         observer_queue = self._observer_queue
         assert observer_queue is not None
         while True:
-            item = observer_queue.get()
+            with self._observer_admission_lock:
+                if self._observer_stop_requested.is_set() and observer_queue.empty():
+                    return
+            try:
+                item = observer_queue.get(timeout=0.05)
+            except queue.Empty:
+                continue
             if item is _OBSERVER_STOP:
                 return
             observer = self._on_turn_failure
             if observer is None or not isinstance(item, str):
                 continue
-            try:
-                observer(item)
-            except Exception as error:  # noqa: BLE001 -- never-raises contract
-                self._log_observer_event(
-                    "turn-failure-observer.error",
-                    errorType=type(error).__name__,
-                )
+            while True:
+                try:
+                    admission = observer(item)
+                except Exception as error:  # noqa: BLE001 -- never-raises contract
+                    self._log_observer_event(
+                        "turn-failure-observer.error",
+                        errorType=type(error).__name__,
+                    )
+                    break
+                if admission is AdmissionResult.OVERLOADED:
+                    # This bounded lane owns the already-enqueued observation.
+                    # Keep its exact spec-bound payload until the auth owner can
+                    # accept it. Only this I/O thread waits; turns keep settling.
+                    time.sleep(0.05)
+                    continue
+                if admission is AdmissionResult.CLOSED:
+                    self._log_observer_event(
+                        "turn-failure-observer.rejected", reason="owner closed"
+                    )
+                break  # ACCEPTED, or the legacy void-observer contract
 
     def _log_observer_event(self, event: str, **fields: object) -> None:
         logger = self._logger

@@ -33,6 +33,7 @@ class _ChildRecord:
     state: ActorState = ActorState.RUNNING
     generation: int = 1
     failures: deque[float] = field(default_factory=deque)
+    never_begun: dict[str, object] = field(default_factory=dict)
 
 
 class ActorGuardian:
@@ -75,6 +76,7 @@ class ActorGuardian:
             mailbox_capacity=spec.mailbox_capacity,
             event_sink=self._emit,
             failure_callback=self._child_failed,
+            command_started=self._command_started,
         )
         record = _ChildRecord(
             handle=handle,
@@ -102,7 +104,22 @@ class ActorGuardian:
             ):
                 return AdmissionResult.CLOSED
             endpoint = record.endpoint
-        return self._backend.tell(endpoint, command)
+            custody_token = uuid.uuid4().hex
+            record.never_begun[custody_token] = command
+            admission = self._backend.tell(endpoint, custody_token, command)
+            if admission is not AdmissionResult.ACCEPTED:
+                record.never_begun.pop(custody_token, None)
+            return admission
+
+    def _command_started(
+        self, actor_id: str, generation: int, custody_token: str
+    ) -> None:
+        del generation
+        with self._lock:
+            record = self._children.get(actor_id)
+            if record is None:
+                return
+            record.never_begun.pop(custody_token, None)
 
     def snapshot(self, handle: ActorHandle) -> ActorSnapshot:
         with self._lock:
@@ -129,10 +146,16 @@ class ActorGuardian:
             endpoint = record.endpoint
             self._scheduler.cancel(handle.actor_id)
         stopped = endpoint is None or self._backend.stop(endpoint, timeout)
+        undelivered: tuple[object, ...] = ()
         if stopped and endpoint is not None:
             with self._lock:
                 if record.endpoint is endpoint:
                     record.endpoint = None
+                    undelivered = tuple(record.never_begun.values())
+                    record.never_begun.clear()
+        self._notify_undelivered(
+            record.spec, undelivered, "ACTOR_STOPPED_UNDELIVERED"
+        )
         self._emit(
             ActorEvent(
                 kind=ActorEventKind.CHILD_STOPPED,
@@ -176,6 +199,7 @@ class ActorGuardian:
                 break
             time.sleep(min(0.005, max(0.0, deadline - time.monotonic())))
 
+        undelivered_notifications: list[tuple[ActorSpec, tuple[object, ...]]] = []
         for record in records:
             endpoint = record.endpoint
             if endpoint is None:
@@ -188,6 +212,17 @@ class ActorGuardian:
                     if record.endpoint is endpoint:
                         record.endpoint = None
                         record.state = ActorState.STOPPED
+                        undelivered = tuple(record.never_begun.values())
+                        record.never_begun.clear()
+                        if undelivered:
+                            undelivered_notifications.append(
+                                (record.spec, undelivered)
+                            )
+
+        for spec, undelivered in undelivered_notifications:
+            self._notify_undelivered(
+                spec, undelivered, "ACTOR_STOPPED_UNDELIVERED"
+            )
 
         remaining_handles = tuple(
             record.handle for record in records if record.endpoint is not None
@@ -236,6 +271,8 @@ class ActorGuardian:
         scheduled: tuple[int, float] | None = None
         scheduled_event: ActorEvent | None = None
         quarantine_event: ActorEvent | None = None
+        undelivered: tuple[object, ...] = ()
+        undelivered_reason = "ACTOR_RESTARTED_UNDELIVERED"
         with self._lock:
             record = self._children.get(actor_id)
             if (
@@ -245,6 +282,8 @@ class ActorGuardian:
             ):
                 return
             record.endpoint = None
+            undelivered = tuple(record.never_begun.values())
+            record.never_begun.clear()
             record.failures.append(now)
             self._prune_failures(record, now)
             failed_event = ActorEvent(
@@ -256,8 +295,10 @@ class ActorGuardian:
             )
             if self._draining:
                 record.state = ActorState.STOPPED
+                undelivered_reason = "ACTOR_STOPPED_UNDELIVERED"
             elif len(record.failures) > record.policy.max_restarts:
                 record.state = ActorState.QUARANTINED
+                undelivered_reason = "ACTOR_QUARANTINED_UNDELIVERED"
                 quarantine_event = ActorEvent(
                     kind=ActorEventKind.CHILD_QUARANTINED,
                     handle=record.handle,
@@ -277,6 +318,7 @@ class ActorGuardian:
                     restart_delay=delay,
                 )
         self._emit(failed_event)
+        self._notify_undelivered(record.spec, undelivered, undelivered_reason)
         if quarantine_event is not None:
             self._emit(quarantine_event)
         if scheduled is not None:
@@ -313,6 +355,7 @@ class ActorGuardian:
                 mailbox_capacity=spec.mailbox_capacity,
                 event_sink=self._emit,
                 failure_callback=self._child_failed,
+                command_started=self._command_started,
             )
         except Exception as exc:
             self._restart_attempt_failed(actor_id, generation, exc)
@@ -362,3 +405,16 @@ class ActorGuardian:
             self._event_sink(event)
         except Exception:
             return
+
+    @staticmethod
+    def _notify_undelivered(
+        spec: ActorSpec, commands: tuple[object, ...], reason_code: str
+    ) -> None:
+        sink = spec.undelivered_sink
+        if sink is None:
+            return
+        for command in commands:
+            try:
+                sink(command, reason_code)
+            except Exception:
+                continue

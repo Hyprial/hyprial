@@ -11,7 +11,10 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any, Self
+import uuid
+from enum import StrEnum
 
 from hyprial.actor_runtime.policies import (
     DEFAULT_POLICIES,
@@ -19,6 +22,7 @@ from hyprial.actor_runtime.policies import (
     SupervisionPolicy,
 )
 from hyprial.actor_runtime.scheduler import GenerationScheduler
+from hyprial.actor_runtime import ActorRuntime, ActorSpec, AdmissionResult
 from hyprial.contracts.forwarding import FORWARDING_COMMAND_ENV, FORWARDING_UP_ENV
 from .discovery import ForwardingEndpoints
 
@@ -43,6 +47,136 @@ _PROXY_KEYS = frozenset(
 
 class ForwardingSidecarError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class _StatusSidecar:
+    operation_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class _MapSidecarPeer:
+    operation_id: str
+    peer: str
+
+
+@dataclass(frozen=True, slots=True)
+class _UnmapSidecarPeer:
+    operation_id: str
+    peer: str
+
+
+@dataclass(frozen=True, slots=True)
+class _CloseSidecar:
+    operation_id: str
+
+
+class _SidecarReply:
+    def __init__(self) -> None:
+        self.ready = threading.Event()
+        self.value: object | None = None
+        self.error: BaseException | None = None
+
+
+class ForwardingControllerAuthority:
+    """Typed, bounded native wire owner for one forwarding sidecar process."""
+
+    def __init__(self, controller: Any, *, capacity: int = 16, timeout: float = 12.0):
+        self._controller = controller
+        self._guard = threading.Lock()
+        self._pending: dict[str, _SidecarReply] = {}
+        self._closed = False
+        self._timeout = timeout
+        self._peers_reported: bool | None = None
+        self._runtime = ActorRuntime()
+        self._handle = self._runtime.start(
+            ActorSpec(
+                name="forwarding-sidecar-io",
+                handler_factory=lambda: self._receive,
+                mailbox_capacity=capacity,
+                supervision_profile="external_io",
+            )
+        )
+
+    @property
+    def pid(self) -> int | None:
+        value = getattr(self._controller, "pid", None)
+        return value if isinstance(value, int) else None
+
+    @property
+    def peers_reported(self) -> bool | None:
+        with self._guard:
+            return self._peers_reported
+
+    def _call(self, command: object) -> object | None:
+        operation_id = command.operation_id  # type: ignore[attr-defined]
+        reply = _SidecarReply()
+        with self._guard:
+            if self._closed or len(self._pending) >= 16:
+                raise ForwardingSidecarError("forwarding sidecar I/O owner overloaded")
+            self._pending[operation_id] = reply
+            admitted = self._runtime.tell(self._handle, command)
+            if admitted is not AdmissionResult.ACCEPTED:
+                self._pending.pop(operation_id)
+                raise ForwardingSidecarError(
+                    f"forwarding sidecar I/O admission {admitted.value}"
+                )
+        if not reply.ready.wait(self._timeout):
+            raise TimeoutError(
+                f"forwarding sidecar command {operation_id} remains accepted"
+            )
+        if reply.error is not None:
+            raise reply.error
+        return reply.value
+
+    def _receive(self, command: object) -> None:
+        try:
+            if isinstance(command, _StatusSidecar):
+                value = self._controller.status()
+                reported = getattr(self._controller, "peers_reported", None)
+                with self._guard:
+                    self._peers_reported = reported
+            elif isinstance(command, _MapSidecarPeer):
+                value = self._controller.map_peer(command.peer)
+            elif isinstance(command, _UnmapSidecarPeer):
+                value = self._controller.unmap_peer(command.peer)
+            elif isinstance(command, _CloseSidecar):
+                value = self._controller.close()
+            else:
+                raise TypeError("unsupported forwarding sidecar command")
+            error = None
+        except BaseException as caught:
+            value = None
+            error = caught
+        with self._guard:
+            reply = self._pending.pop(command.operation_id, None)  # type: ignore[attr-defined]
+            if reply is not None:
+                reply.value = value
+                reply.error = error
+                reply.ready.set()
+
+    def status(self) -> tuple[tuple[str, ...], dict[str, int]]:
+        result = self._call(_StatusSidecar(uuid.uuid4().hex))
+        assert isinstance(result, tuple)
+        return result
+
+    def map_peer(self, peer: str) -> int:
+        result = self._call(_MapSidecarPeer(uuid.uuid4().hex, peer))
+        assert isinstance(result, int)
+        return result
+
+    def unmap_peer(self, peer: str) -> None:
+        self._call(_UnmapSidecarPeer(uuid.uuid4().hex, peer))
+
+    def close(self) -> None:
+        with self._guard:
+            if self._closed:
+                return
+        self._call(_CloseSidecar(uuid.uuid4().hex))
+        with self._guard:
+            self._closed = True
+        if not self._runtime.stop(self._handle, self._timeout):
+            raise TimeoutError("forwarding sidecar I/O owner did not drain")
 
 
 def _child_environment(environ: Mapping[str, str]) -> dict[str, str]:
@@ -360,6 +494,210 @@ class ForwardingSidecarController:
 _FORWARDING_LAUNCH_KEY = "forwarding-sidecar-relaunch"
 
 
+class _SupervisorAction(StrEnum):
+    SNAPSHOT = "snapshot"
+    BEGIN_START = "begin_start"
+    BEGIN_CLOSE = "begin_close"
+    OBSERVE_EXIT = "observe_exit"
+    STATUS_FAILURE = "status_failure"
+    STATUS_SUCCESS = "status_success"
+    RELAUNCH_DUE = "relaunch_due"
+    INSTALL = "install"
+    ACCOUNT_FAILURE = "account_failure"
+
+
+@dataclass(frozen=True, slots=True)
+class _SupervisorCommand:
+    operation_id: str
+    action: _SupervisorAction
+    token: str = ""
+    backend: ForwardingEndpoints | None = None
+    expected_generation: int = 0
+    exit_status: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _SupervisorSnapshot:
+    state: str
+    failures: int
+    backend: ForwardingEndpoints | None
+    generation: int
+    closed: bool
+
+
+class _SupervisorReply:
+    def __init__(self) -> None:
+        self.ready = threading.Event()
+        self.value: object | None = None
+        self.error: BaseException | None = None
+
+
+class ForwardingSupervisorState:
+    """Pure mailbox owner of sidecar incarnation and restart decisions."""
+
+    def __init__(
+        self, policy: SupervisionPolicy, jitter_source: Callable[[], float],
+    ) -> None:
+        self._policy = policy
+        self._jitter_source = jitter_source
+        self._guard = threading.Lock()
+        self._pending: dict[str, _SupervisorReply] = {}
+        self._backend: ForwardingEndpoints | None = None
+        self._installed: dict[str, ForwardingEndpoints] = {}
+        self._early_exits: dict[str, int] = {}
+        self._failures: deque[float] = deque()
+        self._consecutive = 0
+        self._generation = 0
+        self._first_happened = False
+        self._closed = False
+        self._runtime = ActorRuntime()
+        self._handle = self._runtime.start(
+            ActorSpec(
+                name="forwarding-supervisor-state",
+                handler_factory=lambda: self._receive,
+                mailbox_capacity=64,
+            )
+        )
+
+    def call(
+        self, action: _SupervisorAction, *, token: str = "",
+        backend: ForwardingEndpoints | None = None,
+        expected_generation: int = 0, exit_status: int | None = None,
+    ) -> object | None:
+        command = _SupervisorCommand(
+            uuid.uuid4().hex, action, token, backend, expected_generation,
+            exit_status,
+        )
+        reply = _SupervisorReply()
+        with self._guard:
+            if len(self._pending) >= 64:
+                raise TimeoutError("forwarding supervisor state overloaded")
+            self._pending[command.operation_id] = reply
+            admitted = self._runtime.tell(self._handle, command)
+            if admitted is not AdmissionResult.ACCEPTED:
+                self._pending.pop(command.operation_id)
+                raise TimeoutError(
+                    f"forwarding supervisor state {admitted.value}"
+                )
+        if not reply.ready.wait(2.0):
+            raise TimeoutError(
+                f"forwarding state {command.operation_id} remains accepted"
+            )
+        if reply.error is not None:
+            raise reply.error
+        return reply.value
+
+    def _receive(self, command: object) -> None:
+        if not isinstance(command, _SupervisorCommand):
+            raise TypeError("unsupported forwarding state command")
+        try:
+            value = self._apply(command)
+            error = None
+        except BaseException as caught:
+            value = None
+            error = caught
+        with self._guard:
+            reply = self._pending.pop(command.operation_id, None)
+            if reply is not None:
+                reply.value = value
+                reply.error = error
+                reply.ready.set()
+
+    def _apply(self, command: _SupervisorCommand) -> object | None:
+        action = command.action
+        if action is _SupervisorAction.SNAPSHOT:
+            if self._closed:
+                state = (
+                    "failed" if len(self._failures) > self._policy.max_restarts
+                    else "off"
+                )
+            elif self._backend is not None:
+                state = "degraded" if self._consecutive else "running"
+            elif not self._first_happened:
+                state = "off"
+            else:
+                state = (
+                    "failed" if len(self._failures) > self._policy.max_restarts
+                    else "restarting"
+                )
+            return _SupervisorSnapshot(
+                state, len(self._failures), self._backend,
+                self._generation, self._closed,
+            )
+        if action is _SupervisorAction.BEGIN_START:
+            if self._first_happened or self._closed:
+                return False
+            self._first_happened = True
+            return True
+        if action is _SupervisorAction.BEGIN_CLOSE:
+            if self._closed:
+                return None
+            self._closed = True
+            backend, self._backend = self._backend, None
+            return backend
+        if action is _SupervisorAction.OBSERVE_EXIT:
+            if self._closed:
+                return ("closed", None)
+            backend = self._installed.get(command.token)
+            if backend is None:
+                self._early_exits[command.token] = command.exit_status or 0
+                return ("preinstall", None)
+            if self._backend is not backend:
+                return ("stale", None)
+            self._backend = None
+            self._consecutive = 0
+            return ("installed", backend)
+        if action is _SupervisorAction.STATUS_FAILURE:
+            if self._closed or self._backend is None:
+                return (0, None)
+            self._consecutive += 1
+            count = self._consecutive
+            backend = self._backend if count > self._policy.max_restarts else None
+            if backend is not None:
+                self._backend = None
+                self._consecutive = 0
+            return (count, backend)
+        if action is _SupervisorAction.STATUS_SUCCESS:
+            if self._closed or not self._consecutive:
+                return False
+            self._consecutive = 0
+            return True
+        if action is _SupervisorAction.RELAUNCH_DUE:
+            return bool(
+                not self._closed and self._backend is None
+                and command.expected_generation == self._generation
+            )
+        if action is _SupervisorAction.INSTALL:
+            if (
+                self._closed
+                or command.expected_generation != self._generation
+                or command.token in self._early_exits
+            ):
+                return (False, len(self._failures))
+            assert command.backend is not None
+            self._backend = command.backend
+            self._installed[command.token] = command.backend
+            self._generation += 1
+            return (True, len(self._failures))
+        if action is _SupervisorAction.ACCOUNT_FAILURE:
+            if self._closed:
+                return None
+            now = time.monotonic()
+            self._failures.append(now)
+            window = self._policy.restart_window
+            while self._failures and now - self._failures[0] > window:
+                self._failures.popleft()
+            count = len(self._failures)
+            if count > self._policy.max_restarts:
+                return (count, None, self._generation)
+            delay = self._policy.delay(count, self._jitter_source())
+            return (count, delay, self._generation)
+        raise TypeError("unsupported forwarding state action")
+
+    def close(self, timeout: float = 5.0) -> bool:
+        return self._runtime.stop(self._handle, timeout)
+
+
 def _environment_controller(
     environ: Mapping[str, str], on_exit: Callable[[int], None]
 ) -> ForwardingSidecarController:
@@ -395,6 +733,7 @@ class ForwardingSidecarSupervisor:
         ] = _environment_controller,
         scheduler: GenerationScheduler | None = None,
         jitter_source: Callable[[], float] = random.random,
+        own_io: bool = False,
     ) -> None:
         self._environ = environ
         self._event_log = event_log
@@ -404,6 +743,13 @@ class ForwardingSidecarSupervisor:
         self._controller_factory = controller_factory
         self._scheduler = scheduler if scheduler is not None else GenerationScheduler()
         self._jitter_source = jitter_source
+        self._own_io = own_io
+        self._state_owner = (
+            ForwardingSupervisorState(self._policy, self._jitter_source)
+            if own_io else None
+        )
+        self._state_owner_closed = False
+        self._closing_backend: ForwardingEndpoints | None = None
         self._lock = threading.Lock()
         self._endpoints: ForwardingEndpoints | None = None
         self._failures: deque[float] = deque()
@@ -425,6 +771,10 @@ class ForwardingSidecarSupervisor:
         "broken sidecar looks healthy" blind spot.
         """
 
+        if self._state_owner is not None:
+            snapshot = self._state_owner.call(_SupervisorAction.SNAPSHOT)
+            assert isinstance(snapshot, _SupervisorSnapshot)
+            return snapshot.state
         with self._lock:
             if self._closed:
                 return (
@@ -451,13 +801,22 @@ class ForwardingSidecarSupervisor:
         ``max_restarts=2`` means two relaunches and one terminal verdict).
         """
 
+        if self._state_owner is not None:
+            snapshot = self._state_owner.call(_SupervisorAction.SNAPSHOT)
+            assert isinstance(snapshot, _SupervisorSnapshot)
+            return snapshot.failures
         with self._lock:
             return len(self._failures)
 
     @property
     def current_pid(self) -> int | None:
-        with self._lock:
-            backend = self._endpoints
+        if self._state_owner is not None:
+            snapshot = self._state_owner.call(_SupervisorAction.SNAPSHOT)
+            assert isinstance(snapshot, _SupervisorSnapshot)
+            backend = snapshot.backend
+        else:
+            with self._lock:
+                backend = self._endpoints
         if backend is None:
             return None
         pid = getattr(backend.controller, "pid", None)
@@ -466,6 +825,10 @@ class ForwardingSidecarSupervisor:
     def endpoints(self) -> ForwardingEndpoints | None:
         """The live endpoint backend, or None while down/restarting/failed."""
 
+        if self._state_owner is not None:
+            snapshot = self._state_owner.call(_SupervisorAction.SNAPSHOT)
+            assert isinstance(snapshot, _SupervisorSnapshot)
+            return snapshot.backend
         with self._lock:
             return self._endpoints
 
@@ -474,6 +837,10 @@ class ForwardingSidecarSupervisor:
     def ensure_started(self) -> None:
         """Perform the first start attempt, synchronously, exactly once."""
 
+        if self._state_owner is not None:
+            if self._state_owner.call(_SupervisorAction.BEGIN_START) is True:
+                self._spawn(expected_generation=0)
+            return
         with self._lock:
             if self._first_happened or self._closed:
                 return
@@ -483,6 +850,21 @@ class ForwardingSidecarSupervisor:
     def close(self) -> None:
         """Stop owning the child; no relaunch may fire after this."""
 
+        if self._state_owner is not None:
+            if self._state_owner_closed:
+                return
+            backend = self._closing_backend or self._state_owner.call(
+                _SupervisorAction.BEGIN_CLOSE
+            )
+            self._scheduler.cancel(_FORWARDING_LAUNCH_KEY)
+            if isinstance(backend, ForwardingEndpoints):
+                self._closing_backend = backend
+                backend.close()
+                self._closing_backend = None
+            if not self._state_owner.close(5.0):
+                raise TimeoutError("forwarding supervisor state did not drain")
+            self._state_owner_closed = True
+            return
         with self._lock:
             if self._closed:
                 return
@@ -494,7 +876,7 @@ class ForwardingSidecarSupervisor:
 
     # -- internals ---------------------------------------------------------
 
-    def _note_exit(self, code: int, cell: dict[str, Any]) -> None:
+    def _note_exit(self, code: int, cell: dict[str, Any] | str) -> None:
         """Monitor-thread callback: this cell's child died.
 
         The callback carries the identity of the incarnation it belongs to.
@@ -505,6 +887,37 @@ class ForwardingSidecarSupervisor:
         would never match (review finding C).
         """
 
+        if self._state_owner is not None:
+            if self._state_owner_closed:
+                return
+            assert isinstance(cell, str)
+            verdict = self._state_owner.call(
+                _SupervisorAction.OBSERVE_EXIT,
+                token=cell, exit_status=code,
+            )
+            assert isinstance(verdict, tuple)
+            kind, backend = verdict
+            if kind == "closed" or kind == "stale":
+                return
+            if kind == "preinstall":
+                self._event_log("error", "zenoh.forwarding.exited", exitStatus=code)
+                self._account_for_failure(reason="exited", exit_status=code)
+                return
+            assert isinstance(backend, ForwardingEndpoints)
+            close_error: str | None = None
+            try:
+                backend.close()
+            except Exception as error:
+                close_error = type(error).__name__
+            fields: dict[str, Any] = {"exitStatus": code}
+            if close_error is not None:
+                fields["closeError"] = close_error
+            self._event_log(
+                "warn" if close_error else "error", "zenoh.forwarding.exited", **fields
+            )
+            self._account_for_failure(reason="exited", exit_status=code)
+            return
+        assert isinstance(cell, dict)
         with self._lock:
             if self._closed:
                 return
@@ -552,6 +965,26 @@ class ForwardingSidecarSupervisor:
         budget.
         """
 
+        if self._state_owner is not None:
+            if self._state_owner_closed:
+                return
+            verdict = self._state_owner.call(_SupervisorAction.STATUS_FAILURE)
+            assert isinstance(verdict, tuple)
+            count, backend = verdict
+            if count == 1:
+                self._event_log(
+                    "error", "zenoh.forwarding.failed",
+                    reason="status-unreachable", failures=1, detail=detail[:500],
+                )
+            if backend is not None:
+                try:
+                    backend.close()
+                except Exception:
+                    pass
+                self._account_for_failure(
+                    reason="status-unreachable", exit_status=None
+                )
+            return
         with self._lock:
             if self._closed or self._endpoints is None:
                 return
@@ -581,6 +1014,15 @@ class ForwardingSidecarSupervisor:
     def _note_status_success(self) -> None:
         """The listing hook: the status channel answered again."""
 
+        if self._state_owner is not None:
+            if self._state_owner_closed:
+                return
+            if self._state_owner.call(_SupervisorAction.STATUS_SUCCESS) is True:
+                self._event_log(
+                    "info", "zenoh.forwarding.recovered",
+                    detail="forwarding sidecar status channel recovered",
+                )
+            return
         with self._lock:
             if self._closed or not self._consecutive:
                 return
@@ -592,6 +1034,15 @@ class ForwardingSidecarSupervisor:
         )
 
     def _scheduled_relaunch(self, expected_generation: int) -> None:
+        if self._state_owner is not None:
+            if self._state_owner_closed:
+                return
+            if self._state_owner.call(
+                _SupervisorAction.RELAUNCH_DUE,
+                expected_generation=expected_generation,
+            ) is True:
+                self._spawn(expected_generation=expected_generation)
+            return
         with self._lock:
             stale = (
                 self._closed
@@ -603,9 +1054,10 @@ class ForwardingSidecarSupervisor:
 
     def _spawn(self, *, expected_generation: int) -> None:
         cell: dict[str, Any] = {"backend": None, "exit": None}
+        token = uuid.uuid4().hex
 
         def _exit(code: int) -> None:
-            self._note_exit(code, cell)
+            self._note_exit(code, token if self._state_owner is not None else cell)
 
         try:
             controller = self._controller_factory(self._environ, _exit)
@@ -618,26 +1070,46 @@ class ForwardingSidecarSupervisor:
             )
             self._account_for_failure(reason="start-failed", exit_status=None)
             return
+        if self._own_io:
+            controller = ForwardingControllerAuthority(controller)
         backend = ForwardingEndpoints(
             controller,
             on_failure=self._note_status_failure,
             on_success=self._note_status_success,
         )
+        if self._state_owner is not None:
+            installed = self._state_owner.call(
+                _SupervisorAction.INSTALL,
+                token=token, backend=backend,
+                expected_generation=expected_generation,
+            )
+            assert isinstance(installed, tuple)
+            accepted, count = installed
+            if not accepted:
+                backend.close()
+                return
+            if count:
+                self._event_log(
+                    "info", "zenoh.forwarding.started", failures=count,
+                    detail="forwarding sidecar recovered after failure",
+                )
+            return
         with self._lock:
-            if (
+            stale = (
                 self._closed
                 or expected_generation != self._generation
                 or cell["exit"] is not None
-            ):
-                # Shutdown, a fresher incarnation, or a child that already
-                # died in the pre-install window: own the child we just made
-                # instead of installing it as running.
-                backend.close()
-                return
-            self._endpoints = backend
-            cell["backend"] = backend
-            self._generation += 1
-            count = len(self._failures)
+            )
+            if not stale:
+                self._endpoints = backend
+                cell["backend"] = backend
+                self._generation += 1
+                count = len(self._failures)
+        if stale:
+            # Shutdown, a fresher incarnation, or a child that died before
+            # installation. Closing pipes may block; never hold state lock.
+            backend.close()
+            return
         if count:
             self._event_log(
                 "info",
@@ -647,6 +1119,29 @@ class ForwardingSidecarSupervisor:
             )
 
     def _account_for_failure(self, *, reason: str, exit_status: int | None) -> None:
+        if self._state_owner is not None:
+            decision = self._state_owner.call(_SupervisorAction.ACCOUNT_FAILURE)
+            if decision is None:
+                return
+            assert isinstance(decision, tuple)
+            count, delay, generation = decision
+            fields: dict[str, Any] = {"reason": reason, "failures": count}
+            if exit_status is not None:
+                fields["exitStatus"] = exit_status
+            if delay is None:
+                fields["detail"] = (
+                    "sidecar relaunch budget exhausted; forwarding stays down "
+                    "until the daemon restarts"
+                )
+                self._event_log("error", "zenoh.forwarding.failed", **fields)
+                return
+            fields["delaySeconds"] = round(delay, 3)
+            self._event_log("warn", "zenoh.forwarding.restarting", **fields)
+            self._scheduler.schedule(
+                _FORWARDING_LAUNCH_KEY, generation, delay,
+                lambda _fired: self._scheduled_relaunch(generation),
+            )
+            return
         now = time.monotonic()
         with self._lock:
             if self._closed:

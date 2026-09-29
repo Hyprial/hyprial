@@ -14,8 +14,12 @@ import json
 import secrets
 import sqlite3
 import threading
-from time import time_ns, monotonic
+import queue
+from dataclasses import dataclass
+from time import time_ns, monotonic, sleep
 from uuid import uuid4
+
+from hyprial.actor_runtime import ActorRuntime, ActorSpec, AdmissionResult
 
 from hyprial.contracts import ipc_errors
 from hyprial.dispatch.admission import dispatch_gate
@@ -30,6 +34,40 @@ from hyprial.uri import parse_agent_uri
 
 MAX_FRAME = 256 * 1024
 PREFIX = "hyprial/v1/pac-workflow"
+
+
+@dataclass(frozen=True, slots=True)
+class _RemoteStateCommand:
+    correlation_id: str
+    method: str
+    payload: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class _RemoteStateCompleted:
+    correlation_id: str
+    result: object = None
+    error: Exception | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _RemoteEffect:
+    generation: int
+    command: _RemoteStateCommand
+
+
+@dataclass(frozen=True, slots=True)
+class _RemoteEffectCompleted:
+    generation: int
+    correlation_id: str
+    result: object = None
+    error: Exception | None = None
+
+
+class _PendingRemoteState:
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self.completion: _RemoteStateCompleted | None = None
 
 
 def encoded(value):
@@ -202,23 +240,53 @@ class RemoteWorkflow:
         self.app = application
         self.database = default_database_path(application.state_dir)
         self.authority = application._dispatch_service_actor
+        self.graph_authority = getattr(application, "_pac_graph_authority", None)
         self.outcome_lock = threading.Lock()
+        self._return_lock = threading.Lock()
+        self._returning: set[str] = set()
         self.wire = None
         self.pump = None
         self.stopping = threading.Event()
+        self._state_lock = threading.Lock()
+        self._state_pending: dict[str, _PendingRemoteState] = {}
+        self._state_runtime = ActorRuntime()
+        self._state_handle = None
+        self._effect_queue: queue.Queue[_RemoteEffect] = queue.Queue(maxsize=8)
+        self._effect_workers: tuple[threading.Thread, ...] = ()
+        self._effect_overloads = 0
         store = None
         try:
-            store = PacGraphStore(self.database)
-            with store.write():
-                store._db.execute(
-                    "INSERT OR IGNORE INTO remote_workflow_key VALUES (1,?)",
-                    (secrets.token_bytes(32),),
-                )
-                self.secret = bytes(
+            if self.graph_authority is not None:
+                self.secret = self.graph_authority.ensure_remote_key()
+            else:
+                store = PacGraphStore(self.database)
+                with store.write():
                     store._db.execute(
-                        "SELECT secret FROM remote_workflow_key"
-                    ).fetchone()[0]
+                        "INSERT OR IGNORE INTO remote_workflow_key VALUES (1,?)",
+                        (secrets.token_bytes(32),),
+                    )
+                    self.secret = bytes(
+                        store._db.execute(
+                            "SELECT secret FROM remote_workflow_key"
+                        ).fetchone()[0]
                 )
+            self._state_handle = self._state_runtime.start(
+                ActorSpec(
+                    name="remote-workflow-authority",
+                    handler_factory=lambda: self._run_remote_state,
+                    mailbox_capacity=64,
+                    supervision_profile="state_authority",
+                )
+            )
+            self._effect_workers = tuple(
+                threading.Thread(
+                    target=self._remote_effect_loop,
+                    name=f"pac-remote-effect-{index}", daemon=True,
+                )
+                for index in range(2)
+            )
+            for worker in self._effect_workers:
+                worker.start()
             self.wire = RemoteWire(transport, self.authority, self.handle)
             self.pump = threading.Thread(
                 target=self._pump, name="pac-remote-outcomes", daemon=True
@@ -234,6 +302,10 @@ class RemoteWorkflow:
                     pass
             if self.pump is not None:
                 self.pump.join(1.0)
+            for worker in self._effect_workers:
+                worker.join(1.0)
+            if self._state_handle is not None:
+                self._state_runtime.drain(1.0)
             raise
         finally:
             if store is not None:
@@ -247,7 +319,14 @@ class RemoteWorkflow:
         deadline = monotonic() + max(0, timeout)
         drained = self.wire.drain(max(0, deadline - monotonic()))
         self.pump.join(max(0, deadline - monotonic()))
-        return drained and not self.pump.is_alive()
+        for worker in self._effect_workers:
+            worker.join(max(0, deadline - monotonic()))
+        state_drained = self._state_runtime.drain(max(0, deadline - monotonic()))
+        return (
+            drained and not self.pump.is_alive()
+            and not any(worker.is_alive() for worker in self._effect_workers)
+            and state_drained.complete
+        )
 
     def _local_workflow(self):
         workflow = self.app._workflow_service
@@ -295,6 +374,17 @@ class RemoteWorkflow:
                     continue
 
     def _flush(self, request_id):
+        with self._return_lock:
+            if request_id in self._returning:
+                return {"ok": True, "requestId": request_id, "returnState": "pending"}
+            self._returning.add(request_id)
+        try:
+            return self._flush_once(request_id)
+        finally:
+            with self._return_lock:
+                self._returning.discard(request_id)
+
+    def _flush_once(self, request_id):
         grant = self._lookup(request_id=request_id)
         store = PacGraphStore(self.database, read_only=True)
         try:
@@ -308,15 +398,20 @@ class RemoteWorkflow:
             store.close()
         if row["result_json"] is not None:
             return json.loads(row["result_json"])
-        store = PacGraphStore(self.database)
-        try:
-            with store.write():
-                store._db.execute(
-                    "UPDATE remote_workflow_outbox SET attempted_at=? WHERE request_id=?",
-                    (time_ns() // 1_000_000, request_id),
-                )
-        finally:
-            store.close()
+        if self.graph_authority is not None:
+            self.graph_authority.mark_remote_attempt(
+                request_id, time_ns() // 1_000_000
+            )
+        else:
+            store = PacGraphStore(self.database)
+            try:
+                with store.write():
+                    store._db.execute(
+                        "UPDATE remote_workflow_outbox SET attempted_at=? WHERE request_id=?",
+                        (time_ns() // 1_000_000, request_id),
+                    )
+            finally:
+                store.close()
         try:
             result = self.wire.call(
                 grant["origin"],
@@ -338,18 +433,23 @@ class RemoteWorkflow:
                 "returnState": "rejected",
                 "error": {"code": error.code, "message": str(error)},
             }
-        store = PacGraphStore(self.database)
-        try:
-            with store.write():
-                store._db.execute(
-                    "UPDATE remote_workflow_outbox SET result_json=? WHERE request_id=? AND result_json IS NULL",
-                    (encoded(result).decode(), request_id),
-                )
-        finally:
-            store.close()
+        if self.graph_authority is not None:
+            self.graph_authority.record_remote_result(
+                request_id, encoded(result).decode()
+            )
+        else:
+            store = PacGraphStore(self.database)
+            try:
+                with store.write():
+                    store._db.execute(
+                        "UPDATE remote_workflow_outbox SET result_json=? WHERE request_id=? AND result_json IS NULL",
+                        (encoded(result).decode(), request_id),
+                    )
+            finally:
+                store.close()
         return result
 
-    def _enqueue(self, grant, action, reason, output_text=None):
+    def _enqueue(self, grant, action, reason, output_text=None, *, flush=True):
         if (
             action not in ("complete", "fail")
             or not isinstance(reason, str)
@@ -364,30 +464,40 @@ class RemoteWorkflow:
             output_text = validate_workflow_output_text(output_text)
         except ValueError as error:
             raise PacError("WORKFLOW_OUTPUT_INVALID", str(error)) from error
-        store = PacGraphStore(self.database)
-        try:
-            with store.write():
-                row = store._db.execute(
-                    "SELECT * FROM remote_workflow_outbox WHERE request_id=?",
-                    (grant["requestId"],),
-                ).fetchone()
-                if row and (row["action"], row["reason_ref"], row["output_text"]) != (
-                    action,
-                    reason,
-                    output_text,
-                ):
-                    raise PacError(
-                        "WORKFLOW_OUTCOME_CONFLICT",
-                        "request already has a queued or accepted outcome",
+        if self.graph_authority is not None:
+            self.graph_authority.enqueue_remote_outcome(
+                grant["requestId"], action, reason, output_text
+            )
+        else:
+            store = PacGraphStore(self.database)
+            try:
+                with store.write():
+                    row = store._db.execute(
+                        "SELECT * FROM remote_workflow_outbox WHERE request_id=?",
+                        (grant["requestId"],),
+                    ).fetchone()
+                    if row and (row["action"], row["reason_ref"], row["output_text"]) != (
+                        action,
+                        reason,
+                        output_text,
+                    ):
+                        raise PacError(
+                            "WORKFLOW_OUTCOME_CONFLICT",
+                            "request already has a queued or accepted outcome",
+                        )
+                    store._db.execute(
+                        "INSERT OR IGNORE INTO remote_workflow_outbox"
+                        "(request_id,action,reason_ref,result_json,output_text) "
+                        "VALUES (?,?,?,NULL,?)",
+                        (grant["requestId"], action, reason, output_text),
                     )
-                store._db.execute(
-                    "INSERT OR IGNORE INTO remote_workflow_outbox"
-                    "(request_id,action,reason_ref,result_json,output_text) "
-                    "VALUES (?,?,?,NULL,?)",
-                    (grant["requestId"], action, reason, output_text),
-                )
-        finally:
-            store.close()
+            finally:
+                store.close()
+        if not flush:
+            # A native turn outcome is delivered by the daemon cadence.  The
+            # committed outbox row retains custody while the pump performs
+            # the remote round trip on its own I/O thread.
+            return {"ok": True, "requestId": grant["requestId"], "returnState": "pending"}
         return self._flush(grant["requestId"])
 
     def request_pruned(self, message_id: str, recipient: str) -> bool:
@@ -396,6 +506,8 @@ class RemoteWorkflow:
         grant = self._lookup(message_id=message_id, actor=recipient)
         if grant is None:
             return False
+        if self.graph_authority is not None:
+            return self.graph_authority.prune_remote_request(grant["requestId"])
         store = PacGraphStore(self.database)
         try:
             with store.write():
@@ -587,7 +699,150 @@ class RemoteWorkflow:
             store.close()
         return None
 
+    def _state_call(self, method: str, data: dict) -> object:
+        handle = self._state_handle
+        if handle is None:
+            raise PacError("WORKFLOW_REMOTE_UNAVAILABLE", "remote state authority is closed")
+        correlation = f"remote-state-{uuid4().hex}"
+        command = _RemoteStateCommand(correlation, method, encoded(data))
+        pending = _PendingRemoteState()
+        with self._state_lock:
+            if len(self._state_pending) >= 128 or self.stopping.is_set():
+                raise PacError("WORKFLOW_REMOTE_UNAVAILABLE", "remote state authority is overloaded")
+            self._state_pending[correlation] = pending
+            admission = self._state_runtime.tell(handle, command)
+            if admission is not AdmissionResult.ACCEPTED:
+                del self._state_pending[correlation]
+                raise PacError("WORKFLOW_REMOTE_UNAVAILABLE", f"remote state admission: {admission.value}")
+        if not pending.event.wait(4.0):
+            # The accepted command continues.  Its durable request/receipt
+            # identity fences a caller retry; a timeout never cancels it.
+            with self._state_lock:
+                self._state_pending.pop(correlation, None)
+            raise PacError("WORKFLOW_REMOTE_UNAVAILABLE", "remote state operation remains pending")
+        with self._state_lock:
+            completion = self._state_pending.pop(correlation).completion
+        assert completion is not None
+        if completion.error is not None:
+            raise completion.error
+        return completion.result
+
+    def _complete_remote_state(self, completion: _RemoteStateCompleted) -> None:
+        with self._state_lock:
+            pending = self._state_pending.get(completion.correlation_id)
+            if pending is not None:
+                pending.completion = completion
+                pending.event.set()
+
+    def _run_remote_state(
+        self, command: _RemoteStateCommand | _RemoteEffectCompleted
+    ) -> None:
+        if isinstance(command, _RemoteEffectCompleted):
+            handle = self._state_handle
+            if (
+                handle is not None
+                and command.generation == self._state_runtime.snapshot(handle).generation
+            ):
+                self._complete_remote_state(_RemoteStateCompleted(
+                    command.correlation_id, command.result, command.error,
+                ))
+            return
+        try:
+            data = json.loads(command.payload)
+            if self.graph_authority is not None and command.method in {"reset", "outcome"}:
+                grant = data.get("grant")
+                if not isinstance(grant, dict):
+                    raise PacError("WORKFLOW_REMOTE_INVALID", "request grant is required")
+                self._verify(grant)
+                handle = self._state_handle
+                assert handle is not None
+                try:
+                    self._effect_queue.put_nowait(_RemoteEffect(
+                        self._state_runtime.snapshot(handle).generation, command,
+                    ))
+                except queue.Full as error:
+                    with self._state_lock:
+                        self._effect_overloads += 1
+                    raise PacError(
+                        "WORKFLOW_REMOTE_UNAVAILABLE", "remote effect lane is full"
+                    ) from error
+                return
+            if command.method == "stage_offer":
+                result = self._stage_offer_direct(data)
+            else:
+                result = self._handle_direct(command.method, data)
+            completion = _RemoteStateCompleted(command.correlation_id, result)
+        except Exception as error:
+            completion = _RemoteStateCompleted(command.correlation_id, error=error)
+        self._complete_remote_state(completion)
+
+    def _remote_effect_loop(self) -> None:
+        while not self.stopping.is_set():
+            try:
+                effect = self._effect_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            try:
+                result = self._handle_direct(
+                    effect.command.method, json.loads(effect.command.payload)
+                )
+                completion = _RemoteEffectCompleted(
+                    effect.generation, effect.command.correlation_id, result,
+                )
+            except Exception as error:
+                completion = _RemoteEffectCompleted(
+                    effect.generation, effect.command.correlation_id,
+                    error=error,
+                )
+            handle = self._state_handle
+            while not self.stopping.is_set() and handle is not None:
+                admission = self._state_runtime.tell(handle, completion)
+                if admission is AdmissionResult.ACCEPTED:
+                    break
+                if admission is AdmissionResult.CLOSED:
+                    break
+                sleep(0.01)
+
+    def state_stats(self) -> dict[str, int]:
+        with self._state_lock:
+            pending = len(self._state_pending)
+            overloads = self._effect_overloads
+        return {
+            "pendingRequests": pending,
+            "effectQueued": self._effect_queue.qsize(),
+            "effectCapacity": self._effect_queue.maxsize,
+            "effectOverloads": overloads,
+        }
+
+    def _stage_offer_direct(self, grant: dict) -> None:
+        store = PacGraphStore(self.database)
+        try:
+            with store.write():
+                old = store._db.execute(
+                    "SELECT grant_json FROM remote_workflow_requests WHERE request_id=?",
+                    (grant["requestId"],),
+                ).fetchone()
+                if old and json.loads(old[0]) != grant:
+                    raise PacError(
+                        "WORKFLOW_REMOTE_INVALID", "request grant changed on replay"
+                    )
+                store._db.execute(
+                    "INSERT OR IGNORE INTO remote_workflow_requests VALUES (?,?,?,?,?,?,?,?)",
+                    (
+                        grant["requestId"], grant["graphId"], grant["nodeId"],
+                        grant["owner"], grant["origin"], grant["messageId"],
+                        grant["deadlineMs"], encoded(grant).decode(),
+                    ),
+                )
+        finally:
+            store.close()
+
     def handle(self, method, data):
+        if method in {"current", "inspect", "reset", "outcome"}:
+            return self._state_call(method, data)
+        return self._handle_direct(method, data)
+
+    def _handle_direct(self, method, data):
         if method == "admit":
             return self.admit_local(data)
         grant = data.get("grant")
@@ -610,32 +865,10 @@ class RemoteWorkflow:
                 )
             if dispatch_message_id(grant["effectId"]) != grant["messageId"]:
                 raise PacError("WORKFLOW_REMOTE_INVALID", "invalid delivery binding")
-            store = PacGraphStore(self.database)
-            try:
-                with store.write():
-                    old = store._db.execute(
-                        "SELECT grant_json FROM remote_workflow_requests WHERE request_id=?",
-                        (grant["requestId"],),
-                    ).fetchone()
-                    if old and json.loads(old[0]) != grant:
-                        raise PacError(
-                            "WORKFLOW_REMOTE_INVALID", "request grant changed on replay"
-                        )
-                    store._db.execute(
-                        "INSERT OR IGNORE INTO remote_workflow_requests VALUES (?,?,?,?,?,?,?,?)",
-                        (
-                            grant["requestId"],
-                            grant["graphId"],
-                            grant["nodeId"],
-                            grant["owner"],
-                            grant["origin"],
-                            grant["messageId"],
-                            grant["deadlineMs"],
-                            encoded(grant).decode(),
-                        ),
-                    )
-            finally:
-                store.close()
+            if self.graph_authority is None:
+                self._state_call("stage_offer", grant)
+            else:
+                self.graph_authority.stage_remote_offer(encoded(grant).decode())
             delivered = self.app._pac_notification_io.deliver(
                 effect_id=grant["effectId"],
                 sender=grant["origin"],
@@ -675,17 +908,21 @@ class RemoteWorkflow:
                 replay = self._receipt(grant, "reset", reason)
                 if replay is not None:
                     return replay
-                store = PacGraphStore(self.database)
-                try:
-                    PacReactor(store).reset_flag(
-                        grant["graphId"],
-                        grant["nodeId"],
-                        actor=grant["owner"],
-                        reason_ref=reason,
-                        expected_request=grant["requestId"],
+                if self.graph_authority is not None:
+                    self.graph_authority.reset_flag(
+                        grant["graphId"], grant["nodeId"], actor=grant["owner"],
+                        reason_ref=reason, expected_request=grant["requestId"],
                     )
-                finally:
-                    store.close()
+                else:
+                    store = PacGraphStore(self.database)
+                    try:
+                        PacReactor(store).reset_flag(
+                            grant["graphId"], grant["nodeId"],
+                            actor=grant["owner"], reason_ref=reason,
+                            expected_request=grant["requestId"],
+                        )
+                    finally:
+                        store.close()
                 workflow.submit_timer(time_ns() // 1_000_000)
                 return self._receipt(grant, "reset", reason)
         if method == "outcome":
@@ -715,18 +952,24 @@ class RemoteWorkflow:
                         "request no longer authorizes an outcome",
                     )
                 if action == "complete":
-                    store = PacGraphStore(self.database)
-                    try:
-                        PacReactor(store).set_flag(
-                            grant["graphId"],
-                            grant["nodeId"],
-                            actor=grant["owner"],
-                            reason_ref=reason,
+                    if self.graph_authority is not None:
+                        self.graph_authority.set_flag(
+                            grant["graphId"], grant["nodeId"],
+                            actor=grant["owner"], reason_ref=reason,
                             expected_request=grant["requestId"],
                             output_text=output_text,
                         )
-                    finally:
-                        store.close()
+                    else:
+                        store = PacGraphStore(self.database)
+                        try:
+                            PacReactor(store).set_flag(
+                                grant["graphId"], grant["nodeId"],
+                                actor=grant["owner"], reason_ref=reason,
+                                expected_request=grant["requestId"],
+                                output_text=output_text,
+                            )
+                        finally:
+                            store.close()
                 else:
                     workflow.fail(
                         graph_id=grant["graphId"],
@@ -810,7 +1053,7 @@ class RemoteWorkflow:
             return True  # a completed native turn remains NOT business completion
         code = result.failure_code or "HARNESS_TURN_FAILED"
         try:
-            self._enqueue(grant, "fail", f"harness:{code}")
+            self._enqueue(grant, "fail", f"harness:{code}", flush=False)
         except PacError as error:
             if error.code not in (
                 "WORKFLOW_REQUEST_STALE",

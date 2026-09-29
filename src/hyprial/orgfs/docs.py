@@ -11,19 +11,33 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass, field, replace
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 import difflib
 import fnmatch
 from functools import wraps
 import hashlib
+import inspect
 import json
 from pathlib import Path
 import threading
+import time
 import uuid
+import weakref
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from pycrdt import Array, Doc, Map, Text
+from hyprial.actor_runtime import (
+    ActorEvent,
+    ActorEventKind,
+    ActorHandle,
+    ActorRuntime,
+    ActorSpec,
+    AdmissionResult,
+)
+from hyprial.actor_runtime.effects import EffectCompleted, EffectLane, EffectRequest
 
+from hyprial.contracts import ipc_errors
 from hyprial.contracts.ipc_errors import ORGFS_CONTENT_PENDING
 from hyprial.uri import (
     ORGFS_URI_PREFIX,
@@ -43,6 +57,7 @@ from .api import (
     OrgFsError,
     SpaceInfo,
     SpaceStatus,
+    TextReadSnapshot,
 )
 from .blobs import BlobIntegrityError
 from .purge import (
@@ -56,10 +71,309 @@ from .purge import (
     utc_now,
 )
 from .replica import encode_snapshot_frontier
-from .store import _EMPTY_UPDATE, state_covers
+from .space_authority import (
+    OrgSpaceAuthority,
+    _CommittedDelta,
+    _ReadStore,
+    _JsonProjection,
+)
+from .store import _EMPTY_UPDATE, decode_state_vector, state_covers
 from .structured import StructuredOrgDoc
+from .store import CommitRecord, StoreError
 
 ORGFS_TEXT_MAX = 4 * 1024 * 1024
+_FACADE_EFFECT_CAPACITY = 128
+_SPACE_STATE_CAPACITY = 64
+_MUTATING_FACADE_METHODS = frozenset(
+    {
+        "create_space",
+        "invite",
+        "remove_member",
+        "join",
+        "load_space",
+        "apply_envelope",
+        "install_replacement_snapshot",
+        "acknowledge_purge",
+        "write_text",
+        "write_bytes",
+        "import_from",
+        "mkdir",
+        "move",
+        "remove",
+        "restore",
+        "purge_plan",
+        "purge",
+        "unban",
+        "apply_tree_update",
+        "apply_content_update",
+        "hydrate_content_snapshot",
+        "_apply_structured_update",
+    }
+)
+_SPACE_STATE_METHODS = frozenset(
+    {
+        "create_space",
+        "load_space",
+        "invite",
+        "remove_member",
+        "apply_envelope",
+        "install_replacement_snapshot",
+        "acknowledge_purge",
+        "write_text",
+        "write_bytes",
+        "mkdir",
+        "move",
+        "remove",
+        "restore",
+        "purge_plan",
+        "purge",
+        "unban",
+        "apply_tree_update",
+        "apply_content_update",
+        "hydrate_content_snapshot",
+        "_apply_structured_update",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _WatchNotification:
+    watch_id: str
+    event: ChangeEvent
+
+
+@dataclass(frozen=True, slots=True)
+class _BroadcastPending:
+    space_id: str
+    records: tuple[CommitRecord, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class _ReconcileReplicaBlobs:
+    space_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class _FacadeEffectBatch:
+    sequence: int
+    effects: tuple[
+        _WatchNotification | _ReconcileReplicaBlobs | _BroadcastPending, ...
+    ]
+
+
+@dataclass(frozen=True, slots=True)
+class _FacadeEffectCompletion:
+    operation_id: str
+    generation: int
+    sequence: int
+    failures: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class _FacadeEffectResult:
+    failures: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _InviteMember:
+    space_id: str
+    user: str
+    mode: MemberMode
+
+
+@dataclass(frozen=True, slots=True)
+class _CreateSpace:
+    name: str
+
+
+@dataclass(frozen=True, slots=True)
+class _LoadSpace:
+    space_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class _RemoveMember:
+    space_id: str
+    user: str
+
+
+@dataclass(frozen=True, slots=True)
+class _ApplyEnvelope:
+    space_id: str
+    envelope: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class _InstallReplacement:
+    space_id: str
+    old_doc_id: str
+    new_doc_id: str
+    snapshot: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class _AcknowledgePurge:
+    space_id: str
+    plan_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class _WriteText:
+    space_id: str
+    node: NodeRef
+    content: str
+    base_version: str | None
+    expect_version: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _WriteBytes:
+    space_id: str
+    node: NodeRef
+    content: bytes
+    expect_version: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _Mkdir:
+    space_id: str
+    path: str
+
+
+@dataclass(frozen=True, slots=True)
+class _Move:
+    space_id: str
+    source: NodeRef
+    destination: NodeRef
+
+
+@dataclass(frozen=True, slots=True)
+class _RemoveNode:
+    space_id: str
+    node: NodeRef
+
+
+@dataclass(frozen=True, slots=True)
+class _Restore:
+    space_id: str
+    node: NodeRef
+    version: str
+    recursive: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _PurgePlanCommand:
+    space_id: str
+    targets: tuple[tuple[tuple[str, object], ...], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _Purge:
+    space_id: str
+    plan_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class _Unban:
+    space_id: str
+    sha: str
+
+
+@dataclass(frozen=True, slots=True)
+class _ApplyTreeUpdate:
+    space_id: str
+    update: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class _ApplyContentUpdate:
+    space_id: str
+    node: NodeRef
+    update: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class _HydrateContentSnapshot:
+    space_id: str
+    node: NodeRef
+    expected_doc_id: str
+    snapshot: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class _ApplyStructuredUpdate:
+    space_id: str
+    node_id: str
+    doc_id: str
+    client_id: int
+    base_state: bytes
+    update: bytes
+
+
+_SpaceStateOperation = (
+    _CreateSpace
+    | _LoadSpace
+    | _InviteMember
+    | _RemoveMember
+    | _ApplyEnvelope
+    | _InstallReplacement
+    | _AcknowledgePurge
+    | _WriteText
+    | _WriteBytes
+    | _Mkdir
+    | _Move
+    | _RemoveNode
+    | _Restore
+    | _PurgePlanCommand
+    | _Purge
+    | _Unban
+    | _ApplyTreeUpdate
+    | _ApplyContentUpdate
+    | _HydrateContentSnapshot
+    | _ApplyStructuredUpdate
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _SpaceStateCommand:
+    operation_id: str
+    generation: int
+    operation: _SpaceStateOperation
+    effect_operation_id: str | None
+    effect_generation: int
+
+
+@dataclass(frozen=True, slots=True)
+class _SpaceStateFailure:
+    kind: str
+    code: str
+    message: str
+    details: tuple[tuple[str, object], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _SpaceStateOutcome:
+    value: object = None
+    error: _SpaceStateFailure | None = None
+
+
+@dataclass(slots=True)
+class _SpaceStateWaiter:
+    done: threading.Event
+    value: object = None
+    error: _SpaceStateFailure | None = None
+
+
+@dataclass(slots=True)
+class _SpaceStateOwner:
+    runtime: ActorRuntime
+    actor: ActorHandle
+    effects: EffectLane[_SpaceStateCommand, _SpaceStateOutcome]
+    generation: int = 1
+    commands: dict[str, _SpaceStateCommand] = field(default_factory=dict)
+    waiters: dict[str, _SpaceStateWaiter] = field(default_factory=dict)
+    submitted: set[str] = field(default_factory=set)
+    deferred: list[_SpaceStateCommand] = field(default_factory=list)
 
 
 def _now() -> str:
@@ -71,8 +385,88 @@ def _facade_locked(method: Callable[..., Any]) -> Callable[..., Any]:
 
     @wraps(method)
     def locked(self: "LocalOrgFs", *args: Any, **kwargs: Any) -> Any:
-        with self._lock:
-            return method(self, *args, **kwargs)
+        if getattr(self._space_state_context, "running", False):
+            with self._space_lock(str(args[0])):
+                return method(self, *args, **kwargs)
+        if method.__name__ in _SPACE_STATE_METHODS:
+            return self._submit_space_state(method, args, kwargs)
+        outermost = not hasattr(self._effect_context, "pending")
+        if outermost:
+            self._effect_context.pending = []
+        result: Any = None
+        wait_for_completion = False
+        operation_id: str | None = None
+        authority_lock = (
+            self._lock
+            if method.__name__ in {"create_space", "spaces"}
+            else (
+                nullcontext()
+                if method.__name__ == "join"
+                else self._space_lock(str(args[0]))
+            )
+        )
+        try:
+            with authority_lock:
+                if (
+                    outermost
+                    and method.__name__ in _MUTATING_FACADE_METHODS
+                    and self._effect_closed
+                ):
+                    raise OrgFsError("unavailable", {"message": "orgfs is closing"})
+                generation = self._effect_generation
+                reserved = False
+                if (
+                    outermost
+                    and method.__name__ in _MUTATING_FACADE_METHODS
+                    and self._needs_post_commit_effects()
+                ):
+                    self._ensure_effect_lane()
+                    operation_id = uuid.uuid4().hex
+                    admission = self._effect_lane.reserve(operation_id, generation)
+                    if admission is not AdmissionResult.ACCEPTED:
+                        raise OrgFsError(
+                            "resource-exhausted",
+                            {
+                                "message": "orgfs post-commit effect lane is "
+                                + admission.value,
+                                "operationId": operation_id,
+                            },
+                        )
+                    reserved = True
+                    with self._lock:
+                        self._effect_waiters[operation_id] = threading.Event()
+                try:
+                    result = method(self, *args, **kwargs)
+                finally:
+                    if outermost:
+                        effects = tuple(self._effect_context.pending)
+                        if operation_id is not None and reserved:
+                            if effects:
+                                with self._lock:
+                                    self._effect_sequence += 1
+                                    sequence = self._effect_sequence
+                                request = EffectRequest(
+                                    operation_id,
+                                    generation,
+                                    _FacadeEffectBatch(sequence, effects),
+                                )
+                                self._effect_lane.submit_reserved(request)
+                                wait_for_completion = True
+                            else:
+                                self._effect_lane.cancel_reservation(
+                                    operation_id, generation
+                                )
+                                with self._lock:
+                                    self._effect_waiters.pop(operation_id, None)
+        finally:
+            if outermost:
+                del self._effect_context.pending
+        if (
+            wait_for_completion
+            and not getattr(self._effect_context, "in_effect_worker", False)
+        ):
+            self._wait_for_effect(operation_id)
+        return result
 
     return locked
 
@@ -161,6 +555,7 @@ class _History:
 class _Watch:
     glob: str
     callback: Callable[[ChangeEvent], None]
+    watch_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     events: list[ChangeEvent] = field(default_factory=list)
     closed: bool = False
 
@@ -475,6 +870,12 @@ class LocalOrgFs:
     SpaceStore is supplied every mutation is submitted through its ``commit``
     method; the local fallback is intentionally only an in-process test
     backend and has no filesystem side effects.
+
+    Advanced purge and replacement-snapshot operations require a durable
+    store implementing ``commit_with_outbox`` so its typed authority owns
+    the operation. Commit-only test stores cannot perform those operations.
+    Instance overrides of a class-defined ``broadcast_pending`` are captured
+    as broadcast suppression; their callback invocation count is not promised.
     """
 
     def __init__(
@@ -494,10 +895,326 @@ class LocalOrgFs:
         self.actor = actor
         self.node_id = node_id
         self._lock = threading.RLock()
+        self._space_locks: dict[str, threading.RLock] = {}
+        self._space_state_context = threading.local()
+        self._space_state_owners: dict[str, _SpaceStateOwner] = {}
+        self._space_state_closing = False
+        self._effect_context = threading.local()
+        self._effect_sequence = 0
+        self._effect_failures: list[str] = []
+        self._effect_waiters: dict[str, threading.Event] = {}
+        self._effect_generation = 1
+        self._effect_runtime: ActorRuntime | None = None
+        self._effect_actor: ActorHandle | None = None
+        self._effect_lane: EffectLane[_FacadeEffectBatch, _FacadeEffectResult] | None = None
+        self._effect_closed = False
+        self._watchers: dict[str, _Watch] = {}
         self._spaces: dict[str, _Space] = {}
+        self._space_authorities: dict[str, OrgSpaceAuthority] = {}
         self._clock = 0
         self._events: dict[str, list[ChangeEvent]] = {}
         self._purge_plans: dict[str, tuple[PurgePlan, tuple[dict[str, str], ...]]] = {}
+        self._pending_outbox: dict[str, list[CommitRecord]] = {}
+        self._broadcast_inflight: set[tuple[str, int, bytes]] = set()
+
+    def _defer_effect(
+        self, effect: _WatchNotification | _ReconcileReplicaBlobs | _BroadcastPending
+    ) -> None:
+        pending = getattr(self._effect_context, "pending", None)
+        if pending is None:
+            raise RuntimeError("orgfs effect was produced without a reservation scope")
+        pending.append(effect)
+
+    def effect_failure_snapshot(self) -> tuple[str, ...]:
+        with self._lock:
+            return tuple(self._effect_failures)
+
+    def _needs_post_commit_effects(self) -> bool:
+        with self._lock:
+            has_watcher = any(not watcher.closed for watcher in self._watchers.values())
+        return has_watcher or (self.mesh is not None and self.stores is not None)
+
+    def _broadcast_is_enabled(self) -> bool:
+        if self.mesh is None or not hasattr(self.mesh, "broadcast_pending"):
+            return False
+        method = getattr(self.mesh, "broadcast_pending")
+        implementation = getattr(type(self.mesh), "broadcast_pending", None)
+        # Capture explicit instance overrides before the asynchronous effect
+        # runs, preserving suppression/admission seams without caller closures.
+        return implementation is None or getattr(method, "__func__", None) is implementation
+
+    def _publication_records(
+        self,
+        space_id: str,
+        current: tuple[CommitRecord, ...],
+        *,
+        broadcast: bool,
+    ) -> tuple[CommitRecord, ...]:
+        if not current:
+            return ()
+        enabled = broadcast and self._broadcast_is_enabled()
+        # Publish durable outbox rows through the current journal transaction's
+        # rowid frontier. This includes earlier writer registrations on another
+        # lane that the current CRDT delta causally depends on, while excluding
+        # later commits that happen to be visible in the database already.
+        if enabled:
+            store = self._store(space_id)
+            keys: list[tuple[str, int, str]] = []
+            for record in current:
+                try:
+                    doc_id = str(json.loads(record.envelope_bytes)["docId"])
+                except (KeyError, TypeError, UnicodeDecodeError, json.JSONDecodeError):
+                    continue
+                keys.append((record.writer, record.seq, doc_id))
+            authority = self._space_authorities.get(space_id)
+            if keys and authority is not None and hasattr(authority, "unbroadcast_through"):
+                current = (*current, *authority.unbroadcast_through(tuple(keys)))
+            elif keys and store is not None and hasattr(store, "unbroadcast_through"):
+                current = (*current, *store.unbroadcast_through(tuple(keys)))
+        with self._lock:
+            current = tuple(
+                record
+                for record in current
+                if (record.writer, record.seq, record.envelope_bytes)
+                not in self._broadcast_inflight
+            )
+            if not current:
+                return ()
+            pending = self._pending_outbox.setdefault(space_id, [])
+            if not enabled:
+                pending.extend(current)
+                return ()
+            combined = (*pending, *current)
+            pending.clear()
+        unique: dict[tuple[str, int, bytes], CommitRecord] = {}
+        for record in combined:
+            unique[(record.writer, record.seq, record.envelope_bytes)] = record
+        result = tuple(unique.values())
+        with self._lock:
+            self._broadcast_inflight.update(
+                (record.writer, record.seq, record.envelope_bytes)
+                for record in result
+            )
+        return result
+
+    def _ensure_effect_lane(self) -> None:
+        if self._effect_closed:
+            raise OrgFsError("unavailable", {"message": "orgfs is closing"})
+        if self._effect_lane is not None:
+            return
+        runtime = ActorRuntime()
+        owner_ref = weakref.ref(self)
+
+        def handle_completion(command: object) -> None:
+            owner = owner_ref()
+            if owner is not None:
+                owner._on_effect_completion(command)
+
+        def execute_batch(batch: _FacadeEffectBatch) -> _FacadeEffectResult:
+            owner = owner_ref()
+            return (
+                owner._execute_effect_batch(batch)
+                if owner is not None
+                else _FacadeEffectResult(("owner-closed",))
+            )
+
+        handle = runtime.start(
+            ActorSpec(
+                "orgfs-post-commit-effects",
+                lambda: handle_completion,
+                mailbox_capacity=_FACADE_EFFECT_CAPACITY,
+                supervision_profile="state_authority",
+            )
+        )
+        self._effect_runtime = runtime
+        self._effect_actor = handle
+        self._effect_lane = EffectLane(
+            name="orgfs-post-commit",
+            execute=execute_batch,
+            complete=lambda completion: runtime.tell(handle, completion),
+            capacity=_FACADE_EFFECT_CAPACITY,
+            workers=1,
+        )
+
+    def _execute_effect_batch(
+        self, batch: _FacadeEffectBatch
+    ) -> _FacadeEffectResult:
+        failures: list[str] = []
+        self._effect_context.in_effect_worker = True
+        try:
+            for effect in batch.effects:
+                try:
+                    if isinstance(effect, _WatchNotification):
+                        with self._lock:
+                            watcher = self._watchers.get(effect.watch_id)
+                            callback = (
+                                watcher.callback
+                                if watcher is not None and not watcher.closed
+                                else None
+                            )
+                        if callback is not None:
+                            callback(effect.event)
+                    elif isinstance(effect, _ReconcileReplicaBlobs):
+                        mesh = self.mesh
+                        if mesh is not None and hasattr(
+                            mesh, "reconcile_replica_blobs"
+                        ):
+                            mesh.reconcile_replica_blobs(effect.space_id)
+                    else:
+                        mesh = self.mesh
+                        if mesh is not None:
+                            try:
+                                if effect.records and hasattr(mesh, "broadcast_records"):
+                                    mesh.broadcast_records(effect.space_id, effect.records)
+                                elif hasattr(mesh, "broadcast_pending"):
+                                    mesh.broadcast_pending(effect.space_id)
+                            finally:
+                                with self._lock:
+                                    self._broadcast_inflight.difference_update(
+                                        (record.writer, record.seq, record.envelope_bytes)
+                                        for record in effect.records
+                                    )
+                except Exception as exc:
+                    failures.append(type(exc).__name__)
+            return _FacadeEffectResult(tuple(failures))
+        finally:
+            self._effect_context.in_effect_worker = False
+
+    def _on_effect_completion(self, command: object) -> None:
+        if not isinstance(command, EffectCompleted):
+            raise TypeError("orgfs effect owner received an invalid completion")
+        with self._lock:
+            if command.generation == self._effect_generation:
+                if command.error is not None:
+                    self._effect_failures.append(command.error)
+                elif isinstance(command.result, _FacadeEffectResult):
+                    self._effect_failures.extend(command.result.failures)
+                del self._effect_failures[:-32]
+            waiter = self._effect_waiters.pop(command.operation_id, None)
+        lane = self._effect_lane
+        if lane is not None:
+            lane.acknowledge(command.operation_id, command.generation)
+        if waiter is not None:
+            waiter.set()
+
+    def _wait_for_effect(self, operation_id: str | None) -> None:
+        if operation_id is None:
+            return
+        with self._lock:
+            waiter = self._effect_waiters.get(operation_id)
+        if waiter is not None:
+            waiter.wait(60.0)
+
+    def close_effects(self, timeout: float = 5.0) -> bool:
+        with self._lock:
+            self._space_state_closing = True
+            state_owners = tuple(self._space_state_owners.items())
+            lane = self._effect_lane
+            runtime = self._effect_runtime
+            actor = self._effect_actor
+            authorities = tuple(self._space_authorities.values())
+        deadline = time.monotonic() + timeout
+        for _space_id, owner in state_owners:
+            while time.monotonic() < deadline:
+                snapshot = owner.runtime.snapshot(owner.actor)
+                if (
+                    snapshot.queued == 0
+                    and snapshot.in_flight == 0
+                    and not owner.deferred
+                ):
+                    break
+                time.sleep(0.005)
+            else:
+                return False
+            if not owner.effects.close(max(0.0, deadline - time.monotonic())):
+                return False
+            if not owner.runtime.stop(
+                owner.actor, timeout=max(0.0, deadline - time.monotonic())
+            ):
+                return False
+        with self._lock:
+            self._effect_closed = True
+        if lane is not None:
+            if not lane.close(max(0.0, deadline - time.monotonic())):
+                return False
+            with self._lock:
+                self._effect_generation += 1
+            if runtime is not None and actor is not None:
+                if not runtime.stop(actor, timeout=max(0.0, deadline - time.monotonic())):
+                    return False
+            with self._lock:
+                self._effect_lane = None
+                self._effect_runtime = None
+                self._effect_actor = None
+        for authority in authorities:
+            if not authority.close(timeout=max(0.0, deadline - time.monotonic())):
+                return False
+        with self._lock:
+            self._space_authorities.clear()
+            self._space_state_owners.clear()
+        return True
+
+    def __del__(self) -> None:
+        try:
+            self.close_effects(timeout=1.0)
+        except Exception:
+            pass
+
+    @contextmanager
+    def _post_commit_scope(self, space_id: str | None = None):
+        """Reserve bounded observer custody around structured-document writes."""
+
+        outermost = not hasattr(self._effect_context, "pending")
+        wait_for_completion = False
+        operation_id: str | None = None
+        authority_lock = self._lock if space_id is None else self._space_lock(space_id)
+        with authority_lock:
+            generation = self._effect_generation
+            reserved = False
+            if outermost and self._needs_post_commit_effects():
+                self._ensure_effect_lane()
+                operation_id = uuid.uuid4().hex
+                admission = self._effect_lane.reserve(operation_id, generation)
+                if admission is not AdmissionResult.ACCEPTED:
+                    raise OrgFsError(
+                        "resource-exhausted",
+                        {"message": "orgfs post-commit effect lane is " + admission.value},
+                    )
+                reserved = True
+                with self._lock:
+                    self._effect_waiters[operation_id] = threading.Event()
+            if outermost:
+                self._effect_context.pending = []
+            try:
+                yield
+            finally:
+                if outermost:
+                    effects = tuple(self._effect_context.pending)
+                    del self._effect_context.pending
+                    if operation_id is not None and reserved:
+                        if effects:
+                            with self._lock:
+                                self._effect_sequence += 1
+                                sequence = self._effect_sequence
+                            self._effect_lane.submit_reserved(
+                                EffectRequest(
+                                    operation_id,
+                                    generation,
+                                    _FacadeEffectBatch(sequence, effects),
+                                )
+                            )
+                            wait_for_completion = True
+                        else:
+                            self._effect_lane.cancel_reservation(
+                                operation_id, generation
+                            )
+                            with self._lock:
+                                self._effect_waiters.pop(operation_id, None)
+        if (
+            wait_for_completion
+            and not getattr(self._effect_context, "in_effect_worker", False)
+        ):
+            self._wait_for_effect(operation_id)
 
     def _store(self, space_id: str) -> Any:
         if self.stores is None:
@@ -508,6 +1225,498 @@ class LocalOrgFs:
             return self.stores.get(space_id)
         return None
 
+    def _space_lock(self, space_id: str) -> threading.RLock:
+        with self._lock:
+            lock = self._space_locks.get(space_id)
+            if lock is None:
+                lock = threading.RLock()
+                self._space_locks[space_id] = lock
+            return lock
+
+    def space_authority(self, space_id: str, store: Any | None = None) -> OrgSpaceAuthority | None:
+        if self._effect_closed and not getattr(
+            self._space_state_context, "running", False
+        ):
+            raise OrgFsError("unavailable", {"message": "orgfs is closing"})
+        store = store if store is not None else self._store(space_id)
+        if store is None or not hasattr(store, "commit_with_outbox"):
+            return None
+        with self._lock:
+            authority = self._space_authorities.get(space_id)
+            if authority is None:
+                authority = OrgSpaceAuthority(space_id, store)
+                self._space_authorities[space_id] = authority
+            return authority
+
+    def _make_space_operation(
+        self, method: Callable[..., Any], args: tuple[Any, ...], kwargs: dict[str, Any]
+    ) -> _SpaceStateOperation:
+        bound = inspect.signature(method).bind(self, *args, **kwargs)
+        bound.apply_defaults()
+        values = bound.arguments
+        name = method.__name__
+        if name == "create_space":
+            return _CreateSpace(values["name"])
+        if name == "load_space":
+            return _LoadSpace(values["space_id"])
+        if name == "invite":
+            return _InviteMember(values["space_id"], values["user"], values["mode"])
+        if name == "remove_member":
+            return _RemoveMember(values["space_id"], values["user"])
+        if name == "apply_envelope":
+            return _ApplyEnvelope(values["space_id"], bytes(values["envelope"]))
+        if name == "install_replacement_snapshot":
+            return _InstallReplacement(
+                values["space_id"], values["old_doc_id"], values["new_doc_id"],
+                bytes(values["snapshot_bytes"]),
+            )
+        if name == "acknowledge_purge":
+            return _AcknowledgePurge(values["space_id"], values["plan_id"])
+        if name == "write_text":
+            return _WriteText(
+                values["space_id"], values["node"], values["content"],
+                values["base_version"], values["expect_version"],
+            )
+        if name == "write_bytes":
+            return _WriteBytes(
+                values["space_id"], values["node"], bytes(values["content"]),
+                values["expect_version"],
+            )
+        if name == "mkdir":
+            return _Mkdir(values["space_id"], values["path"])
+        if name == "move":
+            return _Move(values["space_id"], values["source"], values["destination"])
+        if name == "remove":
+            return _RemoveNode(values["space_id"], values["node"])
+        if name == "restore":
+            return _Restore(
+                values["space_id"], values["node"], values["version"],
+                bool(values["recursive"]),
+            )
+        if name == "purge_plan":
+            targets = tuple(
+                tuple(sorted(self._freeze_space_value(dict(item))))
+                for item in values["targets"]
+            )
+            return _PurgePlanCommand(values["space_id"], targets)
+        if name == "purge":
+            return _Purge(values["space_id"], values["plan_id"])
+        if name == "unban":
+            return _Unban(values["space_id"], values["sha"])
+        if name == "apply_tree_update":
+            return _ApplyTreeUpdate(values["space_id"], bytes(values["update"]))
+        if name == "apply_content_update":
+            return _ApplyContentUpdate(
+                values["space_id"], values["node"], bytes(values["update"])
+            )
+        if name == "hydrate_content_snapshot":
+            return _HydrateContentSnapshot(
+                values["space_id"], values["node"], values["expected_doc_id"],
+                bytes(values["snapshot"])
+            )
+        if name == "_apply_structured_update":
+            return _ApplyStructuredUpdate(
+                values["space_id"], values["node_id"], values["doc_id"],
+                int(values["client_id"]), bytes(values["base_state"]),
+                bytes(values["update"]),
+            )
+        raise ValueError(f"no frozen OrgSpace command for {name}")
+
+    @staticmethod
+    def _freeze_space_value(value: object) -> object:
+        if isinstance(value, Mapping):
+            return tuple(
+                sorted(
+                    (str(key), LocalOrgFs._freeze_space_value(item))
+                    for key, item in value.items()
+                )
+            )
+        if isinstance(value, (tuple, list)):
+            return tuple(LocalOrgFs._freeze_space_value(item) for item in value)
+        if value is None or isinstance(value, (str, bytes, int, float, bool, Path)):
+            return value
+        return str(value)
+
+    @staticmethod
+    def _thaw_space_value(value: object) -> object:
+        if isinstance(value, _JsonProjection):
+            return value.decode()
+        if isinstance(value, tuple) and all(
+            isinstance(item, tuple)
+            and len(item) == 2
+            and isinstance(item[0], str)
+            for item in value
+        ):
+            return {key: LocalOrgFs._thaw_space_value(item) for key, item in value}
+        if isinstance(value, tuple):
+            return [LocalOrgFs._thaw_space_value(item) for item in value]
+        return value
+
+    def _ensure_space_state_owner(self, space_id: str) -> _SpaceStateOwner:
+        with self._lock:
+            existing = self._space_state_owners.get(space_id)
+            if existing is not None:
+                return existing
+            owner_ref = weakref.ref(self)
+
+            def actor_event(event: ActorEvent) -> None:
+                owner = owner_ref()
+                if owner is not None:
+                    owner._on_space_state_event(space_id, event)
+
+            def handle(command: object) -> None:
+                owner = owner_ref()
+                if owner is not None:
+                    owner._on_space_state_command(space_id, command)
+
+            def execute(command: _SpaceStateCommand) -> _SpaceStateOutcome:
+                owner = owner_ref()
+                if owner is None:
+                    return _SpaceStateOutcome(
+                        error=_SpaceStateFailure(
+                            "OrgFsError", "unavailable", "orgfs is closed", ()
+                        )
+                    )
+                return owner._execute_space_state(space_id, command)
+
+            runtime = ActorRuntime(event_sink=actor_event)
+            actor = runtime.start(
+                ActorSpec(
+                    f"orgfs-space-{space_id[:12]}-state",
+                    lambda: handle,
+                    mailbox_capacity=_SPACE_STATE_CAPACITY,
+                    supervision_profile="state_authority",
+                )
+            )
+
+            def complete(
+                completion: EffectCompleted[_SpaceStateOutcome],
+            ) -> AdmissionResult:
+                owner = owner_ref()
+                if owner is None:
+                    return AdmissionResult.CLOSED
+                return runtime.tell(actor, completion)
+
+            effects = EffectLane(
+                name=f"orgfs-space-{space_id[:12]}-state-work",
+                execute=execute,
+                complete=complete,
+                capacity=_SPACE_STATE_CAPACITY,
+                workers=1,
+            )
+            created = _SpaceStateOwner(runtime, actor, effects)
+            self._space_state_owners[space_id] = created
+            return created
+
+    def _execute_space_operation(self, operation: _SpaceStateOperation) -> object:
+        if isinstance(operation, _CreateSpace):
+            return type(self).create_space.__wrapped__(self, operation.name)
+        if isinstance(operation, _LoadSpace):
+            return type(self).load_space.__wrapped__(self, operation.space_id)
+        if isinstance(operation, _InviteMember):
+            return type(self).invite.__wrapped__(self, operation.space_id, operation.user, operation.mode)
+        if isinstance(operation, _RemoveMember):
+            return type(self).remove_member.__wrapped__(self, operation.space_id, operation.user)
+        if isinstance(operation, _ApplyEnvelope):
+            return type(self).apply_envelope.__wrapped__(self, operation.space_id, operation.envelope)
+        if isinstance(operation, _InstallReplacement):
+            return type(self).install_replacement_snapshot.__wrapped__(
+                self, operation.space_id, operation.old_doc_id, operation.new_doc_id, operation.snapshot
+            )
+        if isinstance(operation, _AcknowledgePurge):
+            return type(self).acknowledge_purge.__wrapped__(self, operation.space_id, operation.plan_id)
+        if isinstance(operation, _WriteText):
+            return type(self).write_text.__wrapped__(
+                self, operation.space_id, operation.node, operation.content,
+                base_version=operation.base_version, expect_version=operation.expect_version,
+            )
+        if isinstance(operation, _WriteBytes):
+            return type(self).write_bytes.__wrapped__(
+                self, operation.space_id, operation.node, operation.content,
+                expect_version=operation.expect_version,
+            )
+        if isinstance(operation, _Mkdir):
+            return type(self).mkdir.__wrapped__(self, operation.space_id, operation.path)
+        if isinstance(operation, _Move):
+            return type(self).move.__wrapped__(
+                self, operation.space_id, operation.source, operation.destination
+            )
+        if isinstance(operation, _RemoveNode):
+            return type(self).remove.__wrapped__(self, operation.space_id, operation.node)
+        if isinstance(operation, _Restore):
+            return type(self).restore.__wrapped__(
+                self, operation.space_id, operation.node, operation.version,
+                recursive=operation.recursive,
+            )
+        if isinstance(operation, _PurgePlanCommand):
+            targets = tuple(self._thaw_space_value(target) for target in operation.targets)
+            return type(self).purge_plan.__wrapped__(self, operation.space_id, targets)
+        if isinstance(operation, _Purge):
+            return type(self).purge.__wrapped__(self, operation.space_id, operation.plan_id)
+        if isinstance(operation, _Unban):
+            return type(self).unban.__wrapped__(self, operation.space_id, operation.sha)
+        if isinstance(operation, _ApplyTreeUpdate):
+            return type(self).apply_tree_update.__wrapped__(self, operation.space_id, operation.update)
+        if isinstance(operation, _ApplyContentUpdate):
+            return type(self).apply_content_update.__wrapped__(
+                self, operation.space_id, operation.node, operation.update
+            )
+        if isinstance(operation, _HydrateContentSnapshot):
+            return type(self).hydrate_content_snapshot.__wrapped__(
+                self, operation.space_id, operation.node, operation.snapshot,
+                expected_doc_id=operation.expected_doc_id,
+            )
+        if isinstance(operation, _ApplyStructuredUpdate):
+            return type(self)._apply_structured_update.__wrapped__(
+                self, operation.space_id, operation.node_id, operation.doc_id,
+                operation.client_id, operation.base_state, operation.update,
+            )
+        raise TypeError(f"unsupported OrgSpace operation: {type(operation).__name__}")
+
+    def _execute_space_state(
+        self, space_id: str, command: _SpaceStateCommand
+    ) -> _SpaceStateOutcome:
+        self._space_state_context.running = True
+        if not hasattr(self._effect_context, "pending"):
+            self._effect_context.pending = []
+        try:
+            authority_lock = self._lock if space_id == "__directory__" else self._space_lock(space_id)
+            with authority_lock:
+                try:
+                    value = self._execute_space_operation(command.operation)
+                except Exception as error:
+                    details = getattr(error, "details", {})
+                    return _SpaceStateOutcome(
+                        error=_SpaceStateFailure(
+                            type(error).__name__,
+                            str(getattr(error, "code", "internal")),
+                            str(error),
+                            tuple(
+                                sorted(
+                                    (str(key), self._freeze_space_value(item))
+                                    for key, item in dict(details).items()
+                                )
+                            )
+                            if isinstance(details, Mapping)
+                            else (),
+                        )
+                    )
+                finally:
+                    effects = tuple(self._effect_context.pending)
+                    if command.effect_operation_id is not None:
+                        if effects:
+                            with self._lock:
+                                self._effect_sequence += 1
+                                sequence = self._effect_sequence
+                            self._effect_lane.submit_reserved(
+                                EffectRequest(
+                                    command.effect_operation_id,
+                                    command.effect_generation,
+                                    _FacadeEffectBatch(sequence, effects),
+                                )
+                            )
+                        else:
+                            self._effect_lane.cancel_reservation(
+                                command.effect_operation_id, command.effect_generation
+                            )
+                            with self._lock:
+                                self._effect_waiters.pop(command.effect_operation_id, None)
+                    del self._effect_context.pending
+                return _SpaceStateOutcome(value=value)
+        finally:
+            self._space_state_context.running = False
+
+    def _on_space_state_command(self, space_id: str, command: object) -> None:
+        owner = self._space_state_owners[space_id]
+        if isinstance(command, EffectCompleted):
+            with self._lock:
+                state_command = owner.commands.get(command.operation_id)
+                if state_command is None or state_command.generation != command.generation:
+                    waiter = None
+                else:
+                    owner.commands.pop(command.operation_id, None)
+                    owner.submitted.discard(command.operation_id)
+                    waiter = owner.waiters.pop(command.operation_id, None)
+            if waiter is not None:
+                outcome = command.result
+                if isinstance(outcome, _SpaceStateOutcome):
+                    waiter.value = outcome.value
+                    waiter.error = outcome.error
+                else:
+                    waiter.error = _SpaceStateFailure(
+                        "RuntimeError", "internal", "invalid orgspace completion", ()
+                    )
+                waiter.done.set()
+            owner.effects.acknowledge(command.operation_id, command.generation)
+            self._pump_space_state(owner)
+            return
+        if not isinstance(command, _SpaceStateCommand):
+            raise TypeError("orgspace actor received an invalid command")
+        with self._lock:
+            if command.generation != owner.generation:
+                return
+            admission = owner.effects.submit(
+                EffectRequest(command.operation_id, command.generation, command)
+            )
+            if admission is AdmissionResult.ACCEPTED:
+                owner.deferred = [
+                    item
+                    for item in owner.deferred
+                    if item.operation_id != command.operation_id
+                ]
+                owner.submitted.add(command.operation_id)
+                return
+            if admission is AdmissionResult.OVERLOADED:
+                if all(
+                    item.operation_id != command.operation_id
+                    for item in owner.deferred
+                ):
+                    owner.deferred.append(command)
+                return
+        with self._lock:
+            waiter = owner.waiters.pop(command.operation_id, None)
+            owner.commands.pop(command.operation_id, None)
+        if waiter is not None:
+            waiter.error = _SpaceStateFailure(
+                "OrgFsError", "unavailable", "orgspace is closing", ()
+            )
+            waiter.done.set()
+
+    def _pump_space_state(self, owner: _SpaceStateOwner) -> None:
+        with self._lock:
+            if not owner.deferred:
+                return
+            command = owner.deferred[0]
+            admission = owner.effects.submit(
+                EffectRequest(command.operation_id, command.generation, command)
+            )
+            if admission is AdmissionResult.ACCEPTED:
+                owner.deferred.pop(0)
+                owner.submitted.add(command.operation_id)
+
+    def _on_space_state_event(self, space_id: str, event: ActorEvent) -> None:
+        if event.kind is not ActorEventKind.CHILD_RESTARTED:
+            return
+        with self._lock:
+            owner = self._space_state_owners.get(space_id)
+            if owner is None or event.generation <= owner.generation:
+                return
+            owner.generation = event.generation
+            deferred_ids = {command.operation_id for command in owner.deferred}
+            replay = tuple(
+                _SpaceStateCommand(
+                    command.operation_id, event.generation, command.operation,
+                    command.effect_operation_id, command.effect_generation,
+                )
+                for operation_id, command in owner.commands.items()
+                if operation_id not in owner.submitted
+            )
+            for command in replay:
+                owner.commands[command.operation_id] = command
+            replacements = {command.operation_id: command for command in replay}
+            owner.deferred = [
+                replacements[command.operation_id]
+                for command in owner.deferred
+                if command.operation_id in replacements
+            ]
+        self._pump_space_state(owner)
+        for command in replay:
+            if command.operation_id in deferred_ids:
+                continue
+            admission = owner.runtime.tell(owner.actor, command)
+            if admission is not AdmissionResult.ACCEPTED:
+                with self._lock:
+                    if all(
+                        item.operation_id != command.operation_id
+                        for item in owner.deferred
+                    ):
+                        owner.deferred.append(command)
+                self._pump_space_state(owner)
+
+    def _submit_space_state(
+        self, method: Callable[..., Any], args: tuple[Any, ...], kwargs: dict[str, Any]
+    ) -> Any:
+        operation = self._make_space_operation(method, args, kwargs)
+        space_id = (
+            "__directory__" if isinstance(operation, _CreateSpace) else operation.space_id
+        )
+        owner = self._ensure_space_state_owner(space_id)
+        operation_id = uuid.uuid4().hex
+        effect_id: str | None = None
+        effect_generation = self._effect_generation
+        waiter = _SpaceStateWaiter(threading.Event())
+        with self._lock:
+            if self._space_state_closing:
+                raise OrgFsError("unavailable", {"message": "orgfs is closing"})
+            if len(owner.commands) >= _SPACE_STATE_CAPACITY:
+                raise OrgFsError(
+                    "resource-exhausted",
+                    {"message": "orgspace total custody is full"},
+                )
+            if self._needs_post_commit_effects():
+                self._ensure_effect_lane()
+                effect_id = uuid.uuid4().hex
+                admission = self._effect_lane.reserve(effect_id, effect_generation)
+                if admission is not AdmissionResult.ACCEPTED:
+                    raise OrgFsError(
+                        "resource-exhausted",
+                        {
+                            "message": "orgfs post-commit effect lane is "
+                            + admission.value
+                        },
+                    )
+                self._effect_waiters[effect_id] = threading.Event()
+            command = _SpaceStateCommand(
+                operation_id, owner.generation, operation, effect_id, effect_generation
+            )
+            owner.commands[operation_id] = command
+            owner.waiters[operation_id] = waiter
+        while True:
+            admission = owner.runtime.tell(owner.actor, command)
+            if admission is AdmissionResult.ACCEPTED:
+                break
+            with self._lock:
+                current = owner.commands.get(operation_id)
+                if (
+                    admission is AdmissionResult.CLOSED
+                    and current is not None
+                    and current.generation != command.generation
+                ):
+                    command = current
+                    continue
+                owner.commands.pop(operation_id, None)
+                owner.waiters.pop(operation_id, None)
+                if effect_id is not None:
+                    self._effect_lane.cancel_reservation(effect_id, effect_generation)
+                    self._effect_waiters.pop(effect_id, None)
+            raise OrgFsError(
+                "resource-exhausted" if admission is AdmissionResult.OVERLOADED else "unavailable",
+                {"message": "orgspace actor admission was " + admission.value},
+            )
+        waiter.done.wait()
+        if effect_id is not None and not getattr(self._effect_context, "in_effect_worker", False):
+            self._wait_for_effect(effect_id)
+        if waiter.error is not None:
+            error = waiter.error
+            details = dict(error.details)
+            if error.kind == "OrgFsError":
+                raise OrgFsError(error.code, {**details, "message": error.message})
+            if error.kind == "StoreError":
+                raise StoreError(error.code, error.message, **details)
+            if error.kind == "ValueError":
+                raise ValueError(error.message)
+            if error.kind == "TypeError":
+                raise TypeError(error.message)
+            if error.kind in {"FileNotFoundError", "PermissionError", "OSError"}:
+                error_type = {
+                    "FileNotFoundError": FileNotFoundError,
+                    "PermissionError": PermissionError,
+                    "OSError": OSError,
+                }[error.kind]
+                raise error_type(error.message)
+            raise RuntimeError(error.message)
+        return waiter.value
+
     def _commit(
         self,
         space: _Space,
@@ -516,6 +1725,11 @@ class LocalOrgFs:
         *,
         broadcast: bool = True,
     ) -> None:
+        if not hasattr(self._effect_context, "pending"):
+            with self._post_commit_scope(space.info.space_id):
+                return self._commit(
+                    space, doc_id, operation, broadcast=broadcast
+                )
         store = self._store(space.info.space_id)
         if store is None:
             operation()
@@ -545,8 +1759,30 @@ class LocalOrgFs:
                 if doc is not None:
                     doc.apply_update(update)
 
+            outbox_records: tuple[CommitRecord, ...] = ()
+            absorbs: tuple[_CommittedDelta, ...] = ()
             try:
-                store.commit(doc_id, mutate, author=self.author, actor=self.actor)
+                authority = self.space_authority(space.info.space_id, store)
+                if authority is not None:
+                    record, outbox_records, absorbs = authority.commit(
+                        doc_id,
+                        update,
+                        author=self.author,
+                        actor=self.actor,
+                        absorb_since=(
+                            None
+                            if doc_id in ("meta", space.tree_doc_id)
+                            else space.contents[doc_id].doc.get_state()
+                        ),
+                    )
+                elif hasattr(store, "commit_with_outbox"):
+                    record, outbox_records = store.commit_with_outbox(
+                        doc_id, mutate, author=self.author, actor=self.actor
+                    )
+                else:
+                    record = store.commit(
+                        doc_id, mutate, author=self.author, actor=self.actor
+                    )
             except Exception as exc:
                 tree_update, meta_update, nodes, contents, members, removed = rollback
                 space.tree = TreeDocument(update=tree_update)
@@ -564,22 +1800,34 @@ class LocalOrgFs:
                 details = dict(getattr(exc, "details", {}) or {})
                 details.setdefault("message", str(exc))
                 raise OrgFsError(str(code), details) from exc
-            self._absorb_committed_update(space, store, doc_id)
+            self._absorb_committed_deltas(space, absorbs)
             if hasattr(store, "take_drained"):
                 for envelope in store.take_drained():
                     self.apply_envelope(space.info.space_id, envelope)
+            space_id = space.info.space_id
+            current_records = (
+                outbox_records
+                if outbox_records
+                else ((record,) if isinstance(record, CommitRecord) else ())
+            )
+            records = self._publication_records(
+                space_id, current_records, broadcast=broadcast
+            )
             if doc_id == space.tree_doc_id:
-                self._reconcile_serving_replica(space.info.space_id)
-            if (
-                broadcast
-                and self.mesh is not None
-                and hasattr(self.mesh, "broadcast_pending")
+                self._defer_effect(_ReconcileReplicaBlobs(space_id))
+            if records or (
+                not current_records
+                and broadcast
+                and self._broadcast_is_enabled()
             ):
-                self.mesh.broadcast_pending(space.info.space_id)
+                self._defer_effect(_BroadcastPending(space_id, records))
 
     def _commit_many(
         self, space: _Space, operations: Iterable[tuple[str, Callable[[], None]]]
     ) -> None:
+        if not hasattr(self._effect_context, "pending"):
+            with self._post_commit_scope(space.info.space_id):
+                return self._commit_many(space, operations)
         items = tuple(operations)
         if not items:
             return
@@ -601,6 +1849,7 @@ class LocalOrgFs:
             for _doc_id, operation in items:
                 operation()
             mutations: list[tuple[str, Callable[[Any], None]]] = []
+            authority_edits: list[tuple[str, bytes]] = []
             for doc_id, _operation in items:
                 if doc_id == space.tree_doc_id:
                     update = space.tree.get_update()
@@ -613,11 +1862,33 @@ class LocalOrgFs:
                     doc.apply_update(update)
 
                 mutations.append((doc_id, mutate))
+                authority_edits.append((doc_id, update))
             if not hasattr(store, "commit_many"):
                 raise RuntimeError(
                     "durable store does not support atomic document batches"
                 )
-            store.commit_many(mutations, author=self.author, actor=self.actor)
+            authority = self.space_authority(space.info.space_id, store)
+            absorbs: tuple[_CommittedDelta, ...] = ()
+            if authority is not None:
+                records, outbox_records, absorbs = authority.commit_many(
+                    tuple(authority_edits),
+                    author=self.author,
+                    actor=self.actor,
+                    absorb_since={
+                        doc_id: space.contents[doc_id].doc.get_state()
+                        for doc_id, _operation in items
+                        if doc_id not in ("meta", space.tree_doc_id)
+                    },
+                )
+            elif hasattr(store, "commit_many_with_outbox"):
+                records, outbox_records = store.commit_many_with_outbox(
+                    mutations, author=self.author, actor=self.actor
+                )
+            else:
+                records = store.commit_many(
+                    mutations, author=self.author, actor=self.actor
+                )
+                outbox_records = ()
         except Exception as exc:
             (
                 tree_update,
@@ -648,35 +1919,45 @@ class LocalOrgFs:
             details = dict(getattr(exc, "details", {}) or {})
             details.setdefault("message", str(exc))
             raise OrgFsError(str(code), details) from exc
-        for doc_id, _operation in items:
-            self._absorb_committed_update(space, store, doc_id)
+        self._absorb_committed_deltas(space, absorbs)
         if hasattr(store, "take_drained"):
             for envelope in store.take_drained():
                 self.apply_envelope(space.info.space_id, envelope)
+        space_id = space.info.space_id
+        current_records = (
+            outbox_records
+            if outbox_records
+            else tuple(record for record in records if isinstance(record, CommitRecord))
+        )
+        exact_records = self._publication_records(
+            space_id, current_records, broadcast=True
+        )
         if any(doc_id == space.tree_doc_id for doc_id, _operation in items):
-            self._reconcile_serving_replica(space.info.space_id)
-        if self.mesh is not None and hasattr(self.mesh, "broadcast_pending"):
-            self.mesh.broadcast_pending(space.info.space_id)
+            self._defer_effect(_ReconcileReplicaBlobs(space_id))
+        if exact_records or (not current_records and self._broadcast_is_enabled()):
+            self._defer_effect(_BroadcastPending(space_id, exact_records))
 
     @staticmethod
-    def _absorb_committed_update(space: _Space, store: Any, doc_id: str) -> None:
-        """Fold the store's committed ops for a content doc back into the facade.
+    def _absorb_committed_deltas(
+        space: _Space, absorbs: Iterable[_CommittedDelta]
+    ) -> None:
+        """Fold the store's committed content-doc deltas back into the facade.
 
         The store adds a reserved coverage-clock op under its writer client to
-        every commit.  Peers receive it in the envelope, so a content frontier a
-        peer records after editing covers it; the writer's own facade must hold
-        it too or it can never satisfy that frontier (D4 x D1 seam).  The delta
-        is just that op, and the merge is idempotent.
+        every commit.  Peers receive it in the envelope, so a content frontier
+        a peer records after editing covers it; the writer's own facade must
+        hold it too or it can never satisfy that frontier (D4 x D1 seam).
+        The authority returns the delta with the commit result, so the facade
+        does no raw store I/O.  Runs on the success path only, after the
+        commit; the merge is idempotent and rollback is untouched.
         """
 
-        if doc_id in ("meta", space.tree_doc_id):
-            return
-        document = space.contents.get(doc_id)
-        if document is None:
-            return
-        delta = store.committed_update(doc_id, document.doc.get_state())
-        if delta and delta != _EMPTY_UPDATE:
-            document.update(delta)
+        for absorb in absorbs:
+            document = space.contents.get(absorb.doc_id)
+            if document is None:
+                continue
+            if absorb.delta and absorb.delta != _EMPTY_UPDATE:
+                document.update(absorb.delta)
 
     def _ensure_writable(self, space: _Space) -> None:
         member = space.members.get(self.author)
@@ -688,23 +1969,21 @@ class LocalOrgFs:
             raise OrgFsError("not-a-member", {"spaceId": space.info.space_id})
 
     def _space(self, space_id: str) -> _Space:
-        try:
-            return self._spaces[space_id]
-        except KeyError as exc:
-            raise OrgFsError("unknown-space", {"spaceId": space_id}) from exc
+        with self._lock:
+            try:
+                return self._spaces[space_id]
+            except KeyError as exc:
+                raise OrgFsError("unknown-space", {"spaceId": space_id}) from exc
 
-    def _reconcile_serving_replica(self, space_id: str) -> None:
-        """Post-commit trigger: pull retained blob refs into a serving replica."""
-
-        mesh = self.mesh
-        if mesh is not None and hasattr(mesh, "reconcile_replica_blobs"):
-            mesh.reconcile_replica_blobs(space_id)
+    def _existing_space(self, space_id: str) -> _Space | None:
+        with self._lock:
+            return self._spaces.get(space_id)
 
     def retained_blob_digests(self, space_id: str) -> tuple[str, ...]:
         """Snapshot current and trash blob references for inbound materialization."""
 
-        with self._lock:
-            space = self._spaces.get(space_id)
+        with self._space_lock(space_id):
+            space = self._existing_space(space_id)
             if space is None:
                 return ()
             digests = {
@@ -734,13 +2013,13 @@ class LocalOrgFs:
             # every surface.  A mismatch rejects before any side effect.
             parsed = parse_orgfs_uri(path)
             if parsed is None:
-                raise OrgFsError("invalid-uri", {"node": path})
+                raise OrgFsError(ipc_errors.ORGFS_INVALID_URI, {"node": path})
             owner, uri_space, node_id = parsed
             if uri_space != space.info.space_id or owner != (
                 parse_user_uri(space.info.owner) or ""
             ):
                 raise OrgFsError(
-                    "cross-space-uri",
+                    ipc_errors.ORGFS_CROSS_SPACE_URI,
                     {
                         "node": path,
                         "expectedSpaceId": space.info.space_id,
@@ -967,9 +2246,11 @@ class LocalOrgFs:
     ) -> None:
         attributed_author = self.author if author is None else author
         attributed_actor = self.actor if author is None else actor
-        self._clock += 1
+        with self._lock:
+            self._clock += 1
+            clock = self._clock
         space.revision += 1
-        version = _version(space.revision, self._clock)
+        version = _version(space.revision, clock)
         at = _now()
         unique = list(dict.fromkeys(affected))
         for node_id in unique:
@@ -992,12 +2273,14 @@ class LocalOrgFs:
             event = ChangeEvent(
                 space.info.space_id, kind, info, (old_paths or {}).get(node_id)
             )
-            self._events.setdefault(space.info.space_id, []).append(event)
+            with self._lock:
+                events = self._events.setdefault(space.info.space_id, [])
+            events.append(event)
             for watcher in tuple(space.watches):
                 if watcher.closed or not fnmatch.fnmatch(info.path, watcher.glob):
                     continue
                 watcher.events.append(event)
-                watcher.callback(event)
+                self._defer_effect(_WatchNotification(watcher.watch_id, event))
 
     def _parent_for_new(self, space: _Space, path: str) -> tuple[_Node, str]:
         if path.startswith("id:") or path.startswith(ORGFS_URI_PREFIX):
@@ -1051,10 +2334,12 @@ class LocalOrgFs:
             operation()
             if move is not None:
                 node, name = move
-                self._clock += 1
+                with self._lock:
+                    self._clock += 1
+                    clock = self._clock
                 space.tree.record_move(
                     node,
-                    timestamp=self._clock,
+                    timestamp=clock,
                     peer=self.node_id,
                     new_parent=node.parent,
                     name=name,
@@ -1186,8 +2471,9 @@ class LocalOrgFs:
 
     @_facade_locked
     def join(self, space_id: str) -> SpaceInfo:
-        if space_id in self._spaces:
-            return self._spaces[space_id].info
+        existing = self._existing_space(space_id)
+        if existing is not None:
+            return existing.info
         if self.mesh is None:
             raise OrgFsError("no-holder-online")
         info = self.mesh.join(space_id)
@@ -1201,8 +2487,9 @@ class LocalOrgFs:
     def load_space(self, space_id: str) -> SpaceInfo:
         """Hydrate the local facade after an empty-VV mesh clone."""
 
-        if space_id in self._spaces:
-            return self._spaces[space_id].info
+        existing = self._existing_space(space_id)
+        if existing is not None:
+            return existing.info
         store = self._store(space_id)
         if store is None:
             raise OrgFsError("unknown-space", {"spaceId": space_id})
@@ -1302,14 +2589,17 @@ class LocalOrgFs:
         for node in loaded.nodes.values():
             node.version = baseline
         loaded.snapshots[baseline] = self._snapshot(loaded)
-        self._spaces[space_id] = loaded
+        with self._lock:
+            self._spaces.setdefault(space_id, loaded)
+            loaded = self._spaces[space_id]
         return info
 
     @_facade_locked
     def apply_envelope(self, space_id: str, envelope: bytes) -> None:
         """Refresh an open facade after the durable store admits an envelope."""
 
-        if space_id not in self._spaces:
+        space = self._existing_space(space_id)
+        if space is None:
             return
         try:
             value = json.loads(envelope)
@@ -1330,7 +2620,6 @@ class LocalOrgFs:
                 "invalid-argument", {"message": "invalid admitted envelope"}
             ) from exc
 
-        space = self._spaces[space_id]
         origin_author = str(origin.get("author", ""))
         origin_actor = (
             origin.get("actor") if isinstance(origin.get("actor"), str) else None
@@ -1525,7 +2814,13 @@ class LocalOrgFs:
 
         space = self._space(space_id)
         store = self._store(space_id)
-        active_tree = store.active_tree_doc_id() if store is not None else None
+        authority = self.space_authority(space_id, store)
+        if authority is None:
+            raise OrgFsError(
+                "invalid-argument",
+                {"message": "replacement snapshot requires a durable authority"},
+            )
+        active_tree = authority.read(_ReadStore("active_tree_doc_id"))
         if old_doc_id == space.tree_doc_id or active_tree == new_doc_id:
             space.tree_doc_id = new_doc_id
             space.tree = TreeDocument(update=snapshot_bytes)
@@ -1611,6 +2906,23 @@ class LocalOrgFs:
 
     @_facade_locked
     def read_text(self, space_id: str, node: NodeRef) -> tuple[str, str]:
+        _space, item, content = self._read_text_value(space_id, node)
+        return content, item.version
+
+    @_facade_locked
+    def read_text_snapshot(self, space_id: str, node: NodeRef) -> TextReadSnapshot:
+        """Return text, version, and canonical identity from one owner snapshot."""
+
+        space, item, content = self._read_text_value(space_id, node)
+        return TextReadSnapshot(
+            content=content,
+            version=item.version,
+            node=self._node_info(space, item.node_id),
+        )
+
+    def _read_text_value(
+        self, space_id: str, node: NodeRef
+    ) -> tuple[_Space, _Node, str]:
         space = self._space(space_id)
         item = self._one(space, node)
         if item.kind != "doc" or item.doc_id not in space.contents:
@@ -1623,7 +2935,7 @@ class LocalOrgFs:
             )
         ):
             raise self._content_pending(space, item)
-        return content.value(), item.version
+        return space, item, content.value()
 
     def _three_way(self, base: str, current: str, requested: str) -> str:
         if current == base:
@@ -1883,7 +3195,12 @@ class LocalOrgFs:
 
     @_facade_locked
     def import_from(self, space_id: str, node: NodeRef, source: Path) -> NodeInfo:
-        return self.write_bytes(space_id, node, source.read_bytes())
+        # ``import_from`` already owns the per-space state lane and post-commit
+        # reservation. Re-entering the decorated method would enqueue behind
+        # this operation while it still holds that authority.
+        return type(self).write_bytes.__wrapped__(
+            self, space_id, node, source.read_bytes()
+        )
 
     @_facade_locked
     def mkdir(self, space_id: str, path: str) -> NodeInfo:
@@ -2328,6 +3645,8 @@ class LocalOrgFs:
     ) -> _Watch:
         watcher = _Watch(glob, callback)
         self._space(space_id).watches.append(watcher)
+        with self._lock:
+            self._watchers[watcher.watch_id] = watcher
         return watcher
 
     @_facade_locked
@@ -2338,9 +3657,11 @@ class LocalOrgFs:
 
         self._space(space_id)
         cutoff = _version_number(since_version) if since_version is not None else -1
+        with self._lock:
+            events = tuple(self._events.get(space_id, ()))
         return tuple(
             event
-            for event in self._events.get(space_id, ())
+            for event in events
             if _version_number(event.node.version) > cutoff
             and fnmatch.fnmatch(event.node.path, glob)
         )
@@ -2365,7 +3686,9 @@ class LocalOrgFs:
         handle_ref: list[StructuredOrgDoc] = []
 
         def commit(mutate: Callable[[Doc], None]) -> NodeInfo:
-            with self._lock:
+            # User mutation runs only against a detached copy. The owner sees
+            # immutable bytes and fences them against the captured CRDT state.
+            with self._space_lock(space_id):
                 current_space = self._space(space_id)
                 current = self._one(current_space, f"id:{node_id}")
                 if current.doc_id != doc_id or doc_id not in current_space.contents:
@@ -2375,47 +3698,71 @@ class LocalOrgFs:
                     )
                 self._ensure_writable(current_space)
                 live = current_space.contents[doc_id]
-                working = _ContentDocument(
-                    client_id=live.doc.client_id, update=live.export()
+                before = bytes(live.doc.get_state())
+                client_id = live.doc.client_id
+                working = _ContentDocument(client_id=client_id, update=live.export())
+            mutate(working.doc)
+            update = bytes(working.doc.get_update(before))
+            try:
+                return self._apply_structured_update(
+                    space_id, node_id, doc_id, client_id, before, update
                 )
-                before = live.doc.get_state()
-                mutate(working.doc)
-                update = working.doc.get_update(before)
-
-                def apply_content() -> None:
-                    live.doc.apply_update(update)
-                    current.content_frontier += 1
-
-                def record_requirement() -> None:
-                    current.required_content_frontier = live.doc.get_state()
-                    raw = live.value().encode()
-                    current.ref_size = len(raw)
-                    current.ref_sha256 = hashlib.sha256(raw).hexdigest()
-                    current_space.tree.record(current)
-
-                try:
-                    self._commit_many(
-                        current_space,
-                        [
-                            (doc_id, apply_content),
-                            (current_space.tree_doc_id, record_requirement),
-                        ],
-                    )
-                except Exception:
-                    if handle_ref:
-                        handle_ref[0]._doc = document.doc  # noqa: SLF001
-                    raise
-                self._finish(current_space, [node_id], "content")
-                return self._node_info(current_space, node_id)
+            finally:
+                with self._space_lock(space_id):
+                    refreshed = self._space(space_id).contents.get(doc_id)
+                    if handle_ref and refreshed is not None:
+                        handle_ref[0]._document = refreshed  # noqa: SLF001
+                        handle_ref[0]._doc = refreshed.doc  # noqa: SLF001
 
         def version() -> str:
-            with self._lock:
+            with self._space_lock(space_id):
                 current_space = self._space(space_id)
                 return self._node_info(current_space, node_id).version
 
         handle = StructuredOrgDoc(document, doc_id, commit, version=version)
         handle_ref.append(handle)
         return handle
+    @_facade_locked
+    def _apply_structured_update(
+        self, space_id: str, node_id: str, doc_id: str, client_id: int,
+        base_state: bytes, update: bytes,
+    ) -> NodeInfo:
+        space = self._space(space_id)
+        current = self._one(space, f"id:{node_id}")
+        if current.doc_id != doc_id or doc_id not in space.contents:
+            raise OrgFsError(
+                "snapshot-barrier",
+                {"retiredDocId": doc_id, "replacementDocId": current.doc_id},
+            )
+        self._ensure_writable(space)
+        live = space.contents[doc_id]
+        # Remote clients retain ordinary CRDT merge semantics. Only a local
+        # writer advancing the same client clock would reuse generated IDs.
+        if (
+            live.doc.client_id != client_id
+            or decode_state_vector(live.doc.get_state()).get(client_id, 0)
+            != decode_state_vector(base_state).get(client_id, 0)
+        ):
+            raise OrgFsError(
+                "stale-write", {"message": "structured local writer advanced"}
+            )
+
+        def apply_content() -> None:
+            live.doc.apply_update(update)
+            current.content_frontier += 1
+
+        def record_requirement() -> None:
+            current.required_content_frontier = live.doc.get_state()
+            raw = live.value().encode()
+            current.ref_size = len(raw)
+            current.ref_sha256 = hashlib.sha256(raw).hexdigest()
+            space.tree.record(current)
+
+        self._commit_many(
+            space, [(doc_id, apply_content), (space.tree_doc_id, record_requirement)]
+        )
+        self._finish(space, [node_id], "content")
+        return self._node_info(space, node_id)
 
     def _require_purge_owner(self, space: _Space) -> None:
         if self.author != space.info.owner:
@@ -2517,6 +3864,11 @@ class LocalOrgFs:
             raise OrgFsError(
                 "invalid-argument", {"message": "purge requires a durable store"}
             )
+        authority = self.space_authority(space.info.space_id, store)
+        if authority is None:
+            raise OrgFsError(
+                "invalid-argument", {"message": "purge requires a durable authority"}
+            )
         documents: list[PurgeDocument] = []
         snapshots: list[PurgeSnapshot] = []
         writers: set[str] = set()
@@ -2525,7 +3877,13 @@ class LocalOrgFs:
         for target in targets:
             if target["kind"] == "blob":
                 continue
-            inventory = store.purge_inventory(target["docId"])
+            inventory = self._thaw_space_value(
+                authority.read(_ReadStore("purge_inventory", doc_id=target["docId"]))
+            )
+            if not isinstance(inventory, dict):
+                raise OrgFsError(
+                    "invalid-argument", {"message": "invalid purge inventory"}
+                )
             documents.append(
                 PurgeDocument(
                     target["docId"],
@@ -2553,7 +3911,9 @@ class LocalOrgFs:
             blobs.append(PurgeBlob(sha, elsewhere))
         return PurgePlan.create(
             space_id=space.info.space_id,
-            meta_frontier=base64.b64encode(store.frontier("meta")).decode("ascii"),
+            meta_frontier=base64.b64encode(
+                authority.read(_ReadStore("frontier", doc_id="meta"))
+            ).decode("ascii"),
             docs=sorted(documents, key=lambda item: item.doc_id),
             blobs=blobs,
             snapshots=sorted(
@@ -2572,10 +3932,15 @@ class LocalOrgFs:
         self._require_purge_owner(space)
         normalized = self._normalize_purge_targets(space, targets)
         plan = self._build_purge_plan(space, normalized)
-        self._purge_plans[plan.plan_id] = (plan, normalized)
         store = self._store(space_id)
-        if store is not None and hasattr(store, "save_purge_plan"):
-            store.save_purge_plan(plan.plan_id, plan.storage_dict(), normalized)
+        authority = self.space_authority(space_id, store)
+        if authority is None:
+            raise OrgFsError(
+                "invalid-argument", {"message": "purge requires a durable authority"}
+            )
+        with self._lock:
+            self._purge_plans[plan.plan_id] = (plan, normalized)
+        authority.save_purge_plan(plan.plan_id, plan.storage_dict(), normalized)
         return plan
 
     def _purge_participants(self, space: _Space) -> tuple[str, ...]:
@@ -2602,16 +3967,25 @@ class LocalOrgFs:
         space = self._space(space_id)
         self._require_purge_owner(space)
         store = self._store(space_id)
-        saved = self._purge_plans.get(plan_id)
-        if saved is None and store is not None and hasattr(store, "load_purge_plan"):
-            loaded = store.load_purge_plan(plan_id)
+        authority = self.space_authority(space_id, store)
+        if authority is None:
+            raise OrgFsError(
+                "invalid-argument", {"message": "purge requires a durable authority"}
+            )
+        with self._lock:
+            saved = self._purge_plans.get(plan_id)
+        if saved is None:
+            loaded = self._thaw_space_value(
+                authority.read(_ReadStore("load_purge_plan", plan_id=plan_id))
+            )
             if loaded is not None:
                 try:
                     plan = PurgePlan.from_storage_dict(loaded[0])
                 except (KeyError, TypeError, ValueError) as exc:
                     raise OrgFsError("stale-plan", {"planId": plan_id}) from exc
                 saved = (plan, loaded[1])
-                self._purge_plans[plan_id] = saved
+                with self._lock:
+                    self._purge_plans[plan_id] = saved
         if saved is None:
             raise OrgFsError("stale-plan", {"planId": plan_id})
         plan, targets = saved
@@ -2769,7 +4143,11 @@ class LocalOrgFs:
             snapshot_bytes,
             _snapshot_id,
         ) in replacements.items():
-            store.install_replacement(
+            if authority is None:
+                raise OrgFsError(
+                    "invalid-argument", {"message": "purge requires a durable authority"}
+                )
+            authority.install_replacement(
                 old_doc_id,
                 new_doc_id,
                 snapshot_bytes,
@@ -2825,8 +4203,12 @@ class LocalOrgFs:
                 snapshot_id,
             ) in replacements.items():
                 watermarks = (
-                    store.writer_seq_watermarks(new_doc_id)
-                    if store is not None and hasattr(store, "writer_seq_watermarks")
+                    dict(
+                        authority.read(
+                            _ReadStore("writer_seq_watermarks", doc_id=new_doc_id)
+                        )
+                    )
+                    if authority is not None
                     else {}
                 )
                 snapshot_points[new_doc_id] = Map(
@@ -2840,12 +4222,24 @@ class LocalOrgFs:
                 )
 
         self._commit(space, "meta", publish_snapshot_frontiers, broadcast=False)
-        if self.mesh is not None and hasattr(self.mesh, "broadcast_pending"):
-            self.mesh.broadcast_pending(space.info.space_id)
+        if self._broadcast_is_enabled():
+            space_id = space.info.space_id
+            pending = (
+                tuple(authority.read(_ReadStore("unbroadcast")))
+                if authority is not None
+                else ()
+            )
+            records = self._publication_records(space_id, pending, broadcast=True)
+            if records:
+                self._defer_effect(_BroadcastPending(space_id, records))
 
         for old_doc_id in replacements:
-            store.delete_retired_objects(old_doc_id)
-            if store.retired_residue(old_doc_id):
+            if authority is None:
+                raise OrgFsError(
+                    "invalid-argument", {"message": "purge requires a durable authority"}
+                )
+            authority.delete_retired_objects(old_doc_id)
+            if authority.read(_ReadStore("retired_residue", doc_id=old_doc_id)):
                 raise OrgFsError(
                     "invalid-argument",
                     {
@@ -2883,11 +4277,16 @@ class LocalOrgFs:
         space = self._space(space_id)
         plans = space.meta.get("purgePlans", type=Map)
         durable_plans = plans.to_py() if plans is not None else {}
-        if plan_id not in self._purge_plans and plan_id not in durable_plans:
+        with self._lock:
+            has_plan = plan_id in self._purge_plans
+        if not has_plan and plan_id not in durable_plans:
             store = self._store(space_id)
+            authority = self.space_authority(space_id, store)
             loaded = (
-                store.load_purge_plan(plan_id)
-                if store is not None and hasattr(store, "load_purge_plan")
+                self._thaw_space_value(
+                    authority.read(_ReadStore("load_purge_plan", plan_id=plan_id))
+                )
+                if authority is not None
                 else None
             )
             if loaded is None:
@@ -2898,7 +4297,8 @@ class LocalOrgFs:
                 raise OrgFsError("stale-plan", {"planId": plan_id}) from exc
             if plan.plan_id != plan_id:
                 raise OrgFsError("stale-plan", {"planId": plan_id})
-            self._purge_plans[plan_id] = (plan, loaded[1])
+            with self._lock:
+                self._purge_plans[plan_id] = (plan, loaded[1])
         acks = space.meta.get("purgeAcks", type=Map)
         raw = acks.to_py() if acks is not None else {}
         acknowledged = tuple(

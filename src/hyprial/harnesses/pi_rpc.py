@@ -22,7 +22,8 @@ import json
 import os
 import threading
 import time
-from collections.abc import AsyncIterator, Awaitable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Self, cast
@@ -43,6 +44,7 @@ from .streaming import (
 )
 from .worker_channel import WorkerChannel
 from hyprial.agents.environment import ChildEnvironmentLaunch
+from hyprial.agents.runtime import AgentRuntimeContext
 from .model_provider import pi_model_args
 from .pi_loader import (
     find_pi_package_root,
@@ -305,6 +307,9 @@ class PiRpcClient:
         startup_timeout_seconds: float = 30.0,
         settle_grace_seconds: float = 1.5,
         complete_launch: "ChildEnvironmentLaunch | None" = None,
+        runtime_launch_custody: (
+            Callable[[AgentRuntimeContext], AbstractContextManager[None]] | None
+        ) = None,
     ) -> None:
         self.spec = spec
         self.session_ref = session_ref
@@ -315,6 +320,8 @@ class PiRpcClient:
         runtime_context = (
             None if worker_channel is None else worker_channel.runtime_context
         )
+        self._runtime_context = runtime_context
+        self._runtime_launch_custody = runtime_launch_custody
         complete_environment = (
             None
             if self._complete_launch is None
@@ -472,15 +479,21 @@ class PiRpcClient:
     async def __aenter__(self) -> Self:
         environment = self._spawn_environment()
         loop = asyncio.get_running_loop()
-        transport, protocol = await loop.subprocess_exec(
-            lambda: _PiSubprocessProtocol(STREAM_LIMIT_BYTES, loop),
-            *self.command,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=self.spec.cwd,
-            env=environment,
+        custody = (
+            nullcontext()
+            if self._runtime_context is None or self._runtime_launch_custody is None
+            else self._runtime_launch_custody(self._runtime_context)
         )
+        with custody:
+            transport, protocol = await loop.subprocess_exec(
+                lambda: _PiSubprocessProtocol(STREAM_LIMIT_BYTES, loop),
+                *self.command,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=self.spec.cwd,
+                env=environment,
+            )
         assert isinstance(protocol, _PiSubprocessProtocol)
         self._process_protocol = protocol
         self._process = asyncio.subprocess.Process(transport, protocol, loop)
@@ -1036,6 +1049,9 @@ class PiRpcProcess(StreamingTurnProcess):
         complete_launch: "ChildEnvironmentLaunch | None" = None,
         on_turn_failure_for_spec: TurnFailureSpecObserver | None = None,
         on_turn_completed: TurnCompletedObserver | None = None,
+        runtime_launch_custody: (
+            Callable[[AgentRuntimeContext], AbstractContextManager[None]] | None
+        ) = None,
     ) -> None:
         if spec.harness != "pi" or not spec.headless:
             raise ValueError("pi RPC requires a managed headless spec")
@@ -1046,6 +1062,7 @@ class PiRpcProcess(StreamingTurnProcess):
             )
         self.spec = spec
         self._complete_launch = complete_launch
+        self._runtime_launch_custody = runtime_launch_custody
         # One stable session id across client reconnects: pi's --session-id
         # creates the session if missing, so a crashed process resumes the
         # same conversation instead of starting over.  A spec that carries a
@@ -1152,6 +1169,7 @@ class PiRpcProcess(StreamingTurnProcess):
             env=self._env,
             worker_channel=self.worker_channel,
             complete_launch=self._complete_launch,
+            runtime_launch_custody=self._runtime_launch_custody,
         )
         self._last_client = client
         return client

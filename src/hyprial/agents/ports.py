@@ -1,9 +1,50 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol, TypeAlias
+from collections.abc import Mapping
+from typing import Literal, Protocol, TypeAlias
 
 from hyprial.contracts.ports import CommandSink, EventSink, PortCommandRejected
+from .grants import CapabilityGrant
+from .secrets import SecretGrant, SecretSource
+
+AgentDestroyDisposition: TypeAlias = Literal[
+    "destroyed", "already-cleaned", "stale-incarnation"
+]
+
+
+@dataclass(frozen=True, slots=True)
+class FrozenJsonMap:
+    items: tuple[tuple[str, object], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class FrozenJsonList:
+    items: tuple[object, ...]
+
+
+def _freeze_json(value: object) -> object:
+    if isinstance(value, Mapping):
+        if any(not isinstance(key, str) for key in value):
+            raise TypeError("Agent projection JSON keys must be strings")
+        return FrozenJsonMap(tuple(
+            (key, _freeze_json(child)) for key, child in sorted(value.items())
+        ))
+    if isinstance(value, list | tuple):
+        return FrozenJsonList(tuple(_freeze_json(child) for child in value))
+    if value is None or isinstance(value, str | bool | int | float):
+        return value
+    if isinstance(value, FrozenJsonMap | FrozenJsonList):
+        return value
+    raise TypeError(f"Agent projection JSON value is unsupported: {type(value).__name__}")
+
+
+def _thaw_json(value: object) -> object:
+    if isinstance(value, FrozenJsonMap):
+        return {key: _thaw_json(child) for key, child in value.items}
+    if isinstance(value, FrozenJsonList):
+        return [_thaw_json(child) for child in value.items]
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +62,20 @@ class CreateAgentCommand:
     launch_harness: str | None = None
     runtime: str = "headless"
 
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "config", None if self.config is None else _freeze_json(self.config)
+        )
+        object.__setattr__(self, "capabilities", tuple(
+            (key, _freeze_json(value)) for key, value in self.capabilities
+        ))
+
+    def config_payload(self) -> object:
+        return _thaw_json(self.config)
+
+    def capabilities_payload(self) -> dict[str, object]:
+        return {key: _thaw_json(value) for key, value in self.capabilities}
+
 
 @dataclass(frozen=True, slots=True)
 class CreateTransferHostedAgentCommand:
@@ -37,6 +92,7 @@ class CreateHostInvitedAgentCommand:
     correlation_id: str
     name: str
     pinned_owner: str
+    entity_token: str
     cwd: str | None = None
     harness_args: tuple[tuple[str, tuple[str, ...]], ...] = ()
     preferred_harness: str | None = None
@@ -44,6 +100,22 @@ class CreateHostInvitedAgentCommand:
 
 @dataclass(frozen=True, slots=True)
 class DestroyAgentCommand:
+    correlation_id: str
+    name: str
+    expected_entity_token: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SettleAgentDestroyCommand:
+    """Settle one exact Agent incarnation through durable home cleanup."""
+
+    correlation_id: str
+    name: str
+    expected_entity_token: str
+
+
+@dataclass(frozen=True, slots=True)
+class CleanupRevokedAgentHomeCommand:
     correlation_id: str
     name: str
 
@@ -61,6 +133,22 @@ class UpdateAgentCommand:
     preferred_harness: str | None = None
     last_harness: str | None = None
     last_session_id: str | None = None
+    expected_version: int | None = None
+    expected_entity_token: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "config", None if self.config is None else _freeze_json(self.config)
+        )
+        object.__setattr__(self, "capabilities", tuple(
+            (key, _freeze_json(value)) for key, value in self.capabilities
+        ))
+
+    def config_payload(self) -> object:
+        return _thaw_json(self.config)
+
+    def capabilities_payload(self) -> dict[str, object]:
+        return {key: _thaw_json(value) for key, value in self.capabilities}
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +173,41 @@ class RecordAgentActivityCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class SetRestoreDispositionCommand:
+    correlation_id: str
+    actor: str
+    desired_generation: str
+    last_active_at_ms: int | None
+    idle_age_ms: int | None
+    restore_threshold_ms: int
+    restore_override: str = "none"
+    activity_unknown: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ClearRestoreDispositionCommand:
+    correlation_id: str
+    actor: str
+    expected_entity_token: str | None = None
+    expected_desired_generation: str | None = None
+    expected_disposition_token: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BlockAgentCommand:
+    correlation_id: str
+    actor: str
+    reason: str
+    expected_entity_token: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class UnblockAgentCommand:
+    correlation_id: str
+    actor: str
+
+
+@dataclass(frozen=True, slots=True)
 class PinAgentAdapterCommand:
     correlation_id: str
     actor: str
@@ -101,18 +224,133 @@ class UnpinAgentAdapterCommand:
     compare: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class AcquireAgentRuntimeLaunchCommand:
+    correlation_id: str
+    launch_token: str
+
+
+@dataclass(frozen=True, slots=True)
+class ReleaseAgentRuntimeLaunchCommand:
+    correlation_id: str
+    lease_token: str
+    operation_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class ReserveAgentDestroyCommand:
+    correlation_id: str
+    actor: str
+
+
+@dataclass(frozen=True, slots=True)
+class ReleaseAgentDestroyReservationCommand:
+    correlation_id: str
+    reservation_token: str
+
+
+@dataclass(frozen=True, slots=True)
+class RetireAgentLifecycleReceiptCommand:
+    correlation_id: str
+    attempt_token: str
+    resource_token: str
+
+
+@dataclass(frozen=True, slots=True)
+class ConfirmAgentLifecycleReceiptCommand:
+    correlation_id: str
+    attempt_token: str
+    resource_token: str
+
+
+@dataclass(frozen=True, slots=True)
+class GrantAgentCapabilityCommand:
+    correlation_id: str
+    actor: str
+    grant_id: str
+    capability: str
+    scope: str
+    granted_by: str
+    revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class RevokeAgentCapabilityCommand:
+    correlation_id: str
+    actor: str
+    grant_id: str
+    revoked_by: str
+
+
+@dataclass(frozen=True, slots=True)
+class GrantAgentSecretCommand:
+    correlation_id: str
+    actor: str
+    grant_id: str
+    source: SecretSource
+    entry_id: str
+    field_name: str | None
+    environment_names: tuple[str, ...]
+    revision: int
+    prevalidated_home_token: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RevokeAgentSecretCommand:
+    correlation_id: str
+    actor: str
+    grant_id: str
+
+
 AgentCommand: TypeAlias = (
     CreateAgentCommand
     | CreateTransferHostedAgentCommand
     | CreateHostInvitedAgentCommand
     | UpdateAgentCommand
     | DestroyAgentCommand
+    | SettleAgentDestroyCommand
+    | CleanupRevokedAgentHomeCommand
     | BindAgentCommand
     | ReleaseAgentCommand
     | RecordAgentActivityCommand
+    | SetRestoreDispositionCommand
+    | ClearRestoreDispositionCommand
+    | BlockAgentCommand
+    | UnblockAgentCommand
     | PinAgentAdapterCommand
     | UnpinAgentAdapterCommand
+    | AcquireAgentRuntimeLaunchCommand
+    | ReleaseAgentRuntimeLaunchCommand
+    | ReserveAgentDestroyCommand
+    | ReleaseAgentDestroyReservationCommand
+    | RetireAgentLifecycleReceiptCommand
+    | ConfirmAgentLifecycleReceiptCommand
+    | GrantAgentCapabilityCommand
+    | RevokeAgentCapabilityCommand
+    | GrantAgentSecretCommand
+    | RevokeAgentSecretCommand
 )
+
+
+@dataclass(frozen=True, slots=True)
+class RestoreDispositionProjection:
+    entity_token: str
+    desired_generation: str
+    disposition_token: str
+    status: str
+    last_active_at_ms: int | None
+    idle_age_ms: int | None
+    restore_threshold_ms: int
+    restore_override: str
+    activity_unknown: bool
+    recorded_at_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class AgentBlockProjection:
+    entity_token: str
+    reason: str
+    blocked_at_ms: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +374,22 @@ class AgentProjection:
     pinned_adapters: tuple[str, ...] = ()
     created_at_ms: int = 0
     hosted_by: str | None = None
+    restore_disposition: RestoreDispositionProjection | None = None
+    block: AgentBlockProjection | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "config", None if self.config is None else _freeze_json(self.config)
+        )
+        object.__setattr__(self, "capabilities", tuple(
+            (key, _freeze_json(value)) for key, value in self.capabilities
+        ))
+
+    def config_payload(self) -> object:
+        return _thaw_json(self.config)
+
+    def capabilities_payload(self) -> dict[str, object]:
+        return {key: _thaw_json(value) for key, value in self.capabilities}
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -147,10 +401,10 @@ class AgentProjection:
             # bind to it, but it is not part of the public ``ps`` wire.  The
             # field survives on the projection for the composition round-trip.
             "cwd": self.cwd,
-            "config": self.config,
+            "config": self.config_payload(),
             "provider": self.provider,
             "model": self.model,
-            "capabilities": dict(self.capabilities),
+            "capabilities": self.capabilities_payload(),
             "harnessArgs": {harness: list(args) for harness, args in self.harness_args},
             "preferredHarness": self.preferred_harness,
             "lastHarness": self.last_harness,
@@ -254,8 +508,85 @@ class AgentLivenessIoCompleted:
     detail: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class AgentLifecycleReceiptCompleted:
+    correlation_id: str
+    generation: int
+    version: int
+    attempt_token: str
+    resource_token: str
+    operation: str
+    matched: bool
+
+
+@dataclass(frozen=True, slots=True)
+class AgentCapabilityGrantCompleted:
+    correlation_id: str
+    generation: int
+    version: int
+    operation: str
+    changed: bool
+    grant: CapabilityGrant | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AgentSecretGrantCompleted:
+    correlation_id: str
+    generation: int
+    version: int
+    operation: str
+    changed: bool
+    grant: SecretGrant | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AgentRuntimeLaunchLeaseCompleted:
+    correlation_id: str
+    generation: int
+    version: int
+    actor: str
+    lease_token: str
+    acquired: bool
+    expires_at_ms: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AgentRuntimeLaunchCustodyProjection:
+    operation_id: str
+    actor: str
+    lease_token: str
+
+
+@dataclass(frozen=True, slots=True)
+class AgentDestroyReservationCompleted:
+    correlation_id: str
+    generation: int
+    version: int
+    actor: str
+    reservation_token: str
+    reserved: bool
+
+
+@dataclass(frozen=True, slots=True)
+class AgentDestroySettled:
+    correlation_id: str
+    generation: int
+    version: int
+    actor: str
+    expected_entity_token: str
+    disposition: AgentDestroyDisposition
+
+
 AgentEvent: TypeAlias = (
-    AgentMutationCompleted | AgentLivenessIoCompleted | PortCommandRejected
+    AgentMutationCompleted
+    | AgentLivenessIoCompleted
+    | AgentLifecycleReceiptCompleted
+    | AgentCapabilityGrantCompleted
+    | AgentSecretGrantCompleted
+    | AgentRuntimeLaunchLeaseCompleted
+    | AgentDestroyReservationCompleted
+    | AgentDestroySettled
+    | PortCommandRejected
 )
 AgentCommandSink: TypeAlias = CommandSink[AgentCommand]
 AgentEventSink: TypeAlias = EventSink[AgentEvent]

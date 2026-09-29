@@ -12,6 +12,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from uuid import uuid4
 
+from hyprial.actor_runtime import ActorRuntime, ActorSpec, AdmissionResult
+from hyprial.actor_runtime.effects import EffectCompleted, EffectLane, EffectRequest
 from hyprial.persistent_config import atomic_json_write
 
 from .api import (
@@ -54,12 +56,14 @@ class OrphanProcessRegistry:
         clock_ms: Callable[[], int] | None = None,
         unknown_threshold_seconds: float = _DEFAULT_UNKNOWN_THRESHOLD_SECONDS,
         logger: Callable[..., None] | None = None,
+        cleanup_async: bool = True,
     ) -> None:
         self._path = path
         self._identity_reader = identity_reader
         self._clock_ms = clock_ms or (lambda: time.time_ns() // 1_000_000)
         self._unknown_threshold_ms = max(0, int(unknown_threshold_seconds * 1000))
         self._logger = logger
+        self._cleanup_async = cleanup_async
         self._lock = threading.Lock()
         self._collect_lock = threading.Lock()
         self._owner_id = uuid4().hex
@@ -400,11 +404,14 @@ class OrphanProcessRegistry:
                 with self._lock:
                     self._cleanup_in_flight.discard(orphan_id)
 
-        threading.Thread(
-            target=cleanup,
-            name=f"hyprial-orphan-gc-{orphan_id}",
-            daemon=True,
-        ).start()
+        if self._cleanup_async:
+            threading.Thread(
+                target=cleanup,
+                name=f"hyprial-orphan-gc-{orphan_id}",
+                daemon=True,
+            ).start()
+        else:
+            cleanup()
 
     def _load(self) -> dict[str, _OrphanEntry]:
         if self._path is None:
@@ -454,3 +461,261 @@ class OrphanProcessRegistry:
                 pid=entry.pid,
                 detail=detail,
             )
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessCustodyCommand:
+    operation_id: str
+    generation: int
+    kind: str
+    harness_id: str = ""
+    pid: int | None = None
+    marker: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessCustodyCompleted:
+    operation_id: str
+    generation: int
+    orphan_id: str | None
+    retired: int
+    rows: tuple[tuple[tuple[str, object], ...], ...]
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessCustodyProjection:
+    generation: int
+    version: int
+    pending: int
+    rejected: int
+    failed: int
+    rows: tuple[tuple[tuple[str, object], ...], ...]
+
+
+class ProcessCustodyOverloaded(RuntimeError):
+    pass
+
+
+class _CustodyWaiter:
+    def __init__(self) -> None:
+        self.ready = threading.Event()
+        self.result: ProcessCustodyCompleted | None = None
+        self.error: BaseException | None = None
+
+
+class OrphanProcessAuthority:
+    """One ordered custody lane owns process references, probes and JSON state.
+
+    The actor admits typed requests and publishes immutable projections.
+    Its fixed effect lane is the only caller of the retained registry. Process
+    objects stay in local custody under a short lock; commands carry only a
+    token, PID and birth marker. Accepted work survives caller timeout.
+    """
+
+    def __init__(
+        self,
+        path: Path | None = None,
+        *,
+        identity_reader: Callable[[int], str | None],
+        clock_ms: Callable[[], int] | None = None,
+        unknown_threshold_seconds: float = _DEFAULT_UNKNOWN_THRESHOLD_SECONDS,
+        logger: Callable[..., None] | None = None,
+        capacity: int = 64,
+        timeout: float = 10.0,
+        runtime: ActorRuntime | None = None,
+    ) -> None:
+        self._registry = OrphanProcessRegistry(
+            path,
+            identity_reader=identity_reader,
+            clock_ms=clock_ms,
+            unknown_threshold_seconds=unknown_threshold_seconds,
+            logger=logger,
+            cleanup_async=False,
+        )
+        self._runtime = runtime or ActorRuntime()
+        self._guard = threading.Lock()
+        self._generation = 1
+        self._version = 0
+        self._capacity = capacity
+        self._timeout = timeout
+        self._closed = False
+        self._pending: dict[str, _CustodyWaiter] = {}
+        self._processes: dict[str, ManagedHarnessProcess] = {}
+        self._errors: dict[str, BaseException] = {}
+        self._rejected = self._failed = 0
+        self._rows = self._freeze_rows(self._registry.status())
+        self._handle = self._runtime.start(
+            ActorSpec(
+                name="orphan-process-custody",
+                handler_factory=lambda: self._receive,
+                mailbox_capacity=capacity,
+            )
+        )
+        self._effects: EffectLane[
+            ProcessCustodyCommand, ProcessCustodyCompleted
+        ] = EffectLane(
+            name="orphan-process-custody-io",
+            execute=self._execute,
+            complete=lambda event: self._runtime.tell(self._handle, event),
+            capacity=capacity,
+        )
+
+    @staticmethod
+    def _freeze_rows(
+        rows: tuple[dict[str, object], ...]
+    ) -> tuple[tuple[tuple[str, object], ...], ...]:
+        return tuple(tuple(sorted(row.items())) for row in rows)
+
+    def observe_start(
+        self, harness_id: str, process: ManagedHarnessProcess, *,
+        pid: int | None, marker: str | None,
+    ) -> str:
+        return self._call("start", harness_id, process, pid, marker).orphan_id or ""
+
+    def observe_stop(
+        self, harness_id: str, process: ManagedHarnessProcess, *,
+        pid: int | None, marker: str | None,
+    ) -> str:
+        return self._call("stop", harness_id, process, pid, marker).orphan_id or ""
+
+    def collect_once(self) -> int:
+        return self._call("collect").retired
+
+    def status(self) -> tuple[dict[str, object], ...]:
+        with self._guard:
+            rows = self._rows
+        return tuple(dict(row) for row in rows)
+
+    def projection(self) -> ProcessCustodyProjection:
+        with self._guard:
+            return ProcessCustodyProjection(
+                self._generation, self._version, len(self._pending),
+                self._rejected, self._failed, self._rows,
+            )
+
+    def _call(
+        self, kind: str, harness_id: str = "",
+        process: ManagedHarnessProcess | None = None,
+        pid: int | None = None, marker: str | None = None,
+    ) -> ProcessCustodyCompleted:
+        operation_id = uuid4().hex
+        waiter = _CustodyWaiter()
+        command = ProcessCustodyCommand(
+            operation_id, self._generation, kind, harness_id, pid, marker
+        )
+        with self._guard:
+            if self._closed or len(self._pending) >= self._capacity:
+                self._rejected += 1
+                raise ProcessCustodyOverloaded("process custody authority unavailable")
+            self._pending[operation_id] = waiter
+            if process is not None:
+                self._processes[operation_id] = process
+            admission = self._runtime.tell(self._handle, command)
+            if admission is not AdmissionResult.ACCEPTED:
+                self._pending.pop(operation_id)
+                self._processes.pop(operation_id, None)
+                self._rejected += 1
+                raise ProcessCustodyOverloaded(
+                    f"process custody admission: {admission.value}"
+                )
+        if not waiter.ready.wait(self._timeout):
+            raise TimeoutError(
+                f"process custody {operation_id} accepted but still pending"
+            )
+        if waiter.error is not None:
+            raise waiter.error
+        assert waiter.result is not None
+        return waiter.result
+
+    def _receive(self, command: object) -> None:
+        if isinstance(command, ProcessCustodyCommand):
+            admission = self._effects.submit(
+                EffectRequest(command.operation_id, command.generation, command)
+            )
+            if admission is not AdmissionResult.ACCEPTED:
+                with self._guard:
+                    self._errors[command.operation_id] = ProcessCustodyOverloaded(
+                        "process custody I/O lane full"
+                    )
+                self._settle(ProcessCustodyCompleted(
+                    command.operation_id, command.generation,
+                    None, 0, self._rows, "ProcessCustodyOverloaded",
+                ))
+            return
+        if isinstance(command, EffectCompleted):
+            if command.generation == self._generation:
+                result = command.result or ProcessCustodyCompleted(
+                    command.operation_id, command.generation,
+                    None, 0, self._rows, command.error or "ProcessCustodyEffectError",
+                )
+                self._settle(result)
+            self._effects.acknowledge(command.operation_id, command.generation)
+            return
+        raise TypeError("unsupported process custody command")
+
+    def _settle(self, result: ProcessCustodyCompleted) -> None:
+        with self._guard:
+            waiter = self._pending.pop(result.operation_id, None)
+            if waiter is None:
+                return
+            self._processes.pop(result.operation_id, None)
+            error = self._errors.pop(result.operation_id, None)
+            if error is not None or result.error is not None:
+                self._failed += 1
+            else:
+                self._rows = result.rows
+                self._version += 1
+            waiter.result = result
+            waiter.error = error
+            waiter.ready.set()
+
+    def _execute(self, command: ProcessCustodyCommand) -> ProcessCustodyCompleted:
+        try:
+            if command.kind in {"start", "stop"}:
+                with self._guard:
+                    process = self._processes[command.operation_id]
+                operation = (
+                    self._registry.observe_start
+                    if command.kind == "start" else self._registry.observe_stop
+                )
+                orphan_id = operation(
+                    command.harness_id, process,
+                    pid=command.pid, marker=command.marker,
+                )
+                retired = 0
+            elif command.kind == "collect":
+                orphan_id = None
+                retired = self._registry.collect_once()
+            else:
+                raise TypeError("unsupported custody effect")
+            return ProcessCustodyCompleted(
+                command.operation_id, command.generation, orphan_id, retired,
+                self._freeze_rows(self._registry.status()),
+            )
+        except BaseException as error:
+            with self._guard:
+                self._errors[command.operation_id] = error
+            return ProcessCustodyCompleted(
+                command.operation_id, command.generation,
+                None, 0, self._freeze_rows(self._registry.status()),
+                type(error).__name__,
+            )
+
+    def close(self, timeout: float = 5.0) -> bool:
+        deadline = time.monotonic() + max(0.0, timeout)
+        with self._guard:
+            self._closed = True
+        while True:
+            with self._guard:
+                pending = bool(self._pending)
+            if not pending:
+                break
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.005)
+        if not self._effects.close(max(0.0, deadline - time.monotonic())):
+            return False
+        return self._runtime.stop(
+            self._handle, max(0.0, deadline - time.monotonic())
+        )

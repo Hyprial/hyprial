@@ -214,6 +214,9 @@ class ManagedHarnessRuntime:
     def streaming_actors(self) -> tuple[str, ...]:
         return self._facade.streaming_actors()
 
+    def streaming_generations(self) -> dict[str, int]:
+        return dict(self._actor.read_streaming().process_generations)
+
     def dispatch(self, name: str, delivery: HarnessDelivery) -> bool:
         return self._facade.dispatch(name, delivery)
 

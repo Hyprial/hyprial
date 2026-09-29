@@ -40,6 +40,7 @@ from typing import Any
 
 from .journal import envelope
 from .migrations import migrate
+from .restore_facts import PacRestoreFacts
 
 DATABASE_NAME = "pac-graph.sqlite3"
 
@@ -491,6 +492,53 @@ class PacGraphStore:
                 }
             )
         return findings
+
+    def pac_restore_facts(self) -> dict[str, PacRestoreFacts]:
+        """Build committed per-actor restore facts for the writer snapshot."""
+
+        rows = self._db.execute(
+            "SELECT n.actor_name,n.graph_id,n.node_id,w.state "
+            "FROM nodes n JOIN workflow_graphs w ON w.graph_id=n.graph_id "
+            "WHERE n.kind='actor' AND n.actor_name IS NOT NULL "
+            "ORDER BY n.actor_name,n.graph_id,n.node_id"
+        ).fetchall()
+        grouped: dict[str, list[Any]] = {}
+        for row in rows:
+            grouped.setdefault(str(row["actor_name"]), []).append(row)
+        requested_actors = {
+            str(row[0])
+            for row in self._db.execute(
+                "SELECT DISTINCT n.actor_name FROM nodes n "
+                "JOIN workflow_nodes wn "
+                "ON wn.graph_id=n.graph_id AND wn.actor_node=n.node_id "
+                "WHERE n.kind='actor' AND n.actor_name IS NOT NULL "
+                "AND wn.state='requested'"
+            )
+        }
+        remote_return_actors = {
+            str(row[0])
+            for row in self._db.execute(
+                "SELECT DISTINCT n.actor_name FROM nodes n "
+                "JOIN workflow_nodes wn "
+                "ON wn.graph_id=n.graph_id AND wn.actor_node=n.node_id "
+                "JOIN remote_workflow_requests r "
+                "ON r.graph_id=wn.graph_id AND r.node_id=wn.node_id "
+                "JOIN remote_workflow_outbox o ON o.request_id=r.request_id "
+                "WHERE n.kind='actor' AND n.actor_name IS NOT NULL"
+            )
+        }
+        facts: dict[str, PacRestoreFacts] = {}
+        for actor, actor_rows in grouped.items():
+            terminal = all(
+                str(row["state"]) in {"completed", "failed", "cancelled"}
+                for row in actor_rows
+            )
+            facts[actor] = PacRestoreFacts(
+                terminal,
+                actor in requested_actors,
+                actor in remote_return_actors,
+            )
+        return facts
 
     def workflow_roster(self, graph_id: str) -> dict[str, Any] | None:
         """Read and integrity-check the stored roster and its receipts.

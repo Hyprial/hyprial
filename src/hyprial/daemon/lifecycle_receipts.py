@@ -61,6 +61,32 @@ class LifecycleMutationRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class RetireLifecycleReceiptCommand:
+    correlation_id: str
+    attempt_token: str
+    resource_token: str
+
+
+@dataclass(frozen=True, slots=True)
+class ConfirmLifecycleReceiptCommand:
+    correlation_id: str
+    attempt_token: str
+    resource_token: str
+
+
+@dataclass(frozen=True, slots=True)
+class LifecycleReceiptCompleted:
+    correlation_id: str
+    generation: int
+    version: int
+    domain: str
+    attempt_token: str
+    resource_token: str
+    operation: Literal["retire", "confirm"]
+    matched: bool
+
+
+@dataclass(frozen=True, slots=True)
 class StoredLifecycleResource:
     """Durable token fence stored beside one domain's authoritative state."""
 

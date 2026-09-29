@@ -18,6 +18,7 @@ import sys as sys
 import threading
 import time
 from collections.abc import AsyncIterator, Callable, Mapping
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Self
@@ -73,6 +74,7 @@ from .streaming import (
     StreamingTurnProcess,
     TurnCompletedObserver,
     TurnClientFactory,
+    TurnFailureSpecObserver,
     resolve_turn_timeout_seconds,
 )
 from .worker_channel import WorkerChannel
@@ -213,7 +215,7 @@ def _private_directory(path: Path, label: str) -> None:
 
 
 def _write_or_verify_projection_file(
-    source: Path, destination: Path, *, native_root: Path
+    source: Path, destination: Path, *, native_root: Path, read_only: bool = False
 ) -> None:
     try:
         source_metadata = source.lstat()
@@ -237,14 +239,19 @@ def _write_or_verify_projection_file(
     current = native_root
     for part in relative_parent.parts:
         current = current / part
-        try:
-            current.mkdir(mode=0o700)
-        except FileExistsError:
-            pass
+        if not read_only:
+            try:
+                current.mkdir(mode=0o700)
+            except FileExistsError:
+                pass
         _private_directory(current, f"Codex projection directory {part}")
     try:
         destination_metadata = destination.lstat()
     except FileNotFoundError:
+        if read_only:
+            raise CodexAgentHomeError(
+                f"authority-prepared Codex native item {destination.name} is missing"
+            ) from None
         descriptor = os.open(
             destination,
             os.O_WRONLY | os.O_CREAT | os.O_EXCL,
@@ -330,6 +337,7 @@ def prepare_codex_runtime_roots(
     native_root: Path,
     session_root: Path,
     receipt: ConfigProjectionReceipt | None = None,
+    read_only: bool = False,
 ) -> None:
     """Publish an already-resolved P21 projection into the mutable Codex root."""
 
@@ -368,6 +376,7 @@ def prepare_codex_runtime_roots(
             source,
             destination,
             native_root=native_root,
+            read_only=read_only,
         )
     sessions = native_root / "sessions"
     if sessions.exists() or sessions.is_symlink():
@@ -375,6 +384,8 @@ def prepare_codex_runtime_roots(
             raise CodexAgentHomeError(
                 "Codex sessions path is not bound to the resolved session root"
             )
+    elif read_only:
+        raise CodexAgentHomeError("authority-prepared Codex sessions link is missing")
     else:
         sessions.symlink_to(session_root, target_is_directory=True)
     _verify_codex_native_inventory(
@@ -403,6 +414,7 @@ def prepare_codex_runtime_context(context: AgentRuntimeContext) -> None:
         native_root=context.roots.native_root,
         session_root=context.roots.session_root,
         receipt=context.projection_receipt,
+        read_only=context.authority_prepared,
     )
 
 
@@ -1011,6 +1023,7 @@ class CodexInteractiveAppServer:
         native_root: Path | None = None,
         session_root: Path | None = None,
         shared_credential: SharedCredentialBinding | None = None,
+        authority_prepared: bool = False,
     ) -> None:
         self.socket_path = Path(socket_path)
         self.cwd = cwd
@@ -1050,6 +1063,7 @@ class CodexInteractiveAppServer:
                 projection_root=Path(projection_root),
                 native_root=self._native_root,
                 session_root=self._session_root,
+                read_only=authority_prepared,
             )
         self.config_args = tuple(config_args)
         if self._native_root is not None:
@@ -1707,12 +1721,16 @@ class CodexAppServerClient:
         request_timeout_seconds: float = REQUEST_TIMEOUT_SECONDS_DEFAULT,
         thread_start_timeout_seconds: float = THREAD_START_TIMEOUT_SECONDS_DEFAULT,
         turn_idle_timeout_seconds: float | None = None,
-        process_group: _OwnedProcessGroup | None = None,
+        process_group: OwnedProcessGroup | None = None,
         logger: Logger | None = None,
         complete_launch: ChildEnvironmentLaunch | None = None,
+        runtime_launch_custody: (
+            Callable[[AgentRuntimeContext], AbstractContextManager[None]] | None
+        ) = None,
     ) -> None:
         self.spec = spec
         self._complete_launch = complete_launch
+        self._runtime_launch_custody = runtime_launch_custody
         if complete_launch is not None and env is not None:
             raise ValueError(
                 "complete child environment cannot be combined with a "
@@ -1729,6 +1747,7 @@ class CodexAppServerClient:
             if complete_launch is not None
             else None
         )
+        self._runtime_context = runtime_context
         channel_context = (
             worker_channel.runtime_context if worker_channel is not None else None
         )
@@ -1900,16 +1919,22 @@ class CodexAppServerClient:
 
     async def __aenter__(self) -> Self:
         environment = self._spawn_environment()
-        self._process = await _spawn_managed_codex(
-            self.command,
-            self._process_group,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=self.spec.cwd,
-            env=environment,
-            limit=STREAM_LIMIT_BYTES,
+        custody = (
+            nullcontext()
+            if self._runtime_context is None or self._runtime_launch_custody is None
+            else self._runtime_launch_custody(self._runtime_context)
         )
+        with custody:
+            self._process = await _spawn_managed_codex(
+                self.command,
+                self._process_group,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=self.spec.cwd,
+                env=environment,
+                limit=STREAM_LIMIT_BYTES,
+            )
         if self._complete_launch is not None and self._logger is not None:
             self._logger.info(
                 "worker.environment.receipt",
@@ -3724,7 +3749,11 @@ class CodexAppServerProcess(StreamingTurnProcess):
         reconnect_delay_max_seconds: float = 30.0,
         max_delivery_attempts: int = 5,
         complete_launch: ChildEnvironmentLaunch | None = None,
+        on_turn_failure_for_spec: TurnFailureSpecObserver | None = None,
         on_turn_completed: TurnCompletedObserver | None = None,
+        runtime_launch_custody: (
+            Callable[[AgentRuntimeContext], AbstractContextManager[None]] | None
+        ) = None,
     ) -> None:
         if spec.harness != "codex" or not spec.headless:
             raise ValueError("Codex app-server requires a managed headless spec")
@@ -3735,6 +3764,7 @@ class CodexAppServerProcess(StreamingTurnProcess):
         self._process_group = _managed_process_group()
         self.worker_channel = worker_channel
         self._complete_launch = complete_launch
+        self._runtime_launch_custody = runtime_launch_custody
         if complete_launch is not None and env is not None:
             raise ValueError(
                 "complete child environment cannot be combined with a "
@@ -3759,6 +3789,7 @@ class CodexAppServerProcess(StreamingTurnProcess):
                     process_group=self._process_group,
                     logger=logger,
                     complete_launch=self._complete_launch,
+                    runtime_launch_custody=self._runtime_launch_custody,
                 )
             ),
             thread_name=f"hyprial-codex-app-server-{spec.name}",
@@ -3771,6 +3802,24 @@ class CodexAppServerProcess(StreamingTurnProcess):
             force_stopped=self._process_group.stopped,
             force_stop_join_seconds=PROCESS_FORCE_JOIN_SECONDS,
             liveness_probe=self._process_group.liveness,
+            on_turn_failure=(
+                (
+                    lambda failure: on_turn_failure_for_spec(
+                        failure,
+                        harness="codex",
+                        provider=spec.model_provider,
+                        model=spec.model,
+                        worker=spec.name,
+                        runtime_context=(
+                            None
+                            if worker_channel is None
+                            else worker_channel.runtime_context
+                        ),
+                    )
+                )
+                if on_turn_failure_for_spec is not None
+                else None
+            ),
             on_turn_completed=on_turn_completed,
         )
 

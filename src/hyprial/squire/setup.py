@@ -194,7 +194,8 @@ class SetupStateStore:
         self._lock = threading.RLock()
 
     def ensure_binding(self, owner_key: str, channel: str) -> PendingBinding:
-        with self._lock:
+        from .store_lock import json_store_mutation
+        with self._lock, json_store_mutation(self.path):
             bindings = self._load()
             current = bindings.get(owner_key)
             now = int(self._now())
@@ -214,6 +215,7 @@ class SetupStateStore:
             return binding
 
     def verify(self, owner_key: str, channel: str, code: str) -> None:
+        """Inspect a code; binding authorization must use consume_verified."""
         with self._lock:
             binding = self._load().get(owner_key)
             if (
@@ -224,8 +226,31 @@ class SetupStateStore:
             ):
                 raise ValueError("binding code is invalid or expired")
 
+    def consume_verified(self, owner_key: str, channel: str, code: str) -> None:
+        """Atomically spend a one-time authorization before profile mutation.
+
+        Failure after this point requires a fresh challenge unless the requested
+        binding already matches. Never revive a code after a possibly applied
+        profile write. No file lock is held over network or management effects.
+        """
+        from .store_lock import json_store_mutation
+
+        with self._lock, json_store_mutation(self.path):
+            bindings = self._load()
+            binding = bindings.get(owner_key)
+            if (
+                binding is None
+                or binding.channel != channel
+                or binding.code != code
+                or binding.expires_at <= int(self._now())
+            ):
+                raise ValueError("binding code is invalid or expired")
+            del bindings[owner_key]
+            self._save(bindings)
+
     def consume(self, owner_key: str) -> None:
-        with self._lock:
+        from .store_lock import json_store_mutation
+        with self._lock, json_store_mutation(self.path):
             bindings = self._load()
             if owner_key not in bindings:
                 return
@@ -266,9 +291,20 @@ class SetupStateStore:
         }
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         temporary = self.path.with_suffix(f".tmp.{os.getpid()}")
-        temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, self.path)
+        try:
+            with temporary.open("w", encoding="utf-8") as stream:
+                os.fchmod(stream.fileno(), 0o600)
+                stream.write(json.dumps(payload, indent=2) + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, self.path)
+            descriptor = os.open(self.path.parent, os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 class SquireSetup:
@@ -423,7 +459,12 @@ class SquireSetup:
             assert channel is not None and binding_code is not None
             # Verify before every local mutation. A stale or wrong-channel code
             # must not partially change desired state or the user profile.
-            self.setup_state.verify(identity.owner_key, channel, binding_code)
+            authorize = (
+                self.setup_state.consume_verified
+                if "owner-open-id" in selected
+                else self.setup_state.verify
+            )
+            authorize(identity.owner_key, channel, binding_code)
         # ⚠️ Read what is on disk BEFORE the scaffold runs. A freshly created
         # skill carries the instructions, so checking afterwards would never
         # report anything -- and the case worth reporting is precisely the one
@@ -484,7 +525,7 @@ class SquireSetup:
                 machine_key=identity.machine_key,
             )
             changed.extend(fields)
-        if "owner-open-id" in selected and channel is not None:
+        if "owner-open-id" in selected and channel is not None and not binding_already_matches:
             assert profile is not None
             profile, fields = self.profiles.set_squire_channel(
                 identity.owner_key, channel
@@ -494,11 +535,11 @@ class SquireSetup:
         if "owner-open-id" in selected and owner_open_id is not None:
             assert channel is not None and binding_code is not None
             assert profile is not None
-            profile, fields = self.profiles.bind_owner_open_id(
-                identity.owner_key, channel=channel, open_id=owner_open_id
-            )
-            changed.extend(fields)
-            self.setup_state.consume(identity.owner_key)
+            if not binding_already_matches:
+                profile, fields = self.profiles.bind_owner_open_id(
+                    identity.owner_key, channel=channel, open_id=owner_open_id
+                )
+                changed.extend(fields)
             binding_step = {
                 "id": "owner-open-id",
                 "status": "complete",

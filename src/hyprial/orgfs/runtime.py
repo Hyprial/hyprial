@@ -3,17 +3,30 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass, field
 import json
 from pathlib import Path
-from threading import Lock
+from threading import Lock, RLock
+import threading
 import time
-from typing import Any, Final
+from typing import Any, Final, Mapping
+import uuid
+import weakref
 
+from hyprial.actor_runtime import (
+    ActorEvent,
+    ActorEventKind,
+    ActorHandle,
+    ActorRuntime,
+    ActorSpec,
+    AdmissionResult,
+)
+from hyprial.actor_runtime.effects import EffectCompleted, EffectLane, EffectRequest
 from hyprial.transport import KeySpace, Registration, TransportSample, TransportSession
 
 from .api import OrgFsError, SpaceInfo, SpaceStatus
-from .blobs import BlobStore
-from .checkout import CheckoutManager
+from .blob_authority import BlobAuthority
+from .checkout_authority import CheckoutAuthority
 from .docs import LocalOrgFs
 from .mesh import (
     ORGFS_ANNOUNCE_BUFFER_LIMIT,
@@ -21,8 +34,129 @@ from .mesh import (
     OrgFsMesh,
 )
 from .replica import FsReplicaBackend, MemoryReplicaBackend, ReplicaStore
-from .store import LocalSpaceStore, StoreError, state_covers
+from .replica_authority import ReplicaAuthority
+from .space_authority import _ReadStore
+from .store import CommitRecord, LocalSpaceStore, StoreError, state_covers
 
+
+@dataclass(frozen=True, slots=True)
+class _DirectoryCommand:
+    operation_id: str
+    generation: int
+    action: str
+    sample: TransportSample
+
+
+@dataclass(frozen=True, slots=True)
+class _DirectoryEffect:
+    action: str
+    peer: str | None = None
+    space_ids: tuple[str, ...] = ()
+    details: tuple[tuple[str, object], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class _DirectoryEffectBatch:
+    effects: tuple[_DirectoryEffect, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _JoinSpace:
+    space_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class _ServeSpace:
+    space_id: str
+    backend: str
+
+
+@dataclass(frozen=True, slots=True)
+class _CheckoutSpace:
+    space_id: str
+    enabled: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _OpenSpaceMesh:
+    space_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class _SpaceResourceHandle:
+    space_id: str
+    generation: int
+
+
+@dataclass(slots=True)
+class _MeshCreation:
+    done: threading.Event = field(default_factory=threading.Event)
+    handle: _SpaceResourceHandle | None = None
+    error: BaseException | None = None
+
+
+_DirectoryCallOperation = _JoinSpace | _ServeSpace | _CheckoutSpace | _OpenSpaceMesh
+
+
+@dataclass(frozen=True, slots=True)
+class _DirectoryCall:
+    operation_id: str
+    generation: int
+    operation: _DirectoryCallOperation
+
+
+@dataclass(frozen=True, slots=True)
+class _DirectoryCallOutcome:
+    value: object = None
+    error: str | None = None
+
+
+@dataclass(slots=True)
+class _DirectoryWaiter:
+    done: threading.Event
+    value: object = None
+
+
+@dataclass(frozen=True, slots=True)
+class _LifecycleFailure:
+    kind: str
+    code: str
+    message: str
+    details: tuple[tuple[str, object], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _LifecycleOutcome:
+    value: object = None
+    error: _LifecycleFailure | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _LifecycleCommand:
+    operation_id: str
+    generation: int
+    operation: _DirectoryCallOperation
+
+
+@dataclass(slots=True)
+class _LifecycleWaiter:
+    done: threading.Event
+    value: object = None
+    error: _LifecycleFailure | None = None
+
+
+@dataclass(slots=True)
+class _LifecycleAuthority:
+    runtime: ActorRuntime
+    actor: ActorHandle
+    effects: EffectLane[_LifecycleCommand, _LifecycleOutcome]
+    generation: int = 1
+    commands: dict[str, _LifecycleCommand] = field(default_factory=dict)
+    submitted: set[str] = field(default_factory=set)
+    waiters: dict[str, _LifecycleWaiter] = field(default_factory=dict)
+    mesh_opening: dict[str, str] = field(default_factory=dict)
+    mesh_aliases: dict[str, list[str]] = field(default_factory=dict)
+    deferred: list[_LifecycleCommand] = field(default_factory=list)
 
 ORGFS_CONTENT_WAIT_S: Final[float] = 10.0
 
@@ -31,16 +165,45 @@ class _StoreRegistry(dict[str, LocalSpaceStore]):
     def __init__(self, runtime: "OrgFsRuntime") -> None:
         super().__init__()
         self.runtime = runtime
+        self._entries_lock = Lock()
+        self._space_locks: dict[str, Lock] = {}
+
+    def _space_lock(self, key: str) -> Lock:
+        with self._entries_lock:
+            return self._space_locks.setdefault(key, Lock())
 
     def get(self, key: str, default: Any = None) -> LocalSpaceStore:
-        if key not in self:
-            self[key] = LocalSpaceStore(
+        lock = self._space_lock(key)
+        with lock:
+            with self._entries_lock:
+                existing = dict.get(self, key)
+            if existing is not None:
+                return existing
+            created = LocalSpaceStore(
                 self.runtime.state_dir,
                 key,
                 node_id=self.runtime.node_id,
                 blob_store=self.runtime.blobs,
             )
-        return self[key]
+            with self._entries_lock:
+                existing = dict.get(self, key)
+                if existing is None:
+                    dict.__setitem__(self, key, created)
+                    return created
+            created.close()
+            return existing
+
+    def snapshot_ids(self) -> tuple[str, ...]:
+        with self._entries_lock:
+            return tuple(self.keys())
+
+    def snapshot(self) -> tuple[LocalSpaceStore, ...]:
+        with self._entries_lock:
+            return tuple(self.values())
+
+    def clear(self) -> None:
+        with self._entries_lock:
+            super().clear()
 
 
 #: Backoff between await_content provisioning attempts for one blob.
@@ -66,7 +229,7 @@ class OrgFsRuntime:
         self.actor = actor
         self.logger = logger
         self.owner_notifier = owner_notifier
-        self.blobs = BlobStore(self.state_dir)
+        self.blobs = BlobAuthority(self.state_dir)
         self.stores = _StoreRegistry(self)
         self.facade = LocalOrgFs(
             self.stores,
@@ -76,10 +239,18 @@ class OrgFsRuntime:
             actor=actor,
             node_id=node_id,
         )
-        self._checkouts: dict[str, CheckoutManager] = {}
-        self._checkout_registrations: dict[str, Any] = {}
+        self._resource_lock = RLock()
+        self._closing = False
+        self._closed = False
+        self._close_lock = Lock()
+        self._checkouts: dict[str, CheckoutAuthority] = {}
+        self._checkout_lock = Lock()
+        self._checkout_config_lock = Lock()
+        self._checkout_closing = False
         self._checkout_config = self.state_dir / "orgfs" / "checkouts.json"
-        self._replicas: dict[str, ReplicaStore] = {}
+        self._replicas: dict[str, ReplicaAuthority] = {}
+        self._replica_creation_locks: dict[str, Lock] = {}
+        self._mesh_creations: dict[str, _MeshCreation] = {}
         spaces_root = self.state_dir / "orgfs" / "spaces"
         if spaces_root.is_dir():
             for path in sorted(spaces_root.iterdir()):
@@ -101,6 +272,552 @@ class OrgFsRuntime:
         self._pending_announces_lock = Lock()
         self._announce_buffer_dropped = 0
         self._announce_buffer_log_bucket = -1
+        self._directory_generation = 1
+        self._directory_runtime: ActorRuntime | None = None
+        self._directory_actor: ActorHandle | None = None
+        self._directory_effects: EffectLane[
+            _DirectoryEffectBatch, None
+        ] | None = None
+        self._directory_closing = False
+        self._directory_dropped = 0
+        self._directory_custody_lock = Lock()
+        self._directory_pending: set[tuple[str, int]] = set()
+        # One additional bounded envelope must reach the state owner so a full
+        # retained announce buffer can evict its oldest entry and report that
+        # semantic drop. Total queued + active + deferred custody remains fixed.
+        self._directory_capacity = ORGFS_ANNOUNCE_BUFFER_LIMIT + 1
+        self._directory_deferred: list[EffectRequest[_DirectoryEffectBatch]] = []
+        self._lifecycle_lock = Lock()
+        self._lifecycle_authority: _LifecycleAuthority | None = None
+        self._lifecycle_context = threading.local()
+        self._lifecycle_closing = False
+
+    @property
+    def directory_ingress_dropped(self) -> int:
+        return self._directory_dropped
+
+    def _start_directory_ingress(self) -> None:
+        if self._directory_effects is not None:
+            return
+        owner_ref = weakref.ref(self)
+
+        def handle_command(command: object) -> None:
+            owner = owner_ref()
+            if owner is not None:
+                owner._on_directory_command(command)
+
+        def execute_effect(effect: _DirectoryEffectBatch) -> None:
+            owner = owner_ref()
+            if owner is not None:
+                owner._execute_directory_effect(effect)
+
+        runtime = ActorRuntime()
+        handle = runtime.start(
+            ActorSpec(
+                "orgfs-directory-ingress",
+                lambda: handle_command,
+                # The custody bound includes one overflow envelope so the
+                # state owner can evict/report a full retained buffer. Admit
+                # that same bounded envelope even before the worker dequeues.
+                mailbox_capacity=self._directory_capacity,
+                supervision_profile="state_authority",
+            )
+        )
+        self._directory_runtime = runtime
+        self._directory_actor = handle
+        self._directory_effects = EffectLane(
+            name="orgfs-directory-effects",
+            execute=execute_effect,
+            complete=lambda completion: runtime.tell(handle, completion),
+            capacity=ORGFS_ANNOUNCE_BUFFER_LIMIT,
+            workers=1,
+        )
+
+    @property
+    def directory_ingress_pending(self) -> int:
+        with self._directory_custody_lock:
+            return len(self._directory_pending)
+
+    def _release_directory_credit(self, operation_id: str, generation: int) -> None:
+        with self._directory_custody_lock:
+            self._directory_pending.discard((operation_id, generation))
+
+    def _admit_directory_sample(self, action: str, sample: TransportSample) -> None:
+        runtime = self._directory_runtime
+        actor = self._directory_actor
+        with self._directory_custody_lock:
+            if (runtime is None or actor is None or self._directory_closing
+                or len(self._directory_pending) >= self._directory_capacity):
+                self._directory_dropped += 1
+                return
+            command = _DirectoryCommand(
+                uuid.uuid4().hex, self._directory_generation, action, sample
+            )
+            token = (command.operation_id, command.generation)
+            self._directory_pending.add(token)
+            if runtime.tell(actor, command) is not AdmissionResult.ACCEPTED:
+                self._directory_pending.discard(token)
+                self._directory_dropped += 1
+
+    def _on_directory_command(self, command: object) -> None:
+        if isinstance(command, EffectCompleted):
+            effects = self._directory_effects
+            if effects is not None:
+                if effects.acknowledge(command.operation_id, command.generation):
+                    self._release_directory_credit(command.operation_id, command.generation)
+                self._pump_directory_effects()
+            if command.error is not None:
+                self._directory_dropped += 1
+            return
+        if not isinstance(command, _DirectoryCommand):
+            raise TypeError("orgfs directory ingress received an invalid command")
+        lane = self._directory_effects
+        if lane is None or command.generation != self._directory_generation:
+            self._directory_dropped += 1
+            self._release_directory_credit(command.operation_id, command.generation)
+            return
+        if command.action == "announce":
+            effects = self._apply_announcement_command(command.sample)
+        elif command.action == "liveliness":
+            effects = self._apply_liveliness_command(command.sample)
+        else:
+            self._directory_dropped += 1
+            self._release_directory_credit(command.operation_id, command.generation)
+            return
+        if not effects:
+            self._release_directory_credit(command.operation_id, command.generation)
+            return
+        batch = _DirectoryEffectBatch(tuple(effects))
+        request = EffectRequest(command.operation_id, command.generation, batch)
+        if not any(item.operation_id == request.operation_id for item in self._directory_deferred):
+            self._directory_deferred.append(request)
+        self._pump_directory_effects()
+
+    def _pump_directory_effects(self) -> None:
+        lane = self._directory_effects
+        if lane is None:
+            return
+        while self._directory_deferred:
+            request = self._directory_deferred[0]
+            admission = lane.submit(request)
+            if admission is AdmissionResult.OVERLOADED:
+                return
+            self._directory_deferred.pop(0)
+            if admission is AdmissionResult.CLOSED:
+                self._directory_dropped += 1
+                self._release_directory_credit(request.operation_id, request.generation)
+
+    def _apply_announcement_command(
+        self, sample: TransportSample
+    ) -> list[_DirectoryEffect]:
+        try:
+            value = json.loads(sample.payload)
+            prefix = f"{KeySpace().prefix}/org/fs/announce/"
+            if not sample.key.startswith(prefix):
+                return []
+            node = sample.key[len(prefix) :]
+            if (
+                not isinstance(value, dict)
+                or value.get("schemaVersion") != 1
+                or value.get("type") != "orgfs-announce"
+                or value.get("node") != node
+                or not node
+                or "/" in node
+                or not isinstance(value.get("spaces"), list)
+            ):
+                return []
+            with self._pending_announces_lock:
+                observed_live = node in self._lively_peers
+            if not observed_live and not self._supplier_online(node):
+                diagnostics: list[dict[str, object]] = []
+                self._buffer_announce(node, value, diagnostics=diagnostics)
+                return [
+                    _DirectoryEffect(
+                        "log",
+                        details=tuple(sorted(fields.items())),
+                    )
+                    for fields in diagnostics
+                ]
+            with self._pending_announces_lock:
+                self._pending_announces.pop(node, None)
+            self._apply_announce(node, value)
+            return []
+        except Exception:
+            self._directory_dropped += 1
+            return []
+
+    def _apply_liveliness_command(
+        self, sample: TransportSample
+    ) -> list[_DirectoryEffect]:
+        peer, pending = self._settle_peer_liveliness(sample)
+        if not peer or peer == self.node_id:
+            return []
+        if sample.kind == "delete":
+            return []
+        if pending is not None:
+            self._apply_announce(peer, pending)
+        effects = [_DirectoryEffect("announce")]
+        checkout_spaces = tuple(self._checkouts)
+        if checkout_spaces:
+            effects.append(_DirectoryEffect("reconcile", space_ids=checkout_spaces))
+        sync_spaces: list[str] = []
+        for space_id in self.stores.snapshot_ids():
+            with self._pending_announces_lock:
+                holders = frozenset(self._holders.get(space_id, ()))
+            if holders and peer not in holders:
+                continue
+            sync_spaces.append(space_id)
+        if sync_spaces:
+            effects.append(
+                _DirectoryEffect("sync", peer=peer, space_ids=tuple(sync_spaces))
+            )
+        return effects
+
+    def _execute_directory_effect(self, batch: _DirectoryEffectBatch) -> None:
+        for effect in batch.effects:
+            if effect.action == "announce":
+                self._announce_all()
+            elif effect.action == "reconcile":
+                for space_id in effect.space_ids:
+                    with self._checkout_lock:
+                        checkout = self._checkouts.get(space_id)
+                    if checkout is None:
+                        continue
+                    self._request_checkout_reconcile(checkout)
+            elif effect.action == "sync" and effect.peer is not None:
+                for space_id in effect.space_ids:
+                    mesh = self._mesh(space_id)
+                    if mesh is not None:
+                        mesh.schedule_sync_from(effect.peer)
+            elif effect.action == "log" and self.logger is not None:
+                self.logger("warn", "orgfs.announce.buffer-dropped", **dict(effect.details))
+
+    @staticmethod
+    def _request_checkout_reconcile(checkout: Any) -> None:
+        if isinstance(checkout, CheckoutAuthority):
+            checkout.request_reconcile()
+        else:
+            # Test/offline protocol adapters may expose only the frozen legacy
+            # reconcile seam; production entries are always CheckoutAuthority.
+            checkout.reconcile()
+
+    def _close_directory_ingress(self, timeout: float = 5.0) -> bool:
+        with self._directory_custody_lock:
+            self._directory_closing = True
+        runtime = self._directory_runtime
+        actor = self._directory_actor
+        effects = self._directory_effects
+        if runtime is None or actor is None or effects is None:
+            return True
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            snapshot = runtime.snapshot(actor)
+            if (
+                snapshot.queued == 0
+                and snapshot.in_flight == 0
+                and not self._directory_deferred
+                and self.directory_ingress_pending == 0
+            ):
+                break
+            time.sleep(0.005)
+        else:
+            return False
+        if not effects.close(max(0.0, deadline - time.monotonic())):
+            return False
+        self._directory_generation += 1
+        stopped = runtime.stop(actor, timeout=max(0.0, deadline - time.monotonic()))
+        if stopped:
+            self._directory_runtime = None
+            self._directory_actor = None
+            self._directory_effects = None
+        return stopped
+
+    def _ensure_lifecycle_authority(self) -> _LifecycleAuthority:
+        with self._lifecycle_lock:
+            if self._lifecycle_authority is not None:
+                return self._lifecycle_authority
+            owner_ref = weakref.ref(self)
+
+            def actor_event(event: ActorEvent) -> None:
+                owner = owner_ref()
+                if owner is not None:
+                    owner._on_lifecycle_event(event)
+
+            def handle(command: object) -> None:
+                owner = owner_ref()
+                if owner is not None:
+                    owner._on_lifecycle_command(command)
+
+            def execute(command: _LifecycleCommand) -> _LifecycleOutcome:
+                owner = owner_ref()
+                if owner is None:
+                    return _LifecycleOutcome(
+                        error=_LifecycleFailure(
+                            "OrgFsError", "unavailable", "orgfs runtime is closed", ()
+                        )
+                    )
+                return owner._execute_lifecycle(command)
+
+            runtime = ActorRuntime(event_sink=actor_event)
+            actor = runtime.start(
+                ActorSpec(
+                    "orgfs-directory-lifecycle",
+                    lambda: handle,
+                    mailbox_capacity=64,
+                    supervision_profile="state_authority",
+                )
+            )
+
+            def complete(
+                completion: EffectCompleted[_LifecycleOutcome],
+            ) -> AdmissionResult:
+                owner = owner_ref()
+                if owner is None:
+                    return AdmissionResult.CLOSED
+                return runtime.tell(actor, completion)
+
+            authority = _LifecycleAuthority(
+                runtime,
+                actor,
+                EffectLane(
+                    name="orgfs-directory-lifecycle-effects",
+                    execute=execute,
+                    complete=complete,
+                    capacity=64,
+                    workers=4,
+                ),
+            )
+            self._lifecycle_authority = authority
+            return authority
+
+    def _execute_lifecycle(self, command: _LifecycleCommand) -> _LifecycleOutcome:
+        self._lifecycle_context.running = True
+        try:
+            operation = command.operation
+            if isinstance(operation, _JoinSpace):
+                value = self._join_sync(operation.space_id)
+            elif isinstance(operation, _ServeSpace):
+                value = self._serve_sync(operation.space_id, operation.backend)
+            elif isinstance(operation, _CheckoutSpace):
+                value = self._checkout_sync(operation.space_id, operation.enabled)
+            elif isinstance(operation, _OpenSpaceMesh):
+                value = self._ensure_mesh_sync(operation.space_id)
+            else:
+                raise TypeError(f"unsupported directory lifecycle command {type(operation).__name__}")
+            if isinstance(value, Mapping):
+                value = tuple(sorted(value.items()))
+            return _LifecycleOutcome(value=value)
+        except Exception as error:
+            details = getattr(error, "details", {})
+            frozen = (
+                tuple(sorted((str(key), str(value)) for key, value in dict(details).items()))
+                if isinstance(details, dict)
+                else ()
+            )
+            return _LifecycleOutcome(
+                error=_LifecycleFailure(
+                    type(error).__name__,
+                    str(getattr(error, "code", "internal")),
+                    str(error),
+                    frozen,
+                )
+            )
+        finally:
+            self._lifecycle_context.running = False
+
+    def _on_lifecycle_command(self, command: object) -> None:
+        authority = self._lifecycle_authority
+        if authority is None:
+            return
+        if isinstance(command, EffectCompleted):
+            with self._lifecycle_lock:
+                current = authority.commands.get(command.operation_id)
+                if current is None or current.generation != command.generation:
+                    waiter = None
+                    aliases = ()
+                else:
+                    authority.commands.pop(command.operation_id, None)
+                    authority.submitted.discard(command.operation_id)
+                    waiter = authority.waiters.pop(command.operation_id, None)
+                    aliases = tuple(authority.mesh_aliases.pop(command.operation_id, ()))
+                    if isinstance(current.operation, _OpenSpaceMesh):
+                        authority.mesh_opening.pop(current.operation.space_id, None)
+            if waiter is not None:
+                outcome = command.result
+                if isinstance(outcome, _LifecycleOutcome):
+                    waiter.value = outcome.value
+                    waiter.error = outcome.error
+                else:
+                    waiter.error = _LifecycleFailure(
+                        "RuntimeError", "internal", "invalid lifecycle result", ()
+                    )
+                waiter.done.set()
+            if aliases:
+                outcome = command.result
+                for alias_id in aliases:
+                    with self._lifecycle_lock:
+                        alias_waiter = authority.waiters.pop(alias_id, None)
+                        authority.commands.pop(alias_id, None)
+                    if alias_waiter is None:
+                        continue
+                    if isinstance(outcome, _LifecycleOutcome):
+                        alias_waiter.value = outcome.value
+                        alias_waiter.error = outcome.error
+                    else:
+                        alias_waiter.error = _LifecycleFailure(
+                            "RuntimeError", "internal", "invalid lifecycle result", ()
+                        )
+                    alias_waiter.done.set()
+            authority.effects.acknowledge(command.operation_id, command.generation)
+            self._pump_lifecycle(authority)
+            return
+        if not isinstance(command, _LifecycleCommand):
+            raise TypeError("orgfs lifecycle actor received an invalid command")
+        if isinstance(command.operation, _OpenSpaceMesh):
+            with self._lifecycle_lock:
+                opening = authority.mesh_opening.get(command.operation.space_id)
+                if opening is not None and opening != command.operation_id:
+                    aliases = authority.mesh_aliases.setdefault(opening, [])
+                    if command.operation_id not in aliases:
+                        aliases.append(command.operation_id)
+                    return
+                authority.mesh_opening[command.operation.space_id] = command.operation_id
+        admission = authority.effects.submit(
+            EffectRequest(command.operation_id, command.generation, command)
+        )
+        if admission is AdmissionResult.ACCEPTED:
+            authority.deferred = [
+                item for item in authority.deferred
+                if item.operation_id != command.operation_id
+            ]
+            with self._lifecycle_lock:
+                authority.submitted.add(command.operation_id)
+            return
+        if admission is AdmissionResult.OVERLOADED:
+            if all(item.operation_id != command.operation_id for item in authority.deferred):
+                authority.deferred.append(command)
+            return
+
+    def _pump_lifecycle(self, authority: _LifecycleAuthority) -> None:
+        if not authority.deferred:
+            return
+        command = authority.deferred[0]
+        admission = authority.effects.submit(
+            EffectRequest(command.operation_id, command.generation, command)
+        )
+        if admission is AdmissionResult.ACCEPTED:
+            authority.deferred.pop(0)
+            with self._lifecycle_lock:
+                authority.submitted.add(command.operation_id)
+        elif admission is AdmissionResult.CLOSED:
+            authority.deferred.pop(0)
+            with self._lifecycle_lock:
+                authority.commands.pop(command.operation_id, None)
+                waiter = authority.waiters.pop(command.operation_id, None)
+            if waiter is not None:
+                waiter.error = _LifecycleFailure(
+                    "OrgFsError", "unavailable", "directory lifecycle effects are closed", ()
+                )
+                waiter.done.set()
+
+    def _on_lifecycle_event(self, event: ActorEvent) -> None:
+        if event.kind is not ActorEventKind.CHILD_RESTARTED:
+            return
+        authority = self._lifecycle_authority
+        if authority is None:
+            return
+        with self._lifecycle_lock:
+            if event.generation <= authority.generation:
+                return
+            authority.generation = event.generation
+            replay = tuple(
+                _LifecycleCommand(
+                    call.operation_id, event.generation, call.operation
+                )
+                for operation_id, call in authority.commands.items()
+                if operation_id not in authority.submitted
+            )
+            for call in replay:
+                authority.commands[call.operation_id] = call
+        for call in replay:
+            admission = authority.runtime.tell(authority.actor, call)
+            if admission is AdmissionResult.CLOSED:
+                return
+
+    def _ask_lifecycle(self, operation: _DirectoryCallOperation) -> object:
+        if getattr(self._lifecycle_context, "running", False):
+            if isinstance(operation, _JoinSpace):
+                return self._join_sync(operation.space_id)
+            if isinstance(operation, _ServeSpace):
+                return self._serve_sync(operation.space_id, operation.backend)
+            if isinstance(operation, _CheckoutSpace):
+                return self._checkout_sync(operation.space_id, operation.enabled)
+            if isinstance(operation, _OpenSpaceMesh):
+                return self._ensure_mesh_sync(operation.space_id)
+        authority = self._ensure_lifecycle_authority()
+        operation_id = uuid.uuid4().hex
+        waiter = _LifecycleWaiter(threading.Event())
+        with self._lifecycle_lock:
+            if self._lifecycle_closing:
+                raise OrgFsError("unavailable", {"message": "directory lifecycle is closing"})
+            command = _LifecycleCommand(operation_id, authority.generation, operation)
+            authority.commands[operation_id] = command
+            authority.waiters[operation_id] = waiter
+        while True:
+            admission = authority.runtime.tell(authority.actor, command)
+            if admission is AdmissionResult.ACCEPTED:
+                break
+            with self._lifecycle_lock:
+                current = authority.commands.get(operation_id)
+                if admission is AdmissionResult.CLOSED and current is not None and current.generation != command.generation:
+                    command = current
+                    continue
+                authority.commands.pop(operation_id, None)
+                authority.waiters.pop(operation_id, None)
+            raise OrgFsError(
+                "resource-exhausted" if admission is AdmissionResult.OVERLOADED else "unavailable",
+                {"message": "directory lifecycle admission was " + admission.value},
+            )
+        waiter.done.wait()
+        if waiter.error is not None:
+            error = waiter.error
+            details = {key: value for key, value in error.details}
+            if error.kind == "OrgFsError":
+                raise OrgFsError(error.code, {**details, "message": error.message})
+            raise RuntimeError(error.message)
+        if isinstance(waiter.value, tuple) and all(
+            isinstance(item, tuple) and len(item) == 2 for item in waiter.value
+        ):
+            return dict(waiter.value)
+        return waiter.value
+
+    def _close_lifecycle(self, timeout: float = 5.0) -> bool:
+        with self._lifecycle_lock:
+            self._lifecycle_closing = True
+            authority = self._lifecycle_authority
+        if authority is None:
+            return True
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            snapshot = authority.runtime.snapshot(authority.actor)
+            if (
+                snapshot.queued == 0
+                and snapshot.in_flight == 0
+                and not authority.deferred
+            ):
+                break
+            time.sleep(0.005)
+        else:
+            return False
+        if not authority.effects.close(max(0.0, deadline - time.monotonic())):
+            return False
+        if not authority.runtime.stop(
+            authority.actor, timeout=max(0.0, deadline - time.monotonic())
+        ):
+            return False
+        with self._lifecycle_lock:
+            self._lifecycle_authority = None
+        return True
 
     def bind_transport(
         self,
@@ -109,69 +826,36 @@ class OrgFsRuntime:
         supplier_online: Callable[[str], bool] | None = None,
         holder_candidates: Callable[[], tuple[str, ...]] | None = None,
     ) -> None:
-        self._session = session
+        with self._resource_lock:
+            if self._closing:
+                raise OrgFsError("unavailable", {"message": "orgfs runtime is closing"})
+            self._session = session
         if supplier_online is not None:
             self._supplier_online = supplier_online
         if holder_candidates is not None:
             self._holder_candidates = holder_candidates
+        self._start_directory_ingress()
         self._announce_registration = session.subscribe(
-            f"{KeySpace().prefix}/org/fs/announce/*", self._on_announce
+            f"{KeySpace().prefix}/org/fs/announce/*",
+            lambda sample: self._admit_directory_sample("announce", sample),
         )
         observe_liveliness = getattr(session, "observe_liveliness", None)
         if callable(observe_liveliness):
             self._liveliness_registration = observe_liveliness(
                 f"{KeySpace().prefix}/liveliness/actor/*",
-                self._on_peer_liveliness,
+                lambda sample: self._admit_directory_sample("liveliness", sample),
                 history=True,
             )
-        for space_id in tuple(self.stores):
+        for space_id in self.stores.snapshot_ids():
             self._mesh(space_id)
 
     def _on_peer_liveliness(self, sample: TransportSample) -> None:
-        """F5/F6: admit buffered discovery and schedule bounded anti-entropy."""
-
-        peer, pending = self._settle_peer_liveliness(sample)
-        if not peer or sample.kind == "delete":
-            return
-        self._announce_all()
-        if pending is not None:
-            self._apply_announce(peer, pending)
-        # An announce can race the first pop while the liveliness callback
-        # is applying the previous buffered value.  Recheck once after the
-        # presence verdict has flipped so that value cannot be stranded
-        # until a later liveliness transition.
-        with self._pending_announces_lock:
-            landed_during_flip = self._pending_announces.pop(peer, None)
-        if landed_during_flip is not None:
-            self._apply_announce(peer, landed_during_flip)
-        for space_id, checkout in tuple(self._checkouts.items()):
-            try:
-                checkout.reconcile()
-            except Exception as exc:  # noqa: BLE001 - holder retry is best effort
-                if self.logger is not None:
-                    self.logger(
-                        "warn",
-                        "orgfs.checkout.reconcile-failed",
-                        spaceId=space_id,
-                        detail=str(exc),
-                    )
-        for space_id in tuple(self.stores):
-            # F6: only schedule anti-entropy for spaces the peer actually
-            # announced when holder hints exist.  A freshly restarted
-            # node has no in-memory hints yet, so it retains the P1
-            # liveliness fallback until the first announce arrives.
-            holders = self._holders.get(space_id, set())
-            if holders and peer not in holders:
-                continue
-            mesh = self._mesh(space_id)
-            if mesh is not None:
-                mesh.schedule_sync_from(peer)
+        self._process_peer_liveliness(sample)
 
     def _settle_peer_liveliness(
         self, sample: TransportSample
     ) -> tuple[str | None, dict[str, Any] | None]:
         """Track host presence and settle holder hints on liveliness delete."""
-
         peer = self._host_peer_from_liveliness(sample)
         if not peer or peer == self.node_id:
             return None, None
@@ -198,6 +882,38 @@ class OrgFsRuntime:
         if classify_target_identity(peer) != TARGET_KIND_HOST:
             return None
         return peer
+    def _process_peer_liveliness(self, sample: TransportSample) -> None:
+        """F5/F6: admit buffered discovery and schedule bounded anti-entropy."""
+
+        peer, pending = self._settle_peer_liveliness(sample)
+        if peer and sample.kind != "delete":
+            self._announce_all()
+            if pending is not None:
+                self._apply_announce(peer, pending)
+            # An announce can race the first pop while the liveliness callback
+            # is applying the previous buffered value.  Recheck once after the
+            # presence verdict has flipped so that value cannot be stranded
+            # until a later liveliness transition.
+            with self._pending_announces_lock:
+                landed_during_flip = self._pending_announces.pop(peer, None)
+            if landed_during_flip is not None:
+                self._apply_announce(peer, landed_during_flip)
+            with self._checkout_lock:
+                checkouts = tuple(self._checkouts.values())
+            for checkout in checkouts:
+                self._request_checkout_reconcile(checkout)
+            for space_id in self.stores.snapshot_ids():
+                # F6: only schedule anti-entropy for spaces the peer actually
+                # announced when holder hints exist.  A freshly restarted
+                # node has no in-memory hints yet, so it retains the P1
+                # liveliness fallback until the first announce arrives.
+                with self._pending_announces_lock:
+                    holders = frozenset(self._holders.get(space_id, ()))
+                if holders and peer not in holders:
+                    continue
+                mesh = self._mesh(space_id)
+                if mesh is not None:
+                    mesh.schedule_sync_from(peer)
 
     def _announcement_spaces(self) -> tuple[dict[str, object], ...]:
         spaces: list[dict[str, object]] = []
@@ -213,17 +929,26 @@ class OrgFsRuntime:
             if mode is None:
                 continue
             roles = ["member"]
-            if info.space_id in self._replicas:
+            with self._resource_lock:
+                resident = info.space_id in self._replicas
+            if resident:
                 roles.append("resident")
             spaces.append({"spaceId": info.space_id, "roles": roles, "mode": mode})
         return tuple(spaces)
 
     def _announce_all(self) -> None:
-        if self._session is None or not self._meshes:
+        with self._resource_lock:
+            if self._closing or self._session is None:
+                return
+            mesh = next(iter(self._meshes.values()), None)
+        if mesh is None:
             return
-        next(iter(self._meshes.values())).announce()
+        mesh.announce()
 
     def _on_announce(self, sample: TransportSample) -> None:
+        self._process_announce(sample)
+
+    def _process_announce(self, sample: TransportSample) -> None:
         try:
             value = json.loads(sample.payload)
             prefix = f"{KeySpace().prefix}/org/fs/announce/"
@@ -240,7 +965,9 @@ class OrgFsRuntime:
                 or not isinstance(value.get("spaces"), list)
             ):
                 return
-            if not self._supplier_online(key_node):
+            with self._pending_announces_lock:
+                observed_live = key_node in self._lively_peers
+            if not observed_live and not self._supplier_online(key_node):
                 self._buffer_announce(key_node, value)
                 return
             with self._pending_announces_lock:
@@ -249,7 +976,13 @@ class OrgFsRuntime:
         except Exception:
             return
 
-    def _buffer_announce(self, node: str, value: dict[str, Any]) -> None:
+    def _buffer_announce(
+        self,
+        node: str,
+        value: dict[str, Any],
+        *,
+        diagnostics: list[dict[str, object]] | None = None,
+    ) -> None:
         with self._pending_announces_lock:
             spaces = value["spaces"]
             previous = self._pending_announces.get(node)
@@ -263,6 +996,7 @@ class OrgFsRuntime:
                     reason="announcer-limit",
                     node=node,
                     dropped=1,
+                    diagnostics=diagnostics,
                 )
             if not spaces or previous is None or not previous["spaces"]:
                 retained = list(spaces[:ORGFS_ANNOUNCE_SPACES_PER_ENTRY_LIMIT])
@@ -274,6 +1008,7 @@ class OrgFsRuntime:
                         node=node,
                         dropped=dropped,
                         space_count=len(retained),
+                        diagnostics=diagnostics,
                     )
                 return
             by_space = {
@@ -298,6 +1033,7 @@ class OrgFsRuntime:
                     node=node,
                     dropped=dropped,
                     space_count=len(retained),
+                    diagnostics=diagnostics,
                 )
 
     def _record_announce_buffer_drop(
@@ -307,92 +1043,179 @@ class OrgFsRuntime:
         node: str,
         dropped: int,
         space_count: int = 0,
-    ) -> None:
+        diagnostics: list[dict[str, object]] | None = None,
+    ) -> dict[str, object] | None:
         self._announce_buffer_dropped += dropped
         bucket = self._announce_buffer_dropped.bit_length()
         if bucket == self._announce_buffer_log_bucket:
-            return
+            return None
         self._announce_buffer_log_bucket = bucket
-        if self.logger is not None:
-            self.logger(
-                "warn",
-                "orgfs.announce.buffer-dropped",
-                reason=reason,
-                node=node,
-                droppedCount=self._announce_buffer_dropped,
-                announcerCount=len(self._pending_announces),
-                announcerLimit=ORGFS_ANNOUNCE_BUFFER_LIMIT,
-                spaceCount=space_count,
-                spacesPerEntryLimit=ORGFS_ANNOUNCE_SPACES_PER_ENTRY_LIMIT,
-            )
+        fields: dict[str, object] = {
+            "reason": reason,
+            "node": node,
+            "droppedCount": self._announce_buffer_dropped,
+            "announcerCount": len(self._pending_announces),
+            "announcerLimit": ORGFS_ANNOUNCE_BUFFER_LIMIT,
+            "spaceCount": space_count,
+            "spacesPerEntryLimit": ORGFS_ANNOUNCE_SPACES_PER_ENTRY_LIMIT,
+        }
+        if diagnostics is not None:
+            diagnostics.append(fields)
+        elif self.logger is not None:
+            self.logger("warn", "orgfs.announce.buffer-dropped", **fields)
+        return fields
 
     def _apply_announce(self, node: str, value: dict[str, Any]) -> None:
         spaces = value["spaces"]
-        if not spaces:
-            for holders in self._holders.values():
-                holders.discard(node)
-            return
-        for space in spaces:
-            if isinstance(space, dict) and isinstance(space.get("spaceId"), str):
-                space_id = str(space["spaceId"])
-                self._holders.setdefault(space_id, set()).add(node)
-                self._known_holders.setdefault(space_id, set()).add(node)
+        with self._pending_announces_lock:
+            if not spaces:
+                for holders in self._holders.values():
+                    holders.discard(node)
+                return
+            for space in spaces:
+                if isinstance(space, dict) and isinstance(space.get("spaceId"), str):
+                    space_id = str(space["spaceId"])
+                    self._holders.setdefault(space_id, set()).add(node)
+                    self._known_holders.setdefault(space_id, set()).add(node)
+
+    def _holder_snapshot(self, space_id: str) -> tuple[str, ...]:
+        with self._pending_announces_lock:
+            return tuple(sorted(self._holders.get(space_id, ())))
+
+    def _known_holder_snapshot(self, space_id: str) -> tuple[str, ...]:
+        with self._pending_announces_lock:
+            return tuple(sorted(self._known_holders.get(space_id, ())))
+
+    def _ensure_mesh_sync(self, space_id: str) -> _SpaceResourceHandle | None:
+        with self._resource_lock:
+            existing = self._meshes.get(space_id)
+            if existing is not None:
+                return _SpaceResourceHandle(space_id, self._directory_generation)
+            creation = self._mesh_creations.get(space_id)
+            if creation is None:
+                creation = _MeshCreation()
+                self._mesh_creations[space_id] = creation
+                creator = True
+            else:
+                creator = False
+        if not creator:
+            creation.done.wait()
+            if creation.error is not None:
+                raise creation.error
+            return creation.handle
+        try:
+            handle = self._create_mesh_sync(space_id)
+        except BaseException as error:
+            with self._resource_lock:
+                creation.error = error
+                self._mesh_creations.pop(space_id, None)
+                creation.done.set()
+            raise
+        with self._resource_lock:
+            creation.handle = handle
+            self._mesh_creations.pop(space_id, None)
+            creation.done.set()
+        return handle
+
+    def _create_mesh_sync(self, space_id: str) -> _SpaceResourceHandle | None:
+        with self._resource_lock:
+            session = self._session
+            if self._closing or session is None:
+                return None
+            existing = self._meshes.get(space_id)
+        if existing is not None:
+            return _SpaceResourceHandle(space_id, self._directory_generation)
+
+        def applied(envelope: bytes) -> tuple[str, ...]:
+            self.facade.apply_envelope(space_id, envelope)
+            self._reconcile_retirements(space_id)
+            return self.facade.retained_blob_digests(space_id)
+
+        def replacement(
+            old_doc_id: str, new_doc_id: str, snapshot_bytes: bytes
+        ) -> None:
+            if space_id in self.facade._spaces:  # noqa: SLF001
+                self.facade.install_replacement_snapshot(
+                    space_id, old_doc_id, new_doc_id, snapshot_bytes
+                )
+                self._reconcile_retirements(space_id)
+
+        mesh = OrgFsMesh(
+            session,
+            self.stores.get(space_id),
+            self.node_id,
+            author=self.author,
+            blob_store=self.blobs,
+            supplier_online=self._supplier_online,
+            announcement_source=self._announcement_spaces,
+            holder_discovery=lambda: self._holder_snapshot(space_id),
+            recovery_candidates=lambda: (
+                *self._holder_snapshot(space_id), *self._holder_candidates()
+            ),
+            on_applied=applied,
+            on_replacement=replacement,
+            logger=self.logger,
+            space_authority=self.facade.space_authority(
+                space_id, self.stores.get(space_id)
+            ),
+        )
+        with self._resource_lock:
+            if self._closing or self._session is not session:
+                current = None
+                discard = True
+            else:
+                current = self._meshes.get(space_id)
+                if current is None:
+                    current = mesh
+                    self._meshes[space_id] = mesh
+                discard = current is not mesh
+            replica = self._replicas.get(space_id)
+        if discard:
+            mesh.close()
+            return (
+                _SpaceResourceHandle(space_id, self._directory_generation)
+                if current is not None
+                else None
+            )
+        if replica is not None:
+            mesh.attach_replica(replica)
+        self._announce_all()
+        return _SpaceResourceHandle(space_id, self._directory_generation)
 
     def _mesh(self, space_id: str) -> OrgFsMesh | None:
-        if self._session is None:
+        with self._resource_lock:
+            if self._closing or self._session is None:
+                return None
+            existing = self._meshes.get(space_id)
+        if existing is not None:
+            return existing
+        try:
+            handle = self._ask_lifecycle(_OpenSpaceMesh(space_id))
+        except OrgFsError as error:
+            if error.code == "unavailable":
+                return None
+            raise
+        if not isinstance(handle, _SpaceResourceHandle):
             return None
-        if space_id not in self._meshes:
-
-            def applied(envelope: bytes) -> tuple[str, ...]:
-                self.facade.apply_envelope(space_id, envelope)
-                self._reconcile_retirements(space_id)
-                return self.facade.retained_blob_digests(space_id)
-
-            def replacement(
-                old_doc_id: str, new_doc_id: str, snapshot_bytes: bytes
-            ) -> None:
-                if space_id in self.facade._spaces:  # noqa: SLF001
-                    self.facade.install_replacement_snapshot(
-                        space_id, old_doc_id, new_doc_id, snapshot_bytes
-                    )
-                    self._reconcile_retirements(space_id)
-
-            mesh = OrgFsMesh(
-                self._session,
-                self.stores.get(space_id),
-                self.node_id,
-                author=self.author,
-                blob_store=self.blobs,
-                supplier_online=self._supplier_online,
-                announcement_source=self._announcement_spaces,
-                holder_discovery=self._holders.setdefault(space_id, set()),
-                recovery_candidates=lambda: (
-                    *self._holders.get(space_id, ()),
-                    *self._holder_candidates(),
-                ),
-                on_applied=applied,
-                on_replacement=replacement,
-                logger=self.logger,
-            )
-            self._meshes[space_id] = mesh
-            replica = self._replicas.get(space_id)
-            if replica is not None:
-                mesh.attach_replica(replica)
-            self._announce_all()
-        return self._meshes[space_id]
+        with self._resource_lock:
+            return self._meshes.get(handle.space_id)
 
     def _reconcile_retirements(self, space_id: str) -> None:
         """Finish G2 cleanup and ack after all replacement bytes are local."""
 
         store = self.stores.get(space_id)
-        records = store.retirement_records()
-        if store.pending_replacements():
+        authority = self.facade.space_authority(space_id, store)
+        records = tuple(authority.read(_ReadStore("retirement_records")))
+        if authority.read(_ReadStore("pending_replacements")):
             return
-        replica = self._replicas.get(space_id)
-        purge_entries = store.purge_list_entries()
+        with self._resource_lock:
+            replica = self._replicas.get(space_id)
+        purge_entries = dict(authority.read(_ReadStore("purge_list_entries")))
         retirement_plan_ids = {record.plan_id for record in records}
         for record in records:
-            snapshot = store.snapshot(record.replacement_doc_id, shallow_since=None)
+            snapshot = authority.read(
+                _ReadStore("snapshot", doc_id=record.replacement_doc_id)
+            )
             if replica is not None:
                 plan_blobs = tuple(
                     {"sha": digest}
@@ -414,8 +1237,10 @@ class OrgFsRuntime:
                         "blobs": plan_blobs,
                     },
                 )
-            store.delete_retired_objects(record.old_physical_doc_id)
-            if store.retired_residue(record.old_physical_doc_id):
+            authority.delete_retired_objects(record.old_physical_doc_id)
+            if authority.read(
+                _ReadStore("retired_residue", doc_id=record.old_physical_doc_id)
+            ):
                 raise StoreError("invalid-argument", "retired document residue remains")
 
         if replica is not None:
@@ -424,8 +1249,8 @@ class OrgFsRuntime:
                 for digest, plan_id in purge_entries.items()
                 if plan_id not in retirement_plan_ids
             )
-            for doc_id in store.document_ids():
-                if store.snapshot_point(doc_id) is not None:
+            for doc_id in authority.read(_ReadStore("document_ids")):
+                if authority.read(_ReadStore("snapshot_point", doc_id=doc_id)) is not None:
                     replica.apply_retention(doc_id)
         for digest in purge_entries:
             self.blobs.release(space_id, digest)
@@ -435,7 +1260,9 @@ class OrgFsRuntime:
         for plan_id in sorted(plans):
             if any(
                 record.plan_id == plan_id
-                and store.retired_residue(record.old_physical_doc_id)
+                and authority.read(
+                    _ReadStore("retired_residue", doc_id=record.old_physical_doc_id)
+                )
                 for record in records
             ):
                 continue
@@ -445,13 +1272,24 @@ class OrgFsRuntime:
         mesh = self._mesh(space_id)
         return 0 if mesh is None else mesh.broadcast_pending()
 
-    def reconcile_replica_blobs(self, space_id: str) -> tuple[str, ...]:
-        """Reconcile retained local blob refs into the serving replica."""
+    def broadcast_records(
+        self, space_id: str, records: tuple[CommitRecord, ...]
+    ) -> int:
+        mesh = self._mesh(space_id)
+        if mesh is None:
+            return 0
+        if "broadcast_pending" in vars(mesh):
+            return mesh.broadcast_pending(space_id)
+        return mesh.broadcast_records(records)
 
-        replica = self._replicas.get(space_id)
+    def reconcile_replica_blobs(self, space_id: str) -> tuple[str, ...]:
+        """Reconcile retained local blob refs through the per-space authority."""
+
+        with self._resource_lock:
+            replica = self._replicas.get(space_id)
         if replica is None:
             return ()
-        reconciled = replica.reconcile_blobs(self.blobs)
+        reconciled = replica.reconcile_blobs()
         for digest in reconciled:
             self.blobs.pin(space_id, digest, "replica")
         return reconciled
@@ -484,7 +1322,9 @@ class OrgFsRuntime:
                 else self._supplier_online(node)
             )
         }
-        if space_id in self._replicas:
+        with self._resource_lock:
+            serving_locally = space_id in self._replicas
+        if serving_locally:
             online.add(self.node_id)
         return SpaceStatus(
             base.space_id,
@@ -498,7 +1338,11 @@ class OrgFsRuntime:
 
         if space_id not in {info.space_id for info in self.facade.spaces()}:
             raise OrgFsError("unknown-space", {"spaceId": space_id})
-        return self.stores.get(space_id).writer_attributions()
+        store = self.stores.get(space_id)
+        authority = self.facade.space_authority(space_id, store)
+        if authority is None:
+            raise OrgFsError("unavailable", {"spaceId": space_id})
+        return dict(authority.read(_ReadStore("writer_attributions")))
 
     def refresh_space(self, space_id: str, *, timeout: float) -> bool:
         """Try every online holder once without exceeding the caller's bound."""
@@ -506,11 +1350,9 @@ class OrgFsRuntime:
         if self._session is None:
             return False
         holders = tuple(
-            sorted(
-                node
-                for node in self._holders.get(space_id, ())
-                if node != self.node_id and self._supplier_online(node)
-            )
+            node
+            for node in self._holder_snapshot(space_id)
+            if node != self.node_id and self._supplier_online(node)
         )
         if not holders:
             return True
@@ -547,16 +1389,22 @@ class OrgFsRuntime:
 
         online = {
             node
-            for node in self._holders.get(space_id, ())
+            for node in self._holder_snapshot(space_id)
             if node != self.node_id and self._supplier_online(node)
         }
         known = {
             node
-            for node in self._known_holders.get(space_id, ())
+            for node in self._known_holder_snapshot(space_id)
             if node != self.node_id
         }
         candidates = online | known
-        frontiers = self.stores.get(space_id).holder_frontiers()
+        store = self.stores.get(space_id)
+        authority = self.facade.space_authority(space_id, store)
+        assert authority is not None
+        frontiers = {
+            holder: dict(docs)
+            for holder, docs in authority.read(_ReadStore("holder_frontiers"))
+        }
 
         def key(node: str) -> tuple[bool, bool, str]:
             covers = False
@@ -608,13 +1456,14 @@ class OrgFsRuntime:
             )
             refreshed = self.facade.stat(space_id, f"id:{node_id}")
             if refreshed.doc_id:
-                snapshot = self.stores.get(space_id).snapshot(
-                    refreshed.doc_id, shallow_since=None
+                store = self.stores.get(space_id)
+                authority = self.facade.space_authority(space_id, store)
+                assert authority is not None
+                snapshot = authority.read(
+                    _ReadStore("snapshot", doc_id=refreshed.doc_id)
                 )
                 self.facade.hydrate_content_snapshot(
-                    space_id,
-                    f"id:{node_id}",
-                    snapshot.snapshot_bytes,
+                    space_id, f"id:{node_id}", snapshot.snapshot_bytes,
                     expected_doc_id=snapshot.doc_id,
                 )
             return (
@@ -630,7 +1479,7 @@ class OrgFsRuntime:
             {
                 *(
                     node
-                    for node in self._holders.get(space_id, ())
+                    for node in self._holder_snapshot(space_id)
                     if node != self.node_id
                 ),
                 *(node for node in self._holder_candidates() if node != self.node_id),
@@ -650,27 +1499,41 @@ class OrgFsRuntime:
                             "blob-unavailable",
                             "fetched blob did not match requested digest",
                         )
-                    replica = self._replicas.get(space_id)
+                    with self._resource_lock:
+                        replica = self._replicas.get(space_id)
                     if replica is not None:
                         replica.store_blob(digest, payload)
                         self.blobs.pin(space_id, digest, "replica")
                     return payload
                 except StoreError as exc:
                     last_error = exc
+        if self.logger is not None:
+            self.logger(
+                "warn",
+                "orgfs.content.blob-fetch-failed",
+                reason=getattr(last_error, "code", "no-holder-online"),
+                spaceId=space_id,
+                digest=digest,
+                candidates=candidates,
+                detail=str(last_error) if last_error is not None else "",
+            )
         details: dict[str, object] = {
             "digest": digest,
-            "lastKnownHolders": sorted(self._known_holders.get(space_id, ())),
+            "lastKnownHolders": list(self._known_holder_snapshot(space_id)),
         }
         if last_error is not None:
             details["message"] = str(last_error)
         raise OrgFsError("blob-unavailable", details)
 
     def join(self, space_id: str) -> SpaceInfo:
+        return self._ask_lifecycle(_JoinSpace(space_id))  # type: ignore[return-value]
+
+    def _join_sync(self, space_id: str) -> SpaceInfo:
         holders = sorted(
             {
                 *(
                     node
-                    for node in self._holders.get(space_id, ())
+                    for node in self._holder_snapshot(space_id)
                     if node != self.node_id
                 ),
                 *(node for node in self._holder_candidates() if node != self.node_id),
@@ -709,6 +1572,9 @@ class OrgFsRuntime:
         )
 
     def serve(self, space_id: str, backend: str = "fs") -> dict[str, object]:
+        return self._ask_lifecycle(_ServeSpace(space_id, backend))  # type: ignore[return-value]
+
+    def _serve_sync(self, space_id: str, backend: str = "fs") -> dict[str, object]:
         if backend not in {"fs", "memory"}:
             raise OrgFsError(
                 "invalid-argument", {"message": "backend must be fs or memory"}
@@ -720,11 +1586,22 @@ class OrgFsRuntime:
                 raise
             self.join(space_id)
         local_store = self.stores.get(space_id)
-        existing = self._replicas.get(space_id)
+        with self._resource_lock:
+            creation_lock = self._replica_creation_locks.setdefault(space_id, Lock())
+        with creation_lock:
+            return self._create_or_reuse_replica(space_id, backend, local_store)
+
+    def _create_or_reuse_replica(
+        self, space_id: str, backend: str, local_store: LocalSpaceStore
+    ) -> dict[str, object]:
+        """Own one space's replica construction before touching its backend."""
+
+        with self._resource_lock:
+            if self._closing:
+                raise OrgFsError("unavailable", {"message": "orgfs runtime is closing"})
+            existing = self._replicas.get(space_id)
         if existing is not None:
-            existing_backend = (
-                "fs" if isinstance(existing.backend, FsReplicaBackend) else "memory"
-            )
+            existing_backend = "fs" if existing.backend_kind == "FsReplicaBackend" else "memory"
             if existing_backend != backend:
                 raise OrgFsError(
                     "invalid-argument",
@@ -734,7 +1611,7 @@ class OrgFsRuntime:
                         "backend": existing_backend,
                     },
                 )
-            existing.reconcile_blobs(self.blobs)
+            existing.reconcile_blobs()
             for digest in existing.pinned_blobs():
                 self.blobs.pin(space_id, digest, "replica")
             self._reconcile_retirements(space_id)
@@ -769,17 +1646,19 @@ class OrgFsRuntime:
             if self.owner_notifier is not None:
                 self.owner_notifier(owner, event, dict(details))
 
-        replica = ReplicaStore(
-            space_id,
-            replica_backend,
-            local_store,
-            event_callback=conflict_event,
-            owner_notifier=owner_notice,
+        replica_core = ReplicaStore(
+            space_id, replica_backend, local_store,
+            event_callback=conflict_event, owner_notifier=owner_notice,
         )
+        replica = ReplicaAuthority(replica_core, local_store, self.blobs)
         replica.prime_from(local_store, self.blobs)
         for digest in replica.pinned_blobs():
             self.blobs.pin(space_id, digest, "replica")
-        self._replicas[space_id] = replica
+        with self._resource_lock:
+            if self._closing:
+                replica.close(timeout=5.0)
+                raise OrgFsError("unavailable", {"message": "orgfs runtime is closing"})
+            self._replicas[space_id] = replica
         mesh = self._mesh(space_id)
         if mesh is not None:
             mesh.attach_replica(replica)
@@ -806,17 +1685,20 @@ class OrgFsRuntime:
         self.facade.unban(space_id, sha)
 
     def _write_checkout_config(self) -> None:
-        self._checkout_config.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self._checkout_config.with_suffix(".tmp")
-        temporary.write_text(
-            json.dumps(
-                {"schemaVersion": 1, "spaces": sorted(self._checkouts)},
-                separators=(",", ":"),
-                sort_keys=True,
-            ),
-            encoding="utf-8",
-        )
-        temporary.replace(self._checkout_config)
+        with self._checkout_config_lock:
+            with self._checkout_lock:
+                spaces = sorted(self._checkouts)
+            self._checkout_config.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self._checkout_config.with_suffix(".tmp")
+            temporary.write_text(
+                json.dumps(
+                    {"schemaVersion": 1, "spaces": spaces},
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+            temporary.replace(self._checkout_config)
 
     def _restore_checkouts(self) -> None:
         try:
@@ -847,39 +1729,70 @@ class OrgFsRuntime:
     def _set_checkout(
         self, space_id: str, enabled: bool, *, persist: bool
     ) -> dict[str, object]:
-        # Validate membership and hydrate before touching a projection path.
-        self.facade.stat(space_id, "id:root")
         root = self.state_dir / "orgfs" / "spaces" / space_id / "checkout"
+        with self._checkout_lock:
+            if self._checkout_closing:
+                raise OrgFsError("unavailable", {"message": "checkouts are closing"})
+            authority = self._checkouts.get(space_id)
+            if authority is None:
+                authority = CheckoutAuthority(self.facade, self.blobs, space_id, root)
+                if enabled:
+                    self._checkouts[space_id] = authority
         if enabled:
-            manager = self._checkouts.get(space_id)
-            if manager is None:
-                manager = CheckoutManager(self.facade, self.blobs, space_id, root)
-                manager.materialize()
-                registration = self.facade.watch(space_id, "*", manager.apply)
-                self._checkouts[space_id] = manager
-                self._checkout_registrations[space_id] = registration
-            else:
-                manager.materialize()
+            try:
+                authority.enable()
+            except Exception:
+                with self._checkout_lock:
+                    if self._checkouts.get(space_id) is authority:
+                        self._checkouts.pop(space_id, None)
+                authority.close(timeout=5.0)
+                raise
         else:
-            registration = self._checkout_registrations.pop(space_id, None)
-            if registration is not None:
-                registration.close()
-            manager = self._checkouts.pop(space_id, None)
-            if manager is None:
-                manager = CheckoutManager(self.facade, self.blobs, space_id, root)
-            manager.disable()
+            try:
+                authority.disable()
+            finally:
+                with self._checkout_lock:
+                    if self._checkouts.get(space_id) is authority:
+                        self._checkouts.pop(space_id, None)
+                authority.close(timeout=5.0)
         if persist:
             self._write_checkout_config()
         return {"spaceId": space_id, "enabled": enabled, "path": str(root)}
 
     def checkout(self, space_id: str, enabled: bool) -> dict[str, object]:
+        return self._ask_lifecycle(_CheckoutSpace(space_id, bool(enabled)))  # type: ignore[return-value]
+
+    def _checkout_sync(self, space_id: str, enabled: bool) -> dict[str, object]:
         return self._set_checkout(space_id, bool(enabled), persist=True)
 
     def close(self) -> None:
-        for registration in tuple(self._checkout_registrations.values()):
-            registration.close()
-        self._checkout_registrations.clear()
-        self._checkouts.clear()
+        with self._close_lock:
+            with self._resource_lock:
+                if self._closed:
+                    return
+                # Admission is fenced immediately, but remains retryable until
+                # every accepted operation and owned resource has drained.
+                self._closing = True
+            self._close_impl()
+
+    def _close_impl(self) -> None:
+        with self._resource_lock:
+            self._closing = True
+            creations = tuple(self._mesh_creations.values())
+        deadline = time.monotonic() + 5.0
+        for creation in creations:
+            if not creation.done.wait(max(0.0, deadline - time.monotonic())):
+                raise TimeoutError("orgfs mesh creation did not drain")
+        if not self._close_lifecycle(timeout=5.0):
+            raise TimeoutError("orgfs directory lifecycle did not drain")
+        with self._checkout_lock:
+            self._checkout_closing = True
+            checkouts = tuple(self._checkouts.items())
+        for _space_id, checkout in checkouts:
+            if isinstance(checkout, CheckoutAuthority) and not checkout.close(timeout=5.0):
+                raise TimeoutError("orgfs checkout I/O did not drain")
+        with self._checkout_lock:
+            self._checkouts.clear()
         if self._session is not None:
             try:
                 self._session.put(
@@ -903,18 +1816,39 @@ class OrgFsRuntime:
         if self._liveliness_registration is not None:
             self._liveliness_registration.close()
             self._liveliness_registration = None
-        for mesh in reversed(tuple(self._meshes.values())):
+        if not self._close_directory_ingress(timeout=5.0):
+            raise TimeoutError("orgfs directory effects did not drain")
+        with self._resource_lock:
+            meshes = tuple(self._meshes.values())
+            replicas = tuple(self._replicas.values())
+        for mesh in reversed(meshes):
             mesh.close()
-        self._meshes.clear()
-        self._replicas.clear()
+        for replica in replicas:
+            if not replica.close(timeout=5.0):
+                raise TimeoutError("orgfs replica authority did not drain")
+        if not self.facade.close_effects(timeout=5.0):
+            raise TimeoutError("orgfs post-commit effects did not drain")
+        with self._resource_lock:
+            self._meshes.clear()
+            self._replicas.clear()
         with self._pending_announces_lock:
             self._pending_announces.clear()
             self._lively_peers.clear()
-        self._session = None
-        for store in tuple(self.stores.values()):
+        with self._resource_lock:
+            self._session = None
+        if not self.blobs.close(timeout=5.0):
+            raise TimeoutError("orgfs blob authority did not drain")
+        for store in self.stores.snapshot():
             store.close()
         self.stores.clear()
-        self.blobs.close()
+        with self._resource_lock:
+            self._closed = True
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
 
 
 __all__ = ["OrgFsRuntime"]

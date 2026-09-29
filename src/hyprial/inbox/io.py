@@ -23,9 +23,11 @@ from hyprial.inbox.api import DeliveryLifecycle, InboxMessage
 from hyprial.inbox.ports import (
     AcknowledgeCompleted,
     AcknowledgeMessageCommand,
+    BoolMutationCompleted,
     InboxCommand,
     InboxCommandSink,
     InboxEvent,
+    PinnedEventClaim,
     SubmissionCompleted,
     SubmitMessageCommand,
 )
@@ -71,25 +73,44 @@ class CorrelatedInboxEventRouter:
         self._condition = threading.Condition()
         self._events: OrderedDict[str, InboxEvent] = OrderedDict()
         self._claimed: set[str] = set()
+        self._pinned: set[str] = set()
 
     def publish(self, event: object) -> None:
         if not isinstance(
             event,
-            (SubmissionCompleted, AcknowledgeCompleted, PortCommandRejected),
+            (
+                SubmissionCompleted,
+                AcknowledgeCompleted,
+                BoolMutationCompleted,
+                PortCommandRejected,
+            ),
         ):
             return
         with self._condition:
             correlation_id = event.correlation_id
             self._events[correlation_id] = event
             self._events.move_to_end(correlation_id)
-            self._claimed.discard(correlation_id)
+            if correlation_id not in self._pinned:
+                self._claimed.discard(correlation_id)
             while len(self._events) > self._capacity:
-                self._events.popitem(last=False)
+                evicted = next(
+                    (
+                        current
+                        for current in self._events
+                        if current not in self._pinned
+                    ),
+                    None,
+                )
+                if evicted is None:
+                    break
+                self._events.pop(evicted, None)
             self._condition.notify_all()
 
     def claim(self, correlation_id: str) -> bool:
         with self._condition:
             if correlation_id in self._events or correlation_id in self._claimed:
+                return False
+            if len(self._claimed) >= self._capacity:
                 return False
             self._claimed.add(correlation_id)
             return True
@@ -110,6 +131,41 @@ class CorrelatedInboxEventRouter:
             event = self._events.get(correlation_id)
             if isinstance(event, PortCommandRejected):
                 self._events.pop(correlation_id, None)
+            self._condition.notify_all()
+
+    def claim_pinned(self, correlation_id: str) -> PinnedEventClaim:
+        """Reserve one bounded completion cell until its owner releases it."""
+
+        with self._condition:
+            if correlation_id in self._events:
+                return PinnedEventClaim.READY
+            if correlation_id in self._pinned or correlation_id in self._claimed:
+                return PinnedEventClaim.WAIT
+            if len(self._claimed) >= self._capacity:
+                return PinnedEventClaim.FULL
+            while len(self._events) >= self._capacity:
+                evicted = next(
+                    (
+                        current
+                        for current in self._events
+                        if current not in self._pinned
+                    ),
+                    None,
+                )
+                if evicted is None:
+                    return PinnedEventClaim.FULL
+                self._events.pop(evicted, None)
+            if len(self._pinned) >= self._capacity:
+                return PinnedEventClaim.FULL
+            self._claimed.add(correlation_id)
+            self._pinned.add(correlation_id)
+            return PinnedEventClaim.OWNER
+
+    def release_pinned(self, correlation_id: str) -> None:
+        with self._condition:
+            self._pinned.discard(correlation_id)
+            self._claimed.discard(correlation_id)
+            self._events.pop(correlation_id, None)
             self._condition.notify_all()
 
 

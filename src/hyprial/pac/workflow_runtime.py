@@ -15,7 +15,7 @@ import re
 import sqlite3
 import threading
 from time import time_ns, monotonic
-from typing import Any
+from typing import Any, Protocol
 from uuid import uuid4
 
 from hyprial.contracts import ipc_errors
@@ -34,6 +34,44 @@ from .workflow_schema import WorkflowSchemaError, WorkflowSpec, load_workflow_te
 from .workflow_output import validate_workflow_output_text
 
 TERMINAL = {"completed", "failed", "cancelled"}
+
+
+class NotificationReceiptAuthority(Protocol):
+    def record_delivery(
+        self, graph_id: str, event_id: str, edge: str, message_id: str
+    ) -> None: ...
+
+
+class WorkflowTickAuthority(Protocol):
+    def attach_workflow(self, service: GraphWorkflowService) -> None: ...
+    def workflow_tick(self, observed_at_ms: int) -> None: ...
+    def probe_workflow(
+        self, *, yaml_text: str, sender: str, operation_key: str,
+        routine_name: str | None = None, task_key: str | None = None,
+    ) -> str | None: ...
+    def start_workflow(
+        self, *, yaml_text: str, sender: str, operation_key: str,
+        routine_name: str | None, task_key: str | None,
+        machine: str, local_owner: str, at: int,
+    ) -> str: ...
+    def cancel_workflow(
+        self, *, run_id: str, actor: str, reason_ref: str
+    ) -> dict[str, Any]: ...
+    def stop_workflow_worker(
+        self, *, graph_id: str, actor_name: str, actor: str
+    ) -> dict[str, Any]: ...
+    def restart_workflow_worker(
+        self, *, graph_id: str, actor_name: str, actor: str
+    ) -> dict[str, Any]: ...
+    def fail_workflow(
+        self, *, graph_id: str, node_id: str, actor: str,
+        request_id: str, reason_ref: str, output_text: str | None,
+    ) -> dict[str, Any]: ...
+    def record_harness_outcome(
+        self, *, message_id: str, recipient: str, failed: bool,
+        failure_code: str | None = None,
+    ) -> bool: ...
+    def record_request_pruned(self, *, message_id: str, recipient: str) -> bool: ...
 
 
 class WorkflowServiceError(RuntimeError):
@@ -307,7 +345,11 @@ class GraphWorkflowService:
         clock_ms: Callable[[], int] | None = None,
         logger: Any = None,
         start_thread: bool = True,
+        delivery_receipt: NotificationReceiptAuthority | None = None,
+        graph_authority: WorkflowTickAuthority | None = None,
     ):
+        if graph_authority is not None and not start_thread:
+            raise ValueError("PAC graph authority requires asynchronous workflow delivery")
         self.database = default_database_path(state_dir)
         self.database.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.owner, self.machine = owner, machine
@@ -315,6 +357,8 @@ class GraphWorkflowService:
         self.admit = admit
         self.clock = clock_ms or (lambda: time_ns() // 1_000_000)
         self.logger = logger
+        self._delivery_receipt = delivery_receipt
+        self._graph_authority = graph_authority
         self._queue: queue.Queue[int | None] = queue.Queue(maxsize=1)
         self._closed = False
         self._asynchronous = start_thread
@@ -329,7 +373,9 @@ class GraphWorkflowService:
         # Construction is a readiness boundary.  Publishing a service whose
         # database could not be opened makes a later empty recovery look
         # healthy and lets callers enqueue work into a dead cadence.
-        self._open().close()
+        self._open(read_only=self._graph_authority is not None).close()
+        if self._graph_authority is not None:
+            self._graph_authority.attach_workflow(self)
         if start_thread:
             for index in range(2):
                 worker = threading.Thread(
@@ -372,7 +418,7 @@ class GraphWorkflowService:
             except queue.Empty:
                 continue
             try:
-                store = self._open()
+                store = self._open(read_only=self._delivery_receipt is not None)
                 try:
                     self._drain(store, graph_id)
                 finally:
@@ -396,7 +442,10 @@ class GraphWorkflowService:
             if at is None:
                 return
             try:
-                self._tick(self.clock())
+                if self._graph_authority is None:
+                    self._tick(self.clock())
+                else:
+                    self._graph_authority.workflow_tick(self.clock())
             except (
                 Exception
             ) as error:  # one bad graph must not kill the resident cadence
@@ -429,7 +478,7 @@ class GraphWorkflowService:
         )
 
     def recover(self) -> int:
-        store = self._open()
+        store = self._open(read_only=True)
         try:
             try:
                 count = store._db.execute(
@@ -469,12 +518,10 @@ class GraphWorkflowService:
             )
         try:
             spec = load_workflow_text(yaml_text)
-            store = self._open()
-            try:
+            if self._graph_authority is not None:
                 graph_id = (
-                    replay_graph(
-                        store,
-                        spec,
+                    self._graph_authority.probe_workflow(
+                        yaml_text=yaml_text,
                         sender=sender,
                         operation_key=operation_key,
                         routine_name=routine_name,
@@ -486,9 +533,8 @@ class GraphWorkflowService:
                 if graph_id is None:
                     if self.admit:
                         self.admit(spec, sender)
-                    graph_id = compile_workflow(
-                        store,
-                        spec,
+                    graph_id = self._graph_authority.start_workflow(
+                        yaml_text=yaml_text,
                         sender=sender,
                         machine=self.machine,
                         local_owner=self.owner,
@@ -497,8 +543,30 @@ class GraphWorkflowService:
                         routine_name=routine_name,
                         task_key=task_key,
                     )
-            finally:
-                store.close()
+            else:
+                store = self._open()
+                try:
+                    graph_id = (
+                        replay_graph(
+                            store, spec, sender=sender,
+                            operation_key=operation_key,
+                            routine_name=routine_name,
+                            task_key=task_key,
+                        )
+                        if operation_key else None
+                    )
+                    if graph_id is None:
+                        if self.admit:
+                            self.admit(spec, sender)
+                        graph_id = compile_workflow(
+                            store, spec, sender=sender, machine=self.machine,
+                            local_owner=self.owner,
+                            operation_key=operation_key or uuid4().hex,
+                            at=self.clock(), routine_name=routine_name,
+                            task_key=task_key,
+                        )
+                finally:
+                    store.close()
         except (WorkflowSchemaError, PacError) as error:
             raise WorkflowServiceError(error.code, str(error)) from error
         self.submit_timer(self.clock())
@@ -848,7 +916,12 @@ class GraphWorkflowService:
                     conversation_id=f"pac-{graph_id}",
                     idempotency_key=f"pac-notify:{item.event_id}:{item.edge}",
                 )
-                reactor._mark_delivered(item.event_id, item.edge, message)
+                if self._delivery_receipt is None:
+                    reactor._mark_delivered(item.event_id, item.edge, message)
+                else:
+                    self._delivery_receipt.record_delivery(
+                        graph_id, item.event_id, item.edge, message
+                    )
             except Exception as error:
                 if self.logger:
                     self.logger(
@@ -911,6 +984,20 @@ class GraphWorkflowService:
         turn is an explicit execution failure; persist it before inbox ACK.
         Late outcomes cannot overwrite an already accepted completion flag.
         """
+        if self._graph_authority is not None:
+            return self._graph_authority.record_harness_outcome(
+                message_id=message_id, recipient=recipient, failed=failed,
+                failure_code=failure_code,
+            )
+        return self._record_harness_outcome_direct(
+            message_id=message_id, recipient=recipient, failed=failed,
+            failure_code=failure_code,
+        )
+
+    def _record_harness_outcome_direct(
+        self, *, message_id: str, recipient: str, failed: bool,
+        failure_code: str | None = None,
+    ) -> bool:
         store = self._open()
         try:
             with store.write():
@@ -974,6 +1061,18 @@ class GraphWorkflowService:
         swept after a new generation has been requested without authorizing a
         failure of that new generation.
         """
+
+        if self._graph_authority is not None:
+            return self._graph_authority.record_request_pruned(
+                message_id=message_id, recipient=recipient,
+            )
+        return self._record_request_pruned_direct(
+            message_id=message_id, recipient=recipient,
+        )
+
+    def _record_request_pruned_direct(
+        self, *, message_id: str, recipient: str
+    ) -> bool:
 
         failed = False
         store = self._open()
@@ -1213,6 +1312,18 @@ class GraphWorkflowService:
     def cancel(
         self, *, run_id: str, actor: str, reason_ref: str = "workflow:cancelled"
     ) -> dict[str, Any]:
+        if self._graph_authority is not None:
+            try:
+                return self._graph_authority.cancel_workflow(
+                    run_id=run_id, actor=actor, reason_ref=reason_ref
+                )
+            except PacError as error:
+                raise WorkflowServiceError(error.code, str(error)) from error
+        return self._cancel_direct(run_id=run_id, actor=actor, reason_ref=reason_ref)
+
+    def _cancel_direct(
+        self, *, run_id: str, actor: str, reason_ref: str
+    ) -> dict[str, Any]:
         store = self._open()
         try:
             with store.write():
@@ -1262,6 +1373,18 @@ class GraphWorkflowService:
 
     def stop_worker(self, *, graph_id: str, actor_name: str, actor: str):
         """Give up an owned worker and fail its unfinished work immediately."""
+        if self._graph_authority is not None:
+            try:
+                return self._graph_authority.stop_workflow_worker(
+                    graph_id=graph_id, actor_name=actor_name, actor=actor
+                )
+            except PacError as error:
+                raise WorkflowServiceError(error.code, str(error)) from error
+        return self._stop_worker_direct(
+            graph_id=graph_id, actor_name=actor_name, actor=actor
+        )
+
+    def _stop_worker_direct(self, *, graph_id: str, actor_name: str, actor: str):
         from hyprial.pac.lifecycle import request_actor_stop
 
         store = self._open()
@@ -1324,6 +1447,18 @@ class GraphWorkflowService:
 
     def restart_worker(self, *, graph_id: str, actor_name: str, actor: str):
         """Restart an owned worker and make its current work requestable again."""
+        if self._graph_authority is not None:
+            try:
+                return self._graph_authority.restart_workflow_worker(
+                    graph_id=graph_id, actor_name=actor_name, actor=actor
+                )
+            except PacError as error:
+                raise WorkflowServiceError(error.code, str(error)) from error
+        return self._restart_worker_direct(
+            graph_id=graph_id, actor_name=actor_name, actor=actor
+        )
+
+    def _restart_worker_direct(self, *, graph_id: str, actor_name: str, actor: str):
         from hyprial.pac.lifecycle import request_actor_wake
 
         store = self._open()
@@ -1362,6 +1497,25 @@ class GraphWorkflowService:
         request_id: str,
         reason_ref: str,
         output_text: str | None = None,
+    ):
+        if self._graph_authority is not None:
+            try:
+                return self._graph_authority.fail_workflow(
+                    graph_id=graph_id, node_id=node_id, actor=actor,
+                    request_id=request_id, reason_ref=reason_ref,
+                    output_text=output_text,
+                )
+            except PacError as error:
+                raise WorkflowServiceError(error.code, str(error)) from error
+        return self._fail_direct(
+            graph_id=graph_id, node_id=node_id, actor=actor,
+            request_id=request_id, reason_ref=reason_ref,
+            output_text=output_text,
+        )
+
+    def _fail_direct(
+        self, *, graph_id: str, node_id: str, actor: str,
+        request_id: str, reason_ref: str, output_text: str | None,
     ):
         try:
             output_text = validate_workflow_output_text(output_text)
@@ -1419,5 +1573,12 @@ class GraphWorkflowService:
                 )
         finally:
             store.close()
-        self._tick()
+        # Production cadence owns follow-up projection and notification
+        # delivery.  A caller reporting failure has already committed the
+        # request-scoped fact; scanning every graph here can hold an IPC/RX
+        # thread behind unrelated SQLite and delivery work.
+        if self._asynchronous:
+            self.submit_timer(self.clock())
+        else:
+            self._tick()
         return self.status(run_id=graph_id)

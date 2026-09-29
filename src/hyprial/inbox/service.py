@@ -656,23 +656,6 @@ class InboxService:
                 ),
             )
 
-    @_synchronized
-    def wake_outbox_recipient(
-        self, recipient: str, *, now_ms: int | None = None
-    ) -> bool:
-        """Make one recipient's live, delayed rows eligible for the next pump."""
-
-        now = self._now_ms() if now_ms is None else now_ms
-        with self._db:
-            cursor = self._db.execute(
-                """UPDATE outbox
-                      SET next_attempt_ms = ?
-                    WHERE recipient = ?
-                      AND expires_at_ms > ?
-                      AND next_attempt_ms > ?""",
-                (now, recipient, now, now),
-            )
-        return cursor.rowcount > 0
 
     @_synchronized
     def retry_due(self, *, now_ms: int | None = None) -> list[SubmissionResult]:
@@ -769,6 +752,24 @@ class InboxService:
             outcomes.append(SubmissionResult(message.message_id, True, queued=True))
         outcomes.extend(self.retry_custody_due(now_ms=now))
         return outcomes
+
+    @_synchronized
+    def wake_outbox_recipient(
+        self, recipient: str, *, now_ms: int | None = None
+    ) -> bool:
+        """Make one recipient's live delayed rows eligible for the next pump."""
+
+        now = self._now_ms() if now_ms is None else now_ms
+        with self._db:
+            cursor = self._db.execute(
+                """UPDATE outbox
+                      SET next_attempt_ms = ?
+                    WHERE recipient = ?
+                      AND expires_at_ms > ?
+                      AND next_attempt_ms > ?""",
+                (now, recipient, now, now),
+            )
+        return cursor.rowcount > 0
 
     @_synchronized
     def receive(
@@ -2335,6 +2336,16 @@ class InboxService:
                 (recipient,),
             ).fetchone()[0]
         )
+
+    @_synchronized
+    def pending_work_recipients(self) -> frozenset[str]:
+        """Payload-free inbox/custody recipients, read only by the state owner."""
+
+        rows = self._db.execute(
+            "SELECT recipient FROM inbox WHERE consumed=0 "
+            "UNION SELECT recipient FROM custody"
+        ).fetchall()
+        return frozenset(str(row["recipient"]) for row in rows)
 
     @_synchronized
     def pending_recipient_counts(self) -> tuple[tuple[str, int], ...]:

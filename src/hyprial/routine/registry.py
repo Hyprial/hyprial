@@ -22,24 +22,28 @@ from uuid import uuid4
 import yaml
 
 from hyprial.contracts.ports import PortCommandRejected
+from hyprial.contracts import ipc_errors
 from hyprial.log import Logger
 from hyprial.uri import delivery_address_error
 
 from .ports import (
     AddRoutineCommand,
+    CancelRoutineRemovalCommand,
     PauseRoutineCommand,
     RecoverRoutinesCommand,
+    ReserveRoutineRemovalCommand,
     RemoveRoutineCommand,
     ResumeRoutineCommand,
     RoutineAddedProjection,
     RoutineMutationCompleted,
+    RoutineMutationRejected,
     RoutineMutationProjection,
     RoutinesRecovered,
     RoutineSourceQueryCompleted,
     RoutineTimerCompleted,
     RoutineTimerElapsedCommand,
-    SetRoutineCommand,
     RoutinePacIoCompleted,
+    SetRoutineCommand,
 )
 from .schema import RoutineSchemaError, RoutineSpec, load_routine_text
 from .source import SOURCE_ERROR_CAP, SourceTask, route_decision
@@ -103,6 +107,7 @@ class RoutineAlarmEffect:
     routine_name: str
     to: str
     text: str
+    idempotency_key: str = ""
     operation: str = "alarm"
 
 
@@ -112,6 +117,7 @@ RoutineEffect: TypeAlias = (
 RegistryOutput: TypeAlias = (
     RoutineEffect
     | RoutineMutationCompleted
+    | RoutineMutationRejected
     | RoutinesRecovered
     | RoutineTimerCompleted
     | PortCommandRejected
@@ -184,7 +190,7 @@ class RoutineRegistry:
                     schedule_events=((row.name, row.next_due_ms, "skipped", missed, "daemon-downtime", at),),
                 )
         store.rebase_pending_generation(generation)
-        for row in store.pending_effects(limit=10_000):
+        for row in store.pending_effects(limit=10_000, now_ms=self._clock_ms()):
             self._publish(self.decode_effect(row.payload))
 
     def __call__(self, command: object) -> None:
@@ -194,6 +200,10 @@ class RoutineRegistry:
             self._set(command)
         elif isinstance(command, RemoveRoutineCommand):
             self._remove(command)
+        elif isinstance(command, ReserveRoutineRemovalCommand):
+            self._reserve_remove(command)
+        elif isinstance(command, CancelRoutineRemovalCommand):
+            self._cancel_remove(command)
         elif isinstance(command, PauseRoutineCommand):
             self._pause(command)
         elif isinstance(command, ResumeRoutineCommand):
@@ -210,6 +220,9 @@ class RoutineRegistry:
             raise TypeError(f"unsupported routine command: {type(command).__name__}")
 
     def _add(self, command: AddRoutineCommand) -> None:
+        if command.registration_id is not None and not command.registration_id.strip():
+            self._reject(command.correlation_id, "ROUTINE_REGISTRATION_INVALID", "registration ID is blank")
+            return
         try:
             spec = load_routine_text(command.yaml_text)
         except RoutineSchemaError as error:
@@ -230,7 +243,7 @@ class RoutineRegistry:
             outcomes="[]",
             created_at_ms=now,
             version=self._next_version(),
-            registration_id=uuid4().hex,
+            registration_id=command.registration_id or uuid4().hex,
         )
         self._store.apply(routine=row, clear_work_for=spec.name)
         self._active[spec.name] = _ActiveRoutine(spec, command.yaml_text, command.owner)
@@ -246,13 +259,56 @@ class RoutineRegistry:
         )
 
     def _remove(self, command: RemoveRoutineCommand) -> None:
-        if self._store.get_routine(command.name) is None:
+        row = self._store.get_routine(command.name)
+        if row is None:
             self._reject(
                 command.correlation_id,
                 "ROUTINE_NOT_FOUND",
                 f"no such routine: {command.name}",
             )
             return
+        current = self._active.get(command.name)
+        binding = (
+            None if current is None else current.spec.actor or current.spec.produces
+        )
+        reservation = self._store.removal_reservation(command.name)
+        if command.reservation_id is not None:
+            if (
+                reservation is None
+                or reservation.reservation_id != command.reservation_id
+                or reservation.registration_id != row.registration_id
+            ):
+                self._reject(
+                    command.correlation_id,
+                    "ROUTINE_COORDINATOR_CONFLICT",
+                    f"routine {command.name!r} removal reservation changed",
+                )
+                return
+        elif reservation is not None:
+            self._reject(
+                command.correlation_id,
+                "ROUTINE_BUSY",
+                f"routine {command.name!r} has a reserved removal",
+            )
+            return
+        if command.enforce_last and binding is not None and reservation is None:
+            reserved = self._store.reserved_removals()
+            bound = sum(
+                1
+                for name, item in self._active.items()
+                if (item.spec.actor or item.spec.produces) == binding
+                and name not in reserved
+            )
+            if bound <= 1:
+                self._reject(
+                    command.correlation_id,
+                    ipc_errors.ROUTINE_LAST_BINDING,
+                    f"routine {command.name!r} is the last routine bound to "
+                    f"{binding}; bind a new one first with `hyprial routine add`, "
+                    "or modify this one with `hyprial routine set`",
+                    data=(("routine", command.name), ("actor", binding)),
+                )
+                return
         version = self._next_version()
         self._store.apply(remove_routine=command.name)
         self._active.pop(command.name, None)
@@ -265,9 +321,84 @@ class RoutineRegistry:
             )
         )
 
+    def _reserve_remove(self, command: ReserveRoutineRemovalCommand) -> None:
+        row = self._store.get_routine(command.name)
+        if row is None:
+            self._reject(
+                command.correlation_id,
+                "ROUTINE_NOT_FOUND",
+                f"no such routine: {command.name}",
+            )
+            return
+        existing = self._store.removal_reservation(command.name)
+        if (
+            existing is not None
+            and existing.reservation_id == command.reservation_id
+            and existing.registration_id == row.registration_id
+        ):
+            self._publish_mutation(command.correlation_id, row, enabled=row.enabled)
+            return
+        if existing is not None:
+            self._reject(
+                command.correlation_id,
+                "ROUTINE_BUSY",
+                f"routine {command.name!r} has a reserved removal",
+            )
+            return
+        current = self._active.get(command.name)
+        binding = None if current is None else current.spec.actor or current.spec.produces
+        if command.enforce_last and binding is not None:
+            reserved = self._store.reserved_removals()
+            alternatives = sum(
+                1
+                for name, item in self._active.items()
+                if name != command.name
+                and name not in reserved
+                and (item.spec.actor or item.spec.produces) == binding
+            )
+            if alternatives == 0:
+                self._reject(
+                    command.correlation_id,
+                    ipc_errors.ROUTINE_LAST_BINDING,
+                    f"routine {command.name!r} is the last unreserved routine "
+                    f"bound to {binding}; bind a new one first with "
+                    "`hyprial routine add`, or modify this one with "
+                    "`hyprial routine set`",
+                    data=(("routine", command.name), ("actor", binding)),
+                )
+                return
+        self._store.reserve_removal(
+            command.name, command.reservation_id, row.registration_id
+        )
+        self._publish_mutation(command.correlation_id, row, enabled=row.enabled)
+
+    def _cancel_remove(self, command: CancelRoutineRemovalCommand) -> None:
+        self._store.cancel_removal_reservation(
+            command.name, command.reservation_id
+        )
+        row = self._store.get_routine(command.name)
+        self._publish(
+            RoutineMutationCompleted(
+                command.correlation_id,
+                self._generation,
+                self._next_version(),
+                RoutineMutationProjection(
+                    command.name,
+                    enabled=None if row is None else row.enabled,
+                ),
+            )
+        )
+
     def _set(self, command: SetRoutineCommand) -> None:
         row = self._require(command.correlation_id, command.name)
         if row is None:
+            return
+        if self._store.removal_reservation(command.name) is not None:
+            self._reject(
+                command.correlation_id,
+                "ROUTINE_BUSY",
+                f"routine {command.name!r} has a reserved removal",
+            )
             return
         snapshot = self._store.snapshot(command.name)
         if (snapshot is not None and bool(snapshot.in_flight)) or (
@@ -287,7 +418,7 @@ class RoutineRegistry:
         if spec.name != command.name:
             self._reject(
                 command.correlation_id,
-                "ROUTINE_NAME_IMMUTABLE",
+                ipc_errors.ROUTINE_NAME_IMMUTABLE,
                 f"replacement name must remain {command.name!r}",
             )
             return
@@ -295,7 +426,7 @@ class RoutineRegistry:
         if (spec.actor, spec.produces) != (current.actor, current.produces):
             self._reject(
                 command.correlation_id,
-                "ROUTINE_BINDING_IMMUTABLE",
+                ipc_errors.ROUTINE_BINDING_IMMUTABLE,
                 "routine set keeps the existing actor/produces binding",
             )
             return
@@ -310,9 +441,7 @@ class RoutineRegistry:
             spec, command.yaml_text, row.owner
         )
         self._publish_mutation(
-            command.correlation_id,
-            updated,
-            enabled=updated.enabled,
+            command.correlation_id, updated, enabled=updated.enabled
         )
 
     def _pause(self, command: PauseRoutineCommand) -> None:
@@ -382,9 +511,11 @@ class RoutineRegistry:
             return
         self._last_timer_sequence = command.version
         checked = 0
+        reserved = self._store.reserved_removals()
         for row in self._store.list_routines():
             if (
                 not row.enabled
+                or row.name in reserved
                 or row.quarantine_reason is not None
                 or command.observed_at_ms < row.next_due_ms
             ):
@@ -554,7 +685,17 @@ class RoutineRegistry:
             return
         effect = self.decode_effect(effect_row.payload)
         if isinstance(effect, RoutineAlarmEffect):
-            self._store.apply(delete_effects=(effect.effect_id,))
+            if event.code is None:
+                self._store.apply(delete_effects=(effect.effect_id,))
+            else:
+                effect_row = self._store.effect(effect.effect_id)
+                attempts = 1 if effect_row is None else effect_row.attempts + 1
+                delay_ms = min(60_000, 500 * (2 ** min(attempts - 1, 7)))
+                self._store.retry_effect(
+                    effect.effect_id,
+                    attempts=attempts,
+                    available_at_ms=self._clock_ms() + delay_ms,
+                )
             return
         if not isinstance(effect, RoutinePacEffect):
             return
@@ -650,6 +791,10 @@ class RoutineRegistry:
                         routine_name=row.name,
                         to=escalate_to,
                         text=self._render(active.spec, task, nonce=""),
+                        idempotency_key=(
+                            f"routine-alarm:{row.name}:{cycle.correlation_id}:"
+                            f"route:{task.uuid}"
+                        ),
                     )
                 )
                 outcomes.append("escalated")
@@ -753,6 +898,23 @@ class RoutineRegistry:
             escalate_to = effect.escalate_to or active.spec.escalate_to
             code = event.code or "ROUTINE_START_FAILED"
             detail = event.detail or "PAC start returned no graph"
+            alarm = RoutineAlarmEffect(
+                effect_id=f"routine-io-{uuid4().hex}",
+                parent_correlation_id=cycle.correlation_id,
+                generation=self._generation,
+                version=cycle.version,
+                routine_name=row.name,
+                to=escalate_to,
+                text=(
+                    f"routine '{row.name}' failed to start task "
+                    f"'{effect.task_uuid}': {code}: {detail}"
+                ),
+                idempotency_key=(
+                    f"routine-start-failed:{row.name}:{cycle.correlation_id}:"
+                    f"{effect.task_uuid}"
+                ),
+            )
+            alarms = (alarm,)
             self._log(
                 "warn",
                 "routine.start_failed",
@@ -761,20 +923,6 @@ class RoutineRegistry:
                 code=code,
                 detail=detail,
                 to=escalate_to,
-            )
-            alarms = (
-                RoutineAlarmEffect(
-                    effect_id=f"routine-io-{uuid4().hex}",
-                    parent_correlation_id=cycle.correlation_id,
-                    generation=self._generation,
-                    version=cycle.version,
-                    routine_name=row.name,
-                    to=escalate_to,
-                    text=(
-                        f"routine '{row.name}' failed to start task "
-                        f"'{effect.task_uuid}': {code}: {detail}"
-                    ),
-                ),
             )
         remaining = max(0, cycle.pending_start - 1)
         cycle = replace(
@@ -977,6 +1125,7 @@ class RoutineRegistry:
                 f"self-drive routine '{row.name}' paused: {reason}. Resume with "
                 f"`hyprial routine resume {row.name}` after review."
             ),
+            idempotency_key=f"routine-paused:{row.name}:{correlation_id}",
         )
 
     def _publish_mutation(
@@ -997,7 +1146,22 @@ class RoutineRegistry:
             self._reject(correlation_id, "ROUTINE_NOT_FOUND", f"no such routine: {name}")
         return row
 
-    def _reject(self, correlation_id: str, code: str, detail: str) -> None:
+    def _reject(
+        self,
+        correlation_id: str,
+        code: str,
+        detail: str,
+        *,
+        data: tuple[tuple[str, str], ...] = (),
+    ) -> None:
+        if data:
+            self._publish(
+                RoutineMutationRejected(
+                    correlation_id, self._generation, self._epoch,
+                    code, detail, data,
+                )
+            )
+            return
         self._publish(
             PortCommandRejected(
                 correlation_id=correlation_id,
@@ -1022,6 +1186,8 @@ class RoutineRegistry:
             effect.generation,
             effect.version,
             {"kind": type(effect).__name__, **asdict(effect)},
+            0,
+            0,
         )
 
     @staticmethod
@@ -1035,6 +1201,11 @@ class RoutineRegistry:
         }
         if kind == "RoutineSourceQueryEffect":
             values.setdefault("coordinator", "")
+        if kind == "RoutinePacEffect":
+            values.setdefault("occurrence_slot_ms", None)
+            values.setdefault("rearm_after_created_at_ms", 0)
+        if kind == "RoutineAlarmEffect":
+            values.setdefault("idempotency_key", str(values.get("effect_id", "")))
         try:
             return types[kind](**values)
         except KeyError as error:

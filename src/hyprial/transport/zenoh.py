@@ -19,8 +19,16 @@ from typing import Any, Self
 
 import zenoh
 
+from hyprial.actor_runtime import AdmissionResult
+
 from .api import TransportSample
 from .keys import KeySpace
+from .presence_actor import (
+    ActorOnlineTransition,
+    PresenceAuthority,
+    PresenceProjection,
+)
+from .query_actor import QueryIoOwner
 
 logger = logging.getLogger(__name__)
 
@@ -226,113 +234,225 @@ class _CallbackDispatcher:
                         continue
 
 
-class _QueryDispatcher:
-    """Runs queryable handlers away from zenoh's receive threads.
+@dataclass(frozen=True, slots=True)
+class _QueryJob:
+    key_expr: str
+    callback: Callable[[Any], None]
+    payload: Any
+    query: Any
+    retire: Callable[[str], None] | None = None
+    token: str = ""
 
-    A ``zenoh.Query`` remains valid after its direct callback returns and is
-    finalized by ``Query.drop``.  A fixed worker pool can therefore own the
-    handler and reply lifetime without restoring zenoh-python's one indirect
-    callback thread per declaration.
+
+@dataclass(frozen=True, slots=True)
+class _QueryCleanup:
+    job: _QueryJob
+    dropped: bool = False
+
+
+def _drop_query(query: Any, key_expr: str) -> bool:
+    """A failed native drop must not end a shared query worker."""
+
+    try:
+        query.drop()
+        return True
+    except Exception:  # noqa: BLE001 - preserve the remaining pool workers
+        logger.exception(
+            "zenoh.queryable.drop_failed key_expr=%s: a query could not be finalized",
+            key_expr,
+            extra={"event": "zenoh.queryable.drop_failed"},
+        )
+        return False
+
+
+class _QueryDispatcher:
+    """One bounded native-query effect pool shared by all query declarations.
+
+    The queue plus active workers own at most ``capacity + workers`` queries.
+    Direct Zenoh callbacks only reserve and enqueue; accepted native handles
+    remain pinned until the worker replies, drops and retires their token.
     """
 
     def __init__(self, capacity: int, workers: int = QUERY_WORKERS) -> None:
         if capacity < 1 or workers < 1:
-            raise ValueError(
-                "query dispatcher capacity and worker count must be positive"
-            )
+            raise ValueError("query dispatcher capacity and worker count must be positive")
         self._capacity = capacity
-        self._queue: queue.Queue[Any] = queue.Queue(maxsize=capacity)
         self._worker_count = workers
+        self._limit = capacity + workers
+        self._queue: queue.Queue[_QueryJob | None] = queue.Queue(maxsize=self._limit)
         self._threads: list[threading.Thread] = []
         self._dropped: dict[str, int] = {}
-        self._guard = threading.Lock()
+        self._guard = threading.Condition()
+        self._cleanup_retry_lock = threading.Lock()
+        self._outstanding = 0
+        self._cleanup_pending: dict[int, _QueryCleanup] = {}
+        self._paused = False
         self._stopped = False
+        self._sentinels_sent = False
 
-    def wrap(
-        self, key_expr: str, callback: Callable[[Any], None]
-    ) -> Callable[[Any], None]:
+    def wrap(self, key_expr: str, callback: Callable[[Any], None]) -> Callable[[Any], None]:
         def deliver(query: Any) -> None:
-            dropped = 0
-            with self._guard:
-                if self._stopped:
-                    accepted = False
-                else:
-                    self._ensure_workers()
-                    try:
-                        self._queue.put_nowait((key_expr, callback, query))
-                        accepted = True
-                    except queue.Full:
-                        dropped = self._dropped.get(key_expr, 0) + 1
-                        self._dropped[key_expr] = dropped
-                        accepted = False
-            if accepted:
-                return
-            query.drop()
-            if not self._stopped and (
-                dropped == 1 or dropped % OVERFLOW_LOG_EVERY == 0
-            ):
-                logger.error(
-                    "zenoh.queryable.overflow key_expr=%s dropped=%d capacity=%d: "
-                    "the query handlers are not keeping up; query was dropped",
-                    key_expr,
-                    dropped,
-                    self._capacity,
-                    extra={"event": "zenoh.queryable.overflow"},
-                )
+            self.submit(key_expr, callback, query, query)
 
         return deliver
+
+    @staticmethod
+    def reject(key_expr: str, query: Any) -> None:
+        _drop_query(query, key_expr)
+
+    def submit(
+        self,
+        key_expr: str,
+        callback: Callable[[Any], None],
+        payload: Any,
+        query: Any,
+        *,
+        retire: Callable[[str], None] | None = None,
+        token: str = "",
+    ) -> AdmissionResult:
+        dropped = 0
+        with self._guard:
+            if self._stopped:
+                admission = AdmissionResult.CLOSED
+            elif self._paused or self._outstanding >= self._limit:
+                dropped = self._dropped.get(key_expr, 0) + 1
+                self._dropped[key_expr] = dropped
+                admission = AdmissionResult.OVERLOADED
+            else:
+                self._ensure_workers()
+                self._outstanding += 1
+                self._queue.put_nowait(_QueryJob(key_expr, callback, payload, query, retire, token))
+                return AdmissionResult.ACCEPTED
+        _drop_query(query, key_expr)
+        self._retire(retire, token, key_expr)
+        if dropped == 1 or (dropped and dropped % OVERFLOW_LOG_EVERY == 0):
+            logger.error(
+                "zenoh.queryable.overflow key_expr=%s dropped=%d capacity=%d: "
+                "the query handlers are not keeping up; query was dropped",
+                key_expr, dropped, self._capacity,
+                extra={"event": "zenoh.queryable.overflow"},
+            )
+        return admission
 
     def _ensure_workers(self) -> None:
         if self._threads:
             return
         for index in range(self._worker_count):
             worker = threading.Thread(
-                target=self._drain,
-                name=f"hyprial-zenoh-query-{index}",
-                daemon=True,
+                target=self._drain, name=f"hyprial-zenoh-query-{index}", daemon=True
             )
             self._threads.append(worker)
             worker.start()
 
+    @staticmethod
+    def _retire(retire: Callable[[str], None] | None, token: str, key_expr: str) -> bool:
+        if retire is None:
+            return True
+        try:
+            retire(token)
+            return True
+        except Exception:  # noqa: BLE001 - do not lose a shared worker on retirement
+            logger.exception(
+                "zenoh.queryable.retire_failed key_expr=%s", key_expr,
+                extra={"event": "zenoh.queryable.retire_failed"},
+            )
+            return False
+
+    def _finish(self, job: _QueryJob) -> None:
+        dropped = _drop_query(job.query, job.key_expr)
+        retired = dropped and self._retire(job.retire, job.token, job.key_expr)
+        with self._guard:
+            if retired:
+                self._outstanding -= 1
+            else:
+                self._cleanup_pending[id(job)] = _QueryCleanup(job, dropped)
+            self._guard.notify_all()
+
+    def retry_cleanup(self) -> bool:
+        """Try each retained native cleanup once; never rerun its handler."""
+
+        # A close retry and a worker's explicit caller may arrive together.
+        # Claim the whole pass, while native cleanup stays outside the global
+        # admission condition so direct Zenoh callbacks remain nonblocking.
+        with self._cleanup_retry_lock:
+            with self._guard:
+                pending = tuple(self._cleanup_pending.items())
+            for key, state in pending:
+                dropped = state.dropped or _drop_query(state.job.query, state.job.key_expr)
+                retired = dropped and self._retire(
+                    state.job.retire, state.job.token, state.job.key_expr
+                )
+                with self._guard:
+                    if self._cleanup_pending.get(key) is not state:
+                        continue
+                    if retired:
+                        self._cleanup_pending.pop(key)
+                        self._outstanding -= 1
+                    elif dropped and not state.dropped:
+                        self._cleanup_pending[key] = _QueryCleanup(state.job, True)
+                    self._guard.notify_all()
+            with self._guard:
+                return not self._cleanup_pending
+
     def _drain(self) -> None:
         while True:
-            item = self._queue.get()
-            if item is None:
+            job = self._queue.get()
+            if job is None:
                 return
-            key_expr, callback, query = item
             try:
-                callback(query)
-            except Exception:  # noqa: BLE001 - one bad query must not stop the pool
+                job.callback(job.payload)
+            except Exception:  # noqa: BLE001 - isolate one query from the pool
                 logger.exception(
-                    "zenoh queryable callback failed for %s",
-                    key_expr,
+                    "zenoh queryable callback failed for %s", job.key_expr,
                     extra={"event": "zenoh.queryable.callback_failed"},
                 )
             finally:
-                query.drop()
+                self._finish(job)
 
-    def stop(self) -> None:
+    def quiesce(self, timeout: float) -> bool:
+        deadline = time.monotonic() + max(0.0, timeout)
         with self._guard:
             if self._stopped:
-                return
-            self._stopped = True
-            threads = list(self._threads)
+                return False
+            self._paused = True
+            while self._outstanding:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._guard.wait(remaining)
+            return True
 
-        # No new work can enter.  Drop queued queries so their queriers receive
-        # completion, then leave exactly one stop sentinel for every worker.
-        while True:
-            try:
-                item = self._queue.get_nowait()
-            except queue.Empty:
-                break
-            if item is not None:
-                item[2].drop()
-        for _ in threads:
-            self._queue.put(None)
+    def resume(self) -> None:
+        with self._guard:
+            if not self._stopped:
+                self._paused = False
+                self._guard.notify_all()
+
+    def stop(self, timeout: float | None = None) -> bool:
+        deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
+        with self._guard:
+            self._stopped = True
+            self._paused = True
+            threads = tuple(self._threads)
+            send_sentinels = not self._sentinels_sent
+            self._sentinels_sent = True
+        self.retry_cleanup()
+        if send_sentinels:
+            while True:
+                try:
+                    job = self._queue.get_nowait()
+                except queue.Empty:
+                    break
+                if job is not None:
+                    self._finish(job)
+            for _ in threads:
+                self._queue.put_nowait(None)
         current = threading.current_thread()
         for thread in threads:
             if thread is not current:
-                thread.join()
+                thread.join(None if deadline is None else max(0.0, deadline - time.monotonic()))
+        with self._guard:
+            return all(not thread.is_alive() for thread in threads) and not self._cleanup_pending
 
 
 def _environment_integer(name: str, default: int) -> int:
@@ -526,12 +646,15 @@ class _Registration:
     def close(self) -> None:
         if self._closed:
             return
-        self._closed = True
-        if self._on_close is not None:
-            self._on_close(self)
         undeclare = getattr(self._inner, "undeclare", None)
         if undeclare is not None:
             undeclare()
+        # A failed native undeclare keeps this declaration and its session
+        # available for an exact close retry; forgetting it first loses owner
+        # custody while the native queryable may still accept callbacks.
+        self._closed = True
+        if self._on_close is not None:
+            self._on_close(self)
 
     def _replay(self, session: Any) -> None:
         # The old handle died with the old session; never undeclare it.
@@ -546,6 +669,27 @@ def _sample(sample: Any) -> TransportSample:
     if "." in kind:
         kind = kind.rsplit(".", 1)[-1]
     return TransportSample(key=key, payload=payload, kind=kind)
+
+
+class _QueryRegistration:
+    def __init__(self, inner, owner, forget):
+        self._inner = inner
+        self._owner = owner
+        self._forget = forget
+        self._guard = threading.Lock()
+        self._closed = False
+
+    def close(self, timeout: float = 5.0):
+        with self._guard:
+            if self._closed:
+                return
+            # The owner rejects and drops any racing native callback, while
+            # exact accepted cells stay pinned until reply/drop completion.
+            if not self._owner.close(timeout):
+                raise TimeoutError("native query effects did not drain")
+            self._inner.close()
+            self._forget(self._owner)
+            self._closed = True
 
 
 def _reply_error(reply: Any) -> str:
@@ -599,6 +743,12 @@ class ZenohTransport:
         self._rebuilding: tuple[int | None, str, float] | None = None
         self._registrations: list[_Registration] = []
         self._rebuild_hooks: list[Callable[[], None]] = []
+        self._query_guard = threading.Condition()
+        self._query_registrations: dict[QueryIoOwner, _QueryRegistration] = {}
+        self._query_registering = 0
+        self._query_closing = False
+        self._query_lifetime_lock = threading.Lock()
+        self._native_closed = False
 
     @property
     def config(self) -> ZenohConfig:
@@ -670,7 +820,34 @@ class ZenohTransport:
         with self._settled(what, key):
             return self._session
 
+    def callback_overflow_count(self) -> int:
+        """Copy the #891 native hand-off lane's loss counter for its owner.
+
+        The baseline without that emergency adapter has no hand-off dispatcher.
+        This read adds observability; it does not change callback/lock mechanics.
+        """
+        dispatcher = getattr(self, "_dispatcher", None)
+        if dispatcher is None:
+            return 0
+        with dispatcher._guard:
+            return sum(dispatcher._dropped.values())
+
     def reconfigure_connect(self, endpoints: tuple[str, ...]) -> None:
+        """Drain accepted queries while the old session can still serve them."""
+
+        with self._query_lifetime_lock:
+            with self._lock:
+                if self._closed:
+                    raise RuntimeError("transport is closed")
+            if not self._query_dispatcher.quiesce(5.0):
+                self._query_dispatcher.resume()
+                raise TimeoutError("native query effects did not drain before rebuild")
+            try:
+                self._reconfigure_connect_drained(endpoints)
+            finally:
+                self._query_dispatcher.resume()
+
+    def _reconfigure_connect_drained(self, endpoints: tuple[str, ...]) -> None:
         """Dial ``endpoints`` instead of the current connect set, in place.
 
         zenoh-python 1.9 has no live setter for a session's connect endpoints,
@@ -903,57 +1080,66 @@ class ZenohTransport:
 
     def declare_queryable(
         self, key_expr: str, handler: Callable[[str], bytes | None]
-    ) -> _Registration:
-        def answer(query: Any) -> None:
-            payload = handler(str(query.selector))
+    ) -> _QueryRegistration:
+        def answer(selector: str, _request: bytes | None):
+            payload = handler(selector)
             if payload is not None:
-                query.reply(
-                    str(query.key_expr), payload, encoding="application/octet-stream"
-                )
-
-        deliver = zenoh.handlers.Callback(
-            self._query_dispatcher.wrap(key_expr, answer),
-            indirect=False,
-        )
-        return self._register(
-            lambda session: session.declare_queryable(
-                key_expr, deliver, complete=True
-            )
-        )
+                yield selector.split("?", 1)[0], payload
+        return self._register_query(key_expr, answer)
 
     def declare_query_handler(
         self,
         key_expr: str,
         handler: Callable[[str, bytes | None], Iterable[tuple[str, bytes]]],
-    ) -> _Registration:
-        def answer(query: Any) -> None:
-            raw_payload = getattr(query, "payload", None)
-            if raw_payload is None:
-                payload: bytes | None = None
-            elif hasattr(raw_payload, "to_bytes"):
-                payload = raw_payload.to_bytes()
-            else:
-                payload = bytes(raw_payload)
-            try:
-                replies = handler(str(query.selector), payload)
-                for reply_key, reply_payload in replies:
-                    query.reply(
-                        str(reply_key),
-                        reply_payload,
-                        encoding="application/octet-stream",
-                    )
-            except Exception:  # noqa: BLE001 - a bad handler must not kill the queryable
-                logger.exception("orgfs query handler failed for %s", key_expr)
+    ) -> _QueryRegistration:
+        return self._register_query(key_expr, handler)
 
-        deliver = zenoh.handlers.Callback(
-            self._query_dispatcher.wrap(key_expr, answer),
-            indirect=False,
-        )
-        return self._register(
-            lambda session: session.declare_queryable(
-                key_expr, deliver, complete=True
+    def _register_query(self, key_expr, handler):
+        with self._query_guard:
+            if self._query_closing or self._closed:
+                raise RuntimeError("transport query registrations are closing")
+            self._query_registering += 1
+        try:
+            owner = QueryIoOwner(
+                key_expr, handler, dispatcher=self._query_dispatcher,
+                on_error=lambda code: logger.error(
+                    "orgfs query handler failed for %s (%s)", key_expr, code
+                ),
             )
-        )
+            callback = zenoh.handlers.Callback(owner.admit, indirect=False)
+            try:
+                inner = self._register(
+                    lambda session: session.declare_queryable(
+                        key_expr, callback, complete=True
+                    )
+                )
+            except BaseException as error:
+                try:
+                    if not owner.close():
+                        error.add_note("query owner did not drain after failed declaration")
+                except BaseException as cleanup_error:
+                    error.add_note(
+                        "query owner cleanup raised "
+                        f"{type(cleanup_error).__name__}: {cleanup_error}"
+                    )
+                raise
+            registration = _QueryRegistration(inner, owner, self._forget_query)
+            with self._query_guard:
+                self._query_registrations[owner] = registration
+            return registration
+        finally:
+            with self._query_guard:
+                self._query_registering -= 1
+                self._query_guard.notify_all()
+
+    def _forget_query(self, owner):
+        with self._query_guard:
+            self._query_registrations.pop(owner, None)
+
+    def query_status(self):
+        with self._query_guard:
+            owners = tuple(self._query_registrations)
+        return tuple(owner.projection() for owner in owners)
 
     def declare_liveliness(self, key: str) -> _Registration:
         return self._register(lambda session: session.liveliness().declare_token(key))
@@ -980,22 +1166,44 @@ class ZenohTransport:
         )
 
     def close(self) -> None:
-        with self._lock:
-            if self._closed:
-                return
-            self._closed = True
-            # Mid-rebuild, the rebuilding thread closes whatever it opened.
-            session = None if self._rebuilding is not None else self._session
-        self._query_dispatcher.stop()
-        if session is not None:
-            session.close()
-        self._dispatcher.stop()
+        with self._query_lifetime_lock:
+            deadline = time.monotonic() + 5.0
+            with self._lock:
+                self._closed = True
+            with self._query_guard:
+                self._query_closing = True
+                while self._query_registering:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError("native query declaration did not settle")
+                    self._query_guard.wait(remaining)
+                registrations = tuple(self._query_registrations.values())
+            for registration in registrations:
+                registration.close(max(0.0, deadline - time.monotonic()))
+            if not self._query_dispatcher.stop(max(0.0, deadline - time.monotonic())):
+                raise TimeoutError("native query pool did not drain")
+            if not self._native_closed:
+                self._session.close()
+                self._native_closed = True
+            self._dispatcher.stop()
 
     def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_: object) -> None:
         self.close()
+
+
+@dataclass(frozen=True, slots=True)
+class PresenceObservation:
+    key: str
+    kind: str
+    change: str
+    sample_generation: int | None
+    presence_generation: int
+    transport_generation: int | None
+    history_complete: bool | None
+    admission: str
 
 
 class LivelinessDirectory:
@@ -1007,12 +1215,15 @@ class LivelinessDirectory:
         keys: KeySpace | None = None,
         *,
         on_actor_online: Callable[[str], None] | None = None,
+        observation_sink: Callable[[PresenceObservation], None] | None = None,
     ) -> None:
         self._keys = keys or KeySpace()
-        self._lock = threading.Lock()
-        self._actors: set[str] = set()
-        self._mailboxes: set[str] = set()
-        self._on_actor_online = on_actor_online
+        self._observation_sink = observation_sink
+        self._authority = PresenceAuthority()
+        self._legacy_online_unbind: Callable[[], None] | None = None
+        if on_actor_online is not None:
+            self.set_actor_online_callback(on_actor_online)
+        self._session_generation = getattr(session, "projection", None)
         # A rebuilt session re-learns presence from the replayed observers'
         # history; carrying the old sets over would keep departed peers online.
         self._stop_rebuild_hook = session.on_rebuild(self._forget_presence)
@@ -1028,58 +1239,96 @@ class LivelinessDirectory:
         ]
 
     def _actor_event(self, sample: TransportSample) -> None:
-        identity = self._identity(sample)
-        callback: Callable[[str], None] | None = None
-        with self._lock:
-            if sample.kind == "delete":
-                self._actors.discard(identity)
-            elif identity not in self._actors:
-                self._actors.add(identity)
-                callback = self._on_actor_online
-        if callback is not None:
-            callback(identity)
+        self._update("actor", sample)
 
     def _mailbox_event(self, sample: TransportSample) -> None:
-        self._update(self._mailboxes, sample)
+        self._update("mailbox", sample)
 
-    def _identity(self, sample: TransportSample) -> str:
-        return self._keys.decode_identity(sample.key.rsplit("/", 1)[-1])
+    def _update(self, kind: str, sample: TransportSample) -> None:
+        generation = self._authority.projection().generation
+        transport_projection = None
+        if sample.generation is not None and self._session_generation is not None:
+            transport_projection = self._session_generation()
+            if sample.generation != transport_projection.generation:
+                self._observe(kind, sample, generation, transport_projection, "stale")
+                return
+        identity = self._keys.decode_identity(sample.key.rsplit("/", 1)[-1])
+        admission = self._authority.change(kind, identity, sample.kind != "delete", generation=generation)
+        self._observe(kind, sample, generation, transport_projection, admission.value)
+        if admission.value != "accepted":
+            logger.error("presence admission %s; generation is unknown", admission.value)
+            # Production callbacks run under TransportSessionAuthority. Surface
+            # the failed domain handoff so its existing callback-failure path
+            # advances the generation and replays observer history.
+            raise RuntimeError(f"presence admission {admission.value}; history replay required")
 
-    def _update(self, values: set[str], sample: TransportSample) -> None:
-        identity = self._identity(sample)
-        with self._lock:
-            if sample.kind == "delete":
-                values.discard(identity)
-            else:
-                values.add(identity)
-
-    def set_actor_online_callback(self, callback: Callable[[str], None]) -> None:
-        """Bind the transition observer and replay actors already learned."""
-
-        with self._lock:
-            self._on_actor_online = callback
-            online = tuple(sorted(self._actors))
-        for actor in online:
-            callback(actor)
+    def _observe(self, kind, sample, generation, transport_projection, admission):
+        sink = self._observation_sink
+        if sink is None:
+            return
+        try:
+            sink(PresenceObservation(
+                str(sample.key)[:512], kind, str(sample.kind), sample.generation,
+                generation, getattr(transport_projection, "generation", None),
+                getattr(transport_projection, "callbacks_complete", None), admission,
+            ))
+        except Exception:
+            # Optional bounded diagnostics never invalidate an otherwise valid
+            # presence transition. No payload or exception value is exposed.
+            pass
 
     def _forget_presence(self) -> None:
-        with self._lock:
-            self._actors.clear()
-            self._mailboxes.clear()
+        self._authority.reset()
 
     def actor_online(self, actor: str) -> bool:
-        with self._lock:
-            return actor in self._actors
+        return self._callbacks_current() and actor in self._authority.projection().actors
+
+    def presence_projection(self) -> PresenceProjection:
+        """Immutable generation-fenced projection for online-wake consumers."""
+
+        return self._authority.projection()
+
+    def set_actor_online_callback(self, callback: Callable[[str], None]) -> None:
+        """Preserve the dev observer API over committed presence transitions.
+
+        Callbacks must be nonblocking; production binds the typed wake ingress.
+        """
+        if self._legacy_online_unbind is not None:
+            self._legacy_online_unbind()
+        self._legacy_online_unbind = self.bind_actor_online(
+            lambda transition: callback(transition.actor)
+        )
+
+    def bind_actor_online(
+        self, observer: Callable[[ActorOnlineTransition], object]
+    ) -> Callable[[], None]:
+        """Observe committed online transitions, replaying current actors."""
+
+        return self._authority.bind_actor_online(observer)
 
     def online_actors(self) -> tuple[str, ...]:
-        with self._lock:
-            return tuple(sorted(self._actors))
+        if not self._callbacks_current():
+            return ()
+        return tuple(sorted(self._authority.projection().actors))
 
     def online_mailboxes(self) -> tuple[str, ...]:
-        with self._lock:
-            return tuple(sorted(self._mailboxes))
+        if not self._callbacks_current():
+            return ()
+        return tuple(sorted(self._authority.projection().mailboxes))
+
+    def _callbacks_current(self) -> bool:
+        if self._session_generation is None:
+            return True
+        projection = self._session_generation()
+        return not projection.closed and projection.callbacks_complete
 
     def close(self) -> None:
+        if self._legacy_online_unbind is not None:
+            self._legacy_online_unbind()
+            self._legacy_online_unbind = None
         self._stop_rebuild_hook()
         for registration in reversed(self._registrations):
             registration.close()
+        if not self._authority.close():
+            raise TimeoutError("presence authority did not drain")
+        self._observation_sink = None

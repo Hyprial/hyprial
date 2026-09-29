@@ -8,7 +8,7 @@ import threading
 import time
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Protocol
 
 from hyprial.daemon.desired_state import HarnessLaunchSpec
 from hyprial.daemon.lifecycle_manager import LifecycleOperation
@@ -20,6 +20,11 @@ from hyprial.pac.lifecycle import (
 )
 from hyprial.pac.reactor import NotificationSender, PacReactor
 from hyprial.pac.store import PacGraphStore, default_database_path
+
+
+class GraphClockAuthority(Protocol):
+    def clock_tick(self, graph_id: str) -> dict[str, Any]: ...
+
 
 #: One actor reconcile slower than this gets its own log line.  Close->reclaim
 #: took 73 s on a 1 s tick with nothing logged (2026-09-24); per-job duration
@@ -55,13 +60,19 @@ class DaemonActorRuntime:
         agent = self.application.agents.get(actor_name)
         return RuntimeObservation(
             present=running is True,
-            identity_marker=(spec.nickname if spec.nickname and spec.nickname.startswith("pac:") else None),
+            identity_marker=(
+                spec.nickname
+                if spec.nickname and spec.nickname.startswith("pac:")
+                else None
+            ),
             harness=spec.harness,
             agent_entity_token=(agent.entity_token if agent is not None else None),
         )
 
     @staticmethod
-    def _launch_spec(actor_name: str, launch: LaunchSpec, marker: str) -> HarnessLaunchSpec:
+    def _launch_spec(
+        actor_name: str, launch: LaunchSpec, marker: str
+    ) -> HarnessLaunchSpec:
         candidate = HarnessLaunchSpec(
             harness=launch.harness,
             name=actor_name,
@@ -84,7 +95,9 @@ class DaemonActorRuntime:
     ) -> RuntimeObservation:
         spec = self._launch_spec(actor_name, launch, identity_marker)
         self.application._run_lifecycle_operation(
-            LifecycleOperation.create(operation_id, self.application._lifecycle_spec(spec))
+            LifecycleOperation.create(
+                operation_id, self.application._lifecycle_spec(spec)
+            )
         )
         return self.observe(actor_name)
 
@@ -186,8 +199,12 @@ class DaemonPacNotificationSender:
         if remote is None:
             # Startup recovery must not lose the remote request binding.
             from hyprial.uri import parse_agent_uri
+
             principal = parse_agent_uri(request["owner"])
-            if principal and principal[:2] != (self.application.owner, self.application.node_id):
+            if principal and principal[:2] != (
+                self.application.owner,
+                self.application.node_id,
+            ):
                 raise RuntimeError("remote workflow service is not running")
             return None
         return remote.send(request, text=text, idempotency_key=idempotency_key)
@@ -211,6 +228,7 @@ class PacActorService:
         daemon_epoch: str,
         logger: Callable[..., None],
         workers: int = 4,
+        graph_authority: GraphClockAuthority | None = None,
     ) -> None:
         self.database = default_database_path(state_dir)
         self.reference_root = reference_root
@@ -218,19 +236,19 @@ class PacActorService:
         self.sender = sender
         self.daemon_epoch = daemon_epoch
         self.logger = logger
-        self._actor_queue: queue.Queue[tuple[str, str] | None] = queue.Queue(maxsize=128)
+        self._graph_authority = graph_authority
+        self._actor_queue: queue.Queue[tuple[str, str] | None] = queue.Queue(
+            maxsize=128
+        )
         self._clock_queue: queue.Queue[str | None] = queue.Queue(maxsize=128)
+        # Cadence admission is deliberately independent of graph I/O. A
+        # single pending scan coalesces ticks while the database is slow.
+        self._scan_queue: queue.Queue[bool | None] = queue.Queue(maxsize=1)
         self._active_actors: set[tuple[str, str]] = set()
         self._active_clocks: set[str] = set()
-        # Queue saturation resumes at the first deferred job instead of
-        # restarting from the lexicographically earliest graph every tick.
         self._actor_scan_offsets = {"open": 0, "closed": 0}
-        # Start with open priority and carry the weighted turn across ticks.
-        # This is process-local scheduling state; durable lifecycle state stays
-        # in the PAC store and is re-derived after restart.
         self._actor_class_turn = 0
-        # One warning per continuous saturation episode keeps the signal
-        # useful even when the resident cadence runs every second.
+        self._clock_scan_offset = 0
         self._actor_queue_saturated = False
         # Last skip reason logged per (graph, node): logged on change only, so
         # a skip that repeats every tick is one line, not one per second.
@@ -241,6 +259,15 @@ class PacActorService:
         # through `self.logger`, and a future provisioning step that consults
         # `self._closed` or the queue must find them built.
         self._provision_database()
+        attach = getattr(self._graph_authority, "attach_reconciler", None)
+        if callable(attach):
+            attach(
+                self.runtime,
+                self.reference_root,
+                self.daemon_epoch,
+                on_skip=self._note_skip,
+                logger=self.logger,
+            )
         self._actor_threads = tuple(
             threading.Thread(
                 target=self._actor_worker,
@@ -254,7 +281,12 @@ class PacActorService:
             name="hyprial-pac-clock",
             daemon=True,
         )
-        self._threads = (*self._actor_threads, self._clock_thread)
+        self._scan_thread = threading.Thread(
+            target=self._scan_worker,
+            name="hyprial-pac-scan",
+            daemon=True,
+        )
+        self._threads = (*self._actor_threads, self._clock_thread, self._scan_thread)
         for thread in self._threads:
             thread.start()
 
@@ -282,7 +314,9 @@ class PacActorService:
         """
 
         try:
-            PacGraphStore(self.database).close()
+            PacGraphStore(
+                self.database, read_only=self._graph_authority is not None
+            ).close()
         except Exception as error:  # noqa: BLE001 - startup must not depend on it
             self.logger(
                 "error",
@@ -293,11 +327,37 @@ class PacActorService:
             )
 
     def submit_tick(self) -> None:
-        """Admit one resident cadence without deriving clocks from actors."""
+        """Coalesce a cadence without opening SQLite on the timer thread."""
 
-        if self._closed or not self.database.exists():
+        with self._lock:
+            if self._closed:
+                return
+            try:
+                self._scan_queue.put_nowait(True)
+            except queue.Full:
+                # The pending scan will read the latest durable graph state.
+                pass
+
+    def _scan_worker(self) -> None:
+        while True:
+            scan = self._scan_queue.get()
+            if scan is None or self._closed:
+                return
+            try:
+                self._scan_and_admit()
+            except Exception as error:  # noqa: BLE001 - next cadence retries durable state
+                self.logger(
+                    "error",
+                    "pac",
+                    "pac.scan.failed",
+                    errorType=type(error).__name__,
+                    detail=str(error)[:500],
+                )
+
+    def _scan_and_admit(self) -> None:
+        if not self.database.exists():
             return
-        store = PacGraphStore(self.database)
+        store = PacGraphStore(self.database, read_only=True)
         try:
             graphs = list(
                 store._db.execute(
@@ -310,17 +370,37 @@ class PacActorService:
                 for graph in graphs
                 if graph["activated_at"] is not None and graph["closed_at"] is None
             ]
+            # Read-only compatibility for the pinned schema-15 candidate.
+            # Schema 16 cleanup intents become authoritative after dev sync.
+            has_cleanup_intents = (
+                store._db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' "
+                    "AND name='workflow_worker_cleanup_intents'"
+                ).fetchone()
+                is not None
+            )
+            cleanup_column = (
+                "c.state AS cleanup_state,"
+                if has_cleanup_intents
+                else "NULL AS cleanup_state,"
+            )
+            cleanup_join = (
+                "LEFT JOIN workflow_worker_cleanup_intents c "
+                "ON c.graph_id=n.graph_id AND c.actor_node=n.node_id "
+                if has_cleanup_intents
+                else ""
+            )
             actor_rows = list(
                 store._db.execute(
                     "SELECT n.graph_id,n.node_id,g.activated_at,g.closed_at,"
-                    "a.desired,a.op,c.state AS cleanup_state,"
-                    "r.graph_id AS receipt_graph_id "
+                    "a.desired,a.op,"
+                    + cleanup_column
+                    + "r.graph_id AS receipt_graph_id "
                     "FROM nodes n JOIN graphs g ON g.graph_id=n.graph_id "
                     "LEFT JOIN actor_activations a "
                     "ON a.graph_id=n.graph_id AND a.node_id=n.node_id "
-                    "LEFT JOIN workflow_worker_cleanup_intents c "
-                    "ON c.graph_id=n.graph_id AND c.actor_node=n.node_id "
-                    "LEFT JOIN workflow_worker_receipts r "
+                    + cleanup_join
+                    + "LEFT JOIN workflow_worker_receipts r "
                     "ON r.graph_id=n.graph_id AND r.actor_node=n.node_id "
                     "WHERE n.kind='actor' ORDER BY n.graph_id,n.node_id"
                 )
@@ -350,19 +430,33 @@ class PacActorService:
             ]
         finally:
             store.close()
+        warnings: list[tuple[str, dict[str, object]]] = []
         with self._lock:
-            for graph_id in clock_jobs:
+            if self._closed:
+                return
+            if not clock_jobs:
+                self._clock_scan_offset = 0
+            clock_offset = (
+                self._clock_scan_offset % len(clock_jobs) if clock_jobs else 0
+            )
+            rotated_clocks = clock_jobs[clock_offset:] + clock_jobs[:clock_offset]
+            for clock_index, graph_id in enumerate(rotated_clocks):
                 if graph_id in self._active_clocks:
                     continue
                 try:
                     self._clock_queue.put_nowait(graph_id)
                 except queue.Full:
-                    self.logger(
-                        "warn",
-                        "pac",
-                        "pac.clock.queue_full",
-                        graphId=graph_id,
-                        capacity=self._clock_queue.maxsize,
+                    self._clock_scan_offset = (clock_offset + clock_index) % len(
+                        clock_jobs
+                    )
+                    warnings.append(
+                        (
+                            "pac.clock.queue_full",
+                            {
+                                "graphId": graph_id,
+                                "capacity": self._clock_queue.maxsize,
+                            },
+                        )
                     )
                     break
                 self._active_clocks.add(graph_id)
@@ -441,15 +535,20 @@ class PacActorService:
             if deferred == 0:
                 self._actor_queue_saturated = False
             elif not self._actor_queue_saturated:
-                self.logger(
-                    "warn",
-                    "pac",
-                    "pac.actor.queue_full",
-                    capacity=self._actor_queue.maxsize,
-                    deferredJobs=deferred,
-                    jobClass=deferred_group,
+                warnings.append(
+                    (
+                        "pac.actor.queue_full",
+                        {
+                            "capacity": self._actor_queue.maxsize,
+                            "deferredJobs": deferred,
+                            "jobClass": deferred_group,
+                        },
+                    )
                 )
                 self._actor_queue_saturated = True
+
+        for event, fields in warnings:
+            self.logger("warn", "pac", event, **fields)
 
     def _clock_worker(self) -> None:
         while True:
@@ -466,11 +565,14 @@ class PacActorService:
                 # latency to the backlog size.
                 return
             try:
-                store = PacGraphStore(self.database)
-                try:
-                    PacReactor(store, sender=self.sender).tick_clocks(graph_id)
-                finally:
-                    store.close()
+                if self._graph_authority is not None:
+                    self._graph_authority.clock_tick(graph_id)
+                else:
+                    store = PacGraphStore(self.database)
+                    try:
+                        PacReactor(store, sender=self.sender).tick_clocks(graph_id)
+                    finally:
+                        store.close()
             except Exception as error:  # noqa: BLE001 - isolate one graph from the service
                 self.logger(
                     "error",
@@ -510,20 +612,34 @@ class PacActorService:
 
             started = time.monotonic()
             try:
-                store = PacGraphStore(self.database)
-                try:
-                    coordinator = ActorCoordinator(
-                        store,
-                        self.runtime,
-                        daemon_epoch=self.daemon_epoch,
-                        resolver=FileLaunchResolver(self.reference_root),
-                        sender=self.sender,
-                        on_skip=on_skip,
-                    )
-                    coordinator.reconcile(job[0], job[1])
-                finally:
-                    store.close()
-                if not skipped:
+                reconcile = getattr(self._graph_authority, "reconcile_actor", None)
+                actorized = callable(reconcile)
+                if actorized:
+                    admission = reconcile(job[0], job[1])
+                    if getattr(admission, "value", "accepted") != "accepted":
+                        self.logger(
+                            "warn",
+                            "pac",
+                            "pac.actor.queue_full",
+                            graphId=job[0],
+                            nodeId=job[1],
+                            admission=str(getattr(admission, "value", admission)),
+                        )
+                else:
+                    store = PacGraphStore(self.database)
+                    try:
+                        coordinator = ActorCoordinator(
+                            store,
+                            self.runtime,
+                            daemon_epoch=self.daemon_epoch,
+                            resolver=FileLaunchResolver(self.reference_root),
+                            sender=self.sender,
+                            on_skip=on_skip,
+                        )
+                        coordinator.reconcile(job[0], job[1])
+                    finally:
+                        store.close()
+                if not skipped and not actorized:
                     with self._lock:
                         self._skip_reasons.pop(job, None)
                 elapsed_ms = int((time.monotonic() - started) * 1000)
@@ -568,7 +684,8 @@ class PacActorService:
         )
 
     def close(self, timeout: float = 5.0) -> bool:
-        self._closed = True
+        with self._lock:
+            self._closed = True
         deadline = time.monotonic() + timeout
 
         def stop(queue_: queue.Queue[Any], count: int) -> None:
@@ -583,6 +700,7 @@ class PacActorService:
         # room without turning shutdown into an unbounded wait.
         stop(self._clock_queue, 1)
         stop(self._actor_queue, len(self._actor_threads))
+        stop(self._scan_queue, 1)
         for thread in self._threads:
             thread.join(max(0.0, deadline - time.monotonic()))
         return not any(thread.is_alive() for thread in self._threads)

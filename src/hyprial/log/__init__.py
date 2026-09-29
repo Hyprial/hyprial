@@ -24,6 +24,8 @@ from typing import Any, Literal, Self
 
 from hyprial.platform.file_lock import lock_exclusive, unlock
 
+from .writer import LogWriter, LogWriterStatus
+
 LogLevel = Literal["debug", "info", "warn", "error"]
 LogRoute = Literal["daemon", "adapter", "worker", "component"]
 RotationHook = Callable[[Path], None]
@@ -296,6 +298,7 @@ class Logger:
         route: LogRoute = "component",
         runtime: str | None = None,
         rotation_hook: RotationHook | None = None,
+        writer: LogWriter | None = None,
     ) -> None:
         if not component or not name:
             raise ValueError("logger component and name are required")
@@ -305,6 +308,7 @@ class Logger:
         self.route = route
         self.runtime = runtime
         self.rotation_hook = rotation_hook
+        self._writer = writer
         self.path = route_path(
             self.state_dir,
             route=route,
@@ -315,27 +319,35 @@ class Logger:
 
     @classmethod
     def daemon(
-        cls, state_dir: Path, *, name: str, rotation_hook: RotationHook | None = None
+        cls, state_dir: Path, *, name: str, rotation_hook: RotationHook | None = None,
+        asynchronous: bool = False, capacity: int = 4096,
     ) -> Self:
-        return cls(
+        logger = cls(
             state_dir,
             component="daemon",
             name=name,
             route="daemon",
             rotation_hook=rotation_hook,
         )
+        if asynchronous:
+            logger._writer = LogWriter(logger._append, capacity=capacity)
+        return logger
 
     @classmethod
     def adapter(
-        cls, state_dir: Path, *, name: str, rotation_hook: RotationHook | None = None
+        cls, state_dir: Path, *, name: str, rotation_hook: RotationHook | None = None,
+        asynchronous: bool = False, capacity: int = 4096,
     ) -> Self:
-        return cls(
+        logger = cls(
             state_dir,
             component="lark-adapter",
             name=name,
             route="adapter",
             rotation_hook=rotation_hook,
         )
+        if asynchronous:
+            logger._writer = LogWriter(logger._append, capacity=capacity)
+        return logger
 
     @classmethod
     def worker(
@@ -365,6 +377,7 @@ class Logger:
             route=self.route,
             runtime=self.runtime,
             rotation_hook=self.rotation_hook,
+            writer=self._writer,
         )
 
     def log(self, level: LogLevel, event: str, **fields: Any) -> None:
@@ -392,7 +405,30 @@ class Logger:
         payload = (
             json.dumps(entry, separators=(",", ":"), ensure_ascii=False) + "\n"
         ).encode("utf-8")
-        self._append(payload)
+        if self._writer is None:
+            self._append(payload)
+        else:
+            self._writer.submit(payload)
+
+    def writer_status(self) -> LogWriterStatus | None:
+        return self._writer.status() if self._writer is not None else None
+
+    def wait_for_writes(
+        self, *, target: int, rejected_at_capture: int, timeout: float = 2.0
+    ) -> bool:
+        """Observe completion of a specific accepted asynchronous log prefix."""
+
+        return (
+            self._writer.wait_for_writes(
+                target=target, rejected_at_capture=rejected_at_capture,
+                timeout=timeout,
+            )
+            if self._writer is not None
+            else True
+        )
+
+    def close(self, timeout: float = 1.0) -> bool:
+        return self._writer.close(timeout) if self._writer is not None else True
 
     def debug(self, event: str, **fields: Any) -> None:
         self.log("debug", event, **fields)

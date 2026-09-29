@@ -30,6 +30,7 @@ class DispatchAlarm:
         text: str,
         reason: str | None = None,
         conversation_id: str = "workflow",
+        idempotency_key: str | None = None,
     ) -> AlarmResult:
         # The escalation text (routine name, breaker reason) is the payload --
         # it must survive to the reader verbatim.  The pre-2026-09-14 code
@@ -43,7 +44,9 @@ class DispatchAlarm:
         if to.startswith("user:"):
             try:
                 delivered = self._deliver_user is not None and self._deliver_user(
-                    to, text, f"workflow-{uuid4().hex[:12]}"
+                    to,
+                    text,
+                    idempotency_key or f"workflow-{uuid4().hex[:12]}",
                 )
             except InboxIoError as error:
                 # The DM callback raises transient (timeout) / permanent
@@ -73,8 +76,12 @@ class DispatchAlarm:
             return AlarmResult("failed", "human")
         return self._emitter.emit(
             Alarm(
-                correlation_id=f"workflow-{uuid4().hex[:12]}",
-                message_id=f"workflow-{uuid4().hex[:12]}",
+                correlation_id=(
+                    idempotency_key or f"workflow-{uuid4().hex[:12]}"
+                ),
+                message_id=(
+                    idempotency_key or f"workflow-{uuid4().hex[:12]}"
+                ),
                 conversation_id=conversation_id,
                 sender=to,
                 recipient="workflow",

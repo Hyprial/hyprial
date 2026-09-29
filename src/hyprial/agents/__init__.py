@@ -146,6 +146,7 @@ __all__ = [
     "RestoreDisposition",
     "DEFAULT_AGENT_TOOL_PROFILE",
     "ResolvedSecret",
+    "RestoreDisposition",
     "SECRET_ENVIRONMENT_NAMES",
     "SecretCatalogEntry",
     "SecretCustody",

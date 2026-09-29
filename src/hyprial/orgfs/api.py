@@ -45,16 +45,19 @@ ORGFS_ERROR_CODES = frozenset(
     {
         "ambiguous-path",
         "blob-unavailable",
+        "checkout-io",
+        "closed",
         ipc_errors.ORGFS_CONTENT_PENDING,
-        "cross-space-uri",
+        ipc_errors.ORGFS_CROSS_SPACE_URI,
         "invalid-argument",
-        "invalid-uri",
+        ipc_errors.ORGFS_INVALID_URI,
         "log-key-conflict",
         "no-holder-online",
         "not-a-member",
         "not-owner",
         "out-of-range",
         "purged",
+        "resource-exhausted",
         "snapshot-barrier",
         "stale-plan",
         "stale-write",
@@ -62,6 +65,7 @@ ORGFS_ERROR_CODES = frozenset(
         "unknown-blob",
         "unknown-doc",
         "unknown-space",
+        "unavailable",
     }
 )
 
@@ -105,6 +109,15 @@ class NodeInfo:
     # after the defaulted D4 ``content_state`` without a default of its own
     # (no-fallback rule: an optional field is a compat shim in disguise).
     uri: str = field(kw_only=True)
+
+
+@dataclass(frozen=True, slots=True)
+class TextReadSnapshot:
+    """One immutable text and node-identity observation from the facade owner."""
+
+    content: str
+    version: str
+    node: NodeInfo
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,6 +217,8 @@ class OrgFs(Protocol):
     def listdir(self, space_id: str, node: NodeRef) -> tuple[NodeInfo, ...]: ...
 
     def read_text(self, space_id: str, node: NodeRef) -> tuple[str, str]: ...
+
+    def read_text_snapshot(self, space_id: str, node: NodeRef) -> TextReadSnapshot: ...
 
     def write_text(
         self,

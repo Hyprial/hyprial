@@ -284,9 +284,11 @@ class PythonWorkerTurnAdapter(ConcurrentTurnProcess):
         self._log_turn("worker.turn.started", delivery)
         return True
 
-    def drain_results(self) -> tuple[HarnessResult, ...]:
+    def drain_results(self, limit: int | None = None) -> tuple[HarnessResult, ...]:
+        if limit is not None and limit < 0:
+            raise ValueError("result drain limit must be non-negative")
         results: list[HarnessResult] = []
-        while True:
+        while limit is None or len(results) < limit:
             try:
                 result = self._results.get_nowait()
                 results.append(result)
@@ -307,7 +309,8 @@ class PythonWorkerTurnAdapter(ConcurrentTurnProcess):
                     except Exception:
                         pass
             except queue.Empty:
-                return tuple(results)
+                break
+        return tuple(results)
 
     def drain_progress(self) -> tuple[object, ...]:
         return ()

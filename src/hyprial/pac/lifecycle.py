@@ -262,6 +262,7 @@ class ActorCoordinator:
         daemon_epoch: str,
         resolver: LaunchResolver,
         sender: Any | None = None,
+        defer_notifications: bool = False,
         clock: Any = now_ms,
         on_skip: Callable[[str, str, str, dict[str, Any]], None] | None = None,
     ) -> None:
@@ -275,7 +276,11 @@ class ActorCoordinator:
         self.resolver = resolver
         self.sender = sender
         self.clock = clock
-        self.reactor = PacReactor(store, sender=sender if sender is not None else NullSender(), clock=clock)
+        self.reactor = PacReactor(
+            store,
+            sender=(None if defer_notifications else sender if sender is not None else NullSender()),
+            clock=clock,
+        )
 
     def reconcile_all(self) -> None:
         graph_ids = [row[0] for row in self.store._db.execute("SELECT graph_id FROM graphs")]
@@ -451,6 +456,38 @@ class ActorCoordinator:
             lastObservation=observation,
         )
 
+    def _settle_cleanup_effect_failure(
+        self,
+        graph_id: str,
+        node_id: str,
+        *,
+        operation_id: str | None,
+        reason: str,
+        error_type: str,
+        present: bool,
+        detail: str,
+    ) -> bool:
+        """Commit a deferred observe/stop failure on the PAC writer."""
+
+        node = self.store.node(graph_id, node_id)
+        intent = self.store.workflow_worker_cleanup_intent(graph_id, node_id)
+        if node is None or intent is None or intent["state"] != "pending":
+            return False
+        if operation_id is not None and intent["operation_id"] != operation_id:
+            return False
+        self._cleanup_attention(
+            graph_id,
+            node,
+            intent,
+            reason,
+            {
+                "errorType": error_type,
+                "detail": detail[:500],
+                **({"present": True} if present else {}),
+            },
+        )
+        return True
+
     def _complete_cleanup_without_activation(
         self,
         graph_id: str,
@@ -507,13 +544,13 @@ class ActorCoordinator:
         *,
         observation: RuntimeObservation,
     ) -> None:
-        observation_document = self._observation_document(observation)
+        document = self._observation_document(observation)
         db.execute(
             "UPDATE workflow_worker_cleanup_intents SET state='complete',"
             "attention_reason=NULL,last_observation_json=?,updated_at=? "
             "WHERE graph_id=? AND actor_node=? AND operation_id=?",
             (
-                json.dumps(observation_document, ensure_ascii=False, sort_keys=True),
+                json.dumps(document, ensure_ascii=False, sort_keys=True),
                 at,
                 graph["graph_id"],
                 node.node_id,
@@ -537,7 +574,7 @@ class ActorCoordinator:
                 "actorName": node.actor_name,
                 "operationId": intent["operation_id"],
                 "ageMs": max(0, at - int(intent["created_at"])),
-                "lastObservation": observation_document,
+                "lastObservation": document,
                 "workerState": "stopped",
             },
         )
@@ -556,13 +593,16 @@ class ActorCoordinator:
             if cleanup is not None:
                 try:
                     observation = self.runtime.observe(node.actor_name)
-                except Exception as error:  # noqa: BLE001 - durable attention outcome
+                except Exception as error:  # noqa: BLE001 - durable outcome
                     self._cleanup_attention(
                         graph_id,
                         node,
                         cleanup,
                         "lifecycle_manager_unavailable",
-                        {"errorType": type(error).__name__, "detail": str(error)[:500]},
+                        {
+                            "errorType": type(error).__name__,
+                            "detail": str(error)[:500],
+                        },
                     )
                     return
                 if observation.present:
@@ -582,8 +622,6 @@ class ActorCoordinator:
                 return
             activation = self._prepare_up(graph_id, node)
         elif graph["closed_at"] is not None and activation["desired"] != "down":
-            # Managed workflows gain stop authority only from the cleanup
-            # intent copied from an immutable ownership receipt at close.
             if receipt is not None and cleanup is None:
                 return
             activation = self._request_down(
@@ -594,7 +632,7 @@ class ActorCoordinator:
 
         try:
             observation = self.runtime.observe(node.actor_name)
-        except Exception as error:  # noqa: BLE001 - cleanup must fail closed
+        except Exception as error:  # noqa: BLE001 - durable cleanup outcome
             if cleanup is None:
                 raise
             self._cleanup_attention(
@@ -602,7 +640,10 @@ class ActorCoordinator:
                 node,
                 cleanup,
                 "lifecycle_manager_unavailable",
-                {"errorType": type(error).__name__, "detail": str(error)[:500]},
+                {
+                    "errorType": type(error).__name__,
+                    "detail": str(error)[:500],
+                },
             )
             return
         marker = activation["identity_marker"]
@@ -894,16 +935,15 @@ class ActorCoordinator:
             except Exception as error:  # noqa: BLE001 - durable cleanup outcome
                 if cleanup is None:
                     raise
-                reason = (
-                    "stop_timeout"
-                    if isinstance(error, TimeoutError)
-                    else "lifecycle_manager_unavailable"
-                )
                 self._cleanup_attention(
                     graph_id,
                     node,
                     cleanup,
-                    reason,
+                    (
+                        "stop_timeout"
+                        if isinstance(error, TimeoutError)
+                        else "lifecycle_manager_unavailable"
+                    ),
                     {
                         "errorType": type(error).__name__,
                         "detail": str(error)[:500],
@@ -1373,7 +1413,13 @@ class ActorCoordinator:
         observation: RuntimeObservation,
     ) -> None:
         launch = LaunchSpec.from_json(json.loads(activation["launch_json"])) if activation["launch_json"] else LaunchSpec(observation.harness or "unknown", None, None, None, ())
-        stale_operation = f"pac-stale-down:{uuid4().hex}"
+        # A delayed effect completion or daemon restart must retry the same
+        # lifecycle operation, rather than minting a second stop identity.
+        marker = observation.identity_marker or "missing-marker"
+        stale_key = hashlib.sha256(
+            f"{graph_id}\0{node.node_id}\0{marker}".encode()
+        ).hexdigest()[:24]
+        stale_operation = f"pac-stale-down:{stale_key}"
         result = self.runtime.stop(
             node.actor_name or "", launch, operation_id=stale_operation,
             identity_marker=observation.identity_marker or "",

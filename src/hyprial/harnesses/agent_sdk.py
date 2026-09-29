@@ -8,6 +8,7 @@ import os
 import shutil
 import sys
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Self
@@ -269,6 +270,9 @@ class IsolatedAgentSdkClient:
         on_session_established: Callable[[str], None] | None = None,
         process_group: _OwnedProcessGroup | None = None,
         complete_launch: "ChildEnvironmentLaunch | None" = None,
+        runtime_launch_custody: (
+            Callable[[AgentRuntimeContext], AbstractContextManager[None]] | None
+        ) = None,
     ) -> None:
         if session_id is not None and resume is not None:
             raise ValueError("session_id and resume are mutually exclusive")
@@ -304,6 +308,7 @@ class IsolatedAgentSdkClient:
             )
         )
         self._runtime_context = runtime_context
+        self._runtime_launch_custody = runtime_launch_custody
         self.options: dict[str, Any] = {
             "cwd": spec.cwd,
             "model": spec.model or _option_value(spec.args, "--model"),
@@ -415,16 +420,22 @@ class IsolatedAgentSdkClient:
             stderr=asyncio.subprocess.PIPE,
             env=self._env,
         )
-        if os.name == "nt":
-            from hyprial.platform.windows_owned_process import WindowsOwnedProcessGroup
+        custody = (
+            nullcontext()
+            if self._runtime_context is None or self._runtime_launch_custody is None
+            else self._runtime_launch_custody(self._runtime_context)
+        )
+        with custody:
+            if os.name == "nt":
+                from hyprial.platform.windows_owned_process import WindowsOwnedProcessGroup
 
-            if not isinstance(self._process_group, WindowsOwnedProcessGroup):
-                raise ConnectionError("Windows SDK requires a Job-owned launch")
-            self._process = await self._process_group.spawn(self.command, **options)
-        else:
-            self._process = await asyncio.create_subprocess_exec(
-                *self.command, start_new_session=True, **options
-            )
+                if not isinstance(self._process_group, WindowsOwnedProcessGroup):
+                    raise ConnectionError("Windows SDK requires a Job-owned launch")
+                self._process = await self._process_group.spawn(self.command, **options)
+            else:
+                self._process = await asyncio.create_subprocess_exec(
+                    *self.command, start_new_session=True, **options
+                )
         if self._process_group is not None:
             # Publishing ownership can raise if the group is already stopping or
             # its birth identity is unreadable; let that fail the client so the
@@ -635,6 +646,9 @@ def create_claude_sdk_client(
     on_session_established: Callable[[str], None] | None = None,
     process_group: _OwnedProcessGroup | None = None,
     complete_launch: "ChildEnvironmentLaunch | None" = None,
+    runtime_launch_custody: (
+        Callable[[AgentRuntimeContext], AbstractContextManager[None]] | None
+    ) = None,
 ) -> AgentSdkClient:
     logger = (
         Logger.worker(worker_channel.state_dir, runtime="claude", name=spec.name)
@@ -651,6 +665,7 @@ def create_claude_sdk_client(
         on_session_established=on_session_established,
         process_group=process_group,
         complete_launch=complete_launch,
+        runtime_launch_custody=runtime_launch_custody,
     )
 
 
@@ -668,6 +683,9 @@ class ClaudeAgentSdkProcess(StreamingTurnProcess):
         reconnect_delay_seconds: float = 0.25,
         on_turn_failure_for_spec: TurnFailureSpecObserver | None = None,
         on_turn_completed: TurnCompletedObserver | None = None,
+        runtime_launch_custody: (
+            Callable[[AgentRuntimeContext], AbstractContextManager[None]] | None
+        ) = None,
     ) -> None:
         if spec.harness != "claude" or not spec.headless:
             raise ValueError("Claude Agent SDK requires a managed headless spec")
@@ -683,6 +701,7 @@ class ClaudeAgentSdkProcess(StreamingTurnProcess):
         self._established = spec.session_ref is not None
         self._env = env
         self._complete_launch = complete_launch
+        self._runtime_launch_custody = runtime_launch_custody
         _validated_claude_launch_environment(
             spec,
             env=env,
@@ -721,6 +740,11 @@ class ClaudeAgentSdkProcess(StreamingTurnProcess):
                         provider=spec.model_provider,
                         model=spec.model,
                         worker=spec.name,
+                        runtime_context=(
+                            None
+                            if worker_channel is None
+                            else worker_channel.runtime_context
+                        ),
                     )
                 )
                 if on_turn_failure_for_spec is not None
@@ -748,4 +772,5 @@ class ClaudeAgentSdkProcess(StreamingTurnProcess):
             on_session_established=self._session_established,
             process_group=self._process_group,
             complete_launch=self._complete_launch,
+            runtime_launch_custody=self._runtime_launch_custody,
         )

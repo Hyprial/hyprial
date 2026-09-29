@@ -8,14 +8,26 @@ from __future__ import annotations
 
 import base64
 from collections.abc import Callable, Iterable, Mapping
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, wait
+from dataclasses import dataclass
 import hashlib
 import json
 from threading import Event, Lock
 import time
 from typing import TYPE_CHECKING, Any, Final
+import uuid
+import weakref
 
-from hyprial.transport import KeySpace, Registration, TransportSample, TransportSession
+from hyprial.actor_runtime import ActorHandle, ActorRuntime, ActorSpec, AdmissionResult
+from hyprial.actor_runtime.effects import EffectCompleted, EffectLane, EffectRequest
+from hyprial.transport.session_actor import TransportSessionAuthority
+from hyprial.transport import (
+    KeySpace,
+    Registration,
+    TransportSample,
+    TransportSession,
+    ZenohTransport,
+)
 
 from .api import OrgFsError
 from .blobs import (
@@ -32,9 +44,11 @@ from .store import (
     ORGFS_ENVELOPE_BYTES,
     ORGFS_PAGE_BYTES,
     ImportResult,
+    CommitRecord,
     LocalSpaceStore,
     StoreError,
 )
+from .space_authority import _ReadStore
 
 if TYPE_CHECKING:
     from .replica import ReplicaStore
@@ -46,7 +60,12 @@ ORGFS_BLOB_FETCH_QUEUE_LIMIT: Final[int] = 32
 ORGFS_ANNOUNCE_BUFFER_LIMIT: Final[int] = 256
 ORGFS_ANNOUNCE_SPACES_PER_ENTRY_LIMIT: Final[int] = 256
 ORGFS_SYNC_QUEUE_LIMIT: Final[int] = 32
+ORGFS_SYNC_RETRY_BACKOFF_SECONDS: Final[tuple[float, ...]] = (0.25,)
+ORGFS_SCHEDULED_SYNC_ATTEMPT_SECONDS: Final[float] = 2.0
+ORGFS_SCHEDULED_SYNC_BUDGET_SECONDS: Final[float] = 4.5
 ORGFS_REPLICA_SYNC_SCAN_ROWS: Final[int] = 256
+ORGFS_LOG_INGRESS_CAPACITY: Final[int] = 128
+_READ_DIRECT = object()
 # A blob query is broadcast on a key with no node segment, so every mesh
 # answers and the query collects replies until this window closes.  A holder
 # relayed over DERP can need several seconds for one full chunk; a window
@@ -63,6 +82,11 @@ AppliedHook = Callable[[bytes], Iterable[str] | None]
 ReplacementHook = Callable[[str, str, bytes], None]
 AnnouncementSource = Callable[[], Iterable[Mapping[str, Any]]]
 RecoveryCandidates = Callable[[], Iterable[str]]
+@dataclass(frozen=True, slots=True)
+class _LogIngress:
+    operation_id: str
+    generation: int
+    envelope: bytes
 
 
 def _json_bytes(value: Mapping[str, Any]) -> bytes:
@@ -182,12 +206,13 @@ class OrgFsMesh:
         on_applied: AppliedHook | None = None,
         on_replacement: ReplacementHook | None = None,
         announcement_source: AnnouncementSource | None = None,
-        holder_discovery: set[str] | None = None,
+        holder_discovery: set[str] | Callable[[], Iterable[str]] | None = None,
         recovery_candidates: RecoveryCandidates | None = None,
         durable: bool = True,
         logger: MeshLogger | None = None,
         keys: KeySpace | None = None,
         replica_store: ReplicaStore | None = None,
+        space_authority: Any | None = None,
     ) -> None:
         if not node_id:
             raise ValueError("node_id must not be empty")
@@ -205,11 +230,12 @@ class OrgFsMesh:
             holder_discovery if holder_discovery is not None else set()
         )
         self._recovery_candidates = recovery_candidates or (
-            lambda: tuple(self._holder_discovery)
+            lambda: tuple(self._announced_nodes)
         )
         self._logger = logger
         self._keys = keys or KeySpace()
         self.replica_store = replica_store
+        self.space_authority = space_authority
         self._closed = False
         self._worker_lock = Lock()
         self._blob_fetch_pending: dict[str, list[tuple[bytes, str]]] = {}
@@ -221,13 +247,65 @@ class OrgFsMesh:
         self._sync_pending: set[str] = set()
         self._sync_active: set[str] = set()
         self._sync_dropped = 0
+        self._worker_futures: set[Future[object]] = set()
         self._worker_executor = ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix=f"orgfs-worker-{store.space_id[:12]}",
         )
+        owner_ref = weakref.ref(self)
+
+        def handle_ingress(command: object) -> None:
+            owner = owner_ref()
+            if owner is not None:
+                owner._on_ingress_command(command)
+
+        def execute_ingress(command: _LogIngress) -> None:
+            owner = owner_ref()
+            if owner is not None:
+                owner._process_log_ingress(command)
+
+        def complete_ingress(
+            completion: EffectCompleted[None],
+        ) -> AdmissionResult:
+            owner = owner_ref()
+            if owner is None:
+                return AdmissionResult.CLOSED
+            return owner._ingress_runtime.tell(owner._ingress_actor, completion)
+
+        self._ingress_generation = 1
+        self._ingress_dropped = 0
+        self._ingress_guard = Lock()
+        self._ingress_pending: set[tuple[str, int]] = set()
+        self._ingress_capacity = ORGFS_LOG_INGRESS_CAPACITY
+        self._ingress_closing = False
+        self._ingress_closed = False
+        self._ingress_deferred: list[EffectRequest[_LogIngress]] = []
+        self._ingress_runtime = ActorRuntime()
+        self._ingress_actor: ActorHandle = self._ingress_runtime.start(
+            ActorSpec(
+                f"orgfs-space-{store.space_id[:12]}-ingress",
+                lambda: handle_ingress,
+                mailbox_capacity=ORGFS_LOG_INGRESS_CAPACITY,
+                supervision_profile="state_authority",
+            )
+        )
+        self._ingress_effects: EffectLane[_LogIngress, None] = EffectLane(
+            name=f"orgfs-space-{store.space_id[:12]}-effects",
+            execute=execute_ingress,
+            complete=complete_ingress,
+            capacity=ORGFS_LOG_INGRESS_CAPACITY,
+            workers=1,
+        )
         self._registrations: list[Registration] = []
+        log_ingress = (
+            self._admit_log_sample
+            if isinstance(session, (ZenohTransport, TransportSessionAuthority))
+            else self._on_log
+        )
         self._registrations.append(
-            session.subscribe(self._keys.orgfs_log_any(store.space_id), self._on_log)
+            session.subscribe(
+                self._keys.orgfs_log_any(store.space_id), log_ingress
+            )
         )
         try:
             self._registrations.append(
@@ -280,7 +358,8 @@ class OrgFsMesh:
     def _announced_nodes(self) -> set[str]:
         """Deprecated test view of runtime discovery; never an admission gate."""
 
-        return self._holder_discovery
+        source = self._holder_discovery
+        return set(source() if callable(source) else source)
 
     def receive(self, envelope: bytes, *, supplier: str) -> ImportResult:
         """Apply all three inbound gates without turning rejection into a reply."""
@@ -311,7 +390,7 @@ class OrgFsMesh:
                 supplier=supplier,
             )
             return ImportResult("rejected", "supplier-offline")
-        result = self.store.import_envelope(envelope, supplier=supplier)
+        result = self._import_envelope(envelope, supplier=supplier)
         details = getattr(result, "details", None)
         if (
             result.status == "rejected"
@@ -342,7 +421,7 @@ class OrgFsMesh:
         try:
             self._fetch_blob_into_store(supplier, digest)
             # Exactly one retry: a repeated rejection is final.
-            return self.store.import_envelope(envelope, supplier=supplier)
+            return self._import_envelope(envelope, supplier=supplier)
         except Exception as exc:  # noqa: BLE001 - inbound fetch must not kill the worker
             self._log_blob_fetch_failed(
                 "orgfs.update.blob-fetch-failed", exc, supplier=supplier, digest=digest
@@ -404,9 +483,7 @@ class OrgFsMesh:
             return
         if not submit:
             return
-        try:
-            self._worker_executor.submit(self._run_blob_recovery, digest)
-        except RuntimeError:
+        if not self._submit_worker(self._run_blob_recovery, digest):
             with self._worker_lock:
                 batch = self._blob_fetch_pending.pop(digest, [])
                 self._blob_fetch_pending_count -= len(batch)
@@ -421,6 +498,7 @@ class OrgFsMesh:
         if self.blob_store is None or self.blob_store.contains(digest):
             completed.set()
             return completed
+        future: Future[object] | None = None
         rejected: str | None = None
         with self._worker_lock:
             if self._closed:
@@ -429,9 +507,12 @@ class OrgFsMesh:
             existing = self._blob_fetch_waiters.get(digest)
             if existing:
                 return existing[0]
-            if len(self._blob_fetch_waiters) >= ORGFS_BLOB_FETCH_QUEUE_LIMIT or (
-                digest not in self._blob_fetch_pending
-                and len(self._blob_fetch_pending) >= ORGFS_BLOB_FETCH_QUEUE_LIMIT
+            if (
+                len(self._blob_fetch_waiters) >= ORGFS_BLOB_FETCH_QUEUE_LIMIT
+                or (
+                    digest not in self._blob_fetch_pending
+                    and len(self._blob_fetch_pending) >= ORGFS_BLOB_FETCH_QUEUE_LIMIT
+                )
             ):
                 rejected = "queue-full"
             else:
@@ -439,20 +520,24 @@ class OrgFsMesh:
                 if digest not in self._blob_fetch_pending:
                     self._blob_fetch_pending[digest] = []
                     try:
-                        self._worker_executor.submit(self._run_blob_recovery, digest)
+                        future = self._worker_executor.submit(
+                            self._run_blob_recovery, digest
+                        )
                     except RuntimeError:
                         # Admission failed while the lock still excludes
                         # inbound envelope attachment to this new batch.
                         self._blob_fetch_pending.pop(digest, None)
                         self._blob_fetch_waiters.pop(digest, None)
                         rejected = "worker-closed"
+                    else:
+                        self._worker_futures.add(future)
+        if future is not None:
+            future.add_done_callback(self._worker_finished)
         if rejected is not None:
             completed.set()
             self._log(
-                "warn",
-                "orgfs.content.blob-fetch-dropped",
-                reason=rejected,
-                digest=digest,
+                "warn", "orgfs.content.blob-fetch-dropped",
+                reason=rejected, digest=digest,
                 queueLimit=ORGFS_BLOB_FETCH_QUEUE_LIMIT,
             )
         return completed
@@ -509,7 +594,7 @@ class OrgFsMesh:
                 "rejected", "unknown-blob", details={"digest": digest}
             )
             result = (
-                self.store.import_envelope(envelope, supplier=supplier)
+                self._import_envelope(envelope, supplier=supplier)
                 if fetched
                 else initial
             )
@@ -544,24 +629,66 @@ class OrgFsMesh:
                 queueLimit=ORGFS_SYNC_QUEUE_LIMIT,
             )
             return False
-        try:
-            self._worker_executor.submit(self._run_scheduled_sync, supplier)
-        except RuntimeError:
+        if not self._submit_worker(self._run_scheduled_sync, supplier):
             with self._worker_lock:
                 self._sync_pending.discard(supplier)
             return False
         return True
 
+    def _submit_worker(self, operation: Callable[[str], object], key: str) -> bool:
+        with self._worker_lock:
+            if self._closed:
+                return False
+            try:
+                future = self._worker_executor.submit(operation, key)
+            except RuntimeError:
+                return False
+            self._worker_futures.add(future)
+        future.add_done_callback(self._worker_finished)
+        return True
+
+    def _worker_finished(self, future: Future[object]) -> None:
+        with self._worker_lock:
+            self._worker_futures.discard(future)
+
     def _run_scheduled_sync(self, supplier: str) -> None:
         try:
-            self.sync_from(supplier)
-        except Exception as exc:  # noqa: BLE001 - anti-entropy is best effort
-            self._log(
-                "warn",
-                "orgfs.sync.failed",
-                reason=getattr(exc, "code", "sync-failed"),
-                supplier=supplier,
-            )
+            deadline = time.monotonic() + ORGFS_SCHEDULED_SYNC_BUDGET_SECONDS
+            delays = (0.0, *ORGFS_SYNC_RETRY_BACKOFF_SECONDS)
+            for attempt, delay in enumerate(delays, start=1):
+                if delay:
+                    time.sleep(delay)
+                with self._worker_lock:
+                    if self._closed:
+                        return
+                if not self._supplier_allowed(supplier):
+                    return
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return
+                try:
+                    self.sync_from(
+                        supplier,
+                        timeout=min(ORGFS_SCHEDULED_SYNC_ATTEMPT_SECONDS, remaining),
+                        deadline_monotonic=deadline,
+                    )
+                    return
+                except Exception as exc:  # noqa: BLE001 - best-effort lane
+                    retry_scheduled = (
+                        attempt < len(delays)
+                        and self._supplier_allowed(supplier)
+                        and time.monotonic() + delays[attempt] < deadline
+                    )
+                    self._log(
+                        "warn",
+                        "orgfs.sync.failed",
+                        reason=getattr(exc, "code", "sync-failed"),
+                        supplier=supplier,
+                        attempt=attempt,
+                        retryScheduled=retry_scheduled,
+                    )
+                    if not retry_scheduled:
+                        return
         finally:
             with self._worker_lock:
                 self._sync_pending.discard(supplier)
@@ -595,9 +722,7 @@ class OrgFsMesh:
                 queueLimit=ORGFS_BLOB_FETCH_QUEUE_LIMIT,
             )
             return
-        try:
-            self._worker_executor.submit(self._run_replica_blob_reconcile, digest)
-        except RuntimeError:
+        if not self._submit_worker(self._run_replica_blob_reconcile, digest):
             with self._worker_lock:
                 self._replica_blob_pending.pop(digest, None)
 
@@ -666,7 +791,7 @@ class OrgFsMesh:
                 value = json.loads(envelope)
             except (UnicodeDecodeError, json.JSONDecodeError):
                 value = {}
-            if value.get("docId") == "meta" and self.store.pending_replacements():
+            if value.get("docId") == "meta" and self._pending_replacements():
                 self.schedule_sync_from(supplier)
         if result.status == "rejected":
             fields: dict[str, object] = {
@@ -686,6 +811,73 @@ class OrgFsMesh:
             self._log("warn", "orgfs.update.rejected", **fields)
 
     def _on_log(self, sample: TransportSample) -> None:
+        self._process_log_sample(sample)
+
+    @property
+    def ingress_dropped(self) -> int:
+        return self._ingress_dropped
+
+    @property
+    def ingress_pending(self) -> int:
+        with self._ingress_guard:
+            return len(self._ingress_pending)
+
+    def _release_ingress_credit(self, operation_id: str, generation: int) -> None:
+        with self._ingress_guard:
+            self._ingress_pending.discard((operation_id, generation))
+
+    def _admit_log_sample(self, sample: TransportSample) -> None:
+        with self._ingress_guard:
+            if (self._closed or self._ingress_closing
+                or len(self._ingress_pending) >= self._ingress_capacity):
+                self._ingress_dropped += 1
+                return
+            command = _LogIngress(
+                uuid.uuid4().hex, self._ingress_generation, bytes(sample.payload)
+            )
+            token = (command.operation_id, command.generation)
+            self._ingress_pending.add(token)
+            admission = self._ingress_runtime.tell(self._ingress_actor, command)
+            if admission is not AdmissionResult.ACCEPTED:
+                self._ingress_pending.discard(token)
+                self._ingress_dropped += 1
+
+    def _on_ingress_command(self, command: object) -> None:
+        if isinstance(command, EffectCompleted):
+            if self._ingress_effects.acknowledge(
+                command.operation_id, command.generation
+            ):
+                self._release_ingress_credit(command.operation_id, command.generation)
+            self._pump_ingress()
+            if command.error is not None:
+                self._ingress_dropped += 1
+            return
+        if not isinstance(command, _LogIngress):
+            raise TypeError("orgfs space ingress received an invalid command")
+        if command.generation != self._ingress_generation:
+            self._ingress_dropped += 1
+            self._release_ingress_credit(command.operation_id, command.generation)
+            return
+        request = EffectRequest(command.operation_id, command.generation, command)
+        if not any(item.operation_id == request.operation_id for item in self._ingress_deferred):
+            self._ingress_deferred.append(request)
+        self._pump_ingress()
+
+    def _pump_ingress(self) -> None:
+        while self._ingress_deferred:
+            request = self._ingress_deferred[0]
+            admission = self._ingress_effects.submit(request)
+            if admission is AdmissionResult.OVERLOADED:
+                return
+            self._ingress_deferred.pop(0)
+            if admission is AdmissionResult.CLOSED:
+                self._ingress_dropped += 1
+                self._release_ingress_credit(request.operation_id, request.generation)
+
+    def _process_log_ingress(self, command: _LogIngress) -> None:
+        self._process_log_sample(TransportSample("", command.envelope))
+
+    def _process_log_sample(self, sample: TransportSample) -> None:
         try:
             value = _decode_update_header(sample.payload, space_id=self.store.space_id)
         except StoreError as exc:
@@ -708,8 +900,16 @@ class OrgFsMesh:
     def broadcast_pending(self, space_id: str | None = None) -> int:
         if space_id is not None and space_id != self.store.space_id:
             return 0
+        records = self._read(_ReadStore("unbroadcast"))
+        if records is _READ_DIRECT:
+            records = self.store.unbroadcast()
+        return self.broadcast_records(tuple(records))
+
+    def broadcast_records(self, records: Iterable[CommitRecord]) -> int:
+        """Publish the immutable journal records captured at local commit."""
+
         count = 0
-        for record in self.store.unbroadcast():
+        for record in records:
             value = json.loads(record.envelope_bytes)
             self._store_replica_envelope(record.envelope_bytes)
             key = self._keys.orgfs_log(
@@ -719,11 +919,18 @@ class OrgFsMesh:
                 record.seq,
             )
             self.session.put(key, record.envelope_bytes)
-            self.store.mark_broadcast(
-                record.writer,
-                record.seq,
-                doc_id=str(value["docId"]),
-            )
+            if self.space_authority is not None:
+                self.space_authority.mark_broadcast(
+                    record.writer,
+                    record.seq,
+                    doc_id=str(value["docId"]),
+                )
+            else:
+                self.store.mark_broadcast(
+                    record.writer,
+                    record.seq,
+                    doc_id=str(value["docId"]),
+                )
             count += 1
         return count
 
@@ -808,13 +1015,88 @@ class OrgFsMesh:
             # both callbacks.  The admitted member journal remains authoritative,
             # so the subscriber and local broadcast flush must continue.
 
+    def _import_envelope(self, envelope: bytes, *, supplier: str) -> ImportResult:
+        if self.space_authority is not None:
+            return self.space_authority.import_envelope(envelope, supplier=supplier)
+        return self.store.import_envelope(envelope, supplier=supplier)
+
     def _requester_allowed(self, value: Mapping[str, Any]) -> bool:
         requester = value.get("requester")
         return (
             isinstance(requester, dict)
             and isinstance(requester.get("author"), str)
-            and self.store.member_mode(str(requester["author"])) is not None
+            and self._member_mode(str(requester["author"])) is not None
         )
+
+    def _read(self, operation: _ReadStore) -> Any:
+        authority = self.space_authority
+        return authority.read(operation) if authority is not None else _READ_DIRECT
+
+    def _document_ids(self) -> tuple[str, ...]:
+        value = self._read(_ReadStore("document_ids"))
+        return tuple(value) if value is not _READ_DIRECT else self.store.document_ids()
+
+    def _frontier(self, doc_id: str) -> bytes:
+        value = self._read(_ReadStore("frontier", doc_id=doc_id))
+        return bytes(value) if value is not _READ_DIRECT else self.store.frontier(doc_id)
+
+    def _export_since(
+        self, doc_id: str, vv: bytes, *, cursor: str | None, max_bytes: int
+    ) -> Any:
+        value = self._read(
+            _ReadStore(
+                "export_since",
+                doc_id=doc_id,
+                vv=bytes(vv),
+                cursor=cursor,
+                max_bytes=max_bytes,
+            )
+        )
+        return (
+            value
+            if value is not _READ_DIRECT
+            else self.store.export_since(doc_id, vv, cursor=cursor, max_bytes=max_bytes)
+        )
+
+    def _member_mode(self, author: str) -> str | None:
+        value = self._read(_ReadStore("member_mode", author=author))
+        return value if value is not _READ_DIRECT else self.store.member_mode(author)
+
+    def _retired(self, doc_id: str) -> Any:
+        value = self._read(_ReadStore("retired", doc_id=doc_id))
+        return value if value is not _READ_DIRECT else self.store.retired(doc_id)
+
+    def _commit_version(self, doc_id: str, writer: str, seq: int) -> bytes | None:
+        value = self._read(
+            _ReadStore("commit_version", doc_id=doc_id, writer=writer, seq=seq)
+        )
+        return (
+            self.store.commit_version(doc_id, writer, seq)
+            if value is _READ_DIRECT
+            else (None if value is None else bytes(value))
+        )
+
+    def _covered(self, version: bytes, vv: bytes) -> bool:
+        value = self._read(_ReadStore("covered", version=version, vv=vv))
+        return bool(value) if value is not _READ_DIRECT else self.store._covered(version, vv)
+
+    def _log_range(
+        self, doc_id: str, writer: str, *, after: int | None, limit: int
+    ) -> tuple[CommitRecord, ...]:
+        value = self._read(
+            _ReadStore("log_range", doc_id=doc_id, writer=writer, after=after, limit=limit)
+        )
+        return tuple(value) if value is not _READ_DIRECT else self.store.log_range(
+            doc_id, writer, after=after, limit=limit
+        )
+
+    def _retirement_records(self) -> tuple[Any, ...]:
+        value = self._read(_ReadStore("retirement_records"))
+        return tuple(value) if value is not _READ_DIRECT else self.store.retirement_records()
+
+    def _pending_replacements(self) -> tuple[Any, ...]:
+        value = self._read(_ReadStore("pending_replacements"))
+        return tuple(value) if value is not _READ_DIRECT else self.store.pending_replacements()
 
     @staticmethod
     def _cursor_fingerprint(value: Mapping[str, Any], doc_ids: tuple[str, ...]) -> str:
@@ -833,7 +1115,7 @@ class OrgFsMesh:
             vv = _unb64(vectors.get(doc_id, ""))
             cursor: str | None = None
             while True:
-                page = self.store.export_since(
+                page = self._export_since(
                     doc_id, vv, cursor=cursor, max_bytes=ORGFS_PAGE_BYTES
                 )
                 missing.extend(page.envelopes)
@@ -849,7 +1131,7 @@ class OrgFsMesh:
             raise StoreError("not-a-member", "requester is not a space member")
         raw_doc_ids = value.get("docIds")
         if raw_doc_ids is None:
-            doc_ids = self.store.document_ids()
+            doc_ids = self._document_ids()
         elif isinstance(raw_doc_ids, list) and all(
             isinstance(item, str) for item in raw_doc_ids
         ):
@@ -894,7 +1176,7 @@ class OrgFsMesh:
                 ) from exc
         if offset == 0:
             manifests: list[Mapping[str, Any]] = []
-            meta_probe = self.store.export_since(
+            meta_probe = self._export_since(
                 "meta",
                 _unb64(vectors.get("meta", "")),
                 cursor=None,
@@ -905,7 +1187,7 @@ class OrgFsMesh:
             # round may then return the replacement snapshot manifest.
             if not meta_probe.envelopes:
                 for doc_id in doc_ids:
-                    probe = self.store.export_since(
+                    probe = self._export_since(
                         doc_id,
                         _unb64(vectors.get(doc_id, "")),
                         cursor=None,
@@ -986,7 +1268,7 @@ class OrgFsMesh:
         if self.replica_store is None:
             raise StoreError("invalid-argument", "replica store is unavailable")
         for doc_id in doc_ids:
-            if doc_id != "meta" and self.store.retired(doc_id) is not None:
+            if doc_id != "meta" and self._retired(doc_id) is not None:
                 # Ask the replica engine to construct the frozen error details;
                 # the mesh handler below preserves its OrgFsError code.
                 self.replica_store.serve_sync_page((doc_id,), limit=1)
@@ -1031,9 +1313,9 @@ class OrgFsMesh:
             parts = key.split("/")
             doc_id, writer, sequence = parts[2], parts[3], int(parts[4])
             _decode_update_header(envelope, space_id=self.store.space_id)
-            version = self.store.commit_version(doc_id, writer, sequence)
+            version = self._commit_version(doc_id, writer, sequence)
             requested = _unb64(vectors.get(doc_id, ""))
-            if version is not None and self.store._covered(version, requested):
+            if version is not None and self._covered(version, requested):
                 last_scanned_key = key
                 continue
             trial = [*selected, _b64(envelope)]
@@ -1085,8 +1367,8 @@ class OrgFsMesh:
                     else self.durable
                 ),
                 "frontiers": {
-                    doc_id: _b64(self.store.frontier(doc_id))
-                    for doc_id in self.store.document_ids()
+                    doc_id: _b64(self._frontier(doc_id))
+                    for doc_id in self._document_ids()
                 },
             }
         )
@@ -1157,7 +1439,7 @@ class OrgFsMesh:
                     )
                     for key, envelope in rows
                 )
-            records = self.store.log_range(doc_id, writer, after=after, limit=limit)
+            records = self._log_range(doc_id, writer, after=after, limit=limit)
             return tuple(
                 (
                     self._keys.orgfs_log(
@@ -1254,7 +1536,7 @@ class OrgFsMesh:
         retirement = next(
             (
                 record
-                for record in self.store.retirement_records()
+                for record in self._retirement_records()
                 if record.replacement_doc_id == doc_id
                 and record.snapshot_id == snapshot_id
             ),
@@ -1269,11 +1551,20 @@ class OrgFsMesh:
         )
         if hashlib.sha256(body).hexdigest() != snapshot_id:
             raise StoreError("invalid-argument", "snapshot body hash mismatch")
-        self.store.install_replacement(
-            retirement.old_physical_doc_id,
-            retirement.replacement_doc_id,
-            body,
-        )
+        if self.space_authority is not None:
+            self.space_authority.install_replacement(
+                retirement.old_physical_doc_id,
+                retirement.replacement_doc_id,
+                body,
+                author=self.author,
+                actor=self.node_id,
+            )
+        else:
+            self.store.install_replacement(
+                retirement.old_physical_doc_id,
+                retirement.replacement_doc_id,
+                body,
+            )
         if self._on_replacement is not None:
             self._on_replacement(
                 retirement.old_physical_doc_id,
@@ -1310,8 +1601,8 @@ class OrgFsMesh:
         cursor: str | None = None
         applied = 0
         starting_vectors = {
-            doc_id: _b64(self.store.frontier(doc_id))
-            for doc_id in self.store.document_ids()
+            doc_id: _b64(self._frontier(doc_id))
+            for doc_id in self._document_ids()
         }
         exhausted_pending: tuple[tuple[str, str, str], ...] | None = None
         while True:
@@ -1367,8 +1658,8 @@ class OrgFsMesh:
                         "invalid-argument", "snapshot response cannot be paginated"
                     )
                 starting_vectors = {
-                    doc_id: _b64(self.store.frontier(doc_id))
-                    for doc_id in self.store.document_ids()
+                    doc_id: _b64(self._frontier(doc_id))
+                    for doc_id in self._document_ids()
                 }
                 cursor = None
                 continue
@@ -1392,7 +1683,7 @@ class OrgFsMesh:
                         record.replacement_doc_id,
                         record.snapshot_id,
                     )
-                    for record in self.store.pending_replacements()
+                    for record in self._pending_replacements()
                 )
                 if pending:
                     if pending == exhausted_pending:
@@ -1406,8 +1697,8 @@ class OrgFsMesh:
                         )
                     exhausted_pending = pending
                     starting_vectors = {
-                        doc_id: _b64(self.store.frontier(doc_id))
-                        for doc_id in self.store.document_ids()
+                        doc_id: _b64(self._frontier(doc_id))
+                        for doc_id in self._document_ids()
                     }
                     continue
                 return applied
@@ -1493,11 +1784,21 @@ class OrgFsMesh:
             frontiers, dict
         ):
             raise StoreError("invalid-argument", "invalid frontier response")
-        self.store.record_holder_frontier(
-            str(value.get("supplier")),
-            bool(value.get("durable")),
-            {str(doc_id): _unb64(frontier) for doc_id, frontier in frontiers.items()},
-        )
+        holder_frontiers = {
+            str(doc_id): _unb64(frontier) for doc_id, frontier in frontiers.items()
+        }
+        if self.space_authority is not None:
+            self.space_authority.record_holder_frontier(
+                str(value.get("supplier")),
+                bool(value.get("durable")),
+                holder_frontiers,
+            )
+        else:
+            self.store.record_holder_frontier(
+                str(value.get("supplier")),
+                bool(value.get("durable")),
+                holder_frontiers,
+            )
 
     def fetch_blob(
         self,
@@ -1581,13 +1882,45 @@ class OrgFsMesh:
         except BlobError as exc:
             raise StoreError("blob-unavailable", str(exc)) from exc
 
-    def close(self) -> None:
+    def close(self, timeout: float = 5.0) -> None:
+        if self._ingress_closed:
+            return
+        deadline = time.monotonic() + max(0.0, timeout)
         with self._worker_lock:
             self._closed = True
         for registration in reversed(self._registrations):
             registration.close()
         self._registrations.clear()
-        self._worker_executor.shutdown(wait=True, cancel_futures=True)
+        with self._ingress_guard:
+            self._ingress_closing = True
+        while time.monotonic() < deadline:
+            snapshot = self._ingress_runtime.snapshot(self._ingress_actor)
+            if (
+                snapshot.queued == 0
+                and snapshot.in_flight == 0
+                and not self._ingress_deferred
+                and self.ingress_pending == 0
+            ):
+                break
+            time.sleep(0.005)
+        else:
+            raise TimeoutError("orgfs log ingress did not drain")
+        if not self._ingress_effects.close(max(0.0, deadline - time.monotonic())):
+            raise TimeoutError("orgfs log effects did not drain")
+        self._ingress_generation += 1
+        if not self._ingress_runtime.stop(
+            self._ingress_actor, timeout=max(0.0, deadline - time.monotonic())
+        ):
+            raise TimeoutError("orgfs log ingress actor did not stop")
+        # Accepted sync/blob jobs keep custody after a caller's close deadline.
+        # Do not let ThreadPoolExecutor's unbounded join defeat that deadline.
+        self._worker_executor.shutdown(wait=False, cancel_futures=False)
+        with self._worker_lock:
+            pending_workers = tuple(self._worker_futures)
+        if pending_workers:
+            _, unfinished = wait(pending_workers, timeout=max(0.0, deadline - time.monotonic()))
+            if unfinished:
+                raise TimeoutError("orgfs sync/blob workers did not drain")
         with self._worker_lock:
             self._blob_fetch_pending.clear()
             self._blob_fetch_pending_count = 0
@@ -1599,6 +1932,7 @@ class OrgFsMesh:
             )
             self._blob_fetch_waiters.clear()
             self._sync_pending.clear()
+        self._ingress_closed = True
         for waiter in waiters:
             waiter.set()
 
@@ -1608,6 +1942,7 @@ __all__ = [
     "ORGFS_BLOB_FETCH_QUEUE_LIMIT",
     "ORGFS_LOG_RANGE_LIMIT",
     "ORGFS_PAGE_BYTES",
+    "ORGFS_SYNC_RETRY_BACKOFF_SECONDS",
     "ORGFS_SYNC_QUEUE_LIMIT",
     "OrgFsMesh",
 ]

@@ -105,6 +105,14 @@ def _prepare_claude_runtime_context(context: AgentRuntimeContext) -> None:
         and entry.name not in _RESERVED_PROJECTION_ROOTS
         and _is_managed_projection_link(entry, context)
     ]
+    if context.authority_prepared:
+        # The Agent home owner already materialized this exact incarnation.
+        # Consumers verify drift but must not recreate a revoked or removed view.
+        if any(replace for _path, _source, replace in planned) or stale:
+            raise ClaudeRuntimeError("authority-prepared Claude native projection drifted")
+        if not (native_root / _SESSION_LINK).is_symlink():
+            raise ClaudeRuntimeError("authority-prepared Claude projects link is missing")
+        return
     for path, source, replace in planned:
         if replace:
             _replace_projection_link(path, source)

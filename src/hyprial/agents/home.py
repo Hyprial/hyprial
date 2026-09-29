@@ -128,6 +128,17 @@ class AgentHomeProvisioner:
         self.hyprial_home = home
         self.agents_root = home / "agents"
 
+    def claim_receipt(self, *, actor: str, entity_token: str) -> HomeReceipt:
+        """Return the immutable receipt a registry must persist before I/O."""
+
+        return HomeReceipt(
+            actor=actor,
+            entity_token=entity_token,
+            resource_token=uuid4().hex,
+            path=str(self.agents_root / actor),
+            owner_uid=os.getuid(),
+        )
+
     def provision(
         self,
         *,
@@ -135,6 +146,7 @@ class AgentHomeProvisioner:
         entity_token: str,
         incumbent: HomeReceipt | None,
         allow_revoked: bool = False,
+        claimed_receipt: HomeReceipt | None = None,
     ) -> HomeProvisioningAttempt:
         """Prepare one home while the caller holds the registry reservation.
 
@@ -164,14 +176,21 @@ class AgentHomeProvisioner:
             self.validate(ready)
             return HomeProvisioningAttempt(ready, False)
 
-        resource_token = uuid4().hex
-        receipt = HomeReceipt(
+        receipt = claimed_receipt or HomeReceipt(
             actor=actor,
             entity_token=entity_token,
-            resource_token=resource_token,
+            resource_token=uuid4().hex,
             path=str(path),
             owner_uid=os.getuid(),
         )
+        if (
+            receipt.actor != actor
+            or receipt.entity_token != entity_token
+            or Path(receipt.path) != path
+            or receipt.owner_uid != os.getuid()
+            or receipt.status != "ready"
+        ):
+            raise AgentHomeError("receipt-mismatch", actor, "provision-claim")
         created = False
         try:
             path.mkdir(mode=0o700)
@@ -186,6 +205,43 @@ class AgentHomeProvisioner:
             if created:
                 self.compensate(HomeProvisioningAttempt(receipt, True))
             raise
+
+    def provision_claimed(self, receipt: HomeReceipt) -> HomeProvisioningAttempt:
+        """Materialize a registry-issued receipt without inventing authority.
+
+        The registry persists ``receipt`` before dispatching this filesystem
+        effect.  Replaying the effect after a crash therefore validates the
+        same token instead of allocating a second home incarnation.
+        """
+
+        path = Path(receipt.path)
+        self._prepare_root(receipt.actor)
+        collision = self._filesystem_alias(receipt.actor, path)
+        if collision is not None and collision.name != receipt.actor:
+            raise AgentHomeError("name-collision", receipt.actor, "reserve")
+        if path.exists() or path.is_symlink():
+            try:
+                mirrored = self._read_receipt(
+                    path / _RECEIPT_RELATIVE, receipt.actor
+                )
+            except AgentHomeError as error:
+                if error.category in {"missing", "io", "invalid-receipt"}:
+                    raise AgentHomeError(
+                        "unowned-residue", receipt.actor, "reserve"
+                    ) from None
+                raise
+            if mirrored != receipt:
+                raise AgentHomeError(
+                    "receipt-mismatch", receipt.actor, "provision-claim"
+                )
+            self.validate(receipt)
+            return HomeProvisioningAttempt(receipt, False)
+        return self.provision(
+            actor=receipt.actor,
+            entity_token=receipt.entity_token,
+            incumbent=None,
+            claimed_receipt=receipt,
+        )
 
     def validate(self, receipt: HomeReceipt) -> Path:
         """Return the home path only when every ownership fence still matches."""

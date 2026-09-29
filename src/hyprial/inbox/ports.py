@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Protocol, TypeAlias
 
 from hyprial.contracts.ports import CommandSink, EventSink, PortCommandRejected
@@ -17,6 +18,13 @@ from .api import (
     SubmissionResult,
 )
 from .progress import ProgressEvent
+
+
+class PinnedEventClaim(StrEnum):
+    OWNER = "owner"
+    WAIT = "wait"
+    READY = "ready"
+    FULL = "full"
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,7 +61,7 @@ class RetryDueCommand:
 class WakeOutboxRecipientCommand:
     correlation_id: str
     recipient: str
-    now_ms: int | None = None
+    now_ms: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -371,3 +379,5 @@ class InboxProjectionPort(Protocol):
     def read_counts(self) -> InboxCountsProjection: ...
 
     def read_pending(self, recipient: str) -> tuple[InboxMessage, ...]: ...
+
+    def has_pending_work(self, recipient: str) -> bool: ...

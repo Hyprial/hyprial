@@ -89,6 +89,11 @@ class CheckoutManager:
     def apply(self, event: ChangeEvent) -> None:
         """Apply one watch event, re-reading authoritative node state."""
 
+        self.apply_change(event.kind, event.node.node_id)
+
+    def apply_change(self, kind: str, changed_node_id: str) -> None:
+        """Apply a frozen watch projection delivered by CheckoutAuthority."""
+
         with self._lock:
             self._prepare_root()
             projected = self._scan_tree()
@@ -99,8 +104,8 @@ class CheckoutManager:
                 if self._paths_by_node.get(node_id)
                 != (projected[node_id].path if node_id in projected else None)
             }
-            if event.kind in {"removed", "moved"}:
-                changed_paths.add(event.node.node_id)
+            if kind in {"removed", "moved"}:
+                changed_paths.add(changed_node_id)
             for node_id in changed_paths:
                 previous = self._paths_by_node.get(node_id)
                 if previous is not None:
@@ -113,8 +118,8 @@ class CheckoutManager:
                 | {
                     node_id
                     for node_id, item in projected.items()
-                    if node_id == event.node.node_id
-                    or self._is_below(item.path, projected.get(event.node.node_id))
+                    if node_id == changed_node_id
+                    or self._is_below(item.path, projected.get(changed_node_id))
                 }
             )
             for node_id in affected:

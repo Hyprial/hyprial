@@ -724,10 +724,14 @@ class TurnRuntime:
         with self._projection.lock:
             return tuple(self._projection.results)
 
-    def drain_results(self) -> tuple[TurnResultProjection, ...]:
+    def drain_results(self, limit: int | None = None) -> tuple[TurnResultProjection, ...]:
+        if limit is not None and limit < 0:
+            raise ValueError("result drain limit must be non-negative")
         with self._projection.lock:
-            results = tuple(self._projection.results)
-            self._projection.results.clear()
+            count = len(self._projection.results)
+            if limit is not None:
+                count = min(count, limit)
+            results = tuple(self._projection.results.popleft() for _ in range(count))
         for result in results:
             self._admission.release(result.delivery_id)
         return results

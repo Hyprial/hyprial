@@ -489,6 +489,12 @@ class StructuredOrgDoc:
         return _RootMap(self._live_doc())
 
     def transact(self, mutate: Callable[[_RootMap], None]) -> NodeInfo:
+        """Run the callback once and commit its detached changes.
+
+        Authority-backed handles reject with ``stale-write`` if another local
+        mutation changes the captured document before commit. Callers may then
+        explicitly start a new transaction; callbacks are never replayed.
+        """
         if not callable(mutate):
             raise _invalid("transact requires a callable")
 

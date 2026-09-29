@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import AbstractContextManager
 from pathlib import Path
 
 from hyprial.daemon.api import ManagedHarnessProcess
@@ -26,6 +27,7 @@ from .python_worker import (
 )
 from .streaming import TurnCompletedObserver
 from hyprial.agents.environment import ChildEnvironmentLaunch
+from hyprial.agents.runtime import AgentRuntimeContext
 from .worker_channel import WorkerChannel
 
 WorkerChannelFactory = Callable[[HarnessLaunchSpec], WorkerChannel | None]
@@ -35,6 +37,9 @@ WorkerChannelFactory = Callable[[HarnessLaunchSpec], WorkerChannel | None]
 #: the worker start loudly (no ambient fallback exists by construction).
 ChildEnvironmentFactory = Callable[
     [HarnessLaunchSpec, WorkerChannel], "ChildEnvironmentLaunch | None"
+]
+RuntimeLaunchCustody = Callable[
+    [AgentRuntimeContext], AbstractContextManager[None]
 ]
 
 # Mechanisms whose HEADLESS_EXEC entry gives a managed streaming process
@@ -93,6 +98,7 @@ class HarnessLauncher:
         | None = None,
         worker_channel_factory: WorkerChannelFactory | None = None,
         child_environment_factory: "ChildEnvironmentFactory | None" = None,
+        runtime_launch_custody: "RuntimeLaunchCustody | None" = None,
         state_dir: Path | None = None,
         turn_failure_observer: TurnFailureSpecObserver | None = None,
         turn_completed_observer: TurnCompletedObserver | None = None,
@@ -112,9 +118,11 @@ class HarnessLauncher:
         # Applied to the pi carrier only in this slice; the remaining spawn
         # sites keep today's behaviour until B2 collects them.
         self._child_environment_factory = child_environment_factory
+        self._runtime_launch_custody = runtime_launch_custody
         self._legacy_env = env
         # provider_auth's coordinator, when the daemon wires one; passed
-        # straight through to every PiRpcProcess.
+        # through to every managed streaming runtime that can report a
+        # model-vendor failed turn.
         self._turn_failure_observer = turn_failure_observer
         self._turn_completed_observer = turn_completed_observer
         self._agent_sdk_factory = agent_sdk_factory or self._make_agent_sdk_process
@@ -179,6 +187,7 @@ class HarnessLauncher:
             complete_launch=self._complete_launch_for(spec, channel),
             on_turn_failure_for_spec=self._turn_failure_observer,
             on_turn_completed=self._turn_completed_observer,
+            runtime_launch_custody=self._runtime_launch_custody,
         )
 
     def _make_codex_process(self, spec: HarnessLaunchSpec) -> "CodexAppServerProcess":
@@ -192,7 +201,9 @@ class HarnessLauncher:
             worker_channel=channel,
             command=spec.resolved_command(("codex",)),
             complete_launch=launch,
+            on_turn_failure_for_spec=self._turn_failure_observer,
             on_turn_completed=self._turn_completed_observer,
+            runtime_launch_custody=self._runtime_launch_custody,
         )
 
     def _make_pi_process(self, spec: HarnessLaunchSpec) -> "PiRpcProcess":
@@ -218,6 +229,7 @@ class HarnessLauncher:
             complete_launch=complete_launch,
             on_turn_failure_for_spec=self._turn_failure_observer,
             on_turn_completed=self._turn_completed_observer,
+            runtime_launch_custody=self._runtime_launch_custody,
         )
 
     def _make_python_process(self, spec: HarnessLaunchSpec) -> "PythonHarnessProcess":

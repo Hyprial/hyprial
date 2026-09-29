@@ -57,6 +57,7 @@ class ActorSpec:
     handler_factory: Callable[[], CommandHandler]
     mailbox_capacity: int = 128
     supervision_profile: str = "state_authority"
+    undelivered_sink: Callable[[object, str], None] | None = None
 
     def __post_init__(self) -> None:
         if not self.name.strip():
@@ -95,6 +96,7 @@ class DrainReport:
 
 EventSink = Callable[[ActorEvent], None]
 FailureSink = Callable[[str, int, BaseException], None]
+CommandStartedSink = Callable[[str, int, str], None]
 
 
 class ActorBackend(Protocol):
@@ -109,9 +111,12 @@ class ActorBackend(Protocol):
         mailbox_capacity: int,
         event_sink: EventSink,
         failure_callback: FailureSink,
+        command_started: CommandStartedSink,
     ) -> object: ...
 
-    def tell(self, endpoint: object, command: object) -> AdmissionResult: ...
+    def tell(
+        self, endpoint: object, custody_token: str, command: object
+    ) -> AdmissionResult: ...
 
     def close_admission(self, endpoint: object) -> None: ...
 

@@ -29,11 +29,13 @@ from .config import (
     require_agent_config,
     validate_agent_config_location,
 )
+from .home import HomeReceipt
 
 __all__ = [
     "AgentRuntimeContext",
     "AgentRuntimeError",
     "AgentRuntimeRoots",
+    "AgentRuntimePreparation",
     "AgentToolProfile",
     "DEFAULT_AGENT_TOOL_PROFILE",
     "SHARED_CREDENTIAL_DIVERGED",
@@ -43,6 +45,8 @@ __all__ = [
     "SharedCredentialBinding",
     "SshToolAuthorization",
     "resolve_agent_runtime_context",
+    "build_agent_runtime_preparation",
+    "materialize_agent_runtime_context",
     "shared_credential_status",
     "validate_shared_credential_binding",
     "validate_shared_credential_environment",
@@ -394,6 +398,9 @@ class AgentRuntimeContext:
     shared_credential: SharedCredentialBinding | None = field(
         default=None, repr=False
     )
+    authority_prepared: bool = False
+    home_resource_token: str | None = field(default=None, repr=False)
+    launch_token: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if self.harness not in _P2_HARNESSES:
@@ -414,10 +421,16 @@ class AgentRuntimeContext:
         return dict(self.environment_items)
 
     def public_projection(self) -> dict[str, object]:
-        """Non-secret CLI handoff; paths diagnose but confer no new grant."""
+        """Non-secret CLI handoff with an opaque incarnation launch fence."""
 
         return {
             "mode": "agent-home-p2",
+            "authorityPrepared": self.authority_prepared,
+            **(
+                {"launchToken": self.launch_token}
+                if self.authority_prepared and self.launch_token is not None
+                else {}
+            ),
             "actor": self.actor,
             "harness": self.harness,
             "configRevision": self.config_revision,
@@ -444,6 +457,50 @@ class AgentRuntimeContext:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class AgentRuntimePreparation:
+    """Immutable home-incarnation input admitted to the filesystem authority."""
+
+    actor: str
+    actor_name: str
+    entity_token: str
+    config: object
+    home_receipt: HomeReceipt
+    harness: str
+    cwd: str | None
+    tool_profile: AgentToolProfile
+    containerized: bool = False
+
+
+def build_agent_runtime_preparation(
+    *,
+    registry: Any,
+    agent_name: str,
+    harness: str,
+    cwd: str | None,
+    tool_profile: AgentToolProfile,
+    containerized: bool = False,
+    validate_home: bool = True,
+) -> AgentRuntimePreparation | None:
+    agent = registry.require(agent_name)
+    if agent.config is None or harness not in _P2_HARNESSES:
+        return None
+    receipt = registry.home_receipt(
+        agent.actor, validate_mirror=validate_home
+    )
+    return AgentRuntimePreparation(
+        actor=agent.uri,
+        actor_name=agent.actor,
+        entity_token=agent.entity_token,
+        config=agent.config,
+        home_receipt=receipt,
+        harness=harness,
+        cwd=cwd,
+        tool_profile=tool_profile,
+        containerized=containerized,
+    )
+
+
 def resolve_agent_runtime_context(
     *,
     registry: Any,
@@ -460,33 +517,52 @@ def resolve_agent_runtime_context(
     context never silently falls back when its entry cannot carry the contract.
     """
 
-    agent = registry.require(agent_name)
-    if agent.config is None or harness not in _P2_HARNESSES:
+    preparation = build_agent_runtime_preparation(
+        registry=registry,
+        agent_name=agent_name,
+        harness=harness,
+        cwd=cwd,
+        tool_profile=tool_profile,
+        containerized=containerized,
+    )
+    if preparation is None:
         return None
-    if containerized:
+    return materialize_agent_runtime_context(preparation)
+
+
+def materialize_agent_runtime_context(
+    preparation: AgentRuntimePreparation,
+) -> AgentRuntimeContext:
+    """Materialize one already-fenced preparation on the home FS owner."""
+
+    if preparation.containerized:
         raise AgentRuntimeError(
             "agent-home P2 is not supported for containerized launches"
         )
-    config = require_agent_config(agent.config, actor=agent.actor)
-    receipt = registry.home_receipt(agent.actor)
+    config = require_agent_config(preparation.config, actor=preparation.actor_name)
+    receipt = preparation.home_receipt
     agent_home = Path(receipt.path)
-    validate_agent_config_location(config, agent_home=agent_home, cwd=cwd)
+    validate_agent_config_location(
+        config, agent_home=agent_home, cwd=preparation.cwd
+    )
     manifest = config.freeze_manifest()
-    projection = build_native_projection(manifest, harness)
+    projection = build_native_projection(manifest, preparation.harness)
 
-    revision_root = agent_home / "state" / "config" / agent.entity_token / manifest.revision
+    revision_root = (
+        agent_home / "state" / "config" / preparation.entity_token / manifest.revision
+    )
     projection_parent = revision_root / "native"
-    projection_root = projection_parent / harness
-    native_root = agent_home / "secrets" / "native" / harness
+    projection_root = projection_parent / preparation.harness
+    native_root = agent_home / "secrets" / "native" / preparation.harness
     session_root = (
         agent_home / "state" / "pi"
-        if harness == "pi"
-        else agent_home / "state" / "sessions" / harness
+        if preparation.harness == "pi"
+        else agent_home / "state" / "sessions" / preparation.harness
     )
     tool_home = agent_home / "state" / "home"
     xdg_config_home = agent_home / "secrets" / "tools" / "xdg"
     xdg_root = agent_home / "state" / "xdg"
-    tool_profile_root = revision_root / "tools" / tool_profile.profile_id
+    tool_profile_root = revision_root / "tools" / preparation.tool_profile.profile_id
 
     for directory in (
         revision_root,
@@ -505,8 +581,8 @@ def resolve_agent_runtime_context(
     incumbent = None
     if projection_root.exists() or projection_root.is_symlink():
         incumbent = ConfigProjectionReceipt(
-            actor=agent.uri,
-            entity_token=agent.entity_token,
+            actor=preparation.actor,
+            entity_token=preparation.entity_token,
             source_digest=projection.source_digest,
             harness=projection.harness,
             mapping_version=projection.mapping_version,
@@ -518,12 +594,14 @@ def resolve_agent_runtime_context(
         config,
         manifest,
         projection,
-        actor=agent.uri,
-        entity_token=agent.entity_token,
+        actor=preparation.actor,
+        entity_token=preparation.entity_token,
         projection_root=projection_root,
         incumbent=incumbent,
     )
-    tool_environment = _materialize_tool_profile(tool_profile_root, tool_profile)
+    tool_environment = _materialize_tool_profile(
+        tool_profile_root, preparation.tool_profile
+    )
     roots = AgentRuntimeRoots(
         agent_home=agent_home,
         config_source=Path(config.source),
@@ -543,34 +621,35 @@ def resolve_agent_runtime_context(
         "XDG_CACHE_HOME": str(xdg_root / "cache"),
         "XDG_DATA_HOME": str(xdg_root / "data"),
         "XDG_STATE_HOME": str(xdg_root / "state"),
-        _NATIVE_ROOT_ENV[harness]: str(native_root),
+        _NATIVE_ROOT_ENV[preparation.harness]: str(native_root),
         **tool_environment,
     }
-    shared_target = config.shared_credential_path(harness)
+    shared_target = config.shared_credential_path(preparation.harness)
     shared_credential = (
         None
         if shared_target is None
         else SharedCredentialBinding(
-            actor=agent.actor,
-            harness=harness,
-            native_path=native_root / _NATIVE_CREDENTIAL_NAME[harness],
+            actor=preparation.actor_name,
+            harness=preparation.harness,
+            native_path=native_root / _NATIVE_CREDENTIAL_NAME[preparation.harness],
             target_path=Path(shared_target),
-            agent_cwd=None if cwd is None else Path(cwd),
+            agent_cwd=None if preparation.cwd is None else Path(preparation.cwd),
         )
     )
     context = AgentRuntimeContext(
-        actor=agent.uri,
-        entity_token=agent.entity_token,
-        harness=harness,
+        actor=preparation.actor,
+        entity_token=preparation.entity_token,
+        harness=preparation.harness,
         manifest=manifest,
         projection=projection,
         projection_receipt=projection_receipt,
         roots=roots,
-        tool_profile_id=tool_profile.profile_id,
+        tool_profile_id=preparation.tool_profile.profile_id,
         environment_items=tuple(sorted(environment.items())),
         auth_method="native-shared-link" if shared_credential is not None else None,
         auth_revision="designated-v1" if shared_credential is not None else None,
         shared_credential=shared_credential,
+        home_resource_token=receipt.resource_token,
     )
     if shared_credential is not None:
         validate_shared_credential_binding(shared_credential)

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import json
 from typing import Protocol, TypeAlias
 
 from hyprial.contracts.ports import CommandSink, EventSink, PortCommandRejected
 from hyprial.contracts.readiness import ReadinessReport
 
 from .api import HarnessDelivery, HarnessResult
+from .lifecycle_receipts import LifecycleReceiptCompleted
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +141,19 @@ class DrainHarnessResultsCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class ClaimHarnessResultsCommand:
+    correlation_id: str
+    limit: int = 64
+
+
+@dataclass(frozen=True, slots=True)
+class SettleHarnessResultCommand:
+    correlation_id: str
+    claim_token: str
+    delivery_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class DrainHarnessProgressCommand:
     correlation_id: str
 
@@ -196,6 +212,40 @@ class RestoreAdapterRegistrationCommand:
     legacy_pin: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class RestoreEligibilityProjection:
+    actor: str
+    entity_token: str
+    desired_generation: str
+    suppressed: bool
+    source_generation: int
+    source_version: int
+
+
+class AgentIdentityProjectionPort(Protocol):
+    """Cache-only Agent incarnation view consumed by the Harness owner."""
+
+    def entity_token(self, actor: str) -> str | None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class UpdateRestoreEligibilityCommand:
+    correlation_id: str
+    eligibility: RestoreEligibilityProjection
+
+
+def harness_desired_generation(spec: object) -> str:
+    projector = getattr(spec, "to_payload", None)
+    if not callable(projector):
+        projector = getattr(spec, "to_json", None)
+    if not callable(projector):
+        raise TypeError("harness desired generation requires a frozen launch spec")
+    encoded = json.dumps(
+        projector(), sort_keys=True, separators=(",", ":")
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
 HarnessCommand: TypeAlias = (
     EnsureHarnessCommand
     | RemoveHarnessCommand
@@ -207,6 +257,8 @@ HarnessCommand: TypeAlias = (
     | WaitHarnessReadyCommand
     | DispatchHarnessDeliveryCommand
     | DrainHarnessResultsCommand
+    | ClaimHarnessResultsCommand
+    | SettleHarnessResultCommand
     | DrainHarnessProgressCommand
     | BindHarnessLivenessCommand
     | HarnessStartTimerElapsedCommand
@@ -216,6 +268,7 @@ HarnessCommand: TypeAlias = (
     | SnapshotAdapterRegistrationCommand
     | RemoveAdapterRegistrationCommand
     | RestoreAdapterRegistrationCommand
+    | UpdateRestoreEligibilityCommand
 )
 
 
@@ -275,6 +328,7 @@ class HarnessStatusProjection:
 class HarnessStreamingProjection:
     version: int
     actors: tuple[str, ...]
+    process_generations: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -379,6 +433,33 @@ class HarnessResultObserved:
 
 
 @dataclass(frozen=True, slots=True)
+class ClaimedHarnessResult:
+    claim_token: str
+    harness_id: str
+    process_generation: int
+    result: HarnessResult
+
+
+@dataclass(frozen=True, slots=True)
+class HarnessResultsClaimed:
+    correlation_id: str
+    generation: int
+    version: int
+    claims: tuple[ClaimedHarnessResult, ...]
+    errors: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class HarnessResultSettled:
+    correlation_id: str
+    generation: int
+    version: int
+    claim_token: str
+    delivery_id: str
+    settled: bool
+
+
+@dataclass(frozen=True, slots=True)
 class HarnessLivenessBound:
     correlation_id: str
     generation: int
@@ -419,6 +500,16 @@ class HarnessDesiredStateManaged:
     changed: bool
     adapter: HarnessAdapterRegistrationProjection | None = None
     error: BaseException | None = None
+    # Async persistence failures cross the actor boundary as immutable facts.
+    # The synchronous facade reconstructs a supported public exception type
+    # only after this exact correlation settles.
+    error_code: str | None = None
+    error_detail: str | None = None
+    error_is_oserror: bool = False
+    error_errno: int | None = None
+    error_strerror: str | None = None
+    error_filename: str | bytes | None = None
+    error_filename2: str | bytes | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -485,6 +576,8 @@ HarnessEvent: TypeAlias = (
     | HarnessDeliveryAdmitted
     | HarnessProgressObserved
     | HarnessResultObserved
+    | HarnessResultsClaimed
+    | HarnessResultSettled
     | HarnessLivenessBound
     | HarnessProjectionsRefreshed
     | HarnessDesiredStateManaged
@@ -494,6 +587,7 @@ HarnessEvent: TypeAlias = (
     | HarnessStopIoCompleted
     | HarnessCallIoCompleted
     | HarnessesStopped
+    | LifecycleReceiptCompleted
     | PortCommandRejected
 )
 HarnessCommandSink: TypeAlias = CommandSink[HarnessCommand]

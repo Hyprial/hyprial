@@ -231,6 +231,23 @@ class ActiveDaemonHeartbeat:
         return self._generation
 
     def claim(self) -> None:
+        candidate = self._claim_record()
+        self._thread = threading.Thread(
+            target=self._heartbeat_loop,
+            name="hyprial-home-heartbeat",
+            daemon=True,
+        )
+        self._thread.start()
+        if candidate is not None:
+            self._duplicate_thread = threading.Thread(
+                target=self._duplicate_check_entry,
+                args=(candidate,),
+                name="hyprial-home-duplicate-check",
+                daemon=True,
+            )
+            self._duplicate_thread.start()
+
+    def _claim_record(self) -> dict[str, Any] | None:
         if not self.home.is_dir():
             source = (
                 "HYPRIAL_HOME environment variable"
@@ -276,20 +293,7 @@ class ActiveDaemonHeartbeat:
                     raise HYPRIALHomeInUse(self.home.resolve(), blocking_pid)
             time.sleep(min(0.05, self.keepalive_duration))
         self._claimed = True
-        self._thread = threading.Thread(
-            target=self._heartbeat_loop,
-            name="hyprial-home-heartbeat",
-            daemon=True,
-        )
-        self._thread.start()
-        if candidate is not None:
-            self._duplicate_thread = threading.Thread(
-                target=self._duplicate_check_entry,
-                args=(candidate,),
-                name="hyprial-home-duplicate-check",
-                daemon=True,
-            )
-            self._duplicate_thread.start()
+        return candidate
 
     def close(self) -> None:
         self._stop.set()
@@ -303,6 +307,9 @@ class ActiveDaemonHeartbeat:
             # The check polls the stop event every ~50ms, so this join is
             # bounded by the poll granularity, never by the window length.
             duplicate_thread.join(timeout=1.0)
+        self._release_record()
+
+    def _release_record(self) -> None:
         if not self._claimed:
             return
         try:
@@ -314,15 +321,20 @@ class ActiveDaemonHeartbeat:
 
     def _heartbeat_loop(self) -> None:
         while not self._stop.wait(self.keepalive_duration):
-            try:
-                with self._locked():
-                    if not self._owns(self._read_record()):
-                        self._lose_ownership()
-                        return
-                    self._write_record()
-            except Exception:  # noqa: BLE001 - losing the fence stops the daemon
-                self._lose_ownership()
+            if not self._renew_record():
                 return
+
+    def _renew_record(self) -> bool:
+        try:
+            with self._locked():
+                if not self._owns(self._read_record()):
+                    self._lose_ownership()
+                    return False
+                self._write_record()
+            return True
+        except Exception:  # losing the fence stops the daemon
+            self._lose_ownership()
+            return False
 
     def _lose_ownership(self) -> None:
         self._claimed = False
@@ -539,6 +551,7 @@ class ActiveDaemonHeartbeat:
                 os.fsync(stream.fileno())
             os.replace(temporary, self.path)
             self._fsync_home()
+            self._last_committed_heartbeat = float(record["heartbeatMonotonic"])
         finally:
             temporary.unlink(missing_ok=True)
 

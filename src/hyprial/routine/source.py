@@ -60,7 +60,7 @@ class FilePacJournal:
         from hyprial.pac.store import PacGraphStore
         from hyprial.pac.subscription import snapshot
 
-        store = PacGraphStore(self.database)
+        store = PacGraphStore(self.database, read_only=True)
         try:
             graph_ids = store.graph_ids()
         finally:

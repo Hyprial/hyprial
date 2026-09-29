@@ -96,6 +96,7 @@ class PacRoutineDispatch:
         clock_ms: Callable[[], int],
         resolve_principal: Callable[[str], str],
         workflow: Any | None = None,
+        graph_authority: Any | None = None,
     ) -> None:
         self._state_dir = Path(state_dir)
         self._database = default_database_path(self._state_dir)
@@ -108,6 +109,7 @@ class PacRoutineDispatch:
         # short name a later flag could never authorize against.
         self._resolve_principal = resolve_principal
         self._workflow = workflow
+        self._graph_authority = graph_authority
 
     # -- dispatch --------------------------------------------------------
 
@@ -136,9 +138,30 @@ class PacRoutineDispatch:
         """
 
         key = operation_key(routine_name, task_uuid, occurrence_slot_ms)
+        occurrence = None
+        if self._graph_authority is not None:
+            occurrence = self._graph_authority.query_routine_occurrence(
+                routine_name=routine_name,
+                task_uuid=task_uuid,
+                operation_key=key,
+                sender=sender,
+                observed_at_ms=self._clock_ms(),
+                rearm_after_created_at_ms=rearm_after_created_at_ms,
+            )
+            if occurrence.get("existing"):
+                return {
+                    "graphId": str(occurrence["graphId"]),
+                    "state": str(occurrence["state"]),
+                }
+            if occurrence.get("blocked"):
+                return {
+                    "graphId": str(occurrence["graphId"]),
+                    "state": str(occurrence["state"]),
+                }
+
         if self._workflow is not None:
             legacy = False
-            if self._database.exists():
+            if self._graph_authority is None and self._database.exists():
                 probe = PacGraphStore(self._database, read_only=True)
                 try:
                     legacy = probe.graph_by_operation_key(key) is not None
@@ -212,6 +235,39 @@ class PacRoutineDispatch:
 
         target = self._resolve_principal(target)
         escalate_to = self._resolve_principal(escalate_to)
+        if self._graph_authority is not None:
+            prepared = self._graph_authority.start_legacy_routine_graph(
+                routine_name=routine_name, task_uuid=task_uuid,
+                target=target, escalate_to=escalate_to,
+                timeout_seconds=timeout_seconds, sender=sender,
+                observed_at_ms=self._clock_ms(),
+                operation_key=key,
+            )
+            graph_id = str(prepared["graphId"])
+            settled = prepared["settledState"]
+            if settled is not None:
+                return {"graphId": graph_id, "state": settled}
+            deadline_ms = int(prepared["deadlineMs"])
+            delivered = self._deliver(
+                target=target,
+                conversation_id=(
+                    f"routine-{routine_name}-{task_uuid}"
+                    if occurrence_slot_ms is None
+                    else f"routine-{routine_name}-{task_uuid}-{occurrence_slot_ms}"
+                ),
+                text=task_message(
+                    task_text=task_text, graph_id=graph_id,
+                    deadline_ms=deadline_ms,
+                    reason_ref=f"routine:{routine_name}#{task_uuid}:result",
+                ),
+                sender=sender,
+            )
+            if not delivered:
+                raise RuntimeError(
+                    f"routine task message for {graph_id} was refused by the "
+                    "message plane; the graph stays and its deadline reports it"
+                )
+            return {"graphId": graph_id, "state": STATE_RUNNING}
         store = PacGraphStore(self._database)
         try:
             existing = store.graph_by_operation_key(key)
@@ -316,29 +372,6 @@ class PacRoutineDispatch:
             )
         return {"graphId": graph_id, "state": STATE_RUNNING}
 
-    def rearm_boundary(self, *, routine_name: str) -> int:
-        """Return the newest PAC graph creation covered by ``routine resume``.
-
-        The boundary is read from PAC itself, so terminal task state remains a
-        PAC fact.  The routine store only remembers which already-existing PAC
-        facts the explicit resume chose to re-arm.
-        """
-
-        if not self._database.exists():
-            return 0
-        store = PacGraphStore(self._database, read_only=True)
-        try:
-            prefix = f"routine:{routine_name}:"
-            row = store._db.execute(
-                "SELECT COALESCE(MAX(g.created_at), 0) "
-                "FROM graphs g LEFT JOIN workflow_graphs w USING(graph_id) "
-                "WHERE w.routine_name=? OR g.operation_key LIKE ? "
-                "OR g.operation_key LIKE ?",
-                (routine_name, f"{prefix}%", f"workflow:{prefix}%"),
-            ).fetchone()
-            return 0 if row is None else int(row[0])
-        finally:
-            store.close()
 
     def _latest_settled_task(
         self,
@@ -391,6 +424,33 @@ class PacRoutineDispatch:
                 return str(row["graph_id"]), state
         return None
 
+    def rearm_boundary(self, *, routine_name: str) -> int:
+        if self._graph_authority is not None:
+            result = self._graph_authority.query_routine_occurrence(
+                routine_name=routine_name,
+                task_uuid="",
+                operation_key=f"routine:{routine_name}:__rearm_probe__",
+                sender="",
+                observed_at_ms=self._clock_ms(),
+                rearm_after_created_at_ms=0,
+            )
+            return int(result.get("rearmBoundary", 0))
+        if not self._database.exists():
+            return 0
+        store = PacGraphStore(self._database, read_only=True)
+        try:
+            prefix = f"routine:{routine_name}:"
+            row = store._db.execute(
+                "SELECT COALESCE(MAX(g.created_at), 0) "
+                "FROM graphs g LEFT JOIN workflow_graphs w USING(graph_id) "
+                "WHERE w.routine_name=? OR g.operation_key LIKE ? "
+                "OR g.operation_key LIKE ?",
+                (routine_name, f"{prefix}%", f"workflow:{prefix}%"),
+            ).fetchone()
+            return 0 if row is None else int(row[0])
+        finally:
+            store.close()
+
     def _settled_state(
         self, store: PacGraphStore, graph: dict[str, Any], graph_id: str
     ) -> str | None:
@@ -438,7 +498,7 @@ class PacRoutineDispatch:
                 "state": self._workflow_state(str(result["state"])),
             }
 
-        store = PacGraphStore(self._database)
+        store = PacGraphStore(self._database, read_only=True)
         try:
             graph = store.graph(graph_id)
             if graph is None:
@@ -460,6 +520,10 @@ class PacRoutineDispatch:
 
         if self._is_workflow(graph_id):
             self._workflow.cancel(run_id=graph_id, actor=actor)
+            return
+
+        if self._graph_authority is not None:
+            self._graph_authority.close_graph(graph_id, actor=actor)
             return
 
         store = PacGraphStore(self._database)

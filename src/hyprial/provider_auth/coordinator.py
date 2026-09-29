@@ -80,6 +80,7 @@ RELOGIN_COOLDOWN_SECONDS = 2 * 3600
 #: reconcile that accepts a token about to die would clear the mark into the
 #: same failure that set it.
 _CREDENTIAL_LIVE_FLOOR_SECONDS = 300
+_NOTICE_HISTORY_CAPACITY = 256
 
 
 class OwnerNotifier(Protocol):
@@ -104,6 +105,16 @@ class RuntimeContextValidator(Protocol):
     def __call__(self, context: "AgentRuntimeContext") -> bool: ...
 
 
+@dataclass(frozen=True, slots=True)
+class AuthNoticeIntent:
+    episode_key: str
+    episode_id: str
+    round_no: int
+    kind: str
+    text: str
+    idempotency_key: str
+
+
 @dataclass
 class _Episode:
     """One provider's broken stretch.  ``round`` counts issued codes."""
@@ -119,7 +130,9 @@ class _Episode:
     round: int = 0
     inflight: bool = False
     closing_sent: bool = False
+    closing_pending: bool = False
     failure_alerted: bool = False  # helper-machinery failure, once per episode
+    failure_alert_pending: bool = False
     sample: str = ""  # verbatim cause text (追加 2: alerts carry the cause)
     exhausted_at: float | None = None  # when the closing notice went out (S2)
 
@@ -163,6 +176,8 @@ class ProviderAuthCoordinator:
         self._runtime_context_validator = runtime_context_validator
         self._lock = threading.RLock()
         self._episodes: dict[str, _Episode] = {}
+        self._pending_notices: set[str] = set()
+        self._delivered_notices: dict[str, None] = {}
 
     # ------------------------------------------------------------------ API
 
@@ -194,7 +209,9 @@ class ProviderAuthCoordinator:
                 errorType=type(error).__name__,
             )
 
-    def resume_after_restore(self) -> None:
+    def resume_after_restore(
+        self, *, after_provider: str | None = None
+    ) -> tuple[bool, str | None]:
         """Daemon restore hook: re-open episodes for providers still broken.
 
         追加 1 ①: the dispatch mark blocks the failures that would re-trigger
@@ -203,19 +220,38 @@ class ProviderAuthCoordinator:
         just the recovery.
         """
 
+        last_provider = after_provider
         try:
-            for provider in self._providers_marked(REASON_PROVIDER_AUTH_INVALID):
+            providers = sorted(
+                self._providers_marked(REASON_PROVIDER_AUTH_INVALID)
+            )
+            for provider in providers:
+                if after_provider is not None and provider <= after_provider:
+                    continue
                 if self._credential_live(provider):
+                    if not self._restore_child_available(provider, "external"):
+                        return False, last_provider
                     self._recover(provider)
+                    last_provider = provider
                     continue
                 with self._lock:
                     episode = self._episodes.get(provider)
                     if episode is not None and episode.inflight:
+                        last_provider = provider
+                        continue
+                    if episode is not None and (
+                        episode.closing_pending
+                        or episode.failure_alert_pending
+                    ):
+                        last_provider = provider
                         continue
                     if episode is not None and (
                         episode.closing_sent or episode.round >= MAX_ROUNDS
                     ):
                         episode = None  # exhausted record; restore restarts fresh
+                    episode_id = None if episode is None else episode.episode_id
+                    if not self._restore_child_available(provider, episode_id):
+                        return False, last_provider
                     if episode is None:
                         episode = self._new_episode(
                             provider,
@@ -239,11 +275,26 @@ class ProviderAuthCoordinator:
                     episode.inflight = True
                     episode.round += 1
                 self._spawn_round(episode)
+                last_provider = provider
         except Exception as error:  # noqa: BLE001 -- never-raises contract
             self._log(
                 "provider.auth.coordinator.error",
                 errorType=type(error).__name__,
             )
+        return True, last_provider
+
+    def _restore_child_available(
+        self, episode_key: str, episode_id: str | None
+    ) -> bool:
+        """Whether this restore scan may create or restart one child.
+
+        The base coordinator has no asynchronous custody boundary.  The actor
+        wrapper overrides this hook so a single accepted restore scan can
+        pause before it exceeds its reserved descendant window.
+        """
+
+        del episode_key, episode_id
+        return True
 
     # ------------------------------------------------------------- internals
 
@@ -345,6 +396,17 @@ class ProviderAuthCoordinator:
             if episode is not None and episode.kind is not ProviderFailureClass.RELOGINABLE:
                 episode = None
             elif episode is not None and (
+                episode.closing_pending or episode.failure_alert_pending
+            ):
+                episode.workers.add(worker)
+                self._log(
+                    "provider.auth.notification.pending",
+                    provider=provider,
+                    workers=len(episode.workers),
+                    episodeId=episode.episode_id,
+                )
+                return
+            elif episode is not None and (
                 episode.closing_sent or episode.round >= MAX_ROUNDS
             ):
                 # 追加 1 ②: an exhausted record does not block a fresh trigger
@@ -423,13 +485,20 @@ class ProviderAuthCoordinator:
                 self._mark_combo_unavailable(
                     harness, provider, model, REASON_PROVIDER_AUTH_INVALID
                 )
-        self._notify(
-            "⚠️ provider 登录已失效，自动重新登录不支持该 harness\n"
+        self._emit_notice(
+            episode,
+            episode_key=episode.key,
+            episode_id=episode.episode_id,
+            round_no=episode.round,
+            kind="unsupported",
+            text=(
+                "⚠️ provider 登录已失效，自动重新登录不支持该 harness\n"
             f"主机: {self._host}\n"
             f"组合: {harness} / {provider} / {model or '-'}\n"
             f"worker: {worker}\n"
             "未启动 Pi 登录 helper，也未读取宿主凭据。请在该 agent 的 "
-            f"{harness} 原生凭据根完成获授权登录后重试。",
+                f"{harness} 原生凭据根完成获授权登录后重试。"
+            ),
             idempotency_key=f"provider-auth:unsupported:{episode.episode_id}",
         )
         self._log(
@@ -501,14 +570,21 @@ class ProviderAuthCoordinator:
             if mark_capabilities
             else "请修复该 agent 的账号授权后重试;不修改其他 agent 的状态。"
         )
-        self._notify(
-            f"⚠️ provider 账号/权限类错误(重新登录无法解决)\n"
+        self._emit_notice(
+            episode,
+            episode_key=episode.key,
+            episode_id=episode.episode_id,
+            round_no=episode.round,
+            kind="account",
+            text=(
+                f"⚠️ provider 账号/权限类错误(重新登录无法解决)\n"
             f"主机: {self._host}\n"
             f"组合: {harness} / {provider or '-'} / {model or '-'}\n"
             f"worker: {worker}\n"
             f"错误: {summary}\n"
             f"{diagnostic_line}\n"
-            f"{recovery_instruction}",
+                f"{recovery_instruction}"
+            ),
             idempotency_key=f"provider-auth:account:{episode.episode_id}",
         )
         self._log(
@@ -591,6 +667,10 @@ class ProviderAuthCoordinator:
                 episodeId=episode.episode_id,
             )
             outcome = HelperOutcome.FAILED
+        self._finish_round(episode, round_no, outcome)
+
+    def _finish_round(self, episode: _Episode, round_no: int, outcome: HelperOutcome) -> None:
+        provider = episode.provider
         if self._stop.is_set() or outcome is HelperOutcome.STOPPED:
             with self._lock:
                 episode.inflight = False
@@ -616,21 +696,23 @@ class ProviderAuthCoordinator:
             # alert per episode (loud, deduped), then the mark stays and the
             # next trigger decides again.
             with self._lock:
-                already = episode.failure_alerted
-                episode.failure_alerted = True
-                if episode.round >= MAX_ROUNDS and episode.exhausted_at is None:
-                    # The cap was hit through a broken helper (not the normal
-                    # TIMED_OUT close): start the S2 cooldown so the next
-                    # failure cannot open a fresh episode mid-window.
-                    episode.exhausted_at = self._clock()
+                already = (
+                    episode.failure_alerted or episode.failure_alert_pending
+                )
             if not already:
                 diagnostic_line = (
                     "该 provider 仍标记为不可用(仅用于诊断:派发不会因此跳过)。"
                     if episode.mark_capabilities
                     else "该 agent 的认证路由仍失败;未写 owner-global 能力标记。"
                 )
-                self._notify(
-                    f"⚠️ provider 自动重登录失败\n"
+                self._emit_notice(
+                    episode,
+                    episode_key=episode.key,
+                    episode_id=episode.episode_id,
+                    round_no=round_no,
+                    kind="failure",
+                    text=(
+                        f"⚠️ provider 自动重登录失败\n"
                     f"主机: {self._host}\n"
                     f"provider: {provider}\n"
                     f"结果: {outcome}\n"
@@ -639,6 +721,7 @@ class ProviderAuthCoordinator:
                         f"手动兜底:在本机运行 `pi`,执行 /login {provider}。"
                         if episode.mark_capabilities
                         else "请为该 agent 的 native root 重新授权后重试。"
+                        )
                     ),
                     idempotency_key=(
                         f"provider-auth:failed:{episode.episode_id}"
@@ -676,8 +759,14 @@ class ProviderAuthCoordinator:
             if episode.mark_capabilities
             else "该 agent 的认证路由独立处理;授权完成后自动恢复并通知。"
         )
-        self._notify(
-            f"⚠️ provider 认证失效,需要本人重新登录\n"
+        self._emit_notice(
+            episode,
+            episode_key=episode.key,
+            episode_id=episode.episode_id,
+            round_no=round_no,
+            kind="code",
+            text=(
+                f"⚠️ provider 认证失效,需要本人重新登录\n"
             f"主机: {self._host}\n"
             f"provider: {episode.provider}\n"
             f"受影响 worker({len(workers)}): {', '.join(workers) or '(无)'}\n"
@@ -685,7 +774,8 @@ class ProviderAuthCoordinator:
             f"请打开 {announcement.verification_uri}\n"
             f"并输入 code: {announcement.user_code}({expiry_line};"
             f"本轮 {round_no}/{MAX_ROUNDS})\n"
-            f"{diagnostic_line}",
+                f"{diagnostic_line}"
+            ),
             idempotency_key=(
                 f"provider-auth:code:{episode.episode_id}:r{round_no}"
             ),
@@ -700,13 +790,16 @@ class ProviderAuthCoordinator:
 
     def _close_episode(self, episode: _Episode) -> None:
         with self._lock:
-            if episode.closing_sent:
+            if episode.closing_sent or episode.closing_pending:
                 return
-            episode.closing_sent = True
-            if episode.exhausted_at is None:
-                episode.exhausted_at = self._clock()
-        self._notify(
-            f"⚠️ provider {episode.provider} 自动重登录 {MAX_ROUNDS} 轮均未完成,"
+        self._emit_notice(
+            episode,
+            episode_key=episode.key,
+            episode_id=episode.episode_id,
+            round_no=episode.round,
+            kind="closing",
+            text=(
+                f"⚠️ provider {episode.provider} 自动重登录 {MAX_ROUNDS} 轮均未完成,"
             f"已停止自动重发\n"
             f"主机: {self._host}\n"
             f"下次 daemon 重启、或该 provider 再次出现认证失败时,会重新发起。\n"
@@ -714,6 +807,7 @@ class ProviderAuthCoordinator:
                 f"手动兜底:在本机运行 `pi`,执行 /login {episode.provider}。"
                 if episode.mark_capabilities
                 else "请为该 agent 的 native root 重新授权后重试。"
+                )
             ),
             idempotency_key=f"provider-auth:closing:{episode.episode_id}",
         )
@@ -887,14 +981,24 @@ class ProviderAuthCoordinator:
             if episode is None or episode.mark_capabilities
             else "该 agent 的认证路由已恢复;未改写 owner-global 能力标记。"
         )
-        self._notify(
-            f"✅ provider {provider} 认证已恢复\n"
+        recovery_episode_id = (
+            episode.episode_id if episode is not None else "external"
+        )
+        self._emit_notice(
+            None,
+            episode_key=episode_key,
+            episode_id=recovery_episode_id,
+            round_no=0 if episode is None else episode.round,
+            kind="recovered",
+            text=(
+                f"✅ provider {provider} 认证已恢复\n"
             f"主机: {self._host}\n"
             f"受影响 worker({len(workers)}): {', '.join(workers) or '(无)'}\n"
-            f"{recovery_line}",
+                f"{recovery_line}"
+            ),
             idempotency_key=(
                 f"provider-auth:recovered:"
-                f"{episode.episode_id if episode is not None else 'external'}"
+                f"{recovery_episode_id}"
             ),
         )
         self._log(
@@ -905,11 +1009,94 @@ class ProviderAuthCoordinator:
 
     # ----------------------------------------------------------------- send
 
-    def _notify(self, text: str, *, idempotency_key: str) -> None:
-        outcome = self._notifier(text, idempotency_key=idempotency_key)
-        delivered = getattr(outcome, "delivered", None)
+    def _emit_notice(
+        self,
+        episode: _Episode | None,
+        *,
+        episode_key: str,
+        episode_id: str,
+        round_no: int,
+        kind: str,
+        text: str,
+        idempotency_key: str,
+    ) -> bool:
+        intent = AuthNoticeIntent(
+            episode_key,
+            episode_id,
+            round_no,
+            kind,
+            text,
+            idempotency_key,
+        )
+        with self._lock:
+            if idempotency_key in self._delivered_notices:
+                return True
+            if idempotency_key in self._pending_notices:
+                return False
+            if not self._notice_current_locked(intent):
+                return False
+            self._pending_notices.add(idempotency_key)
+            if episode is not None:
+                if kind == "failure":
+                    episode.failure_alert_pending = True
+                elif kind == "closing":
+                    episode.closing_pending = True
+        delivered = self._notify(intent)
+        if delivered:
+            self._complete_notice(intent, delivered=True)
+        return delivered
+
+    def _notice_current(self, intent: AuthNoticeIntent) -> bool:
+        with self._lock:
+            return self._notice_current_locked(intent)
+
+    def _notice_current_locked(self, intent: AuthNoticeIntent) -> bool:
+        episode = self._episodes.get(intent.episode_key)
+        if intent.kind == "recovered":
+            return episode is None
+        return bool(
+            episode is not None
+            and episode.episode_id == intent.episode_id
+            and episode.round == intent.round_no
+            and (intent.kind != "code" or episode.inflight)
+        )
+
+    def _complete_notice(
+        self, intent: AuthNoticeIntent, *, delivered: bool
+    ) -> bool:
+        with self._lock:
+            self._pending_notices.discard(intent.idempotency_key)
+            episode = self._episodes.get(intent.episode_key)
+            current = self._notice_current_locked(intent)
+            if episode is not None and episode.episode_id == intent.episode_id:
+                if intent.kind == "failure":
+                    episode.failure_alert_pending = False
+                elif intent.kind == "closing":
+                    episode.closing_pending = False
+            if not delivered or not current:
+                return False
+            self._delivered_notices[intent.idempotency_key] = None
+            while len(self._delivered_notices) > _NOTICE_HISTORY_CAPACITY:
+                self._delivered_notices.pop(next(iter(self._delivered_notices)))
+            if episode is not None:
+                if intent.kind == "failure":
+                    episode.failure_alerted = True
+                    if episode.round >= MAX_ROUNDS and episode.exhausted_at is None:
+                        episode.exhausted_at = self._clock()
+                elif intent.kind == "closing":
+                    episode.closing_sent = True
+                    if episode.exhausted_at is None:
+                        episode.exhausted_at = self._clock()
+            return True
+
+    def _notify(self, intent: AuthNoticeIntent) -> bool:
+        outcome = self._notifier(
+            intent.text, idempotency_key=intent.idempotency_key
+        )
+        delivered = getattr(outcome, "delivered", None) is True
         self._log(
             "provider.auth.alert",
             delivered=delivered,
-            idempotencyKey=idempotency_key,
+            idempotencyKey=intent.idempotency_key,
         )
+        return delivered

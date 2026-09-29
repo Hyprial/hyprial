@@ -31,13 +31,14 @@ from .ports import (
     ResumeRoutineCommand,
     RoutineInFlightProjection,
     RoutineMutationCompleted,
+    RoutineMutationRejected,
     RoutineProjection,
     RoutinesRecovered,
     RoutineSourceQueryCompleted,
     RoutineSourceTaskProjection,
     RoutineTimerElapsedCommand,
-    SetRoutineCommand,
     RoutinePacIoCompleted,
+    SetRoutineCommand,
 )
 from .registry import (
     DEFAULT_TASK_TIMEOUT_SECONDS,
@@ -62,9 +63,13 @@ from .store import RoutineSnapshot, RoutineStore
 
 
 class RoutineServiceError(RuntimeError):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self, code: str, message: str,
+        data: tuple[tuple[str, str], ...] = (),
+    ) -> None:
         super().__init__(message)
         self.code = code
+        self.data = data
 
 
 class AlarmSink(Protocol):
@@ -75,6 +80,7 @@ class AlarmSink(Protocol):
         text: str,
         reason: str | None = None,
         conversation_id: str = "workflow",
+        idempotency_key: str | None = None,
     ) -> "AlarmResult": ...
 
 
@@ -97,6 +103,8 @@ class PacPort(Protocol):
         timeout_seconds: float,
         sender: str,
         role: str = "dispatch",
+        occurrence_slot_ms: int | None = None,
+        rearm_after_created_at_ms: int = 0,
     ) -> dict[str, object]: ...
 
     def status(self, *, graph_id: str) -> dict[str, object]: ...
@@ -153,8 +161,15 @@ class RoutineFacade:
         self._effects: Queue[RoutineEffect | object] = Queue(
             maxsize=max(1, mailbox_capacity * 2)
         )
+        # The dispatcher owns projection reads and hands effects to a bounded
+        # pool.  A routine has at most one active effect, preserving its saga
+        # order while slow source/PAC/alarm I/O for another routine proceeds.
+        self._effect_work: Queue[RoutineEffect] = Queue(maxsize=4)
+        self._effect_ready = threading.Condition()
+        self._active_routines: set[str] = set()
         self._effect_ids: set[str] = set()
         self._effect_ids_lock = threading.Lock()
+        self._effect_retry_after: dict[str, int] = {}
         self._generation = 0
         self._timer_sequence = 0
         self._closing = False
@@ -193,6 +208,16 @@ class RoutineFacade:
             name="hyprial-routine-effects",
             daemon=True,
         )
+        self._effect_workers = tuple(
+            threading.Thread(
+                target=self._effect_worker_loop,
+                name=f"hyprial-routine-effect-{index}",
+                daemon=True,
+            )
+            for index in range(4)
+        )
+        for worker in self._effect_workers:
+            worker.start()
         self._effect_thread.start()
 
     def submit(self, command: object) -> PortAdmission:
@@ -205,23 +230,18 @@ class RoutineFacade:
             AdmissionResult.CLOSED: PortAdmission.CLOSING,
         }[admission]
 
-    def add(self, *, yaml_text: str, owner: str, enabled: bool = True) -> dict[str, object]:
+    def add(
+        self, *, yaml_text: str, owner: str, enabled: bool = True,
+        registration_id: str | None = None,
+    ) -> dict[str, object]:
         correlation = self._correlation()
         event = self._submit_wait(
-            AddRoutineCommand(correlation, yaml_text, owner, enabled),
+            AddRoutineCommand(correlation, yaml_text, owner, enabled, registration_id),
             correlation,
             RoutineMutationCompleted,
         )
         return event.result.to_payload()
 
-    def set(self, *, name: str, yaml_text: str) -> dict[str, object]:
-        correlation = self._correlation()
-        event = self._submit_wait(
-            SetRoutineCommand(correlation, name, yaml_text),
-            correlation,
-            RoutineMutationCompleted,
-        )
-        return event.result.to_payload()
 
     def list(self) -> dict[str, object]:
         return {"routines": [item.to_payload() for item in self.read_routines()]}
@@ -246,10 +266,48 @@ class RoutineFacade:
             raise RoutineServiceError("ROUTINE_NOT_FOUND", f"no such routine: {name}")
         return {**projection.to_payload(), "scheduleEvents": self._projection.schedule_events(name)}
 
-    def remove(self, *, name: str) -> dict[str, object]:
+    def set(self, *, name: str, yaml_text: str) -> dict[str, object]:
         correlation = self._correlation()
         event = self._submit_wait(
-            RemoveRoutineCommand(correlation, name),
+            SetRoutineCommand(correlation, name, yaml_text),
+            correlation,
+            RoutineMutationCompleted,
+        )
+        return event.result.to_payload()
+
+    def remove(
+        self, *, name: str, enforce_last: bool = False,
+        reservation_id: str | None = None,
+    ) -> dict[str, object]:
+        correlation = self._correlation()
+        event = self._submit_wait(
+            RemoveRoutineCommand(correlation, name, enforce_last, reservation_id),
+            correlation,
+            RoutineMutationCompleted,
+        )
+        return event.result.to_payload()
+
+    def reserve_remove(
+        self, *, name: str, reservation_id: str, enforce_last: bool = False
+    ) -> dict[str, object]:
+        from .ports import ReserveRoutineRemovalCommand
+
+        correlation = self._correlation()
+        self._submit_wait(
+            ReserveRoutineRemovalCommand(
+                correlation, name, reservation_id, enforce_last
+            ),
+            correlation,
+            RoutineMutationCompleted,
+        )
+        return self.status(name=name)
+
+    def cancel_remove(self, *, name: str, reservation_id: str) -> dict[str, object]:
+        from .ports import CancelRoutineRemovalCommand
+
+        correlation = self._correlation()
+        event = self._submit_wait(
+            CancelRoutineRemovalCommand(correlation, name, reservation_id),
             correlation,
             RoutineMutationCompleted,
         )
@@ -340,6 +398,8 @@ class RoutineFacade:
         except Full:
             pass
         self._effect_thread.join(timeout=2.0)
+        for worker in self._effect_workers:
+            worker.join(timeout=2.0)
         if not self._effect_thread.is_alive():
             self._close_projection()
         if report.complete and self._writer_store is not None:
@@ -419,8 +479,10 @@ class RoutineFacade:
                 )
             result = self._results.pop(correlation_id)
             self._waiters.discard(correlation_id)
-        if isinstance(result, PortCommandRejected):
-            raise RoutineServiceError(result.code, result.detail)
+        if isinstance(result, (PortCommandRejected, RoutineMutationRejected)):
+            raise RoutineServiceError(
+                result.code, result.detail, getattr(result, "data", ())
+            )
         if not isinstance(result, expected):
             raise RoutineServiceError(
                 "ROUTINE_PROTOCOL_ERROR",
@@ -455,8 +517,20 @@ class RoutineFacade:
                 self._effect_ids.discard(effect.effect_id)
 
     def _effect_loop(self) -> None:
+        deferred: list[RoutineEffect] = []
         try:
             while not self._effect_stop.is_set():
+                with self._effect_ready:
+                    for index, waiting in enumerate(deferred):
+                        if waiting.routine_name in self._active_routines or self._effect_work.full():
+                            continue
+                        self._active_routines.add(waiting.routine_name)
+                        self._effect_work.put_nowait(waiting)
+                        deferred.pop(index)
+                        break
+                    if len(deferred) >= self._effects.maxsize:
+                        self._effect_ready.wait(0.05)
+                        continue
                 try:
                     effect = self._effects.get(timeout=0.05)
                 except Empty:
@@ -468,25 +542,59 @@ class RoutineFacade:
                     effect,
                     (RoutineSourceQueryEffect, RoutinePacEffect, RoutineAlarmEffect),
                 )
+                with self._effect_ready:
+                    if effect.routine_name in self._active_routines or self._effect_work.full():
+                        deferred.append(effect)
+                    else:
+                        self._active_routines.add(effect.routine_name)
+                        self._effect_work.put_nowait(effect)
+        finally:
+            self._close_projection()
+
+    def _effect_worker_loop(self) -> None:
+        while not self._effect_stop.is_set():
+            try:
+                effect = self._effect_work.get(timeout=0.05)
+            except Empty:
+                continue
+            try:
                 completion = self._execute_effect(effect)
                 stale_generation = self._submit_completion(effect, completion)
                 if stale_generation:
                     with self._effect_ids_lock:
                         self._effect_ids.discard(effect.effect_id)
-                self._refill_effects()
-        finally:
-            self._close_projection()
+                elif (
+                    isinstance(effect, RoutineAlarmEffect)
+                    and isinstance(completion, RoutinePacIoCompleted)
+                    and completion.code is not None
+                ):
+                    with self._effect_ids_lock:
+                        self._effect_retry_after[effect.effect_id] = (
+                            self._clock_ms() + 500
+                        )
+                        self._effect_ids.discard(effect.effect_id)
+            finally:
+                with self._effect_ready:
+                    self._active_routines.discard(effect.routine_name)
+                    self._effect_ready.notify_all()
 
     def _refill_effects(self) -> None:
         if self._effect_stop.is_set():
             return
         with self._effect_ids_lock:
             known_ids = set(self._effect_ids)
-        rows = self._projection.pending_effects(limit=10_000)
-        pending_ids = {row.effect_id for row in rows}
+            retry_after = dict(self._effect_retry_after)
+        now_ms = self._clock_ms()
+        rows = self._projection.pending_effects(limit=10_000, now_ms=now_ms)
+        pending_ids = self._projection.pending_effect_ids()
         with self._effect_ids_lock:
             self._effect_ids.difference_update(known_ids - pending_ids)
+            for effect_id in tuple(self._effect_retry_after):
+                if effect_id not in pending_ids:
+                    self._effect_retry_after.pop(effect_id, None)
         for row in rows:
+            if retry_after.get(row.effect_id, 0) > self._clock_ms():
+                continue
             self._enqueue_effect(RoutineRegistry.decode_effect(row.payload))
 
     def _submit_completion(self, effect: RoutineEffect, completion: object) -> bool:
@@ -510,12 +618,23 @@ class RoutineFacade:
             code: str | None = None
             detail: str | None = None
             try:
-                result = self._alarm.escalate(
-                    to=effect.to,
-                    text=effect.text,
-                    reason="ROUTINE_ALARM",
-                    conversation_id=f"routine:{effect.routine_name}",
-                )
+                try:
+                    result = self._alarm.escalate(
+                        to=effect.to,
+                        text=effect.text,
+                        reason="ROUTINE_ALARM",
+                        conversation_id=f"routine:{effect.routine_name}",
+                        idempotency_key=effect.idempotency_key,
+                    )
+                except TypeError as error:
+                    if "idempotency_key" not in str(error):
+                        raise
+                    result = self._alarm.escalate(
+                        to=effect.to,
+                        text=effect.text,
+                        reason="ROUTINE_ALARM",
+                        conversation_id=f"routine:{effect.routine_name}",
+                    )
                 if getattr(result, "status", "delivered") != "delivered":
                     code = f"ALARM_{str(getattr(result, 'status', 'failed')).upper()}"
                     detail = f"escalation {getattr(result, 'status', 'failed')}"

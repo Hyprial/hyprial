@@ -338,7 +338,8 @@ class BlobStore:
         self.blob_root = root / "orgfs" / "blobs"
         self.refs_path = root / "orgfs" / "blob-refs.sqlite3"
         self._purge_checker = purge_checker
-        self._space_purge_checkers: dict[str, Callable[[str], bool]] = {}
+        self._space_purge_projections: dict[str, frozenset[str]] = {}
+        self._purge_checker_lock = threading.Lock()
         self.blob_root.mkdir(parents=True, exist_ok=True)
         # pysqlite connections are not safe for concurrent execute/close;
         # zenoh callback threads share this store with caller threads.
@@ -375,18 +376,34 @@ class BlobStore:
         return self.blob_root / digest[:2] / digest
 
     def _check_purged(self, space_id: str, digest: str) -> None:
-        checker = self._space_purge_checkers.get(space_id)
-        if (checker is not None and checker(digest)) or (
-            self._purge_checker is not None and self._purge_checker(space_id, digest)
+        with self._purge_checker_lock:
+            projection = self._space_purge_projections.get(space_id, frozenset())
+            global_checker = self._purge_checker
+        if digest in projection or (
+            global_checker is not None and global_checker(space_id, digest)
         ):
             raise BlobPurged(digest)
 
     def register_purge_checker(
         self, space_id: str, checker: Callable[[str], bool]
     ) -> None:
-        """Bind a space's replicated meta purge-list to blob reads/writes."""
+        """Compatibility seam for legacy injected purge projections."""
 
-        self._space_purge_checkers[str(space_id)] = checker
+        with self._purge_checker_lock:
+            self._space_purge_projections[str(space_id)] = frozenset(
+                digest
+                for digest in (path.name for path in self.blob_root.glob("*/*"))
+                if checker(digest)
+            )
+
+    def register_purge_projection(
+        self, space_id: str, digests: Iterable[str]
+    ) -> None:
+        """Publish an immutable per-space purge set without a callback edge."""
+
+        projection = frozenset(_require_digest(digest) for digest in digests)
+        with self._purge_checker_lock:
+            self._space_purge_projections[str(space_id)] = projection
 
     def put(self, space_id: str, data: BlobPayload, *, reason: str) -> str:
         """Store bytes once and add one idempotent per-space reference."""

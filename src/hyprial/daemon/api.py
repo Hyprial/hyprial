@@ -4,9 +4,26 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Any, Mapping, Protocol, runtime_checkable
 
 from .desired_state import HarnessLaunchSpec
+
+
+def _freeze_delivery_json(value: object) -> object:
+    if isinstance(value, Mapping):
+        if any(not isinstance(key, str) for key in value):
+            raise TypeError("Harness delivery origin keys must be strings")
+        return MappingProxyType(
+            {key: _freeze_delivery_json(child) for key, child in value.items()}
+        )
+    if isinstance(value, list | tuple):
+        return tuple(_freeze_delivery_json(child) for child in value)
+    if value is None or isinstance(value, str | bool | int | float):
+        return value
+    raise TypeError(
+        f"Harness delivery origin value is unsupported: {type(value).__name__}"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +43,10 @@ class HarnessDelivery:
     hook_text: str | None = None
     #: Internal recursion fence for the mechanism's own actor exchange.
     hook_request: bool = False
+
+    def __post_init__(self) -> None:
+        if self.origin is not None:
+            object.__setattr__(self, "origin", _freeze_delivery_json(self.origin))
 
 
 def describe_sender(origin: Mapping[str, Any] | None) -> str | None:
@@ -251,7 +272,7 @@ class StreamingHarnessProcess(Protocol):
 
     def enqueue(self, delivery: HarnessDelivery) -> bool: ...
 
-    def drain_results(self) -> tuple[HarnessResult, ...]: ...
+    def drain_results(self, limit: int | None = None) -> tuple[HarnessResult, ...]: ...
 
     def interrupt(self, delivery_id: str, *, timeout: float = 1.0) -> bool: ...
 

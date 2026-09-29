@@ -21,7 +21,6 @@ from collections import deque
 from uuid import NAMESPACE_URL, uuid4, uuid5
 from dataclasses import dataclass, replace
 from enum import StrEnum
-from queue import Empty, Full, Queue
 from collections.abc import Callable
 from pathlib import Path
 
@@ -378,7 +377,11 @@ class _DurableCompletionHandoffs:
 
 
 class DeliveryIoWorker:
-    """One bounded external-I/O lane, independent from the state actor."""
+    """Bounded independent I/O lanes with FIFO custody per recipient.
+
+    The state actor retains business decisions. This adapter only schedules
+    already-typed effects and holds their credits through receipt handoff.
+    """
 
     def __init__(
         self,
@@ -410,29 +413,28 @@ class DeliveryIoWorker:
         self._node_id = node_id
         self._completion_deadline = completion_deadline
         self._completion_backoff = completion_backoff
-        self._queue: Queue[DispatchIoRequested | None] = Queue(maxsize=capacity)
+        self._queue: deque[DispatchIoRequested] = deque()
         self._condition = threading.Condition()
+        self._capacity = capacity + 1  # preserve prior queued + running credit bound
+        self._active_keys: dict[str, frozenset[str]] = {}
         self._pending = 0
         self._unsettled: dict[
             str, tuple[DispatchIoRequested, DispatchIoCompleted | DispatchIoFailed]
         ] = {}
         self._closed = False
-        self._thread = threading.Thread(
-            target=self._run,
-            name="hyprial-delivery-io",
-            daemon=True,
-        )
-        self._thread.start()
+        self._threads = tuple(threading.Thread(
+            target=self._run, name=f"hyprial-delivery-io-{index}", daemon=True,
+        ) for index in range(min(4, self._capacity)))
+        for thread in self._threads:
+            thread.start()
 
     def submit(self, request: DispatchIoRequested) -> bool:
         with self._condition:
-            if self._closed:
+            if self._closed or self._pending >= self._capacity:
                 return False
-            try:
-                self._queue.put_nowait(request)
-            except Full:
-                return False
+            self._queue.append(request)
             self._pending += 1
+            self._condition.notify_all()
             return True
 
     def drain(self, timeout: float) -> bool:
@@ -446,28 +448,46 @@ class DeliveryIoWorker:
                 if remaining <= 0:
                     return False
                 self._condition.wait(remaining)
-        try:
-            self._queue.put_nowait(None)
-        except Full:
-            return False
-        self._thread.join(max(0.0, deadline - time.monotonic()))
-        return not self._thread.is_alive()
+        with self._condition:
+            self._condition.notify_all()
+        for thread in self._threads:
+            thread.join(max(0.0, deadline - time.monotonic()))
+        return not any(thread.is_alive() for thread in self._threads)
+
+    @staticmethod
+    def _request_keys(request: DispatchIoRequested) -> frozenset[str]:
+        keys = {item.message.recipient for item in request.items}
+        if request.alarm is not None:
+            keys.add(request.alarm.sender)
+        return frozenset(keys or {request.correlation_id})
+
+    def _take_ready(self) -> DispatchIoRequested | None:
+        with self._condition:
+            unavailable = set().union(*self._active_keys.values())
+            for index, request in enumerate(self._queue):
+                keys = self._request_keys(request)
+                if keys.isdisjoint(unavailable):
+                    del self._queue[index]
+                    self._active_keys[request.correlation_id] = keys
+                    return request
+                # An earlier request blocked on another key must retain its
+                # order relative to every later request for this recipient.
+                unavailable.update(keys)
+            self._condition.wait(0.05)
+        return None
 
     def _run(self) -> None:
         while True:
-            try:
-                request = self._queue.get(timeout=0.1)
-            except Empty:
+            request = self._take_ready()
+            if request is None:
                 self._retry_unsettled_completions()
                 with self._condition:
                     if self._closed and self._pending == 0:
                         return
                 continue
-            if request is None:
-                return
             try:
                 completion = self._execute(request)
-            except Exception as exc:
+            except BaseException as exc:
                 completion = DispatchIoFailed(
                     correlation_id=request.correlation_id,
                     generation=request.generation,
@@ -476,10 +496,14 @@ class DeliveryIoWorker:
                     detail=type(exc).__name__,
                     receipt_token=request.receipt_token,
                 )
-            settled = self._settle_completion(request, completion)
+            try:
+                settled = self._settle_completion(request, completion)
+            except BaseException:
+                settled = False  # retain native outcome, never repeat its effect
             if settled:
                 with self._condition:
                     self._pending -= 1
+                    self._active_keys.pop(request.correlation_id, None)
                     self._condition.notify_all()
             else:
                 with self._condition:
@@ -779,6 +803,7 @@ class DeliveryIoWorker:
             if self._unsettled.pop(correlation_id, None) is None:
                 return
             self._pending -= 1
+            self._active_keys.pop(correlation_id, None)
             self._condition.notify_all()
 
 
@@ -793,6 +818,7 @@ class _ProjectionState(InboxProjectionPort):
             custody_count=0,
         )
         self._pending: tuple[InboxMessage, ...] = ()
+        self._pending_work: frozenset[str] = frozenset()
 
     @property
     def version(self) -> int:
@@ -806,6 +832,7 @@ class _ProjectionState(InboxProjectionPort):
         outbox_count: int,
         custody_count: int,
         pending: tuple[InboxMessage, ...],
+        pending_work: frozenset[str],
     ) -> None:
         counts = InboxCountsProjection(
             version=version,
@@ -815,6 +842,7 @@ class _ProjectionState(InboxProjectionPort):
         with self._lock:
             self._counts = counts
             self._pending = pending
+            self._pending_work = pending_work
 
     def advance_closed(self, version: int) -> None:
         with self._lock:
@@ -833,6 +861,10 @@ class _ProjectionState(InboxProjectionPort):
             return tuple(
                 message for message in self._pending if message.recipient == recipient
             )
+
+    def has_pending_work(self, recipient: str) -> bool:
+        with self._lock:
+            return recipient in self._pending_work
 
 
 class _NoStateActorIo:
@@ -2512,6 +2544,7 @@ class DeliveryCustody:
             outbox_count=self._service.outbox_count(),
             custody_count=self._service.custody_count(),
             pending=self._service.pending_all(),
+            pending_work=self._service.pending_work_recipients(),
         )
 
     def _publish(self, event: DeliveryCustodyEvent) -> None:
@@ -2600,6 +2633,22 @@ class DeliveryCustodyCoordinator(InboxProjectionPort):
                 handler_factory=factory,
                 mailbox_capacity=mailbox_capacity,
                 supervision_profile=STATE_AUTHORITY,
+                undelivered_sink=self._undelivered,
+            )
+        )
+
+    def _undelivered(self, command: object, reason: str) -> None:
+        if not isinstance(command, WakeOutboxRecipientCommand):
+            return
+        self._events.publish(
+            PortCommandRejected(
+                correlation_id=command.correlation_id,
+                domain="inbox",
+                generation=self._runtime.snapshot(self._handle).generation,
+                version=self._projection.version,
+                code=reason,
+                detail="accepted recipient wake never began",
+                admission=PortAdmission.CLOSING,
             )
         )
 
@@ -2718,6 +2767,9 @@ class DeliveryCustodyCoordinator(InboxProjectionPort):
 
     def read_pending(self, recipient: str) -> tuple[InboxMessage, ...]:
         return self._projection.read_pending(recipient)
+
+    def has_pending_work(self, recipient: str) -> bool:
+        return self._projection.has_pending_work(recipient)
 
     def drain(self, timeout: float = 5.0) -> DrainReport:
         """Drain state, then I/O, then fenced completions for this domain only."""

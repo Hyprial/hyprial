@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Protocol, TypeAlias
 
 from hyprial.contracts.ports import CommandSink, EventSink, PortCommandRejected
+from .lifecycle_receipts import LifecycleReceiptCompleted
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,6 +232,7 @@ SessionEvent: TypeAlias = (
     SessionMutationCompleted
     | SessionLeaseExpired
     | SessionLeaseSweepCompleted
+    | LifecycleReceiptCompleted
     | PortCommandRejected
 )
 SessionCommandSink: TypeAlias = CommandSink[SessionCommand]

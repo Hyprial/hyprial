@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import pykka
 
@@ -11,6 +11,7 @@ from .contracts import (
     ActorEventKind,
     ActorHandle,
     AdmissionResult,
+    CommandStartedSink,
     CommandHandler,
     EventSink,
     ExpectedActorError,
@@ -20,6 +21,7 @@ from .contracts import (
 
 @dataclass(frozen=True, slots=True)
 class _CommandEnvelope:
+    custody_token: str
     command: object
 
 
@@ -76,6 +78,7 @@ class _RuntimeActor(pykka.ThreadingActor):
         gate: _MailboxGate,
         event_sink: EventSink,
         failure_callback: FailureSink,
+        command_started: CommandStartedSink,
     ) -> None:
         super().__init__()
         self._handle = handle
@@ -84,11 +87,17 @@ class _RuntimeActor(pykka.ThreadingActor):
         self._gate = gate
         self._event_sink = event_sink
         self._failure_callback = failure_callback
+        self._command_started = command_started
 
     def on_receive(self, message: object) -> None:
         if not isinstance(message, _CommandEnvelope):
             raise TypeError(f"unsupported runtime envelope: {type(message).__name__}")
         self._gate.begin()
+        self._command_started(
+            self._handle.actor_id,
+            self._generation,
+            message.custody_token,
+        )
         command_type = type(message.command).__name__
         try:
             self._handler(message.command)
@@ -144,6 +153,8 @@ class _RuntimeActor(pykka.ThreadingActor):
 class _BackendEndpoint:
     ref: pykka.ActorRef[_RuntimeActor]
     gate: _MailboxGate
+    stop_guard: threading.Lock = field(default_factory=threading.Lock)
+    stop_future: pykka.Future[bool] | None = None
 
 
 class _PykkaBackend:
@@ -158,6 +169,7 @@ class _PykkaBackend:
         mailbox_capacity: int,
         event_sink: EventSink,
         failure_callback: FailureSink,
+        command_started: CommandStartedSink,
     ) -> object:
         gate = _MailboxGate(mailbox_capacity)
         ref = _RuntimeActor.start(
@@ -167,16 +179,19 @@ class _PykkaBackend:
             gate=gate,
             event_sink=event_sink,
             failure_callback=failure_callback,
+            command_started=command_started,
         )
         return _BackendEndpoint(ref=ref, gate=gate)
 
-    def tell(self, endpoint: object, command: object) -> AdmissionResult:
+    def tell(
+        self, endpoint: object, custody_token: str, command: object
+    ) -> AdmissionResult:
         endpoint = self._require_endpoint(endpoint)
         admission = endpoint.gate.reserve()
         if admission is not AdmissionResult.ACCEPTED:
             return admission
         try:
-            endpoint.ref.tell(_CommandEnvelope(command))
+            endpoint.ref.tell(_CommandEnvelope(custody_token, command))
         except pykka.ActorDeadError:
             endpoint.gate.cancel_reservation()
             endpoint.gate.close(discard_queued=True)
@@ -197,7 +212,11 @@ class _PykkaBackend:
         if not endpoint.ref.is_alive():
             return True
         try:
-            stopped = bool(endpoint.ref.stop(block=True, timeout=max(0.0, timeout)))
+            with endpoint.stop_guard:
+                if endpoint.stop_future is None:
+                    endpoint.stop_future = endpoint.ref.stop(block=False)
+                future = endpoint.stop_future
+            stopped = bool(future.get(timeout=max(0.0, timeout)))
         except pykka.Timeout:
             return False
         return stopped or not endpoint.ref.is_alive()

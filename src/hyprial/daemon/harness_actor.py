@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Generic, TypeVar, cast, get_args
 
 from hyprial.actor_runtime import ActorHandle, ActorRuntime, ActorSpec, AdmissionResult
+from hyprial.actor_runtime.effects import EffectCompleted, EffectLane, EffectRequest
 from hyprial.backoff import capped_exponential
 
 from .api import (
@@ -32,7 +33,14 @@ from .api import (
     StreamingHarnessProcess,
 )
 from .desired_state import DesiredStateError, DesiredStateStore, HarnessLaunchSpec
-from .orphan_processes import OrphanProcessRegistry
+from .desired_state_io import (
+    DesiredStateIoCompleted,
+    DesiredStateIoPort,
+    DesiredStateIoRequest,
+    DesiredStateOperation,
+)
+from .state_persistence import StateCommandCompleted
+from .orphan_processes import OrphanProcessRegistry, OrphanProcessAuthority
 from .harness_ports import (
     BindHarnessLivenessCommand,
     DispatchHarnessDeliveryCommand,
@@ -40,6 +48,11 @@ from .harness_ports import (
     DrainHarnessProgressCommand,
     DrainHarnessReadinessCommand,
     DrainHarnessResultsCommand,
+    ClaimHarnessResultsCommand,
+    SettleHarnessResultCommand,
+    ClaimedHarnessResult,
+    HarnessResultsClaimed,
+    HarnessResultSettled,
     EnsureHarnessCommand,
     HarnessCallIoCompleted,
     HarnessAdapterRegistrationProjection,
@@ -73,12 +86,16 @@ from .harness_ports import (
     RemoveAdapterRegistrationCommand,
     RefreshHarnessProjectionsCommand,
     ReconcileHarnessSessionRefsCommand,
+    RestoreEligibilityProjection,
+    AgentIdentityProjectionPort,
     RestoreAdapterRegistrationCommand,
     RestoreHarnessesCommand,
+    UpdateRestoreEligibilityCommand,
     StopHarnessesCommand,
     SnapshotAdapterRegistrationCommand,
     StageHarnessDesiredCommand,
     WaitHarnessReadyCommand,
+    harness_desired_generation,
 )
 from .readiness_budget import (
     START_ADMISSION_WIDTH_DEFAULT,
@@ -219,6 +236,9 @@ class _RestoreBatch:
     # reconcile owns bring-up afterwards; "deferred" is a handoff, not a
     # verdict about the connector.
     deferred: int = 0
+    # A persistence error rejects the caller once, but every other admitted
+    # or queued target retains its own disposition and write custody.
+    terminal_rejected: bool = False
     # Keys accepted into this restore but not yet handed to the I/O port.
     # Restore used to begin every start in one loop, which made a fleet
     # larger than the port's capacity fail in two ways at once: starts past
@@ -238,6 +258,18 @@ class _PendingCall:
     harness_id: str | None = None
     delivery_id: str | None = None
     subject_id: str | None = None
+    reply_correlation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _SessionRefObservation:
+    key: str
+    incarnation: str
+    generation: int
+    process_token: str | None
+    harness: str
+    name: str
+    session_ref: str | None
 
 
 @dataclass(slots=True)
@@ -275,6 +307,9 @@ class _PendingCallRegistry:
     def cancel(self, correlation: str) -> None:
         with self._lock:
             self._items.pop(correlation, None)
+            for internal, pending in tuple(self._items.items()):
+                if pending.reply_correlation_id == correlation:
+                    self._items.pop(internal)
 
     def clear(self) -> tuple[tuple[str, _PendingCall], ...]:
         with self._lock:
@@ -290,6 +325,7 @@ class _PendingCallRegistry:
 @dataclass(slots=True)
 class _Record:
     spec: HarnessLaunchSpec
+    incarnation: str = field(default_factory=lambda: uuid.uuid4().hex)
     generation: int = 0
     process: ManagedHarnessProcess | None = None
     identity: ProcessIdentity | None = None
@@ -317,6 +353,33 @@ class _Record:
     restore_failed_terminal: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class _StopAllOutcome:
+    stopped: tuple[str, ...]
+    bindings_closed: tuple[str, ...]
+    errors: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _DeliveryReservation:
+    harness_id: str
+    process_generation: int
+    claim_token: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _ClaimScan:
+    operation_id: str
+    limit: int
+    processes: tuple[tuple[str, int, StreamingHarnessProcess], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _ClaimScanOutcome:
+    rows: tuple[tuple[str, int, HarnessResult], ...]
+    errors: tuple[str, ...] = ()
+
+
 class HarnessProjection:
     """Stable read model.  Only the lifecycle actor publishes snapshots."""
 
@@ -326,6 +389,7 @@ class HarnessProjection:
         self._last_errors: dict[str, str] = {}
         self._failed: frozenset[str] = frozenset()
         self._streaming: tuple[str, ...] = ()
+        self._streaming_generations: tuple[tuple[str, int], ...] = ()
         self._session_refs: dict[tuple[str, str], str] = {}
         self._worker_session_refs: dict[tuple[str, str], str] = {}
         # Compatibility-only error face.  Session-ref/streaming projections
@@ -368,6 +432,7 @@ class HarnessProjection:
         errors: dict[str, str] = {}
         failed: set[str] = set()
         streaming: list[str] = []
+        streaming_generations: list[tuple[str, int]] = []
         refs: dict[tuple[str, str], str] = {}
         worker_refs: dict[tuple[str, str], str] = {}
         processes: dict[str, ManagedHarnessProcess] = {}
@@ -418,6 +483,7 @@ class HarnessProjection:
                 failed.add(key)
             if running and isinstance(process, StreamingHarnessProcess):
                 streaming.append(record.spec.name)
+                streaming_generations.append((record.spec.name, record.generation))
             ref = getattr(process, "session_ref", None) if process else None
             if isinstance(ref, str) and ref:
                 refs[(record.spec.harness, record.spec.name)] = ref
@@ -430,6 +496,7 @@ class HarnessProjection:
             self._last_errors = errors
             self._failed = frozenset(failed)
             self._streaming = tuple(streaming)
+            self._streaming_generations = tuple(streaming_generations)
             self._session_refs = refs
             self._worker_session_refs = worker_refs
             self._processes = processes
@@ -470,7 +537,9 @@ class HarnessProjection:
     def read_streaming(self) -> HarnessStreamingProjection:
         with self._lock:
             version = max((row.version for row in self._rows), default=0)
-            return HarnessStreamingProjection(version, self._streaming)
+            return HarnessStreamingProjection(
+                version, self._streaming, self._streaming_generations
+            )
 
     def session_refs(self) -> dict[tuple[str, str], str]:
         return {
@@ -522,13 +591,16 @@ class ProcessIoPort:
         identity_reader: Callable[[int], str | None] = _default_identity_reader,
         orphan_processes: OrphanProcessRegistry | None = None,
         max_workers: int = 4,
+        observe: Callable[[object], AdmissionResult] | None = None,
     ) -> None:
         self._launcher = launcher
         self._emit = emit
+        self._observe = observe or (lambda event: self._emit(event)[0])
         self._delivery_failed = delivery_failed
         self._generation_reader = generation_reader
         self._identity_reader = identity_reader
-        self._orphan_processes = orphan_processes or OrphanProcessRegistry(
+        self._owns_orphan_processes = orphan_processes is None
+        self._orphan_processes = orphan_processes or OrphanProcessAuthority(
             identity_reader=identity_reader
         )
         self._executor = ThreadPoolExecutor(
@@ -539,6 +611,7 @@ class ProcessIoPort:
         self._lock = threading.Lock()
         self._condition = threading.Condition(self._lock)
         self._in_flight = 0
+        self._process_owners: set[object] = set()
         self._slots = threading.BoundedSemaphore(max(1, max_workers) * 4)
 
     def start(
@@ -567,14 +640,31 @@ class ProcessIoPort:
                         error=RuntimeError(detail or "incumbent harness did not stop"),
                     )
             try:
-                process = self._launcher.start(spec)
-                identity = self._capture_identity(process)
+                from .process_owner import own_process, ProcessFactsObserved
+
+                raw_process = self._launcher.start(spec)
+                identity = self._capture_identity(raw_process)
                 self._orphan_processes.observe_start(
                     harness_id,
-                    process,
+                    raw_process,
                     pid=identity.pid,
                     marker=identity.marker,
                 )
+                try:
+                    process = own_process(
+                        raw_process,
+                        observer=lambda token, facts: self._observe(
+                            ProcessFactsObserved(harness_id, token, facts.running)
+                        ),
+                    )
+                except BaseException:
+                    self._stop_checked(raw_process, identity, harness_id=harness_id)
+                    raise
+                self._orphan_processes.observe_start(
+                    harness_id, process, pid=identity.pid, marker=identity.marker
+                )
+                with self._lock:
+                    self._process_owners.add(process)
             except BaseException as error:  # completion carries failures to actor
                 return HarnessProcessStarted(
                     correlation_id=correlation_id,
@@ -673,14 +763,24 @@ class ProcessIoPort:
             self._closed = True
         self._executor.shutdown(wait=False, cancel_futures=True)
         if deadline is None:
-            return self.in_flight == 0
+            deadline = time.monotonic()
         with self._condition:
             while self._in_flight:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     return False
                 self._condition.wait(remaining)
-            return True
+            owners = tuple(self._process_owners)
+        complete = True
+        for owner in owners:
+            if owner.detach(max(0.0, deadline - time.monotonic())):
+                with self._lock:
+                    self._process_owners.discard(owner)
+            else:
+                complete = False
+        if complete and self._owns_orphan_processes:
+            complete = self._orphan_processes.close(max(0.0, deadline - time.monotonic()))
+        return complete
 
     @property
     def in_flight(self) -> int:
@@ -852,6 +952,8 @@ class ProcessIoPort:
         harness_id: str,
         interruption_reason: str | None = None,
     ) -> tuple[bool, str | None]:
+        from .process_owner import ProcessOwner
+
         if (
             identity is not None
             and identity.pid is not None
@@ -859,6 +961,10 @@ class ProcessIoPort:
         ):
             verdict = self._recorded_identity_verdict(identity)
             if verdict == "reused":
+                if isinstance(process, ProcessOwner):
+                    if process.detach(1.0):
+                        with self._lock:
+                            self._process_owners.discard(process)
                 return False, "PID_REUSED: refusing to stop a different process identity"
             if verdict == "dead":
                 # The recorded generation is gone (it may have been replaced by
@@ -884,6 +990,9 @@ class ProcessIoPort:
             ):
                 process.prepare_daemon_interruption(interruption_reason)
             process.stop()
+            if isinstance(process, ProcessOwner):
+                with self._lock:
+                    self._process_owners.discard(process)
         except BaseException as error:
             self._orphan_processes.collect_once()
             return False, str(error)
@@ -943,6 +1052,10 @@ class HarnessRuntimeActor:
         event_sink: object | None = None,
         desired_state: DesiredStateStore | None = None,
         automatic_restore_allowed: Callable[[HarnessLaunchSpec], bool] | None = None,
+        persistence_late_result: (
+            Callable[[str], StateCommandCompleted | None] | None
+        ) = None,
+        agent_identity: AgentIdentityProjectionPort | None = None,
     ) -> None:
         self._runtime = runtime or ActorRuntime()
         self._projection = projection or HarnessProjection()
@@ -958,8 +1071,20 @@ class HarnessRuntimeActor:
             raise ValueError("lifecycle_replay_capacity must be positive")
         self._lifecycle_replay_capacity = lifecycle_replay_capacity
         self._records: dict[str, _Record] = {}
+        self._stop_retry_processes: dict[
+            str, tuple[ManagedHarnessProcess, ProcessIdentity | None]
+        ] = {}
+        self._stop_retry_bindings: dict[str, object] = {}
         self._restore_batches: dict[str, _RestoreBatch] = {}
         self._calls = _PendingCallRegistry()
+        self._result_claim_capacity = 256
+        self._delivery_reservations: dict[str, _DeliveryReservation] = {}
+        self._claimed_results: dict[str, ClaimedHarnessResult] = {}
+        self._result_reservation_snapshot: frozenset[str] = frozenset()
+        self._claim_scan_id: str | None = None
+        self._claim_scan_generations: frozenset[tuple[str, int]] = frozenset()
+        self._retire_after_claim_scan: set[tuple[str, int]] = set()
+        self._claim_waiters: list[tuple[str, int]] = []
         self._timers: dict[tuple[str, int], threading.Timer] = {}
         self._failed_events: list[str] = []
         # Readiness reports (phase ③): one per disposition that happened --
@@ -982,6 +1107,9 @@ class HarnessRuntimeActor:
         self._closing = False
         self._desired_state = desired_state
         self._automatic_restore_allowed = automatic_restore_allowed
+        self._restore_eligibility: dict[str, RestoreEligibilityProjection] = {}
+        self._restore_eligibility_capacity = 10_000
+        self._agent_identity = agent_identity
         self._lifecycle_pending: dict[str, tuple[object, object]] = {}
         self._lifecycle_retry_timers: dict[str, threading.Timer] = {}
         self._lifecycle_effect_resources: set[str] = (
@@ -990,6 +1118,10 @@ class HarnessRuntimeActor:
             else set(desired_state.incomplete_harness_lifecycle_resources())
         )
         self._lifecycle_effect_requests: dict[str, tuple[object, object]] = {}
+        # Exact internal correlations whose native start/stop request crossed
+        # into ProcessIoPort custody, mapped to their logical attempt token.
+        # A later correlation under the same attempt must earn its own phase.
+        self._lifecycle_native_admitted: dict[str, str] = {}
         # A lifecycle ensure can own multiple launcher calls when actor-level
         # retries overlap late I/O completions.  Keep every call fenced until
         # it reports and any process it created is stopped.
@@ -997,6 +1129,7 @@ class HarnessRuntimeActor:
         self._lifecycle_ensure_failure_fences: dict[
             str, _EnsureFailureFence
         ] = {}
+        self._lifecycle_ensure_settling: set[str] = set()
         self._lifecycle_ensure_failure_stops: dict[
             str,
             tuple[
@@ -1019,7 +1152,9 @@ class HarnessRuntimeActor:
         self._start_admission_width = max(1, start_max_workers)
         self._handle: ActorHandle | None = None
         self._io: ProcessIoPort | None = None
-        self._orphan_processes = orphan_processes or OrphanProcessRegistry(
+        self._persistence: DesiredStateIoPort | None = None
+        self._owns_orphan_processes = orphan_processes is None
+        self._orphan_processes = orphan_processes or OrphanProcessAuthority(
             orphan_state_path,
             identity_reader=identity_reader,
             logger=orphan_logger,
@@ -1030,11 +1165,21 @@ class HarnessRuntimeActor:
                 handler_factory=self._new_generation_handler,
                 mailbox_capacity=mailbox_capacity,
                 supervision_profile="process_lifecycle",
+                undelivered_sink=self._on_undelivered,
             )
         )
+        if self._desired_state is not None:
+            self._persistence = DesiredStateIoPort(
+                self._desired_state,
+                complete=lambda event: self._admit(event),
+                late_result=persistence_late_result,
+                capacity=mailbox_capacity,
+            )
+        self._result_effects: EffectLane[_ClaimScan, _ClaimScanOutcome] | None = None
         self._io = ProcessIoPort(
             launcher,
             emit=self._emit_completion,
+            observe=self._admit,
             delivery_failed=self._fail_completion_delivery,
             generation_reader=self._read_generation,
             identity_reader=identity_reader,
@@ -1042,6 +1187,26 @@ class HarnessRuntimeActor:
             max_workers=start_max_workers,
         )
         self._publish()
+
+    def _on_undelivered(self, command: object, reason_code: str) -> None:
+        # ProcessIoPort and EffectLane retain the exact completion until the
+        # replacement generation processes/acknowledges it.  Reporting a
+        # second failure here would release or duplicate that custody.
+        if isinstance(command, EffectCompleted):
+            if isinstance(command.result, DesiredStateIoCompleted):
+                persistence = self._persistence
+                if persistence is not None:
+                    persistence.redeliver(command.result.request)
+            return
+        if _is_io_completion(command):
+            return
+        correlation_id = str(getattr(command, "correlation_id", ""))
+        if correlation_id:
+            self._reject_correlation(
+                correlation_id,
+                reason_code,
+                "accepted harness command did not begin before actor restart",
+            )
 
     @property
     def projection(self) -> HarnessProjection:
@@ -1094,6 +1259,11 @@ class HarnessRuntimeActor:
     def read_worker_session_refs(self) -> HarnessSessionRefsProjection:
         return self._projection.read_worker_session_refs()
 
+    def read_pending_result_delivery_ids(self) -> frozenset[str]:
+        """Immutable reservation projection; native drain cannot reopen a row."""
+
+        return self._result_reservation_snapshot
+
     @property
     def generation(self) -> int:
         return self._read_generation()
@@ -1126,7 +1296,10 @@ class HarnessRuntimeActor:
 
     def submit(self, command: object) -> PortAdmission:
         with self._generation_lock:
-            closing = self._closing and not isinstance(command, StopHarnessesCommand)
+            closing = self._closing and not isinstance(
+                command,
+                (StopHarnessesCommand, ClaimHarnessResultsCommand, SettleHarnessResultCommand),
+            )
             admission = AdmissionResult.CLOSED if closing else self._admit(command)
         if closing:
             self._emit_event(
@@ -1172,9 +1345,11 @@ class HarnessRuntimeActor:
         return self._runtime.tell(handle, command)
 
     def receive(self, handler_generation: int, command: object) -> None:
+        from .process_owner import ProcessFactsObserved
         from .lifecycle_receipts import (
             FailHarnessLifecycleCommand, LifecycleMutationRequest,
-            TerminalizeHarnessLifecycleCommand, HarnessLifecycleTerminalized,
+            TerminalizeHarnessLifecycleCommand,
+            ConfirmLifecycleReceiptCommand, RetireLifecycleReceiptCommand,
         )
 
         if handler_generation != self._handler_generation:
@@ -1188,10 +1363,24 @@ class HarnessRuntimeActor:
                 receipt.mark_processed()
             return
         self._version += 1
+        if isinstance(command, RetireLifecycleReceiptCommand):
+            self._persist_desired(
+                DesiredStateOperation.RETIRE_LIFECYCLE_RECEIPT,
+                command,
+                ("harness", command.attempt_token, command.resource_token),
+                context=("receipt", command, "retire"),
+            )
+            return
+        if isinstance(command, ConfirmLifecycleReceiptCommand):
+            self._persist_desired(
+                DesiredStateOperation.CONFIRM_LIFECYCLE_RECEIPT_RETIRED,
+                command,
+                ("harness", command.attempt_token, command.resource_token),
+                context=("receipt", command, "confirm"),
+            )
+            return
         if isinstance(command, TerminalizeHarnessLifecycleCommand):
-            self._terminalize_incomplete_lifecycle(command.code, command.detail)
-            self._publish()
-            self._emit_event(HarnessLifecycleTerminalized(command.correlation_id))
+            self._terminalize_incomplete_lifecycle(command)
             return
         if isinstance(command, FailHarnessLifecycleCommand):
             with self._generation_lock:
@@ -1267,9 +1456,39 @@ class HarnessRuntimeActor:
         elif isinstance(command, EnsureHarnessCommand):
             self._on_ensure(command)
         elif isinstance(command, RemoveHarnessCommand):
+            self._restore_eligibility.pop(command.name, None)
             self._on_remove(command)
         elif isinstance(command, HarnessTimerElapsedCommand):
             self._on_reconcile(command)
+        elif isinstance(command, UpdateRestoreEligibilityCommand):
+            candidate = command.eligibility
+            if not self._restore_entity_current(candidate):
+                current = (
+                    self._restore_eligibility[candidate.actor]
+                    if candidate.actor in self._restore_eligibility
+                    else None
+                )
+                if current is not None and not self._restore_entity_current(current):
+                    self._restore_eligibility.pop(candidate.actor, None)
+                    self._version += 1
+                return
+            current = (
+                self._restore_eligibility[candidate.actor]
+                if candidate.actor in self._restore_eligibility
+                else None
+            )
+            if current is None and len(self._restore_eligibility) >= (
+                self._restore_eligibility_capacity
+            ):
+                return
+            if current is None or (
+                candidate.source_generation,
+                candidate.source_version,
+            ) > (current.source_generation, current.source_version):
+                self._restore_eligibility[candidate.actor] = candidate
+                self._version += 1
+        elif isinstance(command, ProcessFactsObserved):
+            self._on_process_facts(command)
         elif isinstance(command, DrainHarnessFailedCommand):
             events = tuple(self._failed_events)
             self._failed_events.clear()
@@ -1298,6 +1517,24 @@ class HarnessRuntimeActor:
             self._on_dispatch(command)
         elif isinstance(command, DrainHarnessResultsCommand):
             self._on_drain_results(command)
+        elif isinstance(command, ClaimHarnessResultsCommand):
+            self._on_claim_results(command)
+        elif isinstance(command, SettleHarnessResultCommand):
+            self._on_settle_result(command)
+        elif isinstance(command, EffectCompleted) and isinstance(
+            command.result, DesiredStateIoCompleted
+        ):
+            persistence = self._persistence
+            try:
+                self._on_desired_completed(command.result)
+            except BaseException:
+                if persistence is not None:
+                    persistence.redeliver(command.result.request)
+                raise
+            if persistence is not None:
+                persistence.acknowledge(command.result.request)
+        elif isinstance(command, EffectCompleted):
+            self._on_claim_scan_completed(command)
         elif isinstance(command, DrainHarnessProgressCommand):
             self._on_drain_progress(command)
         elif isinstance(command, BindHarnessLivenessCommand):
@@ -1352,17 +1589,6 @@ class HarnessRuntimeActor:
                 "Harness lifecycle authority requires DesiredStateStore",
             )
             return
-        try:
-            provenance, replayed = self._desired_state.apply_harness_lifecycle(
-                request,
-                generation=self._handler_generation,
-                version=self._version,
-            )
-        except (TypeError, ValueError) as error:
-            self._reject_correlation(
-                request.correlation_id, ipc_errors.INVALID_ARGUMENT, str(error)
-            )
-            return
         payload = request.payload
         if not isinstance(payload, (EnsureHarnessCommand, RemoveHarnessCommand)):
             self._reject_correlation(
@@ -1371,28 +1597,66 @@ class HarnessRuntimeActor:
                 f"unsupported Harness lifecycle payload: {type(payload).__name__}",
             )
             return
+        self._persist_desired(
+            DesiredStateOperation.APPLY_HARNESS_LIFECYCLE,
+            request,
+            (request,),
+            kwargs=(
+                ("generation", self._handler_generation),
+                ("version", self._version),
+            ),
+            context=("lifecycle_apply", request),
+        )
+
+    def _continue_lifecycle_apply(
+        self, request: object, result: object
+    ) -> None:
+        from .lifecycle_receipts import (
+            LifecycleMutationRequest,
+            MutationProvenance,
+        )
+
+        assert isinstance(request, LifecycleMutationRequest)
+        if (
+            not isinstance(result, tuple)
+            or len(result) != 2
+            or not isinstance(result[0], MutationProvenance)
+            or not isinstance(result[1], bool)
+        ):
+            raise TypeError("harness lifecycle persistence returned invalid result")
+        provenance, _replayed = result
+        payload = request.payload
+        assert isinstance(payload, (EnsureHarnessCommand, RemoveHarnessCommand))
         harness_id = (
             f"{payload.spec.harness}:{payload.spec.name}"
             if isinstance(payload, EnsureHarnessCommand)
             else f"{payload.harness}:{payload.name}"
         )
-        if replayed:
-            active = self._lifecycle_effect_requests.get(harness_id)
-            inflight = any(
-                pending_request.attempt_token == request.attempt_token
-                for pending_request, _provenance in self._lifecycle_pending.values()
-            )
-            if (
-                active is not None
-                and active[0].attempt_token == request.attempt_token
-                and inflight
-            ):
-                # LifecycleManager may re-admit the same durable attempt after
-                # its waiter times out while a slow harness is still starting.
-                # The new waiter uses the same correlation id, so the original
-                # completion will settle it. Starting a second I/O generation
-                # would instead supersede the truthful first attempt.
-                return
+        active = self._lifecycle_effect_requests.get(harness_id)
+        pending_correlation = next(
+            (
+                correlation
+                for correlation, (pending_request, _provenance)
+                in self._lifecycle_pending.items()
+                if pending_request.attempt_token == request.attempt_token
+            ),
+            None,
+        )
+        same_attempt = bool(
+            active is not None
+            and active[0].attempt_token == request.attempt_token
+            and pending_correlation is not None
+        )
+        if (
+            same_attempt
+            and self._lifecycle_native_admitted.get(pending_correlation)
+            == request.attempt_token
+        ):
+            # The original continuation already transferred exact start/stop
+            # custody to ProcessIoPort.  Its completion will settle the
+            # retained pending correlation; replaying the frozen persistence
+            # result must not supersede that native generation.
+            return
         record = self._records.get(harness_id)
         runtime_satisfied = bool(
             isinstance(payload, EnsureHarnessCommand)
@@ -1412,47 +1676,48 @@ class HarnessRuntimeActor:
                 harness_id,
                 False,
             )
-            from .lifecycle_receipts import LifecycleMutationCompleted
-
             if isinstance(payload, EnsureHarnessCommand):
                 # U0b: even the no-op "already running" completion must own
                 # the desired-state row (idempotently) -- under start-after-
                 # success semantics the row's ONLY writers are this confirm,
                 # the migration, and offline staging.
-                if not self._desired_state.confirm_harness_lifecycle(
+                operation = DesiredStateOperation.CONFIRM_HARNESS_LIFECYCLE
+                args = (
                     request.attempt_token,
                     provenance.resource_token,
                     _launch_spec(payload.spec),
-                    generation=self._handler_generation,
-                    version=self._version,
-                ):
-                    raise RuntimeError("Harness lifecycle receipt could not confirm")
-            elif not self._desired_state.complete_harness_lifecycle(
-                request.attempt_token,
-                provenance.resource_token,
-                generation=self._handler_generation,
-                version=self._version,
-            ):
-                raise RuntimeError("Harness lifecycle receipt could not complete")
-            self._remember_settled_lifecycle(request.attempt_token)
-            self._emit_event(
-                LifecycleMutationCompleted(
-                    request.correlation_id,
-                    request.attempt_token,
-                    self._handler_generation,
-                    self._version,
-                    "harness",
+                )
+            else:
+                operation = DesiredStateOperation.COMPLETE_HARNESS_LIFECYCLE
+                args = (request.attempt_token, provenance.resource_token)
+            self._persist_desired(
+                operation,
+                request,
+                args,
+                kwargs=(
+                    ("generation", self._handler_generation),
+                    ("version", self._version),
+                ),
+                context=(
+                    "lifecycle_noop",
+                    request,
                     provenance,
                     base,
-                )
+                ),
             )
             return
-        internal_correlation = f"{request.correlation_id}:io:{uuid.uuid4().hex}"
+        internal_correlation = (
+            pending_correlation
+            if same_attempt
+            else f"{request.correlation_id}:io:{uuid.uuid4().hex}"
+        )
+        assert internal_correlation is not None
         internal_payload = replace(payload, correlation_id=internal_correlation)
         resource_id = harness_id
-        self._lifecycle_pending[internal_correlation] = (request, provenance)
-        self._lifecycle_effect_resources.add(resource_id)
-        self._lifecycle_effect_requests[resource_id] = (request, provenance)
+        if not same_attempt:
+            self._lifecycle_pending[internal_correlation] = (request, provenance)
+            self._lifecycle_effect_resources.add(resource_id)
+            self._lifecycle_effect_requests[resource_id] = (request, provenance)
         if isinstance(internal_payload, EnsureHarnessCommand):
             self._on_ensure(internal_payload, lifecycle=True)
             record = self._records.get(resource_id)
@@ -1521,6 +1786,7 @@ class HarnessRuntimeActor:
     def _on_lifecycle_remove(self, command: RemoveHarnessCommand) -> None:
         """Stop without dropping actor custody until the I/O effect succeeds."""
 
+        self._restore_eligibility.pop(command.name, None)
         harness_id = f"{command.harness}:{command.name}"
         record = self._records.get(harness_id)
         if record is None:
@@ -1568,6 +1834,7 @@ class HarnessRuntimeActor:
 
         assert self._io is not None
         self._io.call(correlation, record.generation, self._version, stop_all)
+        self._mark_lifecycle_native_admitted(correlation)
 
     def close_runtime(self, timeout: float) -> bool:
         deadline = time.monotonic() + max(0.0, timeout)
@@ -1577,19 +1844,43 @@ class HarnessRuntimeActor:
             timer.cancel()
         self._lifecycle_retry_timers.clear()
         terminalized = self._close_lifecycle_in_actor(deadline)
+        if self._persistence is not None:
+            if not self._persistence.close(
+                max(0.0, deadline - time.monotonic())
+            ):
+                return False
+        if self._claimed_results:
+            return False
+        if self._result_effects is not None:
+            if not self._result_effects.close(max(0.0, deadline - time.monotonic())):
+                return False
+        if self._claimed_results:
+            return False
+        drained = True
+        if self._io is not None:
+            drained = self._io.close(deadline)
+        if drained and self._owns_orphan_processes:
+            drained = self._orphan_processes.close(max(0.0, deadline - time.monotonic()))
+        if not drained:
+            # Process completions still need the actor to acknowledge their
+            # exact receipt.  Keep it addressable so a later close retry can
+            # join that custody after the native operation settles.
+            return False
         handle = self._handle
-        self._handle = None
         if handle is not None:
-            self._runtime.stop(
+            stopped = self._runtime.stop(
                 handle, timeout=max(0.0, deadline - time.monotonic())
             )
+            if not stopped:
+                # Actor/backend ownership is still live.  Retain the stable
+                # handle and every dependent call so a later close can join
+                # the same stop future instead of losing cleanup custody.
+                return False
+            self._handle = None
         # Edge correlation custody is independently synchronized and can be
         # cleared after the actor is no longer addressable.  Domain records
         # are never mutated here outside their actor.
         self._calls.clear()
-        drained = True
-        if self._io is not None:
-            drained = self._io.close(deadline)
         return drained and terminalized
 
     def _close_lifecycle_in_actor(self, deadline: float) -> bool:
@@ -1622,47 +1913,61 @@ class HarnessRuntimeActor:
         finally:
             self._event_sinks.remove(observe)
 
-    def _terminalize_incomplete_lifecycle(self, code: str, detail: str) -> None:
+    def _terminalize_incomplete_lifecycle(self, command: object) -> None:
         if self._desired_state is None:
-            return
-        from .lifecycle_receipts import LifecycleMutationFailed
+            from .lifecycle_receipts import HarnessLifecycleTerminalized
 
-        requests = dict(self._lifecycle_effect_requests)
+            self._publish_event(HarnessLifecycleTerminalized(command.correlation_id))
+            return
+        state = self._desired_state.load()
+        receipts = tuple(
+            receipt
+            for receipt in state.lifecycle_receipts
+            if receipt.domain == "harness" and not receipt.completed
+        )
+        requests = tuple(
+            (resource_id, entry[0], entry[1])
+            for resource_id, entry in self._lifecycle_effect_requests.items()
+        )
         self._lifecycle_pending.clear()
-        for receipt in self._desired_state.incomplete_harness_lifecycle_receipts():
-            resource_id = receipt.resource_key.removeprefix("harness:")
-            request_entry = requests.get(resource_id)
-            request = None if request_entry is None else request_entry[0]
-            correlation_id = receipt.correlation_id
-            if correlation_id is None and request is not None:
-                raw_correlation = getattr(request, "correlation_id", None)
-                correlation_id = (
-                    raw_correlation if isinstance(raw_correlation, str) else None
-                )
-            if request is not None and isinstance(request.payload, RemoveHarnessCommand):
-                self._emit_event(self._settle_failed_removal(
-                    request, receipt.provenance, code, detail
-                ))
-                continue
-            rolled_back = self._desired_state.rollback_harness_lifecycle(
-                receipt.attempt_token, receipt.provenance.resource_token
-            )
-            self._remember_settled_lifecycle(receipt.attempt_token)
-            if correlation_id is not None:
-                self._emit_event(
-                    LifecycleMutationFailed(
-                        correlation_id,
-                        receipt.attempt_token,
-                        self._handler_generation,
-                        self._version,
-                        "harness",
-                        code,
-                        detail,
-                        rolled_back,
-                    )
-                )
-            self._lifecycle_effect_resources.discard(resource_id)
-            self._lifecycle_effect_requests.pop(resource_id, None)
+        self._lifecycle_native_admitted.clear()
+        self._terminalize_next(command, receipts, requests)
+
+    def _terminalize_next(
+        self,
+        command: object,
+        receipts: tuple[object, ...],
+        requests: tuple[tuple[str, object, object], ...],
+    ) -> None:
+        from .lifecycle_receipts import HarnessLifecycleTerminalized
+
+        if not receipts:
+            self._publish()
+            self._publish_event(HarnessLifecycleTerminalized(command.correlation_id))
+            return
+        receipt, remaining = receipts[0], receipts[1:]
+        resource_id = receipt.resource_key.removeprefix("harness:")
+        request_entry = next(
+            (entry for entry in requests if entry[0] == resource_id), None
+        )
+        request = None if request_entry is None else request_entry[1]
+        if request is not None and isinstance(request.payload, RemoveHarnessCommand):
+            operation = DesiredStateOperation.FAIL_HARNESS_REMOVAL
+        else:
+            operation = DesiredStateOperation.ROLLBACK_HARNESS_LIFECYCLE
+        self._persist_desired(
+            operation,
+            command,
+            (receipt.attempt_token, receipt.provenance.resource_token),
+            context=(
+                "terminalize",
+                command,
+                receipt,
+                request,
+                remaining,
+                requests,
+            ),
+        )
 
     def _new_generation_handler(self) -> _HarnessActorGeneration:
         """Construct one fresh handler and fence every prior async callback.
@@ -1742,19 +2047,20 @@ class HarnessRuntimeActor:
         batch.deferred += 1
         if not batch.pending:
             self._restore_batches.pop(batch_id, None)
-            self._emit_event(
-                HarnessRestoreCompleted(
-                    batch.correlation_id,
-                    self._handler_generation,
-                    self._version,
-                    HarnessRestoreProjection(
-                        batch.attempted,
-                        batch.restored,
-                        batch.failed,
-                        batch.deferred,
-                    ),
+            if not batch.terminal_rejected:
+                self._emit_event(
+                    HarnessRestoreCompleted(
+                        batch.correlation_id,
+                        self._handler_generation,
+                        self._version,
+                        HarnessRestoreProjection(
+                            batch.attempted,
+                            batch.restored,
+                            batch.failed,
+                            batch.deferred,
+                        ),
+                    )
                 )
-            )
 
     def _starts_in_flight(self) -> int:
         """Starts currently handed to the I/O port, derived not tracked.
@@ -1832,12 +2138,17 @@ class HarnessRuntimeActor:
             record = _Record(spec=spec)
             self._records[key] = record
         elif record.explicit_correlation_id is not None:
-            self._reject_correlation(
-                record.explicit_correlation_id,
-                "HARNESS_START_SUPERSEDED",
-                "harness start superseded by a newer command",
+            same_lifecycle_retry = bool(
+                lifecycle
+                and record.explicit_correlation_id == command.correlation_id
             )
-            record.explicit_correlation_id = None
+            if not same_lifecycle_retry:
+                self._reject_correlation(
+                    record.explicit_correlation_id,
+                    "HARNESS_START_SUPERSEDED",
+                    "harness start superseded by a newer command",
+                )
+                record.explicit_correlation_id = None
         incumbent = (
             (record.process, record.identity)
             if record.process is not None
@@ -1936,8 +2247,42 @@ class HarnessRuntimeActor:
         assert self._io is not None
         self._io.call(correlation, record.generation, self._version, stop_all)
 
-    def _on_reconcile(self, command: HarnessTimerElapsedCommand) -> None:
+    def _on_process_facts(self, command) -> None:
+        record = self._records.get(command.harness_id)
         if (
+            record is not None
+            and getattr(record.process, "process_token", None) == command.process_token
+            and not self._closing
+        ):
+            if not command.running:
+                self._on_reconcile(
+                    HarnessTimerElapsedCommand(
+                        f"process-facts:{command.process_token}",
+                        self._handler_generation,
+                        self._last_timer_sequence,
+                        int(time.time() * 1000),
+                    ),
+                    observation=True,
+                )
+
+    def _restore_entity_current(
+        self, eligibility: RestoreEligibilityProjection
+    ) -> bool:
+        identity = self._agent_identity
+        if identity is None:
+            return True
+        try:
+            current = identity.entity_token(eligibility.actor)
+        except Exception:  # cache view failure must fail open for process restore
+            return False
+        return current is not None and current == eligibility.entity_token
+
+    def _on_reconcile(
+        self, command: HarnessTimerElapsedCommand, *, observation: bool = False
+    ) -> None:
+        from .process_owner import ProcessOwner
+
+        if not observation and (
             command.generation != self._handler_generation
             or command.version <= self._last_timer_sequence
         ):
@@ -1947,7 +2292,8 @@ class HarnessRuntimeActor:
                 "timer generation/version no longer owns harness reconciliation",
             )
             return
-        self._last_timer_sequence = command.version
+        if not observation:
+            self._last_timer_sequence = command.version
         if self._closing:
             self._emit_event(
                 HarnessTimerCompleted(
@@ -1961,6 +2307,8 @@ class HarnessRuntimeActor:
         now = self._clock()
         restarted = 0
         for key, record in self._records.items():
+            if not observation and isinstance(record.process, ProcessOwner):
+                record.process.refresh()
             if key in self._lifecycle_effect_resources:
                 continue
             completed = record.completed_start
@@ -2053,6 +2401,20 @@ class HarnessRuntimeActor:
                     continue
             if record.restart_after is not None and now < record.restart_after:
                 continue
+            eligibility = self._restore_eligibility.get(record.spec.name)
+            if eligibility is not None and not self._restore_entity_current(
+                eligibility
+            ):
+                self._restore_eligibility.pop(record.spec.name, None)
+                self._version += 1
+                eligibility = None
+            if (
+                eligibility is not None
+                and eligibility.suppressed
+                and eligibility.desired_generation
+                == harness_desired_generation(record.spec)
+            ):
+                continue
             if self._starts_in_flight() >= self._start_admission_width:
                 # Same bound as restore, for the same reason: the process I/O
                 # port rejects submissions past its capacity outright, and a
@@ -2079,31 +2441,83 @@ class HarnessRuntimeActor:
     def _on_reconcile_session_refs(
         self, command: ReconcileHarnessSessionRefsCommand
     ) -> None:
-        """Persist the actor's current immutable native-session projection."""
+        """Join native facts before persisting the current session refs."""
 
-        self._publish()
-        refs = self.read_session_refs().refs
-        error_detail: str | None = None
+        from .process_owner import ProcessOwner
+
+        captured = tuple(
+            (
+                key, record.incarnation, record.generation,
+                getattr(record.process, "process_token", None),
+                record.spec.harness, record.spec.name, record.process,
+            )
+            for key, record in sorted(self._records.items())
+        )
+        if not any(entry[6] is not None for entry in captured):
+            self._publish()
+            self._complete_session_ref_reconcile(command, ())
+            return
+
+        def observe() -> tuple[_SessionRefObservation, ...]:
+            observed = []
+            for key, incarnation, generation, token, harness, name, process in captured:
+                if isinstance(process, ProcessOwner):
+                    value = process.observe_facts().session_ref
+                else:
+                    # Compatibility processes still run on ProcessIoPort's
+                    # external I/O worker, never on the Harness mailbox.
+                    value = getattr(process, "session_ref", None) if process else None
+                observed.append(
+                    _SessionRefObservation(
+                        key, incarnation, generation, token, harness, name,
+                        value if isinstance(value, str) and value else None,
+                    )
+                )
+            return tuple(observed)
+
+        correlation = self._register_call(
+            f"{command.correlation_id}:observe:{uuid.uuid4().hex}",
+            self._handler_generation,
+            operation="session_refs",
+            reply_correlation_id=command.correlation_id,
+        )
+        assert self._io is not None
+        self._io.call(correlation, self._handler_generation, self._version, observe)
+
+    def _complete_session_ref_reconcile(
+        self,
+        command: ReconcileHarnessSessionRefsCommand,
+        refs: tuple[HarnessSessionRefProjection, ...],
+    ) -> None:
         if refs:
             if self._desired_state is None:
-                error_detail = "Harness session-ref authority requires DesiredStateStore"
-            else:
-                try:
-                    self._desired_state.sync_harness_session_refs(
-                        {
-                            (item.harness, item.name): item.session_ref
-                            for item in refs
-                        }
+                self._emit_event(
+                    HarnessSessionRefsReconciled(
+                        command.correlation_id,
+                        self._handler_generation,
+                        self._version,
+                        refs,
+                        "Harness session-ref authority requires DesiredStateStore",
                     )
-                except (OSError, DesiredStateError) as error:
-                    error_detail = str(error)
+                )
+            else:
+                pairs = tuple(
+                    ((item.harness, item.name), item.session_ref) for item in refs
+                )
+                self._persist_desired(
+                    DesiredStateOperation.SYNC_HARNESS_SESSION_REFS,
+                    command,
+                    (pairs,),
+                    context=("session_refs", command, refs),
+                )
+            return
         self._emit_event(
             HarnessSessionRefsReconciled(
                 command.correlation_id,
                 self._handler_generation,
                 self._version,
                 refs,
-                error_detail,
+                None,
             )
         )
 
@@ -2119,79 +2533,130 @@ class HarnessRuntimeActor:
         """Run offline-management registry work on the Harness authority."""
 
         operation = type(command).__name__
-        changed = False
-        adapter: HarnessAdapterRegistrationProjection | None = None
-        error: BaseException | None = None
         store = self._desired_state
         if store is None:
-            error = RuntimeError(
-                "Harness desired-state management requires DesiredStateStore"
+            self._emit_event(
+                HarnessDesiredStateManaged(
+                    command.correlation_id,
+                    self._handler_generation,
+                    self._version,
+                    operation,
+                    False,
+                    None,
+                    error_detail=(
+                        "Harness desired-state management requires DesiredStateStore"
+                    ),
+                )
             )
-        else:
+            return
+        if isinstance(command, StageHarnessDesiredCommand):
+            spec = _launch_spec(command.spec)
+            before = next(
+                (
+                    item
+                    for item in store.load().harnesses
+                    if (item.harness, item.name) == (spec.harness, spec.name)
+                ),
+                None,
+            )
+            self._persist_desired(
+                DesiredStateOperation.UPSERT_HARNESS,
+                command,
+                (spec,),
+                context=("manage", command, operation, before != spec, None),
+            )
+            return
+        if isinstance(command, SnapshotAdapterRegistrationCommand):
             try:
-                if isinstance(command, StageHarnessDesiredCommand):
-                    spec = _launch_spec(command.spec)
-                    before = next(
-                        (
-                            item
-                            for item in store.load().harnesses
-                            if (item.harness, item.name)
-                            == (spec.harness, spec.name)
-                        ),
-                        None,
-                    )
-                    store.upsert_harness(spec)
-                    changed = before != spec
-                elif isinstance(command, SnapshotAdapterRegistrationCommand):
-                    spec, legacy_pin = store.adapter_registration(command.name)
-                    adapter = HarnessAdapterRegistrationProjection(
-                        command.name,
-                        None if spec is None else _launch_projection(spec),
-                        legacy_pin,
-                    )
-                elif isinstance(command, RemoveAdapterRegistrationCommand):
-                    expected = (
-                        None
-                        if command.expected_spec is None
-                        else _launch_spec(command.expected_spec)
-                    )
-                    store.remove_adapter_registration(
-                        command.name,
-                        expected_spec=expected,
-                        expected_legacy_pin=command.expected_legacy_pin,
-                    )
-                    changed = expected is not None or command.expected_legacy_pin is not None
-                    adapter = HarnessAdapterRegistrationProjection(
-                        command.name,
-                        command.expected_spec,
-                        command.expected_legacy_pin,
-                    )
-                else:
-                    assert isinstance(command, RestoreAdapterRegistrationCommand)
-                    restored = (
-                        None if command.spec is None else _launch_spec(command.spec)
-                    )
-                    store.restore_adapter_registration(
-                        command.name,
-                        spec=restored,
-                        legacy_pin=command.legacy_pin,
-                    )
-                    changed = restored is not None or command.legacy_pin is not None
-                    adapter = HarnessAdapterRegistrationProjection(
-                        command.name, command.spec, command.legacy_pin
-                    )
+                state = store.load()
+                spec = next(
+                    (
+                        item
+                        for item in state.harnesses
+                        if (item.harness, item.name) == ("lark", command.name)
+                    ),
+                    None,
+                )
+                legacy_pin = dict(state.channel_pins).get(command.name)
+                adapter = HarnessAdapterRegistrationProjection(
+                    command.name,
+                    None if spec is None else _launch_projection(spec),
+                    legacy_pin,
+                )
+                error = None
             except Exception as caught:  # noqa: BLE001 - typed actor result
+                adapter = None
                 error = caught
-        self._emit_event(
-            HarnessDesiredStateManaged(
-                command.correlation_id,
-                self._handler_generation,
-                self._version,
-                operation,
-                changed,
-                adapter,
-                error,
+            metadata = (
+                {}
+                if error is None
+                else {
+                    "error_code": type(error).__name__,
+                    "error_detail": str(error),
+                    "error_is_oserror": isinstance(error, OSError),
+                    "error_errno": error.errno if isinstance(error, OSError) else None,
+                    "error_strerror": error.strerror if isinstance(error, OSError) else None,
+                    "error_filename": error.filename if isinstance(error, OSError) else None,
+                    "error_filename2": error.filename2 if isinstance(error, OSError) else None,
+                }
             )
+            self._emit_event(
+                HarnessDesiredStateManaged(
+                    command.correlation_id,
+                    self._handler_generation,
+                    self._version,
+                    operation,
+                    False,
+                    adapter,
+                    **metadata,
+                )
+            )
+            return
+        if isinstance(command, RemoveAdapterRegistrationCommand):
+            expected = (
+                None
+                if command.expected_spec is None
+                else _launch_spec(command.expected_spec)
+            )
+            adapter = HarnessAdapterRegistrationProjection(
+                command.name,
+                command.expected_spec,
+                command.expected_legacy_pin,
+            )
+            self._persist_desired(
+                DesiredStateOperation.REMOVE_ADAPTER_REGISTRATION,
+                command,
+                (command.name,),
+                kwargs=(
+                    ("expected_spec", expected),
+                    ("expected_legacy_pin", command.expected_legacy_pin),
+                ),
+                context=(
+                    "manage",
+                    command,
+                    operation,
+                    expected is not None or command.expected_legacy_pin is not None,
+                    adapter,
+                ),
+            )
+            return
+        assert isinstance(command, RestoreAdapterRegistrationCommand)
+        restored = None if command.spec is None else _launch_spec(command.spec)
+        adapter = HarnessAdapterRegistrationProjection(
+            command.name, command.spec, command.legacy_pin
+        )
+        self._persist_desired(
+            DesiredStateOperation.RESTORE_ADAPTER_REGISTRATION,
+            command,
+            (command.name,),
+            kwargs=(("spec", restored), ("legacy_pin", command.legacy_pin)),
+            context=(
+                "manage",
+                command,
+                operation,
+                restored is not None or command.legacy_pin is not None,
+                adapter,
+            ),
         )
 
     def _on_wait_ready(self, command: WaitHarnessReadyCommand) -> None:
@@ -2226,6 +2691,18 @@ class HarnessRuntimeActor:
         self._io.call(correlation, record.generation, self._version, wait_ready)
 
     def _on_dispatch(self, command: DispatchHarnessDeliveryCommand) -> None:
+        if command.delivery.delivery_id in self._delivery_reservations:
+            self._emit_event(
+                HarnessDeliveryAdmitted(
+                    command.correlation_id,
+                    self._handler_generation,
+                    self._version,
+                    "",
+                    command.delivery.delivery_id,
+                    False,
+                )
+            )
+            return
         selected = next(
             (
                 (key, record)
@@ -2250,6 +2727,10 @@ class HarnessRuntimeActor:
             return
         selected_key, selected_record = selected
         process = cast(StreamingHarnessProcess, selected_record.process)
+        self._delivery_reservations[command.delivery.delivery_id] = (
+            _DeliveryReservation(selected_key, selected_record.generation)
+        )
+        self._result_reservation_snapshot = frozenset(self._delivery_reservations)
         correlation = self._register_call(
             command.correlation_id,
             selected_record.generation,
@@ -2290,6 +2771,179 @@ class HarnessRuntimeActor:
             self._version,
             drain,
         )
+
+    def _scan_results(self, scan: _ClaimScan) -> _ClaimScanOutcome:
+        rows: list[tuple[str, int, HarnessResult]] = []
+        errors: list[str] = []
+        for harness_id, generation, process in scan.processes:
+            remaining = scan.limit - len(rows)
+            if remaining <= 0:
+                break
+            try:
+                results = process.drain_results(remaining)
+            except Exception as error:
+                errors.append(f"{harness_id}:{type(error).__name__}")
+                continue
+            rows.extend((harness_id, generation, result) for result in results)
+        return _ClaimScanOutcome(tuple(rows), tuple(errors))
+
+    def _on_claim_results(self, command: ClaimHarnessResultsCommand) -> None:
+        if command.limit < 1 or command.limit > self._result_claim_capacity:
+            self._reject(
+                command, ipc_errors.INVALID_ARGUMENT, "result claim limit is out of range"
+            )
+            return
+        if self._claim_scan_id is not None:
+            if len(self._claim_waiters) >= self._result_claim_capacity:
+                self._reject(
+                    command, "HARNESS_RESULT_CLAIM_OVERLOADED",
+                    "result claim waiters are full",
+                )
+                return
+            self._claim_waiters.append((command.correlation_id, command.limit))
+            return
+        available = min(
+            command.limit,
+            self._result_claim_capacity - len(self._claimed_results),
+        )
+        processes = tuple(
+            (harness_id, record.generation, cast(StreamingHarnessProcess, record.process))
+            for harness_id, record in self._records.items()
+            if isinstance(record.process, StreamingHarnessProcess)
+        )
+        if available <= 0 or not processes or self._closing:
+            self._emit_event(HarnessResultsClaimed(
+                command.correlation_id, self._handler_generation, self._version,
+                tuple(self._claimed_results.values())[:command.limit],
+            ))
+            return
+        operation_id = uuid.uuid4().hex
+        scan = _ClaimScan(operation_id, available, processes)
+        self._claim_scan_id = operation_id
+        self._claim_scan_generations = frozenset(
+            (harness_id, generation) for harness_id, generation, _ in processes
+        )
+        self._claim_waiters = [(command.correlation_id, command.limit)]
+        if self._result_effects is None:
+            self._result_effects = EffectLane(
+                name="harness-result-claim-io",
+                execute=self._scan_results,
+                complete=lambda event: self._runtime.tell(self._handle, event),
+                capacity=1,
+            )
+        admitted = self._result_effects.submit(
+            EffectRequest(operation_id, self._handler_generation, scan)
+        )
+        if admitted is not AdmissionResult.ACCEPTED:
+            self._claim_scan_id = None
+            self._claim_scan_generations = frozenset()
+            self._claim_waiters.clear()
+            self._reject(
+                command, "HARNESS_RESULT_CLAIM_OVERLOADED",
+                f"result claim admission {admitted.value}",
+            )
+
+    def _on_claim_scan_completed(self, event: EffectCompleted[_ClaimScanOutcome]) -> None:
+        assert self._result_effects is not None
+        if event.operation_id != self._claim_scan_id:
+            self._result_effects.acknowledge(event.operation_id, event.generation)
+            return
+        outcome = event.result or _ClaimScanOutcome((), (event.error or "claim-io-failed",))
+        for harness_id, generation, result in outcome.rows:
+            reservation = self._delivery_reservations.get(result.delivery_id)
+            if (
+                reservation is not None
+                and reservation.claim_token is not None
+                and reservation.process_generation == generation
+            ):
+                continue
+            token = uuid.uuid4().hex
+            claim = ClaimedHarnessResult(token, harness_id, generation, result)
+            self._claimed_results[token] = claim
+            # A confirmed stop can release an unclaimed old reservation while
+            # this native drain is still in flight.  If the same delivery was
+            # offered to a replacement, retain the old result without taking
+            # ownership of the replacement's reservation.
+            if reservation is None or reservation.process_generation == generation:
+                self._delivery_reservations[result.delivery_id] = (
+                    _DeliveryReservation(harness_id, generation, token)
+                )
+        self._result_reservation_snapshot = frozenset(self._delivery_reservations)
+        claims = tuple(self._claimed_results.values())
+        for correlation_id, limit in self._claim_waiters:
+            self._emit_event(HarnessResultsClaimed(
+                correlation_id, self._handler_generation, self._version,
+                claims[:limit], outcome.errors,
+            ))
+        self._claim_waiters.clear()
+        self._claim_scan_id = None
+        self._claim_scan_generations = frozenset()
+        for harness_id, generation in self._retire_after_claim_scan:
+            for delivery_id, reservation in tuple(self._delivery_reservations.items()):
+                if (
+                    reservation.harness_id == harness_id
+                    and reservation.process_generation == generation
+                ):
+                    self._release_unclaimed_delivery(delivery_id)
+        self._retire_after_claim_scan.clear()
+        self._result_effects.acknowledge(event.operation_id, event.generation)
+
+    def _on_settle_result(self, command: SettleHarnessResultCommand) -> None:
+        claim = self._claimed_results.get(command.claim_token)
+        reservation = self._delivery_reservations.get(command.delivery_id)
+        settled = bool(
+            claim is not None
+            and claim.result.delivery_id == command.delivery_id
+        )
+        if settled:
+            self._claimed_results.pop(command.claim_token)
+            if (
+                reservation is not None
+                and reservation.claim_token == command.claim_token
+                and reservation.process_generation == claim.process_generation
+            ):
+                self._delivery_reservations.pop(command.delivery_id, None)
+                self._result_reservation_snapshot = frozenset(
+                    self._delivery_reservations
+                )
+        self._emit_event(HarnessResultSettled(
+            command.correlation_id, self._handler_generation, self._version,
+            command.claim_token, command.delivery_id, settled,
+        ))
+
+    def _release_unclaimed_delivery(
+        self, delivery_id: str, *, harness_id: str | None = None,
+        generation: int | None = None,
+    ) -> None:
+        reservation = self._delivery_reservations.get(delivery_id)
+        if reservation is None or reservation.claim_token is not None:
+            return
+        if harness_id is not None and reservation.harness_id != harness_id:
+            return
+        if generation is not None and reservation.process_generation != generation:
+            return
+        self._delivery_reservations.pop(delivery_id, None)
+        self._result_reservation_snapshot = frozenset(self._delivery_reservations)
+
+    def _release_unclaimed_for(
+        self, harness_id: str, *, before_generation: int | None = None,
+    ) -> None:
+        for delivery_id, reservation in tuple(self._delivery_reservations.items()):
+            if reservation.harness_id != harness_id:
+                continue
+            if (
+                before_generation is not None
+                and reservation.process_generation >= before_generation
+            ):
+                continue
+            scan_key = (reservation.harness_id, reservation.process_generation)
+            if scan_key in self._claim_scan_generations:
+                # A native drain may already have removed the only result.
+                # Keep its reservation until the claim completion enters this
+                # mailbox; stopping the old process cannot reopen the offer.
+                self._retire_after_claim_scan.add(scan_key)
+                continue
+            self._release_unclaimed_delivery(delivery_id)
 
     def _on_drain_progress(self, command: DrainHarnessProgressCommand) -> None:
         processes = tuple(
@@ -2359,10 +3013,6 @@ class HarnessRuntimeActor:
             "HARNESS_RUNTIME_STOPPED", "harness runtime stopped"
         )
         deadline = command.deadline_ms / 1000.0
-        processes: list[
-            tuple[str, ManagedHarnessProcess, ProcessIdentity | None]
-        ] = []
-        bindings: list[object] = []
         for harness_id, record in self._records.items():
             record.generation += 1
             record.starting = False
@@ -2374,38 +3024,53 @@ class HarnessRuntimeActor:
                 )
                 record.explicit_correlation_id = None
             if record.process is not None:
-                processes.append((harness_id, record.process, record.identity))
+                self._stop_retry_processes.setdefault(
+                    harness_id, (record.process, record.identity)
+                )
                 record.process = None
                 record.identity = None
             if record.liveness_binding is not None:
-                bindings.append(record.liveness_binding)
+                self._stop_retry_bindings.setdefault(
+                    harness_id, record.liveness_binding
+                )
                 record.liveness_binding = None
+        processes = tuple(self._stop_retry_processes.items())
+        bindings = tuple(self._stop_retry_bindings.items())
         correlation = self._register_call(
             command.correlation_id,
             self._handler_generation,
             operation="stop_all",
         )
 
-        def stop_all() -> None:
+        def stop_all() -> _StopAllOutcome:
             errors: list[str] = []
+            stopped_ids: list[str] = []
+            bindings_closed: list[str] = []
             assert self._io is not None
-            for harness_id, process, identity in processes:
+            for harness_id, (process, identity) in processes:
                 if time.monotonic() >= deadline:
-                    raise TimeoutError("harness stop deadline elapsed")
+                    errors.append(f"{harness_id}: harness stop deadline elapsed")
+                    continue
                 stopped, detail = self._io._stop_checked(
                     process, identity, harness_id=harness_id
                 )
-                if not stopped:
+                if stopped:
+                    stopped_ids.append(harness_id)
+                else:
                     errors.append(detail or "harness did not stop")
-            for binding in bindings:
+            for harness_id, binding in bindings:
                 if time.monotonic() >= deadline:
-                    raise TimeoutError("harness stop deadline elapsed")
+                    errors.append(f"{harness_id}: binding stop deadline elapsed")
+                    continue
                 try:
                     binding.close()
                 except BaseException as error:
                     errors.append(str(error))
-            if errors:
-                raise RuntimeError("; ".join(errors))
+                else:
+                    bindings_closed.append(harness_id)
+            return _StopAllOutcome(
+                tuple(stopped_ids), tuple(bindings_closed), tuple(errors)
+            )
 
         assert self._io is not None
         self._io.call(
@@ -2526,6 +3191,10 @@ class HarnessRuntimeActor:
             return
         if not event.stopped and event.detail:
             record.last_error = event.detail
+        if event.stopped:
+            self._release_unclaimed_for(
+                event.harness_id, before_generation=event.generation
+            )
 
     def _on_call_completed(self, event: HarnessCallIoCompleted) -> None:
         pending = self._calls.pop(event.correlation_id)
@@ -2537,7 +3206,14 @@ class HarnessRuntimeActor:
                     str(event.error),
                 )
             return
+        if pending.reply_correlation_id is not None:
+            # Each observation has its own I/O settlement identity. A fleet
+            # change may require another observation for the same caller;
+            # only the reply/retry uses that caller's public correlation.
+            event = replace(event, correlation_id=pending.reply_correlation_id)
         if event.generation != pending.expected_generation:
+            if pending.operation == "dispatch" and pending.delivery_id is not None:
+                self._release_unclaimed_delivery(pending.delivery_id)
             self._reject_correlation(
                 event.correlation_id,
                 "STALE_HARNESS_IO_COMPLETION",
@@ -2547,6 +3223,8 @@ class HarnessRuntimeActor:
         if pending.harness_id is not None:
             record = self._records.get(pending.harness_id)
             if record is None or record.generation != pending.expected_generation:
+                if pending.operation == "dispatch" and pending.delivery_id is not None:
+                    self._release_unclaimed_delivery(pending.delivery_id)
                 self._reject_correlation(
                     event.correlation_id,
                     "STALE_HARNESS_IO_COMPLETION",
@@ -2554,13 +3232,66 @@ class HarnessRuntimeActor:
                 )
                 return
         if event.error is not None:
+            if pending.operation == "dispatch" and pending.delivery_id is not None:
+                self._release_unclaimed_delivery(pending.delivery_id)
             self._reject_correlation(
                 event.correlation_id,
                 "HARNESS_IO_FAILED",
                 str(event.error),
             )
             return
-        if pending.operation == "remove":
+        if pending.operation == "session_refs":
+            from .process_owner import ProcessOwner
+
+            observed = event.value
+            if (
+                not isinstance(observed, tuple)
+                or not all(isinstance(item, _SessionRefObservation) for item in observed)
+            ):
+                self._reject_correlation(
+                    event.correlation_id,
+                    "STALE_HARNESS_IO_COMPLETION",
+                    "session-ref facts no longer cover the current harness fleet",
+                )
+                return
+            if len(observed) != len(self._records):
+                self._on_reconcile_session_refs(
+                    ReconcileHarnessSessionRefsCommand(event.correlation_id)
+                )
+                return
+            for item in observed:
+                record = self._records.get(item.key)
+                if (
+                    record is None
+                    or record.incarnation != item.incarnation
+                    or record.generation != item.generation
+                    or getattr(record.process, "process_token", None)
+                    != item.process_token
+                    or (
+                        isinstance(record.process, ProcessOwner)
+                        and record.process.facts().session_ref != item.session_ref
+                    )
+                ):
+                    # A concurrent lifecycle remove/restart changed the fleet
+                    # while native facts were read. Join the new owner (or
+                    # settle empty after removal) under the same correlation;
+                    # never write the old process's ref into a new row.
+                    self._on_reconcile_session_refs(
+                        ReconcileHarnessSessionRefsCommand(event.correlation_id)
+                    )
+                    return
+            self._publish()
+            refs = tuple(
+                HarnessSessionRefProjection(item.harness, item.name, item.session_ref)
+                for item in observed
+                if item.session_ref is not None
+            )
+            self._complete_session_ref_reconcile(
+                ReconcileHarnessSessionRefsCommand(event.correlation_id), refs
+            )
+        elif pending.operation == "remove":
+            if bool(event.value) and pending.subject_id is not None:
+                self._release_unclaimed_for(pending.subject_id)
             self._emit_event(
                 HarnessMutationCompleted(
                     event.correlation_id,
@@ -2572,6 +3303,8 @@ class HarnessRuntimeActor:
             )
         elif pending.operation == "lifecycle-remove":
             if pending.subject_id is not None:
+                if bool(event.value):
+                    self._release_unclaimed_for(pending.subject_id)
                 self._records.pop(pending.subject_id, None)
             self._emit_event(
                 HarnessMutationCompleted(
@@ -2593,6 +3326,8 @@ class HarnessRuntimeActor:
                 )
             )
         elif pending.operation == "dispatch":
+            if not bool(event.value) and pending.delivery_id is not None:
+                self._release_unclaimed_delivery(pending.delivery_id)
             self._emit_event(
                 HarnessDeliveryAdmitted(
                     event.correlation_id,
@@ -2604,6 +3339,8 @@ class HarnessRuntimeActor:
                 )
             )
         elif pending.operation == "results":
+            for result in cast(tuple[HarnessResult, ...], event.value):
+                self._release_unclaimed_delivery(result.delivery_id)
             self._emit_event(
                 HarnessResultObserved(
                     event.correlation_id,
@@ -2622,11 +3359,26 @@ class HarnessRuntimeActor:
                 )
             )
         elif pending.operation == "stop_all":
+            outcome = cast(_StopAllOutcome, event.value)
+            for harness_id in outcome.stopped:
+                self._stop_retry_processes.pop(harness_id, None)
+                self._release_unclaimed_for(harness_id)
+            for harness_id in outcome.bindings_closed:
+                self._stop_retry_bindings.pop(harness_id, None)
             remaining = tuple(
-                key
-                for key, record in self._records.items()
-                if record.process is not None or record.liveness_binding is not None
+                sorted({
+                    *self._stop_retry_processes,
+                    *self._stop_retry_bindings,
+                    *(
+                        key
+                        for key, record in self._records.items()
+                        if record.process is not None
+                        or record.liveness_binding is not None
+                    ),
+                })
             )
+            for detail in outcome.errors:
+                self._failed_events.append(detail)
             self._emit_event(
                 HarnessesStopped(
                     event.correlation_id,
@@ -2634,7 +3386,9 @@ class HarnessRuntimeActor:
                     self._version,
                     remaining,
                     drain_complete=(
-                        self._io is None or self._io.in_flight <= 1
+                        not outcome.errors
+                        and not remaining
+                        and (self._io is None or self._io.in_flight <= 1)
                     ),
                 )
             )
@@ -2683,6 +3437,8 @@ class HarnessRuntimeActor:
             record.spec,
             replace=replace,
         )
+        if allow_lifecycle:
+            self._mark_lifecycle_native_admitted(correlation_id)
         if self._start_timeout_seconds > 0:
             timer = threading.Timer(
                 self._start_timeout_seconds,
@@ -2746,7 +3502,9 @@ class HarnessRuntimeActor:
             record.restore_failed_terminal = True
         if self._is_failed(record):
             record.restart_after = None
-            if not was_failed:
+            if not was_failed and (
+                record.restore_batch is None or self._desired_state is None
+            ):
                 self._failed_events.append(key)
                 # U0b: the failure budget just ran out.  If this harness
                 # previously came up (its desired-state row exists), the row
@@ -2754,14 +3512,17 @@ class HarnessRuntimeActor:
                 # restart displays it and refuses to auto-retry it.  No row
                 # (an explicit first start that never succeeded) leaves no
                 # trace -- mark_harness_failed is a no-op then.  Persistence
-                # is best-effort here: the budget verdict itself must not
-                # be hostage to a status write.
-                if self._desired_state is not None:
+                # is best-effort for reconcile: the budget verdict itself
+                # must not be hostage to a status write. Restore keeps its
+                # own exact write and batch correlation below.
+                if self._desired_state is not None and record.restore_batch is None:
                     harness, name = key.split(":", 1)
-                    try:
-                        self._desired_state.mark_harness_failed(harness, name)
-                    except Exception:  # noqa: BLE001 - status write is best-effort
-                        pass
+                    self._persist_desired(
+                        DesiredStateOperation.MARK_HARNESS_FAILED,
+                        (harness, name),
+                        (harness, name),
+                        context=("mark_failed", harness, name),
+                    )
             return
         base = self._restart_backoff_seconds
         delay = (
@@ -2785,7 +3546,8 @@ class HarnessRuntimeActor:
         success: bool,
         error: BaseException | None,
     ) -> None:
-        # One settled start attempt = one disposition = one report.  On the
+        # One settled start attempt = one disposition = one report. A failed
+        # restore delays that report until its status write commits. On the
         # failure path `_record_failure` has already run, so the verdict
         # reads the post-settlement budget state.
         restore_single_attempt_failed = (
@@ -2802,12 +3564,6 @@ class HarnessRuntimeActor:
             # it does not buy back this ruling, so the record is made
             # terminal regardless.
             was_failed = self._is_failed(record)
-            if self._desired_state is not None:
-                harness, name = key.split(":", 1)
-                try:
-                    self._desired_state.mark_harness_failed(harness, name)
-                except Exception:  # noqa: BLE001 - status write is best-effort
-                    pass
             record.restart_after = None
             record.failures = max(
                 record.failures,
@@ -2817,10 +3573,25 @@ class HarnessRuntimeActor:
                 # _is_failed refuses to terminate at budget 0 by contract;
                 # pin the verdict through the dedicated flag instead.
                 record.restore_failed_terminal = True
-            if not was_failed and self._is_failed(record):
+            if (
+                not was_failed
+                and self._is_failed(record)
+                and (record.restore_batch is None or self._desired_state is None)
+            ):
                 # Same alarm as the budget trip: entering failed must be
                 # observable (watchdog/readiness drain these events).
                 self._failed_events.append(key)
+        batch_id = record.restore_batch
+        if restore_single_attempt_failed and self._desired_state is not None:
+            # The failed restore disposition is not durable until the exact
+            # accepted desired-state operation reports its committed snapshot.
+            # Keep the batch key pending; process start admission is separate.
+            record.restore_batch = None
+            assert batch_id is not None
+            self._persist_restore_failure(
+                batch_id, key, record.incarnation, record.generation
+            )
+            return
         self._report_readiness(
             key,
             "ready"
@@ -2856,37 +3627,91 @@ class HarnessRuntimeActor:
                     ),
                     str(failure),
                 )
-        batch_id = record.restore_batch
         record.restore_batch = None
         if batch_id is None:
             return
         batch = self._restore_batches.get(batch_id)
         if batch is None or key not in batch.pending:
             return
+        self._settle_restore_key(batch_id, key, success=success)
+
+    def _settle_restore_key(
+        self, batch_id: str, key: str, *, success: bool | None
+    ) -> None:
+        batch = self._restore_batches.get(batch_id)
+        if batch is None or key not in batch.pending:
+            return
         batch.pending.remove(key)
         if success:
             batch.restored += 1
-        else:
+        elif success is False:
             batch.failed += 1
         # One start settled, so one admission slot is free.  Restore now
         # drains at the pace starts actually complete instead of dumping the
         # whole fleet at a port that can only hold part of it.
         self._admit_restore_starts(batch_id)
-        if not batch.pending:
+        # Admission can synchronously defer the final queued target and
+        # consume this batch. Only the still-owning path publishes its result.
+        if not batch.pending and self._restore_batches.get(batch_id) is batch:
             self._restore_batches.pop(batch_id, None)
-            self._emit_event(
-                HarnessRestoreCompleted(
-                    batch.correlation_id,
-                    self._handler_generation,
-                    self._version,
-                    HarnessRestoreProjection(
-                        batch.attempted,
-                        batch.restored,
-                        batch.failed,
-                        batch.deferred,
-                    ),
+            if not batch.terminal_rejected:
+                self._emit_event(
+                    HarnessRestoreCompleted(
+                        batch.correlation_id,
+                        self._handler_generation,
+                        self._version,
+                        HarnessRestoreProjection(
+                            batch.attempted,
+                            batch.restored,
+                            batch.failed,
+                            batch.deferred,
+                        ),
+                    )
                 )
+
+    def _persist_restore_failure(
+        self, batch_id: str, key: str, record_incarnation: str,
+        record_generation: int,
+    ) -> None:
+        batch = self._restore_batches.get(batch_id)
+        if batch is None or key not in batch.pending:
+            return
+        persistence = self._persistence
+        if persistence is None:
+            self._fail_restore_persistence(
+                batch_id, key, "HARNESS_PERSISTENCE_UNAVAILABLE",
+                "Harness desired-state persistence is unavailable",
             )
+            return
+        harness, name = key.split(":", 1)
+        request = DesiredStateIoRequest(
+            operation_id=f"harness-state-{uuid.uuid4().hex}",
+            owner_generation=self._handler_generation,
+            owner_version=self._version,
+            operation=DesiredStateOperation.MARK_HARNESS_FAILED,
+            args=(harness, name),
+            context=(
+                "restore_mark_failed", batch_id, key,
+                record_incarnation, record_generation,
+            ),
+        )
+        admission = persistence.submit(request)
+        if admission is not AdmissionResult.ACCEPTED:
+            self._fail_restore_persistence(
+                batch_id, key, "HARNESS_PERSISTENCE_OVERLOADED",
+                f"Harness persistence admission is {admission.value}",
+            )
+
+    def _fail_restore_persistence(
+        self, batch_id: str, key: str, code: str, detail: str
+    ) -> None:
+        batch = self._restore_batches.get(batch_id)
+        if batch is None or key not in batch.pending:
+            return
+        if not batch.terminal_rejected:
+            batch.terminal_rejected = True
+            self._reject_correlation(batch.correlation_id, code, detail)
+        self._settle_restore_key(batch_id, key, success=None)
 
     def _register_call(
         self,
@@ -2897,6 +3722,7 @@ class HarnessRuntimeActor:
         harness_id: str | None = None,
         delivery_id: str | None = None,
         subject_id: str | None = None,
+        reply_correlation_id: str | None = None,
     ) -> str:
         self._calls.register(
             correlation,
@@ -2906,9 +3732,22 @@ class HarnessRuntimeActor:
                 harness_id=harness_id,
                 delivery_id=delivery_id,
                 subject_id=subject_id,
+                reply_correlation_id=reply_correlation_id,
             ),
         )
         return correlation
+
+    def _mark_lifecycle_native_admitted(self, correlation_id: str) -> None:
+        pending = self._lifecycle_pending.get(correlation_id)
+        if pending is None:
+            return
+        attempt_token = getattr(pending[0], "attempt_token", None)
+        if isinstance(attempt_token, str) and attempt_token:
+            self._lifecycle_native_admitted[correlation_id] = attempt_token
+
+    def _pop_lifecycle_pending(self, correlation_id: str) -> tuple[object, object] | None:
+        self._lifecycle_native_admitted.pop(correlation_id, None)
+        return self._lifecycle_pending.pop(correlation_id, None)
 
     def _cancel_start_timer(self, key: str, generation: int) -> None:
         timer = self._timers.pop((key, generation), None)
@@ -2933,7 +3772,9 @@ class HarnessRuntimeActor:
     ) -> None:
         correlation_id = str(getattr(completion, "correlation_id", ""))
         if correlation_id:
-            self._calls.pop(correlation_id)
+            pending = self._calls.pop(correlation_id)
+            if pending is not None and pending.reply_correlation_id is not None:
+                correlation_id = pending.reply_correlation_id
             self._reject_correlation(
                 correlation_id,
                 "HARNESS_COMPLETION_HANDOFF_FAILED",
@@ -2941,10 +3782,13 @@ class HarnessRuntimeActor:
             )
 
     def _terminate_pending(self, code: str, detail: str) -> None:
-        for correlation_id, _pending in self._calls.clear():
-            self._reject_correlation(correlation_id, code, detail)
+        for correlation_id, pending in self._calls.clear():
+            self._reject_correlation(
+                pending.reply_correlation_id or correlation_id, code, detail
+            )
         for batch in tuple(self._restore_batches.values()):
-            self._reject_correlation(batch.correlation_id, code, detail)
+            if not batch.terminal_rejected:
+                self._reject_correlation(batch.correlation_id, code, detail)
         self._restore_batches.clear()
         for record in self._records.values():
             if record.explicit_correlation_id is not None:
@@ -2973,7 +3817,15 @@ class HarnessRuntimeActor:
     def _durable_lifecycle_receipt(self, attempt_token: str) -> object | None:
         if self._desired_state is None:
             return None
-        return self._desired_state.harness_lifecycle_receipt(attempt_token)
+        return next(
+            (
+                receipt
+                for receipt in self._desired_state.load().lifecycle_receipts
+                if receipt.domain == "harness"
+                and receipt.attempt_token == attempt_token
+            ),
+            None,
+        )
 
     def _settled_lifecycle_failure(self, attempt_token: str) -> object | None:
         return self._lifecycle_failures.get(attempt_token)
@@ -2981,6 +3833,11 @@ class HarnessRuntimeActor:
     def _remember_settled_lifecycle(self, attempt_token: str) -> None:
         """Keep only the short duplicate window; durable state owns recovery."""
 
+        for correlation_id, owner in tuple(
+            self._lifecycle_native_admitted.items()
+        ):
+            if owner == attempt_token:
+                self._lifecycle_native_admitted.pop(correlation_id, None)
         if not attempt_token or attempt_token in self._settled_lifecycle_attempts:
             return
         if len(self._settled_lifecycle_order) >= _LIFECYCLE_SETTLED_CAPACITY:
@@ -3018,19 +3875,20 @@ class HarnessRuntimeActor:
             )
         )
 
-    def _settle_failed_removal(
-        self, request: object, provenance: object, code: str, detail: str,
+    def _finish_failed_removal(
+        self,
+        request: object,
+        provenance: object,
+        code: str,
+        detail: str,
+        owns_resource: bool,
     ) -> object:
         from .lifecycle_receipts import LifecycleMutationFailed, LifecycleMutationRequest, MutationProvenance
 
         assert isinstance(request, LifecycleMutationRequest)
         assert isinstance(provenance, MutationProvenance)
         assert isinstance(request.payload, RemoveHarnessCommand)
-        assert self._desired_state is not None
         key = f"{request.payload.harness}:{request.payload.name}"
-        owns_resource = self._desired_state.fail_harness_removal(
-            request.attempt_token, provenance.resource_token
-        )
         active = self._lifecycle_effect_requests.get(key)
         owns_custody = active is None or active[0].attempt_token == request.attempt_token
         # Durable intent first, then memory, with no actor handoff in between.
@@ -3042,7 +3900,7 @@ class HarnessRuntimeActor:
             self._lifecycle_effect_requests.pop(key, None)
         for correlation, (pending, _) in tuple(self._lifecycle_pending.items()):
             if pending.attempt_token == request.attempt_token:
-                self._lifecycle_pending.pop(correlation)
+                self._pop_lifecycle_pending(correlation)
                 self._calls.pop(correlation)
         for correlation, timer in tuple(self._lifecycle_retry_timers.items()):
             if correlation.startswith(f"{request.correlation_id}:io:"):
@@ -3057,8 +3915,40 @@ class HarnessRuntimeActor:
         self._publish()
         return failure
 
-    def _settle_failed_ensure(
-        self, request: object, provenance: object, code: str, detail: str,
+    def _begin_failed_removal(
+        self,
+        request: object,
+        provenance: object,
+        code: str,
+        detail: str,
+        *,
+        control_correlation: str | None = None,
+    ) -> None:
+        from .lifecycle_receipts import LifecycleMutationRequest, MutationProvenance
+
+        assert isinstance(request, LifecycleMutationRequest)
+        assert isinstance(provenance, MutationProvenance)
+        self._persist_desired(
+            DesiredStateOperation.FAIL_HARNESS_REMOVAL,
+            request,
+            (request.attempt_token, provenance.resource_token),
+            context=(
+                "failed_removal",
+                request,
+                provenance,
+                code,
+                detail,
+                control_correlation,
+            ),
+        )
+
+    def _finish_failed_ensure(
+        self,
+        request: object,
+        provenance: object,
+        code: str,
+        detail: str,
+        rolled_back: bool,
     ) -> object:
         from .lifecycle_receipts import (
             LifecycleMutationFailed,
@@ -3069,14 +3959,10 @@ class HarnessRuntimeActor:
         assert isinstance(request, LifecycleMutationRequest)
         assert isinstance(provenance, MutationProvenance)
         assert isinstance(request.payload, EnsureHarnessCommand)
-        assert self._desired_state is not None
         key = f"{request.payload.spec.harness}:{request.payload.spec.name}"
         active = self._lifecycle_effect_requests.get(key)
         owns_custody = (
             active is None or active[0].attempt_token == request.attempt_token
-        )
-        rolled_back = self._desired_state.rollback_harness_lifecycle(
-            request.attempt_token, provenance.resource_token
         )
         if owns_custody:
             self._records.pop(key, None)
@@ -3084,7 +3970,7 @@ class HarnessRuntimeActor:
             self._lifecycle_effect_requests.pop(key, None)
         for correlation, (pending, _) in tuple(self._lifecycle_pending.items()):
             if pending.attempt_token == request.attempt_token:
-                self._lifecycle_pending.pop(correlation)
+                self._pop_lifecycle_pending(correlation)
                 self._calls.pop(correlation)
         for correlation, timer in tuple(self._lifecycle_retry_timers.items()):
             if correlation.startswith(f"{request.correlation_id}:io:"):
@@ -3178,18 +4064,17 @@ class HarnessRuntimeActor:
             for pending in self._lifecycle_ensure_failure_stops.values()
         ):
             return
-        self._lifecycle_ensure_failure_fences.pop(attempt_token, None)
-        result = self._settle_failed_ensure(
+        if attempt_token in self._lifecycle_ensure_settling:
+            return
+        self._lifecycle_ensure_settling.add(attempt_token)
+        accepted = self._persist_desired(
+            DesiredStateOperation.ROLLBACK_HARNESS_LIFECYCLE,
             fence.request,
-            fence.provenance,
-            fence.code,
-            fence.detail,
+            (attempt_token, fence.provenance.resource_token),
+            context=("failed_ensure", attempt_token),
         )
-        self._emit_event(result)
-        from .lifecycle_receipts import HarnessLifecycleFailureSettled
-
-        for correlation in fence.control_correlations:
-            self._emit_event(HarnessLifecycleFailureSettled(correlation, result))
+        if not accepted:
+            self._lifecycle_ensure_settling.discard(attempt_token)
 
     def _fence_failed_ensure(
         self,
@@ -3231,7 +4116,7 @@ class HarnessRuntimeActor:
             )
             return
         assert self._desired_state is not None
-        receipt = self._desired_state.harness_lifecycle_receipt(request.attempt_token)
+        receipt = self._durable_lifecycle_receipt(request.attempt_token)
         if receipt is not None and receipt.completed:
             # The process completion won the mailbox race. Do not turn success
             # into deletion of a newer incarnation or lie to the journal.
@@ -3265,11 +4150,17 @@ class HarnessRuntimeActor:
                 else:
                     # The control can overtake a queued (not yet admitted)
                     # mutation. Apply the genuine request before settling it.
-                    provenance, _ = self._desired_state.apply_harness_lifecycle(
-                        request,
-                        generation=self._handler_generation,
-                        version=self._version,
+                    self._persist_desired(
+                        DesiredStateOperation.APPLY_HARNESS_LIFECYCLE,
+                        command,
+                        (request,),
+                        kwargs=(
+                            ("generation", self._handler_generation),
+                            ("version", self._version),
+                        ),
+                        context=("fail_apply", command),
                     )
+                    return
                 self._fence_failed_ensure(
                     command,
                     request,
@@ -3281,16 +4172,444 @@ class HarnessRuntimeActor:
             # The control can overtake a queued (not yet admitted) mutation.
             # Apply its genuine request through the same domain transaction;
             # never guess absence from a journal's 'dispatched' label.
-            provenance, _ = self._desired_state.apply_harness_lifecycle(
-                request, generation=self._handler_generation, version=self._version,
+            self._persist_desired(
+                DesiredStateOperation.APPLY_HARNESS_LIFECYCLE,
+                command,
+                (request,),
+                kwargs=(
+                    ("generation", self._handler_generation),
+                    ("version", self._version),
+                ),
+                context=("fail_apply", command),
             )
-            result = self._settle_failed_removal(request, provenance, command.code, command.detail)
+            return
         self._emit_event(result)
         self._emit_event(HarnessLifecycleFailureSettled(command.correlation_id, result))
 
-    def _emit_event(self, event: object) -> None:
+    def _persist_desired(
+        self,
+        operation: DesiredStateOperation,
+        command: object,
+        args: tuple[object, ...],
+        *,
+        kwargs: tuple[tuple[str, object], ...] = (),
+        context: object,
+    ) -> bool:
+        persistence = self._persistence
+        if persistence is None:
+            self._reject_correlation(
+                str(getattr(command, "correlation_id", "")),
+                "HARNESS_PERSISTENCE_UNAVAILABLE",
+                "Harness desired-state persistence is unavailable",
+            )
+            return False
+        request = DesiredStateIoRequest(
+            operation_id=f"harness-state-{uuid.uuid4().hex}",
+            owner_generation=self._handler_generation,
+            owner_version=self._version,
+            operation=operation,
+            args=args,
+            kwargs=kwargs,
+            context=context,
+        )
+        admission = persistence.submit(request)
+        if admission is AdmissionResult.ACCEPTED:
+            return True
+        self._reject_correlation(
+            str(getattr(command, "correlation_id", "")),
+            "HARNESS_PERSISTENCE_OVERLOADED",
+            f"Harness persistence admission is {admission.value}",
+        )
+        return False
+
+    def _on_desired_completed(self, completion: DesiredStateIoCompleted) -> None:
         from .lifecycle_receipts import (
             LifecycleMutationCompleted,
+            LifecycleMutationRequest,
+            LifecycleReceiptCompleted,
+            MutationProvenance,
+        )
+
+        request = completion.request
+        context = request.context
+        if not isinstance(context, tuple) or len(context) < 2:
+            raise TypeError("Harness persistence completion has no typed context")
+        kind = context[0]
+        command = context[1]
+        if (
+            request.owner_generation > self._handler_generation
+            or request.owner_version > self._version
+        ):
+            self._reject_correlation(
+                str(getattr(command, "correlation_id", "")),
+                "HARNESS_PERSISTENCE_FENCE_INVALID",
+                "Harness persistence completion is from a future owner fence",
+            )
+            return
+        if completion.error_code is not None:
+            if kind == "failed_ensure":
+                self._lifecycle_ensure_settling.discard(context[1])
+            if kind == "restore_mark_failed":
+                self._fail_restore_persistence(
+                    context[1],
+                    context[2],
+                    "HARNESS_PERSISTENCE_FAILED",
+                    f"{completion.error_code}: {completion.error_detail}",
+                )
+                return
+            if kind == "mark_failed":
+                return
+            if kind == "session_refs":
+                self._publish_event(
+                    HarnessSessionRefsReconciled(
+                        command.correlation_id,
+                        self._handler_generation,
+                        self._version,
+                        context[2],
+                        f"{completion.error_code}: {completion.error_detail}",
+                    )
+                )
+                return
+            if kind == "manage":
+                self._publish_event(
+                    HarnessDesiredStateManaged(
+                        command.correlation_id,
+                        self._handler_generation,
+                        self._version,
+                        context[2],
+                        False,
+                        context[4],
+                        error_code=completion.error_code,
+                        error_detail=completion.error_detail,
+                        error_is_oserror=completion.error_is_oserror,
+                        error_errno=completion.error_errno,
+                        error_strerror=completion.error_strerror,
+                        error_filename=completion.error_filename,
+                        error_filename2=completion.error_filename2,
+                    )
+                )
+                return
+            self._reject_correlation(
+                str(getattr(command, "correlation_id", "")),
+                "HARNESS_PERSISTENCE_FAILED",
+                f"{completion.error_code}: {completion.error_detail}",
+            )
+            return
+        if kind == "receipt":
+            self._publish_event(
+                LifecycleReceiptCompleted(
+                    command.correlation_id,
+                    self._handler_generation,
+                    self._version,
+                    "harness",
+                    command.attempt_token,
+                    command.resource_token,
+                    context[2],
+                    bool(completion.result),
+                )
+            )
+            return
+        if kind == "mark_failed":
+            return
+        if kind == "restore_mark_failed":
+            batch_id, key, record_incarnation, record_generation = context[1:5]
+            batch = self._restore_batches.get(batch_id)
+            if batch is None or key not in batch.pending:
+                return
+            harness, name = key.split(":", 1)
+            committed = (
+                completion.result is True
+                and any(
+                    spec.harness == harness
+                    and spec.name == name
+                    and spec.status == "failed"
+                    for spec in completion.snapshot.harnesses
+                )
+            )
+            if not committed:
+                self._fail_restore_persistence(
+                    batch_id,
+                    key,
+                    "HARNESS_PERSISTENCE_FAILED",
+                    f"Failed restore status was not committed for {key}",
+                )
+                return
+            record = self._records.get(key)
+            if (
+                record is not None
+                and record.incarnation == record_incarnation
+                and record.generation == record_generation
+                and self._is_failed(record)
+            ):
+                self._failed_events.append(key)
+                self._report_readiness(key, "failed")
+            self._settle_restore_key(batch_id, key, success=False)
+            return
+        if kind == "lifecycle_rejection_count":
+            self._continue_lifecycle_rejection(
+                context[1], context[2], context[3], completion.result
+            )
+            return
+        if kind == "failed_removal":
+            failure = self._finish_failed_removal(
+                context[1],
+                context[2],
+                context[3],
+                context[4],
+                bool(completion.result),
+            )
+            self._publish_event(failure)
+            control_correlation = context[5]
+            if isinstance(control_correlation, str):
+                from .lifecycle_receipts import HarnessLifecycleFailureSettled
+
+                self._publish_event(
+                    HarnessLifecycleFailureSettled(control_correlation, failure)
+                )
+            return
+        if kind == "failed_ensure":
+            attempt_token = context[1]
+            self._lifecycle_ensure_settling.discard(attempt_token)
+            fence = self._lifecycle_ensure_failure_fences.pop(
+                attempt_token, None
+            )
+            if fence is None:
+                return
+            failure = self._finish_failed_ensure(
+                fence.request,
+                fence.provenance,
+                fence.code,
+                fence.detail,
+                bool(completion.result),
+            )
+            self._publish_event(failure)
+            from .lifecycle_receipts import HarnessLifecycleFailureSettled
+
+            for correlation in fence.control_correlations:
+                self._publish_event(
+                    HarnessLifecycleFailureSettled(correlation, failure)
+                )
+            return
+        if kind == "terminalize":
+            from .lifecycle_receipts import (
+                LifecycleMutationFailed,
+                TerminalizeHarnessLifecycleCommand,
+            )
+
+            terminalize, receipt, lifecycle_request, remaining, requests = context[1:6]
+            assert isinstance(terminalize, TerminalizeHarnessLifecycleCommand)
+            resource_id = receipt.resource_key.removeprefix("harness:")
+            correlation_id = receipt.correlation_id
+            if correlation_id is None and lifecycle_request is not None:
+                raw = getattr(lifecycle_request, "correlation_id", None)
+                correlation_id = raw if isinstance(raw, str) else None
+            if lifecycle_request is not None and isinstance(
+                lifecycle_request.payload, RemoveHarnessCommand
+            ):
+                self._publish_event(
+                    self._finish_failed_removal(
+                        lifecycle_request,
+                        receipt.provenance,
+                        terminalize.code,
+                        terminalize.detail,
+                        bool(completion.result),
+                    )
+                )
+            else:
+                self._remember_settled_lifecycle(receipt.attempt_token)
+                if correlation_id is not None:
+                    self._publish_event(
+                        LifecycleMutationFailed(
+                            correlation_id,
+                            receipt.attempt_token,
+                            self._handler_generation,
+                            self._version,
+                            "harness",
+                            terminalize.code,
+                            terminalize.detail,
+                            bool(completion.result),
+                        )
+                    )
+                self._lifecycle_effect_resources.discard(resource_id)
+                self._lifecycle_effect_requests.pop(resource_id, None)
+            self._terminalize_next(terminalize, remaining, requests)
+            return
+        if kind == "session_refs":
+            self._publish_event(
+                HarnessSessionRefsReconciled(
+                    command.correlation_id,
+                    self._handler_generation,
+                    self._version,
+                    context[2],
+                    None,
+                )
+            )
+            return
+        if kind == "manage":
+            self._publish_event(
+                HarnessDesiredStateManaged(
+                    command.correlation_id,
+                    self._handler_generation,
+                    self._version,
+                    context[2],
+                    bool(context[3]),
+                    context[4],
+                    None,
+                )
+            )
+            return
+        if kind == "lifecycle_apply":
+            self._continue_lifecycle_apply(command, completion.result)
+            return
+        if kind == "fail_apply":
+            from .lifecycle_receipts import FailHarnessLifecycleCommand, MutationProvenance
+
+            assert isinstance(command, FailHarnessLifecycleCommand)
+            if (
+                not isinstance(completion.result, tuple)
+                or len(completion.result) != 2
+                or not isinstance(completion.result[0], MutationProvenance)
+            ):
+                raise TypeError("Harness failure persistence returned invalid result")
+            provenance = completion.result[0]
+            lifecycle_request = command.request
+            if isinstance(lifecycle_request.payload, EnsureHarnessCommand):
+                self._fence_failed_ensure(
+                    command,
+                    lifecycle_request,
+                    provenance,
+                    command.code,
+                    command.detail,
+                )
+            else:
+                self._begin_failed_removal(
+                    lifecycle_request,
+                    provenance,
+                    command.code,
+                    command.detail,
+                    control_correlation=command.correlation_id,
+                )
+            return
+        if kind == "lifecycle_noop":
+            lifecycle_request, provenance, base = context[1:4]
+            assert isinstance(lifecycle_request, LifecycleMutationRequest)
+            assert isinstance(provenance, MutationProvenance)
+            if completion.result is not True:
+                self._reject_correlation(
+                    lifecycle_request.correlation_id,
+                    "HARNESS_LIFECYCLE_RECEIPT_MISMATCH",
+                    "Harness lifecycle receipt could not settle",
+                )
+                return
+            self._remember_settled_lifecycle(lifecycle_request.attempt_token)
+            self._publish_event(
+                LifecycleMutationCompleted(
+                    lifecycle_request.correlation_id,
+                    lifecycle_request.attempt_token,
+                    self._handler_generation,
+                    self._version,
+                    "harness",
+                    provenance,
+                    base,
+                )
+            )
+            return
+        if kind == "lifecycle_finalize":
+            lifecycle_request, provenance, event = context[1:4]
+            assert isinstance(lifecycle_request, LifecycleMutationRequest)
+            assert isinstance(provenance, MutationProvenance)
+            assert isinstance(event, HarnessMutationCompleted)
+            if completion.result is not True:
+                self._reject_correlation(
+                    lifecycle_request.correlation_id,
+                    "HARNESS_LIFECYCLE_RECEIPT_MISMATCH",
+                    "Harness lifecycle receipt could not settle",
+                )
+                return
+            self._pop_lifecycle_pending(event.correlation_id)
+            self._remember_settled_lifecycle(lifecycle_request.attempt_token)
+            retry = self._lifecycle_retry_timers.pop(event.correlation_id, None)
+            if retry is not None:
+                retry.cancel()
+            self._lifecycle_effect_resources.discard(event.harness_id)
+            self._lifecycle_effect_requests.pop(event.harness_id, None)
+            base = HarnessMutationCompleted(
+                event.correlation_id,
+                event.generation,
+                event.version,
+                event.harness_id,
+                provenance.changed,
+            )
+            self._publish_event(
+                LifecycleMutationCompleted(
+                    lifecycle_request.correlation_id,
+                    lifecycle_request.attempt_token,
+                    event.generation,
+                    event.version,
+                    "harness",
+                    provenance,
+                    base,
+                )
+            )
+            return
+        raise TypeError(f"unsupported Harness persistence context: {kind}")
+
+    def _continue_lifecycle_rejection(
+        self,
+        request: object,
+        provenance: object,
+        event: object,
+        result: object,
+    ) -> None:
+        from .lifecycle_receipts import LifecycleMutationRequest, MutationProvenance
+
+        assert isinstance(request, LifecycleMutationRequest)
+        assert isinstance(provenance, MutationProvenance)
+        assert isinstance(event, PortCommandRejected)
+        if not isinstance(result, int):
+            raise TypeError("Harness lifecycle failure count must be an integer")
+        correlation_id = event.correlation_id
+        retry_budget = self._failure_budget or 3
+        if result < retry_budget and not self._closing:
+            self._pop_lifecycle_pending(correlation_id)
+            delay = min(
+                capped_exponential(
+                    self._lifecycle_retry_base_seconds,
+                    1.0,
+                    max(0, result - 1),
+                ),
+                1.0,
+            )
+            prior = self._lifecycle_retry_timers.pop(correlation_id, None)
+            if prior is not None:
+                prior.cancel()
+
+            def retry() -> None:
+                self._lifecycle_retry_timers.pop(correlation_id, None)
+                self._emit_completion(request)
+
+            timer = threading.Timer(delay, retry)
+            timer.daemon = True
+            self._lifecycle_retry_timers[correlation_id] = timer
+            timer.start()
+            return
+        if isinstance(request.payload, RemoveHarnessCommand):
+            self._pop_lifecycle_pending(correlation_id)
+            self._remember_settled_lifecycle(request.attempt_token)
+            self._begin_failed_removal(
+                request, provenance, event.code, event.detail
+            )
+            return
+        self._fence_failed_ensure(
+            None,
+            request,
+            provenance,
+            event.code,
+            event.detail,
+        )
+
+    def _emit_event(self, event: object) -> None:
+        from .lifecycle_receipts import (
             LifecycleMutationRequest,
             MutationProvenance,
         )
@@ -3301,58 +4620,22 @@ class HarnessRuntimeActor:
             request, provenance = pending
             assert isinstance(request, LifecycleMutationRequest)
             assert isinstance(provenance, MutationProvenance)
-            assert self._desired_state is not None
-            attempts = self._desired_state.record_harness_lifecycle_failure(
-                request.attempt_token, provenance.resource_token
-            )
-            retry_budget = self._failure_budget or 3
-            if attempts < retry_budget and not self._closing:
-                self._lifecycle_pending.pop(correlation_id, None)
-                delay = min(
-                    capped_exponential(
-                        self._lifecycle_retry_base_seconds,
-                        1.0,
-                        max(0, attempts - 1),
-                    ),
-                    1.0,
-                )
-                prior = self._lifecycle_retry_timers.pop(correlation_id, None)
-                if prior is not None:
-                    prior.cancel()
-                def retry() -> None:
-                    self._lifecycle_retry_timers.pop(correlation_id, None)
-                    self._emit_completion(request)
-
-                timer = threading.Timer(delay, retry)
-                timer.daemon = True
-                self._lifecycle_retry_timers[correlation_id] = timer
-                timer.start()
-                return
-            if isinstance(request.payload, RemoveHarnessCommand):
-                self._lifecycle_pending.pop(correlation_id, None)
-                self._remember_settled_lifecycle(request.attempt_token)
-                event = self._settle_failed_removal(
-                    request, provenance, event.code, event.detail
-                )
-            else:
-                self._fence_failed_ensure(
-                    None,
+            self._persist_desired(
+                DesiredStateOperation.RECORD_HARNESS_LIFECYCLE_FAILURE,
+                request,
+                (request.attempt_token, provenance.resource_token),
+                context=(
+                    "lifecycle_rejection_count",
                     request,
                     provenance,
-                    event.code,
-                    event.detail,
-                )
-                return
+                    event,
+                ),
+            )
+            return
         elif pending is not None and isinstance(event, HarnessMutationCompleted):
             request, provenance = pending
             assert isinstance(request, LifecycleMutationRequest)
             assert isinstance(provenance, MutationProvenance)
-            self._lifecycle_pending.pop(correlation_id, None)
-            self._remember_settled_lifecycle(request.attempt_token)
-            retry = self._lifecycle_retry_timers.pop(correlation_id, None)
-            if retry is not None:
-                retry.cancel()
-            assert self._desired_state is not None
             if isinstance(request.payload, EnsureHarnessCommand):
                 # U0b: the process is up (this event IS the start-success
                 # settlement), so THIS is where the desired-state row is
@@ -3365,39 +4648,34 @@ class HarnessRuntimeActor:
                     if record is not None
                     else _launch_spec(request.payload.spec)
                 )
-                if not self._desired_state.confirm_harness_lifecycle(
+                operation = DesiredStateOperation.CONFIRM_HARNESS_LIFECYCLE
+                args = (
                     request.attempt_token,
                     provenance.resource_token,
                     confirmed_spec,
-                    generation=event.generation,
-                    version=event.version,
-                ):
-                    raise RuntimeError("Harness lifecycle receipt could not confirm")
-            elif not self._desired_state.complete_harness_lifecycle(
-                request.attempt_token,
-                provenance.resource_token,
-                generation=event.generation,
-                version=event.version,
-            ):
-                raise RuntimeError("Harness lifecycle receipt could not complete")
-            self._lifecycle_effect_resources.discard(event.harness_id)
-            self._lifecycle_effect_requests.pop(event.harness_id, None)
-            base = HarnessMutationCompleted(
-                event.correlation_id,
-                event.generation,
-                event.version,
-                event.harness_id,
-                provenance.changed,
+                )
+            else:
+                operation = DesiredStateOperation.COMPLETE_HARNESS_LIFECYCLE
+                args = (request.attempt_token, provenance.resource_token)
+            self._persist_desired(
+                operation,
+                request,
+                args,
+                kwargs=(
+                    ("generation", event.generation),
+                    ("version", event.version),
+                ),
+                context=(
+                    "lifecycle_finalize",
+                    request,
+                    provenance,
+                    event,
+                ),
             )
-            event = LifecycleMutationCompleted(
-                request.correlation_id,
-                request.attempt_token,
-                event.generation,
-                event.version,
-                "harness",
-                provenance,
-                base,
-            )
+            return
+        self._publish_event(event)
+
+    def _publish_event(self, event: object) -> None:
         for sink in tuple(self._event_sinks):
             publish = getattr(sink, "publish", None)
             if callable(publish):
@@ -3567,9 +4845,71 @@ class HarnessRuntimeFacade:
                 HarnessDesiredStateManaged,
             ),
         )
+        self._raise_managed_error(event)
+        return event.changed
+
+    @staticmethod
+    def _raise_managed_error(event: HarnessDesiredStateManaged) -> None:
+        """Rebuild public errors only after immutable I/O completion settles."""
+
         if event.error is not None:
             raise event.error
-        return event.changed
+        if event.error_code is None:
+            if event.error_detail is not None:
+                raise RuntimeError(event.error_detail)
+            return
+        if event.error_is_oserror:
+            subclasses: dict[str, type[OSError]] = {
+                "OSError": OSError,
+                "BlockingIOError": BlockingIOError,
+                "BrokenPipeError": BrokenPipeError,
+                "ChildProcessError": ChildProcessError,
+                "ConnectionError": ConnectionError,
+                "ConnectionAbortedError": ConnectionAbortedError,
+                "ConnectionRefusedError": ConnectionRefusedError,
+                "ConnectionResetError": ConnectionResetError,
+                "FileExistsError": FileExistsError,
+                "FileNotFoundError": FileNotFoundError,
+                "InterruptedError": InterruptedError,
+                "IsADirectoryError": IsADirectoryError,
+                "NotADirectoryError": NotADirectoryError,
+                "PermissionError": PermissionError,
+                "ProcessLookupError": ProcessLookupError,
+                "TimeoutError": TimeoutError,
+            }
+            kind = subclasses.get(event.error_code or "")
+            if kind is None:
+                # Calling OSError(errno, ...) can auto-select a *different*
+                # builtin subclass. Unknown custom names intentionally fall
+                # back to plain OSError with the same frozen public facts.
+                fallback = OSError(event.error_detail or "")
+                fallback.errno = event.error_errno
+                fallback.strerror = event.error_strerror
+                fallback.filename = event.error_filename
+                fallback.filename2 = event.error_filename2
+                raise fallback
+            if (
+                event.error_errno is not None
+                or event.error_strerror is not None
+                or event.error_filename is not None
+                or event.error_filename2 is not None
+            ):
+                args: list[object] = [
+                    event.error_errno,
+                    event.error_strerror or event.error_detail or "",
+                ]
+                if event.error_filename is not None or event.error_filename2 is not None:
+                    args.append(event.error_filename)
+                if event.error_filename2 is not None:
+                    args.extend((None, event.error_filename2))
+                raise kind(*args)
+            raise kind(event.error_detail or "")
+        if event.operation == "SnapshotAdapterRegistrationCommand":
+            if event.error_code == "DesiredStateError":
+                raise DesiredStateError(event.error_detail or "")
+            if event.error_code == "RuntimeError":
+                raise RuntimeError(event.error_detail or "")
+        raise RuntimeError(f"{event.error_code}: {event.error_detail}")
 
     def snapshot_adapter_registration(
         self, name: str
@@ -3581,8 +4921,7 @@ class HarnessRuntimeFacade:
                 HarnessDesiredStateManaged,
             ),
         )
-        if event.error is not None:
-            raise event.error
+        self._raise_managed_error(event)
         assert event.adapter is not None
         return event.adapter
 
@@ -3601,8 +4940,7 @@ class HarnessRuntimeFacade:
                 HarnessDesiredStateManaged,
             ),
         )
-        if event.error is not None:
-            raise event.error
+        self._raise_managed_error(event)
         return event.changed
 
     def restore_adapter_registration(
@@ -3620,8 +4958,7 @@ class HarnessRuntimeFacade:
                 HarnessDesiredStateManaged,
             ),
         )
-        if event.error is not None:
-            raise event.error
+        self._raise_managed_error(event)
         return event.changed
 
     def wait_ready(self, harness: str, name: str, timeout: float) -> bool:
@@ -3674,15 +5011,16 @@ class HarnessRuntimeFacade:
             )
             command_drained = cast(HarnessesStopped, event).drain_complete
         except TimeoutError:
-            pass
-        finally:
-            self._fail_pending(
-                HarnessRuntimeClosed("harness runtime stopped")
-            )
-            runtime_drained = self._actor.close_runtime(
-                max(0.0, deadline - time.monotonic())
-            )
-            self._last_drain_complete = command_drained and runtime_drained
+            self._last_drain_complete = False
+            return
+        if not command_drained:
+            self._last_drain_complete = False
+            return
+        self._fail_pending(HarnessRuntimeClosed("harness runtime stopped"))
+        runtime_drained = self._actor.close_runtime(
+            max(0.0, deadline - time.monotonic())
+        )
+        self._last_drain_complete = runtime_drained
 
     def _request(
         self,

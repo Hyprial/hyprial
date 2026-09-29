@@ -52,6 +52,7 @@ from .pull import (
     query_delivery_status,
 )
 from .service import ConsumptionState, InboxService, RetryPolicy
+from .wake import RecipientWakeCoordinator
 from .zenoh_link import (
     ZenohDeliveryTransport,
     ZenohInboxEndpoint,
@@ -96,6 +97,7 @@ __all__ = [
     "OutboxItem",
     "OutboxPruneItem",
     "ReceiveResult",
+    "RecipientWakeCoordinator",
     "RetryPolicy",
     "StatusQueryReport",
     "StatusQueryServed",

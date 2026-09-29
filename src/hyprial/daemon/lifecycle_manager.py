@@ -18,7 +18,7 @@ from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
 from queue import Empty, Full, Queue
-from typing import Callable, Literal
+from typing import Callable, Literal, cast
 from collections.abc import Iterable
 
 from hyprial.agents.ports import (
@@ -764,11 +764,17 @@ class LifecycleProcessManager:
         fault_after_effect: Callable[[str, str], None] | None = None,
         fault_after_receipt_retire: Callable[[str, str], None] | None = None,
         event_sink: Callable[..., None] | None = None,
+        journal_store: object | None = None,
+        combined_shared_receipts: bool = False,
     ) -> None:
         if capacity < 1:
             raise ValueError("capacity must be at least 1")
-        self._store = _LifecycleStore(
-            state if isinstance(state, StateDatabase) else StateDatabase(Path(state))
+        self._store: _LifecycleStore = (
+            cast(_LifecycleStore, journal_store)
+            if journal_store is not None
+            else _LifecycleStore(
+                state if isinstance(state, StateDatabase) else StateDatabase(Path(state))
+            )
         )
         self._generation = self._store.next_generation()
         # U0c (Allen 2026-09-03): a saga that did not finish in its daemon
@@ -793,13 +799,19 @@ class LifecycleProcessManager:
         #: Monotonic start of each operations current re-drive life, used only
         #: to bound an unresolvable step against ``_operation_deadline``.
         self._operation_started_at: dict[str, float] = {}
+        self._deadline_exceeded: set[str] = set()
         self._backoff = admission_backoff
         self._fault_after_effect = fault_after_effect
         self._fault_after_receipt_retire = fault_after_receipt_retire
+        self._combined_shared_receipts = combined_shared_receipts
         self._queue: Queue[str | None] = Queue(maxsize=capacity)
         self._condition = threading.Condition()
         self._scheduled: set[str] = set()
         self._active: str | None = None
+        # Reservations run outside the manager condition.  Drain must wait
+        # for every accepted reservation to finish before declaring the
+        # journal empty or stopping the consumer generation.
+        self._reserving = 0
         self._closed = False
         self._crashed = False
         self._store_closed = False
@@ -858,13 +870,20 @@ class LifecycleProcessManager:
         with self._condition:
             if self._closed or self._crashed:
                 return PortAdmission.CLOSING
+            self._reserving += 1
+        try:
             _created, state = self._store.reserve(operation)
-            if state in {
-                LifecycleState.COMPLETED,
-                LifecycleState.COMPENSATED,
-                LifecycleState.FAILED,
-            }:
-                return PortAdmission.ACCEPTED
+        finally:
+            with self._condition:
+                self._reserving -= 1
+                self._condition.notify_all()
+        if state not in {
+            LifecycleState.COMPLETED,
+            LifecycleState.COMPENSATED,
+            LifecycleState.FAILED,
+        }:
+            # Closing prevents new reservations, but an operation accepted
+            # before close retains durable custody and must still be driven.
             self._schedule(operation.operation_id)
         # Durable reserve is the custody transfer.  Queue saturation cannot
         # turn it back into an ephemeral rejection; recover/scanning retries.
@@ -904,7 +923,13 @@ class LifecycleProcessManager:
         deadline = time.monotonic() + max(0.0, timeout)
         with self._condition:
             self._closed = True
-            while self._active is not None or self._store.pending():
+        while True:
+            # Reads can wait on SQLite and must not hold the condition needed
+            # by the consumer to settle active work or an in-flight reserve.
+            pending = self._store.pending()
+            with self._condition:
+                if self._active is None and self._reserving == 0 and not pending:
+                    break
                 remaining = deadline - time.monotonic()
                 if remaining <= 0 or self._crashed:
                     return False
@@ -976,6 +1001,7 @@ class LifecycleProcessManager:
                     LifecycleState.COMPENSATING,
                 }:
                     self._operation_started_at.pop(operation_id, None)
+                    self._deadline_exceeded.discard(operation_id)
                 with self._condition:
                     self._active = None
                     self._condition.notify_all()
@@ -1086,7 +1112,36 @@ class LifecycleProcessManager:
                 if self._store.effect_done(operation_id, step.name, "forward"):
                     self._retire_completed_receipt(operation_id, step, "forward")
                     continue
+                receipt = self._store.effect_receipt(
+                    operation_id, step.name, "forward"
+                )
+                if operation_id in self._deadline_exceeded and receipt is None:
+                    detail = (
+                        "lifecycle operation exceeded its "
+                        f"{self._operation_deadline:g}s deadline; settled work is being compensated"
+                    )
+                    self._store.set_state(
+                        operation_id, LifecycleState.COMPENSATING, detail,
+                        "LIFECYCLE_OPERATION_TIMEOUT",
+                    )
+                    self._compensate(
+                        operation_id, steps, detail, "LIFECYCLE_OPERATION_TIMEOUT"
+                    )
+                    return
                 self._perform(operation_id, ordinal, step, "forward")
+                if operation_id in self._deadline_exceeded:
+                    detail = (
+                        "lifecycle operation exceeded its "
+                        f"{self._operation_deadline:g}s deadline; settled work is being compensated"
+                    )
+                    self._store.set_state(
+                        operation_id, LifecycleState.COMPENSATING, detail,
+                        "LIFECYCLE_OPERATION_TIMEOUT",
+                    )
+                    self._compensate(
+                        operation_id, steps, detail, "LIFECYCLE_OPERATION_TIMEOUT"
+                    )
+                    return
             self._store.set_state(operation_id, LifecycleState.COMPLETED)
         except LifecycleStepFailed as error:
             self._store.set_state(
@@ -1116,6 +1171,7 @@ class LifecycleProcessManager:
                     f"{self._operation_deadline:g}s deadline with a step still unresolved"
                 )
                 code = "LIFECYCLE_OPERATION_TIMEOUT"
+                self._deadline_exceeded.add(operation_id)
                 if (
                     step.domain == "harness"
                     and step.forward in {"ensure", "remove"}
@@ -1159,6 +1215,16 @@ class LifecycleProcessManager:
                             provenance=settled.provenance,
                         )
                         self._retire_completed_receipt(operation_id, step, "forward")
+                        if step.forward == "ensure":
+                            self._store.set_state(
+                                operation_id, LifecycleState.COMPENSATING,
+                                detail, code,
+                            )
+                            self._compensate(operation_id, steps, detail, code)
+                        else:
+                            # A completed remove cannot be reversed; preserve
+                            # success that won before the actor's failure fence.
+                            self._deadline_exceeded.discard(operation_id)
                         return
                     code, detail = settled.code, settled.detail
                     if step.forward == "ensure":
@@ -1174,10 +1240,13 @@ class LifecycleProcessManager:
                         )
                         self._compensate(operation_id, steps, detail, code)
                         return
-                self._store.set_state(
-                    operation_id, LifecycleState.FAILED, detail, code,
-                )
-                self._operation_started_at.pop(operation_id, None)
+                    self._store.set_state(
+                        operation_id, LifecycleState.FAILED, detail, code,
+                    )
+                    self._operation_started_at.pop(operation_id, None)
+                    return
+                # Non-Harness domains retain custody until their exact late
+                # receipt settles. The deadline marker fences new forward work.
                 return
             time.sleep(min(0.02, self._completion_timeout))
 
@@ -1315,6 +1384,27 @@ class LifecycleProcessManager:
         retirement = self._store.receipt_retirement(operation_id, step.name, direction)
         port = getattr(self._ports, step.domain)
         if retirement is not None:
+            if self._combined_shared_receipts and step.domain in {"session", "harness"}:
+                combined = getattr(self._store, "retire_shared_receipt", None)
+                if not callable(combined):
+                    raise RuntimeError("shared receipt authority is unavailable")
+                if not combined(
+                    step.domain, operation_id, step.name, direction,
+                    retirement.attempt_token, retirement.resource_token,
+                ):
+                    raise LifecycleStepUnresolved(
+                        f"{step.name} shared receipt is not yet retireable"
+                    )
+                completed = self._store.completed_receipt(
+                    operation_id, step.name, direction
+                )
+                # The durable row is already gone. This no-op domain call
+                # releases its in-memory replay claim after the atomic
+                # StatePersistence commit; a crash here is replayable.
+                port.confirm_receipt_retired(
+                    completed.attempt_token, completed.resource_token
+                )
+                return
             if not port.retire_receipt(
                 retirement.attempt_token, retirement.resource_token
             ):

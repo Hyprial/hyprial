@@ -12,6 +12,9 @@ class AddRoutineCommand:
     yaml_text: str
     owner: str
     enabled: bool = True
+    registration_id: str | None = None
+
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +28,23 @@ class SetRoutineCommand:
 class RemoveRoutineCommand:
     correlation_id: str
     name: str
+    enforce_last: bool = False
+    reservation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ReserveRoutineRemovalCommand:
+    correlation_id: str
+    name: str
+    reservation_id: str
+    enforce_last: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class CancelRoutineRemovalCommand:
+    correlation_id: str
+    name: str
+    reservation_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +78,8 @@ RoutineCommand: TypeAlias = (
     AddRoutineCommand
     | SetRoutineCommand
     | RemoveRoutineCommand
+    | ReserveRoutineRemovalCommand
+    | CancelRoutineRemovalCommand
     | PauseRoutineCommand
     | ResumeRoutineCommand
     | RecoverRoutinesCommand
@@ -197,6 +219,18 @@ class RoutineMutationCompleted:
 
 
 @dataclass(frozen=True, slots=True)
+class RoutineMutationRejected:
+    """Owner-supplied refusal facts, frozen before crossing the actor boundary."""
+
+    correlation_id: str
+    generation: int
+    version: int
+    code: str
+    detail: str
+    data: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True, slots=True)
 class RoutinesRecovered:
     correlation_id: str
     generation: int
@@ -246,6 +280,7 @@ class RoutineTimerCompleted:
 
 RoutineEvent: TypeAlias = (
     RoutineMutationCompleted
+    | RoutineMutationRejected
     | RoutinesRecovered
     | RoutineSourceQueryCompleted
     | RoutinePacIoCompleted

@@ -7,8 +7,9 @@ import hmac
 import threading
 import time
 import uuid
+from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from queue import Empty, Full, Queue
 from typing import Protocol
 
@@ -19,6 +20,7 @@ from hyprial.actor_runtime import (
     AdmissionResult,
     DrainReport,
 )
+from hyprial.actor_runtime.effects import EffectCompleted
 from hyprial.agents.ports import (
     AgentCommand,
     AgentEvent,
@@ -39,6 +41,12 @@ from .desired_state import (
     InteractiveSession,
     PendingSessionAgentEffect,
 )
+from .desired_state_io import (
+    DesiredStateIoCompleted,
+    DesiredStateIoPort,
+    DesiredStateIoRequest,
+    DesiredStateOperation,
+)
 from hyprial.cost_counters import CallCostCounters
 from hyprial.uri import parse_agent_uri
 from .session_ports import (
@@ -55,6 +63,7 @@ from .session_ports import (
     SessionRuntimeProjection,
     UnregisterSessionCommand,
 )
+from .state_persistence import StateCommandCompleted, StateCostOrigin
 
 __all__ = ["SessionActor", "SessionOwnershipError"]
 
@@ -124,6 +133,24 @@ class _Version:
         with self._lock:
             self._value += 1
             return self._value
+
+
+class _SessionProjectionState:
+    """One immutable committed session view for caller-side reads."""
+
+    def __init__(self, sessions: tuple[InteractiveSession, ...]) -> None:
+        self._lock = threading.Lock()
+        self._sessions = sessions
+        self._version = 0
+
+    def replace(self, sessions: tuple[InteractiveSession, ...], version: int) -> None:
+        with self._lock:
+            self._sessions = sessions
+            self._version = version
+
+    def read(self) -> tuple[tuple[InteractiveSession, ...], int]:
+        with self._lock:
+            return self._sessions, self._version
 
 
 class _SessionRuntimeState:
@@ -216,6 +243,7 @@ class _EffectCustody:
     token: str
     generation: int
     agent_correlation_id: str
+    cost_origin: StateCostOrigin
 
 
 @dataclass(frozen=True, slots=True)
@@ -409,12 +437,19 @@ class _SessionGeneration:
     store: DesiredStateStore
     daemon_epoch: str
     events: object
-    request_effect: Callable[[PendingSessionAgentEffect, int], bool]
+    request_effect: Callable[
+        [PendingSessionAgentEffect, int, StateCostOrigin], bool
+    ]
     retire_effect: Callable[[str, str], None]
+    effect_cost_origin: Callable[[str, str], StateCostOrigin]
     version: _Version
     clock_ms: Callable[[], int]
     lease_ttl_seconds: float
     runtime_projection: _SessionRuntimeState
+    session_projection: _SessionProjectionState
+    persist: Callable[[DesiredStateIoRequest], AdmissionResult]
+    acknowledge_persistence: Callable[[DesiredStateIoRequest], bool]
+    redeliver_persistence: Callable[[DesiredStateIoRequest], None]
     command_costs: CallCostCounters | None = None
     _mutations: dict[str, _PendingMutation] = field(default_factory=dict, init=False)
     _effect_owners: dict[str, str] = field(default_factory=dict, init=False)
@@ -430,26 +465,57 @@ class _SessionGeneration:
         """
 
         costs = self.command_costs
-        if costs is None or not costs.enabled:
-            self._dispatch(command)
-            return
         failed = True
-        started_cpu = time.thread_time()
+        started_cpu = time.thread_time() if costs is not None and costs.enabled else 0.0
         try:
             self._dispatch(command)
             failed = False
         finally:
-            costs.record(
-                type(command).__name__,
-                cpu_seconds=time.thread_time() - started_cpu,
-                error=failed,
-            )
+            if costs is not None and costs.enabled:
+                costs.record(
+                    type(command).__name__,
+                    cpu_seconds=time.thread_time() - started_cpu,
+                    error=failed,
+                )
 
     def _dispatch(self, command: object) -> None:
-        from .lifecycle_receipts import LifecycleMutationRequest
+        from .lifecycle_receipts import (
+            ConfirmLifecycleReceiptCommand,
+            LifecycleMutationRequest,
+            RetireLifecycleReceiptCommand,
+        )
+
+        if isinstance(command, RetireLifecycleReceiptCommand):
+            self._persist(
+                DesiredStateOperation.RETIRE_LIFECYCLE_RECEIPT,
+                command,
+                ("session", command.attempt_token, command.resource_token),
+                context=("receipt", command, "retire"),
+                cost_origin=StateCostOrigin.BACKGROUND,
+            )
+            return
+        if isinstance(command, ConfirmLifecycleReceiptCommand):
+            self._persist(
+                DesiredStateOperation.CONFIRM_LIFECYCLE_RECEIPT_RETIRED,
+                command,
+                ("session", command.attempt_token, command.resource_token),
+                context=("receipt", command, "confirm"),
+                cost_origin=StateCostOrigin.BACKGROUND,
+            )
+            return
 
         if isinstance(command, LifecycleMutationRequest):
             self._lifecycle(command)
+            return
+        if isinstance(command, EffectCompleted) and isinstance(
+            command.result, DesiredStateIoCompleted
+        ):
+            try:
+                self._persistence_completed(command.result)
+            except BaseException:
+                self.redeliver_persistence(command.result.request)
+                raise
+            self.acknowledge_persistence(command.result.request)
             return
         if isinstance(command, _AgentEffectResult):
             self._effect_result(command)
@@ -488,78 +554,24 @@ class _SessionGeneration:
             self._reject(command, ipc_errors.INVALID_ARGUMENT, str(error))
 
     def _lifecycle(self, request: object) -> None:
-        from .lifecycle_receipts import (
-            LifecycleMutationCompleted,
-            LifecycleMutationRequest,
-        )
+        from .lifecycle_receipts import LifecycleMutationRequest
 
         assert isinstance(request, LifecycleMutationRequest)
         payload = request.payload
-        try:
-            provenance, superseded = self.store.apply_session_lifecycle(request)
-            if isinstance(payload, RegisterSessionCommand):
-                if provenance.changed:
-                    for actor in superseded:
-                        self.runtime_projection.drop(actor)
-                persisted = next(
-                    (
-                        item
-                        for item in self.store.load().interactive_sessions
-                        if item.actor == payload.actor
-                    ),
-                    None,
-                )
-                if persisted is not None and persisted.session_ref is not None:
-                    self.runtime_projection.register(
-                        persisted.actor,
-                        persisted.session_ref,
-                        self.clock_ms(),
-                        confirmed=persisted.source in SESSION_CARRIER_SOURCES,
-                    )
-                projection = SessionMutationProjection(
-                    actor=payload.actor,
-                    session_ref=payload.session_ref,
-                    daemon_epoch=self.daemon_epoch if provenance.changed else None,
-                    registered=provenance.changed,
-                    superseded_actors=superseded,
-                )
-            elif isinstance(payload, UnregisterSessionCommand):
-                if provenance.changed:
-                    self.runtime_projection.drop(payload.actor)
-                projection = SessionMutationProjection(
-                    actor=payload.actor,
-                    session_ref=payload.session_ref,
-                    daemon_epoch=None,
-                    unregistered=provenance.changed,
-                )
-            else:
-                raise TypeError(
-                    f"unsupported Session lifecycle payload: {type(payload).__name__}"
-                )
-            version = (
-                self.version.bump()
-                if provenance.changed
-                else self.version.read()
+        if not isinstance(payload, (RegisterSessionCommand, UnregisterSessionCommand)):
+            self._reject(
+                request,
+                ipc_errors.INVALID_ARGUMENT,
+                f"unsupported Session lifecycle payload: {type(payload).__name__}",
             )
-            base = SessionMutationCompleted(
-                request.correlation_id,
-                self.generation,
-                version,
-                projection,
-            )
-            self._publish(
-                LifecycleMutationCompleted(
-                    request.correlation_id,
-                    request.attempt_token,
-                    self.generation,
-                    version,
-                    "session",
-                    provenance,
-                    base,
-                )
-            )
-        except (TypeError, ValueError) as error:
-            self._reject(request, ipc_errors.INVALID_ARGUMENT, str(error))
+            return
+        self._persist(
+            DesiredStateOperation.APPLY_SESSION_LIFECYCLE,
+            request,
+            (request,),
+            context=("lifecycle", request),
+            cost_origin=StateCostOrigin.BACKGROUND,
+        )
 
     def _register(self, command: RegisterSessionCommand) -> None:
         _required(command.correlation_id, "correlation_id")
@@ -592,39 +604,21 @@ class _SessionGeneration:
         )
         if command.manage_agent:
             bind = _bind_effect(command.correlation_id, session)
-            _state, superseded, effects = self.store.claim_interactive_with_agent_effects(
-                session, bind
+            self._persist(
+                DesiredStateOperation.CLAIM_INTERACTIVE_WITH_AGENT_EFFECTS,
+                command,
+                (session, bind),
+                context=("register", command),
+                cost_origin=StateCostOrigin.IPC,
             )
         else:
-            _state, superseded = self.store.claim_interactive(session)
-            effects = ()
-        for actor in superseded:
-            self.runtime_projection.drop(actor)
-        self.runtime_projection.register(
-            command.actor,
-            command.session_ref,
-            self.clock_ms(),
-            confirmed=command.source in SESSION_CARRIER_SOURCES,
-        )
-        version = self.version.bump()
-        result = SessionMutationCompleted(
-            correlation_id=command.correlation_id,
-            generation=self.generation,
-            version=version,
-            result=SessionMutationProjection(
-                actor=command.actor,
-                session_ref=command.session_ref,
-                registered=True,
-                daemon_epoch=self.daemon_epoch,
-                channel_current_epoch=(
-                    self.daemon_epoch
-                    if command.source in SESSION_CARRIER_SOURCES
-                    else None
-                ),
-                superseded_actors=superseded,
-            ),
-        )
-        self._stage(command.correlation_id, effects, (result,))
+            self._persist(
+                DesiredStateOperation.CLAIM_INTERACTIVE,
+                command,
+                (session,),
+                context=("register", command),
+                cost_origin=StateCostOrigin.IPC,
+            )
 
     def _refresh(self, command: RefreshSessionCommand) -> None:
         current = self._owned_session(command.actor, command.session_ref)
@@ -644,24 +638,18 @@ class _SessionGeneration:
             if command.manage_agent
             else ()
         )
-        self.store.record_session_agent_effects(effects)
-        self.runtime_projection.register(
-            current.actor, command.session_ref, self.clock_ms(), confirmed=True
-        )
-        version = self.version.bump()
-        result = SessionMutationCompleted(
-            correlation_id=command.correlation_id,
-            generation=self.generation,
-            version=version,
-            result=SessionMutationProjection(
-                actor=current.actor,
-                session_ref=command.session_ref,
-                refreshed=True,
-                daemon_epoch=self.daemon_epoch,
-                channel_current_epoch=self.daemon_epoch,
-            ),
-        )
-        self._stage(command.correlation_id, effects, (result,))
+        if effects:
+            self._persist(
+                DesiredStateOperation.RECORD_SESSION_AGENT_EFFECTS,
+                command,
+                (effects,),
+                context=("refresh", command, current, effects),
+                cost_origin=StateCostOrigin.IPC,
+            )
+        else:
+            self._finish_refresh(
+                command, current, effects, StateCostOrigin.IPC
+            )
 
     def _heartbeat(self, command: HeartbeatSessionCommand) -> None:
         current = self._owned_session(command.actor, command.session_ref)
@@ -685,23 +673,18 @@ class _SessionGeneration:
             if command.manage_agent
             else ()
         )
-        self.store.record_session_agent_effects(effects)
-        self.runtime_projection.register(
-            current.actor, command.session_ref, self.clock_ms(), confirmed=True
-        )
-        version = self.version.bump()
-        result = SessionMutationCompleted(
-            correlation_id=command.correlation_id,
-            generation=self.generation,
-            version=version,
-            result=SessionMutationProjection(
-                actor=current.actor,
-                session_ref=command.session_ref,
-                alive=True,
-                daemon_epoch=self.daemon_epoch,
-            ),
-        )
-        self._stage(command.correlation_id, effects, (result,))
+        if effects:
+            self._persist(
+                DesiredStateOperation.RECORD_SESSION_AGENT_EFFECTS,
+                command,
+                (effects,),
+                context=("heartbeat", command, current, effects),
+                cost_origin=StateCostOrigin.IPC,
+            )
+        else:
+            self._finish_heartbeat(
+                command, current, effects, StateCostOrigin.IPC
+            )
 
     def _unregister(self, command: UnregisterSessionCommand) -> None:
         effects = (
@@ -709,25 +692,13 @@ class _SessionGeneration:
             if command.manage_agent
             else ()
         )
-        _state, changed = self.store.unregister_interactive_if_current(
-            command.actor, command.session_ref, effects
+        self._persist(
+            DesiredStateOperation.UNREGISTER_INTERACTIVE_IF_CURRENT,
+            command,
+            (command.actor, command.session_ref, effects),
+            context=("unregister", command, effects),
+            cost_origin=StateCostOrigin.IPC,
         )
-        effects = effects if changed else ()
-        if changed:
-            self.runtime_projection.drop(command.actor)
-        version = self.version.bump() if changed else self.version.read()
-        result = SessionMutationCompleted(
-            correlation_id=command.correlation_id,
-            generation=self.generation,
-            version=version,
-            result=SessionMutationProjection(
-                actor=command.actor,
-                session_ref=command.session_ref,
-                unregistered=changed,
-                daemon_epoch=None,
-            ),
-        )
-        self._stage(command.correlation_id, effects, (result,))
 
     def _lease_elapsed(self, command: SessionLeaseElapsedCommand) -> None:
         if command.generation != self.generation:
@@ -743,7 +714,7 @@ class _SessionGeneration:
             )
         if command.observed_at_ms < 0:
             raise ValueError("observed_at_ms must not be negative")
-        sessions = self.store.load().interactive_sessions
+        sessions = self.session_projection.read()[0]
         effects: list[PendingSessionAgentEffect] = []
         finals: list[SessionEvent] = []
         for session in sessions:
@@ -758,36 +729,381 @@ class _SessionGeneration:
             )
             if alive:
                 continue
-            self.runtime_projection.drop(session.actor)
             effect = _release_effect(command.correlation_id, session.actor)
             effects.append(effect)
-            version = self.version.bump()
             finals.append(
                 SessionLeaseExpired(
                     correlation_id=command.correlation_id,
                     generation=self.generation,
-                    version=version,
+                    version=0,
                     actor=session.actor,
                     session_ref=session.session_ref,
                 )
             )
         if effects:
-            self.store.record_session_agent_effects(tuple(effects))
-        finals.append(
-            SessionLeaseSweepCompleted(
-                correlation_id=command.correlation_id,
-                generation=self.generation,
-                version=self.version.read(),
-                sessions_checked=len(sessions),
+            frozen_effects = tuple(effects)
+            self._persist(
+                DesiredStateOperation.RECORD_SESSION_AGENT_EFFECTS,
+                command,
+                (frozen_effects,),
+                context=("lease", command, frozen_effects, tuple(finals), sessions),
+                cost_origin=StateCostOrigin.BACKGROUND,
+            )
+        else:
+            self._finish_lease(
+                command, (), (), sessions, StateCostOrigin.BACKGROUND
+            )
+
+    def _persist(
+        self,
+        operation: DesiredStateOperation,
+        command: object,
+        args: tuple[object, ...],
+        *,
+        kwargs: tuple[tuple[str, object], ...] = (),
+        context: object,
+        cost_origin: StateCostOrigin,
+    ) -> None:
+        request = DesiredStateIoRequest(
+            operation_id=f"session-state-{uuid.uuid4().hex}",
+            owner_generation=self.generation,
+            owner_version=self.version.read(),
+            operation=operation,
+            args=args,
+            kwargs=kwargs,
+            context=context,
+            cost_origin=cost_origin,
+        )
+        admission = self.persist(request)
+        if admission is not AdmissionResult.ACCEPTED:
+            self._reject(
+                command,
+                "SESSION_PERSISTENCE_OVERLOADED",
+                f"session persistence admission is {admission.value}",
+            )
+
+    def _persistence_completed(self, completion: DesiredStateIoCompleted) -> None:
+        from .lifecycle_receipts import LifecycleReceiptCompleted
+
+        request = completion.request
+        context = request.context
+        if not isinstance(context, tuple) or not context:
+            raise TypeError("session persistence completion has no typed context")
+        kind = context[0]
+        command = context[1]
+        if (
+            request.owner_generation > self.generation
+            or request.owner_version > self.version.read()
+        ):
+            self._reject(
+                command,
+                "SESSION_PERSISTENCE_FENCE_INVALID",
+                "session persistence completion is from a future owner fence",
+            )
+            return
+        self.session_projection.replace(
+            completion.snapshot.interactive_sessions, self.version.read()
+        )
+        if completion.error_code is not None:
+            if kind == "effect_complete" and isinstance(command, _AgentEffectResult):
+                effect = self._pending_effect(command.effect_id)
+                if effect is not None:
+                    self._fail_effect(
+                        effect,
+                        command.custody_token,
+                        "SESSION_PERSISTENCE_FAILED",
+                        f"{completion.error_code}: {completion.error_detail}",
+                    )
+                    return
+            self._reject(
+                command,
+                "SESSION_PERSISTENCE_FAILED",
+                f"{completion.error_code}: {completion.error_detail}",
+            )
+            return
+        try:
+            if kind == "receipt":
+                operation = context[2]
+                self._publish(
+                    LifecycleReceiptCompleted(
+                        command.correlation_id,
+                        self.generation,
+                        self.version.read(),
+                        "session",
+                        command.attempt_token,
+                        command.resource_token,
+                        operation,
+                        bool(completion.result),
+                    )
+                )
+            elif kind == "lifecycle":
+                self._finish_lifecycle(command, completion.result, completion.snapshot)
+            elif kind == "register":
+                self._finish_register(
+                    command, completion.result, request.cost_origin
+                )
+            elif kind == "refresh":
+                self._finish_refresh(
+                    command, context[2], context[3], request.cost_origin
+                )
+            elif kind == "heartbeat":
+                self._finish_heartbeat(
+                    command, context[2], context[3], request.cost_origin
+                )
+            elif kind == "unregister":
+                self._finish_unregister(
+                    command, context[2], completion.result, request.cost_origin
+                )
+            elif kind == "lease":
+                self._finish_lease(
+                    command,
+                    context[2],
+                    context[3],
+                    context[4],
+                    request.cost_origin,
+                )
+            elif kind == "effect_complete":
+                self._finish_effect_result(command)
+            else:
+                raise TypeError(f"unsupported session persistence context: {kind}")
+        finally:
+            self.session_projection.replace(
+                completion.snapshot.interactive_sessions, self.version.read()
+            )
+
+    def _finish_lifecycle(
+        self, request: object, result: object, snapshot: object
+    ) -> None:
+        from .lifecycle_receipts import (
+            LifecycleMutationCompleted,
+            LifecycleMutationRequest,
+            MutationProvenance,
+        )
+
+        assert isinstance(request, LifecycleMutationRequest)
+        if (
+            not isinstance(result, tuple)
+            or len(result) != 2
+            or not isinstance(result[0], MutationProvenance)
+        ):
+            raise TypeError("session lifecycle persistence returned invalid result")
+        provenance, superseded = result
+        payload = request.payload
+        if isinstance(payload, RegisterSessionCommand):
+            if provenance.changed:
+                for actor in superseded:
+                    self.runtime_projection.drop(actor)
+            sessions = getattr(snapshot, "interactive_sessions")
+            persisted = next(
+                (item for item in sessions if item.actor == payload.actor), None
+            )
+            if persisted is not None and persisted.session_ref is not None:
+                self.runtime_projection.register(
+                    persisted.actor,
+                    persisted.session_ref,
+                    self.clock_ms(),
+                    confirmed=persisted.source in SESSION_CARRIER_SOURCES,
+                )
+            projection = SessionMutationProjection(
+                actor=payload.actor,
+                session_ref=payload.session_ref,
+                daemon_epoch=self.daemon_epoch if provenance.changed else None,
+                registered=provenance.changed,
+                superseded_actors=tuple(superseded),
+            )
+        elif isinstance(payload, UnregisterSessionCommand):
+            if provenance.changed:
+                self.runtime_projection.drop(payload.actor)
+            projection = SessionMutationProjection(
+                actor=payload.actor,
+                session_ref=payload.session_ref,
+                daemon_epoch=None,
+                unregistered=provenance.changed,
+            )
+        else:
+            raise TypeError(
+                f"unsupported Session lifecycle payload: {type(payload).__name__}"
+            )
+        version = self.version.bump() if provenance.changed else self.version.read()
+        base = SessionMutationCompleted(
+            request.correlation_id, self.generation, version, projection
+        )
+        self._publish(
+            LifecycleMutationCompleted(
+                request.correlation_id,
+                request.attempt_token,
+                self.generation,
+                version,
+                "session",
+                provenance,
+                base,
             )
         )
-        self._stage(command.correlation_id, tuple(effects), tuple(finals))
+
+    def _finish_register(
+        self,
+        command: object,
+        result: object,
+        cost_origin: StateCostOrigin,
+    ) -> None:
+        assert isinstance(command, RegisterSessionCommand)
+        if not isinstance(result, tuple) or len(result) not in {2, 3}:
+            raise TypeError("session registration persistence returned invalid result")
+        superseded = tuple(result[1])
+        effects = tuple(result[2]) if len(result) == 3 else ()
+        for actor in superseded:
+            self.runtime_projection.drop(actor)
+        self.runtime_projection.register(
+            command.actor,
+            command.session_ref,
+            self.clock_ms(),
+            confirmed=command.source in SESSION_CARRIER_SOURCES,
+        )
+        version = self.version.bump()
+        event = SessionMutationCompleted(
+            command.correlation_id,
+            self.generation,
+            version,
+            SessionMutationProjection(
+                actor=command.actor,
+                session_ref=command.session_ref,
+                registered=True,
+                daemon_epoch=self.daemon_epoch,
+                channel_current_epoch=(
+                    self.daemon_epoch
+                    if command.source in SESSION_CARRIER_SOURCES
+                    else None
+                ),
+                superseded_actors=superseded,
+            ),
+        )
+        self._stage(command.correlation_id, effects, (event,), cost_origin)
+
+    def _finish_refresh(
+        self,
+        command: RefreshSessionCommand,
+        current: InteractiveSession,
+        effects: tuple[PendingSessionAgentEffect, ...],
+        cost_origin: StateCostOrigin,
+    ) -> None:
+        self.runtime_projection.register(
+            current.actor, command.session_ref, self.clock_ms(), confirmed=True
+        )
+        version = self.version.bump()
+        self._stage(
+            command.correlation_id,
+            effects,
+            (
+                SessionMutationCompleted(
+                    command.correlation_id,
+                    self.generation,
+                    version,
+                    SessionMutationProjection(
+                        actor=current.actor,
+                        session_ref=command.session_ref,
+                        refreshed=True,
+                        daemon_epoch=self.daemon_epoch,
+                        channel_current_epoch=self.daemon_epoch,
+                    ),
+                ),
+            ),
+            cost_origin,
+        )
+
+    def _finish_heartbeat(
+        self,
+        command: HeartbeatSessionCommand,
+        current: InteractiveSession,
+        effects: tuple[PendingSessionAgentEffect, ...],
+        cost_origin: StateCostOrigin,
+    ) -> None:
+        self.runtime_projection.register(
+            current.actor, command.session_ref, self.clock_ms(), confirmed=True
+        )
+        version = self.version.bump()
+        self._stage(
+            command.correlation_id,
+            effects,
+            (
+                SessionMutationCompleted(
+                    command.correlation_id,
+                    self.generation,
+                    version,
+                    SessionMutationProjection(
+                        actor=current.actor,
+                        session_ref=command.session_ref,
+                        alive=True,
+                        daemon_epoch=self.daemon_epoch,
+                    ),
+                ),
+            ),
+            cost_origin,
+        )
+
+    def _finish_unregister(
+        self,
+        command: UnregisterSessionCommand,
+        effects: tuple[PendingSessionAgentEffect, ...],
+        result: object,
+        cost_origin: StateCostOrigin,
+    ) -> None:
+        if not isinstance(result, tuple) or len(result) != 2:
+            raise TypeError("session unregister persistence returned invalid result")
+        changed = bool(result[1])
+        committed_effects = effects if changed else ()
+        if changed:
+            self.runtime_projection.drop(command.actor)
+        version = self.version.bump() if changed else self.version.read()
+        self._stage(
+            command.correlation_id,
+            committed_effects,
+            (
+                SessionMutationCompleted(
+                    command.correlation_id,
+                    self.generation,
+                    version,
+                    SessionMutationProjection(
+                        actor=command.actor,
+                        session_ref=command.session_ref,
+                        unregistered=changed,
+                        daemon_epoch=None,
+                    ),
+                ),
+            ),
+            cost_origin,
+        )
+
+    def _finish_lease(
+        self,
+        command: SessionLeaseElapsedCommand,
+        effects: tuple[PendingSessionAgentEffect, ...],
+        finals: tuple[SessionEvent, ...],
+        sessions: tuple[InteractiveSession, ...],
+        cost_origin: StateCostOrigin,
+    ) -> None:
+        completed: list[SessionEvent] = []
+        for final in finals:
+            assert isinstance(final, SessionLeaseExpired)
+            self.runtime_projection.drop(final.actor)
+            completed.append(replace(final, version=self.version.bump()))
+        completed.append(
+            SessionLeaseSweepCompleted(
+                command.correlation_id,
+                self.generation,
+                self.version.read(),
+                len(sessions),
+            )
+        )
+        self._stage(
+            command.correlation_id, effects, tuple(completed), cost_origin
+        )
 
     def _stage(
         self,
         correlation_id: str,
         effects: tuple[PendingSessionAgentEffect, ...],
         final_events: tuple[SessionEvent, ...],
+        cost_origin: StateCostOrigin,
     ) -> None:
         if not effects:
             for event in final_events:
@@ -801,7 +1117,11 @@ class _SessionGeneration:
         self._mutations[correlation_id] = mutation
         for effect in effects:
             self._effect_owners[effect.effect_id] = correlation_id
-            self.request_effect(effect, self.generation)
+            self.request_effect(
+                effect,
+                self.generation,
+                cost_origin,
+            )
 
     def _effect_result(self, result: _AgentEffectResult) -> None:
         effect = self._pending_effect(result.effect_id)
@@ -825,15 +1145,27 @@ class _SessionGeneration:
                 f"expected {effect.operation} result, received {event.operation}",
             )
             return
-        self.store.complete_session_agent_effect(effect.effect_id)
-        self.retire_effect(effect.effect_id, result.custody_token)
-        owner = self._effect_owners.pop(effect.effect_id, None)
+        self._persist(
+            DesiredStateOperation.COMPLETE_SESSION_AGENT_EFFECT,
+            result,
+            (effect.effect_id,),
+            context=("effect_complete", result),
+            cost_origin=self.effect_cost_origin(
+                effect.effect_id, result.custody_token
+            ),
+        )
+
+    def _finish_effect_result(self, result: _AgentEffectResult) -> None:
+        # The durable row has already been removed by the storage completion,
+        # so reconstruct only the owner relationship needed for settlement.
+        self.retire_effect(result.effect_id, result.custody_token)
+        owner = self._effect_owners.pop(result.effect_id, None)
         if owner is None:
             return
         mutation = self._mutations.get(owner)
         if mutation is None:
             return
-        mutation.effect_ids.discard(effect.effect_id)
+        mutation.effect_ids.discard(result.effect_id)
         if mutation.effect_ids:
             return
         self._mutations.pop(owner, None)
@@ -956,6 +1288,9 @@ class SessionActor:
         effect_deadline: float = 1.0,
         effect_backoff: tuple[float, ...] = (0.005, 0.01, 0.02, 0.05),
         runtime: ActorRuntime | None = None,
+        persistence_late_result: (
+            Callable[[str], StateCommandCompleted | None] | None
+        ) = None,
     ) -> None:
         if not daemon_epoch:
             raise ValueError("daemon_epoch must not be empty")
@@ -975,6 +1310,9 @@ class SessionActor:
         self._lease_ttl_seconds = lease_ttl_seconds
         self._version = _Version()
         self._runtime_projection = _SessionRuntimeState(daemon_epoch)
+        self._session_projection = _SessionProjectionState(
+            self._store.load().interactive_sessions
+        )
         # Owned by the actor, not the generation: a guardian restart mints a
         # new _SessionGeneration and the totals must survive it.
         self._command_costs = CallCostCounters(_SESSION_COST_KEYS, wall=False)
@@ -987,7 +1325,28 @@ class SessionActor:
         self._replay_lock = threading.Lock()
         self._replayed_generations: set[int] = set()
         self._replay_attempted: dict[int, threading.Event] = {}
+        self._undelivered_lock = threading.Lock()
+        self._undelivered: deque[object] = deque()
+        self._undelivered_replay_running = False
         self._draining = False
+        self._persistence: DesiredStateIoPort | None = None
+
+        def persist(request: DesiredStateIoRequest) -> AdmissionResult:
+            port = self._persistence
+            return (
+                AdmissionResult.CLOSED
+                if port is None
+                else port.submit(request)
+            )
+
+        def acknowledge_persistence(request: DesiredStateIoRequest) -> bool:
+            port = self._persistence
+            return False if port is None else port.acknowledge(request)
+
+        def redeliver_persistence(request: DesiredStateIoRequest) -> None:
+            port = self._persistence
+            if port is not None:
+                port.redeliver(request)
 
         def factory() -> _SessionGeneration:
             with self._generation_lock:
@@ -1000,10 +1359,15 @@ class SessionActor:
                 events=self._events,
                 request_effect=self._request_effect,
                 retire_effect=self._retire_effect,
+                effect_cost_origin=self._effect_cost_origin,
                 version=self._version,
                 clock_ms=self._clock_ms,
                 lease_ttl_seconds=self._lease_ttl_seconds,
                 runtime_projection=self._runtime_projection,
+                session_projection=self._session_projection,
+                persist=persist,
+                acknowledge_persistence=acknowledge_persistence,
+                redeliver_persistence=redeliver_persistence,
                 command_costs=self._command_costs,
             )
             # Generation 1 is reconciled synchronously after the worker and
@@ -1022,7 +1386,14 @@ class SessionActor:
                 name="session-authority",
                 handler_factory=factory,
                 mailbox_capacity=mailbox_capacity,
+                undelivered_sink=self._on_undelivered,
             )
+        )
+        self._persistence = DesiredStateIoPort(
+            self._store,
+            complete=lambda event: self._runtime.tell(self._handle, event),
+            late_result=persistence_late_result,
+            capacity=mailbox_capacity,
         )
         self._effect_worker = _AgentEffectWorker(
             agent_commands,
@@ -1033,6 +1404,65 @@ class SessionActor:
             backoff=effect_backoff,
         )
         self.reconcile_pending_effects()
+
+    def _on_undelivered(self, command: object, reason_code: str) -> None:
+        if isinstance(command, EffectCompleted):
+            # DesiredStateIoPort retains and retries this exact completion
+            # until the replacement generation acknowledges it.
+            if isinstance(command.result, DesiredStateIoCompleted):
+                persistence = self._persistence
+                if persistence is not None:
+                    persistence.redeliver(command.result.request)
+            return
+        if isinstance(command, (_AgentEffectResult, _AgentEffectUnavailable)):
+            with self._undelivered_lock:
+                self._undelivered.append(command)
+                if self._undelivered_replay_running:
+                    return
+                self._undelivered_replay_running = True
+            threading.Thread(
+                target=self._replay_undelivered,
+                name="hyprial-session-undelivered",
+                daemon=True,
+            ).start()
+            return
+        with self._generation_lock:
+            generation = self._generation
+        _publish(
+            self._events,
+            PortCommandRejected(
+                correlation_id=str(getattr(command, "correlation_id", "")),
+                domain="session",
+                generation=generation,
+                version=self.version,
+                code=reason_code,
+                detail="accepted session command did not begin before actor restart",
+            ),
+        )
+
+    def _replay_undelivered(self) -> None:
+        while True:
+            with self._undelivered_lock:
+                if not self._undelivered:
+                    self._undelivered_replay_running = False
+                    return
+                command = self._undelivered[0]
+            if self._draining:
+                if isinstance(command, (_AgentEffectResult, _AgentEffectUnavailable)):
+                    self._submission_failed(
+                        command.effect_id, command.custody_token
+                    )
+                with self._undelivered_lock:
+                    if self._undelivered and self._undelivered[0] is command:
+                        self._undelivered.popleft()
+                continue
+            admission = self._runtime.tell(self._handle, command)
+            if admission is AdmissionResult.ACCEPTED:
+                with self._undelivered_lock:
+                    if self._undelivered and self._undelivered[0] is command:
+                        self._undelivered.popleft()
+                continue
+            time.sleep(0.005)
 
     @property
     def generation(self) -> int:
@@ -1076,6 +1506,14 @@ class SessionActor:
         """Thread CPU of the Agent-effect admission lane (``ps`` ipcStats)."""
 
         return self._effect_worker.admission_costs
+
+    @property
+    def persistence_io_costs(self) -> CallCostCounters:
+        """Thread CPU on this session owner's desired-state I/O lane."""
+
+        persistence = self._persistence
+        assert persistence is not None
+        return persistence.command_costs
 
     def owns_agent_correlation(self, correlation_id: str) -> bool:
         """Is ``correlation_id`` an Agent command one of this actor's effects sent?
@@ -1185,7 +1623,9 @@ class SessionActor:
                 for current in self._store.load().pending_session_agent_effects
             ):
                 continue
-            if self._request_effect(effect, generation):
+            if self._request_effect(
+                effect, generation, StateCostOrigin.BACKGROUND
+            ):
                 submitted += 1
                 continue
             with self._effect_lock:
@@ -1246,26 +1686,28 @@ class SessionActor:
             return
 
     def read_session(self, actor: str) -> SessionProjection | None:
+        sessions, version = self._session_projection.read()
         session = next(
             (
                 item
-                for item in self._store.load().interactive_sessions
+                for item in sessions
                 if item.actor == actor
             ),
             None,
         )
-        return None if session is None else _projection(session, self.version)
+        return None if session is None else _projection(session, version)
 
     def read_sessions(self) -> tuple[SessionProjection, ...]:
-        version = self.version
+        sessions, version = self._session_projection.read()
         return tuple(
             _projection(session, version)
-            for session in self._store.load().interactive_sessions
+            for session in sessions
         )
 
     def read_runtime(self, actor: str) -> SessionRuntimeProjection | None:
+        sessions, _version = self._session_projection.read()
         session = next(
-            (item for item in self._store.load().interactive_sessions if item.actor == actor),
+            (item for item in sessions if item.actor == actor),
             None,
         )
         if session is None:
@@ -1278,7 +1720,7 @@ class SessionActor:
         )
 
     def assert_owner(self, actor: str, session_ref: str) -> None:
-        sessions = self._store.load().interactive_sessions
+        sessions, _version = self._session_projection.read()
         current = next((item for item in sessions if item.actor == actor), None)
         if current is not None and current.session_ref == session_ref:
             return
@@ -1307,10 +1749,14 @@ class SessionActor:
     def drain(self, timeout: float = 5.0) -> DrainReport:
         started = time.monotonic()
         self._draining = True
-        worker_complete = self._effect_worker.drain(timeout / 2)
+        persistence = self._persistence
+        persistence_complete = (
+            True if persistence is None else persistence.close(timeout / 3)
+        )
+        worker_complete = self._effect_worker.drain(timeout / 3)
         remaining = max(0.0, timeout - (time.monotonic() - started))
         report = self._runtime.drain(remaining)
-        if worker_complete:
+        if worker_complete and persistence_complete:
             return DrainReport(
                 complete=report.complete,
                 elapsed=time.monotonic() - started,
@@ -1323,12 +1769,15 @@ class SessionActor:
         )
 
     def _request_effect(
-        self, effect: PendingSessionAgentEffect, generation: int
+        self,
+        effect: PendingSessionAgentEffect,
+        generation: int,
+        cost_origin: StateCostOrigin,
     ) -> bool:
         custody_token = uuid.uuid4().hex
         agent_correlation_id = f"{effect.effect_id}.{custody_token}"
         custody = _EffectCustody(
-            custody_token, generation, agent_correlation_id
+            custody_token, generation, agent_correlation_id, cost_origin
         )
         with self._effect_lock:
             if self._draining or effect.effect_id in self._effect_custody:
@@ -1361,6 +1810,17 @@ class SessionActor:
             if custody is not None and custody.token == custody_token:
                 self._agent_attempts.pop(custody.agent_correlation_id, None)
                 self._effect_custody.pop(effect_id, None)
+
+    def _effect_cost_origin(
+        self, effect_id: str, custody_token: str
+    ) -> StateCostOrigin:
+        with self._effect_lock:
+            custody = self._effect_custody.get(effect_id)
+            return (
+                custody.cost_origin
+                if custody is not None and custody.token == custody_token
+                else StateCostOrigin.BACKGROUND
+            )
 
     def _deliver_internal(self, command: object) -> bool:
         deadline = time.monotonic() + 1.0

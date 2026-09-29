@@ -1265,7 +1265,7 @@ class DesiredStateStore:
 
     def confirm_lifecycle_receipt_retired(
         self, domain: str, attempt_token: str, resource_token: str
-    ) -> None:
+    ) -> bool:
         with self._lock:
             state = self.load()
             found = next(
@@ -1277,7 +1277,7 @@ class DesiredStateStore:
                 None,
             )
             if found is None:
-                return
+                return False
             if not found.retired or found.provenance.resource_token != resource_token:
                 raise ValueError("lifecycle receipt retirement mismatch")
             self.save(
@@ -1288,6 +1288,7 @@ class DesiredStateStore:
                     ),
                 )
             )
+            return True
 
     def upsert_harness(self, spec: HarnessLaunchSpec) -> DesiredState:
         with self._lock:
@@ -1797,6 +1798,56 @@ class DesiredStateStore:
             updated = replace(state, channel_pins=tuple(sorted(pins.items())))
             self.save(updated)
             return updated, previous
+
+    def remove_matching_channel_pins(
+        self, matches: tuple[tuple[str, str], ...]
+    ) -> DesiredState:
+        """Retire migrated pins without replacing another writer's document."""
+
+        with self._lock:
+            state = self.load()
+            pins = dict(state.channel_pins)
+            for channel, expected in matches:
+                if pins.get(channel) == expected:
+                    pins.pop(channel)
+            updated = tuple(sorted(pins.items()))
+            if updated == state.channel_pins:
+                return state
+            result = replace(state, channel_pins=updated)
+            self.save(result)
+            return result
+
+    def normalize_interactive_sessions(
+        self,
+        *,
+        rewrites: tuple[tuple[str, str | None, str], ...],
+    ) -> DesiredState:
+        """Apply fenced startup identity rewrites to the current document.
+
+        Each source row is identified by actor and session ref, so a newer
+        carrier cannot be moved by a stale normalization attempt.  A row
+        already stored under the canonical actor wins a collision.
+        """
+
+        with self._lock:
+            state = self.load()
+            targets = {(actor, session_ref): canonical for actor, session_ref, canonical in rewrites}
+            normalized: dict[str, InteractiveSession] = {}
+            for session in state.interactive_sessions:
+                canonical = targets.get((session.actor, session.session_ref), session.actor)
+                candidate = (
+                    session if canonical == session.actor
+                    else replace(session, actor=canonical)
+                )
+                existing = normalized.get(canonical)
+                if existing is None or session.actor == canonical:
+                    normalized[canonical] = candidate
+            sessions = tuple(normalized[actor] for actor in sorted(normalized))
+            if sessions == state.interactive_sessions:
+                return state
+            result = replace(state, interactive_sessions=sessions)
+            self.save(result)
+            return result
 
     def _migrate_into_sqlite(self) -> None:
         """Absorb a pre-SQLite home -- Allen's ruling, one rule:

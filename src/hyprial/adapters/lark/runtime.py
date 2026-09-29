@@ -140,6 +140,8 @@ class LarkWorkerProcess:
         self._exit_logged = False
         self._expected_stop = False
         self._control_lock = threading.Lock()
+        self._control_owner_lock = threading.Lock()
+        self._control_owner = None
         if self._drainer is None and process.stdout is not None:
             self._drainer = _drain(process.stdout, logger)
         self._lock = threading.Lock()
@@ -382,6 +384,9 @@ class LarkWorkerProcess:
         )
 
     def stop(self) -> None:
+        owner = getattr(self, "_control_owner", None)
+        if owner is not None:
+            owner.close_admission()
         # Terminating the child closes the inherited ready-write fd; the
         # readiness thread's select then wakes on EOF, resolves, and closes the
         # read fd.  Wait briefly so the thread and fd are reclaimed promptly.
@@ -400,6 +405,8 @@ class LarkWorkerProcess:
             except OSError:
                 pass
             self._control_socket = None
+        if owner is not None and not owner.close(timeout=2.0):
+            raise TimeoutError("Lark control I/O still owns accepted deliveries")
 
     def deliver_reply(self, delivery: HarnessDelivery) -> bool:
         """Ask the worker to perform one native correlated reply.
@@ -445,6 +452,21 @@ class LarkWorkerProcess:
         )
 
     def _control_delivery(
+        self, frame: dict[str, object], delivery_id: str
+    ) -> bool:
+        guard = getattr(self, "_control_owner_lock", None)
+        if guard is None:
+            # Compatibility for protocol-only adapters constructed without the
+            # process initializer. Every launched worker installs the owner.
+            return self._control_delivery_owned(frame, delivery_id)
+        with guard:
+            if self._control_owner is None:
+                from .control_actor import ControlIoOwner
+                self._control_owner = ControlIoOwner(self._control_delivery_owned)
+            owner = self._control_owner
+        return owner.deliver(frame, delivery_id)
+
+    def _control_delivery_owned(
         self, frame: dict[str, object], delivery_id: str
     ) -> bool:
         control = self._control_socket

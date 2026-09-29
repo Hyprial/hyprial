@@ -99,8 +99,8 @@ _LOG = logging.getLogger("hyprial.orgfs.webserver")
 #: (brief §2).
 _ORGFS_ERROR_STATUS = {
     "unknown-doc": 404,
-    "cross-space-uri": 400,
-    "invalid-uri": 400,
+    ipc_errors.ORGFS_CROSS_SPACE_URI: 400,
+    ipc_errors.ORGFS_INVALID_URI: 400,
 }
 
 _CONTENT_PENDING = ipc_errors.ORGFS_CONTENT_PENDING

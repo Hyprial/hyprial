@@ -14,7 +14,7 @@ import json
 from pathlib import Path
 import sqlite3
 from time import time_ns
-from typing import Protocol
+from typing import NoReturn, Protocol
 from uuid import uuid4
 
 from hyprial.contracts import ipc_errors
@@ -34,6 +34,7 @@ from hyprial.dispatch.identity import DISPATCH_SERVICE_ACTOR_NAME
 from hyprial.uri import agent_uri_actor
 
 from .journal import append_event
+from .errors import PacError
 from .store import PacGraphStore, connect, default_database_path
 
 
@@ -49,6 +50,22 @@ class AgentTaskDeliveryIo(Protocol):
         conversation_id: str,
         text: str,
     ) -> object: ...
+
+
+class AgentTaskWriter(Protocol):
+    def attach_agent_task(self, service: PacAgentTaskService) -> None: ...
+    def start_agent_task(self, request: AgentTaskStartInput, caller: str) -> tuple[bool, str]: ...
+    def record_agent_task_delivery(
+        self, run_id: str, target_ref: str, effect_id: str,
+        message_id: str, at_ms: int,
+    ) -> None: ...
+    def cancel_agent_task(
+        self, run_id: str, caller: str, reason: str | None
+    ) -> dict[str, object]: ...
+    def observe_agent_task(
+        self, activity: AgentTaskActivity, submitter: str,
+        message_id: str | None,
+    ) -> dict[str, object]: ...
 
 
 class PacAgentTaskError(RuntimeError):
@@ -228,6 +245,7 @@ class PacAgentTaskService:
         service_actor: str,
         delivery_io: AgentTaskDeliveryIo | None,
         clock_ms: Callable[[], int] | None = None,
+        graph_authority: AgentTaskWriter | None = None,
     ) -> None:
         if agent_uri_actor(service_actor) is None:
             raise PacAgentTaskError(
@@ -242,9 +260,21 @@ class PacAgentTaskService:
         self.service_actor = service_actor
         self.delivery_io = delivery_io
         self.clock_ms = clock_ms or _wall_ms
+        self.graph_authority = graph_authority
         # Provision/migrate before a read-only projection is allowed to open.
-        PacGraphStore(self.database).close()
+        if graph_authority is None:
+            PacGraphStore(self.database).close()
+        else:
+            graph_authority.attach_agent_task(self)
         self.projection = PacAgentTaskProjection(self.database, service_actor)
+
+    @staticmethod
+    def _raise_writer_error(error: PacError) -> NoReturn:
+        raise PacAgentTaskError(
+            error.code, str(error),
+            retryable=error.code in {"PAC_GRAPH_OVERLOADED", "PAC_GRAPH_PENDING"},
+            details=error.data if isinstance(error.data, dict) else None,
+        ) from error
 
     def agent_task_capabilities(self) -> dict[str, object]:
         return {
@@ -268,6 +298,25 @@ class PacAgentTaskService:
     def agent_task_start(
         self, *, request: AgentTaskStartInput, caller: str
     ) -> dict[str, object]:
+        if self.graph_authority is None:
+            created, run_id = self._start_persist_direct(request, caller)
+        else:
+            try:
+                created, run_id = self.graph_authority.start_agent_task(request, caller)
+            except PacError as error:
+                self._raise_writer_error(error)
+        self._deliver_pending(run_id)
+        projection = self.projection.run(run_id, created=created)
+        if projection is None:  # pragma: no cover - guarded by one database
+            _fail(
+                ipc_errors.PROTOCOL_ERROR,
+                f"agent.task externalRef points to missing PAC graph: {run_id}",
+            )
+        return projection.to_payload()
+
+    def _start_persist_direct(
+        self, request: AgentTaskStartInput, caller: str
+    ) -> tuple[bool, str]:
         store = PacGraphStore(self.database)
         created = False
         run_id: str
@@ -310,15 +359,7 @@ class PacAgentTaskService:
                 raise
         finally:
             store.close()
-
-        self._deliver_pending(run_id)
-        projection = self.projection.run(run_id, created=created)
-        if projection is None:  # pragma: no cover - guarded by one database
-            _fail(
-                ipc_errors.PROTOCOL_ERROR,
-                f"agent.task externalRef points to missing PAC graph: {run_id}",
-            )
-        return projection.to_payload()
+        return created, run_id
 
     def _create_graph(
         self,
@@ -428,7 +469,7 @@ class PacAgentTaskService:
         )
 
     def _deliver_pending(self, run_id: str) -> None:
-        store = PacGraphStore(self.database)
+        store = PacGraphStore(self.database, read_only=True)
         try:
             rows = store._db.execute(  # noqa: SLF001 - same PAC store boundary
                 """SELECT d.*,t.target,t.conversation_id
@@ -469,38 +510,56 @@ class PacAgentTaskService:
                     retryable=True,
                     details={"runId": run_id, "effectId": str(row["effect_id"])},
                 ) from error
-            store = PacGraphStore(self.database)
-            try:
-                db = store.write()
+            if self.graph_authority is None:
+                self._record_delivery_direct(
+                    run_id, str(row["target_ref"]), str(row["effect_id"]),
+                    message_id, self.clock_ms(),
+                )
+            else:
                 try:
-                    db.execute(
-                        """UPDATE pac_agent_task_dispatches
-                           SET message_id=?, delivered_at_ms=?
-                           WHERE effect_id=? AND message_id IS NULL""",
-                        (message_id, self.clock_ms(), str(row["effect_id"])),
+                    self.graph_authority.record_agent_task_delivery(
+                        run_id, str(row["target_ref"]), str(row["effect_id"]),
+                        message_id, self.clock_ms(),
                     )
+                except PacError as error:
+                    self._raise_writer_error(error)
+
+    def _record_delivery_direct(
+        self, run_id: str, target_ref: str, effect_id: str,
+        message_id: str, at_ms: int,
+    ) -> None:
+        store = PacGraphStore(self.database)
+        try:
+            db = store.write()
+            try:
+                db.execute(
+                    """UPDATE pac_agent_task_dispatches
+                       SET message_id=?, delivered_at_ms=?
+                       WHERE effect_id=? AND message_id IS NULL""",
+                    (message_id, at_ms, effect_id),
+                )
+                db.execute(
+                    """UPDATE pac_agent_task_targets SET state='running'
+                       WHERE graph_id=? AND target_ref=? AND state='dispatching'""",
+                    (run_id, target_ref),
+                )
+                pending = db.execute(
+                    """SELECT 1 FROM pac_agent_task_dispatches
+                       WHERE graph_id=? AND message_id IS NULL LIMIT 1""",
+                    (run_id,),
+                ).fetchone()
+                if pending is None:
                     db.execute(
-                        """UPDATE pac_agent_task_targets SET state='running'
-                           WHERE graph_id=? AND target_ref=? AND state='dispatching'""",
-                        (run_id, str(row["target_ref"])),
-                    )
-                    pending = db.execute(
-                        """SELECT 1 FROM pac_agent_task_dispatches
-                           WHERE graph_id=? AND message_id IS NULL LIMIT 1""",
+                        """UPDATE pac_agent_task_runs SET state='running'
+                           WHERE graph_id=? AND state='reserved'""",
                         (run_id,),
-                    ).fetchone()
-                    if pending is None:
-                        db.execute(
-                            """UPDATE pac_agent_task_runs SET state='running'
-                               WHERE graph_id=? AND state='reserved'""",
-                            (run_id,),
-                        )
-                    db.commit()
-                except BaseException:
-                    db.rollback()
-                    raise
-            finally:
-                store.close()
+                    )
+                db.commit()
+            except BaseException:
+                db.rollback()
+                raise
+        finally:
+            store.close()
 
     def agent_task_status(self, *, run_id: str) -> dict[str, object]:
         projection = self.projection.run(run_id)
@@ -538,6 +597,16 @@ class PacAgentTaskService:
         return projection.to_payload()
 
     def agent_task_cancel(
+        self, *, run_id: str, caller: str, reason: str | None
+    ) -> dict[str, object]:
+        if self.graph_authority is not None:
+            try:
+                return self.graph_authority.cancel_agent_task(run_id, caller, reason)
+            except PacError as error:
+                self._raise_writer_error(error)
+        return self._cancel_direct(run_id=run_id, caller=caller, reason=reason)
+
+    def _cancel_direct(
         self, *, run_id: str, caller: str, reason: str | None
     ) -> dict[str, object]:
         del caller  # authorization is the daemon's caller-to-service binding.
@@ -610,6 +679,21 @@ class PacAgentTaskService:
         *,
         activity: AgentTaskActivity,
         submitter: str,
+        message_id: str | None = None,
+    ) -> dict[str, object]:
+        if self.graph_authority is not None:
+            try:
+                return self.graph_authority.observe_agent_task(
+                    activity, submitter, message_id
+                )
+            except PacError as error:
+                self._raise_writer_error(error)
+        return self._observe_direct(
+            activity=activity, submitter=submitter, message_id=message_id
+        )
+
+    def _observe_direct(
+        self, *, activity: AgentTaskActivity, submitter: str,
         message_id: str | None = None,
     ) -> dict[str, object]:
         store = PacGraphStore(self.database)
