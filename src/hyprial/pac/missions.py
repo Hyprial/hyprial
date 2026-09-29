@@ -280,7 +280,9 @@ def jev_payload(
     """The {state, questions} the squire sends to the jev, or None when too large.
 
     One ``noul`` question per candidate ("does this graph belong to it?").
-    Missions carry only id, title, keywords and status.  A payload over
+    Missions carry only id, title, keywords and status, and the graph only
+    its id and name: the payload leaves the organisation, so no sender URI
+    (it names a person) goes with it.  A payload over
     ``limit`` is never replaced by a reference, which the jev cannot follow:
     the caller treats that graph as low confidence and asks the owner.
     """
@@ -289,7 +291,6 @@ def jev_payload(
         "pac": {
             "graphId": run.get("graphId"),
             "name": run.get("name"),
-            "sender": run.get("sender"),
         },
         "candidates": [
             {
