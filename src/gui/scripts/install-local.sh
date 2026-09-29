@@ -73,19 +73,9 @@ fi
 require_command node
 require_command npm
 
-if command -v pnpm >/dev/null 2>&1; then
-  pnpm --version >/dev/null 2>&1 || fail "existing pnpm command cannot run"
-elif ((check_only)); then
-  printf 'pnpm is not installed; setup will run: npm install -g pnpm@latest\n'
-else
-  printf 'Installing pnpm for DSH profile management...\n'
-  h2b_gui_npm_install_global pnpm@latest || fail "npm could not install pnpm; check the npm global prefix, permissions, and registry access"
-  hash -r
-  require_command pnpm
-fi
-
+# pnpm is installed from the same locked runtime and activated with DSH below.
 if ((check_only)); then
-  printf 'Setup will resolve npm latest and verify a fresh DSH candidate, including when an older dsh already exists.\n'
+  printf 'Setup will install and verify the DSH runtime from the shipped dependency lock.\n'
 else
   cleanup_dsh_candidate() {
     if [[ -n "${H2B_GUI_CANDIDATE_DSH:-}" && "${dsh_promoted:-0}" != "1" ]]; then
@@ -93,7 +83,7 @@ else
     fi
   }
   trap cleanup_dsh_candidate EXIT
-  h2b_gui_prepare_dsh_release "$repo_root/packages/dsh-runtime" || fail "could not install latest DSH; the active runtime was preserved"
+  h2b_gui_prepare_dsh_release "$repo_root/packages/dsh-runtime" || fail "could not install product DSH; the active runtime was preserved"
 fi
 
 node "$repo_root/scripts/gui-source.mjs"
@@ -130,11 +120,11 @@ fi
 printf 'Preparing GUI browser verification dependencies...\n'
 npm --prefix "$repo_root/browser-tests" ci --no-audit --no-fund
 
-printf 'Testing the resolved latest DSH with the shipped GUI in an isolated browser profile...\n'
+printf 'Testing the resolved product DSH with the shipped GUI in an isolated browser profile...\n'
 node "$repo_root/scripts/ci-browser-install.mjs" || fail "could not prepare Chromium for the required DSH compatibility check"
 DSH_LATEST_ARTIFACTS="$H2B_GUI_RUNTIME_ROOT/dsh-check" \
   node "$repo_root/scripts/verify-dsh-latest.mjs" --runtime "$H2B_GUI_CANDIDATE_DSH" --release \
-  || fail "GUI failed its resolved latest DSH compatibility check; the active DSH runtime was preserved"
+  || fail "GUI failed its resolved product DSH compatibility check; the active DSH runtime was preserved"
 
 node "$repo_root/scripts/gui-source.mjs"
 
@@ -164,7 +154,7 @@ printf 'Validating the DSH web profile configuration...\n'
 dsh --profile web --dump-config | node "$repo_root/scripts/gui-layout-package.mjs" verify-profile \
   || fail "the DSH web profile configuration could not load exactly one GUI layout provider after plugin registration"
 
-h2b_gui_promote_dsh || fail "could not activate the verified latest DSH runtime"
+h2b_gui_promote_dsh || fail "could not activate the verified product DSH runtime"
 dsh_promoted=1
 printf 'GUI now uses managed DSH %s.\n' "$H2B_GUI_DSH_VERSION"
 

@@ -405,6 +405,54 @@ def observed_chats(
         connection.close()
 
 
+def replied_chats(path: Path, *, adapter: str = DEFAULT_ADAPTER) -> tuple[str, ...]:
+    """Chats where an inbound message and its native reply are both recorded.
+
+    First-run's last step asks whether two-way messaging actually works, and the
+    adapter's own state is the only place that knows: ``request_correlations`` is
+    written only after a real inbound event was forwarded, and ``reply_routes``
+    only after the platform returned a native id for the reply.  A chat holding
+    both, joined on the harness message id they share, is a completed exchange
+    that this machine performed -- not a claim about one.
+
+    The evidence is bounded like the rest of this store: an exchange pruned out
+    of the correlation tables is no longer evidence.  Reads keep the
+    :func:`observed_chats` contract -- ``mode=ro``, a missing database is an
+    empty answer, an unreadable one is absence rather than failure -- so asking
+    the question can never create the state being asked about.
+    """
+
+    if not path.is_file():
+        return ()
+    try:
+        uri = f"{path.resolve().as_uri()}?mode=ro"
+        connection = sqlite3.connect(uri, uri=True)
+    except sqlite3.Error:
+        return ()
+    try:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            """SELECT DISTINCT c.chat_id
+                 FROM request_correlations AS c
+                 JOIN reply_routes AS r
+                   ON r.adapter = c.adapter
+                  AND r.harness_message_id = c.harness_message_id
+                  AND r.chat_id = c.chat_id
+                WHERE c.adapter = ?
+                  AND c.chat_id NOT IN (
+                      SELECT chat_id FROM retired_chats WHERE adapter = ?)
+                ORDER BY c.chat_id""",
+            (adapter, adapter),
+        ).fetchall()
+        return tuple(str(row["chat_id"]) for row in rows)
+    except sqlite3.Error:
+        # A database predating either table (or one being written by a worker
+        # mid-rotation) is absence of evidence, not a plan failure.
+        return ()
+    finally:
+        connection.close()
+
+
 class LarkStateStore:
     def __init__(
         self,

@@ -1,7 +1,7 @@
 {
   "schema": "hyprial.gui-source/v1",
-  "commit": "2b6bb97294022189ca2f7e6a83a3fdcea864d5e0",
-  "timestamp": "1790639079",
+  "commit": "2c4dca3f92d46937b278f4817c76acb892ff333a",
+  "timestamp": "1790643092",
   "files": [
     {
       "path": ".env.example",
@@ -359,8 +359,13 @@
       "executable": false
     },
     {
+      "path": "packages/dsh-runtime/package-lock.json",
+      "sha256": "7e95d6894cbd901c5c109dbf3aae7f5162076e1a564039a5550d27029d78bae7",
+      "executable": false
+    },
+    {
       "path": "packages/dsh-runtime/package.json",
-      "sha256": "afdf807c256ffa9d701a449181071267f60ffd9bbc87e0322093f51786c0463f",
+      "sha256": "9776b10ea64d1cce74acc961d7f913138fff8fb1f21b432966b4eb76fd2652b3",
       "executable": false
     },
     {
@@ -495,7 +500,7 @@
     },
     {
       "path": "scripts/dsh-runtime.mjs",
-      "sha256": "56ee56c13e9637f3052931f133489832d2177d04f13ea0f9da2890931fb17e39",
+      "sha256": "5d547c7b2e1762f718be2a948b41653758c03429d1e7560bc392111e566e2e22",
       "executable": false
     },
     {
@@ -530,7 +535,7 @@
     },
     {
       "path": "scripts/install-local.sh",
-      "sha256": "d50babb65747aa10b852642bba6361b3802c15ec5ac72fa287431041bf031540",
+      "sha256": "8dea2de2d4e425a2188ea19bcac007d7569fd8a95ea4bf67811796ea26215b6d",
       "executable": true
     },
     {
@@ -565,7 +570,7 @@
     },
     {
       "path": "scripts/runtime.sh",
-      "sha256": "c884648e482cf84eefdcfe7b9369519e589c599d04c32be0ba995bf64797eafa",
+      "sha256": "f4e1e58c9e3ed74f448c1a196b58d6200dcbd2d3a581747d3c7b64488dd21892",
       "executable": false
     },
     {
@@ -615,7 +620,7 @@
     },
     {
       "path": "scripts/verify-dsh-latest.mjs",
-      "sha256": "0f5ceecf422b0d7e6a6630dcfa62082be5f0dc2cdc13e3fd7bb582cf8deca57c",
+      "sha256": "4386bc464d4e683ebd11d2308308178e93e2d6a035ad0f0acc7899a1e7e8217a",
       "executable": false
     },
     {

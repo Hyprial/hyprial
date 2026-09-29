@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // A real browser/DSH gate. Never reuse an operator's DSH installation or profile.
 import { inspectGuiSource } from './gui-source.mjs';
-import { resolveLatest, prepareCandidate, inspectCandidate, createNpmRunner } from './dsh-runtime.mjs';
+import { resolveLatest, prepareCandidate, prepareRelease, inspectCandidate, createNpmRunner } from './dsh-runtime.mjs';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
@@ -16,9 +16,10 @@ import { verifyGuiLayoutProfile } from './gui-layout-package.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
-assert.ok(args.length === 0 || (args.length === 3 && args[0] === '--runtime' && args[2] === '--release'),
-  'Usage: verify-dsh-latest.mjs [--runtime candidate-directory --release]');
-const released = args.length > 0;
+assert.ok(args.length === 0 || (args.length === 1 && args[0] === '--locked') || (args.length === 3 && args[0] === '--runtime' && args[2] === '--release'),
+  'Usage: verify-dsh-latest.mjs [--locked | --runtime candidate-directory --release]');
+const released = args[0] === '--runtime';
+const lockedRelease = args[0] === '--locked';
 const releaseDirectory = join(root, 'packages/dsh-runtime');
 const stage = await mkdtemp(join(tmpdir(), 'gui-dsh-latest-'));
 const artifacts = resolve(process.env.DSH_LATEST_ARTIFACTS || join(root, '.ci-cache/dsh-latest'));
@@ -39,7 +40,7 @@ const env = { ...inherited, DSH_HOME: join(stage, 'dsh'), H2B_HOME: join(stage, 
 const npm = createNpmRunner(env);
 await writeFile(env.npm_config_userconfig, '');
 await mkdir(env.HARNESS_STATE_DIR, { recursive: true });
-const report = { schema: 'h2b.dsh-latest-check/v1', status: 'failed', tag: released ? 'release' : 'latest', registry,
+const report = { schema: 'h2b.dsh-latest-check/v1', status: 'failed', tag: released || lockedRelease ? 'release' : 'latest', registry,
   checkedAt: new Date().toISOString(), checks: [], browserErrors: [], failedAssets: [], fixtureReads: [], failedRequests: [], businessTransport: 'offline-read-fixtures' };
 let server, browser, bootLog = '';
 function run(command, args, timeout = 600000) {
@@ -57,15 +58,23 @@ try {
   report.sourceKind = source.kind;
   report.sourceVersion = source.version;
   report.workingTreeClean = source.workingTreeClean;
-  const runtime = args.length ? resolve(args[1]) : join(stage, 'runtime');
-  report.dshVersion = released ? inspectCandidate(runtime) : resolveLatest(npm);
+  const runtime = released ? resolve(args[1]) : join(stage, 'runtime');
+  report.dshVersion = released ? inspectCandidate(runtime) : lockedRelease ? inspectCandidate(releaseDirectory) : resolveLatest(npm);
   console.log(`DSH_LATEST resolved=${report.dshVersion}; isolated profile; no model requests`);
   if (!released) {
-    prepareCandidate(releaseDirectory, runtime, report.dshVersion, npm);
+    if (lockedRelease) prepareRelease(releaseDirectory, runtime);
+    else prepareCandidate(releaseDirectory, runtime, report.dshVersion, npm);
     npm(['ci', '--prefix', runtime, '--no-audit', '--no-fund']);
   }
   assert.equal(inspectCandidate(runtime), report.dshVersion);
   const locked = await readFile(join(runtime, 'package-lock.json'), 'utf8');
+  if (released || lockedRelease) {
+    for (const file of ['package.json', 'package-lock.json']) {
+      assert.equal(await readFile(join(runtime, file), 'utf8'),
+        await readFile(join(releaseDirectory, file), 'utf8'),
+        `Product runtime differs from the shipped ${file}`);
+    }
+  }
   report.runtimeLockSha256 = createHash('sha256').update(locked).digest('hex');
   await copyFile(join(runtime, 'package.json'), join(artifacts, 'runtime-package.json'));
   await copyFile(join(runtime, 'package-lock.json'), join(artifacts, 'runtime-package-lock.json'));
@@ -207,13 +216,9 @@ try {
   const body = await page.locator('body').innerText();
   assert.ok(!body.includes('Failed to load plugins'), sanitize(body));
   await page.locator('[data-gui-action="workspace-menu"]').waitFor({ state: 'visible' });
-  for (let i = 0; i < 12; i++) {
-    for (const name of [/^(Continue|继续)$/, /^(Configure later|稍后配置)$/]) {
-      const button = page.getByRole('button', { name });
-      if (await button.isVisible().catch(() => false)) await button.click();
-    }
-    await page.waitForTimeout(200);
-  }
+  // Locator handlers own onboarding dismissal, including late dialogs. Do not
+  // click their trigger buttons here: the handler would consume the click and
+  // hide the target before the original action resumes, causing a timeout.
   assert.equal(await page.locator('[data-gui-layout="1"]').count(), 1, 'exactly one GUI layout must mount');
   const modelWorkspace = join(stage, 'model-catalog-workspace');
   await mkdir(modelWorkspace);
@@ -275,7 +280,7 @@ try {
   assert.deepEqual(report.failedRequests, []);
   assert.deepEqual(report.browserErrors, []);
   await page.screenshot({ path: join(artifacts, 'gui.png'), fullPage: true });
-  if (!released) assert.equal(latest(), report.dshVersion, 'npm latest moved during testing; rerun to resolve and verify the new latest');
+  if (!released && !lockedRelease) assert.equal(latest(), report.dshVersion, 'npm latest moved during testing; rerun to resolve and verify the new latest');
   report.status = 'passed';
 } catch (error) {
   const failedPage = browser?.contexts().flatMap(context => context.pages())[0];

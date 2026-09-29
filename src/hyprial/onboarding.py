@@ -277,6 +277,19 @@ def _json_list(value: object) -> list[object]:
     return list(value)
 
 
+def _adapter_replied_chats(db_path: Path, name: str) -> tuple[str, ...]:
+    """Default round-trip evidence: one configured adapter's own state.
+
+    The configured name is mapped to the adapter's state namespace the same way
+    the adapter worker maps it, so the query looks where the writes landed.
+    """
+
+    from hyprial.adapters.lark.identities import adapter_namespace
+    from hyprial.adapters.lark.state import replied_chats
+
+    return replied_chats(db_path, adapter=adapter_namespace(name))
+
+
 class OnboardingStateReader:
     """Build an onboarding snapshot from the CLI's existing read surfaces."""
 
@@ -290,6 +303,7 @@ class OnboardingStateReader:
         adapters_reader: Callable[[Path], object] | None = None,
         messaging_available: bool | None = None,
         lark_cli_reader: Callable[[], object] | None = None,
+        round_trip_reader: Callable[[Path, str], object] | None = None,
     ) -> None:
         self.hyprial_home = Path(hyprial_home)
         self.state_dir = Path(state_dir)
@@ -298,6 +312,7 @@ class OnboardingStateReader:
         self._adapters_reader = adapters_reader
         self._messaging_available = messaging_available
         self._lark_cli_reader = lark_cli_reader
+        self._round_trip_reader = round_trip_reader
 
     def read(self) -> dict[str, object]:
         runtime_ready = self._runtime_ready()
@@ -323,12 +338,35 @@ class OnboardingStateReader:
                 "authorized": authorized,
                 "routes": routes,
                 "pinned": pinned,
-                # There is no machine-readable round-trip evidence command yet.
-                # Keeping this false is honest; a later smoke implementation
-                # must provide the evidence source rather than a local claim.
-                "roundTripVerified": False,
+                "roundTripVerified": bool(self._round_trip_chats(adapter_names)),
             },
         }
+
+    def _round_trip_chats(self, adapter_names: Sequence[str]) -> tuple[str, ...]:
+        """Chats where a real inbound message and its native reply are both recorded.
+
+        The round-trip step asks whether two-way messaging works, and the honest
+        answer is the adapter's own state, never a marker this machine could
+        write for itself: ``request_correlations`` is written only after a real
+        inbound event was forwarded, and ``reply_routes`` only after the platform
+        returned a native id.  A chat holding both is a completed exchange.  An
+        unreadable or absent store is absence of evidence -- it never verifies.
+        """
+
+        if not adapter_names:
+            return ()
+        path = self.state_dir / "adapters.sqlite3"
+        reader = self._round_trip_reader or _adapter_replied_chats
+        try:
+            chats = [
+                chat
+                for name in adapter_names
+                for chat in _json_list(reader(path, name))
+                if isinstance(chat, str) and chat
+            ]
+        except Exception:  # noqa: BLE001 - an unreadable store is absence, not failure
+            return ()
+        return tuple(sorted(set(chats)))
 
     def _daemon_json(self, method: str) -> Mapping[str, Any]:
         try:

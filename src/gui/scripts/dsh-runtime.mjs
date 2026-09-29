@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, copyFileSync, existsSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -69,7 +69,7 @@ export function createNpmRunner(env = process.env, spawn = spawnSync, log = cons
       const safe = detail.replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/g, '$1[redacted]@')
         .replace(/([?&](?:token|auth|key)=)[^\s"&]+/gi, '$1[redacted]');
       const error = new Error(`npm ${args[0]} failed (${source}): ${safe.slice(-12000)}`);
-      const transient = !p.error && (/\b(?:ETIMEDOUT|ESOCKETTIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|ENETUNREACH|ENOTFOUND|E50[234])\b/.test(detail) || (source === mirror && /\b(?:E404|ETARGET)\b/.test(detail)));
+      const transient = !p.error && (/\b(?:ETIMEDOUT|EIDLETIMEOUT|ESOCKETTIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|ENETUNREACH|ENOTFOUND|E50[234])\b/.test(detail) || (source === mirror && /\b(?:E404|ETARGET)\b/.test(detail)));
       if (!transient || Date.now() >= deadline || index === sources.length - 1) throw error;
       log(error.message + '\nRetrying the same candidate through the alternate registry.');
     }
@@ -89,12 +89,35 @@ export function prepareCandidate(template, destination, version, run = npm) {
   assert.notEqual(resolve(template), resolve(destination));
   assert.ok(!existsSync(join(destination, 'package-lock.json')), 'Candidate already has a dependency lock');
   const manifest = JSON.parse(readFileSync(join(template, 'package.json'), 'utf8'));
-  assert.equal(manifest.dependencies['@deepseek-ai/dsh'], 'latest', 'DSH source policy must remain latest');
+  // This path is only for explicit upstream compatibility probes.
+  assert.ok(manifest.dependencies['@deepseek-ai/dsh'] === 'latest' || versionPattern.test(manifest.dependencies['@deepseek-ai/dsh']));
   manifest.dependencies['@deepseek-ai/dsh'] = version;
   mkdirSync(destination, { recursive: true });
   writeFileSync(join(destination, 'package.json'), JSON.stringify(manifest, null, 2) + '\n');
   run(['install', '--prefix', destination, '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund', '--registry=' + registry]);
   return inspectCandidate(destination);
+}
+
+// Product installs copy the release lock unchanged, without registry metadata or resolution.
+export function prepareRelease(template, destination) {
+  const version = inspectCandidate(template);
+  const manifest = JSON.parse(readFileSync(join(template, 'package.json'), 'utf8'));
+  const lock = JSON.parse(readFileSync(join(template, 'package-lock.json'), 'utf8'));
+  for (const [name, value] of Object.entries(manifest.dependencies)) {
+    assert.match(value, versionPattern, `Release dependency must be exact: ${name}`);
+    assert.equal(lock.packages[''].dependencies[name], value, `Release root mismatch: ${name}`);
+    assert.equal(lock.packages[`node_modules/${name}`]?.version, value, `Release dependency mismatch: ${name}`);
+  }
+  for (const [name, entry] of Object.entries(lock.packages)) {
+    if (!name) continue;
+    assert.ok(!entry.link && /^https:\/\//.test(entry.resolved || '') && /^sha512-/.test(entry.integrity || ''),
+      `Release dependency needs a registry artifact and integrity: ${name}`);
+  }
+  assert.notEqual(resolve(template), resolve(destination));
+  assert.ok(!existsSync(join(destination, 'package-lock.json')), 'Candidate already has a dependency lock');
+  mkdirSync(destination, { recursive: true });
+  for (const file of ['package.json', 'package-lock.json']) copyFileSync(join(template, file), join(destination, file));
+  return version;
 }
 
 export function inspectCandidate(destination) {
@@ -110,8 +133,10 @@ export function inspectCandidate(destination) {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
     const [action, ...args] = process.argv.slice(2);
-    if (action === 'resolve' && args.length === 0) console.log(resolveLatest());
+    if (action === 'release-version' && args.length === 1) console.log(inspectCandidate(args[0]));
+    else if (action === 'release' && args.length === 2) prepareRelease(...args);
+    else if (action === 'resolve' && args.length === 0) console.log(resolveLatest());
     else if (action === 'prepare' && args.length === 3) prepareCandidate(...args);
-    else throw new Error('Usage: dsh-runtime.mjs resolve | prepare <template> <candidate> <resolved-version>');
+    else throw new Error('Usage: dsh-runtime.mjs release-version <template> | release <template> <candidate> | resolve | prepare <template> <candidate> <resolved-version>');
   } catch (error) { console.error(error.message); process.exitCode = 1; }
 }
