@@ -643,7 +643,9 @@ def _poll_device_token(
             raise LoginError(
                 "DEVICE_CODE_EXPIRED",
                 "the device code expired before authorization completed"
-                f"{cause}; re-run hyprial login",
+                f"{cause}; re-run hyprial login. If you signed in with Feishu, "
+                "that sign-in did not approve this device: choose sign in "
+                "with an existing account rather than Feishu",
             )
         try:
             status, payload = _request_json(
@@ -698,7 +700,10 @@ def _poll_device_token(
             if code == "expired_token":
                 raise LoginError(
                     "DEVICE_CODE_EXPIRED",
-                    "the device code expired; re-run hyprial login",
+                    "the device code expired; re-run hyprial login. If you "
+                    "signed in with Feishu, that sign-in did not approve this "
+                    "device: choose sign in with an existing account rather "
+                    "than Feishu",
                     data=error.data,
                 )
             raise error

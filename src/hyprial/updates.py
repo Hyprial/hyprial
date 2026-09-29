@@ -569,7 +569,30 @@ def git_env() -> dict[str, str]:
     if "BatchMode=yes" not in ssh_command:
         ssh_command = f"{ssh_command} -o BatchMode=yes"
     env["GIT_SSH_COMMAND"] = ssh_command
+    # The public mirror needs no header.  A global ``http.extraHeader`` left
+    # over from the internal forge (an ``Authorization: token ...`` line)
+    # would be sent to GitHub too, which rejects it and asks for a username
+    # the headless run can't give -- upgrade then fails with no hint (member
+    # retest, 2026-09-28).  An empty value resets the header list, and the
+    # URL scope keeps every other host's headers untouched.
+    _append_git_config(env, f"http.{PUBLIC_GIT_ORIGIN}.extraHeader", "")
     return env
+
+
+PUBLIC_GIT_ORIGIN = "https://github.com/"
+
+
+def _append_git_config(env: dict[str, str], key: str, value: str) -> None:
+    """Add one command-scope git config entry after any inherited ones."""
+
+    try:
+        count = int(env.get("GIT_CONFIG_COUNT", "0"))
+    except ValueError:
+        count = 0
+    count = max(count, 0)
+    env[f"GIT_CONFIG_KEY_{count}"] = key
+    env[f"GIT_CONFIG_VALUE_{count}"] = value
+    env["GIT_CONFIG_COUNT"] = str(count + 1)
 
 
 def _run_git(

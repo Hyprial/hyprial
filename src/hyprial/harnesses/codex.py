@@ -158,7 +158,7 @@ _CODEX_PROJECT_RESERVED_KEYS = frozenset(
     }
 )
 _CODEX_MUTABLE_ROOT_FILE = re.compile(
-    r"(?:state|logs|goals|memories|queue)_\d+\.sqlite(?:-shm|-wal)?\Z"
+    r"(?:state|logs|goals|memories|queue|thread_history)_\d+\.sqlite(?:-shm|-wal)?\Z"
 )
 _CODEX_MUTABLE_FILES = frozenset(
     {

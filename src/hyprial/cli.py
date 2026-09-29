@@ -1525,6 +1525,7 @@ def _run_login_cli_flow(
                 f"{data.get('interval')}s, expires in "
                 f"{data.get('expiresIn')}s)"
             )
+            typer.echo(f"  {_DEVICE_SIGN_IN_HINT}")
         elif kind == "authenticated":
             typer.echo(
                 f"authenticated as {data['owner']} (issuer {data['issuer']})"
@@ -4772,6 +4773,18 @@ _SQUIRE_SETUP_PARTS = (
     ("profile", "no squire profile yet"),
     ("channel", "no Feishu channel bound to your squire"),
     ("ownerOpenId", "your Feishu account is not bound to your squire"),
+)
+
+
+#: Member retest 2026-09-28: signing in through Feishu on the device page
+#: signs the person in but never approves the device code -- the sign-in
+#: service's Feishu callback drops the user code (infra-ops traced it to
+#: Casdoor's AuthCallbackHandler.js) -- so this command waits until the code
+#: expires.  Until that is fixed, say which sign-in path works.
+_DEVICE_SIGN_IN_HINT = (
+    "on the sign-in page choose \"sign in with an existing account\" "
+    "(使用已有账户登录); signing in with Feishu (使用飞书登录) currently does not "
+    "approve this device, and this command would wait until the code expires"
 )
 
 
