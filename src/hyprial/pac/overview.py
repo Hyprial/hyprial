@@ -129,7 +129,8 @@ def collect(
 
 def _signature(name: str) -> tuple[str, set[str], set[str]]:
     base = re.sub(r"-[0-9a-f]{12,}$", "", name)
-    prs = set(re.findall(r"(?<![0-9])([1-9]\d\d)(?![0-9])", base))
+    # PR numbers have reached four digits; a year (20xx) is not one.
+    prs = set(re.findall(r"(?<![0-9])(?!20\d\d(?![0-9]))([1-9]\d{2,3})(?![0-9])", base))
     words = [
         word
         for word in re.split(r"[-_]", base.lower())
