@@ -21,7 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -141,8 +141,19 @@ def _signature(name: str) -> tuple[str, set[str], set[str]]:
     return base, prs, {f"{a}-{b}" for a, b in zip(words, words[1:])}
 
 
-def build_model(snapshot: Mapping[str, Any], *, node: str) -> dict[str, Any]:
-    """Turn a :func:`collect` snapshot into the page's data model."""
+def build_model(
+    snapshot: Mapping[str, Any],
+    *,
+    node: str,
+    missions: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
+    """Turn a :func:`collect` snapshot into the page's data model.
+
+    ``missions`` are parsed mission files (``hyprial.pac.missions``): a graph
+    a mission lists sits on that mission's line, under the mission's owner,
+    instead of an inferred one.  Only five fields of a mission reach the
+    page; its background and goal stay in the missions space.
+    """
 
     routines = {
         str(item.get("name")): item
@@ -233,7 +244,13 @@ def build_model(snapshot: Mapping[str, Any], *, node: str) -> dict[str, Any]:
                 {"from": source, "to": later["id"], "kind": kind, "label": label}
             )
 
-    lines = _task_lines(node, runs, links, routines, signatures)
+    mission_of: dict[str, Mapping[str, Any]] = {}
+    for mission in sorted(missions, key=lambda item: str(item.get("id"))):
+        for graph in mission.get("pacs") or []:
+            mission_of.setdefault(str(graph), mission)
+    local = {item["id"] for item in runs if not item["routine"]}
+    mission_of = {graph: m for graph, m in mission_of.items() if graph in local}
+    lines = _task_lines(node, runs, links, routines, signatures, mission_of)
     actors = []
     for key in sorted({line["actor"] for line in lines}):
         name = short_actor(key.split("|", 1)[1])
@@ -247,6 +264,16 @@ def build_model(snapshot: Mapping[str, Any], *, node: str) -> dict[str, Any]:
         "lines": lines,
         "runs": runs,
         "links": links,
+        "missions": [
+            {
+                "id": str(mission.get("id")),
+                "title": str(mission.get("title") or ""),
+                "status": mission.get("status"),
+                "owner": short_actor(mission.get("owner")),
+                "pacs": sorted(g for g, m in mission_of.items() if m is mission),
+            }
+            for mission in {id(m): m for m in mission_of.values()}.values()
+        ],
         "visibleNodeGraphs": sum(1 for item in runs if item["nodes"]),
     }
 
@@ -257,8 +284,12 @@ def _task_lines(
     links: list[dict[str, str]],
     routines: Mapping[str, Mapping[str, Any]],
     signatures: Mapping[str, tuple[str, set[str], set[str]]],
+    mission_of: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Infer task lines (what is being built) under actors (who builds it).
+
+    Graphs a mission lists are placed on that mission's line first and take
+    no part in the inference.
 
     PAC cannot declare a task line yet, so related graphs (the inferred links:
     same PR, shared topic, rerun) form one line, owned by the actor with the
@@ -268,7 +299,29 @@ def _task_lines(
     """
 
     by_id = {item["id"]: item for item in runs}
-    parent = {item["id"]: item["id"] for item in runs if not item["routine"]}
+    mission_of = mission_of or {}
+    lines: list[dict[str, Any]] = []
+    by_mission: dict[str, list[str]] = {}
+    for key, mission in mission_of.items():
+        by_mission.setdefault(str(mission.get("id")), []).append(key)
+    for mission_id, members in sorted(by_mission.items()):
+        mission = mission_of[members[0]]
+        members.sort(key=lambda key: (by_id[key]["created"] or 0, key))
+        owner = mission.get("owner")
+        actor = f"{node}|{owner}" if owner else by_id[members[0]]["actor"]
+        line_id = f"{actor}|m:{mission_id}"
+        for key in members:
+            by_id[key]["line"] = line_id
+        line = _line(node, line_id, actor, str(mission.get("title") or mission_id), "mission", members, [])
+        line["mission"] = {"id": mission_id, "status": mission.get("status")}
+        line["background"] = f"mission {mission_id}：背景和目标见 missions 空间的 missions/{mission_id}.md"
+        line["goal"] = "见 mission 文件"
+        lines.append(line)
+    parent = {
+        item["id"]: item["id"]
+        for item in runs
+        if not item["routine"] and item["id"] not in mission_of
+    }
 
     def find(key: str) -> str:
         while parent[key] != key:
@@ -283,7 +336,6 @@ def _task_lines(
     for key in parent:
         groups.setdefault(find(key), []).append(key)
 
-    lines: list[dict[str, Any]] = []
     misc: dict[str, list[str]] = {}
     for members in groups.values():
         members.sort(key=lambda key: (by_id[key]["created"] or 0, key))
@@ -372,6 +424,7 @@ def _line(
             "task": "由互相关联的 PAC 推断出的任务线（同一个 PR、同一主题或重跑）",
             "misc": f"{owner} 没有与其他 PAC 关联的零散任务",
             "routine": f"{owner} 负责的例行，每次运行产生一个 PAC",
+            "mission": "",
         }[kind],
         "goal": "—（任务线尚未声明）",
         "runs": workflows,

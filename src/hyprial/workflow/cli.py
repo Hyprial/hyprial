@@ -170,8 +170,15 @@ def status(
     _call("workflow.status", {"runId": run_id}, json_output=json_output)
 
 
-def _overview_model(json_output: bool, window_days: int) -> tuple[dict[str, Any], Any]:
-    """Collect this node's PAC data as the caller sees it, as a page model."""
+def _overview_model(
+    json_output: bool, window_days: int, missions_space: str | None = None
+) -> tuple[dict[str, Any], Any]:
+    """Collect this node's PAC data as the caller sees it, as a page model.
+
+    With ``missions_space``, graphs listed in its mission files are grouped
+    by mission; a space that cannot be read leaves the inferred lines alone
+    and is reported as ``missionsError`` (not part of the published data).
+    """
 
     import time as _time
 
@@ -197,7 +204,22 @@ def _overview_model(json_output: bool, window_days: int) -> tuple[dict[str, Any]
     snapshot = overview.collect(
         request, now_ms=int(_time.time() * 1000), window_days=window_days
     )
-    return overview.build_model(snapshot, node=node), overview
+    loaded: list[dict[str, Any]] = []
+    problem = None
+    if missions_space:
+        from hyprial.pac import missions
+
+        try:
+            found = missions.load_missions(_missions_request(json_output), missions_space)
+            loaded = found["missions"]
+            if found["unparseable"] or found["conflicts"]:
+                problem = "needs repair: " + ", ".join(
+                    [u["path"] for u in found["unparseable"]] + found["conflicts"]
+                )
+        except CliError as error:
+            problem = str(error)
+    model = overview.build_model(snapshot, node=node, missions=loaded)
+    return ({**model, "missionsError": problem} if problem else model), overview
 
 
 @overview_app.command("show")
@@ -205,13 +227,16 @@ def overview_show(
     window_days: int = typer.Option(
         7, "--window-days", min=1, max=60, help="Include graphs created within this many days."
     ),
+    missions_space: str | None = typer.Option(
+        None, "--missions", help="orgfs space holding missions/: group graphs by mission."
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ):
     """Print this node's overview model (what publish would write)."""
     from hyprial.cli import _execute
 
     def operation():
-        model, _ = _overview_model(json_output, window_days)
+        model, _ = _overview_model(json_output, window_days, missions_space)
         if json_output:
             return {"ok": True, **model}
         runs = len(model["runs"])
@@ -234,6 +259,9 @@ def overview_publish(
     window_days: int = typer.Option(
         7, "--window-days", min=1, max=60, help="Include graphs created within this many days."
     ),
+    missions_space: str | None = typer.Option(
+        None, "--missions", help="orgfs space holding missions/: group graphs by mission."
+    ),
     force: bool = typer.Option(
         False, "--force", help="Write even when nothing changed since the last publish."
     ),
@@ -253,7 +281,8 @@ def overview_publish(
     from hyprial.cli import CliError, _daemon_request, _execute, _state_dir
 
     def operation():
-        model, overview = _overview_model(json_output, window_days)
+        model, overview = _overview_model(json_output, window_days, missions_space)
+        problem = model.pop("missionsError", None)
 
         def fs_request(method: str, params: Any) -> Any:
             result = _daemon_request(method, dict(params))
@@ -283,7 +312,7 @@ def overview_publish(
         records[record_key] = result.pop("keys")
         record_path.parent.mkdir(parents=True, exist_ok=True)
         record_path.write_text(json.dumps(records, indent=2) + "\n", encoding="utf-8")
-        payload = {"ok": True, **result}
+        payload = {"ok": True, **result, **({"missionsError": problem} if problem else {})}
         if json_output:
             return payload
         what = ", ".join(result["written"]) or "nothing (unchanged since the last publish)"
@@ -296,6 +325,8 @@ def overview_publish(
                 "not yet on this node (their holders are offline): "
                 + ", ".join(result["unavailable"])
             )
+        if problem:
+            lines.append(f"missions: {problem} (unlisted graphs stay on inferred lines)")
         if result.get("page"):
             lines.append(f"open in a browser: file://{result['page']}")
         return "\n".join(lines)

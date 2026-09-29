@@ -183,6 +183,7 @@ svg.arrows .arrowhead { fill: var(--accent); }
 .card.dim { opacity: 0.45; }
 .card h3 { font: 700 17px/1.25 var(--display); margin: 0; text-wrap: balance; }
 .card .who { font-size: 12px; color: var(--muted); display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.lane-head .mid { font: 600 11px var(--mono); color: var(--accent); margin-right: 6px; }
 .tag { font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; padding: 1px 6px; border-radius: 4px; background: var(--accent-soft); color: var(--accent); }
 .kv { display: grid; grid-template-columns: 3.2em 1fr; gap: 3px 10px; font-size: 13px; }
 .kv dt { color: var(--faint); }
@@ -338,7 +339,8 @@ svg.arrows .arrowhead { fill: var(--accent); }
   // and text, so anything outside the known set renders as "unknown".
   const GRAPH_STATES = new Set(["running", "completed", "failed", "cancelled"]);
   const NODE_STATES = new Set(["done", "failed", "pending", "requested", "running", "cancelled", "waiting"]);
-  const LINE_KINDS = new Set(["task", "misc", "routine"]);
+  const MISSION_ZH = { active: "进行中", paused: "暂停", done: "已完成" };
+  const LINE_KINDS = new Set(["mission", "task", "misc", "routine"]);
   for (const p of PARTS) for (const l of p.lines || []) if (!LINE_KINDS.has(l.kind)) l.kind = "task";
   for (const p of PARTS) for (const r of p.runs) {
     if (!GRAPH_STATES.has(r.state)) r.state = "unknown";
@@ -590,7 +592,7 @@ svg.arrows .arrowhead { fill: var(--accent); }
   }
   function renderNote() {
     const n = document.getElementById("note");
-    if (view.level === "lines") n.innerHTML = `外层是人和 agent，里层是他们名下的任务线：互相关联的 PAC（同一个 PR、同一主题、重跑）归为一条，其余零散的归到“其他”，例行各占一条细线。任务线是推断的，PAC 里还没有声明任务线的地方。空心点是别人为这条线跑的 PAC。圆点是一次性任务（Workflow），位置是开始时间、颜色是状态，还在跑的拖一条线到当前时刻；小刻度是例行（Routine）的每次运行。鼠标移到圆点上会高亮它的关联箭头。点圆点看这个 PAC，点线名展开这条线。时间轴范围就是统计窗口。拖动时间轴，或在面板上方的叠层上滚动，可以回看任意时刻。`;
+    if (view.level === "lines") n.innerHTML = `外层是人和 agent，里层是他们名下的任务线：squire 在 missions 空间登记过的 PAC 归到对应的 mission（排在最前，带编号）；其余互相关联的 PAC（同一个 PR、同一主题、重跑）归为一条，其余零散的归到“其他”，例行各占一条细线。没有登记到 mission 的任务线是推断的。空心点是别人为这条线跑的 PAC。圆点是一次性任务（Workflow），位置是开始时间、颜色是状态，还在跑的拖一条线到当前时刻；小刻度是例行（Routine）的每次运行。鼠标移到圆点上会高亮它的关联箭头。点圆点看这个 PAC，点线名展开这条线。时间轴范围就是统计窗口。拖动时间轴，或在面板上方的叠层上滚动，可以回看任意时刻。`;
     else if (view.level === "line") n.innerHTML = `上面是例行：每条心跳条是一个 routine，每一格是它产生的一次运行。下面是一次性任务，卡片按创建时间排列。实线箭头：名字里有同一个 PR 号或主题词；虚线：同名重跑。点开卡片看这张 PAC 图的节点。`;
     else {
       const r = RUNS.get(view.id);
@@ -717,8 +719,8 @@ svg.arrows .arrowhead { fill: var(--accent); }
     const quiet = !runs.length && !beats;
     return `<div class="lane lane-${line.kind}${quiet ? " quiet" : ""}">
       <button class="lane-head" data-line="${esc(line.id)}">
-        <b>${esc(line.title)}</b>
-        <span class="lane-meta">${MULTI ? esc(line.node) + " · " : ""}${counts || (beatRuns.length ? "" : "窗口内没有活动")}${line.routines.length ? `<span class="${failing ? "bad" : ""}">${line.kind === "routine" ? "" : `↻${line.routines.length} 个例行 · `}${beatRuns.length} 次${failing ? " · 最近一次失败" : ""}</span>` : ""}</span>
+        <b>${line.mission ? `<span class="mid">${esc(line.mission.id)}</span>` : ""}${esc(line.title)}</b>
+        <span class="lane-meta">${line.mission && line.mission.status !== "active" ? `<span class="tag">${esc(MISSION_ZH[line.mission.status] || line.mission.status)}</span> ` : ""}${MULTI ? esc(line.node) + " · " : ""}${counts || (beatRuns.length ? "" : "窗口内没有活动")}${line.routines.length ? `<span class="${failing ? "bad" : ""}">${line.kind === "routine" ? "" : `↻${line.routines.length} 个例行 · `}${beatRuns.length} 次${failing ? " · 最近一次失败" : ""}</span>` : ""}</span>
       </button>
       <div class="track">${beats}${dots}</div>
     </div>`;
@@ -729,7 +731,7 @@ svg.arrows .arrowhead { fill: var(--accent); }
       const all = [...line.runs, ...line.routines.flatMap(rt => rt.runs)].map(id => RUNS.get(id)).filter(inWindow);
       return { n: all.length, last: Math.max(0, ...all.map(r => r.created)) };
     };
-    const kindOrder = { task: 0, misc: 1, routine: 2 };
+    const kindOrder = { mission: 0, task: 1, misc: 2, routine: 3 };
     const byActor = new Map();
     for (const line of DATA.lines) {
       const key = line.actor || line.id;
@@ -746,7 +748,7 @@ svg.arrows .arrowhead { fill: var(--accent); }
     const actorBlock = g => {
       const w = windowCounts(g.rows.flatMap(row => row.line.runs.map(id => RUNS.get(id))));
       const counts = ["running", "completed", "failed"].filter(k => w[k]).map(k => `<span class="s-${k}"><span class="dot"></span>${STATE_ZH[k]} <span class="mono">${w[k]}</span></span>`).join("");
-      const tasks = g.rows.filter(row => row.line.kind === "task").length;
+      const tasks = g.rows.filter(row => row.line.kind === "task" || row.line.kind === "mission").length;
       const name = g.info.human ? g.info.name.replace(/^user:/, "") : g.info.name;
       return `<div class="actor${g.n ? "" : " quiet"}">
         <div class="actor-head"><b>${esc(name)}</b><span class="lane-meta">${MULTI ? esc(g.info.node) + " · " : ""}${tasks ? `${tasks} 条任务线` : "只有例行和零散任务"}${counts ? " · " : ""}${counts}</span></div>
@@ -783,7 +785,7 @@ svg.arrows .arrowhead { fill: var(--accent); }
     const shown = showOlder ? runs : runs.filter(inWindow);
     const cross = DATA.links.filter(k => { const a = RUNS.get(k.from), b = RUNS.get(k.to); return (a.line === id) !== (b.line === id) && b.created <= T; });
     el.innerHTML = `<div class="linehead">
-        <div><div class="who" style="margin-bottom:6px"><span class="tag">任务线</span><span class="tag">推断</span><span>${esc(line.owner)}</span></div>
+        <div><div class="who" style="margin-bottom:6px">${line.mission ? `<span class="tag">Mission</span><span class="tag">${esc(MISSION_ZH[line.mission.status] || line.mission.status || "")}</span><span class="mono">${esc(line.mission.id)}</span>` : `<span class="tag">任务线</span><span class="tag">推断</span>`}<span>${esc(line.owner)}</span></div>
           <h2>${esc(line.title)}</h2><p>${esc(line.background)}</p></div>
         <div class="box"><dl class="kv"><dt>目标</dt><dd>${esc(line.goal)}</dd><dt>进度</dt><dd>${(() => { const w = windowCounts(runs); const parts = ["running", "completed", "failed", "cancelled"].filter(k => w[k]).map(k => `${STATE_ZH[k]} ${w[k]}`); return `${winLabel()}：${parts.join("，") || "没有活动"}`; })()}</dd>
           ${line.routines.length ? `<dt>例行</dt><dd>${line.routines.length} 个，见下方心跳条</dd>` : ""}
