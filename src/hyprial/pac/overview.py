@@ -168,6 +168,7 @@ def build_model(snapshot: Mapping[str, Any], *, node: str) -> dict[str, Any]:
             {
                 "id": str(row.get("graphId")),
                 "name": str(row.get("name") or ""),
+                "actor": line_key(actor),
                 "line": line_key(actor),
                 "state": row.get("state"),
                 "sender": short_actor(row.get("sender")),
@@ -231,67 +232,174 @@ def build_model(snapshot: Mapping[str, Any], *, node: str) -> dict[str, Any]:
                 {"from": source, "to": later["id"], "kind": kind, "label": label}
             )
 
-    grouped: dict[str, dict[str, Any]] = {}
-    for item in runs:
-        entry = grouped.setdefault(item["line"], {"workflows": [], "routines": {}})
-        if item["routine"]:
-            entry["routines"].setdefault(item["routine"], []).append(item["id"])
-        else:
-            entry["workflows"].append(item["id"])
-    # A registered routine that never ran still shows on its owner's line.
-    for name, info in routines.items():
-        entry = grouped.setdefault(
-            line_key(info.get("owner") or ""), {"workflows": [], "routines": {}}
+    lines = _task_lines(node, runs, links, routines, signatures)
+    actors = []
+    for key in sorted({line["actor"] for line in lines}):
+        name = short_actor(key.split("|", 1)[1])
+        actors.append(
+            {"id": key, "node": node, "name": name, "human": name.startswith("user:")}
         )
-        entry["routines"].setdefault(name, [])
-
-    lines = []
-    for key, entry in grouped.items():
-        actor = key.split("|", 1)[1]
-        name = short_actor(actor)
-        # PAC has no task-line declaration yet: name the line after its actor
-        # and say plainly that the grouping is inferred.
-        human = name.startswith("user:")
-        title = f"{name}（终端直接发起）" if human else name
-        strips = []
-        for routine_name, ids in entry["routines"].items():
-            info = routines.get(routine_name) or {}
-            strips.append(
-                {
-                    "name": routine_name,
-                    "mode": info.get("mode"),
-                    "enabled": info.get("enabled"),
-                    "nextDue": info.get("nextDueMs"),
-                    "inFlight": len(info.get("inFlight") or []),
-                    "runs": ids,
-                }
-            )
-        strips.sort(key=lambda strip: (-len(strip["runs"]), strip["name"]))
-        lines.append(
-            {
-                "id": key,
-                "node": node,
-                "title": title,
-                "owner": name,
-                "background": (
-                    "由人在终端直接发起的 PAC"
-                    if human
-                    else f"{name} 发起的 PAC 与它负责的例行"
-                ),
-                "goal": "—（任务线尚未声明）",
-                "runs": entry["workflows"],
-                "routines": strips,
-            }
-        )
-    lines.sort(key=lambda line: line["id"])
     return {
         "node": node,
         "observedAt": snapshot.get("observedAt"),
+        "actors": actors,
         "lines": lines,
         "runs": runs,
         "links": links,
         "visibleNodeGraphs": sum(1 for item in runs if item["nodes"]),
     }
+
+
+def _task_lines(
+    node: str,
+    runs: list[dict[str, Any]],
+    links: list[dict[str, str]],
+    routines: Mapping[str, Mapping[str, Any]],
+    signatures: Mapping[str, tuple[str, set[str], set[str]]],
+) -> list[dict[str, Any]]:
+    """Infer task lines (what is being built) under actors (who builds it).
+
+    PAC cannot declare a task line yet, so related graphs (the inferred links:
+    same PR, shared topic, rerun) form one line, owned by the actor with the
+    most graphs in it; graphs other actors ran for it stay on that line.
+    Unrelated one-off graphs collect in their actor's "其他" line, and each
+    routine is a line of its own.  Every graph's ``line`` is set here.
+    """
+
+    by_id = {item["id"]: item for item in runs}
+    parent = {item["id"]: item["id"] for item in runs if not item["routine"]}
+
+    def find(key: str) -> str:
+        while parent[key] != key:
+            parent[key] = parent[parent[key]]
+            key = parent[key]
+        return key
+
+    for link in links:
+        if link["from"] in parent and link["to"] in parent:
+            parent[find(link["from"])] = find(link["to"])
+    groups: dict[str, list[str]] = {}
+    for key in parent:
+        groups.setdefault(find(key), []).append(key)
+
+    lines: list[dict[str, Any]] = []
+    misc: dict[str, list[str]] = {}
+    for members in groups.values():
+        members.sort(key=lambda key: (by_id[key]["created"] or 0, key))
+        # Owned by the actor with the most graphs; on a tie, the one who
+        # started the line.
+        owners: dict[str, int] = {}
+        first_seen: dict[str, int] = {}
+        for index, key in enumerate(members):
+            owner = by_id[key]["actor"]
+            owners[owner] = owners.get(owner, 0) + 1
+            first_seen.setdefault(owner, index)
+        actor = max(owners, key=lambda owner: (owners[owner], -first_seen[owner]))
+        if len(members) == 1:
+            misc.setdefault(actor, []).append(members[0])
+            continue
+        line_id = f"{actor}|t:{members[0]}"
+        for key in members:
+            by_id[key]["line"] = line_id
+        lines.append(
+            _line(
+                node,
+                line_id,
+                actor,
+                _topic_title(members, by_id, signatures),
+                "task",
+                members,
+                [],
+            )
+        )
+    for actor, members in misc.items():
+        line_id = f"{actor}|misc"
+        for key in members:
+            by_id[key]["line"] = line_id
+        lines.append(
+            _line(
+                node, line_id, actor, "其他（没有关联的零散任务）", "misc", members, []
+            )
+        )
+
+    routine_runs: dict[str, list[str]] = {}
+    for item in runs:
+        if item["routine"]:
+            routine_runs.setdefault(item["routine"], []).append(item["id"])
+    for name in sorted(set(routine_runs) | set(routines)):
+        info = routines.get(name) or {}
+        ids = routine_runs.get(name, [])
+        actor = (
+            f"{node}|{info.get('owner')}"
+            if info.get("owner")
+            else (by_id[ids[0]]["actor"] if ids else f"{node}|")
+        )
+        line_id = f"{actor}|r:{name}"
+        for key in ids:
+            by_id[key]["line"] = line_id
+        strip = {
+            "name": name,
+            "mode": info.get("mode"),
+            "enabled": info.get("enabled"),
+            "nextDue": info.get("nextDueMs"),
+            "inFlight": len(info.get("inFlight") or []),
+            "runs": ids,
+        }
+        lines.append(_line(node, line_id, actor, f"↻ {name}", "routine", [], [strip]))
+    lines.sort(key=lambda line: line["id"])
+    return lines
+
+
+def _line(
+    node: str,
+    line_id: str,
+    actor: str,
+    title: str,
+    kind: str,
+    workflows: list[str],
+    strips: list[dict[str, Any]],
+) -> dict[str, Any]:
+    owner = short_actor(actor.split("|", 1)[1])
+    return {
+        "id": line_id,
+        "node": node,
+        "actor": actor,
+        "kind": kind,
+        "title": title,
+        "owner": owner,
+        "background": {
+            "task": "由互相关联的 PAC 推断出的任务线（同一个 PR、同一主题或重跑）",
+            "misc": f"{owner} 没有与其他 PAC 关联的零散任务",
+            "routine": f"{owner} 负责的例行，每次运行产生一个 PAC",
+        }[kind],
+        "goal": "—（任务线尚未声明）",
+        "runs": workflows,
+        "routines": strips,
+    }
+
+
+def _topic_title(
+    members: list[str],
+    by_id: Mapping[str, Mapping[str, Any]],
+    signatures: Mapping[str, tuple[str, set[str], set[str]]],
+) -> str:
+    """The words most of the line's graphs share, else its first graph's name."""
+
+    counts: dict[str, int] = {}
+    prs: dict[str, int] = {}
+    for key in members:
+        _, pr_numbers, bigrams = signatures[key]
+        for bigram in bigrams:
+            counts[bigram] = counts.get(bigram, 0) + 1
+        for number in pr_numbers:
+            prs[number] = prs.get(number, 0) + 1
+    best = max(counts.items(), key=lambda item: (item[1], item[0]), default=None)
+    pr = max(prs.items(), key=lambda item: (item[1], item[0]), default=None)
+    if best and best[1] >= 2:
+        return best[0] + (f" · #{pr[0]}" if pr and pr[1] >= 2 else "")
+    if pr and pr[1] >= 2:
+        return f"#{pr[0]}"
+    return str(by_id[members[0]]["name"])
 
 
 def content_key(model: Mapping[str, Any]) -> str:

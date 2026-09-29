@@ -197,6 +197,39 @@ svg.arrows .arrowhead { fill: var(--accent); }
 .spark rect { fill: var(--accent); opacity: 0.5; }
 .spark line { stroke: var(--running); stroke-width: 1.5; }
 
+/* ---------- level 0: swimlanes ---------- */
+.lanes { position: relative; z-index: 1; display: grid; gap: 4px; }
+.lane { display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 12px; align-items: center; min-height: 40px; }
+.lane.quiet { opacity: 0.5; }
+.lane-section { display: grid; gap: 4px; margin-top: 10px; }
+.lane-section .section-label { margin: 6px 0 2px; }
+.lane-head { text-align: left; border: 0; background: none; padding: 6px 8px; border-radius: 8px; cursor: pointer; display: grid; gap: 2px; min-width: 0; }
+.lane-head:hover { background: var(--accent-soft); }
+.lane-head b { font: 600 14px/1.25 var(--display); overflow-wrap: anywhere; }
+.lane-meta { display: flex; flex-wrap: wrap; gap: 2px 10px; font-size: 11.5px; color: var(--muted); align-items: center; }
+.lane-meta span { display: inline-flex; gap: 4px; align-items: center; }
+.lane-meta .bad { color: var(--failed); font-weight: 600; }
+.track { position: relative; height: 30px; border-bottom: 1px solid var(--line); }
+.track.axis { height: 18px; border-bottom: 0; font: 10.5px var(--mono); color: var(--faint); }
+.track.axis span { position: absolute; top: 0; transform: translateX(-50%); white-space: nowrap; }
+.track .pt { position: absolute; top: 9px; width: 12px; height: 12px; margin-left: -6px; border-radius: 50%; border: 2px solid var(--surface); background: var(--c); padding: 0; cursor: pointer; z-index: 2; }
+.track .pt:hover, .track .pt:focus-visible { transform: scale(1.35); }
+.track .trail { position: absolute; top: 14px; height: 2px; background: var(--c); opacity: 0.55; z-index: 1; }
+.track .beat-pt { position: absolute; bottom: 0; width: 3px; height: 8px; margin-left: -1.5px; border: 0; padding: 0; background: var(--c); opacity: 0.75; cursor: pointer; }
+.s-unknown { --c: var(--faint); }
+.actor { display: grid; gap: 2px; padding: 8px 0 6px 10px; border-left: 3px solid var(--line); margin-bottom: 8px; }
+.actor.quiet { opacity: 0.55; }
+.actor-head { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; padding: 0 8px 4px; }
+.actor-head b { font: 700 15px/1.2 var(--display); }
+.lane-routine .lane-head b { font-size: 12.5px; font-weight: 500; color: var(--muted); }
+.lane-routine .track { height: 18px; }
+.lane-misc .lane-head b { font-weight: 500; color: var(--muted); }
+.track .pt.other { box-shadow: 0 0 0 2px var(--c); background: var(--surface); }
+@media (max-width: 860px) {
+  .lane { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .lane-axis > div:first-child { display: none; }
+}
+
 /* ---------- line view ---------- */
 .linehead { display: grid; gap: 14px; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); margin-bottom: 18px; align-items: start; }
 .linehead h2 { font: 700 26px/1.15 var(--display); margin: 0 0 6px; text-wrap: balance; }
@@ -305,6 +338,8 @@ svg.arrows .arrowhead { fill: var(--accent); }
   // and text, so anything outside the known set renders as "unknown".
   const GRAPH_STATES = new Set(["running", "completed", "failed", "cancelled"]);
   const NODE_STATES = new Set(["done", "failed", "pending", "requested", "running", "cancelled", "waiting"]);
+  const LINE_KINDS = new Set(["task", "misc", "routine"]);
+  for (const p of PARTS) for (const l of p.lines || []) if (!LINE_KINDS.has(l.kind)) l.kind = "task";
   for (const p of PARTS) for (const r of p.runs) {
     if (!GRAPH_STATES.has(r.state)) r.state = "unknown";
     if (r.current && !NODE_STATES.has(r.current.state)) r.current.state = "unknown";
@@ -313,6 +348,7 @@ svg.arrows .arrowhead { fill: var(--accent); }
   const DATA = {
     nodes: PARTS.map(p => ({ node: p.node, observedAt: p.observedAt })),
     observedAt: Math.max(0, ...PARTS.map(p => p.observedAt || 0)) || Date.now(),
+    actors: PARTS.flatMap(p => p.actors || []),
     lines: PARTS.flatMap(p => p.lines),
     runs: PARTS.flatMap(p => p.runs),
     links: PARTS.flatMap(p => p.links),
@@ -554,7 +590,7 @@ svg.arrows .arrowhead { fill: var(--accent); }
   }
   function renderNote() {
     const n = document.getElementById("note");
-    if (view.level === "lines") n.innerHTML = `任务线的标题、背景、目标是按“谁发起的 / 哪个 routine”推断的，PAC 里还没有声明任务线的地方；箭头是按名字里的 PR 号和主题词推断的。卡片是一次性任务（Workflow），↻ 是例行（Routine）。拖动时间轴，或在面板上方的叠层上滚动，可以回看任意时刻。`;
+    if (view.level === "lines") n.innerHTML = `外层是人和 agent，里层是他们名下的任务线：互相关联的 PAC（同一个 PR、同一主题、重跑）归为一条，其余零散的归到“其他”，例行各占一条细线。任务线是推断的，PAC 里还没有声明任务线的地方。空心点是别人为这条线跑的 PAC。圆点是一次性任务（Workflow），位置是开始时间、颜色是状态，还在跑的拖一条线到当前时刻；小刻度是例行（Routine）的每次运行。鼠标移到圆点上会高亮它的关联箭头。点圆点看这个 PAC，点线名展开这条线。时间轴范围就是统计窗口。拖动时间轴，或在面板上方的叠层上滚动，可以回看任意时刻。`;
     else if (view.level === "line") n.innerHTML = `上面是例行：每条心跳条是一个 routine，每一格是它产生的一次运行。下面是一次性任务，卡片按创建时间排列。实线箭头：名字里有同一个 PR 号或主题词；虚线：同名重跑。点开卡片看这张 PAC 图的节点。`;
     else {
       const r = RUNS.get(view.id);
@@ -602,27 +638,6 @@ svg.arrows .arrowhead { fill: var(--accent); }
     }
     return { runs, c, last };
   }
-  function spark(line) {
-    const n = 32, w = 300, h = 26, bins = new Array(n).fill(0);
-    for (const id of line.runs) { const r = RUNS.get(id); bins[Math.min(n - 1, Math.floor((r.created - T0) / (NOW - T0) * n))]++; }
-    const max = Math.max(1, ...bins), bw = w / n;
-    const x = (T - T0) / (NOW - T0) * w;
-    return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">${bins.map((v, i) => v ? `<rect x="${i * bw + 1}" y="${h - 2 - (v / max) * (h - 4)}" width="${bw - 2}" height="${(v / max) * (h - 4)}"/>` : "").join("")}<line x1="${x}" x2="${x}" y1="0" y2="${h}"/></svg>`;
-  }
-  function crossAgg() {
-    const agg = new Map();
-    for (const k of DATA.links) {
-      const a = RUNS.get(k.from), b = RUNS.get(k.to);
-      if (a.line === b.line || b.created > T) continue;
-      const key = a.line + "→" + b.line; agg.set(key, { from: a.line, to: b.line, n: (agg.get(key)?.n || 0) + 1 });
-    }
-    return [...agg.values()];
-  }
-  function relChips(id) {
-    const rows = crossAgg().filter(v => v.from === id || v.to === id);
-    if (!rows.length) return "";
-    return `<div class="counts" style="color:var(--accent)">${rows.map(v => `<span>${v.from === id ? "→" : "←"} ${esc(LINES.get(v.from === id ? v.to : v.from).title)} <span class="mono">${v.n}</span></span>`).join("")}</div>`;
-  }
   function routineLast(rt) {
     let last = null;
     for (const id of rt.runs) {
@@ -631,17 +646,6 @@ svg.arrows .arrowhead { fill: var(--accent); }
       if (!last || r.created > last.run.created) last = { run: r, state: s };
     }
     return last;
-  }
-  function routineRow(line) {
-    if (!line.routines.length) return "";
-    const lasts = line.routines.map(routineLast).filter(Boolean).sort((a, b) => b.run.created - a.run.created);
-    const failing = line.routines.filter(rt => routineLast(rt)?.state === "failed").length;
-    const latest = lasts[0];
-    const text = latest
-      ? `最近 <span class="mono">${esc(latest.run.routine)}</span> ${STATE_ZH[latest.state] || latest.state} · ${dur(T - latest.run.created)}前`
-      : "还没有运行过";
-    return `<div class="routine-row${failing ? " bad" : ""}"><span class="cycle" aria-hidden="true">↻</span>
-      <span>${line.routines.length} 个例行${failing ? `，<b>${failing} 个最近一次失败</b>` : ""}</span><span>${text}</span></div>`;
   }
   function beatStrip(rt) {
     const W = 1000, H = 30, y = 11;
@@ -674,35 +678,97 @@ svg.arrows .arrowhead { fill: var(--accent); }
       : `<div class="quiet">${rt.runs.length ? "所选时刻之前还没有运行。" : "已登记，还没有运行过。"}</div>`}
     </div>`;
   }
+  // Level 0: one swimlane per task line, people above agents.  Each PAC is a
+  // dot at its start time on the window's time axis; a running one trails a
+  // line to the chosen moment.  Routine runs are small ticks.  Relations are
+  // arrows between dots.  A lane opens into its cards; a dot opens its graph.
+  function laneAxis(from, to) {
+    const span = to - from;
+    const step = span <= 2 * HOUR ? 15 * 60e3 : span <= 8 * HOUR ? HOUR : span <= 30 * HOUR ? 3 * HOUR : 24 * HOUR;
+    const first = Math.ceil((from + 8 * HOUR) / step) * step - 8 * HOUR;
+    const ticks = [];
+    for (let t = first; t <= to; t += step) {
+      const left = ((t - from) / span * 100).toFixed(2);
+      const label = step >= 24 * HOUR || fmtHM.format(t).startsWith("00") ? fmtDay.format(t) : fmtHM.format(t);
+      ticks.push(`<span style="left:${left}%">${esc(label)}</span>`);
+    }
+    return ticks.join("");
+  }
+  function lane(line, from, to) {
+    const span = to - from;
+    const pos = t => Math.min(100, Math.max(0, (t - from) / span * 100));
+    const runs = line.runs.map(id => RUNS.get(id)).filter(r => r.created <= to && (inWindow(r)));
+    const w = windowCounts(line.runs.map(id => RUNS.get(id)));
+    const dots = runs.map(r => {
+      const s = stateAt(r, T);
+      const x = pos(r.created);
+      const end = s === "running" ? T : (r.closed ?? r.created);
+      const tail = s === "running" ? `<span class="trail s-running" style="left:${x}%;width:${Math.max(0, pos(end) - x)}%"></span>` : "";
+      const other = r.actor && r.actor !== line.actor;
+      const who = other ? ` · ${esc(r.sender)}` : "";
+      return `${tail}<button class="pt s-${s}${other ? " other" : ""}" style="left:${x}%" data-key="${esc(r.id)}" data-run="${esc(r.id)}" title="${esc(r.name)} · ${esc(STATE_ZH[s] || s)} · ${esc(full(r.created))}${who}" aria-label="${esc(r.name)}，${esc(STATE_ZH[s] || s)}${who}"></button>`;
+    }).join("");
+    const beatRuns = line.routines.flatMap(rt => rt.runs.map(id => RUNS.get(id)))
+      .filter(r => r.created <= to && r.created >= from);
+    const beats = beatRuns
+      .map(r => `<button class="beat-pt s-${stateAt(r, T)}" style="left:${pos(r.created)}%" data-run="${esc(r.id)}" title="↻ ${esc(r.routine)} · ${esc(STATE_ZH[stateAt(r, T)] || "")} · ${esc(full(r.created))}" aria-label="例行 ${esc(r.routine)}"></button>`).join("");
+    const failing = line.routines.filter(rt => routineLast(rt)?.state === "failed").length;
+    const counts = ["running", "completed", "failed"].filter(k => w[k]).map(k => `<span class="s-${k}"><span class="dot"></span><span class="mono">${w[k]}</span></span>`).join("");
+    const quiet = !runs.length && !beats;
+    return `<div class="lane lane-${line.kind}${quiet ? " quiet" : ""}">
+      <button class="lane-head" data-line="${esc(line.id)}">
+        <b>${esc(line.title)}</b>
+        <span class="lane-meta">${MULTI ? esc(line.node) + " · " : ""}${counts || (beatRuns.length ? "" : "窗口内没有活动")}${line.routines.length ? `<span class="${failing ? "bad" : ""}">${line.kind === "routine" ? "" : `↻${line.routines.length} 个例行 · `}${beatRuns.length} 次${failing ? " · 最近一次失败" : ""}</span>` : ""}</span>
+      </button>
+      <div class="track">${beats}${dots}</div>
+    </div>`;
+  }
   function renderLines(el) {
-    const cards = DATA.lines.map(line => ({ line, st: lineStats(line) }))
-      .sort((a, b) => (b.st.c.running - a.st.c.running) || ((b.st.last?.at || 0) - (a.st.last?.at || 0)));
-    el.innerHTML = `<div class="grid">${cards.map(({ line, st }) => {
-      const total = st.runs.length;
-      const w = windowCounts(st.runs), wsum = w.running + w.completed + w.failed + w.cancelled;
-      const seg = ["completed", "running", "failed", "cancelled"].map(k => w[k] ? `<span class="s-${k}" style="flex:${w[k]}"></span>` : "").join("");
-      const running = st.runs.filter(r => stateAt(r, T) === "running");
-      const nowText = running.length
-        ? `进行中：${running.slice(0, 2).map(r => `<span class="mono">${esc(r.name)}</span>`).join("、")}${running.length > 2 ? ` 等 ${running.length} 个` : ""}`
-        : st.last ? `最近：<span class="mono">${esc(st.last.run.name)}</span> ${STATE_ZH[st.last.state] || ""} · ${dur(T - st.last.at)}前` : (line.routines.length ? "没有一次性任务，只有例行" : "此时还没有 PAC");
-      const beatsAtT = line.routines.reduce((n, rt) => n + rt.runs.filter(id => RUNS.get(id).created <= T).length, 0);
-      return `<button class="card${total || beatsAtT ? "" : " dim"}" data-key="${esc(line.id)}" data-line="${esc(line.id)}">
-        <div class="who"><span class="tag">任务线</span><span class="tag">推断</span><span>${MULTI ? esc(line.node) + " · " : ""}${esc(line.owner)}</span></div>
-        <h3>${esc(line.title)}</h3>
-        <dl class="kv"><dt>背景</dt><dd>${esc(line.background)}</dd><dt>目标</dt><dd>${esc(line.goal)}</dd></dl>
-        <div class="bar-stack" title="${winLabel()}结束的，加上此刻在跑的">${seg}</div>
-        <div class="counts"><span>${winLabel()}</span>${wsum ? ["running", "completed", "failed", "cancelled"].filter(k => w[k]).map(k => `<span class="s-${k}"><span class="dot"></span>${STATE_ZH[k]} <span class="mono">${w[k]}</span></span>`).join("") : "<span>没有活动</span>"}</div>
-        <div class="now-line">${nowText}</div>
-        ${relChips(line.id)}
-        ${total ? spark(line) : ""}
-        ${routineRow(line)}
-      </button>`;
-    }).join("")}</div>`;
-    const grid = el.querySelector(".grid");
-    grid.onclick = e => { const c = e.target.closest("[data-line]"); if (c) go({ level: "line", id: c.dataset.line }); };
-    const draw = () => drawArrows(el, crossAgg().map(v => ({ ...v, kind: "topic", label: v.n + " 处关联" })));
-    grid.onmouseover = e => { const c = e.target.closest("[data-line]"); const next = c ? c.dataset.line : null; if (next !== hotId) { hotId = next; draw(); } };
-    grid.onmouseleave = () => { hotId = null; draw(); };
+    const to = T, from = T - WIN * HOUR;
+    const activity = line => {
+      const all = [...line.runs, ...line.routines.flatMap(rt => rt.runs)].map(id => RUNS.get(id)).filter(inWindow);
+      return { n: all.length, last: Math.max(0, ...all.map(r => r.created)) };
+    };
+    const kindOrder = { task: 0, misc: 1, routine: 2 };
+    const byActor = new Map();
+    for (const line of DATA.lines) {
+      const key = line.actor || line.id;
+      if (!byActor.has(key)) byActor.set(key, []);
+      byActor.get(key).push({ line, a: activity(line) });
+    }
+    const actorInfo = new Map(DATA.actors.map(a => [a.id, a]));
+    const groups = [...byActor.entries()].map(([key, rows]) => {
+      rows.sort((x, y) => (kindOrder[x.line.kind] ?? 0) - (kindOrder[y.line.kind] ?? 0) || (y.a.n > 0) - (x.a.n > 0) || y.a.last - x.a.last || x.line.title.localeCompare(y.line.title));
+      const info = actorInfo.get(key) || { name: rows[0].line.owner, human: rows[0].line.owner.startsWith("user:"), node: rows[0].line.node };
+      const n = rows.reduce((sum, row) => sum + row.a.n, 0), last = Math.max(0, ...rows.map(row => row.a.last));
+      return { key, info, rows, n, last };
+    }).sort((x, y) => (y.n > 0) - (x.n > 0) || y.last - x.last || x.info.name.localeCompare(y.info.name));
+    const actorBlock = g => {
+      const w = windowCounts(g.rows.flatMap(row => row.line.runs.map(id => RUNS.get(id))));
+      const counts = ["running", "completed", "failed"].filter(k => w[k]).map(k => `<span class="s-${k}"><span class="dot"></span>${STATE_ZH[k]} <span class="mono">${w[k]}</span></span>`).join("");
+      const tasks = g.rows.filter(row => row.line.kind === "task").length;
+      const name = g.info.human ? g.info.name.replace(/^user:/, "") : g.info.name;
+      return `<div class="actor${g.n ? "" : " quiet"}">
+        <div class="actor-head"><b>${esc(name)}</b><span class="lane-meta">${MULTI ? esc(g.info.node) + " · " : ""}${tasks ? `${tasks} 条任务线` : "只有例行和零散任务"}${counts ? " · " : ""}${counts}</span></div>
+        ${g.rows.map(row => lane(row.line, from, to)).join("")}
+      </div>`;
+    };
+    const people = groups.filter(g => g.info.human), agents = groups.filter(g => !g.info.human);
+    const section = (label, list) => list.length ? `<div class="lane-section"><div class="section-label">${label}<span>${list.length} 个</span></div>${list.map(actorBlock).join("")}</div>` : "";
+    el.innerHTML = `<div class="lanes">
+        <div class="lane lane-axis"><div></div><div class="track axis">${laneAxis(from, to)}</div></div>
+        ${section("人", people)}${section("Agent", agents)}
+      </div>`;
+    const box = el.querySelector(".lanes");
+    box.onclick = e => {
+      const d = e.target.closest("[data-run]");
+      if (d) { const r = RUNS.get(d.dataset.run); go({ level: "pac", id: r.id, from: r.line }); return; }
+      const h = e.target.closest("[data-line]");
+      if (h) go({ level: "line", id: h.dataset.line });
+    };
+    const draw = () => drawArrows(el, DATA.links.filter(k => inWindow(RUNS.get(k.from)) && inWindow(RUNS.get(k.to))));
+    box.onmouseover = e => { const d = e.target.closest(".pt"); const next = d ? d.dataset.run : null; if (next !== hotId) { hotId = next; draw(); } };
+    box.onmouseleave = () => { hotId = null; draw(); };
     draw();
   }
 
