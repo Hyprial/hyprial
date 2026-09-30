@@ -101,6 +101,10 @@
 > `<missions-space>`(orgfs 空间 id)、`<owner-short>`(主人短名,用于 id)、
 > `<missions-auto-threshold>`(自动关联的置信度下限,默认 0.9)。读不到就问 <用户>,⛔ 不猜。
 
+⭐ **missions 只记录经 PAC 派出的工作**(Allen 2026-09-29):agent 在会话里自己完成的任务不会被关联到任何
+mission。<用户> 或他的 agent 想让某件工作出现在某条任务线上,就要把它经 PAC 派出去;
+被问到「为什么这件事不在任务线里」时,先看它是不是在会话里直接做的。
+
 **是什么**:空间 `<missions-space>` 的 `missions/` 目录下,每个 mission 一个文件
 (`missions/M-<短名>-NNNN.md`)。文件开头是一个 YAML 块(id、status、owner、opened、closed、
 keywords、pacs),后面是自由文本。只有 squire 写这些文件(这是约定,不是权限)。
