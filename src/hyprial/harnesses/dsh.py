@@ -24,7 +24,7 @@ import time
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol, Self
+from typing import TYPE_CHECKING, Any, Protocol, Self
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -32,6 +32,7 @@ import yaml
 
 from hyprial._dsh_resolver import resolve_hostname
 from hyprial.daemon.desired_state import HarnessLaunchSpec
+from hyprial.log import Logger
 
 from .owned_process import OwnedProcessGroup
 from .streaming import (
@@ -42,6 +43,9 @@ from .streaming import (
 )
 from .worker_channel import WorkerChannel
 from .model_provider import dsh_provider_id, validate_model_selection
+
+if TYPE_CHECKING:
+    from hyprial.agents.environment import ChildEnvironmentLaunch
 
 # The single DSH HTTP request timeout.  It is also the banner read budget:
 # the banner is how the OS-assigned port comes back and is one request's worth
@@ -1080,13 +1084,26 @@ class DshHarnessProcess(StreamingTurnProcess):
         client_factory: TurnClientFactory | None = None,
         worker_channel: WorkerChannel | None = None,
         env: Mapping[str, str] | None = None,
+        complete_launch: "ChildEnvironmentLaunch | None" = None,
         state_dir: Path | None = None,
         dsh_home: Path | None = None,
         on_turn_completed: TurnCompletedObserver | None = None,
     ) -> None:
         if spec.harness != "dsh" or not spec.headless:
             raise ValueError("DSH API process requires a headless dsh spec")
+        if complete_launch is not None and env is not None:
+            raise ValueError(
+                "complete child environment cannot be combined with a "
+                "partial env mapping"
+            )
+        if (
+            complete_launch is not None
+            and worker_channel is not None
+            and complete_launch.actor != worker_channel.actor
+        ):
+            raise ValueError("DSH worker channel and complete environment actors differ")
         self.spec = spec
+        self._complete_launch = complete_launch
         self._session = _DshSession(_option_value(spec.args, "--session-id"))
         self.worker_channel = worker_channel
         if dsh_home is not None:
@@ -1121,10 +1138,36 @@ class DshHarnessProcess(StreamingTurnProcess):
                     "a fresh worker MCP identity cannot resume an existing DSH "
                     "session; omit --session-id"
                 )
-            if shutil.which("dsh") is None:
+            complete_environment = (
+                complete_launch.environment.for_exec()
+                if complete_launch is not None
+                else None
+            )
+            if complete_environment is not None:
+                missing = [
+                    name
+                    for name in ("PATH", "HOME")
+                    if not complete_environment.get(name)
+                ]
+                if missing:
+                    raise DshApiError(
+                        "complete child environment for DSH is missing required "
+                        + ", ".join(missing)
+                    )
+            binary = (
+                shutil.which("dsh", path=complete_environment["PATH"])
+                if complete_environment is not None
+                else shutil.which("dsh")
+            )
+            if binary is None:
                 raise DshApiError("dsh not on PATH")
         self._base_env: dict[str, str] | None = (
             dict(env) if env is not None else None
+        )
+        logger = (
+            Logger.worker(worker_channel.state_dir, runtime="dsh", name=spec.name)
+            if worker_channel is not None
+            else None
         )
         self._dsh_lock = threading.Lock()
         self._io_log_lock = threading.Lock()
@@ -1143,6 +1186,7 @@ class DshHarnessProcess(StreamingTurnProcess):
             client_factory=factory,
             thread_name=f"hyprial-dsh-{spec.name}",
             reconnect_delay_max_seconds=1.0,
+            logger=logger,
             force_stop=self._force_stop_client,
             force_stopped=self._force_stopped_client,
             on_turn_completed=on_turn_completed,
@@ -1199,15 +1243,25 @@ class DshHarnessProcess(StreamingTurnProcess):
             raise DshApiError(
                 "managed DSH requires a worker channel or a state directory"
             )
-        binary = shutil.which("dsh")
+        prepare_worker_home(self.dsh_home)
+        if self._complete_launch is not None:
+            # The launch is the complete child mapping resolved for this actor.
+            # DSH_HOME is the sole harness-owned addition: it selects the
+            # private session/preset root this managed process prepared and
+            # must not be inherited from either the daemon or the agent.
+            environment = self._complete_launch.environment.for_exec()
+            binary = shutil.which("dsh", path=environment["PATH"])
+        else:
+            # Legacy direct callers retain the historical partial-overlay
+            # behaviour until they opt into a complete launch.
+            environment = {**os.environ, **(self._base_env or {})}
+            binary = shutil.which("dsh")
         if binary is None:
             raise DshApiError("dsh not on PATH")
-        prepare_worker_home(self.dsh_home)
-        # A partial env is an overlay on the daemon's own environment, never a
-        # replacement: DSH needs PATH (and whatever else the daemon has).
-        environment = {**os.environ, **(self._base_env or {})}
-        environment.pop("DSH_HOME", None)
         environment["DSH_HOME"] = str(self.dsh_home)
+        # Redaction is derived from the exact mapping handed to Popen, after
+        # the one harness-owned addition, so granted values cannot reach any
+        # stdout/stderr tail, transport error, or io.log entry.
         self._secret_values = _environment_secrets(environment)
         argv = (
             binary,
@@ -1234,6 +1288,15 @@ class DshHarnessProcess(StreamingTurnProcess):
         # previous child running and every generation leaks one DSH.
         try:
             group.register(process.pid)
+            if self._complete_launch is not None and self._logger is not None:
+                self._logger.info(
+                    "worker.environment.receipt",
+                    actor=self._complete_launch.actor,
+                    grants=[
+                        {"grantId": grant_id, "revision": revision}
+                        for grant_id, revision in self._complete_launch.grants
+                    ],
+                )
             endpoint, stdout_tail, stderr_tail = self._read_banner(process, group)
             api = DshHttpApi(
                 endpoint,

@@ -115,8 +115,6 @@ class HarnessLauncher:
         self._worker_channel_factory = worker_channel_factory
         # P1b B1: per-worker complete child environment (resolver →
         # LaunchSpec private values → build_complete_child_environment).
-        # Applied to the pi carrier only in this slice; the remaining spawn
-        # sites keep today's behaviour until B2 collects them.
         self._child_environment_factory = child_environment_factory
         self._runtime_launch_custody = runtime_launch_custody
         self._legacy_env = env
@@ -130,15 +128,8 @@ class HarnessLauncher:
         self._codex_app_server_factory = (
             codex_app_server_factory or self._make_codex_process
         )
-        self._dsh_api_factory = dsh_api_factory or (
-            lambda spec: DshHarnessProcess(
-                spec,
-                env=env,
-                state_dir=state_dir,
-                worker_channel=self._worker_channel_for(spec),
-                on_turn_completed=self._turn_completed_observer,
-            )
-        )
+        self._dsh_state_dir = state_dir
+        self._dsh_api_factory = dsh_api_factory or self._make_dsh_process
         self._python_worker_factory = python_worker_factory or self._make_python_process
 
         def options(harness: str, default: str) -> ConnectorOptions:
@@ -249,6 +240,20 @@ class HarnessLauncher:
             command=spec.command or None,
             complete_launch=complete_launch,
             logger=None,
+            on_turn_completed=self._turn_completed_observer,
+        )
+
+    def _make_dsh_process(self, spec: HarnessLaunchSpec) -> "DshHarnessProcess":
+        """Build one dsh worker from one channel and its complete environment."""
+
+        channel = self._worker_channel_for(spec)
+        complete_launch = self._complete_launch_for(spec, channel)
+        return DshHarnessProcess(
+            spec,
+            env=self._legacy_env if complete_launch is None else None,
+            state_dir=self._dsh_state_dir,
+            worker_channel=channel,
+            complete_launch=complete_launch,
             on_turn_completed=self._turn_completed_observer,
         )
 
