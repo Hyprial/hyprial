@@ -930,7 +930,9 @@ class LarkAdapter:
                     command,
                     response_kind=_command_response_kind(message.text),
                 )
-            target, route_status = self._route(message)
+            target, route_status = self._with_transient_retry(
+                lambda: self._route(message)
+            )
         if target is None:
             # "ignored" is a group message that never addressed us — not a
             # loss.  Anything a user plausibly expected us to handle keeps

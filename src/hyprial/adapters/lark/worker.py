@@ -607,8 +607,9 @@ class _Routes:
         Pins live in the daemon's agents database (``pins`` table); the
         worker never reads daemon state files itself.  Every message queries
         the daemon; a successful empty result replaces the cache (so unpin is
-        immediate), while a transient query failure reuses the last successful
-        value and emits a warning through the worker telemetry stream.
+        immediate), while a query failure can reuse a last successful pin.
+        Without a known destination, the failure propagates to the inbound
+        retry/custody boundary; unavailable authority is not proof of no pin.
         """
 
         del conversation_id  # a pin is per adapter, never per conversation
@@ -644,6 +645,8 @@ class _Routes:
             if self._cached_pin is not None:
                 warning["cachedActor"] = self._cached_pin
             self._report(warning)
+            if self._cached_pin is None:
+                raise
             actor = self._cached_pin
         else:
             self._cached_pin = actor

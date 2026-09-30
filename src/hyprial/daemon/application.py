@@ -1358,6 +1358,13 @@ class DaemonApplication:
         self._readiness_expected: frozenset[str] = frozenset()
         self._readiness_reports: dict[str, ReadinessReport] = {}
         self._readiness_first_round = threading.Event()
+        # Per-request worker-status snapshot (ps / agent.list / agent.get).
+        # IPC clients each run on their own thread, so the "current" snapshot
+        # is a thread-local: one request's table never leaks into a
+        # concurrent request's verdicts.
+        self._worker_snapshot_local = threading.local()
+        # Domain construction starts actors and replays persisted bindings;
+        # their liveness callbacks need this state before construction returns.
         # The raw registry/liveness stores are private to these two actors.
         # Application keeps only typed command/projection facades.
         application_ref = weakref.ref(self)
@@ -1501,11 +1508,6 @@ class DaemonApplication:
         # proves that exact carrier process is gone.  Keep the startup decision
         # visible in ps after the row itself has been retired.
         self._agent_recovery_cleanups: dict[str, JsonObject] = {}
-        # Per-request worker-status snapshot (ps / agent.list / agent.get).
-        # IPC clients each run on their own thread, so the "current" snapshot
-        # is a thread-local: one request's table never leaks into a
-        # concurrent request's verdicts.
-        self._worker_snapshot_local = threading.local()
         self._lock_stream: Any | None = None
         self._logger = self._construct_or_rollback(lambda: Logger.daemon(
             self.state_dir, name=self.node_id, asynchronous=True, capacity=4096

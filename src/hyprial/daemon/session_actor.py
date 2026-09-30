@@ -450,9 +450,11 @@ class _SessionGeneration:
     persist: Callable[[DesiredStateIoRequest], AdmissionResult]
     acknowledge_persistence: Callable[[DesiredStateIoRequest], bool]
     redeliver_persistence: Callable[[DesiredStateIoRequest], None]
+    deferred_persistence: dict[str, DesiredStateIoRequest]
+    deferred_capacity: int
     command_costs: CallCostCounters | None = None
-    _mutations: dict[str, _PendingMutation] = field(default_factory=dict, init=False)
-    _effect_owners: dict[str, str] = field(default_factory=dict, init=False)
+    _mutations: dict[str, _PendingMutation] = field(default_factory=dict)
+    _effect_owners: dict[str, str] = field(default_factory=dict)
 
     def __call__(self, command: object) -> None:
         """Dispatch one command, charging this actor thread's CPU to its type.
@@ -516,6 +518,7 @@ class _SessionGeneration:
                 self.redeliver_persistence(command.result.request)
                 raise
             self.acknowledge_persistence(command.result.request)
+            self._pump_deferred_persistence()
             return
         if isinstance(command, _AgentEffectResult):
             self._effect_result(command)
@@ -775,12 +778,46 @@ class _SessionGeneration:
             cost_origin=cost_origin,
         )
         admission = self.persist(request)
-        if admission is not AdmissionResult.ACCEPTED:
+        if admission is AdmissionResult.ACCEPTED:
+            return
+        if (
+            admission is AdmissionResult.OVERLOADED
+            and isinstance(command, _AgentEffectResult)
+            and len(self.deferred_persistence) < self.deferred_capacity
+        ):
+            # Retain the already completed Agent result and its custody. Only
+            # retry the storage write, after this lane's next owner ACK.
+            self.deferred_persistence[request.operation_id] = request
+            return
+        self._reject_persistence(command, admission)
+
+    def _reject_persistence(self, command: object, admission: AdmissionResult) -> None:
+        if isinstance(command, _AgentEffectResult):
+            self._effect_unavailable(
+                _AgentEffectUnavailable(
+                    command.effect_id,
+                    command.custody_token,
+                    "SESSION_PERSISTENCE_OVERLOADED",
+                    f"session persistence admission is {admission.value}",
+                )
+            )
+        else:
             self._reject(
                 command,
                 "SESSION_PERSISTENCE_OVERLOADED",
                 f"session persistence admission is {admission.value}",
             )
+
+    def _pump_deferred_persistence(self) -> None:
+        while self.deferred_persistence:
+            operation_id = next(iter(self.deferred_persistence))
+            request = self.deferred_persistence[operation_id]
+            admission = self.persist(request)
+            if admission is AdmissionResult.OVERLOADED:
+                return
+            del self.deferred_persistence[operation_id]
+            if admission is not AdmissionResult.ACCEPTED:
+                self._reject_persistence(request.context[1], admission)
 
     def _persistence_completed(self, completion: DesiredStateIoCompleted) -> None:
         from .lifecycle_receipts import LifecycleReceiptCompleted
@@ -1330,6 +1367,10 @@ class SessionActor:
         self._undelivered_replay_running = False
         self._draining = False
         self._persistence: DesiredStateIoPort | None = None
+        # Actor-owned custody survives handler-generation replacement.
+        self._deferred_persistence: dict[str, DesiredStateIoRequest] = {}
+        self._mutations: dict[str, _PendingMutation] = {}
+        self._effect_owners: dict[str, str] = {}
 
         def persist(request: DesiredStateIoRequest) -> AdmissionResult:
             port = self._persistence
@@ -1369,6 +1410,10 @@ class SessionActor:
                 acknowledge_persistence=acknowledge_persistence,
                 redeliver_persistence=redeliver_persistence,
                 command_costs=self._command_costs,
+                deferred_persistence=self._deferred_persistence,
+                deferred_capacity=mailbox_capacity,
+                _mutations=self._mutations,
+                _effect_owners=self._effect_owners,
             )
             # Generation 1 is reconciled synchronously after the worker and
             # stable handle exist.  Guardian-created generations need their
