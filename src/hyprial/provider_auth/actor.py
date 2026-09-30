@@ -682,6 +682,16 @@ class ProviderAuthAuthority:
         if isinstance(command, EffectCompleted):
             operation = command.operation_id
             if operation.startswith("helper:"):
+                # EffectLane completions are at-least-once. A queued replay
+                # after settlement must not recreate the finished decision ID:
+                # its old ACK could otherwise retire the new lane reservation.
+                with self._guard:
+                    owned = self._runners.get(operation)
+                if owned is None:
+                    # Retire an orphaned receipt too. Each helper submission
+                    # mints a fresh UUID; this ACK cannot target a later helper.
+                    self._helpers.acknowledge(operation, command.generation)
+                    return
                 if (
                     command.error is None
                     and isinstance(command.result, tuple)
@@ -689,9 +699,7 @@ class ProviderAuthAuthority:
                 ):
                     helper, outcome = command.result
                 else:
-                    with self._guard:
-                        owned = self._runners.get(operation)
-                    helper = None if owned is None else owned[1]
+                    helper = owned[1]
                     outcome = HelperOutcome.FAILED
                 if helper is None:
                     self._helpers.acknowledge(operation, command.generation)
