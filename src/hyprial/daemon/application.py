@@ -333,7 +333,7 @@ from .turn_hooks import (
     TurnHookService,
     harness_supports_before_delivery,
 )
-from .top import build_top_snapshot
+from .top import InteractiveTurnStats, build_top_snapshot
 from .harness_actor import HarnessRuntimeActor
 
 
@@ -620,6 +620,7 @@ _IPC_STATS_METHODS = frozenset(
         "session.heartbeat",
         "session.refresh",
         "session.register",
+        "session.turn.ended",
         "session.unregister",
         "shutdown",
         "targets",
@@ -1329,6 +1330,8 @@ class DaemonApplication:
             str, _InteractiveRouteEffectGate
         ] = {}
         self._interactive_route_resource_tokens: dict[tuple[str, str], str] = {}
+        self._interactive_turn_stats_lock = threading.Lock()
+        self._interactive_turn_stats: dict[str, InteractiveTurnStats] = {}
         self._clock: Callable[[], float] = time.monotonic
         self._maintenance_scheduler = GenerationScheduler()
         # Sees the tick that never returns, which reconcile_overrun cannot.
@@ -7262,6 +7265,16 @@ class DaemonApplication:
             # time while `ps`, which installs the snapshot, answered.
             with self._worker_status_snapshot():
                 actor_statuses = self._actor_status_snapshot()
+            current_session_refs = {
+                session.actor: session.session_ref
+                for session in self._agent_session_domains.session.read_sessions()
+            }
+            with self._interactive_turn_stats_lock:
+                interactive_turn_stats = {
+                    actor: stats
+                    for actor, stats in self._interactive_turn_stats.items()
+                    if current_session_refs.get(actor) == stats.session_ref
+                }
             result = build_top_snapshot(
                 state_dir=self.state_dir,
                 owner=self.owner,
@@ -7270,6 +7283,7 @@ class DaemonApplication:
                 daemon_pid=os.getpid(),
                 connectors=[],
                 actor_statuses=actor_statuses,
+                interactive_turn_stats=interactive_turn_stats,
                 pending=self._pending_recipient_stats(),
                 stranded=self._historical_inbox_recipients(),
                 now_ms=now_ms,
@@ -7638,8 +7652,7 @@ class DaemonApplication:
                 and agent.last_harness != harness
                 else None
             )
-            completed = self._call_session_route(
-                SessionRouteKind.REGISTER,
+            completed = self._register_interactive_session_with_turn_stats(
                 actor=actor,
                 session_ref=session_ref,
                 command=RegisterSessionCommand(
@@ -7662,6 +7675,10 @@ class DaemonApplication:
                             process_identity=session.process_identity,
                             manage_agent=agent is not None,
                 ),
+                reporting=(
+                    params.get("turnReporting") is True
+                    and session.runtime == "claude_interactive"
+                ),
             )
             result = completed.result.to_payload()
             return {
@@ -7671,6 +7688,34 @@ class DaemonApplication:
                     if handover is not None
                     else {}
                 ),
+            }
+        if method == "session.turn.ended":
+            actor = self._mcp_actor(params)
+            session_ref = _required_string(params.get("sessionRef"), "sessionRef")
+            report_ids = params.get("reportIds")
+            if (
+                not isinstance(report_ids, list)
+                or not report_ids
+                or len(report_ids) > 1000
+                or any(
+                    not isinstance(report_id, str)
+                    or not report_id
+                    or len(report_id) > 128
+                    for report_id in report_ids
+                )
+            ):
+                raise DaemonRequestError(
+                    ipc_errors.INVALID_ARGUMENT,
+                    "reportIds must be an array of 1-1000 non-empty strings up to 128 characters",
+                )
+            stats = self._accept_interactive_turn_report(
+                actor, session_ref, params, report_ids
+            )
+            return {
+                "ok": True,
+                "turnCount": stats.turn_count,
+                "turnCountSinceMs": stats.counting_since_ms,
+                "lastTurnEndedAtMs": stats.last_turn_ended_at_ms,
             }
         if method == "session.refresh":
             actor = self._mcp_actor(params)
@@ -7715,8 +7760,7 @@ class DaemonApplication:
         if method == "session.unregister":
             actor = self._mcp_actor(params)
             session_ref = _required_string(params.get("sessionRef"), "sessionRef")
-            completed = self._call_session_route(
-                SessionRouteKind.UNREGISTER,
+            completed = self._unregister_interactive_session_with_turn_stats(
                 actor=actor,
                 session_ref=session_ref,
                 command=UnregisterSessionCommand(
@@ -11698,6 +11742,142 @@ class DaemonApplication:
             inbox_key=keys.inbox_all(actor),
             advertise=advertise,
         )
+
+    def _register_interactive_session_with_turn_stats(
+        self,
+        *,
+        actor: str,
+        session_ref: str,
+        command: RegisterSessionCommand,
+        reporting: bool,
+    ) -> Any:
+        """Serialize ownership replacement with its turn-counter reset."""
+
+        completed = self._call_session_route(
+            SessionRouteKind.REGISTER,
+            actor=actor,
+            session_ref=session_ref,
+            command=command,
+        )
+        self._reset_interactive_turn_stats(
+            actor, session_ref, reporting=reporting
+        )
+        return completed
+
+    def _unregister_interactive_session_with_turn_stats(
+        self,
+        *,
+        actor: str,
+        session_ref: str,
+        command: UnregisterSessionCommand,
+    ) -> Any:
+        """Serialize removal with any final turn report from that session."""
+
+        completed = self._call_session_route(
+            SessionRouteKind.UNREGISTER,
+            actor=actor,
+            session_ref=session_ref,
+            command=command,
+        )
+        with self._interactive_turn_stats_lock:
+            stats = self._interactive_turn_stats.get(actor)
+            if stats is not None and stats.session_ref == session_ref:
+                self._interactive_turn_stats.pop(actor, None)
+        return completed
+
+    def _accept_interactive_turn_report(
+        self,
+        actor: str,
+        session_ref: str,
+        params: JsonObject,
+        report_ids: list[str],
+    ) -> InteractiveTurnStats:
+        """Fence and count one batch atomically with session replacement."""
+
+        actor = self._fence_interactive_session(actor, params)
+        session = next(
+            (
+                item
+                for item in self._agent_session_domains.session.read_sessions()
+                if item.actor == actor and item.session_ref == session_ref
+            ),
+            None,
+        )
+        if session is None or session.runtime != "claude_interactive":
+            raise DaemonRequestError(
+                ipc_errors.INVALID_ARGUMENT,
+                "turn reports require the current claude_interactive session",
+            )
+        stats = self._record_interactive_turn_reports(
+            actor, session_ref, report_ids
+        )
+        try:
+            self._fence_interactive_session(actor, params)
+        except DaemonRequestError:
+            with self._interactive_turn_stats_lock:
+                current = self._interactive_turn_stats.get(actor)
+                if current is not None and current.session_ref == session_ref:
+                    self._interactive_turn_stats.pop(actor, None)
+            raise
+        return stats
+
+    def _reset_interactive_turn_stats(
+        self, actor: str, session_ref: str, *, reporting: bool
+    ) -> None:
+        """Start a fresh daemon-local counter for a newly registered session."""
+
+        current = self._agent_session_domains.session.read_session(actor)
+        if current is None or current.session_ref != session_ref:
+            return
+        with self._interactive_turn_stats_lock:
+            current = self._agent_session_domains.session.read_session(actor)
+            if current is None or current.session_ref != session_ref:
+                return
+            if not reporting:
+                self._interactive_turn_stats.pop(actor, None)
+            else:
+                self._interactive_turn_stats[actor] = InteractiveTurnStats(
+                    session_ref=session_ref,
+                    counting_since_ms=int(time.time() * 1000),
+                    turn_count=0,
+                    last_turn_ended_at_ms=None,
+                )
+        current = self._agent_session_domains.session.read_session(actor)
+        if current is None or current.session_ref != session_ref:
+            with self._interactive_turn_stats_lock:
+                stats = self._interactive_turn_stats.get(actor)
+                if stats is not None and stats.session_ref == session_ref:
+                    self._interactive_turn_stats.pop(actor, None)
+
+    def _record_interactive_turn_reports(
+        self, actor: str, session_ref: str, report_ids: list[str]
+    ) -> InteractiveTurnStats:
+        """Count idempotent Stop pulses at daemon receipt time."""
+
+        received_at_ms = int(time.time() * 1000)
+        with self._interactive_turn_stats_lock:
+            current = self._interactive_turn_stats.get(actor)
+            if current is None or current.session_ref != session_ref:
+                current = InteractiveTurnStats(
+                    session_ref=session_ref,
+                    counting_since_ms=received_at_ms,
+                    turn_count=0,
+                    last_turn_ended_at_ms=None,
+                )
+            new_ids = frozenset(report_ids) - current.observed_report_ids
+            updated = InteractiveTurnStats(
+                session_ref=session_ref,
+                counting_since_ms=current.counting_since_ms,
+                turn_count=current.turn_count + len(new_ids),
+                last_turn_ended_at_ms=(
+                    received_at_ms
+                    if new_ids
+                    else current.last_turn_ended_at_ms
+                ),
+                observed_report_ids=current.observed_report_ids | new_ids,
+            )
+            self._interactive_turn_stats[actor] = updated
+            return updated
 
     def _fence_interactive_session(
         self, actor: str, params: JsonObject

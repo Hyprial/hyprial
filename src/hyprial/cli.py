@@ -5618,7 +5618,23 @@ def top_status(
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
-    """Show whether each agent is actually working: turns, queue, verdicts."""
+    """Show whether each agent is actually working: turns, queue, verdicts.
+
+    Headless turn fields come from the current worker-generation JSONL log and
+    stay null when that generation boundary cannot be proven.
+    Interactive Claude ``turnCount`` and ``lastTurnEndedAtMs`` come from fenced
+    Stop-hook receipts held by this daemon generation; ``turnCountSinceMs``
+    marks when that partial count began. The end timestamp is daemon receipt
+    time, so reconnect/poll delay can make table IDLE understate model idle.
+    ``recentTurnDurationsMs``, ``recentTurnOutcomes``, ``recentFailureRatio``,
+    and ``openTurnStartedAtMs`` stay null for interactive Claude because no
+    trustworthy start or outcome signal exists.
+    After a daemon restart or for a session launched before turn reporting,
+    counts stay null with ``turnStatsUnavailableReason`` until a reporting
+    session registers or its next Stop pulse arrives; relaunch for a known zero.
+    Queue fields always come from the durable inbox and are independent of turn
+    reporting.
+    """
 
     def operation() -> Any:
         result = _daemon_request("top.snapshot")
@@ -7366,6 +7382,12 @@ def mcp_claude_channel(
     command: list[str] | None = typer.Option(None, "--command"),
     poll_interval: float = typer.Option(0.5, "--poll-interval", hidden=True),
     recovery_signal: Path | None = typer.Option(None, "--recovery-signal", hidden=True),
+    turn_signal_dir: Path | None = typer.Option(
+        None,
+        "--turn-signal-dir",
+        hidden=True,
+        help="Per-launch directory of Stop-hook pulses to forward as turn reports.",
+    ),
     owner_pid: int | None = typer.Option(None, "--owner-pid", hidden=True),
     owner_identity: str | None = typer.Option(None, "--owner-identity", hidden=True),
     tmux_session: str | None = typer.Option(None, "--tmux-session", hidden=True),
@@ -7393,6 +7415,7 @@ def mcp_claude_channel(
             logger=Logger.worker(_state_dir(), runtime="claude", name=actor),
             poll_interval=poll_interval,
             recovery_signal=recovery_signal,
+            turn_signal_dir=turn_signal_dir,
             owner_pid=owner_pid,
             owner_identity=owner_identity,
             tmux_session=tmux_session,
@@ -7413,6 +7436,24 @@ def mcp_claude_channel_recover(
     from hyprial.mcp.channel import signal_channel_recovery
 
     signal_channel_recovery(signal_path.expanduser().resolve())
+
+
+@mcp_app.command("claude-turn-ended", hidden=True)
+def mcp_claude_turn_ended(
+    signal_dir: Path = typer.Option(
+        ..., "--signal-dir", help="Per-launch pulse directory the channel child forwards."
+    ),
+) -> None:
+    """Record one silent, best-effort Claude Stop pulse for the channel child."""
+
+    try:
+        from hyprial.turn_pulse import signal_turn_ended
+
+        signal_turn_ended(signal_dir.expanduser().resolve())
+    except Exception:
+        # A Stop hook is telemetry, never a gate. Empty stdout plus a normal
+        # return keeps it out of Claude's context and cannot prolong the turn.
+        return
 
 
 @mcp_app.command("agent-channel")
@@ -8340,6 +8381,7 @@ def _start_interactive_claude(
     # session may still have a stale file from a crashed earlier launch.
     config_path = state_dir / f"claude-channel-{session_ref}-{uuid4().hex[:8]}.json"
     recovery_path = config_path.with_suffix(".recover")
+    turn_signal_dir = config_path.with_suffix(".turns")
     server_args = [
         "-m",
         "hyprial.cli",
@@ -8355,6 +8397,8 @@ def _start_interactive_claude(
         "claude",
         "--recovery-signal",
         str(recovery_path),
+        "--turn-signal-dir",
+        str(turn_signal_dir),
     ]
     tmux_session_name: str | None = None
     if tmux:
@@ -8443,6 +8487,26 @@ def _start_interactive_claude(
                                 "--signal-path",
                                 str(recovery_path),
                             ],
+                        }
+                    ],
+                }
+            ],
+            "Stop": [
+                {
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": sys.executable,
+                            # A stdlib-only module: importing hyprial.cli
+                            # takes ~1 s on a loaded host, long enough for
+                            # the hook timeout to drop the pulse.
+                            "args": [
+                                "-m",
+                                "hyprial.turn_pulse",
+                                "--signal-dir",
+                                str(turn_signal_dir),
+                            ],
+                            "timeout": 5,
                         }
                     ],
                 }

@@ -18,4 +18,5 @@ def cleanup_launch_resources(
     config_path.unlink(missing_ok=True)
     if recovery_path is not None:
         recovery_path.unlink(missing_ok=True)
+    shutil.rmtree(config_path.with_suffix(".turns"), ignore_errors=True)
     shutil.rmtree(skill_plugin_path(config_path), ignore_errors=True)

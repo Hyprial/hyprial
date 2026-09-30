@@ -98,6 +98,17 @@ class WorkerTurnStats:
     open_turn_stalled_at_ms: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class InteractiveTurnStats:
+    """Daemon-generation-local turn receipts for one interactive session."""
+
+    session_ref: str
+    counting_since_ms: int
+    turn_count: int
+    last_turn_ended_at_ms: int | None
+    observed_report_ids: frozenset[str] = frozenset()
+
+
 def _timestamp_ms(value: object) -> int | None:
     if not isinstance(value, str):
         return None
@@ -311,6 +322,7 @@ def build_actor_row(
     pending: tuple[int, int | None],
     now_ms: int,
     thresholds: TopThresholds = DEFAULT_THRESHOLDS,
+    interactive_turn_stats: InteractiveTurnStats | None = None,
 ) -> JsonObject:
     """Enrich one shared actor-status row for ``top.snapshot``."""
 
@@ -368,6 +380,14 @@ def build_actor_row(
             stats=stats,
             thresholds=thresholds,
         )
+    interactive_claude = runtime == "claude_interactive"
+    turn_count = stats.turn_count if stats is not None else None
+    last_turn_ended_at_ms = (
+        stats.last_turn_ended_at_ms if stats is not None else None
+    )
+    if interactive_claude and interactive_turn_stats is not None:
+        turn_count = interactive_turn_stats.turn_count
+        last_turn_ended_at_ms = interactive_turn_stats.last_turn_ended_at_ms
     row: JsonObject = {
         "actor": actor,
         "name": name,
@@ -380,10 +400,8 @@ def build_actor_row(
         "processStartedAtMs": (
             stats.process_started_at_ms if stats is not None else None
         ),
-        "turnCount": stats.turn_count if stats is not None else None,
-        "lastTurnEndedAtMs": (
-            stats.last_turn_ended_at_ms if stats is not None else None
-        ),
+        "turnCount": turn_count,
+        "lastTurnEndedAtMs": last_turn_ended_at_ms,
         "recentTurnDurationsMs": (
             list(stats.recent_durations_ms) if stats is not None else None
         ),
@@ -409,6 +427,13 @@ def build_actor_row(
         ),
         "state": state,
     }
+    if interactive_claude:
+        if interactive_turn_stats is None:
+            row["turnStatsUnavailableReason"] = (
+                "no-reporting-session-this-generation"
+            )
+        else:
+            row["turnCountSinceMs"] = interactive_turn_stats.counting_since_ms
     if detail:
         row["stateDetail"] = detail
     error = status.get("error")
@@ -430,35 +455,38 @@ def build_top_snapshot(
     now_ms: int,
     thresholds: TopThresholds = DEFAULT_THRESHOLDS,
     actor_statuses: tuple[JsonObject, ...] | list[JsonObject] | None = None,
+    interactive_turn_stats: dict[str, InteractiveTurnStats] | None = None,
     dispatch_without_pac_count: int = 0,
     dispatch_conversation_count: int = 0,
 ) -> JsonObject:
     """The full ``top.snapshot`` IPC result."""
 
     statuses = actor_statuses if actor_statuses is not None else connectors
-    actors = [
-        build_actor_row(
-            state_dir=state_dir,
-            owner=owner,
-            node_id=node_id,
-            status=status,
-            # Queue depth joins on the full canonical URI: same short name
-            # under another node is a different agent (a stranded key).
-            pending=pending.get(
-                (
-                    status["actor"]
-                    if isinstance(status.get("actor"), str)
-                    else canonical_agent_uri(
-                        owner, node_id, str(status.get("name"))
-                    )
-                ),
-                (0, None),
-            ),
-            now_ms=now_ms,
-            thresholds=thresholds,
+    stats_by_actor = interactive_turn_stats or {}
+    actors: list[JsonObject] = []
+    for status in statuses:
+        status_actor = (
+            status["actor"]
+            if isinstance(status.get("actor"), str)
+            else canonical_agent_uri(owner, node_id, str(status.get("name")))
         )
-        for status in statuses
-    ]
+        actors.append(
+            build_actor_row(
+                state_dir=state_dir,
+                owner=owner,
+                node_id=node_id,
+                status=status,
+                # Queue depth joins on the full canonical URI: same short name
+                # under another node is a different agent (a stranded key).
+                pending=pending.get(
+                    status_actor,
+                    (0, None),
+                ),
+                now_ms=now_ms,
+                thresholds=thresholds,
+                interactive_turn_stats=stats_by_actor.get(status_actor),
+            )
+        )
     return {
         "daemon": {
             "pid": daemon_pid,

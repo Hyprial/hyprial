@@ -299,6 +299,7 @@ class ClaudeChannelAdapter:
                 "channelConfirmed": True,
                 "channelBuildVersion": __version__,
                 "channelProtocolVersion": CHANNEL_PROTOCOL_VERSION,
+                "turnReporting": True,
                 "ownerFence": self.owner_fence,
                 "channelLeaseToken": self._lease_token,
                 **(
@@ -428,6 +429,17 @@ class ClaudeChannelAdapter:
         await self._refresh_changed_daemon_generation(result)
         return result
 
+    async def report_turns(self, report_ids: tuple[str, ...]) -> dict[str, Any]:
+        """Forward Stop pulses through the current interactive-session fence."""
+
+        return await self.proxy.call(
+            actor=self.actor,
+            session_ref=self.session_ref,
+            method="session.turn.ended",
+            params={"reportIds": list(report_ids)},
+            mutation=True,
+        )
+
     def _remember_daemon_epoch(self, result: dict[str, Any]) -> None:
         epoch = result.get("daemonEpoch")
         if isinstance(epoch, str) and epoch:
@@ -542,11 +554,24 @@ def _consume_channel_recovery(path: Path | None) -> bool:
     return True
 
 
+def _pending_turn_signals(
+    path: Path | None, *, limit: int = 1000
+) -> tuple[Path, ...]:
+    if path is None:
+        return ()
+    try:
+        entries = sorted(item for item in path.iterdir() if item.is_file())
+    except FileNotFoundError:
+        return ()
+    return tuple(entries[:limit])
+
+
 async def _run_channel_poll_loop(
     adapter: ClaudeChannelAdapter,
     *,
     poll_interval: float,
     recovery_signal: Path | None = None,
+    turn_signal_dir: Path | None = None,
     on_error: Callable[[BaseException, int], None] | None = None,
 ) -> None:
     """Poll daemon-authoritative pending work without ever crashing the child.
@@ -599,6 +624,27 @@ async def _run_channel_poll_loop(
                 await adapter.poll_once(force_rewake=True)
             else:
                 await adapter.poll_once()
+            turn_signals = _pending_turn_signals(turn_signal_dir)
+            if turn_signals:
+                try:
+                    await adapter.report_turns(
+                        tuple(signal.name for signal in turn_signals)
+                    )
+                except DaemonRequestRejected as error:
+                    if error.code == SESSION_SUPERSEDED_CODE:
+                        raise
+                    # Turn counts are telemetry: a rejected report (an older
+                    # daemon without session.turn.ended, a runtime mismatch)
+                    # must not mark delivery as failed or force a refresh.
+                    # The pulses stay on disk and are retried next poll.
+                    _logger.debug(
+                        "turn report for actor %s rejected: %s",
+                        getattr(adapter, "actor", "?"),
+                        error,
+                    )
+                else:
+                    for signal in turn_signals:
+                        signal.unlink(missing_ok=True)
             failures = 0
         except DaemonRequestRejected as error:
             if error.code == SESSION_SUPERSEDED_CODE:
@@ -661,6 +707,7 @@ async def _run_channel_daemon_loops(
     *,
     poll_interval: float,
     recovery_signal: Path | None = None,
+    turn_signal_dir: Path | None = None,
     heartbeat_interval: float = CHANNEL_HEARTBEAT_INTERVAL_SECONDS,
     on_error: Callable[[BaseException, int], None] | None = None,
 ) -> None:
@@ -672,6 +719,7 @@ async def _run_channel_daemon_loops(
                 adapter,
                 poll_interval=poll_interval,
                 recovery_signal=recovery_signal,
+                turn_signal_dir=turn_signal_dir,
                 on_error=on_error,
             )
         )
@@ -1070,6 +1118,7 @@ async def run_channel_session(
     logger: Logger | None = None,
     poll_interval: float = 0.5,
     recovery_signal: Path | None = None,
+    turn_signal_dir: Path | None = None,
     on_error: Callable[[BaseException, int], None] | None = None,
     getppid: Callable[[], int] | None = None,
     owner_pid: int | None = None,
@@ -1176,6 +1225,7 @@ async def run_channel_session(
                     adapter,
                     poll_interval=poll_interval,
                     recovery_signal=recovery_signal,
+                    turn_signal_dir=turn_signal_dir,
                     on_error=on_error,
                 )
             finally:
@@ -1226,6 +1276,7 @@ async def serve_channel_stdio(
     logger: Logger | None = None,
     poll_interval: float = 0.5,
     recovery_signal: Path | None = None,
+    turn_signal_dir: Path | None = None,
     owner_pid: int | None = None,
     owner_identity: str | None = None,
     tmux_session: str | None = None,
@@ -1252,6 +1303,7 @@ async def serve_channel_stdio(
             logger=logger,
             poll_interval=poll_interval,
             recovery_signal=recovery_signal,
+            turn_signal_dir=turn_signal_dir,
             owner_pid=owner_pid,
             owner_identity=owner_identity,
             tmux_session=tmux_session,
