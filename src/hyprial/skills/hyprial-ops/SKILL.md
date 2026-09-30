@@ -51,6 +51,11 @@ hyprial <域> <子命令> --help   # 参数面
   —— hyprial 自己的 worker 代理(Allen 2026-09-25 定):列出的模型厂商(默认 openai、anthropic)的 worker 走代理,
   其它厂商(deepseek、智谱、kimi)的 worker **去掉**代理直连;下一个 worker 启动即生效,不用重启 daemon;
   url 置空即清除。没配置时沿用 daemon 自己环境里的代理(含 all_proxy)。⛔ 重启生产 daemon 时不要剥掉代理变量。
+- `hyprial config set dispatch.reminder "<text>"` —— `workflow plan` / `workflow run` 附带的派单 tier 提醒
+  (Allen 2026-09-28 定:执行节点用 fast、规划设计节点用 strong;只是提醒,不改派单)。
+  文本存在 `<HYPRIAL_HOME>/dispatch-policy.json`,文件缺失时用出厂默认;置空字符串即关闭。
+  `hyprial dispatch matrix --json` 的 `reminders` 显示当前生效值;文件损坏时 plan/run 照常派单,
+  只在 `reminderError` 里报原因,而 `dispatch matrix` 会直接报错,用这条 `config set` 覆盖写即可修复。
 
 ### 应用安装(hyprial install <app>)与取源诊断
 - `hyprial install <app> [--yes] [--check] [--force]` — 按 catalog 钉住的精确

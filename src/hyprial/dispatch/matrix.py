@@ -18,8 +18,10 @@ read by nothing else: they cannot influence ``resolve()``.
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
+from importlib.resources import files
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -71,6 +73,104 @@ TIERS: dict[str, tuple[Candidate, ...]] = {
     ),
 }
 TIER_RANK = {tier: rank for rank, tier in enumerate(TIERS)}
+
+DISPATCH_POLICY_FILENAME = "dispatch-policy.json"
+DISPATCH_POLICY_VERSION = 1
+WORKFLOW_REMINDER_KEY = "workflowReminder"
+_DISPATCH_POLICY_KEYS = frozenset({"version", WORKFLOW_REMINDER_KEY})
+
+
+def dispatch_policy_path(hyprial_home: Path | None = None) -> Path:
+    """Return the operator-owned dispatch policy file."""
+    if hyprial_home is None:
+        from hyprial.home import configured_hyprial_home
+
+        hyprial_home = configured_hyprial_home()[0]
+    return Path(hyprial_home) / DISPATCH_POLICY_FILENAME
+
+
+def _packaged_dispatch_policy() -> dict[str, object]:
+    resource = files("hyprial.dispatch").joinpath(DISPATCH_POLICY_FILENAME)
+    raw = json.loads(resource.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError("packaged dispatch policy must be an object")
+    return raw
+
+
+def _read_dispatch_policy(hyprial_home: Path | None = None) -> dict[str, object]:
+    path = dispatch_policy_path(hyprial_home)
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        # Homes initialized before this policy existed (every live install)
+        # have no file: they get the shipped default, not silence.  Only an
+        # operator-written empty string turns the reminder off.
+        raw = _packaged_dispatch_policy()
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"cannot parse {path}: {error}") from error
+    if not isinstance(raw, dict) or raw.get("version") != DISPATCH_POLICY_VERSION:
+        raise ValueError(
+            f"{path} must be a version {DISPATCH_POLICY_VERSION} dispatch policy object"
+        )
+    unknown = sorted(set(raw) - _DISPATCH_POLICY_KEYS)
+    if unknown:
+        # A misspelt key (``workflowReminderr``) would otherwise be ignored
+        # silently while the real key is missing; name it instead.
+        raise ValueError(f"{path} has unknown keys: {', '.join(unknown)}")
+    reminder = raw.get(WORKFLOW_REMINDER_KEY)
+    if not isinstance(reminder, str):
+        raise ValueError(f"{path}.{WORKFLOW_REMINDER_KEY} must be a string")
+    return raw
+
+
+def workflow_reminders(hyprial_home: Path | None = None) -> list[str]:
+    """Return configured workflow reminders; empty text disables output."""
+    reminder = _read_dispatch_policy(hyprial_home)[WORKFLOW_REMINDER_KEY]
+    assert isinstance(reminder, str)
+    return [reminder] if reminder else []
+
+
+def dispatch_reminders() -> tuple[list[str], str | None]:
+    """Reminders for plan/run, which must never be stopped by them.
+
+    The reminder is advice, not a gate: a malformed or unreadable operator
+    policy yields no reminder plus the reason, and dispatch proceeds.
+    ``hyprial dispatch matrix`` and ``config set`` keep the strict read, so
+    the operator still sees the error loudly where policy is managed.
+    """
+    try:
+        return workflow_reminders(), None
+    except Exception as error:  # noqa: BLE001 - advice must not block dispatch
+        return [], f"{type(error).__name__}: {error}"
+
+
+def ensure_dispatch_policy(hyprial_home: Path) -> Path:
+    """Install the packaged dispatch policy into a new operator home."""
+    path = dispatch_policy_path(hyprial_home)
+    if not path.exists():
+        from hyprial.persistent_config import atomic_json_write
+
+        atomic_json_write(path, _packaged_dispatch_policy())
+    return path
+
+
+def write_workflow_reminder(reminder: str, hyprial_home: Path) -> Path:
+    """Set the operator-owned workflow reminder without changing other policy."""
+    if not isinstance(reminder, str):
+        raise ValueError("workflow reminder must be a string")
+    try:
+        policy = _read_dispatch_policy(hyprial_home)
+    except ValueError:
+        # `config set` is how an operator repairs a broken file, so it must
+        # not refuse to write because the old file is unreadable: start over
+        # from the shipped policy and overwrite.
+        policy = _packaged_dispatch_policy()
+    policy[WORKFLOW_REMINDER_KEY] = reminder
+    from hyprial.persistent_config import atomic_json_write
+
+    path = dispatch_policy_path(hyprial_home)
+    atomic_json_write(path, policy)
+    return path
 
 
 def tier_for_model(model: str | None) -> str | None:

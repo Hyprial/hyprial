@@ -130,6 +130,9 @@ def initialize_hyprial_home() -> Path:
         # ``mkdir(exist_ok=True)`` already rejects a regular file on normal
         # filesystems; keep the postcondition explicit for unusual backends.
         raise NotADirectoryError(f"HYPRIAL home is not a directory: {path}")
+    from hyprial.dispatch.matrix import ensure_dispatch_policy
+
+    ensure_dispatch_policy(path)
     return path
 
 

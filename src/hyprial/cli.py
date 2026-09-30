@@ -9402,6 +9402,7 @@ def dispatch_matrix(
             candidate_json,
             diagnose,
             resolve,
+            workflow_reminders,
         )
 
         if tier is not None and tier not in TIERS:
@@ -9412,6 +9413,7 @@ def dispatch_matrix(
         tiers = (tier,) if tier is not None else tuple(TIERS)
         document: JsonObject = {
             "ok": True,
+            "reminders": workflow_reminders(),
             "tiers": {
                 name: [candidate_json(candidate) for candidate in TIERS[name]]
                 for name in tiers
@@ -11617,7 +11619,7 @@ def config_set(
         help=(
             "Config key (supported: autoUpgrade, lsRemoteTimeoutSeconds, "
             "forwarding.mode, org.fetchSource, workerProxy.url, "
-            "workerProxy.vendors, workerProxy.noProxy)."
+            "workerProxy.vendors, workerProxy.noProxy, dispatch.reminder)."
         ),
     ),
     value: str = typer.Argument(
@@ -11627,7 +11629,8 @@ def config_set(
             "positive seconds; forwarding.mode: off|auto|on; org.fetchSource: "
             "mesh|orgfs; "
             "workerProxy.url: http(s) URL, empty clears; workerProxy.vendors: "
-            "comma list; workerProxy.noProxy: NO_PROXY list, empty = ambient)."
+            "comma list; workerProxy.noProxy: NO_PROXY list, empty = ambient; "
+            "dispatch.reminder: text, empty disables)."
         ),
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
@@ -11674,6 +11677,19 @@ def config_set(
             f"{WORKER_PROXY_SETTINGS_KEY}.{field}": field
             for field in WORKER_PROXY_FIELDS
         }
+        if key == "dispatch.reminder":
+            from hyprial.dispatch.matrix import write_workflow_reminder
+
+            try:
+                path = write_workflow_reminder(value, _hyprial_home())
+            except ValueError as error:
+                raise CliError("INVALID_CONFIGURATION", str(error)) from error
+            return {
+                "ok": True,
+                "key": key,
+                "value": value,
+                "path": str(path),
+            }
         if key in updates.LS_REMOTE_TIMEOUT_KEY_ALIASES:
             try:
                 timeout = float(value)
@@ -11742,6 +11758,7 @@ def config_set(
                         *updates.LS_REMOTE_TIMEOUT_KEY_ALIASES,
                         forwarding_key,
                         org_fetch_source_key,
+                        "dispatch.reminder",
                         *worker_proxy_keys,
                     )
                 ),

@@ -1,0 +1,4 @@
+{
+  "version": 1,
+  "workflowReminder": "Pick each PAC node's tier by its role: execution nodes on the fast tier (kimi / glm / deepseek); planning and design nodes on the strong tier (gpt / claude)."
+}

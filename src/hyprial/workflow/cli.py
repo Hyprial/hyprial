@@ -109,7 +109,17 @@ def plan(
 
     def operation():
         spec, _ = _load(file)
-        return {"ok": True, "plan": spec.to_json()}
+        from hyprial.dispatch.matrix import dispatch_reminders
+
+        reminders, reminder_error = dispatch_reminders()
+        if reminder_error is not None and not json_out:
+            typer.echo(f"reminder unavailable: {reminder_error}", err=True)
+        return {
+            "ok": True,
+            "plan": spec.to_json(),
+            "reminders": reminders,
+            **({"reminderError": reminder_error} if reminder_error else {}),
+        }
 
     _execute(operation, json_output=json_out)
 
@@ -136,16 +146,27 @@ def run(
     # Loading runs through the same JSON error boundary as other commands.
     def operation():
         from hyprial.cli import CliError, _daemon_request
+        from hyprial.dispatch.matrix import dispatch_reminders
 
         spec, raw = _load(file)
+        # Advice only: a broken policy file yields no reminder, never a
+        # failed dispatch.
+        reminders, reminder_error = dispatch_reminders()
+        if reminder_error is not None and not json_output:
+            typer.echo(f"reminder unavailable: {reminder_error}", err=True)
         try:
             identity = _identity(json_output, from_identity)
         except PacError as error:
             raise CliError(error.code, str(error)) from error
         if not yes and not json_output:
             typer.echo(json.dumps(spec.to_json(), ensure_ascii=False, indent=2))
+            for reminder in reminders:
+                typer.echo(reminder, err=True)
             if not typer.confirm("Dispatch this graph?"):
                 raise typer.Exit(1)
+        elif not json_output:
+            for reminder in reminders:
+                typer.echo(reminder, err=True)
         result = _daemon_request(
             "workflow.start",
             {
@@ -156,7 +177,12 @@ def run(
                 ),
             },
         )
-        return {"ok": True, **result}
+        return {
+            "ok": True,
+            "reminders": reminders,
+            **({"reminderError": reminder_error} if reminder_error else {}),
+            **result,
+        }
 
     _execute(operation, json_output=json_output)
 
