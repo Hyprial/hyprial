@@ -31,6 +31,10 @@ class TransportSession(Protocol):
 
     def put(self, key: str, payload: bytes) -> None: ...
 
+    def get_liveliness(
+        self, key_expr: str, *, timeout: float = 1.0
+    ) -> list[TransportSample]: ...
+
     def get(
         self,
         key_expr: str,

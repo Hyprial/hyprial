@@ -429,6 +429,12 @@ _CLOSE_UNBUDGETED_STEPS = (
     ("socket-file", "one unlink"),
     ("daemon-json", "one unlink"),
     ("recipient-wake-observer", "clears the committed-presence observer under an in-memory lock; no I/O or worker join"),
+    (
+        "directory",
+        "UNBOUNDED as a whole: rebuild-hook removal and native registration "
+        "undeclare have no shared end-to-end deadline; the subsequent presence "
+        "authority drain has its own separate 1s budget",
+    ),
     ("routine-service", "joins a queue the step before it drained"),
     ("workflow-service", "same shape as routine-service"),
     (
@@ -2554,6 +2560,7 @@ class DaemonApplication:
         )
         self._require_orgfs_runtime().bind_transport(
             transport,
+            observe_supplier_online=directory.observe_actor_online,
             supplier_online=lambda supplier: (
                 classify_target_identity(supplier) == TARGET_KIND_HOST
                 and presence.actor_online(supplier)
@@ -14951,8 +14958,8 @@ class DaemonApplication:
         ):
             resource = getattr(self, resource_name)
             if resource is not None:
-                if resource_name == "_duplicate_watch":
-                    resource.close()
+                if resource_name == "_directory":
+                    attempt(resource.close, "directory")
                 else:
                     resource.close()
                 setattr(self, resource_name, None)

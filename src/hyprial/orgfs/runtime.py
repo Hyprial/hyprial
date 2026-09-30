@@ -23,6 +23,7 @@ from hyprial.actor_runtime import (
 )
 from hyprial.actor_runtime.effects import EffectCompleted, EffectLane, EffectRequest
 from hyprial.transport import KeySpace, Registration, TransportSample, TransportSession
+from hyprial.transport.presence_actor import ActorOnlineTransition
 
 from .api import OrgFsError, SpaceInfo, SpaceStatus
 from .blob_authority import BlobAuthority
@@ -265,6 +266,8 @@ class OrgFsRuntime:
         self._meshes: dict[str, OrgFsMesh] = {}
         self._announce_registration: Registration | None = None
         self._liveliness_registration: Registration | None = None
+        self._stop_supplier_online: Callable[[], None] | None = None
+        self._sync_after_presence = False
         self._holders: dict[str, set[str]] = {}
         self._known_holders: dict[str, set[str]] = {}
         self._lively_peers: set[str] = set()
@@ -380,6 +383,13 @@ class OrgFsRuntime:
             effects = self._apply_announcement_command(command.sample)
         elif command.action == "liveliness":
             effects = self._apply_liveliness_command(command.sample)
+        elif command.action == "supplier-online":
+            peer = self._host_peer_from_liveliness(command.sample)
+            effects = (
+                self._supplier_sync_effects(peer)
+                if peer and peer != self.node_id and self._supplier_online(peer)
+                else []
+            )
         else:
             self._directory_dropped += 1
             self._release_directory_credit(command.operation_id, command.generation)
@@ -460,6 +470,11 @@ class OrgFsRuntime:
         checkout_spaces = tuple(self._checkouts)
         if checkout_spaces:
             effects.append(_DirectoryEffect("reconcile", space_ids=checkout_spaces))
+        if not self._sync_after_presence:
+            effects.extend(self._supplier_sync_effects(peer))
+        return effects
+
+    def _supplier_sync_effects(self, peer: str) -> list[_DirectoryEffect]:
         sync_spaces: list[str] = []
         for space_id in self.stores.snapshot_ids():
             with self._pending_announces_lock:
@@ -468,10 +483,10 @@ class OrgFsRuntime:
                 continue
             sync_spaces.append(space_id)
         if sync_spaces:
-            effects.append(
+            return [
                 _DirectoryEffect("sync", peer=peer, space_ids=tuple(sync_spaces))
-            )
-        return effects
+            ]
+        return []
 
     def _execute_directory_effect(self, batch: _DirectoryEffectBatch) -> None:
         for effect in batch.effects:
@@ -825,6 +840,9 @@ class OrgFsRuntime:
         *,
         supplier_online: Callable[[str], bool] | None = None,
         holder_candidates: Callable[[], tuple[str, ...]] | None = None,
+        observe_supplier_online: Callable[
+            [Callable[[ActorOnlineTransition], object]], Callable[[], None]
+        ] | None = None,
     ) -> None:
         with self._resource_lock:
             if self._closing:
@@ -834,6 +852,7 @@ class OrgFsRuntime:
             self._supplier_online = supplier_online
         if holder_candidates is not None:
             self._holder_candidates = holder_candidates
+        self._sync_after_presence = observe_supplier_online is not None
         self._start_directory_ingress()
         self._announce_registration = session.subscribe(
             f"{KeySpace().prefix}/org/fs/announce/*",
@@ -848,6 +867,24 @@ class OrgFsRuntime:
             )
         for space_id in self.stores.snapshot_ids():
             self._mesh(space_id)
+        if observe_supplier_online is not None:
+            # Subscribe after restored meshes exist. The committed projection
+            # is replayed at binding, covering presence settled during startup.
+            # Raw liveliness still maintains holder/delete state, but only this
+            # committed wake may launch catch-up when a presence gate is wired.
+            self._stop_supplier_online = observe_supplier_online(
+                self._supplier_became_online
+            )
+
+    def _supplier_became_online(self, transition: ActorOnlineTransition) -> None:
+        # Presence replays agents as well as hosts. Discard unrelated identities
+        # before they can consume directory credit needed by real announces.
+        if transition.actor == self.node_id or not self._is_host_peer(transition.actor):
+            return
+        self._admit_directory_sample(
+            "supplier-online",
+            TransportSample(KeySpace().actor_liveliness(transition.actor), b""),
+        )
 
     def _on_peer_liveliness(self, sample: TransportSample) -> None:
         self._process_peer_liveliness(sample)
@@ -874,14 +911,16 @@ class OrgFsRuntime:
         if not sample.key.startswith(prefix):
             return None
         peer = KeySpace().decode_identity(sample.key[len(prefix) :])
+        return peer if OrgFsRuntime._is_host_peer(peer) else None
+
+    @staticmethod
+    def _is_host_peer(peer: str) -> bool:
         # Import here to avoid making the orgfs module initialize the daemon
         # package while DaemonApplication is importing OrgFsRuntime.
         from hyprial.daemon.identity import classify_target_identity
         from hyprial.uri import TARGET_KIND_HOST
 
-        if classify_target_identity(peer) != TARGET_KIND_HOST:
-            return None
-        return peer
+        return classify_target_identity(peer) == TARGET_KIND_HOST
     def _process_peer_liveliness(self, sample: TransportSample) -> None:
         """F5/F6: admit buffered discovery and schedule bounded anti-entropy."""
 
@@ -1776,6 +1815,9 @@ class OrgFsRuntime:
             self._close_impl()
 
     def _close_impl(self) -> None:
+        if self._stop_supplier_online is not None:
+            self._stop_supplier_online()
+            self._stop_supplier_online = None
         with self._resource_lock:
             self._closing = True
             creations = tuple(self._mesh_creations.values())

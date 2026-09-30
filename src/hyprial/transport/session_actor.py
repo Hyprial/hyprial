@@ -32,6 +32,8 @@ class Query:
     payload: bytes | None
     timeout: float
     all_replies: bool
+    liveliness: bool = False
+    deadline: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -740,6 +742,15 @@ class TransportSessionAuthority:
             self._native.put(payload.key, payload.payload)
         elif isinstance(payload, Query):
             errors = []
+            if payload.liveliness:
+                remaining = (
+                    payload.timeout if payload.deadline is None
+                    else payload.deadline - time.monotonic()
+                )
+                if remaining <= 0:
+                    raise TimeoutError("liveliness query expired before native execution")
+                samples = self._native.get_liveliness(payload.key, timeout=remaining)
+                return QueryResult(tuple(samples), ())
             kwargs = dict(
                 timeout=payload.timeout, errors=errors, all_replies=payload.all_replies
             )
@@ -808,6 +819,20 @@ class TransportSessionAuthority:
         result = self._call(command)
         if errors is not None:
             errors.extend(result.errors)
+        return list(result.samples)
+
+    def get_liveliness(self, key_expr, *, timeout=1.0):
+        timeout = min(timeout, self._timeout)
+        if timeout <= 0:
+            raise TimeoutError("liveliness query budget expired")
+        deadline = time.monotonic() + timeout
+        command = SessionCommand(uuid4().hex, Query(
+            str(key_expr), None, timeout, False, True, deadline,
+        ))
+        reply = self._admit(command)
+        # Caller timeout does not abandon transport custody. The ordinary
+        # query owner will settle it; a queued expired request performs no I/O.
+        result = self._wait(command, reply, max(0.0, deadline - time.monotonic()))
         return list(result.samples)
 
     def callback_pool_snapshot(self) -> CallbackPoolSnapshot:

@@ -21,7 +21,7 @@ import zenoh
 
 from hyprial.actor_runtime import AdmissionResult
 
-from .api import TransportSample
+from .api import Registration, TransportSample
 from .keys import KeySpace
 from .presence_actor import (
     ActorOnlineTransition,
@@ -1141,6 +1141,38 @@ class ZenohTransport:
             owners = tuple(self._query_registrations)
         return tuple(owner.projection() for owner in owners)
 
+    def get_liveliness(
+        self, key_expr: str, *, timeout: float = 1.0
+    ) -> list[TransportSample]:
+        """One bounded read of native live tokens, not an ordinary data get.
+
+        No positive reply is only 'not confirmed online': channel completion
+        alone cannot establish why a remote token was absent. Explicit native
+        timeout/error replies remain errors; callers fail closed for all three.
+        """
+        if timeout <= 0:
+            raise TimeoutError("liveliness query budget expired")
+        session = self._current_session("get_liveliness", key_expr)
+        replies = session.liveliness().get(key_expr, timeout=timeout)
+        results: list[TransportSample] = []
+        while True:
+            try:
+                reply = replies.recv()
+            except Exception as error:
+                reason = str(error).lower()
+                if "timeout" in reason:
+                    raise TimeoutError("liveliness query timed out") from error
+                if "disconnected" in reason or "empty and closed" in reason:
+                    break
+                raise
+            if reply.ok is None:
+                detail = _reply_error(reply)
+                if "timeout" in detail.lower():
+                    raise TimeoutError("liveliness query timed out")
+                raise RuntimeError("liveliness query returned an error")
+            results.append(_sample(reply.ok))
+        return results
+
     def declare_liveliness(self, key: str) -> _Registration:
         return self._register(lambda session: session.liveliness().declare_token(key))
 
@@ -1219,27 +1251,52 @@ class LivelinessDirectory:
     ) -> None:
         self._keys = keys or KeySpace()
         self._observation_sink = observation_sink
-        self._authority = PresenceAuthority()
+        self._session = session
+        self._authority = PresenceAuthority(confirm_present=self._confirm_present)
         self._legacy_online_unbind: Callable[[], None] | None = None
-        if on_actor_online is not None:
-            self.set_actor_online_callback(on_actor_online)
         self._session_generation = getattr(session, "projection", None)
         # A rebuilt session re-learns presence from the replayed observers'
         # history; carrying the old sets over would keep departed peers online.
-        self._stop_rebuild_hook = session.on_rebuild(self._forget_presence)
-        self._registrations = [
-            session.observe_liveliness(
-                f"{self._keys.prefix}/liveliness/actor/*",
-                self._actor_event,
-                history=True,
-            ),
-            session.observe_liveliness(
-                self._keys.mailbox_liveliness_all(), self._mailbox_event, history=True
-            ),
-        ]
+        self._stop_rebuild_hook: Callable[[], None] = lambda: None
+        self._registrations: list[Registration] = []
+        try:
+            if on_actor_online is not None:
+                self.set_actor_online_callback(on_actor_online)
+            self._stop_rebuild_hook = session.on_rebuild(self._forget_presence)
+            for key, callback in (
+                (f"{self._keys.prefix}/liveliness/actor/*", self._actor_event),
+                (self._keys.mailbox_liveliness_all(), self._mailbox_event),
+            ):
+                self._registrations.append(session.observe_liveliness(key, callback, history=True))
+        except BaseException as error:
+            # The new query worker must not escape a failed constructor.
+            # Attempt every owned cleanup, retaining each failure as evidence.
+            cleanups = [self._stop_rebuild_hook]
+            cleanups.extend(registration.close for registration in reversed(self._registrations))
+            for cleanup in cleanups:
+                try:
+                    if cleanup() is False:
+                        error.add_note("presence construction rollback did not drain")
+                except BaseException as cleanup_error:
+                    error.add_note(f"presence construction rollback: {type(cleanup_error).__name__}")
+            try:
+                if not self._authority.close():
+                    self._authority.stop_after_drain()
+                    error.add_note("presence rollback retains accepted I/O until automatic stop")
+            except BaseException as cleanup_error:
+                error.add_note(f"presence owner rollback: {type(cleanup_error).__name__}")
+            raise
 
     def _actor_event(self, sample: TransportSample) -> None:
         self._update("actor", sample)
+
+    def _confirm_present(self, kind: str, identity: str, timeout: float) -> bool:
+        key = (
+            self._keys.actor_liveliness(identity)
+            if kind == "actor" else self._keys.mailbox_liveliness(identity)
+        )
+        samples = self._session.get_liveliness(key, timeout=timeout)
+        return any(sample.key == key and sample.kind == "put" for sample in samples)
 
     def _mailbox_event(self, sample: TransportSample) -> None:
         self._update("mailbox", sample)
@@ -1311,6 +1368,12 @@ class LivelinessDirectory:
             return ()
         return tuple(sorted(self._authority.projection().actors))
 
+    def observe_actor_online(
+        self, observer: Callable[[ActorOnlineTransition], object]
+    ) -> Callable[[], None]:
+        """Observe committed presence without replacing the recipient wake sink."""
+        return self._authority.observe_actor_online(observer)
+
     def online_mailboxes(self) -> tuple[str, ...]:
         if not self._callbacks_current():
             return ()
@@ -1323,12 +1386,15 @@ class LivelinessDirectory:
         return not projection.closed and projection.callbacks_complete
 
     def close(self) -> None:
+        self._authority.close_admission()
         if self._legacy_online_unbind is not None:
             self._legacy_online_unbind()
             self._legacy_online_unbind = None
         self._stop_rebuild_hook()
-        for registration in reversed(self._registrations):
-            registration.close()
+        self._stop_rebuild_hook = lambda: None
+        while self._registrations:
+            self._registrations[-1].close()
+            self._registrations.pop()
         if not self._authority.close():
             raise TimeoutError("presence authority did not drain")
         self._observation_sink = None

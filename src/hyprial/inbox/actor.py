@@ -273,6 +273,9 @@ class _PendingDispatch:
     request: DispatchIoRequested
     completion_kind: str
     pre_results: tuple[SubmissionResult, ...] = ()
+    # At most one timestamp per message already owned by this dispatch. A wake
+    # must survive the older I/O result that can otherwise reintroduce backoff.
+    online_wakes: tuple[tuple[str, int], ...] = ()
 
 
 class InboxAuthorityUnavailable(RuntimeError):
@@ -1045,13 +1048,14 @@ class DeliveryCustody:
             self._claim_retry(command)
             return
         if isinstance(command, WakeOutboxRecipientCommand):
+            retained = self._retain_inflight_wake(command.recipient, command.now_ms)
+            advanced = self._service.wake_outbox_recipient(
+                command.recipient, now_ms=command.now_ms,
+            )
             self._publish_bool(
                 command.correlation_id,
                 "wake_outbox_recipient",
-                self._service.wake_outbox_recipient(
-                    command.recipient,
-                    now_ms=command.now_ms,
-                ),
+                advanced or retained,
             )
             return
         if isinstance(command, PruneInboxCommand):
@@ -1768,6 +1772,7 @@ class DeliveryCustody:
                         ),
                     )
                 )
+        self._apply_inflight_wakes(pending, event.completed_at_ms)
         version = self._committed_version()
         self._publish(event)
         self._publish_final(pending, version, tuple(results))
@@ -1829,9 +1834,45 @@ class DeliveryCustody:
                 for item in pending.request.items
             )
         results = pending.pre_results + deferred
+        self._apply_inflight_wakes(pending, now)
         version = self._committed_version()
         self._publish_final(pending, version, results)
         return True
+
+    def _retain_inflight_wake(self, recipient: str, now_ms: int) -> bool:
+        retained = False
+        for correlation_id, pending in self._pending_io.items():
+            if pending.completion_kind not in {"submit", "retry"}:
+                continue
+            wakes = dict(pending.online_wakes)
+            for item in pending.request.items:
+                if item.message.recipient != recipient or item.custody_retry:
+                    continue
+                # This state belongs to an existing exact dispatch claim, not
+                # an independent recipient queue. Repeated wakes coalesce.
+                message_id = item.message.message_id
+                previous = wakes[message_id] if message_id in wakes else now_ms
+                wakes[message_id] = max(now_ms, previous)
+                retained = True
+            if wakes:
+                self._pending_io[correlation_id] = replace(
+                    pending, online_wakes=tuple(wakes.items()),
+                )
+        return retained
+
+    def _apply_inflight_wakes(self, pending: _PendingDispatch, settled_at_ms: int) -> None:
+        # Exact completion matching has already retired the claim. Only rows
+        # still present and unexpired may be advanced; success, terminalization
+        # and cancellation must never be undone. Attempts/TTL are untouched.
+        now_ms = max(settled_at_ms, self._service._now_ms())
+        with self._service._db:
+            for message_id, wake_ms in pending.online_wakes:
+                due_ms = max(now_ms, wake_ms)
+                self._service._db.execute(
+                    "UPDATE outbox SET next_attempt_ms = MIN(next_attempt_ms, ?) "
+                    "WHERE message_id = ? AND expires_at_ms > ?",
+                    (due_ms, message_id, due_ms),
+                )
 
     def _pop_current_completion(
         self,

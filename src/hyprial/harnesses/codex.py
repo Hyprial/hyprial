@@ -25,6 +25,7 @@ from typing import Any, Self
 
 from hyprial import __version__
 from hyprial.backoff import capped_exponential
+from hyprial.contracts.channel import CHANNEL_HEARTBEAT_INTERVAL_SECONDS
 from hyprial.contracts.ports import PortAdmission
 from hyprial.contracts.session import reply_message_id
 from hyprial.daemon.api import HarnessDelivery, HarnessResultStatus
@@ -2859,6 +2860,7 @@ class CodexInteractiveCarrier:
         poll_seconds: float = 0.5,
         logger: Logger | None = None,
         settlement_retry_seconds: float | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         from .streaming import StreamingTurnProcess
 
@@ -2875,6 +2877,10 @@ class CodexInteractiveCarrier:
         self.process_pid = process_pid
         self.process_identity = process_identity
         self.poll_seconds = poll_seconds
+        self._heartbeat_clock = clock
+        self._session_current = False
+        self._liveness_retry_pending = False
+        self._next_heartbeat_at = 0.0
         self.settlement_retry_seconds = (
             poll_seconds
             if settlement_retry_seconds is None
@@ -2971,6 +2977,9 @@ class CodexInteractiveCarrier:
                     )
                     return
                 if str(error).startswith(ipc_errors.STALE_SESSION):
+                    if self._stop.is_set():
+                        return
+                    self._session_current = False
                     try:
                         self.daemon_request(
                             "session.register",
@@ -3007,7 +3016,57 @@ class CodexInteractiveCarrier:
                 delay = min(5.0, max(self.poll_seconds, delay * 2))
             self._stop.wait(delay)
 
+    def _refresh_session(self) -> None:
+        # Reserve the retry interval before I/O: a fast refusal must not turn
+        # high-frequency inbox polling into repeated persistence attempts.
+        self._next_heartbeat_at = (
+            self._heartbeat_clock() + CHANNEL_HEARTBEAT_INTERVAL_SECONDS
+        )
+        self._liveness_retry_pending = True
+        self.daemon_request("session.refresh", self._signed())
+        self._session_current = True
+        self._liveness_retry_pending = False
+        # Refresh itself renews liveness. Schedule from successful completion,
+        # so frequent inbox polling does not add extra persistence writes.
+        self._next_heartbeat_at = (
+            self._heartbeat_clock() + CHANNEL_HEARTBEAT_INTERVAL_SECONDS
+        )
+
+    def _renew_session(self) -> bool:
+        now = self._heartbeat_clock()
+        if now < self._next_heartbeat_at:
+            # A failed renewal remains observable and cannot make the next
+            # throttled poll look ready to consume inbox work.
+            return self._session_current and not self._liveness_retry_pending
+        if not self._session_current:
+            self._refresh_session()
+            return True
+        self._next_heartbeat_at = now + CHANNEL_HEARTBEAT_INTERVAL_SECONDS
+        self._liveness_retry_pending = True
+        try:
+            self.daemon_request("session.heartbeat", self._signed())
+        except Exception as error:
+            if not str(error).startswith(ipc_errors.STALE_DAEMON_GENERATION):
+                raise
+            # Persisted ownership survives daemon replacement. Confirm the new
+            # generation without re-registering or competing with a new owner.
+            self._session_current = False
+            if not self._stop.is_set():
+                self._refresh_session()
+            return self._session_current
+        self._liveness_retry_pending = False
+        self._next_heartbeat_at = (
+            self._heartbeat_clock() + CHANNEL_HEARTBEAT_INTERVAL_SECONDS
+        )
+        return True
+
     def _poll_once(self) -> None:
+        if self._stop.is_set():
+            return
+        if not self._renew_session():
+            return
+        if self._stop.is_set():
+            return
         self._retry_carrier_facts()
         self._refill_staged_fetched()
         fetched_versions = {
