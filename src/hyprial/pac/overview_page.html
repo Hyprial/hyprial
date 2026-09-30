@@ -135,6 +135,13 @@ button { font: inherit; color: inherit; }
 .crumbs .here { color: var(--ink); font-weight: 600; }
 .note { font-size: 12.5px; color: var(--muted); background: var(--surface-2); border: 1px dashed var(--line); border-radius: 10px; padding: 8px 12px; margin-bottom: 16px; max-width: 110ch; }
 .note b { color: var(--ink); font-weight: 600; }
+.tip { display: inline-grid; place-items: center; width: 20px; height: 20px; padding: 0; border-radius: 50%; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font: 600 11.5px/1 var(--mono); cursor: pointer; flex: none; text-transform: none; letter-spacing: 0; vertical-align: middle; }
+.tip:hover { border-color: var(--accent); color: var(--accent); }
+.tip[aria-expanded="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.crumbs .tip { margin-left: auto; }
+.fold { justify-self: start; border: 1px dashed var(--line); background: none; border-radius: 8px; padding: 4px 10px; margin: 2px 0 2px 8px; font-size: 12px; color: var(--muted); cursor: pointer; }
+.fold:hover { border-color: var(--accent); color: var(--accent); }
+.fold .caret { display: inline-block; width: 1em; }
 .content { position: relative; }
 svg.arrows { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; z-index: 0; }
 svg.arrows.over { z-index: 3; }
@@ -319,7 +326,7 @@ svg.arrows .arrowhead { fill: var(--accent); }
     <div id="ghosts"></div>
     <div class="panel">
       <nav class="crumbs" id="crumbs"></nav>
-      <div class="note" id="note"></div>
+      <div class="note" id="tip-note" data-tip-body="note" hidden></div>
       <div class="content" id="content"></div>
     </div>
   </section>
@@ -371,6 +378,8 @@ svg.arrows .arrowhead { fill: var(--accent); }
   let selectedNode = null;
   let hotId = null;
   let showOlder = false;
+  const openTips = new Set(Array.isArray(saved?.tips) ? saved.tips : []);
+  const unfolded = new Set(Array.isArray(saved?.unfolded) ? saved.unfolded : []);
 
   const tz = { timeZone: "Asia/Shanghai", hour12: false };
   const fmtFull = new Intl.DateTimeFormat("zh-CN", { ...tz, month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
@@ -385,14 +394,46 @@ svg.arrows .arrowhead { fill: var(--accent); }
     return (s / 86400).toFixed(1).replace(/\.0$/, "") + "天";
   };
   const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  // Explanations stay out of the way: an (i) button toggles a hidden body with
+  // id tip-<key>.  Open tips survive re-renders and the per-minute reload.
+  const tip = (key, label) => `<button type="button" class="tip" data-tip="${esc(key)}" aria-controls="tip-${esc(key)}" aria-expanded="${openTips.has(key)}" aria-label="${esc(label)}" title="${esc(label)}">i</button>`;
+  const tipBody = (key, html) => `<div class="note" id="tip-${esc(key)}" data-tip-body="${esc(key)}"${openTips.has(key) ? "" : " hidden"}>${html}</div>`;
+  function setTip(key, open) {
+    if (open) openTips.add(key); else openTips.delete(key);
+    document.querySelectorAll(`[data-tip="${CSS.escape(key)}"]`).forEach(b => b.setAttribute("aria-expanded", String(open)));
+    const body = document.getElementById("tip-" + key);
+    if (body) body.hidden = !open;
+  }
+  document.addEventListener("click", e => {
+    const b = e.target.closest(".tip");
+    if (b) { e.stopPropagation(); setTip(b.dataset.tip, !openTips.has(b.dataset.tip)); }
+  }, true);
   const STATE_ZH = { unknown: "未知", running: "运行中", completed: "完成", done: "完成", failed: "失败", cancelled: "取消", waiting: "等待中", pending: "等待中", requested: "已派发" };
 
+  // ---- lane activity: pure functions; tests/test_pac_overview.py runs this block in node ----
   function stateAt(r, t) {
     if (r.created > t) return null;
     const end = r.closed ?? (r.state !== "running" ? r.progress : null);
     if (end != null && end <= t) return r.state;
     return "running";
   }
+  const endOf = r => r.closed ?? (r.state !== "running" ? r.progress : null);
+  // Active in the window (t - winMs, t]: running at t, or created or closed inside it.
+  function activeIn(r, t, winMs) {
+    const s = stateAt(r, t);
+    if (!s) return false;
+    if (s === "running") return true;
+    const from = t - winMs, end = endOf(r);
+    return r.created > from || (end != null && end > from);
+  }
+  // A line has tasks when one of its one-off PACs or routine runs is active in
+  // the window.  A PAC that finished inside the window counts: its result is
+  // what the window's numbers report.  Lines without tasks fold (agents only).
+  function lineHasTasks(line, runsById, t, winMs) {
+    return [...line.runs, ...line.routines.flatMap(rt => rt.runs)]
+      .some(id => { const r = runsById.get(id); return !!r && activeIn(r, t, winMs); });
+  }
+  // ---- end lane activity ----
   function nodeStateAt(r, n, t) {
     if (n.flagAt && n.flagAt <= t) return n.state;
     const g = stateAt(r, t);
@@ -400,7 +441,6 @@ svg.arrows .arrowhead { fill: var(--accent); }
     return n.state === "done" || n.state === "failed" ? "waiting" : n.state;
   }
   const visibleRuns = ids => ids.map(id => RUNS.get(id)).filter(r => r.created <= T);
-  const endOf = r => r.closed ?? (r.state !== "running" ? r.progress : null);
   // Hourly macro series for the timeline: runs closed per hour by outcome,
   // and how many were running at the end of each hour.
   const HOURS = Math.ceil((NOW - T0) / HOUR);
@@ -426,13 +466,8 @@ svg.arrows .arrowhead { fill: var(--accent); }
     return c;
   }
   // In the window: running at T, or started or finished inside (T - WIN, T].
-  function inWindow(r) {
-    const s = stateAt(r, T);
-    if (!s) return false;
-    if (s === "running") return true;
-    const from = T - WIN * HOUR, end = endOf(r);
-    return r.created > from || (end != null && end > from);
-  }
+  const inWindow = r => activeIn(r, T, WIN * HOUR);
+  const hasTasks = line => lineHasTasks(line, RUNS, T, WIN * HOUR);
   const winLabel = () => WIN >= 168 ? "过去 7 天" : `过去 ${WIN} 小时`;
 
   /* ---------- header ---------- */
@@ -566,7 +601,7 @@ svg.arrows .arrowhead { fill: var(--accent); }
     else if (e.key === "{") setT(T - 6 * HOUR);
     else if (e.key === "]") setT(T + HOUR);
     else if (e.key === "}") setT(T + 6 * HOUR);
-    else if (e.key === "Escape") up();
+    else if (e.key === "Escape") { if (openTips.size) [...openTips].forEach(k => setTip(k, false)); else up(); }
   });
 
   /* ---------- navigation ---------- */
@@ -583,16 +618,18 @@ svg.arrows .arrowhead { fill: var(--accent); }
       parts.push(`<span>›</span><button data-go="line" data-id="${esc(line.id)}">${esc(line.title)}</button>`);
       parts.push(`<span>›</span><span class="here mono">${esc(r.name)}</span>`);
     }
+    parts.push(tip("note", "这一页怎么看"));
     const el = document.getElementById("crumbs");
     el.innerHTML = parts.join("");
     el.onclick = e => {
-      const b = e.target.closest("button"); if (!b) return;
+      const b = e.target.closest("button[data-go]"); if (!b) return;
       go(b.dataset.go === "line" ? { level: "line", id: b.dataset.id } : { level: "lines" });
     };
   }
   function renderNote() {
-    const n = document.getElementById("note");
-    if (view.level === "lines") n.innerHTML = `外层是人和 agent，里层是他们名下的任务线：squire 在 missions 空间登记过的 PAC 归到对应的 mission（排在最前，带编号）；其余互相关联的 PAC（同一个 PR、同一主题、重跑）归为一条，其余零散的归到“其他”，例行各占一条细线。没有登记到 mission 的任务线是推断的。空心点是别人为这条线跑的 PAC。圆点是一次性任务（Workflow），位置是开始时间、颜色是状态，还在跑的拖一条线到当前时刻；小刻度是例行（Routine）的每次运行。鼠标移到圆点上会高亮它的关联箭头。点圆点看这个 PAC，点线名展开这条线。时间轴范围就是统计窗口。拖动时间轴，或在面板上方的叠层上滚动，可以回看任意时刻。`;
+    const n = document.getElementById("tip-note");
+    n.hidden = !openTips.has("note");
+    if (view.level === "lines") n.innerHTML = `外层是人和 agent，里层是他们名下的任务线：squire 在 missions 空间登记过的 PAC 归到对应的 mission（排在最前，带编号）；其余互相关联的 PAC（同一个 PR、同一主题、重跑）归为一条，其余零散的归到“其他”，例行各占一条细线。没有登记到 mission 的任务线是推断的。空心点是别人为这条线跑的 PAC。圆点是一次性任务（Workflow），位置是开始时间、颜色是状态，还在跑的拖一条线到当前时刻；小刻度是例行（Routine）的每次运行。鼠标移到圆点上会高亮它的关联箭头。点圆点看这个 PAC，点线名展开这条线。窗口内没有任务的 agent 任务线收成一行“另有 N 条没有任务的线”，点它展开。时间轴范围就是统计窗口。拖动时间轴，或在面板上方的叠层上滚动，可以回看任意时刻。`;
     else if (view.level === "line") n.innerHTML = `上面是例行：每条心跳条是一个 routine，每一格是它产生的一次运行。下面是一次性任务，卡片按创建时间排列。实线箭头：名字里有同一个 PR 号或主题词；虚线：同名重跑。点开卡片看这张 PAC 图的节点。`;
     else {
       const r = RUNS.get(view.id);
@@ -658,9 +695,9 @@ svg.arrows .arrowhead { fill: var(--accent); }
     for (const r of inWin) { const st = stateAt(r, T); c[st] = (c[st] || 0) + 1; }
     const ticks = seen.map(r => {
       const st = stateAt(r, T), xx = x(r.created);
-      return `<g data-run="${esc(r.id)}"${inWindow(r) ? "" : ` opacity="0.3"`}><title>${esc(full(r.created))} · ${STATE_ZH[st] || st}</title>
+      return `<g data-run="${esc(r.id)}"${inWindow(r) ? "" : ` opacity="0.3"`}><title>${esc(full(r.created))} · ${esc(STATE_ZH[st] || st)}</title>
         <rect class="hit" x="${(xx - 6).toFixed(1)}" y="0" width="12" height="${H - 8}"/>
-        <line class="tick s-${st}" x1="${xx.toFixed(1)}" x2="${xx.toFixed(1)}" y1="${y - 8}" y2="${y + 8}"/></g>`;
+        <line class="tick s-${esc(st)}" x1="${xx.toFixed(1)}" x2="${xx.toFixed(1)}" y1="${y - 8}" y2="${y + 8}"/></g>`;
     }).join("");
     const days = [];
     for (let t = Math.ceil((T0 + 8 * HOUR) / (24 * HOUR)) * 24 * HOUR - 8 * HOUR; t <= NOW; t += 24 * HOUR) {
@@ -708,15 +745,15 @@ svg.arrows .arrowhead { fill: var(--accent); }
       const tail = s === "running" ? `<span class="trail s-running" style="left:${x}%;width:${Math.max(0, pos(end) - x)}%"></span>` : "";
       const other = r.actor && r.actor !== line.actor;
       const who = other ? ` · ${esc(r.sender)}` : "";
-      return `${tail}<button class="pt s-${s}${other ? " other" : ""}" style="left:${x}%" data-key="${esc(r.id)}" data-run="${esc(r.id)}" title="${esc(r.name)} · ${esc(STATE_ZH[s] || s)} · ${esc(full(r.created))}${who}" aria-label="${esc(r.name)}，${esc(STATE_ZH[s] || s)}${who}"></button>`;
+      return `${tail}<button class="pt s-${esc(s)}${other ? " other" : ""}" style="left:${x}%" data-key="${esc(r.id)}" data-run="${esc(r.id)}" title="${esc(r.name)} · ${esc(STATE_ZH[s] || s)} · ${esc(full(r.created))}${who}" aria-label="${esc(r.name)}，${esc(STATE_ZH[s] || s)}${who}"></button>`;
     }).join("");
     const beatRuns = line.routines.flatMap(rt => rt.runs.map(id => RUNS.get(id)))
       .filter(r => r.created <= to && r.created >= from);
     const beats = beatRuns
-      .map(r => `<button class="beat-pt s-${stateAt(r, T)}" style="left:${pos(r.created)}%" data-run="${esc(r.id)}" title="↻ ${esc(r.routine)} · ${esc(STATE_ZH[stateAt(r, T)] || "")} · ${esc(full(r.created))}" aria-label="例行 ${esc(r.routine)}"></button>`).join("");
+      .map(r => `<button class="beat-pt s-${esc(stateAt(r, T))}" style="left:${pos(r.created)}%" data-run="${esc(r.id)}" title="↻ ${esc(r.routine)} · ${esc(STATE_ZH[stateAt(r, T)] || "")} · ${esc(full(r.created))}" aria-label="例行 ${esc(r.routine)}"></button>`).join("");
     const failing = line.routines.filter(rt => routineLast(rt)?.state === "failed").length;
     const counts = ["running", "completed", "failed"].filter(k => w[k]).map(k => `<span class="s-${k}"><span class="dot"></span><span class="mono">${w[k]}</span></span>`).join("");
-    const quiet = !runs.length && !beats;
+    const quiet = !hasTasks(line);
     return `<div class="lane lane-${line.kind}${quiet ? " quiet" : ""}">
       <button class="lane-head" data-line="${esc(line.id)}">
         <b>${line.mission ? `<span class="mid">${esc(line.mission.id)}</span>` : ""}${esc(line.title)}</b>
@@ -745,14 +782,19 @@ svg.arrows .arrowhead { fill: var(--accent); }
       const n = rows.reduce((sum, row) => sum + row.a.n, 0), last = Math.max(0, ...rows.map(row => row.a.last));
       return { key, info, rows, n, last };
     }).sort((x, y) => (y.n > 0) - (x.n > 0) || y.last - x.last || x.info.name.localeCompare(y.info.name));
+    // An agent's lines without tasks fold into one row; people's lines never fold.
     const actorBlock = g => {
+      const busy = g.info.human ? g.rows : g.rows.filter(row => hasTasks(row.line));
+      const idle = g.info.human ? [] : g.rows.filter(row => !hasTasks(row.line));
+      const open = unfolded.has(g.key);
+      const fold = idle.length ? `<button type="button" class="fold" data-fold="${esc(g.key)}" aria-expanded="${open}"><span class="caret" aria-hidden="true">${open ? "▾" : "▸"}</span>${open ? "收起" : "另有"} ${idle.length} 条没有任务的线</button>` : "";
       const w = windowCounts(g.rows.flatMap(row => row.line.runs.map(id => RUNS.get(id))));
       const counts = ["running", "completed", "failed"].filter(k => w[k]).map(k => `<span class="s-${k}"><span class="dot"></span>${STATE_ZH[k]} <span class="mono">${w[k]}</span></span>`).join("");
       const tasks = g.rows.filter(row => row.line.kind === "task" || row.line.kind === "mission").length;
       const name = g.info.human ? g.info.name.replace(/^user:/, "") : g.info.name;
       return `<div class="actor${g.n ? "" : " quiet"}">
         <div class="actor-head"><b>${esc(name)}</b><span class="lane-meta">${MULTI ? esc(g.info.node) + " · " : ""}${tasks ? `${tasks} 条任务线` : "只有例行和零散任务"}${counts ? " · " : ""}${counts}</span></div>
-        ${g.rows.map(row => lane(row.line, from, to)).join("")}
+        ${busy.map(row => lane(row.line, from, to)).join("")}${fold}${open ? idle.map(row => lane(row.line, from, to)).join("") : ""}
       </div>`;
     };
     const people = groups.filter(g => g.info.human), agents = groups.filter(g => !g.info.human);
@@ -763,6 +805,8 @@ svg.arrows .arrowhead { fill: var(--accent); }
       </div>`;
     const box = el.querySelector(".lanes");
     box.onclick = e => {
+      const f = e.target.closest("[data-fold]");
+      if (f) { const k = f.dataset.fold; if (unfolded.has(k)) unfolded.delete(k); else unfolded.add(k); renderLines(el); el.querySelector(`[data-fold="${CSS.escape(k)}"]`)?.focus(); return; }
       const d = e.target.closest("[data-run]");
       if (d) { const r = RUNS.get(d.dataset.run); go({ level: "pac", id: r.id, from: r.line }); return; }
       const h = e.target.closest("[data-line]");
@@ -791,7 +835,7 @@ svg.arrows .arrowhead { fill: var(--accent); }
           ${line.routines.length ? `<dt>例行</dt><dd>${line.routines.length} 个，见下方心跳条</dd>` : ""}
           ${cross.length ? `<dt>跨线</dt><dd>${cross.length} 处关联到其他任务线</dd>` : ""}</dl></div>
       </div>
-      ${line.routines.length ? `<div class="section-label">↻ 例行<span>每一格是一次运行，颜色是结果；点一格打开那次的 PAC 图</span></div><div class="beats">${line.routines.map(beatStrip).join("")}</div>` : ""}
+      ${line.routines.length ? `<div class="section-label">↻ 例行 ${tip("beats", "心跳条怎么看")}</div>${tipBody("beats", "每一格是一次运行，颜色是结果；点一格打开那次的 PAC 图。")}<div class="beats">${line.routines.map(beatStrip).join("")}</div>` : ""}
       <div class="section-label">一次性任务<span>${winLabel()}有活动的 ${shown.length} 个</span></div>
       ${shown.length ? `<div class="pacs">${shown.map(r => pacCard(r, false)).join("")}</div>` : `<div class="empty">${winLabel()}没有一次性任务的活动。</div>`}
       ${older.length ? `<button class="btn" id="older" style="margin-top:14px">${showOlder ? "只看窗口内的" : `显示更早的 ${older.length} 个`}</button>` : ""}`;
@@ -814,9 +858,9 @@ svg.arrows .arrowhead { fill: var(--accent); }
     const rel = relatedOf(r.id).filter(k => RUNS.get(k.from).created <= T && RUNS.get(k.to).created <= T);
     const crossN = rel.filter(k => RUNS.get(k.from).line !== RUNS.get(k.to).line).length;
     const endAt = r.closed && r.closed <= T ? r.closed : null;
-    return `<button class="card pac s-${s}" data-key="${esc(r.id)}" data-run="${esc(r.id)}">
+    return `<button class="card pac s-${esc(s)}" data-key="${esc(r.id)}" data-run="${esc(r.id)}">
       <h4>${esc(compact ? fmtHM.format(r.created) : r.name)}</h4>
-      <div class="meta"><span class="s-${s}" style="display:inline-flex;gap:5px;align-items:center"><span class="dot"></span>${STATE_ZH[s] || s}</span>
+      <div class="meta"><span class="s-${esc(s)}" style="display:inline-flex;gap:5px;align-items:center"><span class="dot"></span>${esc(STATE_ZH[s] || s)}</span>
         ${compact ? "" : `<span class="mono">${esc(full(r.created))}</span><span>${endAt ? "用时 " + dur(endAt - r.created) : "已运行 " + dur(T - r.created)}</span>`}</div>
       ${!compact && r.current && s === "running" && NOW - T < 60e3 ? `<div class="meta">当前节点 <span class="mono">${esc(r.current.nodeId)}:${esc(STATE_ZH[r.current.state] || r.current.state)}</span></div>` : ""}
       ${!compact && (rel.length || r.nodes.length) ? `<div class="rel">${[r.nodes.length ? r.nodes.length + " 个节点" : "", rel.length ? rel.length + " 处关联" + (crossN ? `（${crossN} 处跨线）` : "") : ""].filter(Boolean).join(" · ")}</div>` : ""}
@@ -832,9 +876,9 @@ svg.arrows .arrowhead { fill: var(--accent); }
       <div>
         <h2>${esc(r.name)}</h2>
         ${r.routine ? `<div class="who" style="margin-bottom:6px"><span class="cycle" aria-hidden="true">↻</span><span>例行 <span class="mono">${esc(r.routine)}</span> 的第 ${LINES.get(r.line).routines.find(x => x.name === r.routine).runs.indexOf(r.id) + 1} 次运行</span></div>` : ""}
-        <div class="meta pac" style="border:0;padding:0;margin-bottom:12px"><span class="s-${s || "pending"}" style="display:inline-flex;gap:5px;align-items:center"><span class="dot"></span>${s ? STATE_ZH[s] || s : "所选时刻尚未创建"}</span>
+        <div class="meta pac" style="border:0;padding:0;margin-bottom:12px"><span class="s-${esc(s || "pending")}" style="display:inline-flex;gap:5px;align-items:center"><span class="dot"></span>${s ? esc(STATE_ZH[s] || s) : "所选时刻尚未创建"}</span>
           <span>发起：${esc(r.sender)}</span><span class="mono">${esc(r.id)}</span></div>
-        ${r.nodes.length ? `<div class="dag-wrap">${dag(r)}</div>` : `<div class="empty">节点详情不可见（见上方说明）。${r.current ? `列表里记录的当前节点：<span class="mono">${esc(r.current.nodeId)}:${esc(r.current.state)}</span>` : ""}</div>`}
+        ${r.nodes.length ? `<div class="dag-wrap">${dag(r)}</div>` : `<div class="empty">节点详情不可见（原因见上方 ⓘ）。${r.current ? `列表里记录的当前节点：<span class="mono">${esc(r.current.nodeId)}:${esc(r.current.state)}</span>` : ""}</div>`}
       </div>
       <div class="side">
         <div class="box"><h5>时间</h5><dl class="kv" style="grid-template-columns:4.5em 1fr"><dt>创建</dt><dd class="mono">${esc(full(r.created))}</dd>
@@ -878,7 +922,7 @@ svg.arrows .arrowhead { fill: var(--accent); }
       const p = pos.get(n.id), ns = nodeStateAt(r, n, T);
       return `<g data-node="${esc(n.id)}" class="${selectedNode === n.id ? "sel" : ""}" tabindex="0" role="button" aria-label="节点 ${esc(n.id)}">
         <rect class="node" x="${p.x}" y="${p.y}" width="${W}" height="${H}" rx="9"/>
-        <rect class="stripe s-${ns}" x="${p.x}" y="${p.y + 8}" width="4" height="${H - 16}" rx="2"/>
+        <rect class="stripe s-${esc(ns)}" x="${p.x}" y="${p.y + 8}" width="4" height="${H - 16}" rx="2"/>
         <text x="${p.x + 14}" y="${p.y + 22}" font-weight="600">${esc(n.id)}</text>
         <text class="small" x="${p.x + 14}" y="${p.y + 40}">${esc(n.kind)}${n.role ? " · " + esc(n.role) : ""} · ${esc(STATE_ZH[ns] || ns)}</text>
         <text class="small" x="${p.x + 14}" y="${p.y + 57}">${esc(n.owner.length > 26 ? "…" + n.owner.slice(-25) : n.owner)}</text></g>`;
@@ -897,7 +941,7 @@ svg.arrows .arrowhead { fill: var(--accent); }
   let resizeTimer;
   window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(render, 120); });
   function remember() {
-    try { sessionStorage.setItem("pac-overview", JSON.stringify({ T, followNow: NOW - T < 60e3, WIN, view })); } catch {}
+    try { sessionStorage.setItem("pac-overview", JSON.stringify({ T, followNow: NOW - T < 60e3, WIN, view, tips: [...openTips], unfolded: [...unfolded] })); } catch {}
   }
   setInterval(() => { remember(); location.reload(); }, 60e3);
   if (!PARTS.length) {
