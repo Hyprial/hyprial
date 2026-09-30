@@ -14,6 +14,7 @@ from hyprial.contracts.lifecycle_budgets import (
 )
 import difflib
 import errno
+import hashlib
 import json
 import math
 import mimetypes
@@ -6687,9 +6688,21 @@ def _org_meta(document: Any) -> JsonObject:
 
 @org_app.command("show")
 def org_show(
+    full: bool = typer.Option(
+        False,
+        "--full",
+        help=(
+            "Also print the whole adopted document (members, lines, routing, "
+            "norms, residents) and the sha256 of its bytes."
+        ),
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
-    """Show the organization view this node's owner has adopted."""
+    """Show the organization view this node's owner has adopted.
+
+    Org context is public within the organization: ``--full`` lets any user or
+    agent read it without opening the accepted file under HYPRIAL_HOME.
+    """
 
     def operation() -> JsonObject:
         from hyprial.org.document import document_summary
@@ -6715,9 +6728,22 @@ def org_show(
             },
             "adoptedAt": record.adopted_at.isoformat().replace("+00:00", "Z"),
             "summary": document_summary(document),
+            **(_org_full_document(store, document) if full else {}),
         }
 
     _execute(operation, json_output=json_output)
+
+
+def _org_full_document(store: Any, document: Any) -> JsonObject:
+    """The adopted document as JSON, with the digest of the bytes it came from."""
+
+    accepted = store.accepted_path.read_bytes()
+    body = {key: value for key, value in document.data.items() if key != "meta"}
+    return {
+        "documentSha256": hashlib.sha256(accepted).hexdigest(),
+        # YAML dates and other scalars become plain JSON values.
+        "document": json.loads(json.dumps(body, ensure_ascii=False, default=str)),
+    }
 
 
 @org_app.command("status")

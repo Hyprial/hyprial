@@ -196,8 +196,10 @@ state 由 finish 生成(完整的 asked 和 declined 集合,超出 7 天窗口�
 
 ## 组织上下文(本地 owner 主权)
 
-- 处理归线、成员或 resident 问题前,读取 `~/.hyprial/org-context.md`;也可用
-  `hyprial org show` 查看本节点已采信版本、publisher 与内容摘要。
+- 处理归线、成员或 resident 问题前,用 `hyprial org show --full --json` 读取本节点已采信的完整
+  org-context(成员、任务线、路由、常驻角色、规范),引用时写上它给出的 `documentSha256`,
+  说明你读的是哪一版。不带 `--full` 时只给版本、publisher 和摘要。⛔ 不要直接打开
+  `~/.hyprial/org-context.md`:org-context 是组织内的公开信息,本来就应该用这个命令读。
 - 文件缺失时必须向 <用户> 大声说明 `org-context absent`,不得把记忆、别处版本
   或自己的推断冒充本节点已采信视图;`hyprial org status` 可检查槽位与暂存区。
 - 没有全局权威源。Ed25519 签名只证明文档来自所展示的密钥,不证明发布者拥有
