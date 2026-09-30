@@ -7897,9 +7897,68 @@ def _migration_manifest(path: Path) -> JsonObject:
     return value
 
 
+_MIGRATION_ROUTINE_BINDING_FIELDS = (
+    "owner",
+    "actor",
+    "produces",
+    "target",
+    "targetUri",
+    "coordinator",
+    "coordinatorUri",
+)
+
+
+def _routine_binding_matches_agent(value: object, requested: str) -> bool:
+    if not isinstance(value, str):
+        return False
+    if value == requested:
+        return True
+    requested_uri = parse_agent_uri(requested)
+    candidate_uri = parse_agent_uri(value)
+    if requested_uri is not None:
+        return candidate_uri == requested_uri
+    return candidate_uri is not None and candidate_uri[2] == requested
+
+
+def _guard_agent_migration_routines(agent: str, *, json_output: bool) -> None:
+    result = _daemon_request(
+        "routine.list",
+        {"all": True, **_routine_identity(json_output)},
+    )
+    if not isinstance(result, dict) or not isinstance(result.get("routines"), list):
+        raise CliError("INVALID_RESPONSE", "routine.list must return routines")
+
+    active: list[str] = []
+    for routine in result["routines"]:
+        if not isinstance(routine, dict):
+            raise CliError("INVALID_RESPONSE", "routine.list routines must be objects")
+        if routine.get("enabled") is not True:
+            continue
+        if any(
+            _routine_binding_matches_agent(routine.get(field), agent)
+            for field in _MIGRATION_ROUTINE_BINDING_FIELDS
+        ):
+            name = routine.get("name")
+            active.append(name if isinstance(name, str) and name else "<unnamed>")
+    if active:
+        names = ", ".join(active)
+        raise CliError(
+            "ROUTINE_ACTIVE",
+            f"enabled routine(s) {names} are bound to agent {agent!r}; "
+            "pause them with `hyprial routine pause <name>` and resume after "
+            "the migration",
+        )
+
+
 @migration_app.command("preflight")
 def agent_migrate_preflight(
-    agent: str = typer.Argument(..., help="Registered non-resident agent name."),
+    agent: str = typer.Argument(
+        ...,
+        help=(
+            "Registered agent name (resident agents: pause their routines and "
+            "stop them first)."
+        ),
+    ),
     manifest: Path = typer.Option(
         ...,
         "--manifest",
@@ -7912,18 +7971,25 @@ def agent_migrate_preflight(
 ) -> None:
     """Validate and privately persist one immutable migration plan."""
 
-    _execute(
-        lambda: _daemon_request(
+    def operation() -> Any:
+        _guard_agent_migration_routines(agent, json_output=json_output)
+        return _daemon_request(
             "agent.migrate.preflight",
             {"agent": agent, "manifest": _migration_manifest(manifest)},
-        ),
-        json_output=json_output,
-    )
+        )
+
+    _execute(operation, json_output=json_output)
 
 
 @migration_app.command("execute")
 def agent_migrate_execute(
-    agent: str = typer.Argument(..., help="Registered non-resident agent name."),
+    agent: str = typer.Argument(
+        ...,
+        help=(
+            "Registered agent name (resident agents: pause their routines and "
+            "stop them first)."
+        ),
+    ),
     migration_id: str = typer.Option(
         ..., "--migration-id", help="Migration id returned by preflight."
     ),
@@ -7931,18 +7997,25 @@ def agent_migrate_execute(
 ) -> None:
     """Execute a daemon-persisted preflight plan."""
 
-    _execute(
-        lambda: _daemon_request(
+    def operation() -> Any:
+        _guard_agent_migration_routines(agent, json_output=json_output)
+        return _daemon_request(
             "agent.migrate.execute",
             {"agent": agent, "migrationId": migration_id},
-        ),
-        json_output=json_output,
-    )
+        )
+
+    _execute(operation, json_output=json_output)
 
 
 @migration_app.command("rollback")
 def agent_migrate_rollback(
-    agent: str = typer.Argument(..., help="Registered non-resident agent name."),
+    agent: str = typer.Argument(
+        ...,
+        help=(
+            "Registered agent name (resident agents: pause their routines and "
+            "stop them first)."
+        ),
+    ),
     migration_id: str = typer.Option(
         ..., "--migration-id", help="Completed migration id to roll back."
     ),
@@ -7963,8 +8036,9 @@ def agent_migrate_rollback(
 ) -> None:
     """Roll back a completed plan under a fresh authorization window."""
 
-    _execute(
-        lambda: _daemon_request(
+    def operation() -> Any:
+        _guard_agent_migration_routines(agent, json_output=json_output)
+        return _daemon_request(
             "agent.migrate.rollback",
             {
                 "agent": agent,
@@ -7975,9 +8049,9 @@ def agent_migrate_rollback(
                     "expiresAtMs": expires_at_ms,
                 },
             },
-        ),
-        json_output=json_output,
-    )
+        )
+
+    _execute(operation, json_output=json_output)
 
 
 @agent_app.command("destroy")

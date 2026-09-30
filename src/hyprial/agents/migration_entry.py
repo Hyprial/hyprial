@@ -88,6 +88,7 @@ class MigrationPreflightManifest:
     authorization_window: MigrationAuthorizationWindow
     entries: tuple[MigrationEntry, ...]
     required_support: tuple[SupportKey, ...]
+    subject_kind: str
 
     @classmethod
     def from_json(cls, value: object) -> Self:
@@ -104,12 +105,12 @@ class MigrationPreflightManifest:
         )
         if raw["schemaVersion"] != _SCHEMA_VERSION:
             raise ValueError("unsupported migration manifest schemaVersion")
-        # G-R is unresolved and the registry intentionally has no resident
-        # column.  Require an explicit non-resident attestation and reject all
-        # other values instead of inferring scope from an actor name.
-        if raw["subjectKind"] != "non-resident":
+        # Allen ruled on G-R on 2026-09-29: resident agents are allowed.  Keep
+        # the attestation explicit instead of inferring scope from an actor
+        # name.
+        if raw["subjectKind"] not in ("non-resident", "resident"):
             raise ValueError(
-                "migration manifest subjectKind must be 'non-resident' while G-R is unresolved"
+                "migration manifest subjectKind must be one of 'non-resident' or 'resident'"
             )
         entries = raw["entries"]
         support = raw["requiredSupport"]
@@ -126,6 +127,7 @@ class MigrationPreflightManifest:
             MigrationAuthorizationWindow.from_json(raw["authorizationWindow"]),
             tuple(MigrationEntry.from_json(item) for item in entries),
             parsed_support,
+            raw["subjectKind"],
         )
 
 
