@@ -36,7 +36,12 @@ from .lifecycle import (
     RuntimeObservation,
 )
 from .migrations import unrewritten_owners_note
-from .reactor import NotificationSender, PacReactor, planned_to_json
+from .reactor import (
+    NotificationSender,
+    PacReactor,
+    permanent_delivery_failure,
+    planned_to_json,
+)
 from .restore_facts import PacRestoreFacts
 from .store import NodeRow, PacGraphStore
 from .workflow_graph import compile_workflow, replay_graph
@@ -102,6 +107,22 @@ class RecordDelivery:
     event_id: str
     edge: str
     message_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class RecordFailure:
+    """Terminalize one notification whose send failed permanently (#987).
+
+    Routed through the writer like RecordDelivery: in actorized mode the
+    workflow runtime drains from a read-only store and must never write.
+    """
+
+    correlation_id: str
+    graph_id: str
+    event_id: str
+    edge: str
+    code: str
+    detail: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -408,7 +429,7 @@ class _DeferredResolver:
 
 GraphCommand = (
     SetFlag | ResetFlag | ActivateGraph | CloseGraph | StopActor | ClockTick
-    | RecordDelivery | WorkflowTick | ProbeWorkflow | StartWorkflow
+    | RecordDelivery | RecordFailure | WorkflowTick | ProbeWorkflow | StartWorkflow
     | CancelWorkflow | StopWorkflowWorker | RestartWorkflowWorker | FailWorkflow
     | HarnessOutcome | RequestPruned
     | EnsureRemoteKey | StageRemoteOffer | EnqueueRemoteOutcome
@@ -1196,6 +1217,14 @@ class _Generation:
                     command.event_id, command.edge, command.message_id
                 )
                 return {"ok": True}
+            if isinstance(command, RecordFailure):
+                changed = PacReactor(
+                    store, logger=self.owner._notification_logger
+                )._mark_failed(
+                    command.graph_id, command.event_id, command.edge,
+                    code=command.code, detail=command.detail,
+                )
+                return {"ok": True, "changed": changed}
             raise TypeError("unsupported PAC graph command")
         finally:
             store.close()
@@ -1232,6 +1261,7 @@ class PacGraphAuthority:
                 )
             raise
         self.sender = sender
+        self._notification_logger = logger
         self._call_timeout = call_timeout
         self._completion_capacity = completion_capacity
         self._pending: dict[str, _Pending] = {}
@@ -1495,6 +1525,14 @@ class PacGraphAuthority:
             message_id,
         ))
 
+    def record_failure(
+        self, graph_id: str, event_id: str, edge: str, *, code: str, detail: str
+    ) -> None:
+        self._call(RecordFailure(
+            f"pac-delivery-failure-{uuid4().hex}", graph_id, event_id, edge,
+            code, detail,
+        ))
+
     def attach_workflow(self, service: Any) -> None:
         if Path(service.database).resolve() != self.database.resolve():
             raise ValueError("workflow and graph authority must own the same PAC file")
@@ -1754,7 +1792,8 @@ class PacGraphAuthority:
             rows = store._db.execute(
                 "SELECT n.*, e.graph_id FROM notifications n "
                 "LEFT JOIN flag_events e ON e.event_id=n.event_id "
-                "WHERE n.message_id IS NULL ORDER BY n.at,n.event_id,n.edge LIMIT 128"
+                "WHERE n.message_id IS NULL AND n.failed_at IS NULL "
+                "ORDER BY n.at,n.event_id,n.edge LIMIT 128"
             ).fetchall()
             deliveries: list[_Delivery] = []
             for row in rows:
@@ -1800,8 +1839,19 @@ class PacGraphAuthority:
                         conversation_id=f"pac-{item.graph_id}",
                         idempotency_key=f"pac-notify:{item.event_id}:{item.edge}",
                     )
-                except Exception:
-                    continue  # retry from the durable row
+                except Exception as error:
+                    terminal = permanent_delivery_failure(error)
+                    if terminal is not None:
+                        # A permanent refusal is recorded once and never
+                        # re-sent; anything else retries from the durable row.
+                        try:
+                            self.record_failure(
+                                item.graph_id, item.event_id, item.edge,
+                                code=terminal[0], detail=terminal[1],
+                            )
+                        except Exception:  # noqa: BLE001 - row stays pending
+                            pass
+                    continue
                 command = NotificationDelivered(
                     self._runtime.snapshot(self._handle).generation,
                     item.graph_id, item.event_id, item.edge, str(message_id),

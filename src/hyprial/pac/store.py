@@ -217,6 +217,9 @@ class NotificationRow:
     message_id: str | None
     at: int
     delivered_at: int | None
+    failed_at: int | None
+    failure_code: str | None
+    failure_detail: str | None
     plan: dict[str, Any] | None = None
 
     def to_json(self) -> dict[str, Any]:
@@ -251,6 +254,9 @@ def _notification_row(row: sqlite3.Row) -> NotificationRow:
         message_id=row["message_id"],
         at=row["at"],
         delivered_at=row["delivered_at"],
+        failed_at=row["failed_at"],
+        failure_code=row["failure_code"],
+        failure_detail=row["failure_detail"],
         plan=json.loads(row["plan_json"]) if row["plan_json"] else None,
     )
 

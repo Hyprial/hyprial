@@ -570,7 +570,9 @@ class PacActorService:
                 else:
                     store = PacGraphStore(self.database)
                     try:
-                        PacReactor(store, sender=self.sender).tick_clocks(graph_id)
+                        PacReactor(
+                            store, sender=self.sender, logger=self.logger
+                        ).tick_clocks(graph_id)
                     finally:
                         store.close()
             except Exception as error:  # noqa: BLE001 - isolate one graph from the service
@@ -635,6 +637,7 @@ class PacActorService:
                             resolver=FileLaunchResolver(self.reference_root),
                             sender=self.sender,
                             on_skip=on_skip,
+                            logger=self.logger,
                         )
                         coordinator.reconcile(job[0], job[1])
                     finally:

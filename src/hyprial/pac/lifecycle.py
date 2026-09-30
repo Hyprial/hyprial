@@ -265,6 +265,7 @@ class ActorCoordinator:
         defer_notifications: bool = False,
         clock: Any = now_ms,
         on_skip: Callable[[str, str, str, dict[str, Any]], None] | None = None,
+        logger: Any = None,
     ) -> None:
         self.store = store
         self.runtime = runtime
@@ -280,6 +281,7 @@ class ActorCoordinator:
             store,
             sender=(None if defer_notifications else sender if sender is not None else NullSender()),
             clock=clock,
+            logger=logger,
         )
 
     def reconcile_all(self) -> None:

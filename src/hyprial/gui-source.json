@@ -1,7 +1,7 @@
 {
   "schema": "hyprial.gui-source/v1",
-  "commit": "e37a287c5541bc0ebc76142d71654be574786a8e",
-  "timestamp": "1790756679",
+  "commit": "4b51a309b9c781c0004db5c2287f4dd96b0206ff",
+  "timestamp": "1790775174",
   "files": [
     {
       "path": ".env.example",

@@ -1315,6 +1315,10 @@ class DaemonApplication:
         self._status_endpoint: DeliveryStatusEndpoint | None = None
         self._user_endpoint: ZenohUserDeliveryEndpoint | None = None
         self._user_delivery: ZenohUserDeliveryTransport | None = None
+        # True only between the runtime assigning ``_user_delivery`` and
+        # shutdown clearing it: outside that span a missing transport is
+        # "not wired yet / already torn down", not "not configured".
+        self._user_delivery_settled = False
         self._org_endpoint: OrgContextMesh | None = None
         self._actor_token: Any | None = None
         self._duplicate_watch: DuplicateInstanceWatch | None = None
@@ -2978,6 +2982,7 @@ class DaemonApplication:
         self._status_endpoint = status_endpoint
         self._user_endpoint = user_endpoint
         self._user_delivery = user_delivery
+        self._user_delivery_settled = True
         self._org_endpoint = org_endpoint
         self._actor_token = actor_token
         self._duplicate_watch = duplicate_watch
@@ -3814,27 +3819,43 @@ class DaemonApplication:
                 gateway_logger.close(2.0)
             raise
 
-    def _workflow_deliver_user(self, recipient: str, text: str, message_id: str) -> bool:
+    def _workflow_deliver_user(
+        self,
+        recipient: str,
+        text: str,
+        message_id: str,
+        sender: str | None = None,
+    ) -> bool:
         """Escalation delivery to a ``user:<owner>`` target via the Squire
         user-delivery path.
 
         True when accepted.  A transient timeout (receipt never arrived) is
         raised as a non-permanent ``InboxIoError`` so the report path can
-        retry instead of permanently failing; unconfigured / rejected returns
-        False (permanent)."""
+        retry instead of permanently failing; unconfigured or rejected
+        delivery raises a permanent error with the receiver's code."""
 
         if self._user_delivery is None:
-            return False
+            # The runtime (and PAC with it) starts before the user transport
+            # is assigned, and shutdown tears it down: a drain in either
+            # window must retry.  Only a wired daemon without user delivery
+            # configured is a permanent refusal.
+            raise InboxIoError(
+                "user delivery transport is unavailable",
+                permanent=self._user_delivery_settled,
+                code=ipc_errors.USER_DELIVERY_UNAVAILABLE,
+            )
         try:
             user_target = UserDeliveryTarget.parse(recipient)
-        except ValueError:
-            return False
+        except ValueError as error:
+            raise InboxIoError(
+                str(error), permanent=True, code=ipc_errors.INVALID_ARGUMENT
+            ) from error
         outcome = self._user_delivery.deliver(
             UserDeliveryRequest(
                 message_id=message_id,
                 idempotency_key=f"workflow-escalate:{message_id}",
                 owner=user_target.owner,
-                sender="workflow",
+                sender=sender or f"user:{self.owner}",
                 message=text,
                 conversation_id="workflow",
             )
@@ -3846,21 +3867,32 @@ class DaemonApplication:
                 f"owner-DM delivery for {recipient} timed out waiting for "
                 "the receiver's squire receipt",
                 permanent=False,
+                code=outcome.code,
             )
-        return False
+        raise InboxIoError(
+            outcome.message or f"owner-DM delivery for {recipient} was rejected",
+            permanent=True,
+            code=outcome.code or ipc_errors.USER_DELIVERY_FAILED,
+        )
 
-    def _deliver_report_to_user(self, recipient: str, text: str, message_id: str) -> bool:
+    def _deliver_report_to_user(
+        self,
+        recipient: str,
+        text: str,
+        message_id: str,
+        sender: str,
+    ) -> bool:
         """Delivery-layer ``user:<owner>`` split for run/PAC reports.
 
         Wired into ``InboxDeliveryIoAdapter`` so every report consumer — run
         reports, PAC notifications, legacy workflow effects — shares one
         squire DM path instead of writing inbox messages no transport
-        consumes (2026-09-14 defect class B). Returns False when the owner
-        DM route is unavailable; the adapter then fails the delivery loudly
-        without queueing a doomed retry cycle.
+        consumes (2026-09-14 defect class B). A missing or rejected owner-DM
+        route raises a coded permanent error without queueing a doomed retry
+        cycle.
         """
 
-        return self._workflow_deliver_user(recipient, text, message_id)
+        return self._workflow_deliver_user(recipient, text, message_id, sender)
 
     def _migrate_stored_routine_address(self, name: str) -> str | None:
         """Resolve one bare actor name against THIS machine's agents registry.
@@ -12068,7 +12100,11 @@ class DaemonApplication:
                 graph_id = _required_string(params.get("graphId"), "graphId")
                 node_id = _required_string(params.get("nodeId"), "nodeId")
                 reason_ref = params.get("reasonRef")
-                reactor = PacReactor(store, sender=DaemonPacNotificationSender(self))
+                reactor = PacReactor(
+                    store,
+                    sender=DaemonPacNotificationSender(self),
+                    logger=self._log,
+                )
                 try:
                     if method == "pac.flag.set":
                         outcome = reactor.set_flag(
@@ -14676,6 +14712,9 @@ class DaemonApplication:
                     elapsedMs=int((time.monotonic() - started) * 1000),
                 )
 
+        # From here on a missing user transport is teardown, not configuration:
+        # workflow alerts drained during shutdown retry after restart.
+        self._user_delivery_settled = False
         def close_autoupdate() -> None:
             if not self._autoupdate.stop(
                 timeout=dict(_CLOSE_STEP_BUDGETS)["autoupdate"]

@@ -27,9 +27,9 @@ that a gate.
 Delivery (the actual ``hyprial send``) is a port: :class:`NotificationSender`
 is implemented by the CLI (daemon ``message.send``) and by a stub in
 tests.  PAC records the notification row — including its exact text and
-sending identity — before delivering; a delivery failure leaves the row
-undelivered, and ``hyprial workflow notify resend`` retries exactly those rows
-byte-for-byte.
+sending identity — before delivering.  A transient delivery failure leaves the
+row retryable; a definitively permanent failure is recorded terminally and is
+never selected by ``hyprial workflow notify resend``.
 """
 
 from __future__ import annotations
@@ -64,6 +64,16 @@ OVERDUE = "overdue"
 
 def now_ms() -> int:
     return time_ns() // 1_000_000
+
+
+def permanent_delivery_failure(error: Exception) -> tuple[str, str] | None:
+    """Return a stable terminal classification for an explicitly permanent error."""
+
+    if getattr(error, "permanent", False) is not True:
+        return None
+    raw_code = getattr(error, "code", None)
+    code = raw_code if isinstance(raw_code, str) and raw_code else "PERMANENT_DELIVERY_FAILURE"
+    return code, str(error)[:2000]
 
 
 def turn_text(node_id: str, brief_ref: str, event_id: str, round_no: int) -> str:
@@ -187,10 +197,12 @@ class PacReactor:
         *,
         clock: Any = now_ms,
         sender: NotificationSender | None = None,
+        logger: Any = None,
     ) -> None:
         self._store = store
         self._clock = clock
         self._sender = sender
+        self._logger = logger
 
     def close(self) -> None:
         """Close the underlying store; the reactor owns its store's lifetime."""
@@ -367,6 +379,8 @@ class PacReactor:
             ).fetchone()
             if row is None:
                 raise KeyError((event_id, edge))
+            if row["failed_at"] is not None:
+                raise ValueError("terminally failed notification cannot be delivered")
             if row["message_id"] == message_id:
                 db.commit()
                 return
@@ -403,6 +417,43 @@ class PacReactor:
             db.rollback()
             raise
 
+    def _mark_failed(
+        self,
+        graph_id: str,
+        event_id: str,
+        edge: str,
+        *,
+        code: str,
+        detail: str,
+    ) -> bool:
+        """Atomically terminalize one pending notification exactly once."""
+
+        db = self._store.write()
+        try:
+            at = int(self._clock())
+            changed = db.execute(
+                "UPDATE notifications SET failed_at=?,failure_code=?,failure_detail=? "
+                "WHERE event_id=? AND edge=? AND message_id IS NULL "
+                "AND failed_at IS NULL",
+                (at, code, detail, event_id, edge),
+            ).rowcount
+            db.commit()
+        except BaseException:
+            db.rollback()
+            raise
+        if changed and self._logger is not None:
+            self._logger(
+                "error",
+                "pac",
+                "workflow.delivery_failed",
+                graphId=graph_id,
+                eventId=event_id,
+                edge=edge,
+                code=code,
+                detail=detail,
+            )
+        return bool(changed)
+
     def _deliver(
         self, graph_id: str, planned: tuple[PlannedNotification, ...]
     ) -> tuple[tuple[PlannedNotification, ...], tuple[PlannedNotification, ...], str | None]:
@@ -430,6 +481,15 @@ class PacReactor:
             except Exception as failure:  # noqa: BLE001 - delivery must not undo the durable fact
                 undelivered.append(item)
                 error = f"{type(failure).__name__}: {failure}"
+                terminal = permanent_delivery_failure(failure)
+                if terminal is not None:
+                    self._mark_failed(
+                        graph_id,
+                        item.event_id,
+                        item.edge,
+                        code=terminal[0],
+                        detail=terminal[1],
+                    )
                 continue
             self._mark_delivered(item.event_id, item.edge, message_id)
             delivered.append(item)
@@ -786,7 +846,7 @@ class PacReactor:
     # -- resend ------------------------------------------------------------------------
 
     def resend_undelivered(self, graph_id: str) -> dict[str, Any]:
-        """Retry exactly the notification rows with no ``message_id`` yet."""
+        """Retry notification rows that are neither delivered nor terminally failed."""
 
         if self._require_graph(graph_id)["closed_at"] is not None:
             raise PacError(PAC_GRAPH_CLOSED, "closed graph notifications are not retried")
@@ -802,10 +862,13 @@ class PacReactor:
             *self._store.notifications_by_synthetic_event(graph_id),
         ]
         for index, row in enumerate(rows):
-            if row.message_id is not None:
+            if row.message_id is not None or row.failed_at is not None:
                 continue
             if self._require_graph(graph_id)["closed_at"] is not None:
-                remaining += sum(item.message_id is None for item in rows[index:])
+                remaining += sum(
+                    item.message_id is None and item.failed_at is None
+                    for item in rows[index:]
+                )
                 error = "graph closed before resend; remaining plans are not retried"
                 break
             try:
@@ -817,8 +880,18 @@ class PacReactor:
                     idempotency_key=f"pac-notify:{row.event_id}:{row.edge}",
                 )
             except Exception as failure:  # noqa: BLE001
-                remaining += 1
                 error = f"{type(failure).__name__}: {failure}"
+                terminal = permanent_delivery_failure(failure)
+                if terminal is not None:
+                    self._mark_failed(
+                        graph_id,
+                        row.event_id,
+                        row.edge,
+                        code=terminal[0],
+                        detail=terminal[1],
+                    )
+                else:
+                    remaining += 1
                 continue
             self._mark_delivered(row.event_id, row.edge, message_id)
             delivered += 1

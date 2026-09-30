@@ -19,7 +19,7 @@ from .errors import PAC_MIGRATION_SOURCE_UNREADABLE, PacError
 from .journal import JOURNAL_SCHEMA, append_event
 from .principal import principal_kind
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 
 def _create_v1(db: sqlite3.Connection, schema: str) -> None:
@@ -914,6 +914,23 @@ def _upgrade_v15_to_v16(db: sqlite3.Connection) -> None:
     )
 
 
+def _upgrade_v16_to_v17(db: sqlite3.Connection) -> None:
+    """Give notification delivery a durable terminal-failure state.
+
+    Existing rows remain pending: the migration cannot infer whether a prior
+    attempt was transient or permanent.  Their next real attempt therefore
+    either records delivery or classifies a definitive failure.
+    """
+
+    db.execute("ALTER TABLE notifications ADD COLUMN failed_at INTEGER")
+    db.execute("ALTER TABLE notifications ADD COLUMN failure_code TEXT")
+    db.execute("ALTER TABLE notifications ADD COLUMN failure_detail TEXT")
+    db.execute(
+        "CREATE INDEX notifications_graph_retryable "
+        "ON notifications(json_extract(plan_json,'$.graphId'),message_id,failed_at)"
+    )
+
+
 def migrate(db: sqlite3.Connection, legacy_schema: str, state_dir: Path | None = None) -> None:
     db.execute("BEGIN IMMEDIATE")
     try:
@@ -984,6 +1001,10 @@ def migrate(db: sqlite3.Connection, legacy_schema: str, state_dir: Path | None =
         if version == 15:
             _upgrade_v15_to_v16(db)
             db.execute("PRAGMA user_version = 16")
+            version = 16
+        if version == 16:
+            _upgrade_v16_to_v17(db)
+            db.execute("PRAGMA user_version = 17")
         db.commit()
     except BaseException:
         db.rollback()

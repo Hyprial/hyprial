@@ -42,9 +42,16 @@ class InboxIoDeferred(RuntimeError):
 class InboxIoError(RuntimeError):
     """A terminal inbox result violated the outbound delivery contract."""
 
-    def __init__(self, message: str, *, permanent: bool = False) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        permanent: bool = False,
+        code: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.permanent = permanent
+        self.code = code
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,7 +187,7 @@ class InboxDeliveryIoAdapter:
         resolve_target: Callable[[str], str],
         clock_ms: Callable[[], int] | None = None,
         completion_timeout: float = 2.0,
-        deliver_user: Callable[[str, str, str], bool] | None = None,
+        deliver_user: Callable[[str, str, str, str], bool] | None = None,
     ) -> None:
         if completion_timeout <= 0:
             raise ValueError("completion timeout must be positive")
@@ -218,6 +225,7 @@ class InboxDeliveryIoAdapter:
                 message_id=message_id,
                 recipient=recipient,
                 text=text,
+                sender=sender,
             )
         message = InboxMessage(
             message_id=message_id,
@@ -252,7 +260,7 @@ class InboxDeliveryIoAdapter:
         return DeliveredMessage(message_id=message_id, recipient=recipient)
 
     def _deliver_to_user(
-        self, *, message_id: str, recipient: str, text: str
+        self, *, message_id: str, recipient: str, text: str, sender: str
     ) -> DeliveredMessage:
         """Route one ``user:<owner>`` recipient to its squire DM path.
 
@@ -270,7 +278,7 @@ class InboxDeliveryIoAdapter:
                 permanent=True,
             )
         try:
-            delivered = self._deliver_user(recipient, text, message_id)
+            delivered = self._deliver_user(recipient, text, message_id, sender)
         except InboxIoError as error:
             if error.permanent:
                 raise

@@ -22,7 +22,13 @@ from hyprial.contracts import ipc_errors
 
 from .errors import PacError
 from .journal import append_event
-from .reactor import NotificationSender, PacReactor, PlannedNotification, turn_text
+from .reactor import (
+    NotificationSender,
+    PacReactor,
+    PlannedNotification,
+    permanent_delivery_failure,
+    turn_text,
+)
 from .store import PacGraphStore, default_database_path
 from .workflow_graph import (
     compile_workflow,
@@ -39,6 +45,9 @@ TERMINAL = {"completed", "failed", "cancelled"}
 class NotificationReceiptAuthority(Protocol):
     def record_delivery(
         self, graph_id: str, event_id: str, edge: str, message_id: str
+    ) -> None: ...
+    def record_failure(
+        self, graph_id: str, event_id: str, edge: str, *, code: str, detail: str
     ) -> None: ...
 
 
@@ -891,14 +900,16 @@ class GraphWorkflowService:
             raise
 
     def _drain(self, store: PacGraphStore, graph_id: str):
-        reactor = PacReactor(store, sender=self.sender, clock=self.clock)
+        reactor = PacReactor(
+            store, sender=self.sender, clock=self.clock, logger=self.logger
+        )
         graph = store.graph(graph_id)
         assert graph is not None
         for item in [
             *store.notifications(graph_id),
             *store.notifications_by_synthetic_event(graph_id),
         ]:
-            if item.message_id is not None:
+            if item.message_id is not None or item.failed_at is not None:
                 continue
             is_alert = item.kind == "actor_alert"
             if graph["closed_at"] is not None and not is_alert:
@@ -923,6 +934,27 @@ class GraphWorkflowService:
                         graph_id, item.event_id, item.edge, message
                     )
             except Exception as error:
+                terminal = permanent_delivery_failure(error)
+                if terminal is not None:
+                    if self._delivery_receipt is None:
+                        reactor._mark_failed(
+                            graph_id,
+                            item.event_id,
+                            item.edge,
+                            code=terminal[0],
+                            detail=terminal[1],
+                        )
+                    else:
+                        # Actorized: this drain holds a read-only store, so
+                        # the terminal write goes through the graph writer.
+                        self._delivery_receipt.record_failure(
+                            graph_id,
+                            item.event_id,
+                            item.edge,
+                            code=terminal[0],
+                            detail=terminal[1],
+                        )
+                    continue
                 if self.logger:
                     self.logger(
                         "warn",
@@ -942,7 +974,8 @@ class GraphWorkflowService:
                     "SELECT w.graph_id FROM workflow_graphs w JOIN graphs g USING(graph_id) "
                     "WHERE g.closed_at IS NULL OR w.state NOT IN ('completed','failed','cancelled') OR EXISTS "
                     "(SELECT 1 FROM notifications n WHERE json_extract(n.plan_json,'$.graphId')=g.graph_id "
-                    "AND n.message_id IS NULL AND n.kind='actor_alert') "
+                    "AND n.message_id IS NULL AND n.failed_at IS NULL "
+                    "AND n.kind='actor_alert') "
                     "ORDER BY (g.closed_at IS NOT NULL), g.created_at"
                 )
             ]
@@ -1179,12 +1212,15 @@ class GraphWorkflowService:
                         and self.clock() <= projected["deadlineMs"]
                     )
                     notification = store._db.execute(
-                        "SELECT message_id,delivered_at FROM notifications WHERE event_id=?",
+                        "SELECT message_id,delivered_at,failed_at,failure_code "
+                        "FROM notifications WHERE event_id=?",
                         (projected["requestId"],),
                     ).fetchone()
                     projected["deliveryState"] = (
                         (
-                            "accepted"
+                            "failed"
+                            if notification["failed_at"] is not None
+                            else "accepted"
                             if notification["message_id"]
                             else "planned"
                             if projected["state"] == "requested"
@@ -1194,6 +1230,10 @@ class GraphWorkflowService:
                         if notification
                         else None
                     )
+                    if notification and notification["failed_at"] is not None:
+                        projected["deliveryFailureCode"] = notification[
+                            "failure_code"
+                        ]
                     projected["messageId"] = (
                         notification["message_id"] if notification else None
                     )
