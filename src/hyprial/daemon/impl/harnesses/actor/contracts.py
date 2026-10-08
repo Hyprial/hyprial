@@ -396,6 +396,11 @@ class HarnessProjection:
                     name=record.spec.name,
                     running=running,
                     pid=pid,
+                    identity_marker=(
+                        record.identity.marker
+                        if running and record.identity is not None
+                        else None
+                    ),
                     starting=record.starting,
                     state=_state(record),
                     error=error,

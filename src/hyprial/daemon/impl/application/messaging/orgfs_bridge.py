@@ -16,6 +16,7 @@ from hyprial.kernel import ipc_errors
 from hyprial.kernel import DaemonRequestError
 from hyprial.daemon.impl.orgfs.composition.vocabulary import ORGFS_CONTENT_WAIT_S
 from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
+from hyprial.daemon.impl.org.network.state import read_left_orgs
 from hyprial.daemon.impl.squire import (
     UserDeliveryRequest,
 )
@@ -160,6 +161,7 @@ class _OrgFsBridgeMixin(_IdentityBindingMixin):
                     level, "orgfs", event, **fields
                 ),
                 owner_notifier=self._notify_orgfs_owner,
+                excluded_orgs=lambda: frozenset(read_left_orgs(self.hyprial_home)),
             )
         return self._orgfs_runtime
 

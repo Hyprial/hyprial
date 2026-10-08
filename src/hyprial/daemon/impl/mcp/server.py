@@ -47,6 +47,21 @@ def _plain_stderr_logging() -> None:
     """
 
     root = logging.getLogger()
+    # Embedders may have configured Rich before constructing this server.
+    # Replace those handlers too: leaving even one attached lets its lazy
+    # render imports kill the same warning despite a plain handler beside it.
+    for existing in tuple(root.handlers):
+        if any(
+            cls.__module__ == "rich.logging" and cls.__name__ == "RichHandler"
+            for cls in type(existing).__mro__
+        ):
+            replacement = logging.StreamHandler(sys.stderr)
+            replacement.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+            replacement.setLevel(existing.level)
+            for log_filter in existing.filters:
+                replacement.addFilter(log_filter)
+            root.removeHandler(existing)
+            root.addHandler(replacement)
     if root.handlers:
         return
     handler = logging.StreamHandler(sys.stderr)

@@ -327,6 +327,7 @@ svg.arrows .arrowhead { fill: var(--accent); }
     <div class="panel">
       <nav class="crumbs" id="crumbs"></nav>
       <div class="note" id="tip-note" data-tip-body="note" hidden></div>
+      <div class="note" id="work-warnings" hidden></div>
       <div class="content" id="content"></div>
     </div>
   </section>
@@ -346,7 +347,7 @@ svg.arrows .arrowhead { fill: var(--accent); }
   // and text, so anything outside the known set renders as "unknown".
   const GRAPH_STATES = new Set(["running", "completed", "failed", "cancelled"]);
   const NODE_STATES = new Set(["done", "failed", "pending", "requested", "running", "cancelled", "waiting"]);
-  const MISSION_ZH = { active: "进行中", paused: "暂停", done: "已完成" };
+  const MISSION_ZH = { todo: "待办", doing: "进行中", blocked: "受阻", done: "已完成", dropped: "已放弃" };
   const LINE_KINDS = new Set(["mission", "task", "misc", "routine"]);
   for (const p of PARTS) for (const l of p.lines || []) if (!LINE_KINDS.has(l.kind)) l.kind = "task";
   for (const p of PARTS) for (const r of p.runs) {
@@ -362,6 +363,8 @@ svg.arrows .arrowhead { fill: var(--accent); }
     runs: PARTS.flatMap(p => p.runs),
     links: PARTS.flatMap(p => p.links),
     nodeLinks: PARTS.flatMap(p => p.nodeLinks || []),
+    missions: PARTS.flatMap(p => p.missions || []),
+    invalidWorkItems: PARTS.flatMap(p => p.invalidWorkItems || []),
     visibleNodeGraphs: PARTS.reduce((n, p) => n + (p.visibleNodeGraphs || 0), 0),
   };
   const MULTI = PARTS.length > 1;
@@ -399,6 +402,20 @@ svg.arrows .arrowhead { fill: var(--accent); }
   // id tip-<key>.  Open tips survive re-renders and the per-minute reload.
   const tip = (key, label) => `<button type="button" class="tip" data-tip="${esc(key)}" aria-controls="tip-${esc(key)}" aria-expanded="${openTips.has(key)}" aria-label="${esc(label)}" title="${esc(label)}">i</button>`;
   const tipBody = (key, html) => `<div class="note" id="tip-${esc(key)}" data-tip-body="${esc(key)}"${openTips.has(key) ? "" : " hidden"}>${html}</div>`;
+  // ---- work item warnings: pure renderer exercised by projection tests ----
+  function workItemWarnings(data) {
+    const unverified = (data.missions || []).filter(m => m.unverifiedOperator);
+    const verified = (data.missions || []).flatMap(m =>
+      (m.ownerActions || []).filter(a => a.verified).map(a => ({ mission: m, action: a }))
+    );
+    const invalid = data.invalidWorkItems || [];
+    return [
+      ...unverified.map(m => `未验证 operator owner action：${esc(m.id)}`),
+      ...verified.map(x => `verified (LAX same-uid) owner action：${esc(x.mission.id)} / ${esc(x.action.action)}`),
+      ...invalid.map(m => `无效 work item：${esc(m.path)} — ${esc(m.reason)}`),
+    ].join("<br>");
+  }
+  // ---- end work item warnings ----
   function setTip(key, open) {
     if (open) openTips.add(key); else openTips.delete(key);
     document.querySelectorAll(`[data-tip="${CSS.escape(key)}"]`).forEach(b => b.setAttribute("aria-expanded", String(open)));
@@ -758,7 +775,7 @@ svg.arrows .arrowhead { fill: var(--accent); }
     return `<div class="lane lane-${line.kind}${quiet ? " quiet" : ""}">
       <button class="lane-head" data-line="${esc(line.id)}">
         <b>${line.mission ? `<span class="mid">${esc(line.mission.id)}</span>` : ""}${esc(line.title)}</b>
-        <span class="lane-meta">${line.mission && line.mission.status !== "active" ? `<span class="tag">${esc(MISSION_ZH[line.mission.status] || line.mission.status)}</span> ` : ""}${MULTI ? esc(line.node) + " · " : ""}${counts || (beatRuns.length ? "" : "窗口内没有活动")}${line.routines.length ? `<span class="${failing ? "bad" : ""}">${line.kind === "routine" ? "" : `↻${line.routines.length} 个例行 · `}${beatRuns.length} 次${failing ? " · 最近一次失败" : ""}</span>` : ""}</span>
+        <span class="lane-meta">${line.mission && line.mission.status !== "doing" ? `<span class="tag">${esc(MISSION_ZH[line.mission.status] || line.mission.status)}</span> ` : ""}${MULTI ? esc(line.node) + " · " : ""}${counts || (beatRuns.length ? "" : "窗口内没有活动")}${line.routines.length ? `<span class="${failing ? "bad" : ""}">${line.kind === "routine" ? "" : `↻${line.routines.length} 个例行 · `}${beatRuns.length} 次${failing ? " · 最近一次失败" : ""}</span>` : ""}</span>
       </button>
       <div class="track">${beats}${dots}</div>
     </div>`;
@@ -940,6 +957,8 @@ svg.arrows .arrowhead { fill: var(--accent); }
   /* ---------- render ---------- */
   function render() {
     renderHeader(); renderGhosts(); renderRail(); renderCrumbs(); renderNote();
+    const warnings = document.getElementById("work-warnings");
+    warnings.innerHTML = workItemWarnings(DATA); warnings.hidden = !warnings.innerHTML;
     const el = document.getElementById("content");
     if (view.level === "lines") renderLines(el);
     else if (view.level === "line") renderLine(el, view.id);

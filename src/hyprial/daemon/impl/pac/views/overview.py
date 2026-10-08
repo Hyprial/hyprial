@@ -319,6 +319,11 @@ def build_model(
                 "status": mission.get("status"),
                 "owner": short_actor(mission.get("owner")),
                 "pacs": sorted(g for g, m in mission_of.items() if m is mission),
+                **(
+                    {"unverifiedOperator": True}
+                    if mission.get("unverifiedOperator")
+                    else {}
+                ),
             }
             for mission in {id(m): m for m in mission_of.values()}.values()
         ],
@@ -463,7 +468,7 @@ def _task_lines(
             by_id[key]["line"] = line_id
         line = _line(node, line_id, actor, str(mission.get("title") or mission_id), "mission", members, [])
         line["mission"] = {"id": mission_id, "status": mission.get("status")}
-        line["background"] = f"mission {mission_id}：背景和目标见 missions 空间的 missions/{mission_id}.md"
+        line["background"] = f"work item {mission_id}：背景和目标见组织目录空间的 work/{mission_id}.md"
         line["goal"] = "见 mission 文件"
         lines.append(line)
     parent = {

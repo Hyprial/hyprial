@@ -81,6 +81,7 @@ class OrgFsRuntime(RuntimeDirectory, RuntimeLifecycle, RuntimeContent, RuntimeCh
         actor: str | None = None,
         logger: Callable[..., None] | None = None,
         owner_notifier: Callable[[str, str, dict[str, object]], None] | None = None,
+        excluded_orgs: Callable[[], frozenset[str]] | None = None,
     ) -> None:
         self.state_dir = Path(state_dir)
         self.node_id = node_id
@@ -88,6 +89,7 @@ class OrgFsRuntime(RuntimeDirectory, RuntimeLifecycle, RuntimeContent, RuntimeCh
         self.actor = actor
         self.logger = logger
         self.owner_notifier = owner_notifier
+        self._excluded_orgs = excluded_orgs or (lambda: frozenset())
         self.blobs = BlobAuthority(self.state_dir)
         self.stores = _StoreRegistry(self)
         self.facade = LocalOrgFs(
@@ -150,6 +152,8 @@ class OrgFsRuntime(RuntimeDirectory, RuntimeLifecycle, RuntimeContent, RuntimeCh
         self._directory_pending: set[tuple[str, int]] = set()
         self._directory_rebuild_pending = False
         self._directory_sync_due: float | None = None
+        self._directory_sync_offset = self._new_directory_sync_offset()
+        self._directory_sync_last: dict[str, str] = {}
         # One additional bounded envelope must reach the state owner so a full
         # retained announce buffer can evict its oldest entry and report that
         # semantic drop. Total queued + active + deferred custody remains fixed.

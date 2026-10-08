@@ -335,6 +335,7 @@ class _BridgeReconcileMixin:
                         message=self._message_text(notice),
                         origin=self._message_origin(notice),
                         hook_request=is_hook_request(notice),
+                        notice=True,
                     )
                     if self._turn_hooks is not None:
                         if not delivery.hook_request:

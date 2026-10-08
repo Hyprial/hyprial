@@ -163,6 +163,9 @@ from hyprial.daemon.impl.application.messaging.delivery.lark import _LarkGateway
 from hyprial.daemon.impl.application.messaging.delivery.sends import _UserDeliveryMixin
 from hyprial.daemon.impl.application.messaging.delivery.status_queries import _DeliveryStatusMixin
 from hyprial.daemon.impl.application.messaging.inbox_surface.send import _MessageSendMixin
+from hyprial.daemon.impl.application.messaging.inbox_surface.agent_bot_attempts import (
+    AgentBotAttemptLedger,
+)
 from hyprial.daemon.impl.state_persistence.alarm import (
     CpuOwnerBudgetAlarm,
     StateWriterAlarm,
@@ -175,6 +178,7 @@ from hyprial.daemon.impl.application.messaging.inbox_surface.queries import (
 from hyprial.daemon.impl.application.messaging.status.views import _StatusViewsMixin
 from hyprial.daemon.impl.application.messaging.status.snapshots import _WorkerSnapshotMixin
 from hyprial.daemon.impl.application.messaging.orgfs_bridge import _OrgFsBridgeMixin
+from hyprial.daemon.impl.application.messaging.work_items import _WorkItemsMixin
 from hyprial.daemon.impl.application.messaging.visibility import _VisibilityMixin
 from hyprial.daemon.impl.application.messaging.maintenance import _MaintenanceMixin
 from hyprial.daemon.impl.ipc.router import _IpcDispatchMixin
@@ -245,6 +249,7 @@ class DaemonApplication(
     _StatusViewsMixin,
     _WorkerSnapshotMixin,
     _OrgFsBridgeMixin,
+    _WorkItemsMixin,
     _VisibilityMixin,
     _MaintenanceMixin,
     _IpcDispatchMixin,
@@ -307,6 +312,9 @@ class DaemonApplication(
         hook_consumers: Mapping[str, Any] | None = None,
     ) -> None:
         self.state_dir = Path(state_dir)
+        self._agent_bot_attempts = AgentBotAttemptLedger(
+            self.state_dir / "agent-bot-attempts.json"
+        )
         self._exposure_store = ExposureStore(
             self.state_dir / "network-exposures.json"
         )
@@ -720,7 +728,8 @@ class DaemonApplication(
         self._orgfs_runtime: OrgFsRuntime | None = None
         self._org_identity_binding_projector: Any | None = None
         self._org_identity_binding_suppression: Any | None = None
-        self._org_identity_binding_publication_lock = threading.Lock()
+        # Re-entrant: publication holds it and the deferred branch takes it again.
+        self._org_identity_binding_publication_lock = threading.RLock()
         self._org_identity_binding_pending_all = False
         self._org_identity_binding_pending_orgs: set[str] = set()
         self._org_context_bridge: Any | None = None

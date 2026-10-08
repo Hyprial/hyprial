@@ -1,7 +1,7 @@
 from __future__ import annotations
 import sqlite3
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from hyprial.daemon.impl.inbox.contracts.api  import (
@@ -16,6 +16,37 @@ from hyprial.daemon.impl.inbox.links.pull  import DEFAULT_HOLD_TTL_MS, DeliveryS
 from hyprial.daemon.impl.inbox.service.state  import ConsumptionState
 
 _REPLY_COMPLETION_HANDOFF_GRACE_SECONDS = 0.5
+
+
+def delivery_pending(
+    database: Path,
+    recipient: str,
+    message_id: str,
+    *,
+    now_ms: int | None = None,
+    warn: Callable[[str, str], None] | None = None,
+) -> ConsumptionState:
+    """Classify this exact row through the read-only inbox projection.
+
+    ``UNKNOWN`` is fail-open: the worker runs the turn when the projection is
+    absent, locked, damaged, or otherwise unreadable. A duplicate prompt is
+    recoverable; a silently dropped turn is not.
+    """
+
+    if not database.exists():
+        if warn is not None:
+            warn("FileNotFoundError", "inbox projection does not exist")
+        return ConsumptionState.UNKNOWN
+    try:
+        return InboxReadProjection(database).delivery_state(
+            recipient, message_id, now_ms=now_ms
+        )
+    except Exception as error:
+        if warn is not None:
+            warn(type(error).__name__, str(error)[:300])
+        return ConsumptionState.UNKNOWN
+
+
 class InboxReadProjection:
     """Stable read-only SQLite face; every connection is opened ``mode=ro``."""
 
@@ -87,6 +118,39 @@ class InboxReadProjection:
             (recipient,),
         )
         return messages[0] if messages else None
+
+    def delivery_state(
+        self,
+        recipient: str,
+        message_id: str,
+        *,
+        now_ms: int | None = None,
+    ) -> ConsumptionState:
+        """Return the worker admission state for one inbox-backed delivery."""
+
+        now = time.time_ns() // 1_000_000 if now_ms is None else now_ms
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT inbox.consumed, inbox.expires_at_ms,
+                          EXISTS (
+                              SELECT 1 FROM harness_failure_settlements
+                               WHERE harness_failure_settlements.message_id = inbox.message_id
+                                 AND harness_failure_settlements.terminal = 1
+                          ) AS terminal
+                     FROM inbox
+                    WHERE inbox.recipient = ? AND inbox.message_id = ?""",
+                (recipient, message_id),
+            ).fetchone()
+        if row is None:
+            return ConsumptionState.UNKNOWN
+        if bool(row["terminal"]):
+            return ConsumptionState.FAILED
+        if bool(row["consumed"]):
+            return ConsumptionState.CONSUMED
+        expires_at_ms = row["expires_at_ms"]
+        if expires_at_ms is not None and int(expires_at_ms) <= now:
+            return ConsumptionState.EXPIRED
+        return ConsumptionState.PENDING
 
     def pending_messages(
         self,

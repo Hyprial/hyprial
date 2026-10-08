@@ -21,6 +21,8 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import * as net from "node:net";
 
 // Mirror hyprial.daemon.application._serve_connection / hyprial.cli._daemon_request.
@@ -36,6 +38,56 @@ export interface WorkerIdentity {
 }
 
 export type DaemonResult = Record<string, unknown>;
+
+export interface ProcessBirthIdentityOptions {
+  platform?: string;
+  readPs?: (pid: number) => string | null;
+}
+
+function readPsStart(pid: number): string | null {
+  try {
+    return execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+      encoding: "utf-8",
+      env: { PATH: "/bin:/usr/bin", TZ: "UTC0", LC_ALL: "C" },
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Match the daemon's process-birth marker grammar for PID-reuse fencing. */
+export function processBirthIdentity(
+  pid: number,
+  options: ProcessBirthIdentityOptions = {},
+): string | null {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  const platform = options.platform ?? process.platform;
+  if (platform === "linux") {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf-8");
+      const closing = stat.lastIndexOf(")");
+      const fields = closing >= 0 ? stat.slice(closing + 2).trim().split(/\s+/) : [];
+      const starttime = fields[19];
+      if (starttime && /^\d+$/.test(starttime)) {
+        return `proc-starttime:${starttime}`;
+      }
+    } catch {
+      // Fall through to the daemon's portable ps-lstart component.
+    }
+  }
+  // On Darwin, Date.now() - process.uptime() can round one second later than
+  // the kernel birth timestamp. ps reads the same lstart component as the
+  // daemon, so boundary starts compare exactly instead of intermittently.
+  const started = (options.readPs ?? readPsStart)(pid);
+  if (started) return `ps-lstart:${started}`;
+  if (platform === "darwin") {
+    // Sandboxed hosts can deny ps. The daemon grants only this coarse
+    // component a documented one-second comparison tolerance.
+    return `darwin-startsec:${Math.floor(Date.now() / 1000 - process.uptime())}`;
+  }
+  return null;
+}
 
 export function identityFromEnv(): WorkerIdentity | null {
   const actor = process.env.HYPRIAL_WORKER_ACTOR?.trim();

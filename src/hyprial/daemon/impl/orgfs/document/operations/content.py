@@ -207,6 +207,7 @@ class FacadeContent:
         *,
         base_version: str | None = None,
         expect_version: str | None = None,
+        create_only: bool = False,
     ) -> NodeInfo:
         space = self._space(space_id)
         self._ensure_writable(space)
@@ -256,6 +257,10 @@ class FacadeContent:
         if existing.kind != "doc":
             raise OrgFsError(
                 "invalid-argument", {"message": "target is not a text document"}
+            )
+        if create_only:
+            raise OrgFsError(
+                "stale-write", {"message": "create-only target already exists"}
             )
         if expect_version is not None and existing.version != expect_version:
             raise OrgFsError(

@@ -202,6 +202,17 @@ _IPC_STATS_METHODS = frozenset(
         "workflow.status",
         "workflow.worker.restart",
         "workflow.worker.stop",
+        "work.add",
+        "work.check",
+        "work.done",
+        "work.keywords",
+        "work.link",
+        "work.ls",
+        "work.note",
+        "work.repair",
+        "work.resolve",
+        "work.show",
+        "work.status",
     }
 )
 
@@ -380,6 +391,8 @@ class _IpcDispatchMixin:
             return self._ipc_orgfs(
                 method, params, _trusted_message_origin=_trusted_message_origin
             )
+        if method.startswith("work."):
+            return self._handle_work(method, params)
         if method == "management.squire.ensure":
             return self._ipc_management_squire_ensure(params)
         if method == "management.adapter.remove":
@@ -445,7 +458,10 @@ class _IpcDispatchMixin:
         if method == "hosts":
             return self._ipc_hosts()
         if method == "session.register":
-            return self._ipc_session_register(params)
+            return self._ipc_session_register(
+                params,
+                verify_process_claim=_trusted_message_origin == "ipc",
+            )
         if method == "session.turn.ended":
             return self._ipc_session_turn_ended(params)
         if method == "session.refresh":

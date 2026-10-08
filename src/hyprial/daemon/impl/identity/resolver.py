@@ -847,6 +847,65 @@ class IdentityResolver(OverrideWrites):
             return None
         return binding.open_id
 
+    @staticmethod
+    def _one_open_id(values: set[str], *, adapter: str) -> str | None:
+        if len(values) > 1:
+            raise IdentityResolverError(
+                ipc_errors.IDENTITY_CONFLICT,
+                f"more than one openId is bound for adapter {adapter!r}",
+            )
+        return next(iter(values), None)
+
+    def owner_open_id(self, owner_or_user_key: str, adapter: str) -> str | None:
+        """Resolve one user's outbound open-id in exactly one Lark app.
+
+        Unlike :meth:`profile_open_id`, this sender-side lookup needs no
+        receiver ``UserProfile``.  The target may live on another node; the
+        local identity graph (override, union binding, then grandfathered
+        observation) is enough.  Adapter matching stays app-qualified so an
+        open-id observed by another bot can never be borrowed.
+        """
+
+        identity = self._required(owner_or_user_key, "owner/user key")
+        users = self._user_records()
+        user = users.get(identity) or self._user_for_owner(users, identity)
+        user_key = user.user_key if user is not None else identity_slug(identity)
+        owner = user.owner if user is not None else identity
+        suffix = short_actor_name(adapter)
+        adapters = {adapter, f"lark:{suffix}", suffix}
+
+        override_ids = {
+            account.open_id
+            for account in self._accounts()
+            if account.user_key == user_key
+            and account.source == "override"
+            and account.adapter in adapters
+        }
+        selected = self._one_open_id(override_ids, adapter=suffix)
+        if selected is not None:
+            return selected
+
+        bound_ids: set[str] = set()
+        for row in self.bindings(platform="lark"):
+            if row["user"] != user_key or row["unionId"] is None:
+                continue
+            for account in row["accounts"]:
+                if account["adapter"] in adapters:
+                    self._resolved(row["unionId"])
+                    bound_ids.add(account["openId"])
+        selected = self._one_open_id(bound_ids, adapter=suffix)
+        if selected is not None:
+            return selected
+
+        legacy_ids = {
+            row.open_id
+            for row in self._legacy_rows(adapter=suffix)
+            if row.standing == "verified"
+            and row.owner is not None
+            and (row.owner == owner or identity_slug(row.owner) == user_key)
+        }
+        return self._one_open_id(legacy_ids, adapter=suffix)
+
     def profile_open_id(self, profile: Any, adapter: str) -> str | None:
         """Outbound observed account, with read-only users.json continuity.
 

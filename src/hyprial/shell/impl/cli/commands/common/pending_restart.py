@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import socket
 import subprocess
+import sys
 import tempfile
 from typing import Any
 
@@ -83,6 +84,10 @@ def _install_locked_requirement(
                     "install",
                     "--force",
                     "--compile-bytecode",
+                    # Keep this process's import paths valid after uv replaces
+                    # the tool environment. Changing Python is a separate action.
+                    "--python",
+                    sys.executable,
                     "--constraints",
                     str(constraints),
                     requirement,

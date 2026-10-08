@@ -41,14 +41,8 @@ overview_app = typer.Typer(
     no_args_is_help=True,
 )
 
-missions_app = typer.Typer(
-    help="Missions: link this node's PAC graphs to mission files (a squire's routine).",
-    no_args_is_help=True,
-)
-
 workflow_app.add_typer(history_app, name="history")
 workflow_app.add_typer(overview_app, name="overview")
-workflow_app.add_typer(missions_app, name="missions")
 workflow_app.add_typer(worker_app, name="worker")
 workflow_app.add_typer(notify_app, name="notify")
 workflow_app.add_typer(migration_app, name="migration")

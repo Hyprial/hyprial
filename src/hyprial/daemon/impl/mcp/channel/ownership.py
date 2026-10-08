@@ -79,8 +79,12 @@ _DAEMON_CONTACT_ERRORS = (
     ValueError,
 )
 
-def _read_darwin_process_identity(pid: int) -> str | None:
-    """Read one macOS process birth time without the sandboxed ``ps`` CLI."""
+def _read_darwin_process_start(pid: int) -> tuple[int, int] | None:
+    """Read one macOS process birth time without the sandboxed ``ps`` CLI.
+
+    Returns ``(start_sec, start_usec)``.  The caller builds the marker
+    components from the numbers, so nothing re-parses a marker string.
+    """
 
     try:
         library = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
@@ -112,14 +116,59 @@ def _read_darwin_process_identity(pid: int) -> str | None:
         or info.start_sec <= 0
     ):
         return None
-    return f"darwin-starttime:{info.start_sec}:{info.start_usec}"
+    return int(info.start_sec), int(info.start_usec)
+
+
+def _read_process_parent(pid: int) -> int | None:
+    """Read one parent PID without trusting caller-provided process facts."""
+
+    if pid <= 1:
+        return 0
+    if sys.platform.startswith("linux"):
+        try:
+            stat = (_PROC_ROOT / str(pid) / "stat").read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            return None
+        closing = stat.rfind(")")
+        fields = stat[closing + 2 :].split() if closing >= 0 else []
+        try:
+            parent = int(fields[1])
+        except (IndexError, ValueError):
+            return None
+        return parent if parent >= 0 else None
+    if sys.platform == "darwin":
+        try:
+            library = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+            proc_pidinfo = library.proc_pidinfo
+            proc_pidinfo.argtypes = [
+                ctypes.c_int,
+                ctypes.c_int,
+                ctypes.c_uint64,
+                ctypes.c_void_p,
+                ctypes.c_int,
+            ]
+            proc_pidinfo.restype = ctypes.c_int
+            info = _DarwinProcBsdInfo()
+            read = proc_pidinfo(
+                pid,
+                _DARWIN_PROC_PIDTBSDINFO,
+                0,
+                ctypes.byref(info),
+                ctypes.sizeof(info),
+            )
+        except (OSError, AttributeError, ValueError):
+            return None
+        if read != ctypes.sizeof(info) or info.pid != pid:
+            return None
+        return int(info.ppid)
+    return None
 
 #: Component schemes a process-birth marker may carry. A marker is one or more
 #: ``scheme:value`` components joined by ``;``; a single-component marker is
 #: indistinguishable from the historical single-scheme strings, so markers
 #: written by older builds parse in the same grammar.
 _KNOWN_IDENTITY_SCHEMES = frozenset(
-    {"proc-starttime", "darwin-starttime", "ps-lstart"}
+    {"proc-starttime", "darwin-starttime", "darwin-startsec", "ps-lstart"}
 )
 
 #: The ps fallback prints a local-time string, so its environment is pinned:
@@ -142,6 +191,46 @@ def _identity_components(marker: str) -> dict[str, str]:
             return {"raw": marker}
         components[scheme] = value
     return components
+
+
+def _process_identities_match(expected: str, observed: str) -> bool:
+    """Require at least one matching process-birth component.
+
+    Node's Darwin uptime clock can straddle the kernel's whole-second birth
+    boundary. Only that explicitly coarse component gets a one-second
+    tolerance, and only when it is the ONLY shared component: when a finer
+    component (native microseconds, proc start ticks, ps lstart) is shared and
+    differs, that is PID reuse, and a coarse-second near-miss must not
+    override it. Opaque legacy markers remain exact.
+    """
+
+    expected_components = _identity_components(expected)
+    observed_components = _identity_components(observed)
+    shared = expected_components.keys() & observed_components.keys()
+    for scheme in shared:
+        if expected_components[scheme] == observed_components[scheme]:
+            return True
+        if scheme == "darwin-startsec" and shared == {"darwin-startsec"}:
+            try:
+                if abs(
+                    int(expected_components[scheme])
+                    - int(observed_components[scheme])
+                ) <= 1:
+                    return True
+            except ValueError:
+                pass
+    return False
+
+
+def _process_identities_comparable(expected: str, observed: str) -> bool:
+    """Return whether two markers have any process-birth scheme in common."""
+
+    shared = (
+        _identity_components(expected).keys()
+        & _identity_components(observed).keys()
+    )
+    return bool(shared - {"raw"})
+
 
 def _read_proc_process_identity(pid: int) -> str | None:
     """Read the procfs starttime component (Linux)."""
@@ -267,9 +356,16 @@ def _read_process_identity(pid: int) -> str | None:
             # and skip the ps spawn entirely.
             return proc_identity
     if sys.platform == "darwin":
-        native_identity = _read_darwin_process_identity(pid)
-        if native_identity is not None:
-            components.append(native_identity)
+        native_start = _read_darwin_process_start(pid)
+        if native_start is not None:
+            start_sec, start_usec = native_start
+            components.append(f"darwin-starttime:{start_sec}:{start_usec}")
+            # Node exposes its own monotonic uptime but cannot call libproc
+            # without an addon. The independently readable whole-second
+            # component lets an in-process carrier report the same birth
+            # fact while the microsecond marker remains the stronger
+            # native fence for Python-owned processes.
+            components.append(f"darwin-startsec:{start_sec}")
     ps_identity = _read_ps_process_identity(pid)
     if ps_identity is not None:
         components.append(ps_identity)
@@ -312,9 +408,8 @@ def _owner_process_status(
     expected_components = _identity_components(expected_identity)
     observed_components = _identity_components(observed_identity)
     shared = expected_components.keys() & observed_components.keys()
-    for scheme in shared:
-        if expected_components[scheme] == observed_components[scheme]:
-            return _OwnerProcessStatus.ALIVE
+    if _process_identities_match(expected_identity, observed_identity):
+        return _OwnerProcessStatus.ALIVE
     if shared:
         return _OwnerProcessStatus.IDENTITY_MISMATCH
     return _OwnerProcessStatus.UNKNOWN

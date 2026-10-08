@@ -104,6 +104,7 @@ from hyprial.shell.impl.cli.commands.config.settings import config_app, config_s
 from hyprial.shell.impl.cli.commands.fs.commands import _fs_run, fs_app, fs_checkout, fs_create, fs_export, fs_history, fs_import, fs_invite, fs_join, fs_ls, fs_members, fs_mkdir, fs_mv, fs_purge, fs_purge_plan, fs_purge_status, fs_read, fs_remove_member, fs_resolve, fs_restore, fs_rm, fs_serve, fs_spaces, fs_status, fs_trash, fs_unban, fs_watch, fs_web, fs_write
 from hyprial.shell.impl.cli.commands.org.commands import _org_full_document, _org_meta, org_app, org_create, org_execute, org_fetch, org_import, org_invite, org_network, org_show, org_status
 from hyprial.shell.impl.cli.commands.routine.commands import routine_app
+from hyprial.shell.impl.cli.commands.work import work_app
 from hyprial.shell.impl.cli.commands.workflow.run import workflow_app
 from hyprial.shell.impl.cli.commands.transfer import (
     TransferCliDependencies,
@@ -277,6 +278,7 @@ app.add_typer(config_app, name="config")
 app.add_typer(lark_auth_app, name="lark-auth")
 app.add_typer(agent_app, name="agent")
 app.add_typer(org_app, name="org")
+org_app.add_typer(work_app, name="work")
 app.add_typer(fs_app, name="fs")
 app.add_typer(profile_app, name="profile")
 app.add_typer(network_app, name="network")
@@ -465,4 +467,5 @@ __all__ = [
     "user_proxy_app", "user_proxy_setup", "user_proxy_status", "user_show", "user_unbind", "user_whois",
     "uuid4", "version", "workflow_app", "workflow_gc", "worktrees_command",
     "write_failure_marker",
+    "work_app",
 ]

@@ -103,6 +103,7 @@ class SequentialTurnProcess(
             self.label = label
             self._client_factory = client_factory
             self._logger = logger
+            self._delivery_projection_failure_kinds: set[str] = set()
             self._reconnect_delay_seconds = reconnect_delay_seconds
             self._reconnect_delay_max_seconds = reconnect_delay_max_seconds
             self._max_delivery_attempts = max_delivery_attempts
@@ -290,6 +291,7 @@ class SequentialTurnProcess(
                             message=delivery.message,
                             hook_text=delivery.hook_text,
                             hook_request=delivery.hook_request,
+                            notice=delivery.notice,
                         ),
                     )
                 )
@@ -512,12 +514,22 @@ class SequentialTurnProcess(
                                     message=projection.message,
                                     hook_text=projection.hook_text,
                                     hook_request=projection.hook_request,
+                                    notice=projection.notice,
                                 )
                             channel = getattr(self, "worker_channel", None)
                             if channel is not None:
                                 from hyprial.daemon.impl.pac.contracts.delivery import (
+                                    ALREADY_CONSUMED,
+                                    EXPIRED,
+                                    TERMINALLY_FAILED,
                                     WITHDRAWN,
                                     delivery_current,
+                                )
+                                from hyprial.daemon.impl.inbox.authority.read import (
+                                    delivery_pending,
+                                )
+                                from hyprial.daemon.impl.inbox.service.state import (
+                                    ConsumptionState,
                                 )
                                 from hyprial.daemon.impl.pac.contracts.bindings import (
                                     RemoteWorkflowUnavailable,
@@ -544,6 +556,56 @@ class SequentialTurnProcess(
                                         self._active_delivery_id = None
                                         self._active_generation = None
                                         self._aborted_generations.discard(current_fence[0])
+                                    current = None
+                                    current_fence = None
+                                    continue
+                                state = (
+                                    ConsumptionState.PENDING
+                                    if current.notice
+                                    else delivery_pending(
+                                        channel.state_dir / "inbox.sqlite3",
+                                        current.recipient,
+                                        current.delivery_id,
+                                        warn=self._warn_delivery_projection_once,
+                                    )
+                                )
+                                if state in {
+                                    ConsumptionState.CONSUMED,
+                                    ConsumptionState.EXPIRED,
+                                    ConsumptionState.FAILED,
+                                }:
+                                    reason = {
+                                        ConsumptionState.EXPIRED: EXPIRED,
+                                        ConsumptionState.FAILED: TERMINALLY_FAILED,
+                                    }.get(state, ALREADY_CONSUMED)
+                                    assert current_fence is not None
+                                    admission = self._turn_runtime.complete_io(
+                                        generation=current_fence[0],
+                                        version=current_fence[1],
+                                        result=TurnResultProjection(
+                                            delivery_id=current.delivery_id,
+                                            recipient=current.recipient,
+                                            status="interrupted",
+                                            failure_code=reason,
+                                        ),
+                                    )
+                                    if admission is not PortAdmission.ACCEPTED:
+                                        self.last_error = (
+                                            "consumed turn completion relay was refused"
+                                        )
+                                        self._stopping.set()
+                                        return
+                                    self._log_turn(
+                                        "worker.turn.skipped",
+                                        current,
+                                        reason=reason,
+                                    )
+                                    with self._lock:
+                                        self._active_delivery_id = None
+                                        self._active_generation = None
+                                        self._aborted_generations.discard(
+                                            current_fence[0]
+                                        )
                                     current = None
                                     current_fence = None
                                     continue
@@ -846,6 +908,21 @@ class SequentialTurnProcess(
             except OSError:
                 # Turn execution is authoritative; local visibility I/O cannot
                 # turn a successful harness response into a delivery failure.
+                return
+
+        def _warn_delivery_projection_once(self, failure_kind: str, detail: str) -> None:
+            if failure_kind in self._delivery_projection_failure_kinds:
+                return
+            self._delivery_projection_failure_kinds.add(failure_kind)
+            if self._logger is None:
+                return
+            try:
+                self._logger.warn(
+                    "worker.delivery_projection_unreadable",
+                    failureKind=failure_kind,
+                    detail=detail,
+                )
+            except OSError:
                 return
 
         async def _receive_result(

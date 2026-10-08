@@ -22,6 +22,7 @@ from hyprial.kernel import DaemonRequestError
 from hyprial.kernel import (
     CHANNEL_LIVENESS_TTL_SECONDS,
     CHANNEL_PROTOCOL_VERSION,
+    SESSION_CARRIER_SOURCES,
     channel_generation,
     safe_channel_build_version,
 )
@@ -29,6 +30,11 @@ from hyprial.daemon.impl.desired_state  import (
     InteractiveSession,
 )
 from hyprial.daemon.impl.session_actor  import owner_only_relocation
+from hyprial.daemon.impl.mcp.channel.ownership import (
+    _process_identities_match,
+    _read_process_identity as process_birth_identity,
+    _read_process_parent,
+)
 from hyprial.daemon.impl.operations.session_ports  import (
     HeartbeatSessionCommand,
     RefreshSessionCommand,
@@ -186,7 +192,62 @@ class _SessionRegistryMixin:
                 f"agent {actor} was destroyed; this session is permanently retired",
             )
 
-    def _ipc_session_register(self, params) -> Any:
+    @staticmethod
+    def _verified_ipc_process_fence(
+        process_pid: int | None,
+        process_identity: str | None,
+        peer_pid: object,
+    ) -> tuple[int | None, str | None]:
+        if process_pid is None or process_identity is None:
+            return process_pid, process_identity
+        if not isinstance(peer_pid, int) or peer_pid <= 0:
+            return None, None
+        observed = process_birth_identity(process_pid)
+        if observed is None or not _process_identities_match(
+            process_identity, observed
+        ):
+            raise DaemonRequestError(
+                ipc_errors.CALLER_NOT_AUTHORIZED,
+                "session process identity does not match the claimed process",
+            )
+
+        def ancestry_reaches(start: int, target: int) -> bool:
+            """True only when a bounded, fully readable walk meets ``target``.
+
+            An unreadable link (root-owned processes such as /usr/bin/login
+            are unreadable to a non-root daemon), a cycle, or an over-long
+            chain is "not proven", never an error: the other check may still
+            prove the relation.
+            """
+            current = start
+            seen: set[int] = set()
+            while current > 1 and current not in seen and len(seen) < 128:
+                if current == target:
+                    return True
+                seen.add(current)
+                parent = _read_process_parent(current)
+                if parent is None or parent < 0:
+                    return False
+                current = parent
+            return False
+
+        # Interactive carriers claim an ancestor harness process (claude, pi):
+        # walk from the peer up to the claim. Codex is the inverse: the IPC CLI
+        # Popen()s the claimed app-server, so a DIRECT child of the peer is
+        # also accepted -- depth one only, not any descendant.
+        if _read_process_parent(process_pid) == peer_pid or ancestry_reaches(
+            peer_pid, process_pid
+        ):
+            return process_pid, process_identity
+        raise DaemonRequestError(
+            ipc_errors.CALLER_NOT_AUTHORIZED,
+            "session process claim is not proven to be the IPC peer's "
+            "ancestor or direct child",
+        )
+
+    def _ipc_session_register(
+        self, params, *, verify_process_claim: bool = False
+    ) -> Any:
         actor = self._mcp_actor(params)
         session_ref = _required_string(params.get("sessionRef"), "sessionRef")
         self._reject_retired_session_ref(actor, session_ref)
@@ -202,10 +263,16 @@ class _SessionRegistryMixin:
                 ipc_errors.INVALID_ARGUMENT,
                 "processPid and processIdentity must be provided together",
             )
-        if process_pid is not None and source != "codex-app-server":
+        if process_pid is not None and source not in SESSION_CARRIER_SOURCES:
             raise DaemonRequestError(
-                ipc_errors.INVALID_ARGUMENT,
-                "process identity is only valid for codex-app-server sessions",
+                ipc_errors.INVALID_SESSION_SOURCE,
+                "process identity is valid only for interactive carrier sessions",
+            )
+        if verify_process_claim:
+            process_pid, process_identity = self._verified_ipc_process_fence(
+                process_pid,
+                process_identity,
+                getattr(self._ipc_peer, "pid", None),
             )
         command = params.get("command")
         if (

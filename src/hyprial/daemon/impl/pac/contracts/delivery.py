@@ -12,6 +12,9 @@ from hyprial.daemon.impl.pac.workflows.graphs  import input_token
 from hyprial.daemon.impl.pac.contracts.bindings  import remote_binding, remote_current
 
 WITHDRAWN = "PAC_REQUEST_WITHDRAWN"
+ALREADY_CONSUMED = "already-consumed"
+EXPIRED = "expired"
+TERMINALLY_FAILED = "terminally-failed"
 
 
 def is_workflow_delivery(state_dir: Path, message_id: str) -> bool:

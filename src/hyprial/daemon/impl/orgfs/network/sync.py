@@ -236,6 +236,14 @@ class MeshSync:
                     defer_blob_fetch=False,
                     projection_attempted=projection_attempted,
                 )
+                if result.status == "rejected" and result.code == "supplier-offline":
+                    # Presence can change after the initial gate. Do not let
+                    # join hydrate a partial page; reuse its bounded retry path.
+                    raise StoreError(
+                        "not-a-member",
+                        "supplier went offline during sync",
+                        reason="supplier-not-online",
+                    )
                 if result.status == "applied":
                     applied += 1
             cursor = value.get("next")

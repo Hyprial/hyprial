@@ -85,6 +85,7 @@ class FacadeSpaceState:
             return _WriteText(
                 values["space_id"], values["node"], values["content"],
                 values["base_version"], values["expect_version"],
+                bool(values["create_only"]),
             )
         if name == "write_bytes":
             return _WriteBytes(
@@ -242,6 +243,7 @@ class FacadeSpaceState:
             return type(self).write_text.__wrapped__(
                 self, operation.space_id, operation.node, operation.content,
                 base_version=operation.base_version, expect_version=operation.expect_version,
+                create_only=operation.create_only,
             )
         if isinstance(operation, _WriteBytes):
             return type(self).write_bytes.__wrapped__(

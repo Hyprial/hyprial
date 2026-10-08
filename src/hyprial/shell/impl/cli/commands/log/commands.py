@@ -172,6 +172,7 @@ _TRAJECTORY_LOG_EVENTS = frozenset(
         "worker.turn.completed",
         "worker.turn.failed",
         "worker.turn.interrupted",
+        "worker.turn.skipped",
         "outbox.pruned",
         "inbox.pruned",
     }

@@ -25,6 +25,20 @@ from hyprial.kernel import AdmissionResult
 if TYPE_CHECKING:
     pass
 
+
+def _worker_skip(result: HarnessResult) -> bool:
+    from hyprial.daemon.impl.pac.contracts.delivery import (
+        ALREADY_CONSUMED,
+        EXPIRED,
+        TERMINALLY_FAILED,
+    )
+
+    return (
+        result.status is HarnessResultStatus.INTERRUPTED
+        and result.failure_code in {ALREADY_CONSUMED, EXPIRED, TERMINALLY_FAILED}
+    )
+
+
 class _BridgeResultsMixin:
     """DaemonEventBridge cluster; the composing class owns the state."""
 
@@ -98,7 +112,7 @@ class _BridgeResultsMixin:
         if terminal_attempt is None:
             terminal_attempt = self._pending_workflow_attempts.get(result.delivery_id)
         self._pending_reply_results.pop(result.delivery_id, None)
-        if self._workflow_outcome is not None:
+        if self._workflow_outcome is not None and not _worker_skip(result):
             try:
                 if self._workflow_outcome(result):
                     acknowledged = self.inbox.ack(
@@ -299,7 +313,7 @@ class _BridgeResultsMixin:
                 )
             # Re-added below only if its reply fails to confirm again.
             self._pending_reply_results.pop(result.delivery_id, None)
-            if self._workflow_outcome is not None:
+            if self._workflow_outcome is not None and not _worker_skip(result):
                 try:
                     handled = self._workflow_outcome(result)
                     if handled:

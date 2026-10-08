@@ -130,6 +130,11 @@ def _undeliverable_outbox_recipient(recipient: str) -> bool:
     )
 
 
+
+# Ends the label written in front of a relayed body whose sender could not be
+# resolved; the route forward recognises its own label by it.
+_UNCONFIRMED_SENDER_MARK = "（发送方身份未能确认）："
+
 class _UserDeliveryMixin:
     """Application cluster mixin; the state owner is DaemonApplication."""
 
@@ -301,7 +306,7 @@ class _UserDeliveryMixin:
             params["onBehalfOf"] = self._resolve_on_behalf_actor(request.sender)
         except DaemonRequestError:
             params["message"] = (
-                f"转述自 {display_sender(request.sender)}（发送方身份未能确认）："
+                f"转述自 {display_sender(request.sender)}{_UNCONFIRMED_SENDER_MARK}"
                 f"\n\n{request.message}"
             )
         try:
@@ -412,14 +417,21 @@ class _UserDeliveryMixin:
                 # A route post can only speak as the bot, so it is attributed
                 # in the text.  Attribute it to whoever the proxy is relaying
                 # (the original sender), not to the proxy itself.
+                sender = self._relayed_sender(original)
                 self._deliver_route_target(
                     to,
                     text=text,
-                    sender=self._relayed_sender(original),
+                    sender=sender,
                     conversation=original.conversation_id,
                     operation_id=operation_id,
                     index=0,
                     resources=(),
+                    # A daemon relay with no onBehalfOf already carries the
+                    # sender label in its body (the unresolved-sender line);
+                    # naming dispatch-coordinator on top only adds noise.
+                    attribute=not self._relay_is_daemon_labelled(
+                        original, sender, text
+                    ),
                 )
                 return ForwardOutcome(True)
             reply = self.handle(
@@ -475,6 +487,34 @@ class _UserDeliveryMixin:
             return on_behalf_of
         return original.sender
 
+    def _relay_is_daemon_labelled(
+        self, original: InboxMessage, sender: str, text: str
+    ) -> bool:
+        """True only for a verbatim relay of a body the daemon labelled.
+
+        The proxy chooses the forwarded text, so a prefix check on it would
+        let any text that starts with a 转述自 line drop the outer attribution.
+        Instead the forwarded text must equal the relayed row's own message,
+        and that message's first line must be the unresolved-sender label
+        _deliver_to_live_user_proxy wrote in front of the body
+        (display_sender strips line breaks, so the sender cannot reach past
+        the first line).
+        """
+
+        if sender != self._dispatch_service_actor:
+            return False
+        try:
+            payload = json.loads(original.payload)
+        except (TypeError, ValueError):
+            return False
+        message = payload.get("message") if isinstance(payload, dict) else None
+        if not isinstance(message, str) or text != message:
+            return False
+        first_line = message.split("\n", 1)[0]
+        return first_line.startswith("转述自 ") and first_line.endswith(
+            _UNCONFIRMED_SENDER_MARK
+        )
+
     def _deliver_route_target(
         self,
         target: str,
@@ -485,6 +525,7 @@ class _UserDeliveryMixin:
         operation_id: str,
         index: int,
         resources: tuple[RouteResource, ...],
+        attribute: bool = True,
     ) -> list[JsonObject]:
         """Post to one ``route:<adapter>:<route>`` target, expanding fanout."""
 
@@ -507,7 +548,9 @@ class _UserDeliveryMixin:
         # — the same 转述自 <full-actor>： marker the user:<owner> DM path
         # renders.  Text-only injection: the message body structure and any
         # file/image posts stay untouched.
-        attributed_text = f"转述自 {display_sender(sender)}：\n\n{text}"
+        attributed_text = (
+            f"转述自 {display_sender(sender)}：\n\n{text}" if attribute else text
+        )
         deliveries: list[JsonObject] = []
         for item in resolved:
             member_key = (

@@ -14,7 +14,7 @@ from hyprial.biz.impl.routine.contracts.ports import (
 )
 from hyprial.biz.impl.routine.contracts.schema import RoutineSpec
 
-DEFAULT_TASK_TIMEOUT_SECONDS = 3600.0
+DEFAULT_TASK_TIMEOUT_SECONDS = 24 * 60 * 60.0
 
 
 @dataclass(frozen=True, slots=True)

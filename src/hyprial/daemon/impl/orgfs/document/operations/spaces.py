@@ -174,7 +174,16 @@ class FacadeSpaces:
         require_space_owner(self.author, space.info)
         if mode not in ("ro", "rw") or not isinstance(user, str) or not user:
             raise OrgFsError("invalid-argument")
-        member = MemberInfo(space_id, user, mode, self.author, _now())
+        # A re-invite of a current member changes its mode only: added_at
+        # orders who dials whom between org devices (org.network.dialing), so
+        # it must not move.  The owner's own row keeps the space's birth.
+        current = space.members.get(user)
+        if user == space.info.owner:
+            member = MemberInfo(space_id, user, mode, self.author, space.info.created_at)
+        elif current is not None and user not in space.removed_members:
+            member = MemberInfo(space_id, user, mode, current.added_by, current.added_at)
+        else:
+            member = MemberInfo(space_id, user, mode, self.author, _now())
 
         def operation() -> None:
             space.members[user] = member
@@ -183,7 +192,7 @@ class FacadeSpaces:
             members[user] = Map(
                 {
                     "mode": mode,
-                    "addedBy": self.author,
+                    "addedBy": member.added_by,
                     "addedAt": member.added_at,
                     "removedAt": None,
                 }

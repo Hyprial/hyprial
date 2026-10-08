@@ -229,6 +229,7 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.configuration.network_profile import validate_profile as validate_profile
     import hyprial.daemon.impl.pac.views.missions as views_missions
     import hyprial.daemon.impl.pac.views.overview as views_overview
+    import hyprial.daemon.impl.pac.views.work_items as views_work_items
     from hyprial.daemon.impl.network.tailcat import verify_tailcat_sidecar as verify_tailcat_sidecar
     from hyprial.daemon.impl.orgfs.web import with_human_web_urls as with_human_web_urls
     from hyprial.daemon.impl.dispatch.matrix import workflow_reminders as workflow_reminders
@@ -470,6 +471,7 @@ _FACADE_EXPORTS = {
     'verify_tailcat_sidecar': ('hyprial.daemon.impl.network.tailcat', 'verify_tailcat_sidecar'),
     'views_missions': ('hyprial.daemon.impl.pac.views.missions', None),
     'views_overview': ('hyprial.daemon.impl.pac.views.overview', None),
+    'views_work_items': ('hyprial.daemon.impl.pac.views.work_items', None),
     'with_human_web_urls': ('hyprial.daemon.impl.orgfs.web', 'with_human_web_urls'),
     'workflow_reminders': ('hyprial.daemon.impl.dispatch.matrix', 'workflow_reminders'),
     'write_envelope': ('hyprial.daemon.impl.transfer.archive.envelope', 'write_envelope'),
@@ -729,6 +731,7 @@ __all__ = [
     'verify_tailcat_sidecar',
     'views_missions',
     'views_overview',
+    'views_work_items',
     'with_human_web_urls',
     'workflow_reminders',
     'write_envelope',

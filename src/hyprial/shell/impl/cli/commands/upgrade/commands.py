@@ -432,13 +432,35 @@ def _perform_upgrade(
             ) from error
         result["notification"] = notification
 
-    return _restart_daemon_onto_install(
-        result,
-        before=before,
-        installed_version=installed_version,
-        resolution=resolution,
-        resolved=resolved,
-    )
+    try:
+        return _restart_daemon_onto_install(
+            result,
+            before=before,
+            installed_version=installed_version,
+            resolution=resolution,
+            resolved=resolved,
+        )
+    except ImportError as error:
+        # The old process may have lost an import path after replacement,
+        # including after it stopped the daemon. A fresh CLI can use the new
+        # installation; do not leave the operator with only a raw import error.
+        raise services.CliError(
+            "UPGRADE_RESTART_FAILED",
+            f"upgrade installed {installed_version}, but daemon restart failed: "
+            f"{error}. Run `hyprial restart` from a new shell command to restore service.",
+            {
+                **resolved,
+                "upgradeCompleted": True,
+                "upgraded": True,
+                "restartRequired": True,
+                "restart": {
+                    "attempted": True,
+                    "restarted": False,
+                    "reason": "post-install import failed",
+                    "before": before,
+                },
+            },
+        ) from error
 
 
 def _read_restore_phase() -> str | None:

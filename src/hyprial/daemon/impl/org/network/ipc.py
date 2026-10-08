@@ -15,6 +15,7 @@ from typing import Any
 from hyprial.kernel import DaemonRequestError, ipc_errors
 from hyprial.daemon.impl.ipc.params import JsonObject, _required_string
 from hyprial.daemon.impl.orgfs.api import OrgFsError
+from hyprial.daemon.impl.org.network.dialing import DialState, dial_peers
 from hyprial.daemon.impl.org.network.directory import OrgFsDirectoryStore
 from hyprial.daemon.impl.org.network.service import (
     OrgNetworkError,
@@ -240,15 +241,51 @@ def process_leave_requests_for_app(app: Any) -> dict:
 def directory_peers_for_app(app: Any) -> dict[str, str]:
     """The directory peers callback for endpoint discovery (§4.2 seam).
 
-    Failures answer an empty mapping: discovery is additive and a directory
-    that cannot answer must not stop a daemon from starting.
+    Answers the peers this node dials (one dialer per pair, see
+    ``dialing.dial_peers``).  If choosing the direction fails, it dials every
+    member rather than none: mutual dialing is the old behaviour, nobody
+    dialing is a disconnected pair.  Only a directory that cannot answer at
+    all yields an empty mapping -- discovery must not stop a daemon starting.
     """
 
     try:
-        return _build_service(app).directory_peers()
+        service = _build_service(app)
     except Exception:  # noqa: BLE001 - discovery must never raise
         return {}
+    try:
+        state = getattr(app, "_org_dial_state", None)
+        if state is None:
+            state = DialState()
+            app._org_dial_state = state
+        return dial_peers(
+            service,
+            state=state,
+            log=getattr(app, "_log", None),
+            is_live=_host_liveliness(app),
+        )
+    except Exception as error:  # noqa: BLE001 - degrade to mutual, never to none
+        log = getattr(app, "_log", None)
+        if log is not None:
+            log(
+                "warn",
+                "org",
+                "org.dial_direction.failed",
+                errorType=type(error).__name__,
+                detail=str(error)[:200],
+            )
+        try:
+            return service.directory_peers()
+        except Exception:  # noqa: BLE001 - discovery must never raise
+            return {}
 
+
+def _host_liveliness(app: Any):  # type: ignore[no-untyped-def]
+    """``device id -> currently live?`` from OrgFS host liveliness, if running."""
+
+    runtime = getattr(app, "_orgfs_runtime", None)
+    if runtime is None:
+        return lambda _device: False
+    return lambda device: device in getattr(runtime, "_lively_peers", ())
 
 __all__ = [
     "directory_peers_for_app",

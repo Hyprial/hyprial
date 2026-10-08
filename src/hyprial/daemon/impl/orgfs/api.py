@@ -250,6 +250,7 @@ class OrgFs(Protocol):
         *,
         base_version: str | None = None,
         expect_version: str | None = None,
+        create_only: bool = False,
     ) -> NodeInfo: ...
 
     def read_bytes(self, space_id: str, node: NodeRef) -> bytes: ...

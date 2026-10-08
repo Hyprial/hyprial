@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import secrets
 import time
 from enum import StrEnum
@@ -41,6 +42,9 @@ from hyprial.daemon.impl.mcp.api  import (
     DaemonRequestRejected,
 )
 from hyprial.daemon.impl.mcp.channel.ownership import _DAEMON_CONTACT_ERRORS
+from hyprial.daemon.impl.mcp.channel.ownership import (
+    _read_process_identity as process_birth_identity,
+)
 from hyprial.daemon.impl.mcp.proxy  import StatelessDaemonProxy
 from hyprial.daemon.impl.mcp.wake  import WakeCoordinator
 
@@ -191,6 +195,8 @@ class ClaudeChannelAdapter:
         return await self._call("message.pending.wait", params, mutation=False)
 
     async def _register(self) -> dict[str, Any]:
+        harness_pid = os.getppid()
+        harness_identity = process_birth_identity(harness_pid)
         return await self._call(
             "session.register",
             {
@@ -204,6 +210,14 @@ class ClaudeChannelAdapter:
                 "turnReporting": True,
                 "ownerFence": self.owner_fence,
                 "channelLeaseToken": self._lease_token,
+                **(
+                    {
+                        "processPid": harness_pid,
+                        "processIdentity": harness_identity,
+                    }
+                    if harness_pid > 1 and harness_identity is not None
+                    else {}
+                ),
                 **(
                     {"tmuxSession": self.tmux_session}
                     if self.tmux_session is not None

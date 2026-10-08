@@ -15,6 +15,7 @@ class TurnDeliveryProjection:
     message: str
     hook_text: str | None = None
     hook_request: bool = False
+    notice: bool = False
 
 
 @dataclass(frozen=True, slots=True)

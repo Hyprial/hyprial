@@ -138,6 +138,7 @@ class PythonWorkerTurnAdapter(ConcurrentTurnProcess):
             else (dict(env) if env is not None else {})
         )
         self._logger = logger or self._make_logger()
+        self._delivery_projection_failure_kinds: set[str] = set()
         self._on_turn_completed = on_turn_completed
         self._stop_timeout_seconds = stop_timeout_seconds
         self._lock = threading.RLock()
@@ -229,7 +230,15 @@ class PythonWorkerTurnAdapter(ConcurrentTurnProcess):
             if self.in_flight >= self.max_in_flight:
                 return False
             if self.worker_channel is not None:
-                from hyprial.daemon.impl.pac.contracts.delivery import WITHDRAWN, delivery_current
+                from hyprial.daemon.impl.pac.contracts.delivery import (
+                    ALREADY_CONSUMED,
+                    EXPIRED,
+                    TERMINALLY_FAILED,
+                    WITHDRAWN,
+                    delivery_current,
+                )
+                from hyprial.daemon.impl.inbox.authority.read import delivery_pending
+                from hyprial.daemon.impl.inbox.service.state import ConsumptionState
                 from hyprial.daemon.impl.pac.contracts.bindings import RemoteWorkflowUnavailable
 
                 try:
@@ -252,6 +261,45 @@ class PythonWorkerTurnAdapter(ConcurrentTurnProcess):
                             HarnessResultStatus.INTERRUPTED,
                             failure_code=WITHDRAWN,
                         )
+                    )
+                    return True
+                state = (
+                    ConsumptionState.PENDING
+                    if delivery.notice
+                    else delivery_pending(
+                        self.worker_channel.state_dir / "inbox.sqlite3",
+                        delivery.recipient,
+                        delivery.delivery_id,
+                        warn=self._warn_delivery_projection_once,
+                    )
+                )
+                if state in {
+                    ConsumptionState.CONSUMED,
+                    ConsumptionState.EXPIRED,
+                    ConsumptionState.FAILED,
+                }:
+                    reason = {
+                        ConsumptionState.EXPIRED: EXPIRED,
+                        ConsumptionState.FAILED: TERMINALLY_FAILED,
+                    }.get(state, ALREADY_CONSUMED)
+                    self._records[delivery.delivery_id] = _DeliveryState(
+                        delivery,
+                        time.monotonic(),
+                        time.time_ns() // 1_000_000,
+                        terminal=True,
+                    )
+                    self._results.put(
+                        HarnessResult(
+                            delivery.delivery_id,
+                            delivery.recipient,
+                            HarnessResultStatus.INTERRUPTED,
+                            failure_code=reason,
+                        )
+                    )
+                    self._log_turn(
+                        "worker.turn.skipped",
+                        delivery,
+                        reason=reason,
                     )
                     return True
             payload: object
@@ -824,6 +872,23 @@ class PythonWorkerTurnAdapter(ConcurrentTurnProcess):
             self._logger.info(event, **fields)
         except OSError:
             # Local observability is fail-open; turn custody is not.
+            return
+
+    def _warn_delivery_projection_once(
+        self, failure_kind: str, detail: str
+    ) -> None:
+        if failure_kind in self._delivery_projection_failure_kinds:
+            return
+        self._delivery_projection_failure_kinds.add(failure_kind)
+        if self._logger is None:
+            return
+        try:
+            self._logger.warn(
+                "worker.delivery_projection_unreadable",
+                failureKind=failure_kind,
+                detail=detail,
+            )
+        except OSError:
             return
 
 

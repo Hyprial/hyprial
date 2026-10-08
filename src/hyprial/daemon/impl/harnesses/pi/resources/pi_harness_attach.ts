@@ -37,7 +37,11 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import bridgeFactory from "./pi_harness_bridge.ts";
-import { callDaemon, identityFromEnv } from "./pi_daemon_ipc.ts";
+import {
+  callDaemon,
+  identityFromEnv,
+  processBirthIdentity,
+} from "./pi_daemon_ipc.ts";
 import {
   Heartbeat,
   InboxWatch,
@@ -298,11 +302,15 @@ export default function (pi: ExtensionAPI) {
   }
 
   function registerParams(): Record<string, unknown> {
+    const processIdentity = processBirthIdentity(process.pid);
     return signed({
           cwd: process.cwd(),
           command: CARRIER_COMMAND,
           source: CARRIER_SOURCE,
           runtime: CARRIER_RUNTIME,
+          ...(processIdentity
+            ? { processPid: process.pid, processIdentity }
+            : {}),
           // Detached-tmux launches (`hyprial start pi --tmux`, the #218 pattern):
           // the daemon records the session name on the registration so
           // `hyprial ps` shows where to attach. No claude-style owner-fence

@@ -54,6 +54,14 @@ class GatewayCommand:
     payload: SendOwnerDm | SendChat | SendChatFile | SendChatImage | ReplyToMessage
 
 
+class GatewayAdmissionRefused(RuntimeError):
+    """The gateway proved that native I/O was not admitted."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(f"Lark outbound gateway {reason}")
+        self.reason = reason
+
+
 @dataclass
 class _Reply:
     ready: threading.Event = field(default_factory=threading.Event)
@@ -88,13 +96,15 @@ class GatewayIoAuthority:
         command = GatewayCommand(uuid4().hex, payload)
         reply = _Reply()
         with self._guard:
-            if self._closed or len(self._pending) >= self._capacity:
-                raise RuntimeError("Lark outbound gateway closed or overloaded")
+            if self._closed:
+                raise GatewayAdmissionRefused("closed")
+            if len(self._pending) >= self._capacity:
+                raise GatewayAdmissionRefused("overloaded")
             self._pending[command.operation_id] = reply
             admission = self._runtime.tell(self._handle, command)
             if admission is not AdmissionResult.ACCEPTED:
                 self._pending.pop(command.operation_id)
-                raise RuntimeError(f"Lark outbound gateway {admission.value}")
+                raise GatewayAdmissionRefused(admission.value)
         if not reply.ready.wait(None if await_settlement else self._timeout):
             raise TimeoutError(
                 f"gateway request {command.operation_id} remains accepted"

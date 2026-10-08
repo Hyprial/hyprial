@@ -73,6 +73,12 @@ class RuntimeDirectory:
         """Reserve the overflow envelope beside the announcement budget."""
         return ORGFS_ANNOUNCE_BUFFER_LIMIT + 1
 
+    @staticmethod
+    def _new_directory_sync_offset() -> int:
+        """Give every runtime a different starting point in holder rotations."""
+
+        return random.randrange(1 << 63)
+
     @property
     def directory_ingress_dropped(self) -> int:
         return self._directory_dropped
@@ -401,7 +407,7 @@ class RuntimeDirectory:
 
 
     def anti_entropy_tick(self, now: float) -> int:
-        """Schedule one bounded pull per online org-space holder when due.
+        """Schedule one bounded pull per online org space when due.
 
         Never raises: daemon maintenance runs other phases after this one, so a
         failure is logged as ``orgfs.anti_entropy.failed`` and counts as zero.
@@ -425,22 +431,49 @@ class RuntimeDirectory:
                 return 0
             self._directory_sync_due = _next_directory_sync_due(now)
 
-        targets: set[tuple[str, str]] = set()
+        excluded_orgs = self._excluded_orgs()
+        targets: dict[str, str] = {}
         for space in self.facade.spaces():
-            if not (
-                is_org_directory_space(space.name) or is_org_acl_space(space.name)
-            ):
+            is_directory = is_org_directory_space(space.name)
+            is_acl = is_org_acl_space(space.name)
+            if not (is_directory or is_acl):
+                continue
+            org = space.name if is_directory else space.name.removesuffix("-acl")
+            if org in excluded_orgs:
                 continue
             with self._pending_announces_lock:
-                holders = tuple(self._holders.get(space.space_id, ()))
-            targets.update(
-                (space.space_id, peer)
-                for peer in holders
-                if peer != self.node_id and self._supplier_online(peer)
-            )
+                holders = tuple(sorted(
+                    peer
+                    for peer in self._holders.get(space.space_id, ())
+                    if peer != self.node_id
+                ))
+            online = tuple(peer for peer in holders if self._supplier_online(peer))
+            if not online:
+                continue
+            with self._pending_announces_lock:
+                last = self._directory_sync_last.get(space.space_id)
+                peer = (
+                    online[self._directory_sync_offset % len(online)]
+                    if last is None
+                    else next((name for name in online if name > last), online[0])
+                )
+                self._directory_sync_last[space.space_id] = peer
+            targets[space.space_id] = peer
 
+        # The periodic path alone is linear. Presence edges, announce catch-up,
+        # and post-rebuild catch-up remain eager, so a join or restart already
+        # receives a full pull without duplicating that work in this tick.
+        # Each space remembers the NAME of the last holder it pulled from and
+        # takes the first online holder after it in sorted order (wrapping).
+        # A holder that stays online cannot be stepped over, so it is reached
+        # within one turn of the names however the others flap.  An integer
+        # cursor cannot give that: a liveliness delete removes a peer from
+        # ``_holders`` (``_settle_peer_liveliness``), so any index shifts with
+        # the flapping and A-online-on-even / Z-on-odd ticks starve an
+        # always-online H.  Worst case for one row on one holder: k holders,
+        # one per due tick of 60 s +20% jitter, about (k-1) x 72 s.
         scheduled = 0
-        for space_id, peer in sorted(targets):
+        for space_id, peer in sorted(targets.items()):
             mesh = self._mesh(space_id)
             if mesh is not None and mesh.schedule_sync_from(peer):
                 scheduled += 1

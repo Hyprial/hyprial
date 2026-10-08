@@ -449,8 +449,7 @@ class _SessionRoutesMixin:
         sessions = self._agent_session_domains.session.read_sessions()
         for session in sessions:
             if (
-                session.source != "codex-app-server"
-                or session.process_pid is None
+                session.process_pid is None
                 or session.process_identity is None
             ):
                 continue

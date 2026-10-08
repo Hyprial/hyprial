@@ -317,9 +317,8 @@ class OrgNetworkService:
         for step in steps:
             detail = self._execute_step(parsed, step.kind)
             executed.append({"kind": step.kind, "ok": True, "detail": detail})
-        # An explicit join undoes an earlier leave on this node; without it
-        # the rejoined org would stay hidden from list()/network().
-        clear_left_org(self._home, parsed.org)
+            if step.kind == "join-org":  # a join undoes an earlier leave here,
+                clear_left_org(self._home, parsed.org)  # even if a later step fails
         self._log("info", "org", "org.execute", org=parsed.org, spaceId=parsed.space_id)
         return {"org": parsed.org, "spaceId": parsed.space_id, "steps": executed}
 

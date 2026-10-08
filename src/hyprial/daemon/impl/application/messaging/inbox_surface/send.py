@@ -1,20 +1,14 @@
 """message.send and message.reply: authoring sends with idempotent delivery per target kind."""
 
 from __future__ import annotations
-
-from __future__ import annotations
 import json
 import time
-from typing import Any, TYPE_CHECKING
+from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
 from hyprial.daemon.impl.adapters.lark.contracts.reply_bridge import (
     lark_reply_adapter,
 )
-from hyprial.kernel import ipc_errors
-from hyprial.kernel import DaemonRequestError
-from hyprial.kernel import (
-    reply_message_id,
-)
+from hyprial.kernel import DaemonRequestError, ipc_errors, reply_message_id
 from hyprial.daemon.impl.inbox import (
     DeliveryLifecycle,
     InboxAuthorityTimeout,
@@ -48,11 +42,11 @@ from hyprial.daemon.impl.path_authz import (
     operator_policy,
     session_attachment_policy,
 )
-if TYPE_CHECKING:
-    pass
-
 from hyprial.daemon.impl.application.messaging.delivery.sends import (
     _require_deliverable_send_target,
+)
+from hyprial.daemon.impl.application.messaging.inbox_surface.agent_bot import (
+    AgentBotSendSupport,
 )
 from hyprial.daemon.impl.application.messaging.visibility import (
     _message_origin,
@@ -64,7 +58,7 @@ from hyprial.daemon.impl.ipc.params import (
 )
 
 
-class _MessageSendMixin:
+class _MessageSendMixin(AgentBotSendSupport):
     """Application cluster mixin; the state owner is DaemonApplication."""
 
     def _ipc_message_send(self, method, params, _trusted_message_origin: str | None = None) -> Any:
@@ -190,6 +184,32 @@ class _MessageSendMixin:
                     raise DaemonRequestError(
                         ipc_errors.INVALID_ARGUMENT, str(error)
                     ) from error
+                agent_bot = self._deliver_user_via_agent_bot(
+                    caller=caller,
+                    target=target,
+                    owner=user_target.owner,
+                    text=text,
+                    target_key=target_key,
+                    message_id=message_id,
+                    conversation_id=conversation,
+                    trusted_origin=_trusted_message_origin,
+                )
+                if agent_bot is not None:
+                    deliveries.append(agent_bot)
+                    if agent_bot["accepted"]:
+                        self._log(
+                            "info",
+                            "daemon",
+                            "send.received",
+                            messageId=message_id,
+                            correlationId=message_id,
+                            node="daemon-send",
+                            conversationId=conversation,
+                            sender=source,
+                            target=target,
+                            nativeMessageId=agent_bot["nativeMessageId"],
+                        )
+                    continue
                 if self._user_delivery is None:
                     raise DaemonRequestError(
                         ipc_errors.USER_DELIVERY_UNAVAILABLE,

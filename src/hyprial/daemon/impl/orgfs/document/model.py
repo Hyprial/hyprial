@@ -196,6 +196,7 @@ class _WriteText:
     content: str
     base_version: str | None
     expect_version: str | None
+    create_only: bool
 
 
 @dataclass(frozen=True, slots=True)

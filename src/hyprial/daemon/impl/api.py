@@ -51,6 +51,8 @@ class HarnessDelivery:
     hook_text: str | None = None
     #: Internal recursion fence for the mechanism's own actor exchange.
     hook_request: bool = False
+    #: True only when reconcile sourced this delivery from ``system_notices``.
+    notice: bool = False
 
     def __post_init__(self) -> None:
         if self.origin is not None:

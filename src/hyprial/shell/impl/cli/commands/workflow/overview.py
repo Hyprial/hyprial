@@ -12,17 +12,20 @@ from hyprial.shell.impl.cli.commands.common.services import get_services
 from hyprial.shell.impl.cli.output import CliResult
 
 
-from hyprial.shell.impl.cli.commands.workflow.missions import _missions_request
+from hyprial.shell.impl.cli.commands.work.commands import (
+    _association_request,
+    _org_space,
+)
 from hyprial.shell.impl.cli.commands.workflow.run import _identity, overview_app
 
 
 def _overview_model(
-    json_output: bool, window_days: int, missions_space: str | None = None
+    json_output: bool, window_days: int, org: str | None = None
 ) -> tuple[dict[str, Any], Any]:
     """Collect this node's PAC data as the caller sees it, as a page model.
 
-    With ``missions_space``, graphs listed in its mission files are grouped
-    by mission; a space that cannot be read leaves the inferred lines alone
+    Graphs listed in the org's work items are grouped by work item; a space
+    that cannot be read leaves the inferred lines alone
     and is reported as ``missionsError`` (not part of the published data).
     """
 
@@ -51,20 +54,24 @@ def _overview_model(
         request, now_ms=int(_time.time() * 1000), window_days=window_days
     )
     loaded: list[dict[str, Any]] = []
+    invalid_work_items: list[dict[str, str]] = []
     problem = None
-    if missions_space:
-        from hyprial.daemon import views_missions as missions
+    from hyprial.daemon import views_missions as missions
 
-        try:
-            found = missions.load_missions(_missions_request(json_output), missions_space)
-            loaded = found["missions"]
-            if found["unparseable"] or found["conflicts"]:
-                problem = "needs repair: " + ", ".join(
-                    [u["path"] for u in found["unparseable"]] + found["conflicts"]
-                )
-        except services.CliError as error:
-            problem = str(error)
+    try:
+        found = missions.load_missions(
+            _association_request(json_output), _org_space(org)
+        )
+        loaded = found["missions"]
+        invalid_work_items = found["unparseable"]
+        if found["unparseable"] or found["conflicts"]:
+            problem = "needs repair: " + ", ".join(
+                [u["path"] for u in found["unparseable"]] + found["conflicts"]
+            )
+    except services.CliError as error:
+        problem = str(error)
     model = overview.build_model(snapshot, node=node, missions=loaded)
+    model["invalidWorkItems"] = invalid_work_items
     return ({**model, "missionsError": problem} if problem else model), overview
 
 @overview_app.command("show")
@@ -72,8 +79,8 @@ def overview_show(
     window_days: int = typer.Option(
         7, "--window-days", min=1, max=60, help="Include graphs created within this many days."
     ),
-    missions_space: str | None = typer.Option(
-        None, "--missions", help="orgfs space holding missions/: group graphs by mission."
+    org: str | None = typer.Option(
+        None, "--org", help="Organization whose work items group the graphs."
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ):
@@ -81,7 +88,7 @@ def overview_show(
     services = get_services()
 
     def operation():
-        model, _ = _overview_model(json_output, window_days, missions_space)
+        model, _ = _overview_model(json_output, window_days, org)
 
         def render(_data: Any) -> str:
             runs = len(model["runs"])
@@ -105,8 +112,8 @@ def overview_publish(
     window_days: int = typer.Option(
         7, "--window-days", min=1, max=60, help="Include graphs created within this many days."
     ),
-    missions_space: str | None = typer.Option(
-        None, "--missions", help="orgfs space holding missions/: group graphs by mission."
+    org: str | None = typer.Option(
+        None, "--org", help="Organization whose work items group the graphs."
     ),
     force: bool = typer.Option(
         False, "--force", help="Write even when nothing changed since the last publish."
@@ -125,7 +132,7 @@ def overview_publish(
     services = get_services()
 
     def operation():
-        model, overview = _overview_model(json_output, window_days, missions_space)
+        model, overview = _overview_model(json_output, window_days, org)
         problem = model.pop("missionsError", None)
 
         def fs_request(method: str, params: Any) -> Any:

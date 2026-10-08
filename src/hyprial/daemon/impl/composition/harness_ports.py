@@ -417,6 +417,19 @@ class HarnessPortClient:
             for item in self.actor.read_worker_session_refs().refs
         }
 
+    def projected_worker_process_identities(
+        self,
+    ) -> dict[tuple[str, str], tuple[int, str]]:
+        """Live worker PID plus birth marker, kept off diagnostic payloads."""
+
+        return {
+            (item.runtime, item.name): (item.pid, item.identity_marker)
+            for item in self.actor.read_harnesses()
+            if item.running
+            and item.pid is not None
+            and item.identity_marker is not None
+        }
+
     def wait_ready(self, harness: str, name: str, timeout: float) -> bool:
         return self.call(
             WaitHarnessReadyCommand(

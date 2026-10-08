@@ -284,6 +284,7 @@ class HarnessStatusProjection:
     name: str
     running: bool
     pid: int | None = None
+    identity_marker: str | None = None
     starting: bool = False
     # Retry posture derived from the actor's failure counter: "retrying"
     # while failures accumulate inside the budget, "failed" once it is spent

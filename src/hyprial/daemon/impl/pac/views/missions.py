@@ -1,7 +1,7 @@
-"""Missions: which PAC graphs belong to which task line (docs/design/design-missions.md).
+"""Work-item associations: which PAC graphs belong to which task line.
 
-A mission is one file ``missions/M-<owner>-NNNN.md`` in a dedicated orgfs
-space, written only by squires.  Its first ```yaml block is machine-readable
+A work item is one file ``work/M-<owner>-NNNN.md`` in an org directory space.
+Its first ```yaml block is machine-readable
 (``id``, ``status``, ``owner``, ``keywords``, ``pacs``); the rest is prose.
 
 This module is the deterministic half of the association.  A squire's
@@ -26,23 +26,25 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-import yaml
-
 from hyprial.daemon.impl.pac.views.overview import DAY_MS, DEFAULT_WINDOW_DAYS, Request, _signature
+from hyprial.daemon.impl.pac.views.work_items import (
+    WORK_STATUSES,
+    WorkItemError,
+    parse_work_item,
+    validate_work_item_state,
+)
 
-MISSIONS_DIR = "missions"
+WORK_DIR = "work"
 WORK_NODE = "work"
 TOP_CANDIDATES = 5
 GRAPHS_PER_ROUND = 20
 LIST_LIMIT = 500  # workflow.list returns at most this many, newest first
 PAYLOAD_LIMIT = 32 * 1024
 STATE_LIMIT = 60 * 1024  # under the 64 KiB workflow output cap
-STATUSES = ("active", "done", "paused")
+STATUSES = WORK_STATUSES
 _TERMINAL = {"completed", "failed", "cancelled"}
 SKIPPED_STATE = {"skipped": True}  # the output of a round that did nothing
 _MISSION_FILE = re.compile(r"M-[A-Za-z0-9._-]+-\d{4,}\.md")
-_YAML_BLOCK = re.compile(r"^```ya?ml[ \t]*\n(.*?)^```", re.MULTILINE | re.DOTALL)
-_HEADING = re.compile(r"^##[ \t]+(\S+)[ \t]+(.+?)[ \t]*$", re.MULTILINE)
 
 
 class MissionParseError(ValueError):
@@ -60,40 +62,26 @@ class PreviousRoundUnreadable(RuntimeError):
 def parse_mission(text: str) -> dict[str, Any]:
     """The YAML block of one mission file, validated; the title comes from its heading."""
 
-    block = _YAML_BLOCK.search(text)
-    if block is None:
-        raise MissionParseError("no ```yaml block")
     try:
-        data = yaml.safe_load(block.group(1))
-    except yaml.YAMLError as error:
-        raise MissionParseError(f"yaml: {error}".splitlines()[0]) from error
-    if not isinstance(data, dict):
-        raise MissionParseError("yaml block is not a mapping")
-    mission_id = data.get("id")
-    if not isinstance(mission_id, str) or not mission_id.startswith("M-"):
-        raise MissionParseError("id must be a string starting with M-")
-    status = data.get("status")
-    if status not in STATUSES:
-        raise MissionParseError(f"status must be one of {', '.join(STATUSES)}")
-    keywords = data.get("keywords") or []
-    pacs = data.get("pacs") or []
-    if not isinstance(keywords, list) or not isinstance(pacs, list):
-        raise MissionParseError("keywords and pacs must be lists")
-    heading = next(
-        (m.group(2) for m in _HEADING.finditer(text) if m.group(1) == mission_id), None
-    )
+        item = parse_work_item(text)
+        validate_work_item_state(item)
+    except WorkItemError as error:
+        if str(error).startswith(("keywords must be", "pacs must be")):
+            raise MissionParseError("keywords and pacs must be lists") from error
+        raise MissionParseError(str(error)) from error
     return {
-        "id": mission_id,
-        "title": heading or mission_id,
-        "status": status,
-        "owner": str(data.get("owner") or ""),
-        "keywords": [str(word) for word in keywords],
-        "pacs": [str(graph).strip() for graph in pacs if str(graph).strip()],
+        "id": item.id,
+        "title": item.title,
+        "status": item.head["status"],
+        "owner": item.owner,
+        "keywords": item.head["keywords"],
+        "pacs": [str(graph).strip() for graph in item.head["pacs"] if str(graph).strip()],
+        "unverifiedOperator": item.to_dict()["unverifiedOperator"],
     }
 
 
 def load_missions(
-    request: Request, space_id: str, *, base: str = MISSIONS_DIR
+    request: Request, space_id: str, *, base: str = WORK_DIR
 ) -> dict[str, Any]:
     """Every mission file in the space, with those that need a squire's repair.
 
@@ -104,7 +92,7 @@ def load_missions(
     listing = request("orgfs.ls", {"spaceId": space_id, "path": base})
     missions: list[dict[str, Any]] = []
     unparseable: list[dict[str, str]] = []
-    conflicts: list[str] = []
+    conflict_nodes: dict[str, list[str]] = {}
     for item in listing.get("nodes") or []:
         if not isinstance(item, dict) or item.get("deleted"):
             continue
@@ -113,7 +101,9 @@ def load_missions(
             continue
         path = f"{base}/{name}"
         if item.get("name_conflict"):
-            conflicts.append(path)
+            node_id = item.get("node_id")
+            if isinstance(node_id, str) and node_id:
+                conflict_nodes.setdefault(path, []).append(node_id)
             continue
         try:
             read = request(
@@ -136,6 +126,10 @@ def load_missions(
             }
         )
     missions.sort(key=lambda mission: mission["id"])
+    conflicts = [
+        {"path": path, "nodeIds": sorted(set(node_ids))}
+        for path, node_ids in sorted(conflict_nodes.items())
+    ]
     return {"missions": missions, "unparseable": unparseable, "conflicts": conflicts}
 
 
@@ -233,7 +227,7 @@ def candidates(
     sender = run.get("sender")
     scored: list[tuple[int, str, dict[str, Any]]] = []
     for mission in missions:
-        if mission.get("status") == "done":
+        if mission.get("status") in {"done", "dropped"}:
             continue
         reasons: list[str] = []
         score = 0

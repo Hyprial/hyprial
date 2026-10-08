@@ -229,11 +229,12 @@ class Agent:
     #: Composed from the ``pins`` table at read time; writes go through
     #: ``AgentRegistry.pin``/``unpin`` only (``save`` ignores this field).
     #: Kept on the record (and in its JSON shape) so ``agent get/list``
-    #: show the binding, and kept a *list* for shape-compatibility even
+    #: show the binding.  Besides inbound routing, ``message.send`` uses the
+    #: pin to select this local agent's own bot for eligible ``user:`` DMs.
+    #: Kept a *list* for shape-compatibility even
     #: though UNIQUE(agent) makes it hold at most one adapter.  Deleting the
-    #: agent row cascades the pins away.  Inbound-only and not a bijection:
-    #: outbound replies travel with each message's own correlation, never by
-    #: looking an adapter up here.
+    #: agent row cascades the pins away.  It is not a bijection: correlated
+    #: replies still use each message's own adapter rather than this pin.
     pinned_adapters: tuple[str, ...] = ()
 
     # -- lifecycle: existing is active, destroy is deletion (no retired state) --
