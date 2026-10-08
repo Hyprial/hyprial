@@ -8,6 +8,7 @@ the selected G1 document engine is pycrdt/Yjs.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 import re
@@ -16,12 +17,14 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Callable, Iterable, Literal, Mapping, Protocol, TypeAlias
 
-from pycrdt import Doc, Map
+from pycrdt import Doc, Map, Text
 
 from hyprial.identity import (
+    binding_assertion_publish_after,
     directory_owner_principal,
     parse_protected_directory_node_id,
     parse_protected_directory_doc_id,
+    protected_directory_author_allowed,
     protected_directory_node_id,
     protected_directory_doc_id,
 )
@@ -36,8 +39,17 @@ _MAX_PENDING_IMPORTS = 512
 _MAX_PENDING_IMPORT_AGE_SECONDS = 60 * 60
 #: Replica key components stay 15 bytes below the usual 255-byte filesystem
 #: component limit.  This covers the longest ``.tmp-XXXXXXXX`` suffix plus a
-#: byte of margin and is shared by ingress writer validation.
+#: byte of margin and is shared by ingress writer validation.  Document ids
+#: are exempt: they never become a path component (``document_file_stem``).
 MAX_REPLICA_SEGMENT_LENGTH = 240
+#: Fixed-length on-disk name of a document: ``h-`` plus 32 base32 characters
+#: (160 bits) of sha256(doc id).  Protected directory ids grow with user and
+#: device names and passed 255 bytes for real Casdoor names, so neither the
+#: store's ``docs/`` files nor the replica's document directories are named
+#: by the id itself.  The id stays recoverable from the file's own header
+#: (store) or the directory's ``.docid`` file (replica).
+DOCUMENT_FILE_PREFIX = "h-"
+_DOCUMENT_FILE_STEM = re.compile(r"h-[a-z2-7]{32}")
 
 _SAFE_WRITER = re.compile(
     rf"^[A-Za-z0-9._:-]{{1,{MAX_REPLICA_SEGMENT_LENGTH}}}$"
@@ -45,6 +57,23 @@ _SAFE_WRITER = re.compile(
 _EMPTY_UPDATE = b"\x00\x00"
 _DOC_IDS = {"meta"}
 _LOG = logging.getLogger(__name__)
+
+
+def _binding_proof_update_is_publishable(
+    baseline: Doc, update: bytes, *, now: float
+) -> bool:
+    """Apply one protected-row update and enforce the publication time gate."""
+
+    probe = Doc()
+    try:
+        probe.apply_update(baseline.get_update())
+        probe.apply_update(update)
+        text = probe.get("text", type=Text).to_py()
+        row = json.loads(text)
+        proof = row.get("proof") if isinstance(row, dict) else None
+        return isinstance(proof, str) and now > binding_assertion_publish_after(proof)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
 
 DocMutator: TypeAlias = Callable[[Doc], None]
 FaultHook: TypeAlias = Callable[[str], None]
@@ -244,6 +273,18 @@ def _empty_meta(doc: Doc) -> None:
             doc[name] = Map()
 
 
+def document_file_stem(doc_id: str) -> str:
+    """Return the fixed-length on-disk name for ``doc_id`` (no suffix)."""
+
+    digest = hashlib.sha256(doc_id.encode("utf-8")).digest()
+    token = base64.b32encode(digest).decode("ascii").lower()
+    return DOCUMENT_FILE_PREFIX + token[:32]
+
+
+def is_document_file_stem(name: str) -> bool:
+    return _DOCUMENT_FILE_STEM.fullmatch(name) is not None
+
+
 def _wire_doc_id(doc_id: str) -> str:
     if doc_id in _DOC_IDS:
         return doc_id
@@ -292,7 +333,16 @@ def _tree_node_operation_allowed(
         identity = parse_protected_directory_node_id(node_id)
         parent_identity = parse_protected_directory_node_id(parent)
         if identity is not None:
-            if identity[0] != space_id or principal != identity[1]:
+            section = (
+                "people"
+                if identity[2].startswith("directory/people/")
+                else "devices"
+            )
+            if identity[0] != space_id or not protected_directory_author_allowed(
+                section=section,
+                path_principal=identity[1],
+                author=principal,
+            ):
                 return False
             path = identity[2]
             parent_path, separator, expected_name = path.rpartition("/")

@@ -59,18 +59,26 @@ if TYPE_CHECKING:
     from hyprial.identity.impl.device import DEVICE_KEY_RELPATH as DEVICE_KEY_RELPATH
     from hyprial.identity.impl.device import DEVICE_RECORD_RELPATH as DEVICE_RECORD_RELPATH
     from hyprial.identity.impl.org_directory import DIRECTORY_DIR as DIRECTORY_DIR
+    from hyprial.identity.impl.org_directory import BINDING_ASSERTION_CLIENT_ID as BINDING_ASSERTION_CLIENT_ID
+    from hyprial.identity.impl.org_directory import BINDING_ASSERTION_OWNER as BINDING_ASSERTION_OWNER
+    from hyprial.identity.impl.org_directory import binding_assertion_claims_unverified as binding_assertion_claims_unverified
+    from hyprial.identity.impl.org_directory import binding_assertion_publish_after as binding_assertion_publish_after
+    from hyprial.identity.impl.org_directory import binding_numeric_date as binding_numeric_date
+    from hyprial.identity.impl.org_directory import PEOPLE_DIR as PEOPLE_DIR
     from hyprial.identity.impl.agents.actor.ports import DestroyAgentCommand as DestroyAgentCommand
     from hyprial.identity.impl.provider_auth.helper import DeviceLoginRunner as DeviceLoginRunner
     from hyprial.identity.impl.device import DeviceRecord as DeviceRecord
     from hyprial.identity.impl.org_directory import DirectoryDevice as DirectoryDevice
     from hyprial.identity.impl.org_directory import DirectoryStore as DirectoryStore
     from hyprial.identity.impl.org_directory import directory_device_path as directory_device_path
+    from hyprial.identity.impl.org_directory import directory_binding_path as directory_binding_path
     from hyprial.identity.impl.org_directory import directory_owner_principal as directory_owner_principal
     from hyprial.identity.impl.org_directory import ProtectedDocIdTooLongError as ProtectedDocIdTooLongError
     from hyprial.identity.impl.org_directory import parse_protected_directory_node_id as parse_protected_directory_node_id
     from hyprial.identity.impl.org_directory import parse_protected_directory_doc_id as parse_protected_directory_doc_id
     from hyprial.identity.impl.org_directory import protected_directory_node_id as protected_directory_node_id
     from hyprial.identity.impl.org_directory import protected_directory_doc_id as protected_directory_doc_id
+    from hyprial.identity.impl.org_directory import protected_directory_author_allowed as protected_directory_author_allowed
     from hyprial.identity.impl.agents.runtime.enforcement import EnforcementError as EnforcementError
     from hyprial.identity.impl.agents.runtime.enforcement import GRANTABLE_CAPABILITIES as GRANTABLE_CAPABILITIES
     from hyprial.identity.impl.agents.actor.ports import GrantAgentCapabilityCommand as GrantAgentCapabilityCommand
@@ -292,18 +300,26 @@ _FACADE_EXPORTS = {
     'DEVICE_KEY_RELPATH': ('hyprial.identity.impl.device', 'DEVICE_KEY_RELPATH'),
     'DEVICE_RECORD_RELPATH': ('hyprial.identity.impl.device', 'DEVICE_RECORD_RELPATH'),
     'DIRECTORY_DIR': ('hyprial.identity.impl.org_directory', 'DIRECTORY_DIR'),
+    'BINDING_ASSERTION_CLIENT_ID': ('hyprial.identity.impl.org_directory', 'BINDING_ASSERTION_CLIENT_ID'),
+    'BINDING_ASSERTION_OWNER': ('hyprial.identity.impl.org_directory', 'BINDING_ASSERTION_OWNER'),
+    'binding_assertion_claims_unverified': ('hyprial.identity.impl.org_directory', 'binding_assertion_claims_unverified'),
+    'binding_assertion_publish_after': ('hyprial.identity.impl.org_directory', 'binding_assertion_publish_after'),
+    'binding_numeric_date': ('hyprial.identity.impl.org_directory', 'binding_numeric_date'),
+    'PEOPLE_DIR': ('hyprial.identity.impl.org_directory', 'PEOPLE_DIR'),
     'DestroyAgentCommand': ('hyprial.identity.impl.agents.actor.ports', 'DestroyAgentCommand'),
     'DeviceLoginRunner': ('hyprial.identity.impl.provider_auth.helper', 'DeviceLoginRunner'),
     'DeviceRecord': ('hyprial.identity.impl.device', 'DeviceRecord'),
     'DirectoryDevice': ('hyprial.identity.impl.org_directory', 'DirectoryDevice'),
     'DirectoryStore': ('hyprial.identity.impl.org_directory', 'DirectoryStore'),
     'directory_device_path': ('hyprial.identity.impl.org_directory', 'directory_device_path'),
+    'directory_binding_path': ('hyprial.identity.impl.org_directory', 'directory_binding_path'),
     'directory_owner_principal': ('hyprial.identity.impl.org_directory', 'directory_owner_principal'),
     'ProtectedDocIdTooLongError': ('hyprial.identity.impl.org_directory', 'ProtectedDocIdTooLongError'),
     'parse_protected_directory_node_id': ('hyprial.identity.impl.org_directory', 'parse_protected_directory_node_id'),
     'parse_protected_directory_doc_id': ('hyprial.identity.impl.org_directory', 'parse_protected_directory_doc_id'),
     'protected_directory_node_id': ('hyprial.identity.impl.org_directory', 'protected_directory_node_id'),
     'protected_directory_doc_id': ('hyprial.identity.impl.org_directory', 'protected_directory_doc_id'),
+    'protected_directory_author_allowed': ('hyprial.identity.impl.org_directory', 'protected_directory_author_allowed'),
     'EnforcementError': ('hyprial.identity.impl.agents.runtime.enforcement', 'EnforcementError'),
     'GRANTABLE_CAPABILITIES': ('hyprial.identity.impl.agents.runtime.enforcement', 'GRANTABLE_CAPABILITIES'),
     'GrantAgentCapabilityCommand': ('hyprial.identity.impl.agents.actor.ports', 'GrantAgentCapabilityCommand'),
@@ -544,18 +560,26 @@ __all__ = [
     'DEVICE_KEY_RELPATH',
     'DEVICE_RECORD_RELPATH',
     'DIRECTORY_DIR',
+    'BINDING_ASSERTION_CLIENT_ID',
+    'BINDING_ASSERTION_OWNER',
+    'binding_assertion_claims_unverified',
+    'binding_assertion_publish_after',
+    'binding_numeric_date',
+    'PEOPLE_DIR',
     'DestroyAgentCommand',
     'DeviceLoginRunner',
     'DeviceRecord',
     'DirectoryDevice',
     'DirectoryStore',
     'directory_device_path',
+    'directory_binding_path',
     'directory_owner_principal',
     'ProtectedDocIdTooLongError',
     'parse_protected_directory_node_id',
     'parse_protected_directory_doc_id',
     'protected_directory_node_id',
     'protected_directory_doc_id',
+    'protected_directory_author_allowed',
     'EnforcementError',
     'GRANTABLE_CAPABILITIES',
     'GrantAgentCapabilityCommand',

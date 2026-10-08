@@ -19,6 +19,8 @@ from typing import Any
 
 from pycrdt import Doc
 
+from hyprial.kernel import lock_exclusive, unlock
+
 from hyprial.daemon.impl.orgfs.storage.store.membership import (
     StoreMembership,
     _MEMBER_ADD_FRONTIER_SCHEMA_VERSION,
@@ -63,11 +65,24 @@ from hyprial.daemon.impl.orgfs.storage.store.vocabulary import _wire_doc_id as _
 from hyprial.daemon.impl.orgfs.storage.store.vocabulary import _write_var_uint as _write_var_uint
 from hyprial.daemon.impl.orgfs.storage.store.vocabulary import _writer_is_safe as _writer_is_safe
 from hyprial.daemon.impl.orgfs.storage.store.vocabulary import decode_state_vector as decode_state_vector
+from hyprial.daemon.impl.orgfs.storage.store.vocabulary import document_file_stem as document_file_stem
+from hyprial.daemon.impl.orgfs.storage.store.vocabulary import is_document_file_stem as is_document_file_stem
 from hyprial.daemon.impl.orgfs.storage.store.vocabulary import state_covers as state_covers
 
 
 #: Writes between refreshes of the cached ``.loro`` state files.
 _CHECKPOINT_COMMITS = 64
+#: A ``docs/h-*.loro`` file is this line, the document id, a newline, then
+#: the document update.  The id lives in the file because the name is a hash.
+_DOC_FILE_MAGIC = b"hyprial-orgfs-doc/1\n"
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 class LocalSpaceStore(StoreMembership, StoreJournal, StoreAdmission, StoreSnapshots, StoreRetirement):
@@ -290,7 +305,77 @@ class LocalSpaceStore(StoreMembership, StoreJournal, StoreAdmission, StoreSnapsh
             return self._root / "meta.loro"
         if doc_id.startswith("tree-"):
             return self._root / "tree.loro"
-        return self._root / "docs" / f"{doc_id}.loro"
+        return self._root / "docs" / f"{document_file_stem(doc_id)}.loro"
+
+
+    def _write_document_file(
+        self, path: Path, doc_id: str, update: bytes, *, durable_name: bool = False
+    ) -> None:
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=".orgfs-doc-", dir=path.parent
+        )
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(_DOC_FILE_MAGIC + doc_id.encode("utf-8") + b"\n" + update)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+            if durable_name:
+                _fsync_directory(path.parent)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+    @staticmethod
+    def _read_document_file(path: Path) -> tuple[str, bytes]:
+        raw = path.read_bytes()
+        newline = raw.find(b"\n", len(_DOC_FILE_MAGIC))
+        if not raw.startswith(_DOC_FILE_MAGIC) or newline == -1:
+            raise StoreError("invalid-argument", f"invalid document file {path}")
+        try:
+            doc_id = _wire_doc_id(raw[len(_DOC_FILE_MAGIC) : newline].decode("ascii"))
+        except (StoreError, UnicodeDecodeError) as exc:
+            raise StoreError("invalid-argument", f"invalid document file {path}") from exc
+        if not doc_id.startswith("doc-") or document_file_stem(doc_id) != path.stem:
+            raise StoreError("invalid-argument", f"invalid document file {path}")
+        return doc_id, raw[newline + 1 :]
+
+
+    def _migrate_document_files(self) -> None:
+        """Rename id-named ``docs/<doc id>.loro`` files (0.5.2 and earlier) once.
+
+        Each file is rewritten under its hashed name (temporary file, fsync,
+        rename, directory fsync) before the old name is removed, so a crash
+        leaves the old file only, both (the new one complete), or the new one
+        only, and the next open resumes from any of them.  With both present
+        the new file wins: it may already carry later writes.  The lock file
+        keeps two concurrent opens of the same space from interleaving.
+        There is no way back: an older build cannot read ``h-*.loro``.
+        """
+
+        docs = self._root / "docs"
+        with (self._root / ".docs-migration.lock").open("a+b") as stream:
+            lock_exclusive(stream.fileno())
+            try:
+                for legacy in sorted(docs.glob("*.loro")):
+                    if is_document_file_stem(legacy.stem):
+                        continue
+                    doc_id = _wire_doc_id(legacy.stem)
+                    if not doc_id.startswith("doc-"):
+                        raise StoreError(
+                            "invalid-argument", f"invalid document path {legacy}"
+                        )
+                    target = self._doc_path(doc_id)
+                    if not target.exists():
+                        self._write_document_file(
+                            target, doc_id, legacy.read_bytes(), durable_name=True
+                        )
+                    self._fault("docs-migration:written")
+                    legacy.unlink()
+                    _fsync_directory(docs)
+            finally:
+                unlock(stream.fileno())
 
 
     @staticmethod
@@ -328,15 +413,16 @@ class LocalSpaceStore(StoreMembership, StoreJournal, StoreAdmission, StoreSnapsh
                         "invalid-argument", f"cannot load {tree_path}"
                     ) from exc
             self._docs[active_tree] = tree
+        self._migrate_document_files()
         for path in sorted((self._root / "docs").glob("*.loro")):
-            doc_id = _wire_doc_id(path.stem)
-            if not doc_id.startswith("doc-"):
+            if not is_document_file_stem(path.stem):
                 raise StoreError("invalid-argument", f"invalid document path {path}")
+            doc_id, update = self._read_document_file(path)
             if self.retired(doc_id) is not None:
                 path.unlink()
                 continue
             self._docs[doc_id] = self._new_doc(doc_id)
-            self._docs[doc_id].apply_update(path.read_bytes())
+            self._docs[doc_id].apply_update(update)
 
 
     def _replay_journal(self) -> None:
@@ -405,6 +491,9 @@ class LocalSpaceStore(StoreMembership, StoreJournal, StoreAdmission, StoreSnapsh
             doc = self._docs[doc_id]
             path = self._doc_path(doc_id)
             path.parent.mkdir(parents=True, exist_ok=True)
+            if doc_id.startswith("doc-"):
+                self._write_document_file(path, doc_id, doc.get_update())
+                continue
             descriptor, temporary_name = tempfile.mkstemp(
                 prefix=".orgfs-doc-", dir=path.parent
             )

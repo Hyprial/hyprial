@@ -28,6 +28,7 @@ DAEMON_CLOSE_STEP_BUDGETS = (
     ("hook-bus", TURN_HOOK_CLOSE_TIMEOUT_SECONDS),
     ("turn-hooks", TURN_HOOK_CLOSE_TIMEOUT_SECONDS),
     ("restore-thread", 2.0),
+    ("org-binding-cache", 5.0),
     ("remote-workflow", 5.0),
 )
 

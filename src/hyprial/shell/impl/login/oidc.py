@@ -236,11 +236,11 @@ def _fetch_endpoints(profile: NetworkProfile) -> OidcEndpoints:
 
 
 def _request_device_authorization(
-    endpoints: OidcEndpoints, profile: NetworkProfile
+    endpoints: OidcEndpoints, profile: NetworkProfile, *, scope: str | None = None
 ) -> DeviceAuthorization:
     status, payload = _request_json(
         endpoints.device_authorization_endpoint,
-        data={"client_id": profile.client_id, "scope": LOGIN_SCOPE},
+        data={"client_id": profile.client_id, "scope": scope or LOGIN_SCOPE},
     )
     error = _token_error(status, payload, where="device authorization")
     if error is not None:
@@ -322,7 +322,8 @@ def _poll_device_token(
     *,
     sleep: Callable[[float], None],
     clock: Callable[[], float],
-) -> tuple[str, str]:
+    require_refresh: bool = True,
+) -> tuple[str, str | None]:
     """Poll until the token endpoint issues tokens or a terminal state.
 
     Rhythm is the server's alone: ``interval`` between polls (RFC default
@@ -381,12 +382,14 @@ def _poll_device_token(
         last_transport_error = None
         if 200 <= status < 300 and isinstance(payload, dict):
             access = payload.get("access_token")
-            refresh = payload.get("refresh_token")
             if not isinstance(access, str) or not access:
                 raise LoginError(
                     "TOKEN_RESPONSE_INVALID",
                     "token response has no usable access_token",
                 )
+            if not require_refresh:
+                return access, None
+            refresh = payload.get("refresh_token")
             if not isinstance(refresh, str) or not refresh:
                 raise LoginError(
                     "TOKEN_RESPONSE_INVALID",

@@ -46,7 +46,7 @@ user_app = typer.Typer(
         "merged identity view. Guests never grant authorization."
     )
 )
-bindings_app = typer.Typer(help="Inspect binding migration state.")
+bindings_app = typer.Typer(help="Inspect binding state or publish your own proof.")
 user_app.add_typer(bindings_app, name="bindings")
 
 
@@ -113,6 +113,12 @@ def _rows(value: object, *, method: str, keys: Sequence[str]) -> list[JsonObject
 
 
 def _binding_rows(source: str | None = None) -> list[JsonObject]:
+    return _binding_view(source)["rows"]
+
+
+def _binding_view(source: str | None = None) -> JsonObject:
+    """Rows, plus the daemon's publication suppression when it reports one."""
+
     params: JsonObject = {}
     if source is not None:
         if source not in _SOURCES:
@@ -122,11 +128,14 @@ def _binding_rows(source: str | None = None) -> list[JsonObject]:
             )
         params["source"] = source
     result = get_services()._daemon_request("identity.bindings.list", params)
-    return _rows(
-        result,
-        method="identity.bindings.list",
-        keys=("bindings",),
-    )
+    view: JsonObject = {
+        "rows": _rows(result, method="identity.bindings.list", keys=("bindings",))
+    }
+    if isinstance(result, Mapping) and isinstance(
+        result.get("publicationSuppression"), Mapping
+    ):
+        view["publicationSuppression"] = dict(result["publicationSuppression"])
+    return view
 
 
 def _account_only(row: Mapping[str, Any]) -> bool:
@@ -162,7 +171,38 @@ def _render_bindings(data: Mapping[str, Any]) -> str:
                 for column in _BINDING_COLUMNS
             ]
         )
-    return render_table(None, list(_BINDING_COLUMNS), cells)
+    table = render_table(None, list(_BINDING_COLUMNS), cells)
+    suppression = data.get("publicationSuppression")
+    if not isinstance(suppression, Mapping):
+        return table
+    return table + "\n" + _render_publication_suppression(suppression)
+
+
+def _suppression_setter(value: object) -> str:
+    if not isinstance(value, Mapping):
+        return ""
+    who = scalar_text(value.get("operator"))
+    if value.get("operatorVerified") is False:
+        who = f"{who} operator"
+    pid = value.get("callerPid")
+    return f" (set by {who}" + (f", pid {pid})" if pid is not None else ")")
+
+
+def _render_publication_suppression(suppression: Mapping[str, Any]) -> str:
+    set_by = suppression.get("setBy")
+    set_by = set_by if isinstance(set_by, Mapping) else {}
+    org_setters = set_by.get("orgs")
+    org_setters = org_setters if isinstance(org_setters, Mapping) else {}
+    parts: list[str] = []
+    if suppression.get("all"):
+        part = "all orgs" + _suppression_setter(set_by.get("all"))
+        exceptions = [str(org) for org in suppression.get("except") or ()]
+        if exceptions:
+            part += "; except " + ", ".join(exceptions)
+        parts.append(part)
+    for org in suppression.get("orgs") or ():
+        parts.append(str(org) + _suppression_setter(org_setters.get(org)))
+    return "publication withheld: " + ("; ".join(parts) if parts else "none")
 
 
 def _render_whois(data: Mapping[str, Any]) -> str:
@@ -196,6 +236,49 @@ def _render_mutation(data: Mapping[str, Any]) -> str:
     return rendered
 
 
+def _binding_publication_scope(
+    *, org: str | None, all_orgs: bool
+) -> JsonObject:
+    selected_org = org.strip() if org is not None else None
+    if bool(selected_org) == all_orgs:
+        raise get_services().CliError(
+            ipc_errors.INVALID_ARGUMENT,
+            "choose exactly one binding scope: --org <ORG> or --all",
+        )
+    return {"all": True} if all_orgs else {"org": selected_org}
+
+
+def _render_binding_publication(data: Mapping[str, Any]) -> str:
+    orgs = data.get("orgs")
+    selected = ", ".join(map(str, orgs)) if isinstance(orgs, list) else ""
+    return (
+        f"binding publication updated for {selected or 'no joined organizations'}; "
+        "operatorVerified=false"
+    )
+
+
+def _binding_publication_command(
+    method: str, *, org: str | None, all_orgs: bool, json_output: bool
+) -> None:
+    def operation() -> CliResult:
+        try:
+            value = get_services()._daemon_request(
+                method, _binding_publication_scope(org=org, all_orgs=all_orgs)
+            )
+        except Exception as error:
+            if getattr(error, "code", None) == ipc_errors.CALLER_NOT_AUTHORIZED:
+                raise get_services().CliError(
+                    ipc_errors.CALLER_NOT_AUTHORIZED,
+                    f"{ipc_errors.CALLER_NOT_AUTHORIZED}: {error}",
+                ) from error
+            raise
+        return CliResult(
+            _mapping(value, method=method), render=_render_binding_publication
+        )
+
+    get_services()._execute(operation, json_output=json_output)
+
+
 @user_app.command("list")
 def user_list(
     source: str | None = typer.Option(
@@ -206,7 +289,7 @@ def user_list(
     """List the merged binding view; JSON output uses {"rows": [...]}."""
 
     get_services()._execute(
-        lambda: CliResult({"rows": _binding_rows(source)}, render=_render_bindings),
+        lambda: CliResult(_binding_view(source), render=_render_bindings),
         json_output=json_output,
     )
 
@@ -541,3 +624,40 @@ def user_bindings_audit(
         return CliResult({"rows": rows}, render=_render_audit)
 
     get_services()._execute(operation, json_output=json_output)
+
+
+_BINDING_PUBLICATION_HELP = (
+    "applies only to your own binding proof (the current node owner). "
+    "Refused for daemon workers, for requests that name an agent session, and "
+    "for a codex app-server session whose process birth matches; any other "
+    "caller, including an agent's shell running this CLI or a peer whose "
+    "process cannot be read, is recorded as an unverified operator."
+)
+
+
+@bindings_app.command("withdraw", help=_BINDING_PUBLICATION_HELP)
+def user_bindings_withdraw(
+    org: str | None = typer.Option(None, "--org", help="One joined organization."),
+    all_orgs: bool = typer.Option(False, "--all", help="Every joined organization."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    _binding_publication_command(
+        "identity.binding.withdraw",
+        org=org,
+        all_orgs=all_orgs,
+        json_output=json_output,
+    )
+
+
+@bindings_app.command("publish", help=_BINDING_PUBLICATION_HELP)
+def user_bindings_publish(
+    org: str | None = typer.Option(None, "--org", help="One joined organization."),
+    all_orgs: bool = typer.Option(False, "--all", help="Every joined organization."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    _binding_publication_command(
+        "identity.binding.publish",
+        org=org,
+        all_orgs=all_orgs,
+        json_output=json_output,
+    )

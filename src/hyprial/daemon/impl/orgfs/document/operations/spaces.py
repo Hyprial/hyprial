@@ -17,7 +17,7 @@ import json
 
 import uuid
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 
 
@@ -45,7 +45,7 @@ from hyprial.daemon.impl.orgfs.storage.space_authority  import (
 
 
 
-from hyprial.daemon.impl.orgfs.document.model import TreeDocument, _ContentDocument, _Node, _Space, _decode_content_frontier, _facade_locked, _now, _version
+from hyprial.daemon.impl.orgfs.document.model import TreeDocument, _ContentDocument, _MetaWatch, _Node, _Space, _decode_content_frontier, _facade_locked, _now, _version
 
 class FacadeSpaces:
     """Responsibility methods on the sole LocalOrgFs state host.
@@ -126,6 +126,15 @@ class FacadeSpaces:
         space = self._space(space_id)
         meta = space.meta.get("space", type=Map)
         return dict(meta.to_py() or {})
+
+
+    @_facade_locked
+    def watch_meta(self, space_id: str, callback: Callable[[], None]) -> _MetaWatch:
+        watcher = _MetaWatch(callback)
+        self._space(space_id).meta_watches.append(watcher)
+        with self._lock:
+            self._meta_watchers[watcher.watch_id] = watcher
+        return watcher
 
 
     @_facade_locked
@@ -548,6 +557,8 @@ class FacadeSpaces:
                 )
 
         refresh()
+        if doc_id == "meta":
+            self._notify_meta_watchers(space)
 
 
     @_facade_locked

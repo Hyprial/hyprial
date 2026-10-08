@@ -4,54 +4,22 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import quote
 
 from hyprial.identity import UserStore, identity_slug
 from hyprial.kernel import ipc_errors, short_actor_name
+from hyprial.daemon.impl.configuration.identity import read_settings_identity_metadata
 
-from .errors import IdentityResolverError
-from .overrides import OverrideWrites
+from .bindings import OrgBindingCache, OrgBindingUnavailable, VerifiedOrgBinding
+from .models import Candidate as _Candidate
+from .models import LEGACY_SOURCES as _LEGACY_SOURCES
+from .models import LegacyRow as _LegacyRow
+from .models import SOURCES
+from .mutation.errors import IdentityResolverError
+from .mutation.overrides import OverrideWrites
 from .store import GuardedOverrideStore, OverrideStore
-
-
-#: Grandfathered human assertions (design §5): read-only, removed together
-#: after the ed923b04 audit moves each row to a union-keyed override.
-_LEGACY_SOURCES = frozenset({"legacy-identities", "legacy-user-bind"})
-
-SOURCES = frozenset(
-    {
-        "casdoor-login",
-        "org-directory",
-        "local-override",
-        "legacy-identities",
-        "legacy-user-bind",
-    }
-)
-
-
-@dataclass(frozen=True, slots=True)
-class _LegacyRow:
-    adapter: str
-    open_id: str
-    union_id: str | None
-    owner: str | None
-    standing: str
-    observed_at_ms: int | None
-    display_name: str | None
-    source: str
-
-
-@dataclass(frozen=True, slots=True)
-class _Candidate:
-    user_key: str
-    kind: str
-    owner: str | None
-    source: str
-    confirmed_by: str | None
-    updated_at: int | None
 
 
 class IdentityResolver(OverrideWrites):
@@ -65,12 +33,15 @@ class IdentityResolver(OverrideWrites):
         owner: str,
         users: UserStore | Any | None = None,
         legacy_path: Path | None = None,
+        org_bindings: Callable[[], tuple[VerifiedOrgBinding, ...]] | None = None,
     ) -> None:
         self.state_dir = Path(state_dir)
         self.hyprial_home = Path(hyprial_home)
         self.owner = owner
         self._users = users
         self._legacy_path = legacy_path or self.state_dir / "adapters.sqlite3"
+        self._org_bindings_is_cache = org_bindings is None
+        self._org_bindings = org_bindings or OrgBindingCache(self.state_dir).bindings
         self._overrides = GuardedOverrideStore(
             OverrideStore(self.state_dir / "identity.sqlite3"),
             lambda error: IdentityResolverError(
@@ -269,6 +240,11 @@ class IdentityResolver(OverrideWrites):
         owner = self._owner_candidate(union_id, users)
         if owner is not None:
             candidates.append(owner)
+        candidates.extend(
+            candidate
+            for candidate, bound_union in self._org_candidates()
+            if bound_union == union_id
+        )
         for override in self._overrides.list(platform="lark"):
             user = users.get(override.user_key)
             if override.union_id == union_id and user is not None:
@@ -689,6 +665,29 @@ class IdentityResolver(OverrideWrites):
             row["outboundOnly"] = True
         return row
 
+    def _org_candidates(self) -> list[tuple[_Candidate, str]]:
+        """Verified org-directory rows from the proof-free cache (§2.2)."""
+        if self._org_bindings_is_cache:
+            mode = read_settings_identity_metadata(hyprial_home=self.hyprial_home)[0]
+            if mode != "casdoor":
+                return []
+        try:
+            org_bindings = self._org_bindings()
+        except OrgBindingUnavailable as error:
+            raise IdentityResolverError(
+                ipc_errors.IDENTITY_SOURCE_UNAVAILABLE, str(error)
+            ) from error
+        return [
+            (
+                _Candidate(
+                    binding.user_key, "member", binding.user, "org-directory",
+                    None, binding.issued_at_ms,
+                ),
+                binding.union_id,
+            )
+            for binding in org_bindings
+        ]
+
     def bindings(
         self, *, platform: str | None = None, source: str | None = None
     ) -> list[dict[str, Any]]:
@@ -705,6 +704,8 @@ class IdentityResolver(OverrideWrites):
             candidate = self._owner_candidate(owner_union, users)
             assert candidate is not None
             rows.append(self._binding(candidate, owner_union))
+        for candidate, bound_union in self._org_candidates():
+            rows.append(self._binding(candidate, bound_union))
         for override in self._overrides.list(platform="lark"):
             user = users.get(override.user_key)
             if user is not None:

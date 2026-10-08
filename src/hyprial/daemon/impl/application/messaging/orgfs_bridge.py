@@ -1,8 +1,6 @@
 """OrgFs runtime bridge: the orgfs.* IPC family, owner notices and the org-context bridge."""
 
 from __future__ import annotations
-
-from __future__ import annotations
 import json
 import time
 from collections.abc import Callable
@@ -29,6 +27,9 @@ from hyprial.identity import is_org_acl_space
 if TYPE_CHECKING:
     pass
 
+from hyprial.daemon.impl.application.messaging.identity_binding import (
+    _IdentityBindingMixin,
+)
 from hyprial.daemon.impl.ipc.params import (
     JsonObject,
     _required_string,
@@ -36,6 +37,7 @@ from hyprial.daemon.impl.ipc.params import (
 
 
 _ORGFS_NOTICE_NAMESPACE = "orgfs"
+
 
 _ORG_CONTEXT_READ_METHODS = frozenset(
     {
@@ -121,7 +123,7 @@ def _authorized_or_refused(action: Callable[[], Any]) -> Any:
             ipc_errors.ATTACHMENT_PATH_REFUSED, str(refused), data
         ) from refused
 
-class _OrgFsBridgeMixin:
+class _OrgFsBridgeMixin(_IdentityBindingMixin):
     """Application cluster mixin; the state owner is DaemonApplication."""
 
     @classmethod
@@ -160,6 +162,7 @@ class _OrgFsBridgeMixin:
                 owner_notifier=self._notify_orgfs_owner,
             )
         return self._orgfs_runtime
+
 
     def _notify_orgfs_owner(
         self, owner: str, event: str, details: dict[str, object]

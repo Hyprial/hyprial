@@ -124,6 +124,10 @@ from hyprial.shell.impl.login.oidc import (
     _request_json,
     _token_error,
 )
+from hyprial.shell.impl.login.binding import (
+    obtain_binding_proof,
+    validate_binding_confirmation,
+)
 
 __all__ = [
     "CREDENTIAL_VERSION",
@@ -504,6 +508,7 @@ def run_login(
     clock: Callable[[], float] | None = None,
     now: Callable[[], datetime] | None = None,
     write_owner: Callable[..., Path] | None = None,
+    binding_profile: NetworkProfile | None = None,
 ) -> LoginResult:
     """Run the nine-step identity stage; returns a :class:`LoginResult`.
 
@@ -659,6 +664,72 @@ def run_login(
             migration_preview=projection,
         )
 
+    previous_binding: dict[str, str] | None = None
+    if lark_union_id is not None:
+        try:
+            previous = json.loads(
+                (home / "settings.json").read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError):
+            previous = None
+        existing = (
+            previous.get("identityBinding") if isinstance(previous, dict) else None
+        )
+        if (
+            isinstance(existing, dict)
+            and set(existing) == {"user", "larkUnionId", "proof", "publishedAt"}
+            and existing.get("user") == owner
+            and existing.get("larkUnionId") == lark_union_id
+            and all(isinstance(value, str) and value for value in existing.values())
+        ):
+            previous_binding = {
+                key: value
+                for key, value in existing.items()
+                if isinstance(key, str) and isinstance(value, str)
+            }
+    identity_binding: dict[str, str] | None = None
+    if lark_union_id is not None:
+        try:
+            proof = obtain_binding_proof(
+                binding_profile or profile,
+                emit=notify,
+                open_browser=open_browser,
+                open_url=open_url,
+                sleep=sleep,
+                clock=clock,
+            )
+        except LoginError as error:
+            notify(
+                "binding-proof-failed",
+                {
+                    "code": error.code,
+                    "message": (
+                        f"{error}; will retry on the next login or org join"
+                    ),
+                },
+            )
+            identity_binding = previous_binding
+        else:
+            try:
+                validate_binding_confirmation(
+                    proof,
+                    expected_user=owner,
+                    expected_union_id=lark_union_id,
+                )
+            except LoginError as error:
+                notify(
+                    "binding-proof-failed",
+                    {"code": error.code, "message": str(error)},
+                )
+                identity_binding = previous_binding
+            else:
+                identity_binding = {
+                    "user": owner,
+                    "larkUnionId": lark_union_id,
+                    "proof": proof,
+                    "publishedAt": now().isoformat(),
+                }
+
     if before_commit is not None:
         before_commit(previous_owner, owner, observed_identity)
 
@@ -666,6 +737,11 @@ def run_login(
     # step 8): if the owner write fails the credential stays and a re-run
     # completes; there is deliberately no rollback of the credential here.
     target = home / SECRETS_DIRNAME / LOGIN_FILENAME
+    if not isinstance(refresh_token, str) or not refresh_token:
+        raise LoginError(
+            "TOKEN_RESPONSE_INVALID",
+            "login token response has no usable refresh token",
+        )
     credential = LoginCredential(
         version=CREDENTIAL_VERSION,
         issuer=profile.issuer,
@@ -679,6 +755,7 @@ def run_login(
             user_id=subject,
             username=owner,
             lark_union_id=lark_union_id,
+            identity_binding=identity_binding,
             environ=env,
             hyprial_home=home,
         )

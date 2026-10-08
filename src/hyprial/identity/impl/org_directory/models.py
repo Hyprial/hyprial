@@ -9,21 +9,34 @@ directory model, daemon provides the storage).
 from __future__ import annotations
 
 import base64
+import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from hyprial.kernel import canonical_user_uri, parse_user_uri
+from hyprial.kernel import (
+    IDENTITY_BINDING_PUBLISH_SKEW_SECONDS,
+    canonical_user_uri,
+    parse_user_uri,
+)
+from hyprial.identity.impl.identity_slug import identity_slug
 
 __all__ = [
     "DIRECTORY_DIR",
+    "BINDING_ASSERTION_CLIENT_ID",
+    "BINDING_ASSERTION_OWNER",
     "INVITES_DIR",
     "LEAVES_DIR",
+    "PEOPLE_DIR",
     "ORG_META_DOC",
     "ORG_SPACE_PREFIX",
     "DirectoryDevice",
     "directory_device_path",
+    "directory_binding_path",
+    "binding_assertion_claims_unverified",
+    "binding_numeric_date",
+    "binding_assertion_publish_after",
     "directory_owner_principal",
     "is_org_acl_space",
     "is_org_directory_space",
@@ -35,15 +48,21 @@ __all__ = [
     "parse_protected_directory_doc_id",
     "protected_directory_node_id",
     "protected_directory_doc_id",
+    "protected_directory_author_allowed",
 ]
 
 #: An org name and its directory-space id share the ``group-`` prefix.
 ORG_SPACE_PREFIX = "group-"
+#: Public client id of the dedicated Casdoor binding-assertion application.
+BINDING_ASSERTION_CLIENT_ID = "1be2763a29154030fbcb"
+BINDING_ASSERTION_OWNER = "hyprial"
 #: Reserved suffix for the daemon-owned policy space beside each directory.
 _ORG_ACL_SUFFIX = "-acl"
 #: One document per device owner and opaque device id:
 #: ``directory/devices/<owner>/<deviceId>.json``.
 DIRECTORY_DIR = "directory/devices"
+#: Verified platform-account bindings: one fixed row per path-safe user key.
+PEOPLE_DIR = "directory/people"
 #: Pending invites: ``directory/invites/<token_id>.json``.
 INVITES_DIR = "directory/invites"
 #: Leave requests: ``directory/leaves/<user>.json`` (processed by owner/admin).
@@ -59,9 +78,15 @@ _PROTECTED_DOC_ID_FAMILY = "doc-orgdir-"
 _PROTECTED_DOC_ID_PREFIX = "doc-orgdir-v3-"
 _PROTECTED_NODE_ID_FAMILY = "node-orgdir-"
 _PROTECTED_NODE_ID_PREFIX = "node-orgdir-v1-"
-#: Doc ids become file and directory names (``docs/<id>.loro`` and the replica
-#: tree), so an id plus the longest suffix must fit one 255-byte component.
-MAX_PROTECTED_DOC_ID_LENGTH = 240
+#: JavaScript-safe integer range used by JWT NumericDate claims.
+_NUMERIC_DATE_LIMIT = 1 << 53
+#: A protocol sanity bound, not a storage one: the local store and replica
+#: name each document by a fixed-length hash of its id, so the id is never a
+#: path component.  The id grows with the org name, owner and member names
+#: and the device id; 1024 leaves room for long real names (253 characters
+#: for an invite in ``group-internal`` already passed the old 240 file-name
+#: bound) while still refusing an unbounded id on the wire.
+MAX_PROTECTED_DOC_ID_LENGTH = 1024
 _PROTECTED_DOC_SECTIONS = frozenset(
     {"devices", "people", "leaves", "invites", "org"}
 )
@@ -78,6 +103,48 @@ _RECORD_KEYS = frozenset(
         "updatedAt",
     }
 )
+
+
+def binding_assertion_claims_unverified(proof: str) -> dict[str, object]:
+    """Decode only the JWT claims needed before signature verification.
+
+    Publication uses this parser solely to delay disclosure until the signed
+    ``exp`` is in the past, and login uses it to compare the confirmed account
+    with the already verified login identity.  It grants no authority.
+    """
+
+    parts = proof.split(".") if isinstance(proof, str) else []
+    if len(parts) != 3 or not parts[1] or len(parts[1]) > 65_536:
+        raise ValueError("binding proof is not a compact JWT")
+    try:
+        payload = base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4))
+        claims = json.loads(payload)
+    except (ValueError, TypeError, json.JSONDecodeError) as error:
+        raise ValueError("binding proof claims are invalid") from error
+    if not isinstance(claims, dict):
+        raise ValueError("binding proof claims are not an object")
+    return claims
+
+
+def binding_assertion_publish_after(proof: str) -> float:
+    """Earliest wall-clock second at which the assertion may be published."""
+
+    expires_at = binding_assertion_claims_unverified(proof).get("exp")
+    return binding_numeric_date(expires_at, "expiry") + (
+        IDENTITY_BINDING_PUBLISH_SKEW_SECONDS
+    )
+
+
+def binding_numeric_date(value: object, label: str) -> float:
+    """Return one bounded JWT NumericDate or reject it without overflow."""
+
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not 0 < value < _NUMERIC_DATE_LIMIT
+    ):
+        raise ValueError(f"binding proof {label} is missing or invalid")
+    return float(value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,6 +235,34 @@ def directory_device_path(owner: str, device_id: str) -> str:
     return f"{DIRECTORY_DIR}/{bare_owner}/{device_id}.json"
 
 
+def directory_binding_path(user: str) -> str:
+    """Build the owner-scoped binding path from the stable user-store key."""
+
+    principal = directory_owner_principal(user)
+    bare_user = parse_user_uri(principal)
+    assert bare_user is not None
+    return f"{PEOPLE_DIR}/{identity_slug(bare_user)}/binding.json"
+
+
+def protected_directory_author_allowed(
+    *, section: str, path_principal: str, author: str
+) -> bool:
+    """Authorize a protected row without trusting its content.
+
+    Device paths retain the exact historical owner spelling.  People paths
+    use the same stable path key as ``UserStore`` and therefore compare that
+    key with the authenticated author's slug.
+    """
+
+    author_principal = directory_owner_principal(author)
+    if section != "people" or author_principal == path_principal:
+        return author_principal == path_principal
+    path_user = parse_user_uri(path_principal)
+    author_user = parse_user_uri(author_principal)
+    assert path_user is not None and author_user is not None
+    return identity_slug(author_user) == path_user
+
+
 def _protected_tree_principal(path: str, space_owner: str | None) -> str | None:
     parts = path.split("/")
     if not parts or parts[0] != "directory" or space_owner is None:
@@ -224,11 +319,10 @@ def protected_directory_doc_id(
 
     Four length-prefixed segments encode ``spaceId``, the protected section,
     the canonical path user, and the remaining path.  Unpadded lowercase
-    base32 keeps the id within the transport and replica key alphabet and,
-    being single-case, distinct on case-insensitive filesystems: two ids that
-    differ only in case would share one ``docs/<id>.loro`` file and merge two
-    principals' documents.  An id longer than MAX_PROTECTED_DOC_ID_LENGTH is
-    refused with ProtectedDocIdTooLongError, never truncated or hashed.
+    base32 keeps the id within the transport and replica key alphabet and
+    single-case.  An id longer than MAX_PROTECTED_DOC_ID_LENGTH is refused
+    with ProtectedDocIdTooLongError, never truncated or hashed: every reader
+    decodes the principal and path from the id itself.
     Length prefixes make the encoding injective even when a value contains
     the field separator.
     """

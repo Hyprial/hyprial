@@ -48,7 +48,7 @@ from hyprial.daemon.impl.orgfs.storage.space_authority  import (
 from hyprial.daemon.impl.orgfs.storage.store  import CommitRecord
 
 
-from hyprial.daemon.impl.orgfs.document.model import _BroadcastPending, _FACADE_EFFECT_CAPACITY, _FacadeEffectBatch, _FacadeEffectResult, _ReconcileReplicaBlobs, _WatchNotification
+from hyprial.daemon.impl.orgfs.document.model import _BroadcastPending, _FACADE_EFFECT_CAPACITY, _FacadeEffectBatch, _FacadeEffectResult, _MetaWatchNotification, _ReconcileReplicaBlobs, _WatchNotification
 
 class FacadeEffects:
     """Responsibility methods on the sole LocalOrgFs state host.
@@ -57,7 +57,11 @@ class FacadeEffects:
     """
 
     def _defer_effect(
-        self, effect: _WatchNotification | _ReconcileReplicaBlobs | _BroadcastPending
+        self,
+        effect: _WatchNotification
+        | _MetaWatchNotification
+        | _ReconcileReplicaBlobs
+        | _BroadcastPending,
     ) -> None:
         pending = getattr(self._effect_context, "pending", None)
         if pending is None:
@@ -73,7 +77,14 @@ class FacadeEffects:
     def _needs_post_commit_effects(self) -> bool:
         with self._lock:
             has_watcher = any(not watcher.closed for watcher in self._watchers.values())
-        return has_watcher or (self.mesh is not None and self.stores is not None)
+            has_meta_watcher = any(
+                not watcher.closed for watcher in self._meta_watchers.values()
+            )
+        return (
+            has_watcher
+            or has_meta_watcher
+            or (self.mesh is not None and self.stores is not None)
+        )
 
 
     def _broadcast_is_enabled(self) -> bool:
@@ -199,6 +210,16 @@ class FacadeEffects:
                             )
                         if callback is not None:
                             callback(effect.event)
+                    elif isinstance(effect, _MetaWatchNotification):
+                        with self._lock:
+                            watcher = self._meta_watchers.get(effect.watch_id)
+                            callback = (
+                                watcher.callback
+                                if watcher is not None and not watcher.closed
+                                else None
+                            )
+                        if callback is not None:
+                            callback()
                     elif isinstance(effect, _ReconcileReplicaBlobs):
                         mesh = self.mesh
                         if mesh is not None and hasattr(

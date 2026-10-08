@@ -612,6 +612,10 @@ class _ShutdownMixin:
             self._usage_cache = None
             if usage_cache.stop(timeout=2.0) is False:
                 errors.append(RuntimeError("usage authority did not drain"))
+        if self._org_identity_binding_projector is not None:
+            projector = self._org_identity_binding_projector
+            self._org_identity_binding_projector = None
+            attempt(projector.close, "org-binding-cache")
         if self._orgfs_runtime is not None:
             orgfs_runtime = self._orgfs_runtime
             self._orgfs_runtime = None

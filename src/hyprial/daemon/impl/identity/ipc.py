@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from typing import Any
 
 from hyprial.identity import UserStoreError
@@ -15,6 +16,8 @@ _METHODS = frozenset(
     {
         "identity.resolve",
         "identity.bindings.list",
+        "identity.binding.publish",
+        "identity.binding.withdraw",
         "identity.override.set",
         "identity.override.clear",
         "identity.users.list",
@@ -29,6 +32,27 @@ def _operator(operator: bool) -> None:
             ipc_errors.IDENTITY_OVERRIDE_FORBIDDEN,
             "identity mutation is available only to the local operator",
         )
+
+
+def _binding_operator(operator: bool) -> None:
+    if not operator:
+        raise DaemonRequestError(
+            ipc_errors.CALLER_NOT_AUTHORIZED,
+            "identity binding publication is available only to the local operator",
+        )
+
+
+def _binding_scope(params: dict[str, Any]) -> tuple[str | None, bool]:
+    if set(params) == {"org"}:
+        org = params.get("org")
+        if isinstance(org, str) and org:
+            return org, False
+    elif set(params) == {"all"} and params.get("all") is True:
+        return None, True
+    raise DaemonRequestError(
+        ipc_errors.INVALID_PARAMS,
+        "use exactly {org: <ORG>} or {all: true}",
+    )
 
 
 def _variant(
@@ -76,6 +100,10 @@ def handle_identity_ipc(
     params: dict[str, Any],
     *,
     operator: bool,
+    peer_pid: int | None = None,
+    binding_withdraw: Callable[..., Any] | None = None,
+    binding_publish: Callable[..., Any] | None = None,
+    binding_status: Callable[[], dict[str, object] | None] | None = None,
 ) -> Any:
     try:
         if method == "identity.resolve":
@@ -88,11 +116,35 @@ def handle_identity_ipc(
                 adapter=params.get("adapter"), open_id=params.get("openId")
             )
         if method == "identity.bindings.list":
-            return {
+            result = {
                 "bindings": resolver.bindings(
                     platform=params.get("platform"), source=params.get("source")
                 )
             }
+            suppression = binding_status() if binding_status is not None else None
+            if suppression is not None:
+                result["publicationSuppression"] = suppression
+            return result
+        if method in {"identity.binding.withdraw", "identity.binding.publish"}:
+            # LAX(identity-step-up): this is the unverified local operator gate.
+            _binding_operator(operator)
+            org, all_orgs = _binding_scope(params)
+            callback = (
+                binding_withdraw
+                if method == "identity.binding.withdraw"
+                else binding_publish
+            )
+            if callback is None:
+                raise DaemonRequestError(
+                    ipc_errors.METHOD_NOT_FOUND,
+                    f"unknown daemon method {method}",
+                )
+            return callback(
+                org=org,
+                all_orgs=all_orgs,
+                operator_verified=False,
+                peer_pid=peer_pid,
+            )
         if method == "identity.override.set":
             # LAX(identity-step-up): R1 matches today's local-operator user bind.
             _operator(operator)

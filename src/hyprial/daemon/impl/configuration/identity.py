@@ -129,6 +129,7 @@ def write_settings_owner(
     user_id: str | None = None,
     username: str | None = None,
     lark_union_id: str | None = None,
+    identity_binding: Mapping[str, object] | None = None,
     environ: Mapping[str, str] | None = None,
     hyprial_home: Path | None = None,
 ) -> Path:
@@ -173,6 +174,7 @@ def write_settings_owner(
         and (user_id is None or record.get("userId") == user_id)
         and (username is None or record.get("username") == username)
         and _settings_lark_union_id(record) == lark_union_id
+        and record.get("identityBinding") == identity_binding
     ):
         return path
     record["owner"] = value
@@ -181,8 +183,8 @@ def write_settings_owner(
     if username is not None:
         record["username"] = username
     _write_lark_union_id(record, lark_union_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    _write_identity_binding(record, identity_binding)
+    atomic_json_write(path, record)
     return path
 
 
@@ -232,6 +234,7 @@ def write_settings_identity(
     user_id: str | None = None,
     username: str | None = None,
     lark_union_id: str | None = None,
+    identity_binding: Mapping[str, object] | None = None,
     environ: Mapping[str, str] | None = None,
     hyprial_home: Path | None = None,
 ) -> Path:
@@ -273,6 +276,7 @@ def write_settings_identity(
         and (user_id is None or record.get("userId") == user_id)
         and (username is None or record.get("username") == username)
         and _settings_lark_union_id(record) == lark_union_id
+        and record.get("identityBinding") == identity_binding
     ):
         return path
     record["owner"] = value
@@ -283,6 +287,7 @@ def write_settings_identity(
     if username is not None:
         record["username"] = username
     _write_lark_union_id(record, lark_union_id)
+    _write_identity_binding(record, identity_binding)
     atomic_json_write(path, record)
     return path
 
@@ -305,6 +310,21 @@ def _write_lark_union_id(record: dict[str, object], value: str | None) -> None:
         }
     else:
         record.pop("identityClaims", None)
+
+
+def _write_identity_binding(
+    record: dict[str, object], value: Mapping[str, object] | None
+) -> None:
+    if value is None:
+        record.pop("identityBinding", None)
+        return
+    expected = {"user", "larkUnionId", "proof", "publishedAt"}
+    if set(value) != expected or not all(
+        isinstance(value.get(key), str) and value.get(key)
+        for key in expected
+    ):
+        raise ValueError("identity binding must have the frozen four string fields")
+    record["identityBinding"] = dict(value)
 
 
 # -- Target classification (Allen's four object types) ----------------------

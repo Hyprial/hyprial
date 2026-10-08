@@ -57,6 +57,18 @@ def _run_login_cli_flow(
                 f"{data.get('expiresIn')}s)\n"
                 f"  {_DEVICE_SIGN_IN_HINT}"
             )
+        elif kind == "binding-device":
+            restart = " (fresh code after expiry)" if data.get("restarted") else ""
+            notice(
+                "binding proof confirmation required"
+                f"{restart} — open this URL and enter the code:\n"
+                f"  {data['verificationUri']}\n"
+                f"  code: {data['userCode']}\n"
+                "  (waiting for confirmation; expires in "
+                f"{data.get('expiresIn')}s)"
+            )
+        elif kind == "binding-proof-failed":
+            warn(str(data["message"]), json_output=False)
         elif kind == "authenticated":
             warn(f"authenticated as {data['owner']} (issuer {data['issuer']})", json_output=False)
 

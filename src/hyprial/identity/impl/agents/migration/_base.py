@@ -11,12 +11,15 @@ from typing import Self
 from enum import StrEnum
 from dataclasses import dataclass
 import hashlib
+import logging
 from hyprial.kernel import ipc_errors
 import json
 import os
 import shutil
 import stat
 import uuid
+
+_LOG = logging.getLogger(__name__)
 
 """Fail-closed, per-agent migration transactions for agent-home P2.
 
@@ -161,11 +164,42 @@ class SupportMatrix:
                 return row.status
         return SupportStatus.NOT_RUN
 
+    def _requirement_status(self, key: SupportKey) -> tuple[SupportStatus, bool]:
+        status = self.status_for(key)
+        recorded_versions = {
+            row.key.version for row in self.rows if row.key.harness == key.harness
+        }
+        unrecorded = key.harness == "codex" and key.version not in recorded_versions
+        if not unrecorded:
+            return status, False
+        structural = {
+            row.status
+            for row in self.rows
+            if (
+                row.key.harness,
+                row.key.operating_system,
+                row.key.entrypoint,
+                row.key.auth_mode,
+            )
+            == (
+                key.harness,
+                key.operating_system,
+                key.entrypoint,
+                key.auth_mode,
+            )
+        }
+        if len(structural) == 1:
+            status = structural.pop()
+        return status, True
+
     def require_pass(self, keys: Iterable[SupportKey], *, actor: str) -> None:
         for key in keys:
-            if self.status_for(key) is not SupportStatus.PASS:
+            status, unrecorded = self._requirement_status(key)
+            if unrecorded:
+                _LOG.warning("codex.version.unrecorded version=%s", key.version)
+            if status is not SupportStatus.PASS:
                 raise AgentHomeMigrationError(
-                    f"support-{self.status_for(key).value.lower()}",
+                    f"support-{status.value.lower()}",
                     "preflight-support",
                     actor=actor,
                 )

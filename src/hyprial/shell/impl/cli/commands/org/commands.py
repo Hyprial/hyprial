@@ -2,7 +2,16 @@
 
 from __future__ import annotations
 
-from hyprial.shell.impl.cli.output import confirm as ask, render_generic
+from datetime import UTC, datetime
+import time
+import webbrowser
+
+from hyprial.shell.impl.cli.output import (
+    confirm as ask,
+    notice,
+    progress,
+    render_generic,
+)
 
 from collections.abc import Mapping
 from hyprial.shell.impl.cli.output import CliResult
@@ -114,6 +123,135 @@ def _read_link_argument(link: str) -> str:
     return text
 
 
+# The login modules import hyprial.daemon; importing them at module level would
+# load the daemon package on every `hyprial` invocation (see
+# test_importing_the_cli_does_not_drag_in_the_daemon_package). These module-level
+# names stay patchable and import on first use.
+def obtain_binding_proof(*args: Any, **kwargs: Any) -> str:
+    from hyprial.shell.impl.login.binding import obtain_binding_proof as obtain
+
+    return obtain(*args, **kwargs)
+
+
+def validate_binding_confirmation(*args: Any, **kwargs: Any) -> None:
+    from hyprial.shell.impl.login.binding import (
+        validate_binding_confirmation as validate,
+    )
+
+    validate(*args, **kwargs)
+
+
+def _retry_binding_proof_before_join(*, json_output: bool) -> None:
+    """Best-effort proof retry; the org join itself is never conditional."""
+
+    from hyprial.shell.impl.login.flow import LoginError
+
+    services = get_services()
+    home = Path(services._hyprial_home())
+    try:
+        settings = json.loads((home / "settings.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(settings, dict) or settings.get("identityMode") != "casdoor":
+        return
+    owner = settings.get("owner")
+    claims = settings.get("identityClaims")
+    properties = claims.get("properties") if isinstance(claims, dict) else None
+    union_id = (
+        properties.get("oauth_Lark_unionId")
+        if isinstance(properties, dict)
+        else None
+    )
+    if not isinstance(owner, str) or not isinstance(union_id, str):
+        return
+    existing = settings.get("identityBinding")
+    if (
+        isinstance(existing, dict)
+        and existing.get("user") == owner
+        and existing.get("larkUnionId") == union_id
+    ):
+        return
+
+    def emit(kind: str, data: dict[str, Any]) -> None:
+        if kind != "binding-device":
+            return
+        restart = " (fresh code after expiry)" if data.get("restarted") else ""
+        message = (
+            f"binding proof confirmation required{restart} — open this URL "
+            f"and enter code {data['userCode']}: {data['verificationUri']}"
+        )
+        if json_output:
+            progress(kind, message, json_output=True, **data)
+        else:
+            notice(message)
+
+    def open_url(url: str) -> bool:
+        try:
+            return webbrowser.open(url)
+        except Exception:  # noqa: BLE001 - URI remains visible in the notice
+            return False
+
+    try:
+        profile, _source = services.resolve_profile()
+        proof = obtain_binding_proof(
+            profile,
+            emit=emit,
+            open_browser=True,
+            open_url=open_url,
+            sleep=time.sleep,
+            clock=time.monotonic,
+        )
+        validate_binding_confirmation(
+            proof, expected_user=owner, expected_union_id=union_id
+        )
+        from hyprial.daemon import write_settings_identity
+
+        write_settings_identity(
+            owner,
+            mode="casdoor",
+            issuer=settings.get("identityIssuer"),
+            user_id=(
+                settings.get("userId")
+                if isinstance(settings.get("userId"), str)
+                else None
+            ),
+            username=(
+                settings.get("username")
+                if isinstance(settings.get("username"), str)
+                else None
+            ),
+            lark_union_id=union_id,
+            identity_binding={
+                "user": owner,
+                "larkUnionId": union_id,
+                "proof": proof,
+                "publishedAt": datetime.now(UTC).isoformat(),
+            },
+            hyprial_home=home,
+        )
+    except LoginError as error:
+        message = f"{error}; will retry on the next login or org join"
+        progress(
+            "binding-proof-failed",
+            message,
+            json_output=json_output,
+            code=error.code,
+            detail=message,
+        )
+    except Exception as error:  # noqa: BLE001 - proof is non-fatal to joining
+        message = (
+            f"binding proof retry failed ({type(error).__name__}); will retry "
+            "on the next login or org join"
+        )
+        progress(
+            "binding-proof-failed",
+            message,
+            json_output=json_output,
+            code=type(error).__name__,
+            detail=message,
+        )
+
+
 def _org_join_via_ipc(method: str, link: str, *, json_output: bool) -> None:
     """Shared body of ``org join``/``org execute``: every link form — https
     URL, ``hyprial://`` deep link, bare token, bare ``v1.`` — is passed
@@ -122,6 +260,7 @@ def _org_join_via_ipc(method: str, link: str, *, json_output: bool) -> None:
 
     def operation() -> JsonObject:
         services = get_services()
+        _retry_binding_proof_before_join(json_output=json_output)
         # The join workflow maps the inviter, redials, and then retries
         # ``fs.join`` until the holder is visible (bounded at 30s
         # daemon-side), so the default 15s IPC roundtrip would cut a slow

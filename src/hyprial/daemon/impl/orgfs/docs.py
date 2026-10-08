@@ -71,6 +71,8 @@ from hyprial.daemon.impl.orgfs.document.model import _InviteMember as _InviteMem
 from hyprial.daemon.impl.orgfs.document.model import _LoadSpace as _LoadSpace
 from hyprial.daemon.impl.orgfs.document.model import _MUTATING_FACADE_METHODS as _MUTATING_FACADE_METHODS
 from hyprial.daemon.impl.orgfs.document.model import _Mkdir as _Mkdir
+from hyprial.daemon.impl.orgfs.document.model import _MetaWatch as _MetaWatch
+from hyprial.daemon.impl.orgfs.document.model import _MetaWatchNotification as _MetaWatchNotification
 from hyprial.daemon.impl.orgfs.document.model import _Move as _Move
 from hyprial.daemon.impl.orgfs.document.model import _Node as _Node
 from hyprial.daemon.impl.orgfs.document.model import _NodeSnapshot as _NodeSnapshot
@@ -152,6 +154,7 @@ class LocalOrgFs(FacadeEffects, FacadeSpaceState, FacadeProjection, FacadeSpaces
         self._effect_lane: EffectLane[_FacadeEffectBatch, _FacadeEffectResult] | None = None
         self._effect_closed = False
         self._watchers: dict[str, _Watch] = {}
+        self._meta_watchers: dict[str, _MetaWatch] = {}
         self._spaces: dict[str, _Space] = {}
         self._space_authorities: dict[str, OrgSpaceAuthority] = {}
         self._clock = 0

@@ -31,6 +31,11 @@ from hyprial.daemon.impl.orgfs.storage.store.vocabulary import (
     MAX_REPLICA_SEGMENT_LENGTH,
     StoreError,
 )
+from hyprial.daemon.impl.orgfs.storage.replica_layout import (
+    _DOCUMENT_KINDS,
+    DocumentDirectories,
+    _document_key_segment,
+)
 
 
 ORGFS_REPLICA_RETAIN_BEFORE_SNAPSHOT: Final[int] = 0
@@ -101,12 +106,18 @@ def _segment(value: str, *, name: str) -> str:
     return value
 
 
+def _key_segment(kind: str, index: int, value: str) -> str:
+    if index == 2 and kind in _DOCUMENT_KINDS:
+        return _document_key_segment(value, name=f"key segment {index}")
+    return _segment(value, name=f"key segment {index}")
+
+
 def _validate_key(key: str) -> tuple[str, ...]:
     if not isinstance(key, str) or not key or key.startswith("/") or key.endswith("/"):
         raise ValueError("replica key must be a non-empty relative object key")
     parts = tuple(key.split("/"))
     for index, part in enumerate(parts):
-        _segment(part, name=f"key segment {index}")
+        _key_segment(parts[0], index, part)
     if parts[0] == "log":
         if len(parts) != 5 or not parts[4].isdigit():
             raise ValueError("log key must be log/<space>/<doc>/<writer>/<seq>")
@@ -122,7 +133,7 @@ def _validate_key(key: str) -> tuple[str, ...]:
 
 
 def _document_segment(value: str) -> str:
-    doc_id = _segment(value, name="doc_id")
+    doc_id = _document_key_segment(value, name="doc_id")
     try:
         parse_protected_directory_doc_id(doc_id)
     except ValueError as exc:
@@ -133,9 +144,10 @@ def _document_segment(value: str) -> str:
 def _validate_prefix(prefix: str) -> str:
     if not isinstance(prefix, str) or prefix.startswith("/") or "//" in prefix:
         raise ValueError("replica prefix must be relative")
-    for index, part in enumerate(prefix.rstrip("/").split("/")):
+    parts = prefix.rstrip("/").split("/")
+    for index, part in enumerate(parts):
         if part:
-            _segment(part, name=f"prefix segment {index}")
+            _key_segment(parts[0], index, part)
     return prefix
 
 
@@ -207,7 +219,7 @@ class MemoryReplicaBackend:
         return False
 
 
-class FsReplicaBackend:
+class FsReplicaBackend(DocumentDirectories):
     """Durable immutable-object backend rooted in the selected state tree."""
 
     def __init__(
@@ -224,11 +236,15 @@ class FsReplicaBackend:
         self.root = root / "orgfs" / "replica" / self.space_id
         self.root.mkdir(parents=True, exist_ok=True)
         self._cleanup_temporary_files()
+        self._document_ids: dict[Path, str] = {}
+        self._migrate_document_directories()
 
     def _path(self, key: str) -> Path:
         parts = _validate_key(key)
-        if parts[0] in {"log", "snapshot"} and parts[1] != self.space_id:
-            raise ValueError("replica key belongs to another space")
+        if parts[0] in _DOCUMENT_KINDS:
+            if parts[1] != self.space_id:
+                raise ValueError("replica key belongs to another space")
+            return self._document_directory(parts[0], parts[2]).joinpath(*parts[3:])
         return self.root.joinpath(*parts)
 
     def _cleanup_temporary_files(self) -> None:
@@ -258,6 +274,9 @@ class FsReplicaBackend:
         if existing is not None:
             return PutOutcome.IDEMPOTENT if existing == value else PutOutcome.CONFLICT
 
+        parts = key.split("/")
+        if parts[0] in _DOCUMENT_KINDS:
+            self._write_document_id(self._document_directory(parts[0], parts[2]), parts[2])
         path.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary_name = tempfile.mkstemp(
             prefix=f".{path.name}.tmp-", dir=path.parent
@@ -302,16 +321,18 @@ class FsReplicaBackend:
 
     def keys(self, prefix: str) -> Iterator[str]:
         prefix = _validate_prefix(prefix)
-        matches = tuple(
-            sorted(
-                path.relative_to(self.root).as_posix()
-                for path in self.root.rglob("*")
-                if path.is_file()
-                and not path.name.startswith(".")
-                and _matches_prefix(path.relative_to(self.root).as_posix(), prefix)
-            )
-        )
-        return iter(matches)
+        keys: list[str] = []
+        for path in self.root.rglob("*"):
+            if not path.is_file() or path.name.startswith("."):
+                continue
+            parts = path.relative_to(self.root).parts
+            if parts[0] in _DOCUMENT_KINDS and len(parts) > 3:
+                doc_id = self._document_id_of(self.root.joinpath(*parts[:3]))
+                parts = (parts[0], parts[1], doc_id, *parts[3:])
+            key = "/".join(parts)
+            if _matches_prefix(key, prefix):
+                keys.append(key)
+        return iter(sorted(keys))
 
     def durable(self) -> bool:
         return True

@@ -37,6 +37,7 @@ from hyprial.identity import (
     ProtectedDocIdTooLongError,
     org_from_space_name,
     parse_protected_directory_node_id,
+    protected_directory_author_allowed,
     protected_directory_node_id,
     protected_directory_doc_id,
 )
@@ -60,7 +61,7 @@ from hyprial.daemon.impl.orgfs.storage.store  import _EMPTY_UPDATE, state_covers
 from hyprial.daemon.impl.orgfs.storage.store  import CommitRecord
 
 
-from hyprial.daemon.impl.orgfs.document.model import TreeDocument, _ABSENT_NODE, _BroadcastPending, _ContentDocument, _History, _Node, _NodeSnapshot, _ReconcileReplicaBlobs, _Space, _SpaceSnapshot, _content_fingerprint, _WatchNotification, _encode_content_frontier, _facade_locked, _node_uri, _now, _raise_invalid, _version
+from hyprial.daemon.impl.orgfs.document.model import TreeDocument, _ABSENT_NODE, _BroadcastPending, _ContentDocument, _History, _MetaWatchNotification, _Node, _NodeSnapshot, _ReconcileReplicaBlobs, _Space, _SpaceSnapshot, _content_fingerprint, _WatchNotification, _encode_content_frontier, _facade_locked, _node_uri, _now, _raise_invalid, _version
 
 
 def _snapshot_matches(entry: _NodeSnapshot, node: _Node) -> bool:
@@ -105,6 +106,8 @@ class FacadeProjection:
         store = self._store(space.info.space_id)
         if store is None:
             operation()
+            if doc_id == "meta":
+                self._notify_meta_watchers(space)
         else:
             rollback = (
                 space.tree.get_update(),
@@ -193,6 +196,14 @@ class FacadeProjection:
                 and self._broadcast_is_enabled()
             ):
                 self._defer_effect(_BroadcastPending(space_id, records))
+            if doc_id == "meta":
+                self._notify_meta_watchers(space)
+
+
+    def _notify_meta_watchers(self, space: _Space) -> None:
+        for watcher in tuple(space.meta_watches):
+            if not watcher.closed:
+                self._defer_effect(_MetaWatchNotification(watcher.watch_id))
 
 
     def _commit_many(
@@ -309,6 +320,8 @@ class FacadeProjection:
             self._defer_effect(_ReconcileReplicaBlobs(space_id))
         if exact_records or (not current_records and self._broadcast_is_enabled()):
             self._defer_effect(_BroadcastPending(space_id, exact_records))
+        if any(doc_id == "meta" for doc_id, _operation in items):
+            self._notify_meta_watchers(space)
 
 
     @staticmethod
@@ -461,7 +474,12 @@ class FacadeProjection:
             ["directory", "leaves"],
         ):
             return True
-        return identity[1] in space.members
+        return any(
+            protected_directory_author_allowed(
+                section=parts[1], path_principal=identity[1], author=member
+            )
+            for member in space.members
+        )
 
 
     @_facade_locked

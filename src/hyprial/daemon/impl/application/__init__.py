@@ -324,6 +324,9 @@ class DaemonApplication(
             if owner is not None
             else resolve_node_owner(hyprial_home=self.hyprial_home)
         )
+        self.identity_mode, self.identity_issuer = read_settings_identity_metadata(
+            hyprial_home=self.hyprial_home
+        )
         self._identity_resolver = IdentityResolver(
             state_dir=self.state_dir,
             hyprial_home=self.hyprial_home,
@@ -340,9 +343,6 @@ class DaemonApplication(
             == _SENDER_AUTH_ENFORCE
         )
         self._ipc_peer = threading.local()
-        self.identity_mode, self.identity_issuer = read_settings_identity_metadata(
-            hyprial_home=self.hyprial_home
-        )
         # ⭐ Rewrite the owner segment of stored addresses, once, before any
         # store below reads them.  Ordering is the whole point: DesiredStateStore
         # and the registries are constructed a few lines down, and a store that
@@ -718,6 +718,11 @@ class DaemonApplication(
         self._legacy_agent_home_log_lock = threading.Lock()
         self._legacy_agent_home_logged: set[str] = set()
         self._orgfs_runtime: OrgFsRuntime | None = None
+        self._org_identity_binding_projector: Any | None = None
+        self._org_identity_binding_suppression: Any | None = None
+        self._org_identity_binding_publication_lock = threading.Lock()
+        self._org_identity_binding_pending_all = False
+        self._org_identity_binding_pending_orgs: set[str] = set()
         self._org_context_bridge: Any | None = None
         # A3 dispatch gate (design-dispatch-always-pac-2026-09-03 §三②): the
         # live numerator of the PAC bypass rate, surfaced on ps/top.  The

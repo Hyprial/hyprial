@@ -60,8 +60,23 @@ def proxy_opener(
 
 def url_opener(
     environ: Mapping[str, str] | None = None,
+    *,
+    follow_redirects: bool = True,
 ) -> tuple[Callable[..., Any], str]:
     """``(open, note)``: ``urllib.request.urlopen`` unless a route is needed."""
 
     opener, note = proxy_opener(environ)
+    if not follow_redirects:
+        class _NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *_args: Any, **_kwargs: Any) -> None:
+                return None
+
+        handlers: list[Any] = [_NoRedirect()]
+        if opener is not None:
+            handlers.extend(
+                handler
+                for handler in opener.handlers
+                if isinstance(handler, urllib.request.ProxyHandler)
+            )
+        return urllib.request.build_opener(*handlers).open, note
     return (opener.open if opener is not None else urllib.request.urlopen), note

@@ -39,3 +39,15 @@ PROCESS_CPU_PROBE_TIMEOUT_SECONDS = 1.0
 #: Aggregate allowance for one PAC git base-resolution, prepare, or cleanup
 #: operation. Callers cap it by the remaining workflow-operation deadline.
 PAC_WORKTREE_GIT_TIMEOUT_SECONDS = 30.0
+
+# Identity binding assertions remain bearer credentials until their signed
+# expiry. Publication waits beyond that instant for bounded clock skew. JWKS
+# retention, publication retry, and unknown-kid refresh are bounded separately
+# so key rotation takes effect without creating a busy loop or giving
+# attacker-chosen kids an unbounded fetch rate.
+IDENTITY_BINDING_PUBLISH_SKEW_SECONDS = 30.0
+IDENTITY_BINDING_PUBLISH_RETRY_SECONDS = 5.0
+IDENTITY_BINDING_PUBLISH_RETRY_MAX_SECONDS = 300.0
+IDENTITY_BINDING_PUBLISH_WARNING_INTERVAL_SECONDS = 60.0
+IDENTITY_BINDING_JWKS_TTL_SECONDS = 300.0
+IDENTITY_BINDING_UNKNOWN_KID_REFRESH_INTERVAL_SECONDS = 60.0

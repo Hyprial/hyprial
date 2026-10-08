@@ -11,8 +11,8 @@ from typing import Any
 
 from hyprial.kernel import ipc_errors
 
+from ..store import OverrideConflictError
 from .errors import IdentityResolverError
-from .store import OverrideConflictError
 
 
 class OverrideWrites:

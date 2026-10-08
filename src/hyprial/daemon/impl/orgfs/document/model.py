@@ -106,6 +106,11 @@ class _WatchNotification:
 
 
 @dataclass(frozen=True, slots=True)
+class _MetaWatchNotification:
+    watch_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class _BroadcastPending:
     space_id: str
     records: tuple[CommitRecord, ...] = ()
@@ -120,7 +125,11 @@ class _ReconcileReplicaBlobs:
 class _FacadeEffectBatch:
     sequence: int
     effects: tuple[
-        _WatchNotification | _ReconcileReplicaBlobs | _BroadcastPending, ...
+        _WatchNotification
+        | _MetaWatchNotification
+        | _ReconcileReplicaBlobs
+        | _BroadcastPending,
+        ...,
     ]
 
 
@@ -606,6 +615,16 @@ class _Watch:
         self.closed = True
 
 
+@dataclass
+class _MetaWatch:
+    callback: Callable[[], None]
+    watch_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    closed: bool = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
 class TreeDocument:
     """A pycrdt-backed tree log with deterministic move replay.
 
@@ -874,6 +893,7 @@ class _Space:
     snapshots: dict[str, Mapping[str, _NodeSnapshot]]
     revision: int = 0
     watches: list[_Watch] = field(default_factory=list)
+    meta_watches: list[_MetaWatch] = field(default_factory=list)
     #: node_id -> (entry in the latest version, content object, fingerprint);
     #: lets the next version reuse an entry whose node and content are unchanged.
     snapshot_marks: dict[str, tuple[_NodeSnapshot, Any, Any]] = field(

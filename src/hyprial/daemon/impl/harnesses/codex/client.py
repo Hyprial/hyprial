@@ -75,6 +75,9 @@ from hyprial.daemon.impl.harnesses.codex.app_server import (
     _thread_execution_params,
 )
 from hyprial.daemon.impl.harnesses.codex.process import _ClientCloseMixin
+from hyprial.daemon.impl.harnesses.codex.projection import (
+    warn_if_unrecorded_codex_version,
+)
 from hyprial.daemon.impl.harnesses.codex.carrier import (
     MANAGED_TURN_IDLE_TIMEOUT_SECONDS,
 )
@@ -367,6 +370,7 @@ class CodexAppServerClient(
                         "capabilities": {"experimentalApi": True},
                     },
                 )
+                warn_if_unrecorded_codex_version(initialize, self._logger)
                 await self.notify("initialized", {})
                 if self._p2_runtime:
                     assert self._native_root is not None

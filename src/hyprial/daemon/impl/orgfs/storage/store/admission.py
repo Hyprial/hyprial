@@ -9,26 +9,11 @@ on ``(doc_id, author)`` and cannot vary with content/link arrival order.
 
 from __future__ import annotations
 
-
-
 import json
-
 from collections import Counter
-
 from datetime import UTC, datetime, timedelta
-
-
-
-
-
 import sqlite3
 import time
-
-
-
-
-
-
 from typing import Any, Literal, Mapping
 
 from pycrdt import Array, Doc, Map
@@ -38,12 +23,12 @@ from hyprial.identity import (
     org_from_space_name,
     parse_protected_directory_node_id,
     parse_protected_directory_doc_id,
+    protected_directory_author_allowed,
     protected_directory_node_id,
     protected_directory_doc_id,
 )
 
-
-from hyprial.daemon.impl.orgfs.storage.store.vocabulary import CommitRecord, ExportPage, ImportResult, StoreError, _LOG, _b64, _changed_meta_entries, _decode_state_vector, _doc_roots, _json_bytes, _now, _tree_node_operation_allowed, _unb64, _wire_doc_id
+from hyprial.daemon.impl.orgfs.storage.store.vocabulary import CommitRecord, ExportPage, ImportResult, StoreError, _LOG, _b64, _binding_proof_update_is_publishable, _changed_meta_entries, _decode_state_vector, _doc_roots, _json_bytes, _now, _tree_node_operation_allowed, _unb64, _wire_doc_id
 
 class StoreAdmission:
     """Responsibility methods on the sole LocalSpaceStore state host.
@@ -304,6 +289,12 @@ class StoreAdmission:
                 return False
             if identity is not None and identity[0] != space_id:
                 return False
+            section = (
+                "people"
+                if identity is not None
+                and identity[2].startswith("directory/people/")
+                else "devices"
+            )
             position_changed = after_node is not None and (
                 prior is None
                 or prior.get("parent") != after_node.get("parent")
@@ -359,7 +350,12 @@ class StoreAdmission:
                 if expected_node_id is not None and node_id != expected_node_id:
                     return False
                 if prior is None and identity is not None and (
-                    node_id != expected_node_id or principal != identity[1]
+                    node_id != expected_node_id
+                    or not protected_directory_author_allowed(
+                        section=section,
+                        path_principal=identity[1],
+                        author=principal,
+                    )
                 ):
                     return False
             if prior is not None and identity is not None:
@@ -367,9 +363,17 @@ class StoreAdmission:
                     return False
                 deletion = self._deletion_only(prior, after_node)
                 if deletion:
-                    if principal != identity[1]:
+                    if not protected_directory_author_allowed(
+                        section=section,
+                        path_principal=identity[1],
+                        author=principal,
+                    ):
                         return False
-                elif principal != identity[1]:
+                elif not protected_directory_author_allowed(
+                    section=section,
+                    path_principal=identity[1],
+                    author=principal,
+                ):
                     return False
             if (
                 after_node is not None
@@ -439,6 +443,7 @@ class StoreAdmission:
         author: str,
         space_owner: str | None,
         meta_baseline: Doc,
+        enforce_binding_publish_time: bool,
     ) -> bool | None:
         if not self._is_org_directory_space(meta_baseline):
             return True
@@ -467,15 +472,20 @@ class StoreAdmission:
             )
         except ValueError:
             return False
-        encoded_space, section, path_principal, _leaf = identity
-        required = (
-            owner_principal
-            if section in {"invites", "org"}
-            else path_principal
+        encoded_space, section, path_principal, leaf = identity
+        if encoded_space != space_id:
+            return False
+        if enforce_binding_publish_time and section == "people" and leaf == "binding.json" and not (
+            _binding_proof_update_is_publishable(
+                self._doc(doc_id), update, now=time.time()
+            )
+        ):
+            return False
+        if section in {"invites", "org"}:
+            return principal == owner_principal
+        return protected_directory_author_allowed(
+            section=section, path_principal=path_principal, author=principal
         )
-        return encoded_space == space_id and principal == required
-
-
     def admission(
         self, envelope: bytes
     ) -> Literal[
@@ -572,6 +582,7 @@ class StoreAdmission:
                 author=author,
                 space_owner=owner,
                 meta_baseline=baseline,
+                enforce_binding_publish_time=False,
             )
         except StoreError:
             device_allowed = False

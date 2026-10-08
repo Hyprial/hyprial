@@ -110,10 +110,26 @@ def ipc_org_invite(app: Any, params: JsonObject) -> dict:
         raise _translate(error) from error
 
 
+def _publish_identity_binding_after_join(app: Any) -> None:
+    """The binding proof is an add-on: it never fails a completed join."""
+
+    try:
+        app._publish_identity_binding()
+    except Exception as error:  # noqa: BLE001 - the join already succeeded
+        app._log(
+            "warn",
+            "identity",
+            "identity.org-binding.publish-after-join-failed",
+            reason=type(error).__name__,
+        )
+
+
 def ipc_org_execute(app: Any, params: JsonObject) -> dict:
     link = _required_string(params.get("link"), "link")
     try:
-        return _build_service(app).execute(link)
+        result = _build_service(app).execute(link)
+        _publish_identity_binding_after_join(app)
+        return result
     except OrgFsError as error:
         raise _translate(error) from error
     except (InviteError, OrgNetworkError, ValueError) as error:
@@ -125,7 +141,9 @@ def ipc_org_join(app: Any, params: JsonObject) -> dict:
 
     link = _required_string(params.get("link"), "link")
     try:
-        return _build_service(app).join(link)
+        result = _build_service(app).join(link)
+        _publish_identity_binding_after_join(app)
+        return result
     except OrgFsError as error:
         raise _translate(error) from error
     except (InviteError, OrgNetworkError, ValueError) as error:

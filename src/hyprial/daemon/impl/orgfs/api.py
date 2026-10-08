@@ -275,6 +275,10 @@ class OrgFs(Protocol):
         self, space_id: str, glob: str, callback: Callable[[ChangeEvent], None]
     ) -> Registration: ...
 
+    def watch_meta(
+        self, space_id: str, callback: Callable[[], None]
+    ) -> Registration: ...
+
     def open_doc(self, space_id: str, node: NodeRef) -> OrgDoc: ...
 
     def history(

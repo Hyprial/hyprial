@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any, Callable
 
 from hyprial.daemon.impl.orgfs.api import OrgFs, OrgFsError
@@ -26,9 +27,12 @@ from hyprial.identity import (
     DIRECTORY_DIR,
     INVITES_DIR,
     LEAVES_DIR,
+    PEOPLE_DIR,
     ORG_META_DOC,
     DirectoryDevice,
+    binding_assertion_publish_after,
     directory_device_path,
+    directory_binding_path,
     directory_owner_principal,
     org_from_space_name,
     org_space_name,
@@ -37,11 +41,10 @@ from hyprial.identity import (
 from hyprial.kernel import ORGFS_CONTENT_PENDING, canonical_user_uri
 
 _LOG = logging.getLogger(__name__)
-_PEOPLE_DIR = "directory/people"
 _OWNER_CREATED_DIRS = (
     "directory",
     DIRECTORY_DIR,
-    _PEOPLE_DIR,
+    PEOPLE_DIR,
     INVITES_DIR,
     LEAVES_DIR,
 )
@@ -202,6 +205,93 @@ class OrgFsDirectoryStore:
             json.dumps(device.as_record(), sort_keys=True, separators=(",", ":")),
         )
 
+    def put_binding(self, org: str, record: dict[str, Any]) -> None:
+        """Publish one exact four-field binding row under its stable user key."""
+
+        if set(record) != {"user", "larkUnionId", "proof", "publishedAt"}:
+            raise ValueError("binding row must have exactly the frozen four fields")
+        user = record.get("user")
+        if not isinstance(user, str) or not user:
+            raise ValueError("binding row user must be a non-empty string")
+        proof = record.get("proof")
+        if not isinstance(proof, str):
+            raise ValueError("binding row proof must be a string")
+        if time.time() <= binding_assertion_publish_after(proof):
+            raise ValueError("binding proof is not expired past the skew budget")
+        path = directory_binding_path(user)
+        space_id = self._space_id(org)
+        self._mkdir_if_absent(space_id, path.rsplit("/", 1)[0])
+        self._fs.write_text(
+            space_id,
+            path,
+            json.dumps(record, sort_keys=True, separators=(",", ":")),
+        )
+
+    def remove_binding(self, org: str, user: str) -> bool:
+        """Delete the caller's stable binding row; absent is idempotent."""
+
+        space_id = self._space_id(org)
+        try:
+            self._fs.remove(space_id, directory_binding_path(user))
+        except OrgFsError as error:
+            if error.code == "unknown-doc":
+                return False
+            raise
+        return True
+
+    def list_binding_rows(self, org: str) -> list[tuple[str, dict[str, Any]]]:
+        """Read author-checked candidate rows; proof verification is separate."""
+
+        space_id = self._space_id(org)
+        try:
+            users = self._fs.listdir(space_id, PEOPLE_DIR)
+        except OrgFsError as error:
+            if error.code == "unknown-doc":
+                return []
+            raise
+        rows: list[tuple[str, dict[str, Any]]] = []
+        for user_entry in users:
+            if user_entry.kind != "dir":
+                continue
+            path = f"{PEOPLE_DIR}/{user_entry.name}/binding.json"
+            try:
+                node = self._fs.stat(space_id, path)
+                expected = protected_directory_doc_id(
+                    space_id, path, space_owner=self._space_owner(space_id)
+                )
+                if node.kind != "doc" or node.doc_id != expected:
+                    raise ValueError("binding row has the wrong protected document id")
+                text, _version = self._fs.read_text(space_id, f"id:{node.node_id}")
+                record = json.loads(text)
+                if not isinstance(record, dict):
+                    raise ValueError("binding row must be a JSON object")
+                user = record.get("user")
+                if not isinstance(user, str) or not user:
+                    raise ValueError("binding row has no user")
+                authors = {
+                    directory_owner_principal(author)
+                    for author in self._fs.document_authors(
+                        space_id, f"id:{node.node_id}"
+                    )
+                }
+                if authors != {directory_owner_principal(user)}:
+                    raise ValueError("binding row author does not equal its user")
+            except (OrgFsError, TypeError, ValueError) as error:
+                self._warn_invalid_binding(path, error)
+                continue
+            rows.append((user_entry.name, record))
+        return rows
+
+    def is_member(self, org: str, user: str) -> bool:
+        """Return whether the exact user principal is a current org member."""
+
+        principal = directory_owner_principal(user)
+        space_id = self._space_id(org)
+        return principal == directory_owner_principal(self._space_owner(space_id)) or any(
+            directory_owner_principal(member.user) == principal
+            for member in self._fs.members(space_id)
+        )
+
     def ensure_org_directory_roots(self, org: str) -> None:
         """Create shared directory roots while the facade is the space owner."""
 
@@ -218,6 +308,14 @@ class OrgFsDirectoryStore:
             if org is not None
         ]
         return sorted(set(orgs))
+
+    def binding_watch_targets(self) -> list[tuple[str, str]]:
+        """Current org names and spaces for binding-row/meta projections."""
+
+        return [
+            (org, self._space_id(org))
+            for org in self.orgs()
+        ]
 
     # -- invites (OrgFS-backed, used by OrgNetworkService) -----------------
 
@@ -454,6 +552,13 @@ class OrgFsDirectoryStore:
             self._logger("warn", "org", "directory.device_invalid", **fields)
             return
         _LOG.warning("org.directory.device_invalid path=%s detail=%s", path, error)
+
+    def _warn_invalid_binding(self, path: str, error: Exception) -> None:
+        fields = {"path": path, "detail": str(error)}
+        if self._logger is not None:
+            self._logger("warn", "org", "directory.binding_invalid", **fields)
+            return
+        _LOG.warning("org.directory.binding_invalid path=%s detail=%s", path, error)
 
     @staticmethod
     def _device_key_conflicts(

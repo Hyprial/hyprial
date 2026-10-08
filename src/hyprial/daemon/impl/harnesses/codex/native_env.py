@@ -30,6 +30,12 @@ from hyprial.daemon.impl.harnesses.codex.process import (
     CodexExecutableResolutionError,
     resolve_codex_executable,
 )
+from hyprial.daemon.impl.harnesses.codex.projection import (
+    CodexAgentHomeError,
+    codex_projection_item_matches,
+    private_directory as _private_directory,
+    write_or_verify_projection_file as _write_or_verify_projection_file,
+)
 
 _CODEX_SUPPORTED_AUTH_STORES = frozenset({"file", "ephemeral"})
 
@@ -79,11 +85,6 @@ _CODEX_MUTABLE_PREFIXES = (
     "thread-writer-locks/",
 )
 
-class CodexAgentHomeError(ValueError):
-    """The resolved Codex native root failed its P2 loading contract."""
-
-    permanent_start_failure = True
-
 @dataclass(frozen=True, slots=True)
 class CodexNativeLoadEvidence:
     """Non-secret observations returned by the real Codex app-server."""
@@ -96,84 +97,6 @@ class CodexNativeLoadEvidence:
     requires_openai_auth: bool
     user_skills: tuple[str, ...]
     project_skills: tuple[str, ...]
-
-def _private_directory(path: Path, label: str) -> None:
-    try:
-        metadata = path.lstat()
-    except OSError as error:
-        raise CodexAgentHomeError(f"{label} is unreadable") from error
-    if (
-        stat.S_ISLNK(metadata.st_mode)
-        or not stat.S_ISDIR(metadata.st_mode)
-        or metadata.st_uid != os.getuid()
-        or stat.S_IMODE(metadata.st_mode) != 0o700
-    ):
-        raise CodexAgentHomeError(f"{label} must be an owner-private directory")
-
-def _write_or_verify_projection_file(
-    source: Path, destination: Path, *, native_root: Path, read_only: bool = False
-) -> None:
-    try:
-        source_metadata = source.lstat()
-        body = source.read_bytes()
-    except OSError as error:
-        raise CodexAgentHomeError(
-            f"cannot read Codex projection item {source.name}"
-        ) from error
-    if (
-        stat.S_ISLNK(source_metadata.st_mode)
-        or not stat.S_ISREG(source_metadata.st_mode)
-        or stat.S_IMODE(source_metadata.st_mode) != 0o600
-    ):
-        raise CodexAgentHomeError(
-            f"Codex projection item {source.name} is not a private regular file"
-        )
-    try:
-        relative_parent = destination.parent.relative_to(native_root)
-    except ValueError as error:
-        raise CodexAgentHomeError("Codex projection destination escaped its root") from error
-    current = native_root
-    for part in relative_parent.parts:
-        current = current / part
-        if not read_only:
-            try:
-                current.mkdir(mode=0o700)
-            except FileExistsError:
-                pass
-        _private_directory(current, f"Codex projection directory {part}")
-    try:
-        destination_metadata = destination.lstat()
-    except FileNotFoundError:
-        if read_only:
-            raise CodexAgentHomeError(
-                f"authority-prepared Codex native item {destination.name} is missing"
-            ) from None
-        descriptor = os.open(
-            destination,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-            0o600,
-        )
-        try:
-            with os.fdopen(descriptor, "wb", closefd=False) as stream:
-                stream.write(body)
-                stream.flush()
-                os.fsync(stream.fileno())
-        finally:
-            os.close(descriptor)
-        return
-    except OSError as error:
-        raise CodexAgentHomeError(
-            f"cannot inspect Codex native item {destination.name}"
-        ) from error
-    if (
-        stat.S_ISLNK(destination_metadata.st_mode)
-        or not stat.S_ISREG(destination_metadata.st_mode)
-        or stat.S_IMODE(destination_metadata.st_mode) != 0o600
-        or destination.read_bytes() != body
-    ):
-        raise CodexAgentHomeError(
-            f"Codex native projection item {destination.name} drifted"
-        )
 
 def _allowed_codex_mutable_file(relative: str) -> bool:
     return (
@@ -693,6 +616,9 @@ def verify_codex_native_projection(
         raise CodexAgentHomeError("resolved CODEX_HOME must be a real directory")
     for item in receipt.items:
         candidate = root.joinpath(*Path(item.native_path).parts)
+        projected = Path(receipt.projection_root).joinpath(
+            *Path(item.native_path).parts
+        )
         try:
             item_metadata = candidate.lstat()
         except OSError as error:
@@ -703,8 +629,23 @@ def verify_codex_native_projection(
             raise CodexAgentHomeError(
                 f"Codex native projection item {item.native_path} is not a regular file"
             )
+        try:
+            projected_body = projected.read_bytes()
+        except OSError as error:
+            raise CodexAgentHomeError(
+                f"Codex projection source item {item.native_path} is missing"
+            ) from error
+        if (
+            len(projected_body) != item.size
+            or hashlib.sha256(projected_body).hexdigest() != item.digest
+        ):
+            raise CodexAgentHomeError(
+                f"Codex projection source item {item.native_path} drifted"
+            )
         body = candidate.read_bytes()
-        if len(body) != item.size or hashlib.sha256(body).hexdigest() != item.digest:
+        if not codex_projection_item_matches(
+            item.native_path, projected_body, body
+        ):
             raise CodexAgentHomeError(
                 f"Codex native projection item {item.native_path} drifted"
             )

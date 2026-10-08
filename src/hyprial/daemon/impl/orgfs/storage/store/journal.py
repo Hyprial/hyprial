@@ -263,6 +263,7 @@ class StoreJournal:
                 author=author,
                 space_owner=self._owner(),
                 meta_baseline=self._docs["meta"],
+                enforce_binding_publish_time=True,
             ):
                 raise StoreError(
                     "not-a-member", "device row belongs to another member"
@@ -477,6 +478,7 @@ class StoreJournal:
                         author=author,
                         space_owner=owner,
                         meta_baseline=self._docs["meta"],
+                        enforce_binding_publish_time=True,
                     ):
                         raise StoreError(
                             "not-a-member", "device row belongs to another member"

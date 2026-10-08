@@ -513,6 +513,7 @@ class _WiringTransportMixin:
                 and presence.liveness_keeps(actor)
             ),
         )
+        self._start_org_identity_bindings_safely()
         network_delivery = ZenohDeliveryTransport(
             transport, presence, origin_node=self.node_id
         )

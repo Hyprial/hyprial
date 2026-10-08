@@ -89,6 +89,8 @@ _IPC_STATS_METHODS = frozenset(
         "identity.whoami",
         "identity.resolve",
         "identity.bindings.list",
+        "identity.binding.publish",
+        "identity.binding.withdraw",
         "identity.override.set",
         "identity.override.clear",
         "identity.users.list",
@@ -222,6 +224,70 @@ _ORG_NETWORK_METHODS = {
 class _IpcDispatchMixin:
     """Application cluster mixin; the state owner is DaemonApplication."""
 
+    def _interactive_identity_binding_peer(self, peer_pid: object) -> bool:
+        """Match an IPC peer to an interactive PID and its birth identity."""
+
+        if isinstance(peer_pid, bool) or not isinstance(peer_pid, int):
+            return False
+        from hyprial.daemon.impl.mcp.channel import ownership
+
+        observed = ownership._read_process_identity(peer_pid)
+        if observed is None:
+            return False
+        observed_parts = ownership._identity_components(observed)
+
+        def same_birth(recorded: str) -> bool:
+            # Component-wise, as owner liveness compares: two readers may
+            # record different scheme sets for one birth; a reused PID differs
+            # in every scheme they share.
+            recorded_parts = ownership._identity_components(recorded)
+            return any(
+                recorded_parts[scheme] == observed_parts[scheme]
+                for scheme in recorded_parts.keys() & observed_parts.keys()
+            )
+
+        return any(
+            session.process_pid == peer_pid
+            and session.process_identity is not None
+            and same_birth(session.process_identity)
+            for session in self.desired_state.load().interactive_sessions
+        )
+
+    def _identity_binding_operator(
+        self,
+        params: JsonObject,
+        *,
+        trusted_message_origin: str | None,
+    ) -> tuple[bool, int | None]:
+        """Apply R2i's zero-cost agent refusals before the future ancestry walk.
+
+        Only three callers are recognized as agents: daemon workers, requests
+        that carry an actor or sessionRef, and an IPC peer whose pid and birth
+        match an interactive session that registered its process (today only
+        codex app-server does; claude, pi and kimi sessions cannot be matched).
+        Everything else, including an agent's own shell running the CLI and a
+        peer whose process cannot be read, counts as an unverified operator.
+        """
+
+        peer = self._ipc_peer
+        peer_pid = getattr(peer, "pid", None)
+        caller_pid = (
+            peer_pid
+            if isinstance(peer_pid, int) and not isinstance(peer_pid, bool)
+            else None
+        )
+        carries_session_identity = any(
+            key in params for key in ("actor", "sessionRef")
+        )
+        # The IPC server records only the peer pid per connection; there is no
+        # connection-level actor or session to consult.
+        operator = not (
+            trusted_message_origin == "worker"
+            or carries_session_identity
+            or self._interactive_identity_binding_peer(caller_pid)
+        )
+        return operator, caller_pid
+
     def handle(
         self,
         method: str,
@@ -341,11 +407,29 @@ class _IpcDispatchMixin:
         if method.startswith("identity."):
             from hyprial.daemon.impl.identity import handle_identity_ipc
 
+            binding_operator = True
+            peer_pid = None
+            if method in {
+                "identity.binding.publish",
+                "identity.binding.withdraw",
+            }:
+                binding_operator, peer_pid = self._identity_binding_operator(
+                    params, trusted_message_origin=_trusted_message_origin
+                )
+
             return handle_identity_ipc(
                 self._identity_resolver,
                 method,
                 params,
-                operator=_trusted_message_origin != "worker",
+                operator=(
+                    binding_operator
+                    if method.startswith("identity.binding.")
+                    else _trusted_message_origin != "worker"
+                ),
+                peer_pid=peer_pid,
+                binding_withdraw=self._withdraw_identity_binding,
+                binding_publish=self._publish_identity_binding_explicit,
+                binding_status=lambda: self._identity_binding_suppression().status(),
             )
         if method == "org.publish":
             return self._ipc_org_publish()
