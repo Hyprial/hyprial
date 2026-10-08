@@ -1,0 +1,5 @@
+{
+  "comment": "取消回执形状 fixture；commandId / receiptId 由 adapter 生成后回填，GUI 不自造。",
+  "status": "cancelled",
+  "reason": "user_cancelled"
+}

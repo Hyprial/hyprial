@@ -1,0 +1,23 @@
+{
+  "comment": "会话 s-1 历史。events 形状 = D0a §4：{eventId, kind: user|assistant|tool|system, text?, toolCard?}。toolCard 为工具调用卡片 wire 形状，仅存在于 UI adapter 内。",
+  "sessionId": "s-1",
+  "events": [
+    { "eventId": "evt-001", "kind": "user", "text": "把原型会话页改成三栏布局并校验" },
+    { "eventId": "evt-002", "kind": "assistant", "text": "先校验当前草稿，再给出预览快照。" },
+    {
+      "eventId": "evt-003", "kind": "tool",
+      "toolCard": {
+        "tool_call_id": "call_gui_01",
+        "tool_name": "hyprial_gui_preview",
+        "kind": "tool-result",
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"draft\":{\"id\":\"gui-fixture-draft-1\",\"revision\":3,\"document\":{\"schemaVersion\":1,\"id\":\"my-workspace\",\"name\":\"原型工作台\",\"kind\":\"shell\",\"navigation\":[{\"id\":\"home\",\"label\":\"主页\",\"pageId\":\"home\"}],\"pages\":[{\"id\":\"home\",\"title\":\"主页\",\"layout\":{\"type\":\"Stack\",\"id\":\"root\",\"children\":[{\"type\":\"Text\",\"id\":\"t1\",\"text\":\"D0b 提取原型预览\"}]}}],\"theme\":{\"mode\":\"system\",\"density\":\"comfortable\"}}}}"
+          }
+        ]
+      }
+    },
+    { "eventId": "evt-004", "kind": "system", "text": "预览已生成，等待用户确认。" }
+  ]
+}

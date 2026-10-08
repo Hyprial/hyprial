@@ -1,8 +1,4 @@
-.dsh-h2b-state/
-.env.local
 node_modules/
-
-.ci-cache/
-
-__pycache__/
-*.pyc
+.cache/
+coverage/
+*.log

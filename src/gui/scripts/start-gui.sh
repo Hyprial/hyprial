@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
+# Start entry named by hyprial-install.json. Configuration is explicit
+# environment only; product/server.mjs fails closed with a named error when the
+# transport driver or the trusted principal is missing.
 set -euo pipefail
-source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/hyprial-env.sh"
-repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
-if [[ "${H2B_GUI_APP:-dsh}" != dsh ]]; then
-  printf 'Dashboard is retired; use hyprial gui [start|status|stop|upgrade].\n' >&2
-  exit 2
-fi
-exec bash "$repo_root/scripts/start-web.sh" "$@"
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
+exec node product/server.mjs

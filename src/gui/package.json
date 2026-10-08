@@ -1,52 +1,33 @@
 {
-  "name": "@hyprial/dsh-hyprial-plugin",
-  "version": "0.1.1",
+  "name": "@hyprial/gui",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
-  "main": "./static/host.js",
   "exports": {
-    ".": "./static/host.js",
-    "./client": "./static/client.js",
-    "./agent-task-client": "./integration/agent-task-client.js",
-    "./package.json": "./package.json"
+    "./studio": "./studio/index.mjs",
+    "./session": "./session/index.mjs",
+    "./host": "./host/index.mjs",
+    "./client": "./client/index.mjs",
+    "./presentation": "./presentation/index.mjs",
+    "./product": "./product/index.mjs",
+    "./transport": "./transport/index.mjs"
   },
-  "files": [
-    "dsh-web.patch.yml",
-    "*.mjs",
-    "imskin-host-plugin.js",
-    "imskin-plugin.js",
-    "static",
-    "client",
-    "integration",
-    "shared",
-    "contracts"
-  ],
-  "dsh": {
-    "bundle": {
-      "patch": "./dsh-web.patch.yml"
-    },
-    "client": {
-      "platform": "web",
-      "inject": []
-    }
+  "license": "Apache-2.0",
+  "description": "Independent Hyprial GUI: deep-module product surface (studio/session/host/client/presentation) with server composition root",
+  "engines": {
+    "node": ">=24"
   },
   "scripts": {
-    "update:dsh-release": "npm run test:dsh:latest",
-    "test:dsh:latest": "node scripts/verify-dsh-latest.mjs",
-    "build:static": "node scripts/build-static-client.mjs",
-    "test": "node --test tests/*.test.mjs",
-    "test:cli:real": "node scripts/verify-cli-console.mjs",
-    "test:agent-task:real": "node scripts/verify-agent-task-real.mjs",
-    "setup:local": "bash scripts/install-local.sh",
-    "start:web": "bash scripts/start-web.sh",
-    "build:codex": "node scripts/codex-package.mjs build",
-    "verify:codex": "node scripts/codex-package.mjs verify"
-  },
-  "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1"
+    "test": "node --test \"tests/**/*.test.mjs\"",
+    "check": "node scripts/check-architecture.mjs",
+    "verify": "npm run check && npm test",
+    "build": "node product/build.mjs",
+    "start": "node product/server.mjs"
   },
   "dependencies": {
+    "@deepseek-ai/cordis": "4.0.1",
     "proper-lockfile": "4.1.2",
-    "yaml": "2.9.0"
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
   }
 }

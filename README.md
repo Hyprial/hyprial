@@ -13,8 +13,8 @@ adapter 再把 Lark 等外部平台接到相同的消息面。
 
 它解决的是长任务中的通信连续性问题：协调者、worker 或即时通道暂时不可用时，
 任务目标与消息仍应当可发现、可恢复、可核验，而不是依赖某个进程一直在线或
-某个人记得上下文。设计目标与长期可执行约束见 [GOALS.md](GOALS.md)，协议和
-架构入口见[设计文档](docs/design.md)。
+某个人记得上下文。设计目标与长期可执行约束见 [ROADMAP.md](ROADMAP.md)，协议和
+架构入口见[设计文档](docs/design/design.md)。
 
 ## Quickstart
 
@@ -43,8 +43,8 @@ hyprial doctor
 这条路径会在 home 不存在时自动执行 init 的 home 初始化部分，并在身份建立后
 启动 daemon，所以最终状态与 `install → init → doctor` 相同。
 
-加入现有网络前先完成[节点入网清单](docs/onboarding-checklist.md)。首次启动、
-显式 Zenoh 端点、macOS 防火墙和诊断细节见[运维指南](docs/operator-guide.md)。
+加入现有网络前先完成[节点入网清单](docs/guides/onboarding-checklist.md)。首次启动、
+显式 Zenoh 端点、macOS 防火墙和诊断细节见[运维指南](docs/guides/operator-guide.md)。
 
 ## 安装
 
@@ -60,7 +60,7 @@ Forgejo ref，可用 `hyprial upgrade --source forgejo --ref <完整提交或标
 
 当前没有需要迁移的旧 TypeScript 主机，也不再提供旧状态迁移。若意外发现仍装有
 旧版的机器，不要覆盖安装：先停止并删除旧版、归档其状态目录，再按全新主机安装。
-可复制的安全步骤见[退役 TS 安装处理](docs/cutover-runbook.md)。
+可复制的安全步骤见[退役 TS 安装处理](docs/guides/cutover-runbook.md)。
 
 从已消失的旧 `harness-bridge-py` 来源安装过 v0.4.0 时，先用同版本刷新来源，
 不会切换到 `dev`。⚠️ **这一条只对内网机器适用**：`v0.4.0` 是历史版本，
@@ -104,7 +104,7 @@ env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=url.ssh://git@git.internal.hyprial.com/.
 同一段提示也收录在 `hyprial-ops` skill 里。
 
 恢复前提、核验步骤、旧 TypeScript 安装删除与失败边界都保留在
-[运维指南的安装章节](docs/operator-guide.md#安装)，不要只凭上面一条命令跳过核验。
+[运维指南的安装章节](docs/guides/operator-guide.md#安装)，不要只凭上面一条命令跳过核验。
 
 ## 核心概念
 
@@ -114,27 +114,27 @@ env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=url.ssh://git@git.internal.hyprial.com/.
 | connector | 把一个具体 harness 会话接到 daemon，承接该 agent 的输入、输出与生命周期。 |
 | adapter | 连接 Lark 等外部平台，把平台身份和消息映射到 Hyprial 的统一寻址与投递模型。 |
 | PAC | 声明式派单和跟踪层；描述任务图、条件与等待规则，不替 worker 执行任务。 |
-| sidecar | 由 Hyprial 校验并控制的辅助进程，用于 tsnet 入网、跨 tailnet 转发等独立能力。 |
+| sidecar | 由 Hyprial 校验并控制的辅助进程（Tailcat，随 wheel 分发），用于设备密钥与跨网络转发等独立能力。 |
 
 进一步阅读：
 
-- [daemon 生命周期](docs/p2-daemon.md)
-- [Harness provider 模型](docs/harness-model-providers.md)
-- [PAC workflow](docs/design-pac-workflow.md) 与 [PAC v2 图/flag 反应器](docs/design-pac-graph-flag-reactor.md)
-- [Lark App onboarding](docs/lark-app-onboarding.md)
-- [tsnet sidecar 与登录设计](docs/hyprial-login-design.md)
+- [daemon 生命周期](docs/reference/p2-daemon.md)
+- [Harness provider 模型](docs/reference/harness-model-providers.md)
+- [PAC workflow](docs/design/design-pac-workflow.md) 与 [PAC v2 图/flag 反应器](docs/design/design-pac-graph-flag-reactor.md)
+- [Lark App onboarding](docs/guides/lark-app-onboarding.md)
+- [Tailcat cutover 架构与边车协议 v3](docs/design/tailnet-cutover-architecture-2026-10-03.md)
 
 ## 运维指南
 
-原 README 的运维内容没有删除，已整体迁入[运维指南](docs/operator-guide.md)：
+原 README 的运维内容没有删除，已整体迁入[运维指南](docs/guides/operator-guide.md)：
 
 - 安装诊断与 v0.4.0 历史来源恢复
 - macOS 防火墙与旧 TypeScript 安装删除
 - tag-only 升级、三轨选择和自动更新 loop
-- 网络 profile、多 home、`hyprial login` U1/U2/U3b 与 sidecar 入网
+- profile v2、多 home、`hyprial login` 身份与设备 key，以及 Tailcat 转发边界
 
-升级轨道的治理和发布细节另见[升级轨道](docs/upgrade-tracks.md)，双机与显式端点
-部署见 [Zenoh 双机指南](docs/zenoh-two-machine.md)。
+升级轨道的治理和发布细节另见[升级轨道](docs/guides/upgrade-tracks.md)，双机与显式端点
+部署见 [Zenoh 双机指南](docs/guides/zenoh-two-machine.md)。
 
 ## Development
 
@@ -147,7 +147,8 @@ env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=url.ssh://git@git.internal.hyprial.com/.
 git clone ssh://git@git.internal.hyprial.com/HyprialOS/harness-bridge.git
 cd harness-bridge
 uv sync --extra test
-uv run pytest
+npm --prefix src/gui ci --ignore-scripts # Node 24; Python tests include native GUI fixtures.
+uv run --with libcst==1.9.0 pytest tests/
 uv run ruff check .
 ```
 
@@ -164,11 +165,19 @@ uv run ruff check .
 
 ## Contributing
 
-GUI 源码现在位于 [`src/gui`](src/gui)，保持独立 Node 工程。开发时在该目录执行
-`npm ci --ignore-scripts`、`npm run build:static` 和 `npm test`。
-GUI 的 CI 位于 `.forgejo/workflows/gui.yml`；源码发布包构建及隔离安装演练见
-[GUI 合仓实施记录](docs/gui-migration/implementation.md)。源码合仓尚不代表公开
-catalog 或现有用户安装已切换，发行切换条件也记录在该文档中。
+[`src/gui`](src/gui) 是独立的 `@hyprial/gui` Node 工程；
+[`desktop`](desktop) 是包装同一 GUI product server 的 Tauri v2 外壳。使用 Node 24，
+在仓库根执行 `npm --prefix src/gui ci --ignore-scripts`、`npm --prefix src/gui run check`、
+`npm --prefix src/gui test` 和 `npm --prefix src/gui run build`；desktop 单独执行
+`npm --prefix desktop ci --ignore-scripts`、`npm --prefix desktop test`。
+Rust 外壳执行 `cargo fmt --manifest-path desktop/src-tauri/Cargo.toml -- --check`、
+`cargo clippy --locked --manifest-path desktop/src-tauri/Cargo.toml --all-targets -- -D warnings`、
+`cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml`（GUI 依赖已安装，PATH 有 Node ≥24）。
+启动 GUI 必须显式配置 transport driver 与可信 principal，缺失时 fail closed，不默认接入
+mock 或生产 daemon。Python 使用 uv；先运行结构和公共边界门，再跑焦点测试。
+具体命令、模块职责与隔离要求见 [GUI workflow](.agents/skills/gui-workflow/SKILL.md)。
+GUI 与 desktop 分别由 `.forgejo/workflows/gui.yml` 和 `desktop-check.yml` 检查；
+unit/build 通过不代表浏览器、真实 backend、完整功能等价或已发布安装切换完成，这些仍须独立证据。
 
 欢迎提交问题和补丁。**补丁需要开发内网访问权限** —— 请先联系 maintainer 申请加入，
 流程见上面的 [Development](#development)；在此之前可以在

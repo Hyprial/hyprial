@@ -1,9 +1,0 @@
-# DSH patch `name` is a match guard, not a replacement field.
-# Disable the stock root before boot, then register exactly one active provider.
-- id: ui-layout
-  disabled: true
-- insert:
-    - id: h2b-ui-layout
-      name: '@hyprial/dsh-gui-layout'
-    - id: hyprial-plugin
-      name: '@hyprial/dsh-hyprial-plugin'

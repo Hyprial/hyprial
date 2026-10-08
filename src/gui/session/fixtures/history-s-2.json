@@ -1,0 +1,28 @@
+{
+  "comment": "会话 s-2 历史：含 Kanban 看板 toolCard（board envelope，gui-kanban.inc.js 的 guiKanbanEnvelope 校验形状）。",
+  "sessionId": "s-2",
+  "events": [
+    { "eventId": "evt-101", "kind": "user", "text": "看一眼当前看板数据" },
+    { "eventId": "evt-102", "kind": "assistant", "text": "读取只读看板（沿用 Kanban 自身过滤）。" },
+    {
+      "eventId": "evt-103",
+      "kind": "tool",
+      "toolCard": {
+        "tool_call_id": "call_kanban_01",
+        "tool_name": "hyprial_kanban_board",
+        "kind": "kanban-board",
+        "envelope": {
+          "ok": true,
+          "operation": "board",
+          "filtered": true,
+          "filter": "project:D0b",
+          "taskCount": 2,
+          "tasks": [
+            { "uuid": "3f2c9a10-7b1e-4c55-9d0a-4f2e8d6b1a77", "description": "D0b 原型：mock adapter 语义核对", "status": "pending", "stage": "review", "project": "D0b", "owner": "gui-line" },
+            { "uuid": "9c41b6d2-5e8f-4a30-b7c1-2d6e0f9a83b4", "description": "D0b 原型：启动图 exclude 断言", "status": "pending", "stage": "verify", "project": "D0b", "owner": "gui-line" }
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -5,11 +5,13 @@
 
 ## 开发环境
 
-项目要求 Python 3.12+，依赖和命令由 uv 管理：
+项目要求 Python 3.12+，依赖和命令由 uv 管理。
+全套测试包含独立 GUI 的真实 Node fixture，还需要 Node 24 与 GUI 的锁定依赖：
 
 ```sh
 uv sync --extra test
-uv run pytest
+npm --prefix src/gui ci --ignore-scripts
+uv run --with libcst==1.9.0 pytest tests/
 uv run ruff check .
 ```
 
@@ -20,7 +22,9 @@ uv run ruff check .
 
 ## 测试
 
-- 先运行直接覆盖改动的焦点测试，再运行 `uv run pytest` 全量套件。
+- 先运行直接覆盖改动的焦点测试，再运行 `uv run --with libcst==1.9.0 pytest tests/` 全量套件。
+  全套包含一次性迁移工具测试；LibCST 的 pin 来自 `scripts/refactor/pyproject.toml`，
+  `--with` 为临时工具叠加，不进入产品依赖或根锁文件。
 - 交付前运行全仓 `uv run ruff check .`。
 - 涉及跨实现协议时，运行 `./contract/run-all.sh --isolated-only`；需要真实环境的
   场景必须明确报告 PASS、FAIL 或 BLOCKED，不能用 skip 代替结论。
@@ -38,7 +42,7 @@ uv run ruff check .
 4. 若改动改变已发布字段（JSON 键、诊断字段、事件名、错误码）的语义，同步
    contract/ 下引用它的文件；确不同步时在 PR 正文写一行
    `Contract-Impact: <为什么这次放行是安全的>`。CI 的 contract-impact 门
-   按 PR 自身增量逐字判定（scripts/check_contract_impact.py）。
+   按 PR 自身增量逐字判定（scripts/verify/check_contract_impact.py）。
 5. 不自行绕过分支保护，不把 PR 绿等同于合并后目标分支也绿。
 
 Forgejo 的认证、SSH transport、PR 和 CI 操作遵循

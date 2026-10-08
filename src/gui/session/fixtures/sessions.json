@@ -1,0 +1,7 @@
+{
+  "comment": "会话列表 fixture。sessionId 由 adapter/服务端生成并在此固化；GUI 只读，不得提交自造 id（sessionIdentity 纪律）。",
+  "sessions": [
+    { "sessionId": "s-1", "title": "GUI 提取原型评审", "updatedAt": "2026-10-01T12:00:00Z", "state": "active" },
+    { "sessionId": "s-2", "title": "Kanban 只读数据核对", "updatedAt": "2026-10-01T11:30:00Z", "state": "active" }
+  ]
+}

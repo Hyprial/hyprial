@@ -1,696 +1,216 @@
 {
   "schema": "hyprial.gui-source/v1",
-  "commit": "1e6f20d4ae5ada91a8816094d0ab2fc97b6cb1a8",
-  "timestamp": "1790776939",
+  "commit": "8e7f4a468ae8264771b0a9ea83f0bc898144df63",
+  "timestamp": "1791423902",
   "files": [
     {
-      "path": ".env.example",
-      "sha256": "e29f517231f1e9bf8d5e8186eb2e735b1969976746b4430a22df6af7589e802f",
+      "path": ".gitignore",
+      "sha256": "75ae4a6664361ae899eca65e80cb265ed139b03262327af21c493ad5817faa7d",
       "executable": false
     },
     {
-      "path": ".gitignore",
-      "sha256": "56e94324db4a6c8f40a2ba52030fd070dc4153df999cfca4a724eefefd212c0d",
+      "path": "NOTICE.md",
+      "sha256": "829eedf3e67230df7af268f7c89a59586a11874c5308ff7949ed405225bd9d85",
       "executable": false
     },
     {
       "path": "README.md",
-      "sha256": "798f57483d8ad8455b4c004ea627663d098082cf8eaaf049913e948a30a1cec8",
+      "sha256": "b92b7866b5bee7b0bf87f7c818b53b7c03bf11cc8ef01c99dbad043bfbfd321d",
       "executable": false
     },
     {
-      "path": "browser-tests/README.md",
-      "sha256": "5f43765eb958f0508365dd4859033d60b4f58913ad9890b6500f805944df1980",
+      "path": "client/composer.mjs",
+      "sha256": "21ee68fa0daa514a6bdd113ac139aad11e5b4f7b512dfb2d35a8061cf791f1c9",
       "executable": false
     },
     {
-      "path": "browser-tests/package-lock.json",
-      "sha256": "d89149f2f4eacae6fec28639cb16b5e9a858e9c876eeefc165fbb8b69312e79a",
+      "path": "client/index.mjs",
+      "sha256": "eb17dbf52d3b530a830f1989ba05df8b3b4460dd6c138ad17a398ebfb3246797",
       "executable": false
     },
     {
-      "path": "browser-tests/package.json",
-      "sha256": "a63581b4ab538e317f117887153209e643aee3864dfedcda80fea5daaba00e35",
+      "path": "client/ui-runtime.mjs",
+      "sha256": "46b18d719572a3f45bfbaefdc48dcf2e639254bbfda7d3562287264555ec1e36",
       "executable": false
     },
     {
-      "path": "client/gui-authoring.inc.js",
-      "sha256": "1cdaacee2f4b8b7f848da7dc1022b7db1447ab55a234442960b8647b148047c2",
+      "path": "client/workspace.mjs",
+      "sha256": "f73e480e2db35e8aae7df1c47c30b717cbf035fdd2a681b0ab45dc64f051e694",
       "executable": false
     },
     {
-      "path": "client/gui-business.css",
-      "sha256": "c2b04a7156334af1ade61712bff6223cbb50f97b41eeb4d3f6fcdd44cfd737d0",
-      "executable": false
-    },
-    {
-      "path": "client/gui-business.inc.js",
-      "sha256": "36827db5db603259f8a903aea151e7e87e85e40b7f8cfcac8aa08193b5911ec0",
-      "executable": false
-    },
-    {
-      "path": "client/gui-editor.css",
-      "sha256": "cc454c1f785087174537ccef152e7bed811e4cde64687789833b62889928ac70",
-      "executable": false
-    },
-    {
-      "path": "client/gui-editor.inc.js",
-      "sha256": "ff57d6e40df7b99dfd2faf01dc6b314304214e0cf6e3ee31f2dfad5a5eef30ad",
-      "executable": false
-    },
-    {
-      "path": "client/gui-kanban.inc.js",
-      "sha256": "c4eadaa6ef61f2923219b6b7989f7dfaf34a9b37ff0751995e9bc8aaf81e9664",
-      "executable": false
-    },
-    {
-      "path": "client/gui-module-runtime.inc.js",
-      "sha256": "bfda89521723e3a0187d9239d85f23ebfb6f40057788d00bbf5f97432b35c8d5",
-      "executable": false
-    },
-    {
-      "path": "client/gui-profile.inc.js",
-      "sha256": "34ecba716b59b4c0f89f1e523cf63afaba0716c4ed52a7ab6e1f9037d8d23254",
-      "executable": false
-    },
-    {
-      "path": "client/gui-studio.css",
-      "sha256": "4bcc6185ad0d33a969ee5f9b0935385a60f5578e5f134368bca8d0fd645b1ca7",
-      "executable": false
-    },
-    {
-      "path": "client/gui-studio.inc.js",
-      "sha256": "b12029160047599bb5e252f5de8d4ff53e80a7af24dc71299b7660ba24d804dc",
-      "executable": false
-    },
-    {
-      "path": "client/gui-theme.css",
-      "sha256": "9b1a0bdd7abb3bdead32b5bbb04775c7301df59e51fc860382dd1a35d40bc318",
-      "executable": false
-    },
-    {
-      "path": "client/gui-workspace.inc.js",
-      "sha256": "dfc943c83ba33f8e7560ff254c54eee83df570aa8b47654ac6a616c388be21cb",
-      "executable": false
-    },
-    {
-      "path": "client/workflow-workbench.inc.js",
-      "sha256": "306adf0594a6c8781ac0d1324129108a6e54d71a616700b59dc96f825dcc8b88",
-      "executable": false
-    },
-    {
-      "path": "contracts/mfu-agent-task-v1.lock.json",
-      "sha256": "9a4aef6141e38b9fb78e400090fdc2e72194a7909322b17f28d08412d7caca48",
-      "executable": false
-    },
-    {
-      "path": "dsh-web.patch.yml",
-      "sha256": "c8121d4858b51f1fe96b757816d8538dba7d4da748b6c76d88923cf47e7b0090",
-      "executable": false
-    },
-    {
-      "path": "h2b-cli-capabilities.mjs",
-      "sha256": "c40e512e201133cae96679290bab1fe065fbb092aaaa451d87c0fa1923266ee4",
-      "executable": false
-    },
-    {
-      "path": "h2b-control-bridge.mjs",
-      "sha256": "a8dbbbf1fd6841276c5edd51b11ecce2350deb59faa96ffe85976209afe223fa",
-      "executable": false
-    },
-    {
-      "path": "h2b-install.json",
-      "sha256": "fdef2b62584be2c03012402e8de762f682c20916cf6881ba69dd28e78e3d51e1",
-      "executable": false
-    },
-    {
-      "path": "h2b-session-bridge.mjs",
-      "sha256": "bfbe5d10a3c49a4aa3759bbc9e01952d1ae8517d765bec0c9fe6d77b39386d0b",
+      "path": "host/index.mjs",
+      "sha256": "84c000280f65b0312c4895f376d7e00469d413e24772078e3212fd13dfd94d77",
       "executable": false
     },
     {
       "path": "hyprial-install.json",
-      "sha256": "fdef2b62584be2c03012402e8de762f682c20916cf6881ba69dd28e78e3d51e1",
-      "executable": false
-    },
-    {
-      "path": "im-group-chat-mockup.html",
-      "sha256": "56a247d3424037e3125d6ee19c49553ee7ad79c737ef7190f7000c22876c9ce6",
-      "executable": false
-    },
-    {
-      "path": "imskin-host-plugin.js",
-      "sha256": "9561b055ee31359aa00bca0a9c653ea186696eb793f7a0b77afbf41281ad6463",
-      "executable": false
-    },
-    {
-      "path": "imskin-plugin.js",
-      "sha256": "f6bcefd68ae307c9562761cb41bc97db182f61500d6f11d61d813f10c74ea147",
+      "sha256": "e541dbad2eef22d195fdccdc7ac3a1e44131421f22a1a90e4a8e8ad2e31ede42",
       "executable": false
     },
     {
       "path": "install.sh",
-      "sha256": "418c965466c14d7efe1dbbf072ec852aca6cf917cf9384442b92060dabd41652",
+      "sha256": "d54b28e1c86eaa1822f137a978344d509eb96dd0ffa36e12e86bf9412c197230",
       "executable": true
     },
     {
-      "path": "integration/adapter-enrollment.mjs",
-      "sha256": "baf5ac3e00e40cd1edb5a39b936721fdb6109a71c09a16998b583ec6717db1a6",
-      "executable": false
-    },
-    {
-      "path": "integration/agent-launch-settings.mjs",
-      "sha256": "d46ad8336c0872cfea26e3a8f1b6278f48a78eb191aa73d0c1dc284b0892ad3e",
-      "executable": false
-    },
-    {
-      "path": "integration/agent-task-client.js",
-      "sha256": "5a403fd2c1d4ad4f0820667c50316f5127a759df015b500344885821e9b8efc9",
-      "executable": false
-    },
-    {
-      "path": "integration/cli-readonly-ops.mjs",
-      "sha256": "91970de31b0611cf58aff3cf70a3848e2bc1d53c58f60ea392116c7e0a914944",
-      "executable": false
-    },
-    {
-      "path": "integration/cli-spawn.mjs",
-      "sha256": "cc3b10c883201c07db1e3603fb7f05a3256b18b4db66f7bc66209c5670319978",
-      "executable": false
-    },
-    {
-      "path": "integration/console-management.mjs",
-      "sha256": "2828b339b6e0209968be170e211c0cce19128283341912513daa4ea9b10e2435",
-      "executable": false
-    },
-    {
-      "path": "integration/daemon-endpoint.mjs",
-      "sha256": "b8b6d8c2f7c295a1c5e6c3b8be15a6a706a47b0baa04790ed87586d8ae2b4aa7",
-      "executable": false
-    },
-    {
-      "path": "integration/direct-chat-index.js",
-      "sha256": "0ffd5fc9f0a9ec7e75ca20d1e1fe7f0fc8bdb2294ee2a909876ad938fe3adb1a",
-      "executable": false
-    },
-    {
-      "path": "integration/gui-reference-authoring.mjs",
-      "sha256": "752c44230376bdaea6b5076b032e03cf2872813ca164099688c8eafe78b09e50",
-      "executable": false
-    },
-    {
-      "path": "integration/gui-studio-host.mjs",
-      "sha256": "45c6656707650369b14c5eb6baf76bfe274a069cfbd219533bce5763b4ec56d8",
-      "executable": false
-    },
-    {
-      "path": "integration/gui-studio.mjs",
-      "sha256": "43d3f54982e61bf4b949fb5fe423287d512300e0b206e562402f38e5ca239aae",
-      "executable": false
-    },
-    {
-      "path": "integration/hyprial-cli.mjs",
-      "sha256": "a35290561f5dfb954864bcb2c00516d31c6d8063f9f4319f89e3ed97fc2c463d",
-      "executable": false
-    },
-    {
-      "path": "integration/kanban-gui.mjs",
-      "sha256": "7c75ecc08b1cf3b874e81d83330278da8dbd4d830be58cea7a617f91d0eb81db",
-      "executable": false
-    },
-    {
-      "path": "integration/org-adoption.mjs",
-      "sha256": "4ac901e005be1952dfb3cb149e822752744eab784f43962614fe2f89e6d6be7b",
-      "executable": false
-    },
-    {
-      "path": "integration/org-cli-runner.mjs",
-      "sha256": "4071b95cb267ad58a08490f36fa663f687a787711cb0441969f21c41c691414b",
-      "executable": false
-    },
-    {
-      "path": "integration/pac-bridge.js",
-      "sha256": "c6b84d0f434e37b1e1a794d29111820b4837d3fe906a49df2f924daed2766262",
-      "executable": false
-    },
-    {
-      "path": "integration/pac-carrier.js",
-      "sha256": "67da32d39799e761a01ab8c3e72663a36e857efe50df93494761762fb9837ae1",
-      "executable": false
-    },
-    {
-      "path": "integration/pac-service.py",
-      "sha256": "4d080918bcc61a7322d478971ca5f432f7655ada3594aaa0f5d3cbeb2030d6eb",
-      "executable": false
-    },
-    {
-      "path": "integration/pac-tools.js",
-      "sha256": "9e612640823ba964ef1e93e06e6774b0a6adc771164d4173750e26687112c435",
-      "executable": false
-    },
-    {
-      "path": "integration/session-ledger.js",
-      "sha256": "81922bbac06d76f41a1f5f1df4002dcfd24cb093fc5ea8043d63b92744540e07",
-      "executable": false
-    },
-    {
-      "path": "integration/session-tools.js",
-      "sha256": "df3f942c0ed64ac2dd4a1741504b51bd9c4d3082e6e1ea09536640ebac350801",
-      "executable": false
-    },
-    {
-      "path": "integration/shell-environment-command.mjs",
-      "sha256": "de2dafb56a0bb8de9f7e6993089638a533050ff0f2b338dc9fa3ca0ca6985709",
-      "executable": false
-    },
-    {
-      "path": "integration/subagent-release.mjs",
-      "sha256": "9bf53fe733eb72e5ad614ff1ba0b06bde33a5ebccf4e592468ccab6834dfda06",
-      "executable": false
-    },
-    {
-      "path": "integration/workflow-tools.js",
-      "sha256": "2944a1f4dfaff79fbe2a0e2693a8073d4999a54225b21b6e119560335949b925",
-      "executable": false
-    },
-    {
-      "path": "integration/workflow-workbench.mjs",
-      "sha256": "e8516a495271e95254fa10e159dcbb01023d10c70eb47080e7bb1f4c22d2f584",
+      "path": "legal/LICENSE",
+      "sha256": "fea3af2657d619a249dfdb6b3310bc7d3daf077e4e9d5f843f4e11b13b33dfa3",
       "executable": false
     },
     {
       "path": "package-lock.json",
-      "sha256": "e380e1215be27c210d4bdc161ebd54db6028f4651aa5748b7862a6cb416e371b",
+      "sha256": "fe5bc537b610f8ddd5b7b5f90a82f287c1507034a6b00045ec3053491f1ff481",
       "executable": false
     },
     {
       "path": "package.json",
-      "sha256": "66f15f519ecce462de5071642f5a70fe67b91501c52b39fcdea65bf58349add4",
+      "sha256": "59d0c36276d6b7466bb533572f257bfd810c07301cf0812ea4938213a72ad341",
       "executable": false
     },
     {
-      "path": "packages/dsh-codex/dsh-codex-0.2.7-hyprial.1.tgz",
-      "sha256": "bb0afad318810bfbda8e294c5770f25ad0bf55f82dec0649403993a052a9bc91",
+      "path": "plugins/trusted-panel.mjs",
+      "sha256": "25512dfb31a40817cea13cadeef390089e5dc569109d03845162593900ac9b99",
       "executable": false
     },
     {
-      "path": "packages/dsh-codex/dsh-codex-0.2.7-hyprial.2.tgz",
-      "sha256": "33461206126dff2ef505ca0c36859ddaa991fe892bf64964c82a99024efeaf90",
+      "path": "presentation/index.mjs",
+      "sha256": "e55d4ea8f89c47dd2130976f2cca1313ae5c8669cc4690943fdaea7a7e9afa70",
       "executable": false
     },
     {
-      "path": "packages/dsh-codex/dsh-codex-0.2.7-hyprial.3.tgz",
-      "sha256": "7042cea3f5619c79bd0ca864dd04378a0951b8126850dd12873b94576719665e",
+      "path": "presentation/theme.mjs",
+      "sha256": "85539994ed0e733a2e770e8faa54afc5ca31ebadcd5b853c0647aff496f786d7",
       "executable": false
     },
     {
-      "path": "packages/dsh-codex/dsh-codex-0.2.7-hyprial.4.tgz",
-      "sha256": "fc39313454c9775b4c3b999e7c35697cc3700a410ba3ed52dd2888270778d26d",
+      "path": "product/assets/client.js",
+      "sha256": "40ef287b0a0cdfaab567326cd72746b723257329cc5af7b4fbd7831677929273",
       "executable": false
     },
     {
-      "path": "packages/dsh-codex/dsh-codex-0.2.7-hyprial.5.tgz",
-      "sha256": "fd57bb88ddff7e820a6db388b8d77fd2de076c05a8ee8a3b0fb256e41d53e51a",
+      "path": "product/assets/style.css",
+      "sha256": "a40f3f3eb01e4f8c5bf8b50b71374d27e3364d0b5d129cac41546421c9ecf125",
       "executable": false
     },
     {
-      "path": "packages/dsh-codex/dsh-codex-0.2.7-hyprial.6.tgz",
-      "sha256": "c1651e04a1a836b38cf725009f36608d3c1b54c04ec12c62d1a6ad90bc8f843e",
+      "path": "product/build.mjs",
+      "sha256": "cc8499ca3f645e3e3300d07d31a1416859eae7af9e95bdc2c378e3f261c8c6bb",
       "executable": false
     },
     {
-      "path": "packages/dsh-codex/release.json",
-      "sha256": "20027575a49f3781b2ece08f1d8352b44f21aa99ea5a97fbed8add7fec955f8d",
+      "path": "product/config.mjs",
+      "sha256": "2d8658628a7819540bd79171d81f5369e4ee774c93dd99b55b5a097fa4ce924f",
       "executable": false
     },
     {
-      "path": "packages/dsh-gui-focus-compat/README.md",
-      "sha256": "8aa0d0d78fceedfc8261eccbc3e107b78dda31abc9fecbf473604623db946b8b",
+      "path": "product/index.mjs",
+      "sha256": "cfb1ac75e4d35ee0bed527ace7034992cfc4e5d76316f58b53b1ba669fba4362",
       "executable": false
     },
     {
-      "path": "packages/dsh-gui-focus-compat/patch.json",
-      "sha256": "72dd4cfaba7cf75a9238f92dac8473914a02b3a85ffcf6d4b3aa1cd085460a28",
+      "path": "product/page.mjs",
+      "sha256": "c1f9614717f6e89908e77e9a83f0d266bd0ec403d217643e297fe89e445239d6",
       "executable": false
     },
     {
-      "path": "packages/dsh-history-compat/LICENSE",
-      "sha256": "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+      "path": "product/server-core.mjs",
+      "sha256": "e020b6ce15bc561cdc9b0efaaa72605491b46d554956d72c3cc2dcca71652e55",
       "executable": false
     },
     {
-      "path": "packages/dsh-history-compat/README.md",
-      "sha256": "e3a8527c1dfcf3d01067a8e66ded0c32f2f674c90333d108c4c6556957d3f714",
+      "path": "product/server.mjs",
+      "sha256": "66f276bf271673d353e94c7f8ebea5c80a11f35b418dc72c480a396dc2621a52",
       "executable": false
     },
     {
-      "path": "packages/dsh-history-compat/message-occurrence.patch",
-      "sha256": "256365338f647cb7d4bfd06f6c3c51ea2ddaec3d353fa564c44892abd28a20b5",
+      "path": "scripts/check-architecture.mjs",
+      "sha256": "34759cfd43f7321ba50f8d93ea8ba9ca417e3d608cfed94fdb4666aef52971ff",
       "executable": false
     },
     {
-      "path": "packages/dsh-history-compat/patch.json",
-      "sha256": "a10db579782f3257b60add2830a589119e8acf89047b0f2063d279509e5e2370",
+      "path": "scripts/collect-evidence.mjs",
+      "sha256": "68548d19e72fbccf83a59c066f800ca0e1ff6674b6774870c366663adaa96b90",
       "executable": false
     },
     {
-      "path": "packages/dsh-history-compat/upstream.patch",
-      "sha256": "0d47b1767507a6524f1372fe171c9ce8e0fcf67b8dcd49e93b0dbb3de895dc03",
-      "executable": false
-    },
-    {
-      "path": "packages/dsh-runtime/package-lock.json",
-      "sha256": "7e95d6894cbd901c5c109dbf3aae7f5162076e1a564039a5550d27029d78bae7",
-      "executable": false
-    },
-    {
-      "path": "packages/dsh-runtime/package.json",
-      "sha256": "9776b10ea64d1cce74acc961d7f913138fff8fb1f21b432966b4eb76fd2652b3",
-      "executable": false
-    },
-    {
-      "path": "packages/gui-layout/README.md",
-      "sha256": "01754d79687e4528c49ce521a4bfcfe917612aed1975b403feba97533d2a6623",
-      "executable": false
-    },
-    {
-      "path": "packages/gui-layout/assets/README.md",
-      "sha256": "da135b874d9838e82f4d83a816e8c19e24103d95e13f9dd3740bbd4b3aef112a",
-      "executable": false
-    },
-    {
-      "path": "packages/gui-layout/assets/hyprial-hf-48.png",
-      "sha256": "93c0ab5291788c5dd8dc779924f357e49db5e7baa2f12f6a70fc195b17e05f1a",
-      "executable": false
-    },
-    {
-      "path": "packages/gui-layout/build-modern.mjs",
-      "sha256": "e708d3cfb36ddcbcfda02b905e930d48fb32036dccb9050564bc72a6598ddf8b",
-      "executable": false
-    },
-    {
-      "path": "packages/gui-layout/build.mjs",
-      "sha256": "2697543eda88942c6d0abba73cf3e0f37486bb8bdf6f37f9b0ec9b726916d05d",
-      "executable": false
-    },
-    {
-      "path": "packages/gui-layout/client.js",
-      "sha256": "32d3923e111c91f1912002a1bfe7e1a5bc0464186ab3cbcb8f3f7cd098028136",
-      "executable": false
-    },
-    {
-      "path": "packages/gui-layout/host.js",
-      "sha256": "505c3e2f05a21509f0e27454527ebff87704a65b3cf5706509245ab6dc8c5bd4",
-      "executable": false
-    },
-    {
-      "path": "packages/gui-layout/package.json",
-      "sha256": "2bdc8ca8699c07e44b3b7dbdac3251854e810b82b0cac19c7403ff33e92e27e5",
-      "executable": false
-    },
-    {
-      "path": "packages/gui-layout/vendor/LICENSE",
-      "sha256": "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
-      "executable": false
-    },
-    {
-      "path": "packages/gui-layout/vendor/SHA256SUMS",
-      "sha256": "794601f6eec17da13b5bc5b796a840c25bd4f8ddfef263f57345df9ab597c533",
-      "executable": false
-    },
-    {
-      "path": "packages/gui-layout/vendor/dsh-ui-layout-0.1.5-rc.2.js",
-      "sha256": "930c10a9bed1094e7bca6242276c22ba7020fd58bac47d70a0fef174544508ef",
-      "executable": false
-    },
-    {
-      "path": "packages/gui-layout/vendor/dsh-ui-layout-rc.2.js",
-      "sha256": "16f001f89a9bc19c54cfa90e37cf52e191113af0abe5efd593e57d7ab30060ad",
-      "executable": false
-    },
-    {
-      "path": "packages/gui-layout/workspace-extension.js",
-      "sha256": "5c20c44b1d6779c333d3407e5c74790190ccc4ae19c9047170e8a3dd71784ea2",
-      "executable": false
-    },
-    {
-      "path": "scripts/build-static-client.mjs",
-      "sha256": "acb477eaebbf51b0153c81beb650b5c34e441f7f969bcd1b575707f11e30196d",
-      "executable": false
-    },
-    {
-      "path": "scripts/ci-browser-install.mjs",
-      "sha256": "b836a037edbd7ad7518b3b86dc323048e0875a643ddc0bc6468b939587d19f5f",
-      "executable": false
-    },
-    {
-      "path": "scripts/ci-cache-env.mjs",
-      "sha256": "9d8fdea6165208a833910dd3102594cd59baa5d6ab69642ee1330c36ac333341",
-      "executable": false
-    },
-    {
-      "path": "scripts/ci-cache-tool.sh",
-      "sha256": "f98b07924fb89a598d3785abd80b1258a45158e9fd31789433fbcf51870b29e0",
-      "executable": false
-    },
-    {
-      "path": "scripts/ci-scope.mjs",
-      "sha256": "f861ae00bcff8784e0f10e67a8a209240260948462e35a60abc8c08519afea42",
-      "executable": false
-    },
-    {
-      "path": "scripts/ci-scope.test.mjs",
-      "sha256": "601774ad9014d4762165f81abb09c6eef84a83b0fdbc5dcb83f86db0cc555862",
-      "executable": false
-    },
-    {
-      "path": "scripts/ci-step.sh",
-      "sha256": "11d2cd55f1bf146213cad673b632b0197d765c1870109b391ef03d13e0bdf29b",
-      "executable": false
-    },
-    {
-      "path": "scripts/codex-package.mjs",
-      "sha256": "0cf587c5a4dd7fa3b216fe55976b529757357bb25132d5404530a9aef9ad6c84",
-      "executable": false
-    },
-    {
-      "path": "scripts/codex-proxy-env.sh",
-      "sha256": "8e1a09369dea79453819968468d508d7c8777543882fef11b65c46e208e94720",
-      "executable": false
-    },
-    {
-      "path": "scripts/compat-bin/h2b",
-      "sha256": "f9e4194e597dca84c9b829f53a265e06847a62a7245486e8f0b876d8cc4acba6",
-      "executable": true
-    },
-    {
-      "path": "scripts/configure-pac.py",
-      "sha256": "817333e89c7817e0089a7556235563fc86eb086a07c011d19332f78db0d593e0",
-      "executable": false
-    },
-    {
-      "path": "scripts/dsh-gui-focus-compat.mjs",
-      "sha256": "e3374d617197f463237358cd5f7ea2f8b4e6c9f98baba076f3f6c1aad96625e9",
-      "executable": false
-    },
-    {
-      "path": "scripts/dsh-history-compat.mjs",
-      "sha256": "34b19b163357faa8fd2b017216e0b421c422ffb9af37a8a648c003ee102ce5ca",
-      "executable": false
-    },
-    {
-      "path": "scripts/dsh-runtime.mjs",
-      "sha256": "5d547c7b2e1762f718be2a948b41653758c03429d1e7560bc392111e566e2e22",
-      "executable": false
-    },
-    {
-      "path": "scripts/gui-layout-package.mjs",
-      "sha256": "301ef4a7c9dbb5162b312dbc0b521c5a0864cfe80609037e6b77ffeeffb2457c",
-      "executable": false
-    },
-    {
-      "path": "scripts/gui-source.mjs",
-      "sha256": "dd8500c483fc47ca76e2816dd9ddf7f850fb1baee9222ab5b2204a872e6ffcce",
-      "executable": false
-    },
-    {
-      "path": "scripts/hyprial-env.sh",
-      "sha256": "b730bf02d6afcfed59b0d18ddc1a8a308e3f0f8967da3dad7d0e7b21a4665c0c",
-      "executable": false
-    },
-    {
-      "path": "scripts/hyprial-plugin-package.mjs",
-      "sha256": "9a277fb3e6a89648b4a0ed0c9bbe826b66143fe2acb7cfcce3a760273da06135",
-      "executable": false
-    },
-    {
-      "path": "scripts/hyprial-provider-seed.mjs",
-      "sha256": "15a9c176ff18aeea98b903ce0a887f9409795c7ab1fa423a11895dfca396a114",
-      "executable": false
-    },
-    {
-      "path": "scripts/install-browser-deps.mjs",
-      "sha256": "24c43a6bd2760b3e59809142dcb79cd96da0be1eeb924c47c79d32a723f246c0",
-      "executable": false
-    },
-    {
-      "path": "scripts/install-local.sh",
-      "sha256": "8dea2de2d4e425a2188ea19bcac007d7569fd8a95ea4bf67811796ea26215b6d",
-      "executable": true
-    },
-    {
-      "path": "scripts/kanban-env.sh",
-      "sha256": "e0a458ede63c11b2c195345a36bb1bbabdf6f83ae5227963223886946dcd8ea4",
-      "executable": false
-    },
-    {
-      "path": "scripts/launch-dsh.mjs",
-      "sha256": "678608fad4ed70c8619af1b73d7c155b786b65b89da5a6c846a85db0199d34ff",
-      "executable": false
-    },
-    {
-      "path": "scripts/maintain-session-state.mjs",
-      "sha256": "b080572c3ac16bcb5833f70e1fe40ed0a79f255d7a828d48ce93d80ceabe391f",
-      "executable": false
-    },
-    {
-      "path": "scripts/open-gui.mjs",
-      "sha256": "a9b06bf997e8d24307ba10c0248369b50f4395be28c7302269b2aea1ea77bd6c",
-      "executable": false
-    },
-    {
-      "path": "scripts/publish-gui-tested.mjs",
-      "sha256": "a2b420a8054306a0f56219cfa814f56534eeae12548c9c3a49884fe6587d5c9b",
-      "executable": false
-    },
-    {
-      "path": "scripts/recheck-gui-agent-dsh.mjs",
-      "sha256": "fa5cd7344c6165cbdbdcc06a6db5cb0498f5d5a45636addc2ccdad122fae8760",
-      "executable": false
-    },
-    {
-      "path": "scripts/runtime.sh",
-      "sha256": "f4e1e58c9e3ed74f448c1a196b58d6200dcbd2d3a581747d3c7b64488dd21892",
+      "path": "scripts/reproduce.mjs",
+      "sha256": "e8780d96f5c7f6e122c3e1d9109ca07ce1d2a6e62feb8078bacc502f02ba98ed",
       "executable": false
     },
     {
       "path": "scripts/start-gui.sh",
-      "sha256": "6d2e37105fd790b60895c16f01e18fd5f9b54664f5b26ce533cb59c25476e277",
-      "executable": false
-    },
-    {
-      "path": "scripts/start-web.sh",
-      "sha256": "64ea4e1bed9dec30f7562f783b07b8aeb6b2f58f4bbccbb6104a51f3cadab73a",
+      "sha256": "eb7b8db3089a460ae2fc12fcd40a92dfec72a6253345003e21dc200cb045bfc7",
       "executable": true
     },
     {
-      "path": "scripts/verify-agent-task-real.mjs",
-      "sha256": "eaef1f75763ae641bddf8563fb45d1f8257bd292e5fc0bc9912debe8c2cafe1c",
+      "path": "session/fixtures/cancel-receipt.json",
+      "sha256": "0ff9b4f819adbe83d1a76feac16713259cd73776f9a2d44016e1138902b166a5",
       "executable": false
     },
     {
-      "path": "scripts/verify-cli-console.mjs",
-      "sha256": "db04046f7a97593af0714be8023d8a0bf769afdb89271ea096fd580d9dd1b85b",
+      "path": "session/fixtures/capabilities.json",
+      "sha256": "5b30fa4ab5bd500ee33edbc7b8ff4530d1e081454c65b621840d4ca7e73e22e3",
       "executable": false
     },
     {
-      "path": "scripts/verify-codex-models.mjs",
-      "sha256": "2520e467c4afabcbcabdaf68f6eb6393065e208f0abde3070167aa1ee086cd03",
+      "path": "session/fixtures/history-s-1.json",
+      "sha256": "29ebdde3cd137fc5a8e66c16f31ea93e46795da4ae93b7fc700b99ff5f5e5a3b",
       "executable": false
     },
     {
-      "path": "scripts/verify-dsh-carrier-restore.mjs",
-      "sha256": "b3fda16166a7f3397827a502fb60e7250ed5a95404f7fc989ebc1844210e220c",
+      "path": "session/fixtures/history-s-2.json",
+      "sha256": "a5d32cf7387dcf0381de3cf72a780c369a75aee93c941bb8f68db557b26156cf",
       "executable": false
     },
     {
-      "path": "scripts/verify-dsh-gui-focus.mjs",
-      "sha256": "1c07868ee2839fc9ecfbf9a6ecf34a81c66a992e4037e1c45b688f2a936e3d1c",
+      "path": "session/fixtures/progress-stream.json",
+      "sha256": "51027d18a1097f6b23a12e7aa2f39a8cc71602fc44720f4225afcc205727d03b",
       "executable": false
     },
     {
-      "path": "scripts/verify-dsh-history-occurrences.mjs",
-      "sha256": "5aec0cc6df033ca928a47a1117c011790951df36391a4c842fb2bad1d50da3fa",
+      "path": "session/fixtures/sessions.json",
+      "sha256": "a49666ad99f885060136538a80002d649359ec7fe7a6ab566c0d86f1bb333921",
       "executable": false
     },
     {
-      "path": "scripts/verify-dsh-history.mjs",
-      "sha256": "66252ba5b3a2e6449e2cd0eced160d260936dab5c02646339e60fdfbd68f7a15",
+      "path": "session/fixtures/terminal-state.json",
+      "sha256": "910e20c79724c37a4566a1754efb1241ffdec4812d2c876498d3c44182518df4",
       "executable": false
     },
     {
-      "path": "scripts/verify-dsh-latest.mjs",
-      "sha256": "4386bc464d4e683ebd11d2308308178e93e2d6a035ad0f0acc7899a1e7e8217a",
+      "path": "session/index.mjs",
+      "sha256": "e1017acbf9ea685d92388d868c2bff78919eff344285aa66bc44a73988843175",
       "executable": false
     },
     {
-      "path": "scripts/verify-gui-agent-dsh.mjs",
-      "sha256": "1227e531d1b89e5acfb7cfa258b6f41fd59e8118a0916b0acfa37bee905c5c2f",
+      "path": "studio/core.mjs",
+      "sha256": "ef03c176a852f77524dfeb23ebef75d0ed6d4e2a26098acb9f4400bbca93cf7c",
       "executable": false
     },
     {
-      "path": "scripts/verify-gui-default-navigation-dsh.mjs",
-      "sha256": "bf35c2c994982c73e346cbcccb072e268be065d070faeeaaee0bbe3bc0583e98",
+      "path": "studio/fs-persistence.mjs",
+      "sha256": "986b3ac0b9b7c85c6a170c97b64e046f4f164b6daa86ac87a8597b6c3ca6f544",
       "executable": false
     },
     {
-      "path": "scripts/verify-gui-editor.mjs",
-      "sha256": "7eefd078ffd21b0858933f2be34c7fbfdce72080e5059fcd6467c5344148efb9",
+      "path": "studio/index.mjs",
+      "sha256": "5a38b48dcdfc6c2d2896ee3657518a0b26cfdb9642000529e32c564726db6ae4",
       "executable": false
     },
     {
-      "path": "scripts/verify-gui-module-views.mjs",
-      "sha256": "fe4634ec3ba48af85af9ce15c04e40563e83a327b082c28ebead894a995fd66c",
+      "path": "studio/memory-persistence.mjs",
+      "sha256": "6bc3d0746ecef38a25bdd0fa21cfe53368a1bbd8a735c6b1b411fd9714dbbb41",
       "executable": false
     },
     {
-      "path": "scripts/verify-gui-studio-dsh.mjs",
-      "sha256": "f6782f7ddb475850a835e63790d4bea07b5e7c3a84eb9875d52b6b6b405926ae",
+      "path": "studio/reference-authoring.mjs",
+      "sha256": "f2b61f46b5f3aed4572d6724ac02438b5bb9a6e5a2b4e58d83c222d370733e80",
       "executable": false
     },
     {
-      "path": "scripts/verify-gui-studio.mjs",
-      "sha256": "a46a17fe03feba7c131367c97b36f630cbd045e80ecb09b7bbd433aba0d336d6",
-      "executable": false
-    },
-    {
-      "path": "scripts/verify-gui-workflow-dsh.mjs",
-      "sha256": "3bedcbd4db2f3c7d7a798e0e3019712af436690e501e867b22a392e25e74ceb4",
-      "executable": false
-    },
-    {
-      "path": "scripts/verify-pac-message-termination.py",
-      "sha256": "e3b854a3477e317012868314ff5f312ec76cdca8b2f63ab79a8c7a9ba7d664ce",
-      "executable": false
-    },
-    {
-      "path": "scripts/verify-session-tools-real.mjs",
-      "sha256": "f9bc3b0596127375a943756272c9539999c1030f6139fac04c5c712f40f45d8e",
-      "executable": false
-    },
-    {
-      "path": "scripts/verify-workflow-instances.mjs",
-      "sha256": "4e96d7c29b3aecc39e731feb87c977a73725a1a3c75fa00c23add8cf5e81aee8",
-      "executable": false
-    },
-    {
-      "path": "scripts/verify-workflow-task-browser.mjs",
-      "sha256": "8fc9add2777e4853fc7c9448d05a0de4a55d0e912c85983296e909e3a573cc66",
-      "executable": false
-    },
-    {
-      "path": "shared/gui-style.mjs",
-      "sha256": "a9953f01ad822abbb988d970d7c023323d58156e35b2420bc39fd1eef7463be1",
-      "executable": false
-    },
-    {
-      "path": "static/client.js",
-      "sha256": "606e8425e8f497d629b0badaf3efebacfa11314997cd013902542c54aaa6b30a",
-      "executable": false
-    },
-    {
-      "path": "static/host.js",
-      "sha256": "09e2bcdd19cccd40ed953bcde330996824c55d601082d85da81bd8b459026e09",
+      "path": "transport/index.mjs",
+      "sha256": "771be665dc05feb1dcdf3efdc116569fa6ffb89846faa675d15fa988e5c321e8",
       "executable": false
     }
   ]

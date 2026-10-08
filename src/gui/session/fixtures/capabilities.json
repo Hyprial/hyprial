@@ -1,0 +1,8 @@
+{
+  "comment": "能力分级 fixture（D0a §4）。未实现项如实登记为 unknown，不冒充已支持；streaming=progress 表示仅有进度级增量，无正文 delta。",
+  "streaming": "progress",
+  "toolCards": true,
+  "attachments": false,
+  "subagents": false,
+  "unknown": ["正文 delta 流", "附件完整生命周期", "子 agent 记录", "历史投影导入格式"]
+}

@@ -1,24 +1,13 @@
 {
   "schema": "hyprial.install/v2",
   "name": "gui",
-  "install": [
-    "bash",
-    "install.sh"
-  ],
-  "start": [
-    "bash",
-    "scripts/start-gui.sh"
-  ],
+  "install": ["bash", "install.sh"],
+  "start": ["bash", "scripts/start-gui.sh"],
   "commands": [
     {
       "name": "gui",
       "summary": "Start, inspect, stop, or upgrade the installed local GUI",
-      "actions": [
-        "start",
-        "status",
-        "stop",
-        "upgrade"
-      ]
+      "actions": ["start", "status", "stop", "upgrade"]
     }
   ]
 }

@@ -1,0 +1,81 @@
+"""Squire setup and user-profile public seams."""
+
+from hyprial.daemon.impl.squire.addressing import (
+    ReceiverUserDelivery,
+    UserAdapterRegistry,
+    UserDeliveryLedger,
+    UserDeliveryPort,
+    UserDeliveryRequest,
+    UserDeliveryResult,
+    UserDeliveryTarget,
+    ZenohUserDeliveryEndpoint,
+    ZenohUserDeliveryTransport,
+    display_sender,
+    is_user_target)
+from hyprial.daemon.impl.squire.probe import (
+    REASON_COMMAND_NOT_FOUND,
+    REASON_MISSING_CREDENTIAL,
+    REASON_PROBE_ERROR,
+    REASON_PROBE_TIMEOUT,
+    REASON_USAGE_LIMIT,
+    ProbeRun,
+    RuntimeProber,
+    classify_run,
+    probe_combinations)
+from hyprial.kernel import (
+    build_probe_command,
+    )
+from hyprial.identity import (
+    NotificationRule,
+    OwnerOpenId,
+    PreferredReceiver,
+    RuntimeCapability,
+    UserProfile,
+    UserProfileError,
+    UserProfileStore)
+from hyprial.daemon.impl.squire.setup import (
+    AppOnboardingPort,
+    AppOnboardingResult,
+    DeferredAppOnboarding,
+    SetupIdentity,
+    SquireManagementPort,
+    SquireSetup,
+    derive_setup_identity)
+
+__all__ = [
+    "AppOnboardingPort",
+    "AppOnboardingResult",
+    "DeferredAppOnboarding",
+    "NotificationRule",
+    "OwnerOpenId",
+    "PreferredReceiver",
+    "ProbeRun",
+    "REASON_COMMAND_NOT_FOUND",
+    "REASON_MISSING_CREDENTIAL",
+    "REASON_PROBE_ERROR",
+    "REASON_PROBE_TIMEOUT",
+    "REASON_USAGE_LIMIT",
+    "ReceiverUserDelivery",
+    "RuntimeCapability",
+    "RuntimeProber",
+    "SetupIdentity",
+    "SquireManagementPort",
+    "SquireSetup",
+    "UserAdapterRegistry",
+    "UserDeliveryLedger",
+    "UserDeliveryPort",
+    "UserDeliveryRequest",
+    "UserDeliveryResult",
+    "UserDeliveryTarget",
+    "UserProfile",
+    "UserProfileError",
+    "UserProfileStore",
+    "ZenohUserDeliveryEndpoint",
+    "ZenohUserDeliveryTransport",
+    "build_probe_command",
+    "classify_run",
+    "derive_setup_identity",
+    "display_sender",
+    "is_user_target",
+    "probe_combinations",
+]

@@ -1,0 +1,447 @@
+"""Explicit shared contracts and primitives for the five-domain architecture."""
+
+from hyprial.kernel.impl.actor_runtime import (
+    ActorEvent,
+    ActorEventKind,
+    ActorHandle,
+    ActorRuntime,
+    ActorState,
+    DrainReport,
+    ExpectedActorError,
+    STATE_AUTHORITY,
+)
+from hyprial.kernel.impl.actor_runtime.contracts import (
+    ActorSpec,
+    AdmissionResult,
+)
+from hyprial.kernel.impl.actor_runtime.effects import (
+    EffectCompleted,
+    EffectLane,
+    EffectRequest,
+)
+from hyprial.kernel.impl.actor_runtime.policies import (
+    DEFAULT_POLICIES,
+    EXTERNAL_IO,
+    PROCESS_LIFECYCLE,
+    SupervisionPolicy,
+)
+from hyprial.kernel.impl.actor_runtime.scheduler import (
+    GenerationScheduler,
+)
+from hyprial.kernel.impl.hooks import (
+    EVENT_NAMES,
+    HOOK_EVENT_SCHEMA_VERSION,
+    HOOKS_CONFIG_NAME,
+    INTERCEPT_EVENT_NAMES,
+    HookBus,
+    HookEvent,
+    HookRegistration,
+    HooksConfig,
+    LaneProjection,
+    ObserverHook,
+    redact_turn_excerpt,
+    safe_turn_identifier,
+    safe_turn_tool_names,
+    turn_event_payload,
+)
+from hyprial.kernel.impl.configuration.home import (
+    child_state_environment,
+    configured_hyprial_home,
+    configured_harness_state_dir,
+    default_hyprial_home,
+    HYPRIALHomeNotInitialized,
+    initialize_hyprial_home,
+    require_initialized_hyprial_home,
+)
+from hyprial.kernel.impl.configuration.persistent_config import (
+    atomic_json_write,
+    ChannelConfiguration,
+    ChannelRouteConfig,
+    LarkGatewayConfig,
+    PersistentConfigError,
+    PersistentConfigStore,
+    PersistentConfiguration,
+)
+from hyprial.kernel.impl.contracts.channels.channel import (
+    channel_generation,
+    CHANNEL_HEARTBEAT_INTERVAL_SECONDS,
+    CHANNEL_LIVENESS_TTL_SECONDS,
+    CHANNEL_PROTOCOL_VERSION,
+    safe_channel_build_version,
+)
+from hyprial.kernel.impl.contracts.channels.forwarding import (
+    DEFAULT_PEER_PORT,
+    FORWARDING_COMMAND_ENV,
+    FORWARDING_UP_ENV,
+    SERVICE_CONTROL_TIMEOUT_SECONDS,
+    SERVICE_RECONCILE_INTERVAL_SECONDS,
+    SERVICE_REGISTRY_READ_TIMEOUT_SECONDS,
+)
+from hyprial.kernel.impl.contracts.channels.lark import (
+    lark_recovery_coverage,
+)
+from hyprial.kernel.impl.contracts.channels.worker_channel import (
+    bound_request,
+    GUEST_WORKER_STATE,
+    MAX_FRAME_BYTES,
+    WorkerBinding,
+    WorkerChannelError,
+)
+from hyprial.kernel.impl.contracts.daemon import (
+    ipc_errors,
+)
+from hyprial.kernel.impl.contracts.daemon.daemon_diagnostics import (
+    DAEMON_STARTUP_PHASES,
+    DaemonStartupPhase,
+)
+from hyprial.kernel.impl.contracts.daemon.daemon_launch import (
+    DaemonLaunchResult,
+)
+from hyprial.kernel.impl.contracts.daemon.daemon_teardown import (
+    DAEMON_CLOSE_BUDGET_SECONDS,
+    DAEMON_CLOSE_STEP_BUDGETS,
+    DAEMON_EXIT_BACKSTOP_SECONDS,
+    TEARDOWN_BUDGETED_SECONDS,
+    TURN_HOOK_CLOSE_TIMEOUT_SECONDS,
+)
+from hyprial.kernel.impl.contracts.daemon.ipc_errors import (
+    DaemonRequestError,
+    ORGFS_CONTENT_PENDING,
+)
+from hyprial.kernel.impl.contracts.daemon.lifecycle_budgets import (
+    LIFECYCLE_IPC_MARGIN_SECONDS,
+    LIFECYCLE_OPERATION_DEADLINE_SECONDS,
+    LIFECYCLE_WAIT_MARGIN_SECONDS,
+    PAC_WORKTREE_GIT_TIMEOUT_SECONDS,
+    PROCESS_CPU_PROBE_TIMEOUT_SECONDS,
+)
+from hyprial.kernel.impl.contracts.daemon.readiness import (
+    ReadinessReport,
+)
+from hyprial.kernel.impl.contracts.execution.execution_runtime import (
+    has_execution_runtime,
+    parse_execution_runtime,
+    SmolvmRuntimeSpec,
+)
+from hyprial.kernel.impl.contracts.execution.session import (
+    is_session_fetch,
+    reply_message_id,
+    SESSION_CARRIER_SOURCES,
+    session_fetch_params,
+)
+from hyprial.kernel.impl.contracts.pac_gc import (
+    PAC_GC_INTERVAL_SECONDS,
+    PAC_GC_JITTER_RATIO,
+    PAC_GC_MAX_REMOVALS_PER_PASS,
+)
+from hyprial.kernel.impl.contracts.ports import (
+    CommandSink,
+    EventSink,
+    PortAdmission,
+    PortCommandRejected,
+    RequestPortError,
+)
+from hyprial.kernel.impl.facts.capabilities import (
+    Capability,
+    SupportLevel,
+)
+from hyprial.kernel.impl.facts.cost_counters import (
+    CallCostCounters,
+    OTHER_KEY,
+    RUNTIME_OVERFLOW_OWNER,
+    RuntimeCpuCounters,
+    runtime_cpu_counters,
+)
+from hyprial.kernel.impl.facts.launch_spec import (
+    DesiredStateError,
+    HarnessLaunchSpec,
+)
+from hyprial.kernel.impl.facts.lifecycle_vocab import (
+    DomainEffectClaim,
+    LifecycleMutationCompleted,
+    LifecycleMutationRequest,
+    MutationProvenance,
+)
+from hyprial.kernel.impl.facts.pac_dispatch_vocab import (
+    DEADLINE_NODE,
+    operation_key,
+    STATE_DONE,
+    STATE_ESCALATED,
+    WORK_NODE,
+)
+from hyprial.kernel.impl.facts.tier_vocab import (
+    _candidate,
+    build_probe_command,
+    Candidate,
+    tier_for_model,
+    TIERS,
+)
+from hyprial.kernel.impl.facts.update_source import (
+    DEFAULT_GIT_URL,
+    FORGEJO_GIT_URL,
+    OFFICIAL_GIT_URL,
+)
+from hyprial.kernel.impl.log import (
+    Logger,
+    migrate_pre_trajectory_logs,
+    PRE_TRAJECTORY_ARCHIVE,
+    redact,
+    route_path,
+)
+from hyprial.kernel.impl.platform.file_lock import (
+    lock_exclusive,
+    unlock,
+)
+from hyprial.kernel.impl.platform.ports import (
+    connect_named_pipe,
+    create_owned_process_group,
+    is_windows_owned_process_group,
+    listen_named_pipe,
+    windows_process_identity,
+)
+from hyprial.kernel.impl.platform.process import (
+    probe_process,
+)
+from hyprial.kernel.impl.primitives import (
+    uri,
+)
+from hyprial.kernel.impl.primitives.backoff import (
+    capped_exponential,
+)
+from hyprial.kernel.impl.primitives.duration import (
+    DurationParseError,
+    parse_duration,
+)
+from hyprial.kernel.impl.primitives.node_identity import resolve_node_id
+from hyprial.kernel.impl.primitives.uri import (
+    ADAPTER_URI_PREFIX,
+    agent_uri_actor,
+    AGENT_URI_PREFIX,
+    canonical_agent_uri,
+    canonical_orgfs_uri,
+    canonical_user_uri,
+    CHANNEL_URI_PREFIX,
+    delivery_address_error,
+    is_agent_id_segment,
+    is_device_id_segment,
+    is_identity_id_segment,
+    is_user_id_segment,
+    ORGFS_URI_PREFIX,
+    orgfs_web_url,
+    OrgfsWebNetwork,
+    parse_agent_uri,
+    parse_channel_uri,
+    parse_orgfs_uri,
+    parse_route_uri,
+    parse_user_uri,
+    legacy_user_uri,
+    ROUTE_URI_PREFIX,
+    short_actor_name,
+    TARGET_KIND_AGENT,
+    TARGET_KIND_CHANNEL_ROUTE,
+    TARGET_KIND_HOST,
+    TARGET_KIND_UNKNOWN,
+    TARGET_KIND_USER,
+    uri_scheme,
+)
+from hyprial.kernel.impl.processes._dsh_resolver import (
+    resolve_hostname,
+)
+from hyprial.kernel.impl.processes.owned_process import (
+    darwin_group_has_live_members,
+    linux_group_has_live_members,
+    parse_linux_process_stat,
+    process_birth_identity,
+    OwnedProcessGroup,
+    PROCESS_FORCE_KILL_SECONDS,
+    PROCESS_FORCE_TERM_SECONDS,
+)
+from hyprial.kernel.impl.processes.process_facts import (
+    ManagedHarnessProcess,
+    ProcessLiveness,
+    ProcessLivenessProbeError,
+    ProcessLivenessState,
+)
+
+__all__ = [
+    "_candidate",
+    "ActorEvent",
+    "ActorEventKind",
+    "ActorHandle",
+    "ActorRuntime",
+    "ActorSpec",
+    "ActorState",
+    "ADAPTER_URI_PREFIX",
+    "AdmissionResult",
+    "agent_uri_actor",
+    "AGENT_URI_PREFIX",
+    "atomic_json_write",
+    "bound_request",
+    "build_probe_command",
+    "CallCostCounters",
+    "Candidate",
+    "canonical_agent_uri",
+    "canonical_orgfs_uri",
+    "canonical_user_uri",
+    "Capability",
+    "capped_exponential",
+    "channel_generation",
+    "CHANNEL_HEARTBEAT_INTERVAL_SECONDS",
+    "CHANNEL_LIVENESS_TTL_SECONDS",
+    "CHANNEL_PROTOCOL_VERSION",
+    "CHANNEL_URI_PREFIX",
+    "ChannelConfiguration",
+    "ChannelRouteConfig",
+    "child_state_environment",
+    "CommandSink",
+    "configured_hyprial_home",
+    "configured_harness_state_dir",
+    "connect_named_pipe",
+    "create_owned_process_group",
+    "DAEMON_CLOSE_BUDGET_SECONDS",
+    "DAEMON_CLOSE_STEP_BUDGETS",
+    "DAEMON_EXIT_BACKSTOP_SECONDS",
+    "DAEMON_STARTUP_PHASES",
+    "DaemonLaunchResult",
+    "DaemonRequestError",
+    "DaemonStartupPhase",
+    "DEADLINE_NODE",
+    "DEFAULT_GIT_URL",
+    "default_hyprial_home",
+    "darwin_group_has_live_members",
+    "DEFAULT_PEER_PORT",
+    "DEFAULT_POLICIES",
+    "delivery_address_error",
+    "is_agent_id_segment",
+    "is_device_id_segment",
+    "is_identity_id_segment",
+    "is_user_id_segment",
+    "DesiredStateError",
+    "DomainEffectClaim",
+    "DrainReport",
+    "DurationParseError",
+    "EffectCompleted",
+    "EffectLane",
+    "EffectRequest",
+    "EVENT_NAMES",
+    "EventSink",
+    "ExpectedActorError",
+    "EXTERNAL_IO",
+    "FORGEJO_GIT_URL",
+    "FORWARDING_COMMAND_ENV",
+    "FORWARDING_UP_ENV",
+    "GenerationScheduler",
+    "HOOK_EVENT_SCHEMA_VERSION",
+    "HOOKS_CONFIG_NAME",
+    "HookBus",
+    "HookEvent",
+    "HookRegistration",
+    "HooksConfig",
+    "GUEST_WORKER_STATE",
+    "HarnessLaunchSpec",
+    "has_execution_runtime",
+    "HYPRIALHomeNotInitialized",
+    "initialize_hyprial_home",
+    "INTERCEPT_EVENT_NAMES",
+    "ipc_errors",
+    "is_session_fetch",
+    "is_windows_owned_process_group",
+    "lark_recovery_coverage",
+    "LarkGatewayConfig",
+    "LaneProjection",
+    "legacy_user_uri",
+    "LIFECYCLE_IPC_MARGIN_SECONDS",
+    "LIFECYCLE_OPERATION_DEADLINE_SECONDS",
+    "LIFECYCLE_WAIT_MARGIN_SECONDS",
+    "LifecycleMutationCompleted",
+    "LifecycleMutationRequest",
+    "listen_named_pipe",
+    "linux_group_has_live_members",
+    "lock_exclusive",
+    "Logger",
+    "ManagedHarnessProcess",
+    "MAX_FRAME_BYTES",
+    "migrate_pre_trajectory_logs",
+    "MutationProvenance",
+    "OFFICIAL_GIT_URL",
+    "ObserverHook",
+    "operation_key",
+    "ORGFS_CONTENT_PENDING",
+    "ORGFS_URI_PREFIX",
+    "orgfs_web_url",
+    "OrgfsWebNetwork",
+    "OTHER_KEY",
+    "OwnedProcessGroup",
+    "PAC_GC_INTERVAL_SECONDS",
+    "PAC_GC_JITTER_RATIO",
+    "PAC_GC_MAX_REMOVALS_PER_PASS",
+    "PAC_WORKTREE_GIT_TIMEOUT_SECONDS",
+    "parse_agent_uri",
+    "parse_channel_uri",
+    "parse_duration",
+    "parse_execution_runtime",
+    "parse_orgfs_uri",
+    "parse_route_uri",
+    "parse_user_uri",
+    "resolve_node_id",
+    "PersistentConfigError",
+    "PersistentConfigStore",
+    "parse_linux_process_stat",
+    "PersistentConfiguration",
+    "PortAdmission",
+    "PortCommandRejected",
+    "RequestPortError",
+    "RUNTIME_OVERFLOW_OWNER",
+    "RuntimeCpuCounters",
+    "runtime_cpu_counters",
+    "PRE_TRAJECTORY_ARCHIVE",
+    "probe_process",
+    "process_birth_identity",
+    "PROCESS_CPU_PROBE_TIMEOUT_SECONDS",
+    "PROCESS_FORCE_KILL_SECONDS",
+    "PROCESS_FORCE_TERM_SECONDS",
+    "PROCESS_LIFECYCLE",
+    "ProcessLiveness",
+    "ProcessLivenessProbeError",
+    "ProcessLivenessState",
+    "ReadinessReport",
+    "redact_turn_excerpt",
+    "redact",
+    "reply_message_id",
+    "require_initialized_hyprial_home",
+    "resolve_hostname",
+    "route_path",
+    "ROUTE_URI_PREFIX",
+    "safe_channel_build_version",
+    "safe_turn_identifier",
+    "safe_turn_tool_names",
+    "SESSION_CARRIER_SOURCES",
+    "SERVICE_CONTROL_TIMEOUT_SECONDS",
+    "SERVICE_RECONCILE_INTERVAL_SECONDS",
+    "SERVICE_REGISTRY_READ_TIMEOUT_SECONDS",
+    "session_fetch_params",
+    "short_actor_name",
+    "SmolvmRuntimeSpec",
+    "STATE_AUTHORITY",
+    "STATE_DONE",
+    "STATE_ESCALATED",
+    "SupervisionPolicy",
+    "SupportLevel",
+    "TARGET_KIND_AGENT",
+    "TARGET_KIND_CHANNEL_ROUTE",
+    "TARGET_KIND_HOST",
+    "TARGET_KIND_UNKNOWN",
+    "TARGET_KIND_USER",
+    "TEARDOWN_BUDGETED_SECONDS",
+    "tier_for_model",
+    "TIERS",
+    "TURN_HOOK_CLOSE_TIMEOUT_SECONDS",
+    "turn_event_payload",
+    "unlock",
+    "uri",
+    "uri_scheme",
+    "windows_process_identity",
+    "WORK_NODE",
+    "WorkerBinding",
+    "WorkerChannelError",
+]

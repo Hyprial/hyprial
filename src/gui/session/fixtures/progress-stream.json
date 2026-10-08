@@ -1,0 +1,9 @@
+{
+  "comment": "实时增量 fixture：progress 事件携带 tool_call_id/tool_name/detail；seq 仅作进度序（progress ordinal），绝不冒充正文 cursor。",
+  "sessionId": "s-1",
+  "entries": [
+    { "seq": 1, "tool_call_id": "call_gui_01", "tool_name": "hyprial_gui_preview", "detail": "校验 GUI 文档", "at": "2026-10-01T12:00:05Z" },
+    { "seq": 2, "tool_call_id": "call_gui_01", "tool_name": "hyprial_gui_preview", "detail": "生成预览快照", "at": "2026-10-01T12:00:06Z" },
+    { "seq": 3, "tool_call_id": "call_gui_01", "tool_name": "hyprial_gui_preview", "detail": "预览就绪", "at": "2026-10-01T12:00:07Z" }
+  ]
+}

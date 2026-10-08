@@ -1,0 +1,7 @@
+{
+  "comment": "终态 fixture：由 adapter/服务端给出，GUI 只读；终态语义独立于 progress seq 与正文 cursor。",
+  "sessionId": "s-1",
+  "terminal": "completed",
+  "eventId": "evt-004",
+  "at": "2026-10-01T12:00:07Z"
+}

@@ -12,7 +12,7 @@ name = "hyprial"
 # nobody checked.  On its own line in its own file, "did the version change?"
 # becomes a diff a machine can read instead of a habit people remember.
 dynamic = ["version"]
-description = "Harness Bridge: decentralized agent communication (Python rewrite)"
+description = "Harness Bridge: decentralized agent communication"
 license = "Apache-2.0"
 requires-python = ">=3.12"
 dependencies = [
@@ -28,6 +28,7 @@ dependencies = [
     "pykka>=4.2,<5",
     "typesafe-sdk==0.7.0",
     "pycrdt==0.14.6",
+    "pycasbin>=2.8,<3",
 ]
 
 [project.scripts]
@@ -59,18 +60,18 @@ path = "src/hyprial/gui_build_hook.py"
 
 [tool.ruff]
 target-version = "py312"
-# Repro artifacts under notes/repro are kept VERBATIM on purpose: their
+# Repro artifacts under docs/notes/repro are kept VERBATIM on purpose: their
 # value is byte-fidelity when re-run against future baselines (the PR #332
 # findings were re-read on f6598d1 with exactly these files).  Linting them
 # invites "fixing" a script whose shape is the evidence -- so they are out
 # of lint scope, not out of the tree.
-extend-exclude = ["notes/repro"]
+extend-exclude = ["docs/notes/repro"]
 
 [tool.ruff.lint]
 # Mandatory Pyflakes plus structural pycodestyle hygiene.  F821 catches
 # exception classes referenced without being imported before tests exercise
 # the exceptional path.
-# W605 added 2026-09-13: a docstring in contract/migration-cutover/drill-run.py
+# W605 added 2026-09-13: a docstring in a (since retired) migration drill
 # recorded a `git grep -nE '\bexec...'` command, and because the docstring was
 # not raw, `\b` became a backspace and `\(` stayed literal -- so the command
 # the file documented was not the command that had been run. Nothing caught it:
