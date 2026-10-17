@@ -23,6 +23,7 @@ TailcatWheelError = tailcat_tools["TailcatWheelError"]
 
 WHEEL_BIN_DIR = "hyprial/_bin"
 ALLOW_MISSING_ENV = "HYPRIAL_TAILCAT_ALLOW_MISSING"
+WORKER_WHEEL_ENV = "HYPRIAL_BUILD_WORKER_WHEEL"
 
 
 class CustomBuildHook(BuildHookInterface):
@@ -31,6 +32,13 @@ class CustomBuildHook(BuildHookInterface):
             return  # Source development is not a product distribution.
         root = Path(self.root)
         self._stages: list[tempfile.TemporaryDirectory] = []
+        if os.environ.get(WORKER_WHEEL_ENV) == "1":
+            # Thin worker wheel (containerized-transfer image): no GUI bundle
+            # and no tailcat sidecar.  The image's builder stage compiles the
+            # sidecar once and COPY --from=builder into /opt/hyprial/_bin, so
+            # the wheel needs neither a .git context nor a Go toolchain --
+            # the two things the product-wheel stages demand.
+            return
         self._stage_gui(root, build_data)
         self._stage_tailcat(root, build_data)
 

@@ -100,6 +100,7 @@ class StoredLifecycleReceipt:
     correlation_id: str | None = None
     generation: int | None = None
     version: int | None = None
+    expected_entity_token: str | None = None
 
     @classmethod
     def from_json(cls, value: object) -> Self:
@@ -115,6 +116,7 @@ class StoredLifecycleReceipt:
                 if value.get("expectedResourceToken") is None
                 else str(value["expectedResourceToken"])
             ),
+            expected_entity_token=value.get("expectedEntityToken"),
             provenance=MutationProvenance(
                 bool(value.get("createdByOperation", False)),
                 bool(value.get("changed", False)),
@@ -144,6 +146,11 @@ class StoredLifecycleReceipt:
             raise ValueError("lifecycle receipt identity must not be blank")
         if not result.resource_key:
             raise ValueError("lifecycle receipt resource key must not be blank")
+        if result.expected_entity_token is not None and (
+            not isinstance(result.expected_entity_token, str)
+            or not result.expected_entity_token.strip()
+        ):
+            raise ValueError("lifecycle receipt entity token must not be blank")
         return result
 
     def to_json(self) -> dict[str, object]:
@@ -153,6 +160,8 @@ class StoredLifecycleReceipt:
             "operationId": self.operation_id,
             "resourceKey": self.resource_key,
             "expectedResourceToken": self.expected_resource_token,
+            **({"expectedEntityToken": self.expected_entity_token}
+               if self.expected_entity_token is not None else {}),
             "createdByOperation": self.provenance.created_by_operation,
             "changed": self.provenance.changed,
             "resourceToken": self.provenance.resource_token,

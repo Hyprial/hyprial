@@ -38,6 +38,7 @@ from hyprial.daemon.impl.inbox.contracts.ports  import (
 )
 from hyprial.daemon.impl.inbox.tracking.progress  import PROGRESS_INTENT
 from hyprial.daemon.impl.inbox.service.policy  import (
+    OFFLINE_RECHECK_INTERVAL_MS,
     RetryPolicy,
     online_retry_next_attempt_ms,
 )
@@ -474,13 +475,33 @@ class DeliveryCustodyLifecycleMixin:
                 reason="ack not received",
             )
             return
+        row = self._service._db.execute(
+            "SELECT expires_at_ms, last_error FROM outbox WHERE message_id = ?",
+            (message.message_id,),
+        ).fetchone()
+        if row is None:
+            return
+        next_attempt_ms = min(
+            int(row["expires_at_ms"]), now_ms + OFFLINE_RECHECK_INTERVAL_MS
+        )
+        first_hold = row["last_error"] != "recipient offline"
         self._service._db.execute(
             """UPDATE outbox
-                  SET next_attempt_ms = expires_at_ms,
+                  SET next_attempt_ms = ?,
                       last_error = ?
                 WHERE message_id = ?""",
-            ("recipient offline", message.message_id),
+            (next_attempt_ms, "recipient offline", message.message_id),
         )
+        if first_hold:
+            self._service._alarm._safe_log(
+                "info",
+                "outbox.offline_hold",
+                messageId=message.message_id,
+                recipient=message.recipient,
+                sender=message.sender,
+                recheckMs=OFFLINE_RECHECK_INTERVAL_MS,
+                nextAttemptMs=next_attempt_ms,
+            )
     def _reject_correlation(self, correlation_id: str) -> None:
         self._publish(
             PortCommandRejected(

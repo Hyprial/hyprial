@@ -116,6 +116,7 @@ def _create_agent_for_start(
     cwd: Path,
     provider: str | None = None,
     model: str | None = None,
+    include_resume_snapshot: bool = False,
 ) -> JsonObject:
     """Route ``hyprial start`` through ``agent create`` before launching anything.
 
@@ -141,4 +142,6 @@ def _create_agent_for_start(
         params["provider"] = provider
     if model is not None:
         params["model"] = model
+    if include_resume_snapshot:
+        params["includeResumeSnapshot"] = True
     return services._daemon_request("agent.create", params)

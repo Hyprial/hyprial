@@ -42,7 +42,7 @@ from hyprial.kernel import AdmissionResult
 if TYPE_CHECKING:
     from hyprial.daemon.impl.inbox.contracts.api import DeliveryTransport, InboxPort
     from hyprial.daemon.impl.transport.api import PresenceView, TransportSession
-    from hyprial.daemon.impl.harnesses.turn_delivery.service  import TurnHookService
+    from hyprial.daemon.impl.hooks.intercept import DeliveryHookService
 
 from .settlement import (
     BLOCKING_FAILURE_CUSTODY_CAPACITY,
@@ -158,7 +158,6 @@ class DaemonEventBridge(_BridgeForwardsMixin, _BridgeReconcileMixin, _BridgeResu
         harness_actor_uri: Callable[[str], str] | None = None,
         logger: Callable[..., None] | None = None,
         clock_ms: Callable[[], int] | None = None,
-        usage_limit_observer: Callable[[str], None] | None = None,
         blocking_failure_observer: (
             Callable[[str, str, str], AdmissionResult | None]
             | Callable[[str, str], None] | None
@@ -168,9 +167,10 @@ class DaemonEventBridge(_BridgeForwardsMixin, _BridgeReconcileMixin, _BridgeResu
         workflow_outcome: Callable[[HarnessResult], bool] | None = None,
         forwarder: Forwarder | None = None,
         owner_notifier: Callable[..., object] | None = None,
+        in_channel_notice_delivery: Callable[..., object] | None = None,
         owner_requester_addresses: Collection[str] = (),
         hold_ttl_ms: int = DEFAULT_HOLD_TTL_MS,
-        turn_hooks: "TurnHookService | None" = None,
+        delivery_hooks: "DeliveryHookService | None" = None,
         actor_mode: bool = False,
     ) -> None:
         if hold_ttl_ms <= 0:
@@ -181,6 +181,14 @@ class DaemonEventBridge(_BridgeForwardsMixin, _BridgeReconcileMixin, _BridgeResu
         # owner-DM channel instead of only the log.  Called off the runtime
         # loop; never raises into it.
         self._owner_notifier = owner_notifier
+        # Allen 2026-10-13 (in-DM alarm ruling): a fail-loud notice for a
+        # human-originated conversation is replied into the chat the request
+        # came from.  The adapter owns that chat handle, so the hand-off is
+        # this callback (the composition root wires it to the adapter's
+        # native-reply path, the same one alarms use); the daemon keeps the
+        # timeout/custody decisions.  Called off the runtime loop's custody
+        # paths; must never raise into them.
+        self._in_channel_notice_delivery = in_channel_notice_delivery
         # Addresses that ALREADY reach the owner: their own squire adapter, one
         # of its routes, their ``user:`` address.  Handing a diverted notice to
         # "the owner" when the waiting sender is one of these puts the same
@@ -197,11 +205,7 @@ class DaemonEventBridge(_BridgeForwardsMixin, _BridgeReconcileMixin, _BridgeResu
         self.delivery = delivery
         self.harness_actor_registrar = harness_actor_registrar
         self._logger = logger
-        self._turn_hooks = turn_hooks
-        # The quota watchdog hears each PROVIDER_USAGE_LIMIT turn.  It only
-        # observes: settlement below is unchanged (Allen 09-17: exhausted
-        # agents keep today's handling).
-        self._usage_limit_observer = usage_limit_observer
+        self._delivery_hooks = delivery_hooks
         self._blocking_failure_observer = blocking_failure_observer
         self._blocking_failure_identity = blocking_failure_identity
         self._blocked_actor = blocked_actor
@@ -255,6 +259,10 @@ class DaemonEventBridge(_BridgeForwardsMixin, _BridgeReconcileMixin, _BridgeResu
         #: is never reported as delivered.
         self._pending_notices: dict[str, InboxMessage] = {}
         self._notice_failures_logged: set[str] = set()
+        #: (conversation id, notice kind) pairs already replied into a human
+        #: conversation this run -- the in-channel rate limit's once-keys
+        #: (first occurrence + terminal outcome only, Allen 2026-10-13).
+        self._in_channel_notice_keys: set[tuple[str, str]] = set()
         # Forwards (user-proxy).  The send can post to Lark and has no bound
         # of its own, so it runs on one FIFO thread instead of the tick; one
         # thread keeps the order in which the worker finished its turns.

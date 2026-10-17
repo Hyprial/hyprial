@@ -18,6 +18,7 @@ from uuid import NAMESPACE_URL, uuid5
 from hyprial.daemon.impl.inbox.contracts.api import DeliveryLifecycle, InboxMessage
 from hyprial.kernel import parse_agent_uri
 from hyprial.daemon import (
+    Alarm,
     AttemptIdentity,
     is_human_facing_requester,
     no_progress_budget_seconds,
@@ -31,12 +32,29 @@ from hyprial.daemon.impl.api  import (
 if TYPE_CHECKING:
     pass
 
+def _notice_is_terminal(message: InboxMessage) -> bool:
+    """Whether a fail-loud notice reports a terminal (no-retry) outcome.
+
+    Only the unavailable notice carries ``terminal``; a no-progress report is
+    never terminal.  A malformed body reads as non-terminal: the rate limit
+    then suppresses rather than over-sends.
+    """
+
+    try:
+        body = json.loads(message.payload)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return False
+    return isinstance(body, dict) and body.get("terminal") is True
+
+
 class _BridgeForwardsMixin:
     """DaemonEventBridge cluster; the composing class owns the state."""
 
-    def _forget_turn_hook_delivery(self, delivery_id: str) -> None:
-        if self._turn_hooks is not None:
-            self._turn_hooks.forget_delivery(delivery_id)
+    def _settle_delivery_hooks(self, result: HarnessResult) -> None:
+        """Emit ``delivery.settled`` and release the delivery's hook state."""
+
+        if self._delivery_hooks is not None:
+            self._delivery_hooks.settled(result)
 
     def _start_forward_thread(self) -> None:
         if self._forward_thread is not None:
@@ -143,6 +161,7 @@ class _BridgeForwardsMixin:
             agent_entity_token=entity_token,
             budget_ms=no_progress_budget_seconds(harness) * 1_000,
             last_progress_ms=started,
+            worker_name=actor,
         )
 
     def _note_delivery_progress(self, delivery_id: str, now_ms: int) -> None:
@@ -189,6 +208,23 @@ class _BridgeForwardsMixin:
         except Exception:  # noqa: BLE001 - lookup failure must not hide the report
             return None
 
+    def _failure_route(self, delivery_id: str) -> InboxMessage | None:
+        """Terminal-ledger route for a delivery with no inbox row at all.
+
+        Second fallback for the fail-loud notice: when neither the pending
+        row nor the settlement tombstone can name the sender, the
+        ``delivery_status`` ledger often still can (PR #1463 finding 2:
+        ``availability_loud.route_missing`` with no book carrying the route).
+        """
+
+        reader = getattr(self.inbox, "harness_failure_route", None)
+        if not callable(reader):
+            return None
+        try:
+            return reader(delivery_id)
+        except Exception:  # noqa: BLE001 - lookup failure must not hide the report
+            return None
+
     def _settlement(self, delivery_id: str) -> object | None:
         reader = getattr(self.inbox, "harness_failure_settlement", None)
         if not callable(reader):
@@ -199,17 +235,50 @@ class _BridgeForwardsMixin:
             return None
 
     def _log_missing_failure_route(self, result: HarnessResult) -> None:
-        if self._logger is None:
+        """Last resort when no book names the sender: tell a human.
+
+        Until now this was an error log line and nothing else -- exactly the
+        silent path the fail-loud unit exists to remove (PR #1463 finding 2:
+        the advisor's auth failure produced this line and nobody was told).
+        The human-audience alarm rides the existing throttle ledger, so a
+        burst of unroutable results still reaches the operator once, loudly.
+        """
+
+        failure_code = result.failure_code or classify_harness_failure(result.error)
+        if self._logger is not None:
+            self._logger(
+                "error",
+                "daemon",
+                "availability_loud.route_missing",
+                deliveryId=result.delivery_id,
+                recipient=result.recipient,
+                failureCode=failure_code,
+                detail="no pending row and no settlement tombstone for the sender",
+            )
+        emitter = getattr(self.inbox, "alarm_emitter", None)
+        if emitter is None:
             return
-        self._logger(
-            "error",
-            "daemon",
-            "availability_loud.route_missing",
-            deliveryId=result.delivery_id,
-            recipient=result.recipient,
-            failureCode=result.failure_code or classify_harness_failure(result.error),
-            detail="no pending row and no settlement tombstone for the sender",
-        )
+        try:
+            emitter.emit(
+                Alarm(
+                    correlation_id=result.delivery_id,
+                    message_id=result.delivery_id,
+                    conversation_id="",
+                    sender=result.recipient,
+                    recipient=result.recipient,
+                    reason=failure_code,
+                    audience="human",
+                    text=(
+                        "⚠️ 一个失败的投递找不到任何可告知的路由："
+                        "无待处理行、无结算墓碑、台账无路由。"
+                        f"delivery: {result.delivery_id} "
+                        f"worker: {result.recipient} "
+                        f"failure: {failure_code}"
+                    ),
+                )
+            )
+        except Exception:  # noqa: BLE001 - the alarm must never mask the result
+            pass
 
     def _unavailable_notice_for(
         self,
@@ -413,47 +482,94 @@ class _BridgeForwardsMixin:
         if is_human_facing_requester(message.recipient) or self._is_user_proxy(
             message.recipient
         ):
-            # Never into a person's chat.  A user-proxy is one: it relays
-            # everything it receives into its person's DM (2026-09-26: 252
-            # notices to allen-proxy in a self-feeding chain).
-            #
-            # Handing it to the owner is the fallback, not the rule: when the
-            # waiting sender IS the owner, "the owner" is the same person and
-            # the wrap only adds a layer to text they were never meant to
-            # receive (2026-09-26: the owner asked why the same notice kept
-            # arriving about his own requests).  Those are logged, not re-handed.
-            # Not held for retry; diversion happens only here, once per notice.
+            # Allen 2026-10-13 (in-DM alarm ruling): the person's own
+            # conversation hears about its stalled/failed request, in that
+            # conversation -- owner diversion is retired for human-originated
+            # conversations (observed 2026-10-12: 34 diverted notices/24h
+            # reached the owner; none reached the waiting person).
+            return self._submit_loud_to_human(message)
+        return self._submit_notice_to_inbox(message)
+
+    def _submit_loud_to_human(self, message: InboxMessage) -> bool:
+        """Reply one notice into the conversation that is waiting for it.
+
+        The chat handle belongs to the adapter, so the daemon hands the
+        notice to the composition-root deliverer (wired to the adapter's
+        native-reply path) and keeps only the timeout/custody decisions.
+        A user-proxy requester is the one human-facing shape whose original
+        channel is an inbox leg: the proxy relays what it receives into the
+        person's DM, so its notice goes through the ordinary submit.
+
+        Rate limit per (conversation x notice kind): the first occurrence and
+        the terminal outcome reach the chat; later intermediates are
+        suppressed and logged, never re-sent per tick -- the 2026-09-26
+        allen-proxy 252-notice self-feeding chain must not regress.  The
+        once-keys live in process memory: a restart grants each conversation
+        one fresh first occurrence, bounded by the same gate.
+        """
+
+        kind = _notice_kind(message)
+        key = (message.conversation_id, kind or "")
+        if key in self._in_channel_notice_keys and not _notice_is_terminal(message):
             self._pending_notices.pop(message.message_id, None)
-            requester_is_owner = self._request_reaches_the_owner(message)
-            redirected = self._owner_notifier is not None and not requester_is_owner
             if self._logger is not None:
-                if requester_is_owner:
-                    detail = (
-                        "human-facing requester is the owner; notice logged, "
-                        "not sent to the owner"
-                    )
-                elif redirected:
-                    detail = (
-                        "human-facing requester; notice sent to the owner, "
-                        "not to the requester"
-                    )
-                else:
-                    detail = "human-facing requester; notice logged, not sent"
                 self._logger(
                     "warn",
                     "daemon",
-                    "availability_loud.diverted",
+                    "availability_loud.in_channel_suppressed",
                     messageId=message.message_id,
+                    conversationId=message.conversation_id,
+                    recipient=message.recipient,
+                    notification=kind,
+                )
+            return False
+        if self._is_user_proxy(message.recipient):
+            delivered = self._submit_notice_to_inbox(message)
+        else:
+            deliverer = self._in_channel_notice_delivery
+            if deliverer is None:
+                self._remember_pending_notice(
+                    message, code="IN_CHANNEL_DELIVERY_UNWIRED"
+                )
+                return False
+            try:
+                delivered = bool(
+                    deliverer(message, _owner_facing_notice_text(message))
+                )
+            except Exception as error:  # noqa: BLE001 - the adapter boundary never breaks the tick
+                self._remember_pending_notice(message, code=type(error).__name__)
+                return False
+            if not delivered:
+                # The adapter would not take it (worker offline, correlation
+                # pruned).  Held and retried on later ticks, never diverted:
+                # owner diversion is retired for human-originated
+                # conversations (2026-10-13).
+                self._remember_pending_notice(
+                    message, code="IN_CHANNEL_DELIVERY_REFUSED"
+                )
+                return False
+        if delivered:
+            self._in_channel_notice_keys.add(key)
+            self._pending_notices.pop(message.message_id, None)
+            self._notice_failures_logged.discard(message.message_id)
+            if self._logger is not None and not self._is_user_proxy(
+                message.recipient
+            ):
+                self._logger(
+                    "warn",
+                    "daemon",
+                    "availability_loud.in_channel_sent",
+                    messageId=message.message_id,
+                    conversationId=message.conversation_id,
                     recipient=message.recipient,
                     idempotencyKey=message.idempotency_key,
-                    notification=_notice_kind(message),
-                    requesterIsOwner=requester_is_owner,
-                    redirectedToOwner=redirected,
-                    detail=detail,
+                    notification=kind,
                 )
-            if redirected:
-                self._notify_owner_of_diverted(message)
-            return False
+        return delivered
+
+    def _submit_notice_to_inbox(self, message: InboxMessage) -> bool:
+        """Submit one notice through the inbox; hold it if the inbox refuses."""
+
         submit = getattr(self.inbox, "submit", None)
         if not callable(submit):
             self._remember_pending_notice(message, code="INBOX_SUBMIT_UNAVAILABLE")
@@ -484,6 +600,14 @@ class _BridgeForwardsMixin:
     def _request_reaches_the_owner(self, message: InboxMessage) -> bool:
         """True when re-handing this notice would reach the waiting sender.
 
+        Retained 2026-10-13 as the owner-diversion fallback surface for a
+        NON-human requester with no reachable channel only; the human-facing
+        path no longer calls it (owner diversion is retired for
+        human-originated conversations -- the notice is replied into the
+        original chat instead).  No current caller reaches this method; it
+        stays with its wiring so a non-human fallback lands in one place if
+        that class of requester ever appears.
+
         The addresses come from the composition root, which is the only place
         that knows which adapter, routes and ``user:`` address belong to this
         owner.  Conversation ids count too: a notice for a request made inside
@@ -498,7 +622,13 @@ class _BridgeForwardsMixin:
         )
 
     def _notify_owner_of_diverted(self, message: InboxMessage) -> None:
-        """Hand a diverted notice to the owner channel on its own thread."""
+        """Hand a diverted notice to the owner channel on its own thread.
+
+        Retained 2026-10-13 as the fallback for a NON-human requester with no
+        reachable channel only; the human-facing path no longer diverts (the
+        notice is replied into the original chat instead), so no current
+        caller reaches this method.
+        """
 
         notifier = self._owner_notifier
         assert notifier is not None
@@ -557,6 +687,14 @@ class _BridgeForwardsMixin:
         to wait for.  The message says "no observable progress, cause not yet
         determined" -- it never claims a permission/approval cause, and it
         never kills or interrupts the turn.  One report per attempt.
+
+        Before reporting T1, one steer is attempted: a delivery that is only
+        QUEUED behind a busy turn is folded into that running turn instead of
+        making its sender wait.  Only a failed steer (no capability, no
+        running turn, rejected, transport dead) becomes the notice; a human
+        conversation's notice still goes in-channel (item A).  A user-proxy
+        relay is never steered: its turn is a person's chat leg, not a turn
+        the daemon may fold input into.
         """
 
         for attempt in tuple(self._inflight.values()):
@@ -571,6 +709,15 @@ class _BridgeForwardsMixin:
             waited_ms = now - attempt.last_progress_ms
             if waited_ms < attempt.budget_ms:
                 continue
+            if not attempt.steered and attempt.identity.harness != "user-proxy":
+                if self._steer_stalled_delivery(attempt):
+                    # The queued message is now in the running turn.  Grant
+                    # the attempt one more window before reporting; a second
+                    # silence reports (steer once, then notice).
+                    self._inflight[attempt.identity.delivery_id] = replace(
+                        attempt, steered=True, last_progress_ms=now
+                    )
+                    continue
             identity = replace(attempt.identity, observed_at_ms=now)
             message = no_progress_notice(
                 identity, waited_ms=waited_ms, budget_ms=attempt.budget_ms
@@ -581,6 +728,42 @@ class _BridgeForwardsMixin:
                 attempt, reported=True
             )
         return reported
+
+    def _steer_stalled_delivery(self, attempt: _InflightAttempt) -> bool:
+        """One bounded steer attempt; logs the outcome either way.
+
+        Returns True only on the harness runtime's native acceptance.  A
+        missing port, a raised fault, a refusal and an unprovable outcome all
+        read as False so the caller raises the notice -- an unknown outcome
+        must never be silently treated as delivered.
+        """
+
+        steer = getattr(self.harnesses, "steer", None)
+        delivery_id = attempt.identity.delivery_id
+        detail: str | None = None
+        accepted = False
+        if not callable(steer):
+            detail = "harness runtime exposes no steer port"
+        else:
+            try:
+                accepted = bool(
+                    steer(attempt.worker_name, delivery_id)
+                )
+            except Exception as error:  # noqa: BLE001 - a fault is a failed steer
+                detail = f"{type(error).__name__}: {error}"
+        if self._logger is not None:
+            self._logger(
+                "info" if accepted else "warn",
+                "daemon",
+                "availability_loud.steer_accepted"
+                if accepted
+                else "availability_loud.steer_failed",
+                deliveryId=delivery_id,
+                worker=attempt.identity.worker,
+                harness=attempt.identity.harness,
+                detail=detail or "native steer accepted",
+            )
+        return accepted
 
     def _reply_and_ack(self, original: InboxMessage, result: HarnessResult) -> bool:
         reply = InboxMessage(

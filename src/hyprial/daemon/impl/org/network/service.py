@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from hyprial.daemon.impl.orgfs.api import OrgFs, OrgFsError, require_space_owner
+from hyprial.daemon.impl.org.network.casdoor import CasdoorGroups, CasdoorMembershipMixin
 from hyprial.daemon.impl.org.network.binding import (
     resolve_org_acl_space,
     resolve_org_directory_space,
@@ -93,7 +94,7 @@ def _canonical_member_uri(user: str) -> str:
     return canonical_user_uri(user)
 
 
-class OrgNetworkService:
+class OrgNetworkService(CasdoorMembershipMixin):
     """Organization lifecycle on top of the OrgFS directory (§4.3)."""
 
     def __init__(
@@ -109,7 +110,7 @@ class OrgNetworkService:
         unmap_peer: Callable[[str], None] | None = None,
         request_redial: Callable[[], None] | None = None,
         read_own_address: Callable[[], str | None] | None = None,
-        casdoor_create_group: Callable[[str], None] | None = None,
+        casdoor: CasdoorGroups | None = None,
         forwarding_status: Callable[[], Mapping[str, Any] | None] | None = None,
         logger: _Logger | None = None,
         invite_ttl_seconds: float = DEFAULT_INVITE_TTL_SECONDS,
@@ -145,7 +146,7 @@ class OrgNetworkService:
         # LAX(tailnet-cutover): Casdoor group creation is best effort — a
         # failure only warns; the proper shape is a reconciled group
         # resource with retry and an operator surface.
-        self._casdoor_create_group = casdoor_create_group
+        self._casdoor = casdoor
         self._forwarding_status = forwarding_status
         self._invite_ttl_seconds = invite_ttl_seconds
         self._join_timeout_seconds = join_timeout_seconds
@@ -165,16 +166,7 @@ class OrgNetworkService:
             # no membership table yet, and create_space makes the creator
             # the space owner, hence the org owner.
             self._require_allows(org=org, action="create", resource="org")
-        casdoor = "not-configured"
-        if self._casdoor_create_group is not None:
-            try:
-                self._casdoor_create_group(org)
-                casdoor = "created"
-            except Exception as error:  # noqa: BLE001 - best effort by ruling
-                casdoor = "failed"
-                self._log(
-                    "warn", "org", "org.create.casdoor-failed", org=org, detail=str(error)
-                )
+        casdoor = self._casdoor_require_group(org)  # before any OrgFS write
         acl_name = f"{name}-acl"
         if existing is None:
             info = self._fs.create_space(name)
@@ -234,8 +226,10 @@ class OrgNetworkService:
         # joining daemon presents as its OrgFS author; a bare name would be a
         # member nobody can ever act as (E2E-025: "not-a-member").
         acl_space = self._require_acl_space(org)
-        member = self._fs.invite(space.space_id, member_uri, "rw")
-        acl_member = self._fs.invite(acl_space.space_id, member_uri, "ro")
+        # The authority first (design §2); a failed OrgFS write undoes the add.
+        member, acl_member = self._invite_casdoor_first(
+            org, space.space_id, acl_space.space_id, member_uri
+        )
         steps = default_bootstrap()
         workflow_yaml = bootstrap_yaml(steps)
         token = self._new_token()
@@ -402,6 +396,7 @@ class OrgNetworkService:
             "spaceId": space.space_id,
             "user": user,
             "removedDevices": removed_devices,
+            "casdoorGroup": self._casdoor_removal_note(org),
         }
 
     def delete(self, org: str) -> dict[str, Any]:
@@ -507,9 +502,11 @@ class OrgNetworkService:
             for user, record in sorted(requests.items()):
                 if not leave_request_admitted(self._store, self._log, org, user):
                     continue
-                removed_devices = self._remove_member_and_devices(
-                    org, space.space_id, user
-                )
+                try:
+                    removed_devices = self._remove_member_and_devices(org, space.space_id, user)
+                except OrgNetworkError as error:  # Casdoor first: retried next pass
+                    self._log("warn", "org", "org.leaves.casdoor-failed", org=org, user=user, code=error.code)
+                    continue
                 processed.append(
                     {
                         "org": org,
@@ -865,27 +862,9 @@ class OrgNetworkService:
         readers make the retained protected rows inert.
         """
 
-        candidates = (
-            [user] if user.startswith("user:") else [user, canonical_user_uri(user)]
-        )
-        for candidate in candidates:
-            try:
-                self._fs.remove_member(space_id, candidate)
-                self._remove_acl_member(org, candidate)
-                break
-            except OrgFsError as error:
-                # "invalid-argument" means that form was not a member.
-                if error.code != "invalid-argument":
-                    raise
+        self._casdoor_remove(org, user)  # the authority first (design §2)
+        self._remove_orgfs_member(org, space_id, user)
         return []
-
-    def _remove_acl_member(self, org: str, user: str) -> None:
-        acl_space = self._require_acl_space(org)
-        try:
-            self._fs.remove_member(acl_space.space_id, user)
-        except OrgFsError as error:
-            if error.code != "invalid-argument":
-                raise
 
     def _write_default_acl_policy(self, space_id: str) -> None:
         try:

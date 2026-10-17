@@ -39,6 +39,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import bridgeFactory from "./pi_harness_bridge.ts";
 import {
   callDaemon,
+  DaemonIpcError,
   identityFromEnv,
   processBirthIdentity,
 } from "./pi_daemon_ipc.ts";
@@ -156,17 +157,18 @@ function finalAssistantText(messages: unknown): string | null {
     const candidate = messages[index] as {
       role?: unknown;
       content?: unknown;
+      stopReason?: unknown;
     };
-    if (candidate?.role !== "assistant" || !Array.isArray(candidate.content)) {
-      continue;
-    }
+    if (candidate?.role !== "assistant") continue;
+    if (!Array.isArray(candidate.content) ||
+        candidate.stopReason === "error" || candidate.stopReason === "aborted") return null;
     const parts = (candidate.content as Array<{ type?: unknown; text?: unknown }>)
       .filter(
         (item) => item?.type === "text" && typeof item.text === "string",
       )
       .map((item) => item.text as string);
     const text = parts.join("\n");
-    if (text) return text;
+    return text.trim() ? text : null;
   }
   return null;
 }
@@ -324,7 +326,20 @@ export default function (pi: ExtensionAPI) {
 
   async function perform(action: Request): Promise<Record<string, unknown>> {
     if (action instanceof Register) {
-      return callDaemon("session.register", registerParams(), true);
+      // A resumed session registers guarded: the daemon must confirm it
+      // checked for a live incumbent, or registration fails and retries.
+      const guarded = process.env.HYPRIAL_RESUME_GUARDED === "1";
+      const result = await callDaemon(
+        guarded ? "session.register_guarded" : "session.register",
+        registerParams(),
+        true,
+      );
+      if (guarded && result.liveIncumbentGuardApplied !== true) {
+        throw new Error(
+          "CODEX_RESUME_GUARD_UNCONFIRMED: daemon did not confirm guarded registration",
+        );
+      }
+      return result;
     }
     if (action instanceof Refresh) {
       return callDaemon("session.refresh", signed(), false);
@@ -458,36 +473,58 @@ export default function (pi: ExtensionAPI) {
     return completing;
   }
 
+  async function settleMessage(message: PendingMessage, text: string): Promise<void> {
+    const isRequest = message.intent === "request";
+    try {
+      const result = await callDaemon(
+        isRequest ? "message.reply" : "message.ack",
+        signed({
+          messageId: message.messageId,
+          ...(isRequest ? { message: text } : {}),
+        }),
+        true,
+      );
+      // Transport success is not settlement. A duplicate receipt may have
+      // ok:false while positively confirming reply delivery and inbound ACK.
+      if (result.ok !== true && !(
+        result.acknowledged === true && (!isRequest || result.replied === true)
+      )) {
+        throw new DaemonIpcError(
+          String(result.code ?? "MESSAGE_SETTLEMENT_PENDING"),
+          "daemon has not confirmed reply/ack settlement",
+          result,
+        );
+      }
+    } catch (error) {
+      if (!isRequest || errorCode(error) !== CODE_REPLY_UNAVAILABLE) throw error;
+      // This code also means the original exists but has no usable reply path.
+      // Only an observation proves it disappeared; never fetch/ACK to probe.
+      const pending = await callDaemon("message.pending.list", signed(), false);
+      if (pending.ok !== true || !Array.isArray(pending.messages) ||
+          !pending.messages.every((row) =>
+            row && typeof row === "object" &&
+            typeof row.messageId === "string" && row.messageId.trim().length > 0
+          )) {
+        throw new DaemonIpcError(
+          "MESSAGE_SETTLEMENT_PENDING", "pending-message observation unavailable",
+        );
+      }
+      if (pending.messages.some((row) =>
+        row && typeof row === "object" &&
+        (row as Record<string, unknown>).messageId === message.messageId
+      )) throw error;
+      // Consumed/expired elsewhere: no pending request remains to settle.
+      // This is not evidence that the user read a reply.
+    }
+  }
+
   async function completeOutstandingOnce(): Promise<void> {
     if (outstanding === null || outstanding.finalText === null) return;
     for (const message of outstanding.messages) {
-      const isRequest = message.intent === "request";
-      try {
-        if (isRequest) {
-          await callDaemon(
-            "message.reply",
-            signed({ messageId: message.messageId, message: outstanding.finalText }),
-            true,
-          );
-        } else {
-          await callDaemon(
-            "message.ack",
-            signed({ messageId: message.messageId }),
-            true,
-          );
-        }
-        completed.add(message.messageId);
-        queuedForInjection.delete(message.messageId);
-      } catch (error) {
-        // Another path (the model called harness_reply itself, or an
-        // out-of-band hyprial ack) already completed this delivery: benign.
-        if (errorCode(error) === CODE_REPLY_UNAVAILABLE) {
-          completed.add(message.messageId);
-          queuedForInjection.delete(message.messageId);
-          continue;
-        }
-        throw error;
-      }
+      if (completed.has(message.messageId)) continue;
+      await settleMessage(message, outstanding.finalText);
+      completed.add(message.messageId);
+      queuedForInjection.delete(message.messageId);
     }
     outstanding = null;
     watch.listNow();
@@ -496,31 +533,11 @@ export default function (pi: ExtensionAPI) {
 
   async function failOutstanding(reason: string): Promise<void> {
     if (outstanding === null) return;
-    for (const message of outstanding.messages) {
-      try {
-        if (message.intent === "request") {
-          await callDaemon(
-            "message.reply",
-            signed({ messageId: message.messageId, message: reason }),
-            true,
-          );
-        } else {
-          await callDaemon("message.ack", signed({ messageId: message.messageId }), true);
-        }
-        completed.add(message.messageId);
-        queuedForInjection.delete(message.messageId);
-      } catch (error) {
-        if (errorCode(error) === CODE_REPLY_UNAVAILABLE) {
-          completed.add(message.messageId);
-          queuedForInjection.delete(message.messageId);
-        } else {
-          watch.observeRejection(errorCode(error));
-        }
-      }
-    }
-    outstanding = null;
-    watch.listNow();
-    schedulePoll(0);
+    // Keep the same failure body on the ordinary settlement retry lane.
+    // A rejected injection must not drop its reply while native delivery waits.
+    outstanding.finalText = reason;
+    outstanding.settled = true;
+    await completeOutstanding();
   }
 
   async function runPollLane(

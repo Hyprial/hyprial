@@ -422,6 +422,7 @@ class RuntimeLifecycle:
             author=self.author,
             blob_store=self.blobs,
             supplier_online=self._supplier_online,
+            supplier_owner=self._supplier_owner_for_space(space_id),
             announcement_source=self._announcement_spaces,
             holder_discovery=lambda: self._holder_snapshot(space_id),
             recovery_candidates=lambda: (
@@ -430,6 +431,7 @@ class RuntimeLifecycle:
             on_applied=applied,
             on_replacement=replacement,
             logger=self.logger,
+            announce_instrumentation_enabled=self._announce_instrumentation_enabled,
             space_authority=self.facade.space_authority(
                 space_id, self.stores.get(space_id)
             ),

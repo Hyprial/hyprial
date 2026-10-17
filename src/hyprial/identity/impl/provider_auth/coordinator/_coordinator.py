@@ -419,7 +419,7 @@ class ProviderAuthCoordinator():
                     # dedup the alert.
                     episode.workers.add(worker)
                     return
-                # `squire probe` cleared the mark while the episode key stayed
+                # `agent tiers probe` cleared the mark while the episode key stayed
                 # -- this is a fresh failure, so re-alert and re-mark (S4).
                 self._episodes.pop(key, None)
             episode = _Episode(
@@ -448,7 +448,7 @@ class ProviderAuthCoordinator():
             else "该 agent 的认证路由已记录失败;未写 owner-global 能力标记。"
         )
         recovery_instruction = (
-            "人工处理(账号侧)后运行 `hyprial squire probe` 重新探测即可恢复。"
+            "人工处理(账号侧)后运行 `hyprial agent tiers probe`（原 squire probe） 重新探测即可恢复。"
             if mark_capabilities
             else "请修复该 agent 的账号授权后重试;不修改其他 agent 的状态。"
         )

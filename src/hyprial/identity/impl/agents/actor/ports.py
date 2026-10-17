@@ -152,6 +152,23 @@ class UpdateAgentCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class BindAgentConfigCommand:
+    """Change only config, fenced by incarnation and the prior config value."""
+
+    correlation_id: str
+    name: str
+    expected_entity_token: str
+    config: object
+    expected_current_config_digest: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "config", None if self.config is None else _freeze_json(self.config))
+
+    def config_payload(self) -> object:
+        return _thaw_json(self.config)
+
+
+@dataclass(frozen=True, slots=True)
 class BindAgentCommand:
     correlation_id: str
     actor: str
@@ -333,6 +350,7 @@ AgentCommand: TypeAlias = (
     | CreateTransferHostedAgentCommand
     | CreateHostInvitedAgentCommand
     | UpdateAgentCommand
+    | BindAgentConfigCommand
     | DestroyAgentCommand
     | SettleAgentDestroyCommand
     | CleanupRevokedAgentHomeCommand

@@ -33,7 +33,7 @@ class _StartupGraph:
     inbox: Any
     shared_inbox_events: Any
     hold_policy: Any
-    turn_hooks: Any
+    delivery_hooks: Any
     harnesses: Any
     endpoint: Any = None
     status_endpoint: Any = None
@@ -46,3 +46,8 @@ class _StartupGraph:
     actor_token: Any = None
     runtime: Any = None
     recovery: Any = None
+    #: The adapter-side chat leg for human-conversation fail-loud notices
+    #: (Allen 2026-10-13 in-DM alarm ruling); composed with the delivery
+    #: plane because it closes over the lark client, consumed by the runtime
+    #: bridge.
+    in_channel_notice_delivery: Any = None

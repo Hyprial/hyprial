@@ -12,6 +12,7 @@ import time
 from collections.abc import Callable
 from concurrent.futures import CancelledError, ThreadPoolExecutor
 from dataclasses import replace
+from pathlib import Path
 from typing import cast
 from hyprial.kernel import AdmissionResult
 from hyprial.daemon.impl.api  import (
@@ -30,6 +31,26 @@ from hyprial.daemon.impl.harnesses.runtime.ports  import (
 )
 
 from .contracts import HarnessRuntimeClosed, ProcessIdentity, _CompletionReceipt, _completion_succeeded, _default_identity_reader, _failed_completion
+
+
+class HarnessCwdMissingError(RuntimeError):
+    """A harness launch target has no usable working directory."""
+
+    code = "HARNESS_CWD_MISSING"
+    permanent_start_failure = True
+
+
+def validate_harness_cwd(spec: HarnessLaunchSpec) -> None:
+    """Reject an explicit cwd before any launcher or incumbent side effect."""
+
+    if spec.cwd is None:
+        return
+    path = Path(spec.cwd).expanduser().resolve(strict=False)
+    if not path.is_dir():
+        raise HarnessCwdMissingError(
+            f"harness cwd does not exist or is not a directory: {path}"
+        )
+
 
 class ProcessIoPort:
     """Bounded blocking-I/O pool returning typed, generation-fenced events."""
@@ -78,6 +99,17 @@ class ProcessIoPort:
         replace: tuple[ManagedHarnessProcess, ProcessIdentity | None] | None = None,
     ) -> None:
         def operation() -> HarnessProcessStarted:
+            try:
+                validate_harness_cwd(spec)
+            except BaseException as error:
+                return HarnessProcessStarted(
+                    correlation_id=correlation_id,
+                    generation=generation,
+                    version=version,
+                    harness_id=harness_id,
+                    pid=None,
+                    error=error,
+                )
             if replace is not None:
                 old_process, old_identity = replace
                 stopped, detail = self._stop_checked(

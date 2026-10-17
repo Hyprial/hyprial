@@ -66,6 +66,31 @@ def _resolved_agent_cwd(actor: str, cwd: Path | None) -> Path:
     return cwd.expanduser().resolve() if cwd is not None else _agent_workspace(actor)
 
 
+def _resolved_interactive_resume_cwd(actor: str, cwd: Path | None) -> Path:
+    """Resolve an existing cwd without consulting native session history."""
+
+    services = get_services()
+    if cwd is None:
+        result = services._daemon_request("agent.get", {"name": actor})
+        raw_agent = result.get("agent")
+        registered = raw_agent.get("cwd") if isinstance(raw_agent, dict) else None
+        if not isinstance(registered, str) or not registered:
+            raise services.CliError(
+                "INVALID_CWD",
+                "interactive resume without --cwd requires an existing agent "
+                "with a registered cwd",
+            )
+        resolved = Path(registered).expanduser().resolve()
+    else:
+        resolved = cwd.expanduser().resolve()
+    if not resolved.is_dir():
+        raise services.CliError(
+            "INVALID_CWD",
+            f"interactive resume cwd is not an existing directory: {resolved}",
+        )
+    return resolved
+
+
 def _stdin_isatty() -> bool:
     """Whether a CLI confirmation can be answered (a narrow test seam)."""
 
@@ -485,6 +510,13 @@ def _wait_for_daemon(
             last_error = error
             raise
         if _probe_reports_running(result):
+            health = result.get("storageHealth")
+            if isinstance(health, dict) and health.get("healthy") is False:
+                raise services.CliError(
+                    ipc_errors.DAEMON_START_FAILED,
+                    "daemon is reachable but its database health check failed",
+                    {"storageHealth": health},
+                )
             return result
         last_error = services.CliError("INVALID_RESPONSE", "daemon did not report ready")
         remaining = min(idle_deadline, hard_deadline) - services.time.monotonic()
@@ -632,7 +664,7 @@ def _user_proxy_setup_warning(owner: str, profile: Any) -> JsonObject | None:
     node, so the message says both before the command.
     """
 
-    if profile.delivery_agent is not None:
+    if profile.delivery_agent is not None or not _setup_hint_enabled("userProxy"):
         return None
     machine = profile.preferred_receiver.machine
     next_step = "hyprial user-proxy setup --adapter <your-adapter> --route <route>"
@@ -642,9 +674,56 @@ def _user_proxy_setup_warning(owner: str, profile: Any) -> JsonObject | None:
             f"your squire is set up, but messages to user:{owner} still arrive in the "
             "squire's chat, mixed with its own. For a separate channel, add a Feishu "
             f"adapter of your own (not the squire's), then on {machine} run: {next_step}"
+            ". To stop this reminder: hyprial config set hints.userProxy off"
         ),
         "data": {"owner": owner, "machine": machine, "nextStep": next_step},
     }
+
+
+#: Optional setup reminders the owner can turn off (settings.json ``hints``).
+_SETUP_HINTS = ("userProxy",)
+
+
+def _setup_hint_enabled(name: str) -> bool:
+    """False only when settings.json says ``hints.<name>`` is ``off``.
+
+    Local file read inside a tight start budget: any read problem keeps the
+    reminder on rather than failing the command.
+    """
+
+    try:
+        home = get_services()._hyprial_home()
+        record = json.loads((home / "settings.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return True
+    hints = record.get("hints") if isinstance(record, dict) else None
+    return not (isinstance(hints, dict) and hints.get(name) == "off")
+
+
+def _write_setup_hint(name: str, value: str, hyprial_home: Path) -> Path:
+    """Persist ``hints.<name>`` (on|off), keeping every other settings key."""
+
+    normalized = value.strip().lower()
+    if normalized not in ("on", "off"):
+        raise ValueError(f"hints.{name} accepts on|off; got {value!r}")
+    path = Path(hyprial_home) / "settings.json"
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        record = {}
+    except (OSError, ValueError) as error:
+        raise ValueError(f"cannot parse {path}: {error}") from error
+    if not isinstance(record, dict):
+        raise ValueError(f"cannot parse {path}: top level is not an object")
+    section = record.get("hints")
+    section = dict(section) if isinstance(section, dict) else {}
+    section[name] = normalized
+    record["hints"] = section
+    path.parent.mkdir(parents=True, exist_ok=True)
+    staging = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    staging.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    os.replace(staging, path)
+    return path
 
 
 def _announce_setup_guidance(result: JsonObject) -> None:

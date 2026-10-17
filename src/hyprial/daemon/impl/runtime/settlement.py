@@ -347,6 +347,14 @@ class _InflightAttempt:
     budget_ms: int
     last_progress_ms: int
     reported: bool = False
+    #: Set once this attempt's queued delivery was folded into the running
+    #: turn by a native steer.  "Steer once" is a policy cap, not a retry
+    #: loop: a second silence window after a successful steer reports instead.
+    steered: bool = False
+    #: The connector NAME (launch spec name) this attempt was handed to.  The
+    #: identity keeps the canonical worker URI for evidence; the steer port is
+    #: addressed by name, and a reverse URI parse would be a second lookup.
+    worker_name: str = ""
 
 
 @dataclass(frozen=True, slots=True)

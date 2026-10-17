@@ -15,7 +15,7 @@ import sys
 import typer
 
 from hyprial.shell.impl.cli.commands.common.root import app
-from hyprial.shell.impl.cli.commands.common.support import JsonObject, _DAEMON_IPC_ROUNDTRIP_SECONDS, _resolved_agent_cwd, _user_proxy_launch_params
+from hyprial.shell.impl.cli.commands.common.support import JsonObject, _DAEMON_IPC_ROUNDTRIP_SECONDS, _resolved_agent_cwd, _resolved_interactive_resume_cwd, _user_proxy_launch_params
 @app.command(
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True}
 )
@@ -33,16 +33,19 @@ def start(
         "--tmux",
         help=(
             "Run the interactive TUI inside a detached tmux session and "
-            "return attach commands (interactive claude and pi only)."
+            "return attach commands (interactive claude, pi, and codex)."
         ),
     ),
     resume: str | None = typer.Option(
         None,
         "--resume",
         help=(
-            "Resume an existing session by id: interactive claude, or headless "
-            "claude, pi, and codex (refused, never a fresh session, when the "
-            "session cannot be found or does not hold)."
+            "Resume an existing session by id: interactive claude, pi, and "
+            "codex, or headless claude, pi, and codex. Interactive Codex "
+            "requires an existing Agent. DSH is refused because "
+            "a fresh worker MCP identity cannot attach an existing DSH session; "
+            "jev has no persistent session; user-proxy is a stateless relay. "
+            "A missing session is refused, never replaced with a fresh one."
         ),
     ),
     model_provider: str | None = typer.Option(
@@ -120,7 +123,7 @@ def start(
             # profile, not caller-supplied evidence.  Selection is static
             # configuration, so this is one ordinary IPC round-trip: the
             # request no longer waits on any liveness probe (2026-09-21).
-            # The read-only `dispatch matrix --probe` never enters this path.
+            # Availability recorded by `agent tiers probe` never enters this path.
             resolved = services._daemon_request(
                 "dispatch.matrix.resolve", {"tier": tier, "name": name},
                 timeout=_DAEMON_IPC_ROUNDTRIP_SECONDS,
@@ -156,10 +159,15 @@ def start(
                     ipc_errors.INVALID_ARGUMENT,
                     "user-proxy relays and has no model; --tier, --provider, and --model are not accepted",
                 )
-            if resume is not None or tmux:
+            if resume is not None:
                 raise services.CliError(
                     ipc_errors.INVALID_ARGUMENT,
-                    "user-proxy does not support --resume or --tmux",
+                    "user-proxy is a stateless relay and has no persistent "
+                    "session to resume",
+                )
+            if tmux:
+                raise services.CliError(
+                    ipc_errors.INVALID_ARGUMENT, "user-proxy does not support --tmux"
                 )
             runtime_args = ()
             headless = True
@@ -174,10 +182,14 @@ def start(
                     ipc_errors.INVALID_ARGUMENT,
                     "jev model selection belongs to each request; --tier, --provider, and --model are not accepted",
                 )
-            if resume is not None or tmux:
+            if resume is not None:
                 raise services.CliError(
                     ipc_errors.INVALID_ARGUMENT,
-                    "jev does not support --resume or --tmux",
+                    "jev has no persistent session; model selection is per request",
+                )
+            if tmux:
+                raise services.CliError(
+                    ipc_errors.INVALID_ARGUMENT, "jev does not support --tmux"
                 )
             headless = True
         try:
@@ -197,29 +209,37 @@ def start(
                     f"{option} was supplied both as a hyprial option and after '--'",
                 )
         resolved_cwd = _resolved_agent_cwd(name, cwd)
+        resume_agent_before: JsonObject | None = None
         if resume is not None:
             if not (
-                (harness_kind == "claude" and not headless)
+                (harness_kind in {"claude", "pi", "codex"} and not headless)
                 or (headless and harness_kind in {"claude", "pi", "codex"})
             ):
+                reason = (
+                    "headless DSH cannot resume because a fresh worker MCP identity "
+                    "cannot attach an existing DSH session"
+                    if harness_kind == "dsh" and headless
+                    else f"interactive {harness_kind} has no resumable native runtime"
+                )
                 raise services.CliError(
                     ipc_errors.INVALID_ARGUMENT,
-                    "--resume is supported for interactive claude and for headless "
-                    "claude, pi, and codex",
+                    reason,
                 )
             if not resume.strip():
                 raise services.CliError(
                     ipc_errors.INVALID_ARGUMENT, "--resume requires a session id"
                 )
+            if harness_kind in {"pi", "codex"} and not headless:
+                resolved_cwd = _resolved_interactive_resume_cwd(name, cwd)
         if tmux and headless:
             raise services.CliError(
                 ipc_errors.INVALID_ARGUMENT, "--tmux cannot be combined with --headless"
             )
-        if tmux and harness_kind not in {"claude", "pi"}:
+        if tmux and harness_kind not in {"claude", "pi", "codex"}:
             raise services.CliError(
                 "UNSUPPORTED_CAPABILITY",
-                "--tmux is currently only supported for interactive claude "
-                "and pi sessions",
+                "--tmux is currently only supported for interactive claude, "
+                "pi, and codex sessions",
             )
         if not headless:
             from hyprial.daemon import (
@@ -257,6 +277,7 @@ def start(
                     name=name,
                     nickname=nickname,
                     cwd=resolved_cwd,
+                    resume=resume,
                     runtime_args=runtime_args,
                     model_provider=model_provider,
                     model=model,
@@ -273,10 +294,12 @@ def start(
                     name=name,
                     nickname=nickname,
                     cwd=resolved_cwd,
+                    resume=resume,
                     runtime_args=runtime_args,
                     model_provider=model_provider,
                     model=model,
                     json_output=json_output,
+                    tmux=tmux,
                 )
             raise services.CliError(
                 "UNSUPPORTED_CAPABILITY",
@@ -298,15 +321,6 @@ def start(
                     f"{harness_kind} binary not found on PATH; install it "
                     f"(or fix PATH) before starting a {harness_kind} connector",
                 )
-        # A5: the agent exists before the connector does, on this path too.
-        services._create_agent_for_start(
-            name=name,
-            harness=harness_kind,
-            runtime="headless",
-            cwd=resolved_cwd,
-            provider=None if harness_kind in {"jev", "user-proxy"} else model_provider,
-            model=None if harness_kind in {"jev", "user-proxy"} else model,
-        )
         params: JsonObject = {
             # The IPC key stays "provider" so this CLI can talk to a daemon
             # running an older build (and vice versa).
@@ -345,29 +359,111 @@ def start(
             # does not hold (STRICT_RESUME_FAILED, worker stopped).  Without
             # this key the daemon keeps today's default: a fresh session.
             params["sessionRef"] = resume.strip()
+            # Native transcript validation is read-only and must precede the
+            # reusable Agent write.  A daemon without this dedicated method
+            # fails closed with METHOD_NOT_FOUND before agent.create.
+            preflight = services._daemon_request("lifecycle.resume.preflight", params)
+            preflight_snapshot = preflight.get("agentSnapshot")
+            if not isinstance(preflight_snapshot, dict):
+                raise services.CliError(
+                    "INVALID_RESPONSE",
+                    "resume preflight did not return the complete Agent snapshot; "
+                    "the daemon cannot safely restore a start-time refusal",
+                )
+        # A5: the Agent exists before the connector does. Resume adds the
+        # stricter condition above: an invalid native target cannot rewrite it.
+        create_result = services._create_agent_for_start(
+            name=name,
+            harness=harness_kind,
+            runtime="headless",
+            cwd=resolved_cwd,
+            provider=None if harness_kind in {"jev", "user-proxy"} else model_provider,
+            model=None if harness_kind in {"jev", "user-proxy"} else model,
+            include_resume_snapshot=resume is not None,
+        )
+        if resume is not None:
+            raw_before = create_result.get("resumePreviousSnapshot")
+            if not isinstance(raw_before, dict):
+                raise services.CliError(
+                    ipc_errors.RESUME_AGENT_RESTORE_FAILED,
+                    "agent.create did not replace an existing Agent after resume "
+                    "preflight; no exact rollback record exists, so inspect the "
+                    "new Agent before retrying",
+                )
+            resume_agent_before = raw_before
+        resume_agent_after = create_result.get("resumeSnapshot")
+        if resume_agent_before is not None and not isinstance(resume_agent_after, dict):
+            raise services.CliError(
+                "INVALID_RESPONSE",
+                "agent.create did not return the post-write Agent snapshot; "
+                "the daemon cannot safely restore a start-time refusal",
+            )
         # Harness readiness is bounded by the lifecycle manager's operation
         # deadline, and this wait must OUTLAST the daemon-side wait
         # (deadline + wait margin): a shorter budget abandoned a healthy
         # start with IPC_TIMEOUT while the daemon still owned and settled it
         # (2026-09-14 production).  Same derivation as `down`; the three
         # waits are composed from one deadline, never chosen independently.
-        return services._daemon_request(
-            "lifecycle.start-smolvm" if execution_runtime is not None else "lifecycle.start",
-            params,
-            timeout=(
-                LIFECYCLE_OPERATION_DEADLINE_SECONDS
-                + LIFECYCLE_WAIT_MARGIN_SECONDS
-                + LIFECYCLE_IPC_MARGIN_SECONDS
-                # A resume adds the daemon's readiness check (one margin) and,
-                # when it fails, one undo operation (a full operation wait).
-                + (
-                    LIFECYCLE_WAIT_MARGIN_SECONDS
-                    + LIFECYCLE_OPERATION_DEADLINE_SECONDS
+        try:
+            return services._daemon_request(
+                (
+                    "lifecycle.start-smolvm"
+                    if execution_runtime is not None
+                    else "lifecycle.start"
+                ),
+                params,
+                timeout=(
+                    LIFECYCLE_OPERATION_DEADLINE_SECONDS
                     + LIFECYCLE_WAIT_MARGIN_SECONDS
-                    if "sessionRef" in params
-                    else 0.0
-                )
-            ),
-        )
+                    + LIFECYCLE_IPC_MARGIN_SECONDS
+                    # A resume adds the daemon's readiness check (one margin) and,
+                    # when it fails, one undo operation (a full operation wait).
+                    + (
+                        LIFECYCLE_WAIT_MARGIN_SECONDS
+                        + LIFECYCLE_OPERATION_DEADLINE_SECONDS
+                        + LIFECYCLE_WAIT_MARGIN_SECONDS
+                        if "sessionRef" in params
+                        else 0.0
+                    )
+                ),
+            )
+        except services.CliError as start_error:
+            if (
+                resume_agent_before is not None
+                and isinstance(resume_agent_after, dict)
+                and start_error.code
+                in {
+                    ipc_errors.RESUME_SESSION_NOT_FOUND,
+                    ipc_errors.STRICT_RESUME_FAILED,
+                }
+            ):
+                # The rollback is a compensating write, not a second start
+                # attempt: when it fails its own error must NOT replace the
+                # start refusal that made the rollback necessary.  Keep the
+                # original code/message as the primary failure and attach the
+                # rollback failure as extra context the operator can read.
+                try:
+                    services._daemon_request(
+                        "agent.resume.restore",
+                        {
+                            "name": name,
+                            "expected": resume_agent_after,
+                            "replacement": resume_agent_before,
+                        },
+                    )
+                except Exception as restore_error:  # noqa: BLE001 - reported, never mask
+                    data = (
+                        dict(start_error.data)
+                        if isinstance(start_error.data, dict)
+                        else {}
+                    )
+                    data["restoreError"] = {
+                        "code": getattr(restore_error, "code", None),
+                        "message": str(restore_error),
+                    }
+                    raise services.CliError(
+                        start_error.code, str(start_error), data
+                    ) from start_error
+            raise
 
     services._execute(operation, json_output=json_output)

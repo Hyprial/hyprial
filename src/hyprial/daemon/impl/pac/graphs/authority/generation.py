@@ -121,7 +121,39 @@ class _Generation:
         else:
             if isinstance(command, _RESTORE_FACT_COMMANDS):
                 self.owner._refresh_restore_facts()
+            self._wake_affected(command, result)
             self.complete(GraphCommandCompleted(command.correlation_id, self.generation, result=result))
+
+    def _wake_affected(self, command: GraphCommand, result: Any) -> None:
+        """Wake the actor(s) a committed graph write can make actionable.
+
+        This is the event side of the supply: the every-tick scan used to
+        re-derive every actor of every open graph to notice these changes.
+        Effect completions keep their own in-handler continuation; this
+        covers the graph-level mutations.  ``wake_actor`` is best-effort -
+        the periodic fallback sweep catches a dropped or missed wake.
+        """
+
+        wake = getattr(self.owner, "wake_actor", None)
+        if not callable(wake):
+            return
+        if isinstance(command, (ActivateGraph, CloseGraph, StopActor)):
+            wake(command.graph_id)
+        elif isinstance(command, (SetFlag, ResetFlag)):
+            wake(command.graph_id)
+        elif isinstance(
+            command, (CancelWorkflow, FailWorkflow,
+                      StopWorkflowWorker, RestartWorkflowWorker)
+        ):
+            graph_id = getattr(command, "graph_id", None) or getattr(
+                command, "run_id", None
+            )
+            if graph_id:
+                wake(str(graph_id))
+        elif isinstance(command, (StartWorkflow, StartLegacyRoutine)):
+            graph_id = (result or {}).get("graphId")
+            if graph_id:
+                wake(str(graph_id))
 
     def _reconcile_actor(self, command: ReconcileActor) -> None:
         if command.generation not in (0, self.generation):
@@ -176,6 +208,7 @@ class _Generation:
                 resolver=_DeferredResolver(command),
                 defer_notifications=True,
                 on_skip=self.owner._actor_skip,
+                publisher=self.owner.hook_publisher,
             )
             try:
                 coordinator.reconcile(command.graph_id, command.node_id)
@@ -444,6 +477,7 @@ class _Generation:
                 ),
                 defer_notifications=True,
                 on_skip=self.owner._actor_skip,
+                publisher=self.owner.hook_publisher,
             )
             settled = coordinator._settle_cleanup_effect_failure(
                 effect.graph_id,
@@ -484,6 +518,7 @@ class _Generation:
                     observation=effect.observation,
                 )),
                 defer_notifications=True,
+                publisher=self.owner.hook_publisher,
             )
             coordinator._launch_failed(
                 effect.graph_id, node, dict(row), RuntimeError(detail)
@@ -539,6 +574,13 @@ class _Generation:
                 )
             return {"accepted": accepted}
         store = PacGraphStore(self.database)
+        store.hook_publisher = self.owner.hook_publisher
+        wake = getattr(self.owner, "wake_actor", None)
+        if callable(wake):
+            # A close committed here must stop the graph's running workers;
+            # the deferred-close choke point wakes them once the close is
+            # durable instead of waiting for the fallback sweep.
+            store.graph_closed_wake = lambda graph_id: wake(graph_id)
         try:
             if isinstance(command, QueryRoutineOccurrence):
                 return self._routine_occurrence(store, command)
@@ -757,6 +799,7 @@ class _Generation:
                         if isinstance(command, SetFlag)
                         else None
                     ),
+                    publisher=self.owner.hook_publisher,
                 )
                 if isinstance(command, SetFlag):
                     outcome = reactor.set_flag(
@@ -841,9 +884,16 @@ class _Generation:
                         db.commit()
                     except BaseException:
                         db.rollback()
+                        store.discard_graph_closed()
                         raise
+                    store.flush_graph_closed()
                     return {"ok": True, **show_graph(store, command.graph_id)}
-                return {"ok": True, **close_graph(store, command.graph_id, actor=command.actor)}
+                return {"ok": True, **close_graph(
+                    store,
+                    command.graph_id,
+                    actor=command.actor,
+                    publisher=self.owner.hook_publisher,
+                )}
             if isinstance(command, StopActor):
                 request_actor_stop(
                     store, command.graph_id, command.actor_name, actor=command.actor

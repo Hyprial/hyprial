@@ -14,6 +14,7 @@ from hyprial.daemon.impl.pac.actors.coordinator.types import (
     CLEANUP_ATTEMPT_LIMIT,
     LaunchSpec,
     RuntimeObservation,
+    WorkerCleanupComplete,
 )
 
 
@@ -471,6 +472,7 @@ class _CoordinatorUp:
     ) -> None:
         db = self.store.write()
         inserted: list[PlannedNotification] = []
+        cleanup_record: WorkerCleanupComplete | None = None
         try:
             graph = self.store.graph(graph_id)
             current = db.execute(
@@ -507,7 +509,7 @@ class _CoordinatorUp:
                     and cleanup_row["state"] == "pending"
                     and cleanup_row["operation_id"] == cleanup["operation_id"]
                 ):
-                    self._complete_cleanup_row(
+                    cleanup_record = self._complete_cleanup_row(
                         db,
                         graph,
                         node,
@@ -541,6 +543,7 @@ class _CoordinatorUp:
         except BaseException:
             db.rollback()
             raise
+        self._publish_cleanup_complete(cleanup_record)
         self.reactor._deliver(graph_id, tuple(inserted))
 
     def _launch_failed(self, graph_id: str, node: NodeRow, activation: dict[str, Any], error: Exception) -> None:

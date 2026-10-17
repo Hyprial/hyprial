@@ -31,6 +31,7 @@ from hyprial.daemon.impl.desired_state_io  import (
 )
 from hyprial.daemon.impl.state_persistence  import StateCommandCompleted
 from hyprial.daemon.impl.processes.orphan_processes  import OrphanProcessRegistry, OrphanProcessAuthority
+from hyprial.daemon.impl.harnesses.runtime.observation import RuntimeFactsAuthority
 from hyprial.daemon.impl.harnesses.runtime.ports  import (
     BindHarnessLivenessCommand,
     DispatchHarnessDeliveryCommand,
@@ -40,8 +41,11 @@ from hyprial.daemon.impl.harnesses.runtime.ports  import (
     DrainHarnessResultsCommand,
     ClaimHarnessResultsCommand,
     SettleHarnessResultCommand,
+    SteerHarnessDeliveryCommand,
     ClaimedHarnessResult,
     EnsureHarnessCommand,
+    HoldStartsForTransfer,
+    ReleaseStartsHold,
     HarnessCallIoCompleted,
     HarnessCommand,
     HarnessFailedDrained,
@@ -57,6 +61,7 @@ from hyprial.daemon.impl.harnesses.runtime.ports  import (
     RemoveHarnessCommand,
     RemoveAdapterRegistrationCommand,
     RefreshHarnessProjectionsCommand,
+    ObserveHarnessRuntimeFactsCommand,
     ReconcileHarnessSessionRefsCommand,
     RestoreEligibilityProjection,
     AgentIdentityProjectionPort,
@@ -77,6 +82,7 @@ from hyprial.kernel import ipc_errors
 from hyprial.kernel import PortAdmission, PortCommandRejected
 from hyprial.kernel import ReadinessReport
 
+from .behaviors.transfer import _TransferBehavior
 from .behaviors.delivery import _DeliveryBehavior
 from .behaviors.desired import _DesiredBehavior
 from .behaviors.lifecycle import _LifecycleBehavior
@@ -86,6 +92,7 @@ from .contracts import HarnessProjection, ProcessIdentity, _ClaimScan, _ClaimSca
 from .io_port import ProcessIoPort
 
 class HarnessRuntimeActor(
+    _TransferBehavior,
     _DesiredBehavior,
     _ProcessEventsBehavior,
     _DeliveryBehavior,
@@ -120,7 +127,17 @@ class HarnessRuntimeActor(
             Callable[[str], StateCommandCompleted | None] | None
         ) = None,
         agent_identity: AgentIdentityProjectionPort | None = None,
+        source_custody_clear: Callable[[str, str], bool] | None = None,
+        runtime_facts_authority: RuntimeFactsAuthority | None = None,
     ) -> None:
+        self._init_transfer_holds(mailbox_capacity)
+        # Composition-owned capability authority for the restore-only native
+        # observation port.  A standalone actor is its own authority; the
+        # composition layer hands the same instance to the harness port client
+        # that mints grants, so a grant from anywhere else never validates.
+        self._runtime_facts_authority = (
+            runtime_facts_authority or RuntimeFactsAuthority()
+        )
         self._runtime = runtime or ActorRuntime()
         self._projection = projection or HarnessProjection()
         self._clock = clock
@@ -172,9 +189,11 @@ class HarnessRuntimeActor(
         self._desired_state = desired_state
         self._automatic_restore_allowed = automatic_restore_allowed
         self._logger = orphan_logger
+        self._identity_reader = identity_reader
         self._restore_eligibility: dict[str, RestoreEligibilityProjection] = {}
         self._restore_eligibility_capacity = 10_000
         self._agent_identity = agent_identity
+        self._source_custody_clear = source_custody_clear
         self._lifecycle_pending: dict[str, tuple[object, object]] = {}
         self._lifecycle_retry_timers: dict[str, threading.Timer] = {}
         self._lifecycle_effect_resources: set[str] = (
@@ -288,6 +307,9 @@ class HarnessRuntimeActor(
         return self._orphan_processes.status()
 
 
+    def orphan_persistence_stats(self) -> dict[str, int]:
+        return self._orphan_processes.persistence_stats()
+
     def restore_settlement_budget(self, target_count: int) -> float | None:
         """Wall-clock backstop for one restore round's settlement wait.
 
@@ -366,6 +388,13 @@ class HarnessRuntimeActor(
     @property
     def version(self) -> int:
         return self._version
+
+
+    @property
+    def runtime_facts_authority(self) -> RuntimeFactsAuthority:
+        """The capability authority that validates restore observations."""
+
+        return self._runtime_facts_authority
 
 
     def subscribe_events(self, sink: object) -> None:
@@ -496,10 +525,21 @@ class HarnessRuntimeActor(
             self._publish()
             return True
         if isinstance(command, LifecycleMutationRequest):
+            entity_error = self._lifecycle_entity_error(command)
+            if entity_error is not None:
+                self._reject_correlation(
+                    command.correlation_id, *entity_error,
+                )
+                return True
             with self._generation_lock:
                 durable_receipt = self._durable_lifecycle_receipt(
                     command.attempt_token
                 )
+                if (durable_receipt is not None
+                        and durable_receipt.expected_entity_token != command.expected_entity_token):
+                    self._reject_correlation(command.correlation_id, ipc_errors.INVALID_ARGUMENT,
+                                             "lifecycle attempt token was reused with another incarnation fence")
+                    return True
                 if durable_receipt is not None and durable_receipt.completed:
                     replay_claim = self._claim_lifecycle_replay(
                         command.attempt_token
@@ -557,7 +597,11 @@ class HarnessRuntimeActor(
     def _dispatch_command(self, command: object) -> bool:
         from hyprial.daemon.impl.processes.process_owner  import ProcessFactsObserved
 
-        if isinstance(command, RestoreHarnessesCommand):
+        if isinstance(command, HoldStartsForTransfer):
+            self._on_hold_starts(command)
+        elif isinstance(command, ReleaseStartsHold):
+            self._on_release_starts(command)
+        elif isinstance(command, RestoreHarnessesCommand):
             self._on_restore(command)
         elif isinstance(command, EnsureHarnessCommand):
             self._on_ensure(command)
@@ -621,6 +665,8 @@ class HarnessRuntimeActor(
             self._on_wait_ready(command)
         elif isinstance(command, DispatchHarnessDeliveryCommand):
             self._on_dispatch(command)
+        elif isinstance(command, SteerHarnessDeliveryCommand):
+            self._on_steer(command)
         elif isinstance(command, DrainHarnessResultsCommand):
             self._on_drain_results(command)
         elif isinstance(command, ClaimHarnessResultsCommand):
@@ -649,8 +695,10 @@ class HarnessRuntimeActor(
             self._on_stop_all(command)
         elif isinstance(command, HarnessProcessStarted):
             self._on_start_completed(command)
+            self._transfer_start_completed(command)
         elif isinstance(command, HarnessStopIoCompleted):
             self._on_stop_completed(command)
+            self._transfer_stop_completed(command)
         elif isinstance(command, HarnessCallIoCompleted):
             self._on_call_completed(command)
         elif isinstance(command, HarnessStartTimerElapsedCommand):
@@ -664,6 +712,15 @@ class HarnessRuntimeActor(
                     self._version,
                 )
             )
+        elif isinstance(command, ObserveHarnessRuntimeFactsCommand):
+            if not self._runtime_facts_authority.validate(command.grant):
+                self._reject(
+                    command,
+                    ipc_errors.HARNESS_RUNTIME_OBSERVATION_UNAUTHORIZED,
+                    "native runtime observation requires a minted restore grant",
+                )
+            else:
+                self._on_reconcile_session_refs(command, publish_only=True)
         elif isinstance(command, StageHarnessDesiredCommand):
             self._on_manage_desired(command)
         elif isinstance(command, SnapshotAdapterRegistrationCommand):

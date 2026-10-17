@@ -27,6 +27,7 @@ from hyprial.daemon.impl.network.route_ports  import (
 class LifecycleKind(StrEnum):
     CREATE = "create"
     DEACTIVATE = "deactivate"
+    RESUME = "resume"
     REMOVE = "remove"
     TRANSFER = "transfer"
 
@@ -56,6 +57,14 @@ class LifecycleSpec:
     route: RouteSpec
     session: SessionLifecycleSpec | None = None
     interruption_reason: str | None = None
+    expected_entity_token: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.expected_entity_token is not None and (
+            not isinstance(self.expected_entity_token, str)
+            or not self.expected_entity_token.strip()
+        ):
+            raise ValueError("expected_entity_token must not be blank")
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +77,11 @@ class LifecycleOperation:
     @classmethod
     def create(cls, operation_id: str, target: LifecycleSpec) -> LifecycleOperation:
         return cls(operation_id, LifecycleKind.CREATE, target)
+
+    @classmethod
+    def resume(cls, operation_id: str, target: LifecycleSpec) -> LifecycleOperation:
+        """Rebuild runtime effects without creating/destroying the Agent."""
+        return cls(operation_id, LifecycleKind.RESUME, target)
 
     @classmethod
     def remove(cls, operation_id: str, target: LifecycleSpec) -> LifecycleOperation:

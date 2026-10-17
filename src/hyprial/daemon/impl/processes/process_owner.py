@@ -57,6 +57,14 @@ class InterruptTurn:
 
 
 @dataclass(frozen=True, slots=True)
+class SteerTurn:
+    """Fold one QUEUED delivery into the turn running right now."""
+
+    delivery_id: str
+    timeout: float
+
+
+@dataclass(frozen=True, slots=True)
 class WaitReady:
     timeout: float
 
@@ -226,6 +234,8 @@ class ProcessOwner:
             value = tuple(method()) if callable(method) else ()
         elif isinstance(command, InterruptTurn):
             value = process.interrupt(command.delivery_id, timeout=command.timeout)
+        elif isinstance(command, SteerTurn):
+            value = process.steer(command.delivery_id, timeout=command.timeout)
         elif isinstance(command, WaitReady):
             method = getattr(process, "wait_ready", None)
             value = (
@@ -373,6 +383,11 @@ class ProcessOwner:
         assert isinstance(observed, ProcessFacts)
         return observed
 
+    @property
+    def custody_source(self):
+        """Identity only: raw and owned wrappers represent one process generation."""
+        return self._process
+
     def facts(self):
         with self._guard:
             return self._facts
@@ -475,6 +490,9 @@ class StreamingProcessOwner(ProcessOwner):
 
     def interrupt(self, delivery_id, *, timeout=1.0):
         return self._call(InterruptTurn(delivery_id, timeout), timeout + 1.0)
+
+    def steer(self, delivery_id, *, timeout=5.0):
+        return self._call(SteerTurn(delivery_id, timeout), timeout + 1.0)
 
 
 def own_process(process, *, observer=None):

@@ -52,9 +52,10 @@ from hyprial.identity import (
     PAC_NOTIFY_DELIVERY_FAILED,
     PacError,
 )
+from hyprial.kernel import HookEventPublisher
 from hyprial.daemon.impl.pac.contracts.expansion.types import PreparedExpansion
 from hyprial.daemon.impl.pac.graphs.edits  import BACK, FORWARD, canonical_edge
-from hyprial.daemon.impl.pac.storage.journal  import activation_id, append_event
+from hyprial.daemon.impl.pac.storage.journal  import GraphClosedRecord, activation_id, append_event
 from hyprial.daemon.impl.pac.storage.migrations  import unrewritten_owners_note
 from hyprial.daemon.impl.pac.storage.store  import PacGraphStore
 from hyprial.daemon.impl.pac.workflows.outputs  import validate_workflow_output_text
@@ -201,12 +202,16 @@ class PacReactor:
         sender: NotificationSender | None = None,
         logger: Any = None,
         expansion_context: PreparedExpansion | None = None,
+        publisher: HookEventPublisher | None = None,
     ) -> None:
         self._store = store
         self._clock = clock
         self._sender = sender
         self._logger = logger
         self._expansion_context = expansion_context
+        self._publisher = publisher
+        if publisher is not None:
+            store.hook_publisher = publisher
 
     def close(self) -> None:
         """Close the underlying store; the reactor owns its store's lifetime."""
@@ -725,6 +730,17 @@ class PacReactor:
                         at=at,
                         data={"at": at, "by": node_id},
                     )
+                    # An unmanaged end-flag close records no state; endState
+                    # is null by contract, never an invented "completed".
+                    self._store.defer_graph_closed(
+                        GraphClosedRecord(
+                            graph_id=graph_id,
+                            end_state=None,
+                            closed_by=node_id,
+                            reason_ref=reason_ref,
+                            closed_at_ms=at,
+                        )
+                    )
             if managed_end:
                 from hyprial.daemon.impl.pac.workflows.runtime  import close_workflow
 
@@ -733,6 +749,8 @@ class PacReactor:
                     "WHERE graph_id=? AND state='failed' LIMIT 1",
                     (graph_id,),
                 ).fetchone()
+                # Managed closes funnel through close_workflow, which defers
+                # the record; the flush below publishes it after the commit.
                 close_workflow(
                     self._store,
                     graph,
@@ -801,6 +819,10 @@ class PacReactor:
         except BaseException:
             db.rollback()
             raise
+
+        # The graph close is durable; publish the deferred fact after the
+        # commit, on the caller's thread, never inside the transaction.
+        self._store.flush_graph_closed()
 
         # Network I/O is outside SQLite's write lock; recovery only replays
         # these durable plans, never reinterprets old flags against a new graph.

@@ -166,17 +166,20 @@ uv run ruff check .
 ## Contributing
 
 [`src/gui`](src/gui) 是独立的 `@hyprial/gui` Node 工程；
-[`desktop`](desktop) 是包装同一 GUI product server 的 Tauri v2 外壳。使用 Node 24，
+[`app`](app) 是 Tauri v2 外壳：默认 Core 加载静态页面，不启动本机 runtime；
+`--features power-pack` 保留包装 GUI product server 的 legacy 路径。使用 Node 24，
 在仓库根执行 `npm --prefix src/gui ci --ignore-scripts`、`npm --prefix src/gui run check`、
-`npm --prefix src/gui test` 和 `npm --prefix src/gui run build`；desktop 单独执行
-`npm --prefix desktop ci --ignore-scripts`、`npm --prefix desktop test`。
-Rust 外壳执行 `cargo fmt --manifest-path desktop/src-tauri/Cargo.toml -- --check`、
-`cargo clippy --locked --manifest-path desktop/src-tauri/Cargo.toml --all-targets -- -D warnings`、
-`cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml`（GUI 依赖已安装，PATH 有 Node ≥24）。
+`npm --prefix src/gui test` 和 `npm --prefix src/gui run build`；app 单独执行
+`npm --prefix app ci --ignore-scripts`、`npm --prefix app test`。
+先运行 `npm --prefix app run build:core` 生成静态资产；`npm --prefix app run dev:core` 启动 Core。
+Rust 外壳执行 `cargo fmt --manifest-path app/src-tauri/Cargo.toml -- --check`、
+`cargo clippy --locked --manifest-path app/src-tauri/Cargo.toml --all-targets -- -D warnings`、
+`cargo test --locked --manifest-path app/src-tauri/Cargo.toml`（GUI 依赖已安装，PATH 有 Node ≥24）。
+另须对 clippy/test 添加 `--features power-pack` 验证 legacy 层，不能因默认 feature 为空而省略旧 runtime 回归。
 启动 GUI 必须显式配置 transport driver 与可信 principal，缺失时 fail closed，不默认接入
 mock 或生产 daemon。Python 使用 uv；先运行结构和公共边界门，再跑焦点测试。
 具体命令、模块职责与隔离要求见 [GUI workflow](.agents/skills/gui-workflow/SKILL.md)。
-GUI 与 desktop 分别由 `.forgejo/workflows/gui.yml` 和 `desktop-check.yml` 检查；
+GUI 与 app 分别由 `.forgejo/workflows/gui.yml` 和 `desktop-check.yml` 检查；
 unit/build 通过不代表浏览器、真实 backend、完整功能等价或已发布安装切换完成，这些仍须独立证据。
 
 欢迎提交问题和补丁。**补丁需要开发内网访问权限** —— 请先联系 maintainer 申请加入，

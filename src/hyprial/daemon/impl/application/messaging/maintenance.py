@@ -35,6 +35,9 @@ from hyprial.daemon.impl.application.messaging.status.snapshots import (
 from hyprial.daemon.impl.application.netendpoints.endpoints import (
     _reconcile_tick_budget,
 )
+from hyprial.daemon.impl.application.messaging.instrumentation.orgfs_announce import (
+    note_forwarding_timer_tick,
+)
 
 
 _INBOX_WATCH_INTERVAL_MS = 60_000
@@ -87,15 +90,6 @@ def _record_phase_cpu(owner: str, phase: str, *, cpu_seconds: float) -> None:
 
 class _MaintenanceMixin:
     """Application cluster mixin; the state owner is DaemonApplication."""
-
-    def _on_usage_refreshed(self) -> None:
-        watchdog = self._quota_watchdog
-        if watchdog is None:
-            return
-        alerts = watchdog.observe_readings()
-        held = watchdog.flush_failures()
-        for alert in [*alerts, *([held] if held is not None else [])]:
-            self._log("info", "daemon", "quota_watchdog.alerted", kind=alert.kind, key=alert.key)
 
     def _transport_lock_holder(self) -> Any:
         lock_holder = getattr(getattr(self, "_transport", None), "lock_holder", None)
@@ -639,15 +633,8 @@ class _MaintenanceMixin:
                     "warn", "daemon", "profile.refresh_overloaded",
                     errorType=type(error).__name__,
                 )
-        if now >= self._keep_refresh_due:
-            self._keep_refresh_due = now + 30.0
-            try:
-                self._agent_keep.refresh(wait=False)
-            except Exception as error:
-                self._log(
-                    "warn", "daemon", "agent.keep_refresh_overloaded",
-                    errorType=type(error).__name__,
-                )
+        if now >= self._restore_policy_refresh_due:
+            self._restore_policy_refresh_due = now + 30.0
             try:
                 self._restore_policy.refresh(wait=False)
             except Exception as error:
@@ -664,6 +651,7 @@ class _MaintenanceMixin:
             admission = forwarding.submit(int(time.time_ns() // 1_000_000))
             if admission is AdmissionResult.OVERLOADED:
                 self._log("warn", "daemon", "forwarding.tick_overloaded")
+        self._note_forwarding_timer_tick()
         observed_at_ms = int(time.time_ns() // 1_000_000)
         cadence = self._dispatch_cadence
         if cadence is None:
@@ -973,6 +961,9 @@ class _MaintenanceMixin:
         """The snapshot installed for this request thread, when there is one."""
 
         return getattr(self._worker_snapshot_local, "current", None)
+
+    def _note_forwarding_timer_tick(self) -> None:
+        note_forwarding_timer_tick(self)
 
     def _log(self, level: str, component: str, event: str, **fields: Any) -> None:
         self._logger.bind(component=component).log(level, event, **fields)

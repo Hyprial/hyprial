@@ -51,21 +51,31 @@ except ImportError:  # pragma: no cover - compatibility across Typer layouts
 # --- command families (import order == original registration order) --------
 from hyprial.shell.impl.cli.commands.common.services import CliServices, set_service_resolver
 from hyprial.shell.impl.cli.commands.common.root import app
-from hyprial.shell.impl.cli.commands.common.support import CliError, DAEMON_START_HARD_CAP_SECONDS, DAEMON_START_IDLE_BUDGET_SECONDS, JsonObject, _CONNECT_BACKLOG_ERRNOS, _CONNECT_BACKLOG_RETRY_INTERVAL, _DAEMON_IPC_ROUNDTRIP_SECONDS, _DEVICE_SIGN_IN_HINT, _INIT_READY_TIMEOUT_ENV, _PEER_GONE_ERRNOS, _RESTORE_FOLLOWUP_POLL_INTERVAL_SECONDS, _RESTORE_WAIT_DEFAULT_SECONDS, _RESTORE_WAIT_MAX_SECONDS, _RESTORE_WAIT_POLL_SECONDS, _SQUIRE_SETUP_PARTS, _agent_workspace, _announce_setup_guidance, _append_warning, _connect_daemon_socket, _daemon_probe, _daemon_ready_for_process, _daemon_request, _daemon_request_once, _emit, _endpoint_args, _execute, _fail, _hyprial_home, _json_failure, _local_operator_identity, _message_claim_params, _overview_age, _overview_duration, _overview_last_segment, _overview_next, _overview_sender, _overview_table, _peer_gone, _probe_reports_running, _resolved_agent_cwd, _restore_wait_budget, _socket_path, _squire_setup_warning, _state_dir, _stdin_isatty, _user_proxy_launch_params, _user_proxy_setup_warning, _utc_now, _wait_for_daemon
+from hyprial.shell.impl.cli.commands.common.support import CliError, DAEMON_START_HARD_CAP_SECONDS, DAEMON_START_IDLE_BUDGET_SECONDS, JsonObject, _CONNECT_BACKLOG_ERRNOS, _CONNECT_BACKLOG_RETRY_INTERVAL, _DAEMON_IPC_ROUNDTRIP_SECONDS, _DEVICE_SIGN_IN_HINT, _INIT_READY_TIMEOUT_ENV, _PEER_GONE_ERRNOS, _RESTORE_FOLLOWUP_POLL_INTERVAL_SECONDS, _RESTORE_WAIT_DEFAULT_SECONDS, _RESTORE_WAIT_MAX_SECONDS, _RESTORE_WAIT_POLL_SECONDS, _SETUP_HINTS, _SQUIRE_SETUP_PARTS, _agent_workspace, _announce_setup_guidance, _append_warning, _connect_daemon_socket, _daemon_probe, _daemon_ready_for_process, _daemon_request, _daemon_request_once, _emit, _endpoint_args, _execute, _fail, _hyprial_home, _json_failure, _local_operator_identity, _message_claim_params, _overview_age, _overview_duration, _overview_last_segment, _overview_next, _overview_sender, _overview_table, _peer_gone, _probe_reports_running, _resolved_agent_cwd, _restore_wait_budget, _setup_hint_enabled, _socket_path, _squire_setup_warning, _state_dir, _stdin_isatty, _user_proxy_launch_params, _user_proxy_setup_warning, _utc_now, _wait_for_daemon, _write_setup_hint
 from hyprial.shell.impl.cli.commands.common.daemon_start import _CUSTODY_STARTUP_ERROR_SHAPES, _DAEMON_LOG_READ_BYTES, _SAFE_DAEMON_STARTUP_EVENTS, _daemon_launch_capture, _daemon_launch_log_summary, _daemon_startup_failure_evidence, _daemon_startup_phase_summary, _launch_daemon_process, _launch_daemon_process_locked, _launch_process_error
 from hyprial.shell.impl.cli.commands.common.daemon_stop import _describe_survivor, _observe_restart_process, _stop_daemon_for_identity_switch, _stop_daemon_for_operator, _stop_daemon_gracefully, _stop_daemon_with_proof, _stopped_process, _wait_daemon_teardown_receipt, old_pid_from
 from hyprial.shell.impl.cli.commands.login.commands import _login_route_is_first_time_setup, login
 from hyprial.shell.impl.cli.commands.meta.commands import _semantic_version, _version_result, help_command, version
 from hyprial.shell.impl.cli.commands.socialware.commands import _prime_post_install_restart_imports, _require_installed_commit, _running_daemon_before_upgrade, install
 from hyprial.shell.impl.cli.commands.common.pending_restart import _install_locked_requirement
-from hyprial.shell.impl.cli.commands.daemon.status import _TOP_SEVERITY, _format_quota_window, _format_top_age, _format_top_reset, _format_top_rss, _format_top_seconds, _format_top_window_seconds, _parse_ps_duration, _render_top, _render_top_quota, _sample_process_table, _subtree_totals, _top_state_label, process_status, top_status
+from hyprial.shell.impl.cli.commands.daemon.ps import process_status
+from hyprial.shell.impl.cli.commands.daemon.top import _TOP_SEVERITY, _format_quota_window, _format_top_age, _format_top_reset, _format_top_rss, _format_top_seconds, _format_top_window_seconds, _parse_ps_duration, _render_top, _render_top_quota, _sample_process_table, _subtree_totals, _top_state_label, top_status
 from hyprial.shell.impl.cli.commands.doctor.commands import _device_key_doctor_check, _doctor_result, _dsh_doctor_check, _dsh_endpoint_label, _dsh_host_describe, _duplicate_instance_doctor_check, _historical_inbox_doctor_check, _lark_inbound_doctor_check, _maintenance_doctor_check, _mcp_channel_doctor_check, _pac_gc_doctor_check, _restore_doctor_check, _routine_health_doctor_check, _tailcat_sidecar_doctor_check, _workflow_worker_cleanup_doctor_check, _zenoh_doctor_check, doctor
 from hyprial.shell.impl.cli.commands.workflow.internal.worktrees import _WORKTREE_GIT_TIMEOUT_SECONDS, _WORKTREE_STATES, _dirty_activity_at_ms, _dirty_paths, _display_worktree_path, _git_count, _parse_worktree_porcelain, _render_worktree_repository, _resolve_worktree_repository, _run_worktree_git, _scan_worktree, _scan_worktree_repository, _worktree_bases, _worktree_git_output, _worktree_ref_exists, _worktree_remove_command, worktrees_command
-from hyprial.shell.impl.cli.commands.host.overview import _TARGETS_KIND_OPTIONS, _render_hosts, _render_targets, hosts, targets
+from hyprial.shell.impl.cli.commands.host.targets import _TARGETS_KIND_OPTIONS, _render_targets, targets
+from hyprial.shell.impl.cli.commands.host.hosts import _render_hosts, hosts
 from hyprial.shell.impl.cli.commands.common.support import _render_routine_list, _render_workflow_list
-from hyprial.shell.impl.cli.commands.message.commands import _validate_from_identity, ack, delivery_app, delivery_status, outbox_app, outbox_list, outbox_prune, reply, send
-from hyprial.shell.impl.cli.commands.log.commands import RFC3339, _AGENT_TIMELINE_EVENTS, _TRAJECTORY_LOG_EVENTS, _entry_timestamp, _format_trajectory, _is_log_entry, _is_trajectory_log_entry, _log_result, _parse_boundary, _read_log_history, _status_timestamp, _trajectory_event_state, _trajectory_node, _trajectory_ordering, _trajectory_result, log_command, query_command, trajectory_command
-from hyprial.shell.impl.cli.commands.init.commands import FIRST_RUN_ROUTE_NAME, _complete_initialization, _configured_adapter_names, _initialize_org_context, _onboarding_apply_actions, _onboarding_scope_authorized, _onboarding_snapshot, _org_init_warning, _zenoh_endpoint_warning, init, onboarding_app, onboarding_apply, onboarding_plan
+from hyprial.shell.impl.cli.commands.message.send import _validate_from_identity, send
+from hyprial.shell.impl.cli.commands.message.ack import ack
+from hyprial.shell.impl.cli.commands.message.reply import reply
+from hyprial.shell.impl.cli.commands.message.outbox import outbox_app, outbox_list, outbox_prune
+from hyprial.shell.impl.cli.commands.message.delivery import delivery_app, delivery_status
+from hyprial.shell.impl.cli.commands.log.history import RFC3339, _entry_timestamp, _is_log_entry, _read_log_history
+from hyprial.shell.impl.cli.commands.log.query import query_command
+from hyprial.shell.impl.cli.commands.log.log import _log_result, _parse_boundary, log_command
+from hyprial.shell.impl.cli.commands.log.trajectory import _AGENT_TIMELINE_EVENTS, _TRAJECTORY_LOG_EVENTS, _format_trajectory, _is_trajectory_log_entry, _status_timestamp, _trajectory_event_state, _trajectory_node, _trajectory_ordering, _trajectory_result, trajectory_command
+from hyprial.shell.impl.cli.commands.init.onboarding import FIRST_RUN_ROUTE_NAME, _configured_adapter_names, _onboarding_apply_actions, _onboarding_scope_authorized, _onboarding_snapshot, onboarding_app, onboarding_apply, onboarding_plan
+from hyprial.shell.impl.cli.commands.init.init import _complete_initialization, _initialize_org_context, _org_init_warning, _zenoh_endpoint_warning, init
 from hyprial.shell.impl.cli.commands.daemon.commands import daemon_app, daemon_run, daemon_status, daemon_stop
 from hyprial.shell.impl.cli.commands.service import service_app
 from hyprial.shell.impl.cli.commands.agent.grant import grants_check, grants_visibility
@@ -76,16 +86,18 @@ from hyprial.shell.impl.cli.commands.common.pending_restart import PENDING_RESTA
 from hyprial.shell.impl.cli.commands.daemon.restart import _daemon_restart_identity, _interrupted_turns, _record_autoupdate_restart_confirmation, _record_autoupdate_restart_not_required, _restart_is_interactive, _restart_status, restart_command
 from hyprial.shell.impl.cli.commands.gui.commands import gui_command, gui_status, start_gui_background, stop_gui
 from hyprial.shell.impl.cli.commands.login.flow import _ensure_login_device, _prove_daemon_absent, _run_login_cli_flow
-from hyprial.shell.impl.cli.commands.squire.commands import _delivery_agent_live, _parse_combo, _squire_setup_operation, _stored_user_proxy_route, squire_app, squire_probe, squire_setup, user_proxy_app, user_proxy_setup, user_proxy_status
-from hyprial.shell.impl.cli.commands.agent.admin import agent_app, agent_destroy, agent_keep_app, agent_list, agent_unblock, migration_app, secret_app
+from hyprial.shell.impl.cli.commands.squire.squire import _squire_setup_operation, squire_app, squire_setup
+from hyprial.shell.impl.cli.commands.squire.user_proxy import _stored_user_proxy_route, user_proxy_app, user_proxy_setup, user_proxy_status
+from hyprial.shell.impl.cli.commands.agent.admin import agent_app, agent_destroy, agent_list, agent_unblock, migration_app, secret_app
 from hyprial.shell.impl.cli.commands.agent.create import _create_agent_for_start, agent_create, agent_host_invite
 from hyprial.shell.impl.cli.commands.agent.grant import agent_grant, agent_grants, agent_revoke
 from hyprial.shell.impl.cli.commands.agent.home import _MIGRATION_ROUTINE_BINDING_FIELDS, _guard_agent_migration_routines, _migration_manifest, _routine_binding_matches_agent, agent_home_census, agent_migrate_execute, agent_migrate_preflight, agent_migrate_rollback
-from hyprial.shell.impl.cli.commands.agent.restore import agent_keep_add, agent_keep_list, agent_keep_remove, agent_restore_policy, agent_restore_threshold
+from hyprial.shell.impl.cli.commands.agent.restore import agent_restore_policy, agent_restore_threshold
 from hyprial.shell.impl.cli.commands.agent.secret import agent_secret_entry_write, agent_secret_grant, agent_secret_list, agent_secret_revoke
 from hyprial.shell.impl.cli.commands.agent.runtime.interactive import _announce_plugin_skips, _channel_registration_confirmed, _handover_prompt, _interactive_actor, _interactive_actor_name, _launch_detached_tui, _pi_attach_registration, _plugin_skip_warnings, _runtime_context_environment, _runtime_context_projection, _runtime_launch_custody, _terminate_process, _wait_foreground, _with_plugin_warnings, _write_launch_config
 from hyprial.shell.impl.cli.commands.agent.runtime.claude import _CLAUDE_HARNESS_TOOLS, _CLAUDE_SESSION_IDENTITY_FLAGS, _reject_claude_session_identity_args, _start_interactive_claude
 from hyprial.shell.impl.cli.commands.agent.runtime.sessions import _CODEX_SESSION_FLAGS, _PI_SESSION_IDENTITY_FLAGS, _reject_codex_session_args, _reject_pi_session_identity_args, _start_interactive_codex, _start_interactive_pi
+from hyprial.shell.impl.cli.commands.agent.runtime.tiers import _delivery_agent_live, _parse_combo, agent_tiers, tiers_app, tiers_probe
 from hyprial.shell.impl.cli.commands.user.commands import user_add, user_app, user_bind, user_bindings_audit, user_list, user_show, user_unbind, user_whois
 from hyprial.shell.impl.cli.commands.adapter.admin import _adapter_secret_from_text, _confirm_adapter_stopped, _parse_adapter_routes, _present_verification_prompt, _read_adapter_secret, _verification_expiry, adapter_add, adapter_app, adapter_doctor, adapter_list, adapter_onboard, adapter_reload, adapter_remove, adapter_start, adapter_status, adapter_stop
 from hyprial.shell.impl.cli.commands.adapter.authorize import _authorize_interactively, _present_authorization_prompt, adapter_authorize
@@ -95,7 +107,6 @@ from hyprial.shell.impl.cli.commands.adapter.data import _checked_identity_kind,
 from hyprial.shell.impl.cli.commands.meta.mcp import mcp_agent_channel, mcp_app, mcp_claude_channel, mcp_claude_channel_recover, mcp_claude_turn_ended
 from hyprial.shell.impl.cli.commands.routine.commands import _routine_identity, routine_add, routine_list, routine_pause, routine_resume, routine_rm, routine_set, routine_status
 from hyprial.shell.impl.cli.commands.workflow.misc import workflow_gc
-from hyprial.shell.impl.cli.commands.workflow.internal.dispatch import dispatch_app, dispatch_matrix
 from hyprial.shell.impl.cli.commands.host.network import network_app, network_expose, network_exposures, network_peer_key, network_unexpose
 from hyprial.shell.impl.cli.commands.profile.commands import _profile_rows, _require_profile_name, profile_app, profile_create, profile_list, profile_use
 from hyprial.shell.impl.cli.commands.adapter.lark_auth import _canonical_lark_auth_state_path, _lark_auth_guard_notify_anchor, _lark_auth_send, _lark_auth_state_path, _lark_auth_timer_check, lark_auth_app, lark_auth_check, lark_auth_complete
@@ -264,7 +275,7 @@ set_service_resolver(_cli_services)
 # --- group wiring (original add_typer order) -------------------------------
 agent_app.add_typer(secret_app, name="secret")
 agent_app.add_typer(migration_app, name="migrate")
-agent_app.add_typer(agent_keep_app, name="keep")
+agent_app.add_typer(tiers_app, name="tiers")
 app.add_typer(adapter_app, name="adapter")
 app.add_typer(daemon_app, name="daemon")
 app.add_typer(service_app, name="service")
@@ -289,7 +300,6 @@ transfer_runtime_app = typer.Typer(
 )
 app.add_typer(transfer_runtime_app, name="transfer-runtime")
 app.add_typer(workflow_app, name="workflow")
-app.add_typer(dispatch_app, name="dispatch")
 app.add_typer(routine_app, name="routine")
 app.add_typer(onboarding_app, name="onboarding")
 adapter_app.add_typer(route_app, name="route")
@@ -336,9 +346,13 @@ transfer_bundle_receive = _transfer_commands.transfer_bundle_receive
 transfer_bundle_land = _transfer_commands.transfer_bundle_land
 transfer_credential_seal = _transfer_commands.transfer_credential_seal
 transfer_credential_open = _transfer_commands.transfer_credential_open
+transfer_trust_source_add = _transfer_commands.transfer_trust_source_add
+transfer_trust_source_list = _transfer_commands.transfer_trust_source_list
+transfer_trust_source_retire = _transfer_commands.transfer_trust_source_retire
 transfer_bundle_complete = _transfer_commands.transfer_bundle_complete
 transfer_precheck = _transfer_commands.transfer_precheck
 transfer_receive = _transfer_commands.transfer_receive
+transfer_recipient_key = _transfer_commands.transfer_recipient_key
 transfer_cred_stage = _transfer_commands.transfer_cred_stage
 transfer_container_home = _transfer_commands.transfer_container_home
 transfer_session_path = _transfer_commands.transfer_session_path
@@ -376,7 +390,7 @@ __all__ = [
     "_CODEX_SESSION_FLAGS", "_CONNECT_BACKLOG_ERRNOS", "_CONNECT_BACKLOG_RETRY_INTERVAL", "_CUSTODY_STARTUP_ERROR_SHAPES", "_DAEMON_IPC_ROUNDTRIP_SECONDS",
     "_DAEMON_LOG_READ_BYTES", "_DEVICE_SIGN_IN_HINT", "_INIT_READY_TIMEOUT_ENV",
     "_MIGRATION_ROUTINE_BINDING_FIELDS", "_PEER_GONE_ERRNOS", "_PI_SESSION_IDENTITY_FLAGS", "_RESTORE_FOLLOWUP_POLL_INTERVAL_SECONDS",
-    "_RESTORE_WAIT_DEFAULT_SECONDS", "_RESTORE_WAIT_MAX_SECONDS", "_RESTORE_WAIT_POLL_SECONDS", "_SAFE_DAEMON_STARTUP_EVENTS", "_SQUIRE_SETUP_PARTS",
+    "_RESTORE_WAIT_DEFAULT_SECONDS", "_RESTORE_WAIT_MAX_SECONDS", "_RESTORE_WAIT_POLL_SECONDS", "_SAFE_DAEMON_STARTUP_EVENTS", "_SETUP_HINTS", "_SQUIRE_SETUP_PARTS",
     "_TARGETS_KIND_OPTIONS", "_TOP_SEVERITY", "_TRAJECTORY_LOG_EVENTS", "_WORKTREE_GIT_TIMEOUT_SECONDS",
     "_WORKTREE_STATES", "_adapter_secret_from_text", "_agent_workspace", "_announce_plugin_skips",
     "_announce_setup_guidance", "_append_warning", "_authorize_interactively", "_autoupdate_result", "_canonical_lark_auth_state_path",
@@ -414,14 +428,14 @@ __all__ = [
     "_routine_identity", "_run_login_cli_flow", "_run_worktree_git",
     "_running_daemon_before_upgrade", "_runtime_context_environment", "_runtime_context_projection", "_runtime_launch_custody",
     "_sample_process_table", "_scan_worktree", "_scan_worktree_repository", "_semantic_version", "_socket_path",
-    "_squire_setup_operation", "_squire_setup_warning", "_start_interactive_claude", "_start_interactive_codex", "_start_interactive_pi",
+    "_setup_hint_enabled", "_squire_setup_operation", "_squire_setup_warning", "_start_interactive_claude", "_start_interactive_codex", "_start_interactive_pi",
     "_state_dir", "_status_timestamp", "_stdin_isatty", "_stop_daemon_for_identity_switch", "_stop_daemon_for_operator",
     "_stop_daemon_gracefully", "_stop_daemon_with_proof", "_stopped_process", "_stored_user_proxy_route", "_subtree_totals",
     "_tailcat_sidecar_doctor_check",
     "_terminate_process", "_timer_config", "_top_state_label", "_trajectory_event_state", "_trajectory_node",
     "_trajectory_ordering", "_trajectory_result", "_transfer_cli_dependencies", "_transfer_commands",
     "_user_proxy_launch_params", "_user_proxy_setup_warning", "_utc_now", "_validate_from_identity",
-    "_verification_expiry", "_version_result", "_wait_daemon_teardown_receipt", "_wait_for_daemon", "_wait_foreground",
+    "_verification_expiry", "_version_result", "_wait_daemon_teardown_receipt", "_wait_for_daemon", "_wait_foreground", "_write_setup_hint",
     "_with_plugin_warnings", "_workflow_worker_cleanup_doctor_check", "_worktree_bases", "_worktree_git_output",
     "_worktree_ref_exists", "_worktree_remove_command", "_write_launch_config", "_write_pending_restart", "_zenoh_doctor_check",
     "_zenoh_endpoint_warning", "ack", "adapter_add", "adapter_app", "adapter_authorize",
@@ -429,15 +443,14 @@ __all__ = [
     "adapter_list", "adapter_media_get", "adapter_onboard", "adapter_pin", "adapter_pins",
     "adapter_reload", "adapter_remove", "adapter_route_add", "adapter_route_candidates", "adapter_route_list",
     "adapter_route_remove", "adapter_start", "adapter_status", "adapter_stop", "adapter_unpin",
-    "agent_app", "agent_create", "agent_destroy", "agent_grant", "agent_grants",
-    "agent_home_census", "agent_host_invite", "agent_keep_add", "agent_keep_app", "agent_keep_list",
-    "agent_keep_remove", "agent_list", "agent_migrate_execute", "agent_migrate_preflight", "agent_migrate_rollback",
+    "agent_app", "agent_create", "agent_destroy", "agent_grant", "agent_grants", "agent_tiers",
+    "agent_home_census", "agent_host_invite", "agent_list", "agent_migrate_execute", "agent_migrate_preflight", "agent_migrate_rollback",
     "agent_restore_policy", "agent_restore_threshold", "agent_revoke", "agent_secret_entry_write", "agent_secret_grant",
     "agent_secret_list", "agent_secret_revoke", "agent_unblock", "app", "autoupdate_app",
     "autoupdate_install", "autoupdate_restart", "autoupdate_run", "autoupdate_status", "autoupdate_uninstall",
     "config_app", "config_set", "configured_hyprial_home", "daemon_app", "daemon_run",
-    "daemon_status", "daemon_stop", "default_hyprial_home", "delivery_app", "delivery_status", "dispatch_app",
-    "dispatch_matrix", "doctor", "down", "fs_app", "fs_checkout",
+    "daemon_status", "daemon_stop", "default_hyprial_home", "delivery_app", "delivery_status",
+    "doctor", "down", "fs_app", "fs_checkout",
     "fs_create", "fs_export", "fs_history", "fs_import", "fs_invite",
     "fs_join", "fs_ls", "fs_members", "fs_mkdir", "fs_mv",
     "fs_purge", "fs_purge_plan", "fs_purge_status", "fs_read", "fs_remove_member",
@@ -458,12 +471,13 @@ __all__ = [
     "restart_command", "route_app", "routine_add", "routine_app", "routine_list",
     "routine_pause", "routine_resume", "routine_rm", "routine_set", "routine_status",
     "secret_app", "send", "service_app", "shutil", "socket",
-    "squire_app", "squire_probe", "squire_setup", "start", "start_gui_background",
+    "squire_app", "squire_setup", "start", "start_gui_background",
     "stop_gui", "subprocess", "targets", "tcp_probe", "time",
-    "top_status", "trajectory_command", "transfer", "transfer_bundle_complete", "transfer_bundle_export",
+    "tiers_app", "tiers_probe", "top_status", "trajectory_command", "transfer", "transfer_bundle_complete", "transfer_bundle_export",
     "transfer_bundle_land", "transfer_bundle_receive", "transfer_bundle_validate", "transfer_container_home", "transfer_cred_stage",
-    "transfer_credential_open", "transfer_credential_seal", "transfer_precheck", "transfer_receive", "transfer_runtime_app",
-    "transfer_runtime_downgrade_state", "transfer_runtime_probe", "transfer_session_path", "upgrade",     "user_add", "user_app", "user_bind", "user_bindings_audit", "user_list",
+    "transfer_credential_open", "transfer_credential_seal", "transfer_precheck", "transfer_receive", "transfer_recipient_key", "transfer_runtime_app",
+    "transfer_runtime_downgrade_state", "transfer_runtime_probe", "transfer_session_path", "transfer_trust_source_add",
+    "transfer_trust_source_list", "transfer_trust_source_retire", "upgrade",     "user_add", "user_app", "user_bind", "user_bindings_audit", "user_list",
     "user_proxy_app", "user_proxy_setup", "user_proxy_status", "user_show", "user_unbind", "user_whois",
     "uuid4", "version", "workflow_app", "workflow_gc", "worktrees_command",
     "write_failure_marker",

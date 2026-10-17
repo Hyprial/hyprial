@@ -40,6 +40,20 @@ SECRET_ENVIRONMENT_NAMES = frozenset(
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_AUTH_TOKEN",
         "CLAUDE_CODE_OAUTH_TOKEN",
+        # Endpoint selector, deliberately NOT a credential: Claude Code reads
+        # ``ANTHROPIC_BASE_URL`` beside ``ANTHROPIC_AUTH_TOKEN`` and a bundle
+        # that carried the token but not the endpoint would silently send it to
+        # the vendor's own origin.  The name rides the same explicit-approval
+        # vocabulary as the auth names because that vocabulary is exactly the
+        # set the target's secret registry can bind at launch -- putting it
+        # here is what lets a landed env credential reach the child.  The
+        # alternative (a second, non-secret carry channel threaded from the
+        # envelope through landing into the launch environment) would add a
+        # parallel binding table for one string; the cost is that this name is
+        # custody-classified as an agent-private secret at rest, which is a
+        # stricter box than the value needs, never a weaker one.  The landing
+        # approval check itself is unchanged: membership, never a wildcard.
+        "ANTHROPIC_BASE_URL",
         "DEEPSEEK_API_KEY",
         "TYPESAFE_API_KEY",
         "ZAI_CODING_CN_API_KEY",

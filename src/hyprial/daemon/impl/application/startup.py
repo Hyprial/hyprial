@@ -236,6 +236,7 @@ class _StartupMixin:
             )
             self._warn_if_worker_proxy_absent()
             step(self._start_runtime, DaemonStartupPhase.ACTOR_RUNTIME)
+            step(self._start_database_health, DaemonStartupPhase.ACTOR_RUNTIME)
             # Activate only when a protected record or persisted intent exists.
             # Otherwise the first service RPC performs the same composition;
             # an unconfigured daemon owns no service threads or polling work.
@@ -673,6 +674,42 @@ class _StartupMixin:
                 "one has not finished shutting down"
             ) from error
         self._lock_stream = fence.detach()
+
+    def _start_database_health(self) -> None:
+        from hyprial.daemon.impl.lifecycle.health.database import DatabaseHealth
+
+        if self._inbox is None:
+            return  # no storage runtime was assembled (embedded startup seam)
+
+        def diagnostics():
+            reader = getattr(self._harnesses, "orphan_persistence_stats", None)
+            stats = reader() if callable(reader) else None
+            return {
+                "maintenance": self._maintenance_watchdog.status(),
+                "maintenanceWatchdogLoaded": True,
+                "maintenanceWatchdogRunning": bool(
+                    self._maintenance_watchdog._poller is not None
+                    and self._maintenance_watchdog._poller.is_alive()
+                ),
+                "restorePending": not self._restore_done.is_set(),
+                "orphanWriteBytes": (
+                    stats["appendBytes"] + stats["snapshotBytes"] if stats else None
+                ),
+            }
+
+        health = DatabaseHealth(
+            self.state_dir, epoch=self.epoch,
+            databases=("agents.sqlite3", "inbox.sqlite3", "pac-graph.sqlite3"),
+            log=lambda level, event, **fields: self._log(level, "daemon", event, **fields),
+            diagnostics=diagnostics,
+            write_alarm=lambda fields: self._raise_harness_failed_alarm(
+                self.epoch, kind="orphan-write-rate", reason="ORPHAN_WRITE_RATE_HIGH",
+                text=", ".join(f"{key}={value}" for key, value in fields.items()),
+            ),
+        )
+        self._database_health = health
+        health.check()
+        health.start(self.stop_event)
 
     def _write_pid_file(self) -> None:
         path = self.state_dir / "daemon.json"

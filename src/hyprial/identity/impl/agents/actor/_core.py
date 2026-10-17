@@ -60,15 +60,14 @@ from uuid import uuid4
 
 from ._base import (
     AgentHomeAccessError,
-    AgentHomeAccessPending,
     AgentMigrationBusy,
     SenderIdentityError,
     _AGENT_COST_KEYS,
     _AgentProjectionState,
     _AgentStateEffectCompleted,
+    _VerifyLandingPayloadCommand,
     _ConfirmLandingHomeCommand,
     _DesiredStatePort,
-    _HomeCall,
     _LegacyRuntimeResult,
     _MaterialiseLandingHomeCommand,
     _MigrationWaiter,
@@ -87,6 +86,7 @@ from ._base import (
 )
 from ._generation_dispatch import _GenerationDispatchMixin
 from ._generation_ops import _GenerationOpsMixin
+from ._home_calls import HomeCallRegistry, await_home_call, command_fingerprint, home_operation_id
 @dataclass(slots=True)
 
 class _AgentGeneration(_GenerationDispatchMixin, _GenerationOpsMixin):
@@ -154,9 +154,7 @@ class AgentActor:
         self._pending_home: dict[
             tuple[str, int], _PendingHomeMutation | _PendingHomeAccess
         ] = {}
-        self._home_call_lock = threading.Lock()
-        self._home_calls: dict[str, _HomeCall] = {}
-        self._home_call_capacity = 32
+        self._home_calls = HomeCallRegistry()
         self._migration_lock = threading.Lock()
         self._migration_waiters: dict[str, _MigrationWaiter] = {}
         self._migration_settled: OrderedDict[str, tuple[MigrationRequest, MigrationOutcome]] = OrderedDict()
@@ -274,8 +272,8 @@ class AgentActor:
         if isinstance(command, (AgentHomeEffectCompleted, _AgentStateEffectCompleted)):
             return  # Effect owners retain and retry completion until ACK.
         correlation = str(getattr(command, "correlation_id", ""))
-        if isinstance(command, (_PrepareWorkspaceCommand, _PrepareRuntimeCommand, _MaterialiseLandingHomeCommand, _ConfirmLandingHomeCommand)):
-            self._complete_home_call(correlation, None, RuntimeError(reason))
+        if isinstance(command, (_PrepareWorkspaceCommand, _PrepareRuntimeCommand, _MaterialiseLandingHomeCommand, _ConfirmLandingHomeCommand, _VerifyLandingPayloadCommand)):
+            self._home_calls.abandon_unstarted(correlation, RuntimeError(reason))
             return
         if correlation:
             _publish(self._events, PortCommandRejected(
@@ -577,13 +575,7 @@ class AgentActor:
         value: str | AgentRuntimeContext | _LegacyRuntimeResult | None,
         error: BaseException | None,
     ) -> None:
-        with self._home_call_lock:
-            call = self._home_calls.pop(correlation_id, None)
-        if call is None:
-            return
-        call.value = value
-        call.error = error
-        call.event.set()
+        self._home_calls.settle(correlation_id, value, error)
 
     def _execute_state_effect(self, request: _PinStateRequest) -> _PinStateResult:
         if self._desired_state is None:
@@ -746,14 +738,17 @@ class AgentActor:
         *,
         containerized: bool = False,
         legacy_reporter: Callable[[str, str], None] | None = None,
+        expected_entity_token: str | None = None,
+        operation_id: str | None = None,
     ) -> AgentRuntimeContext | None:
         result = self._call_home_access(_PrepareRuntimeCommand(
-            uuid4().hex,
+            home_operation_id(operation_id),
             actor,
             harness,
             cwd,
             tool_profile,
             containerized,
+            expected_entity_token,
         ))
         if isinstance(result, _LegacyRuntimeResult):
             # Emit only after owner settlement, using its immutable decision;
@@ -768,48 +763,59 @@ class AgentActor:
     def materialise_landing_home(
         self, actor: str, staged_root: str, *, expected_entity_token: str,
         expected_files: tuple[HomePayloadFile, ...],
+        operation_id: str | None = None,
     ) -> str:
         result = self._call_home_access(_MaterialiseLandingHomeCommand(
-            uuid4().hex, actor, expected_entity_token, staged_root, expected_files,
+            home_operation_id(operation_id), actor, expected_entity_token, staged_root, tuple(expected_files),
         ))
         if not isinstance(result, str):
             raise AgentHomeAccessError("landing materialisation returned no home")
         return result
 
-    def confirm_landing_home(self, actor: str, *, expected_entity_token: str) -> str:
+    def confirm_landing_home(
+        self, actor: str, *, expected_entity_token: str, operation_id: str | None = None,
+    ) -> str:
         result = self._call_home_access(_ConfirmLandingHomeCommand(
-            uuid4().hex, actor, expected_entity_token,
+            home_operation_id(operation_id), actor, expected_entity_token,
         ))
         if not isinstance(result, str):
             raise AgentHomeAccessError("landing confirmation returned no home")
         return result
 
+    def verify_landing_payload(
+        self, actor: str, *, expected_entity_token: str,
+        expected_files: tuple[HomePayloadFile, ...],
+    ) -> str:
+        """Fresh read under identity/receipt fences, never a cached success probe."""
+        if not isinstance(expected_entity_token, str) or not expected_entity_token:
+            raise ValueError("expected_entity_token must be a non-empty string")
+        result = self._call_home_access(_VerifyLandingPayloadCommand(
+            home_operation_id(None), actor, expected_entity_token, tuple(expected_files),
+        ))
+        if result not in {"present", "absent", "partial"}:
+            raise AgentHomeAccessError("invalid landing payload classification")
+        return result
+
     def _call_home_access(
         self,
-        command: _PrepareWorkspaceCommand | _PrepareRuntimeCommand | _MaterialiseLandingHomeCommand | _ConfirmLandingHomeCommand,
+        command: _PrepareWorkspaceCommand | _PrepareRuntimeCommand | _MaterialiseLandingHomeCommand | _ConfirmLandingHomeCommand | _VerifyLandingPayloadCommand,
         timeout: float = 70.0,
     ) -> str | AgentRuntimeContext | _LegacyRuntimeResult | None:
         if self._home_effects is None:
             raise AgentHomeAccessError("Agent home filesystem authority is unavailable")
-        call = _HomeCall()
-        with self._home_call_lock:
-            if len(self._home_calls) >= self._home_call_capacity:
-                raise AgentHomeAccessError("Agent home access capacity is full")
-            self._home_calls[command.correlation_id] = call
-        admission = self._runtime.tell(self._handle, command)
-        if admission is not AdmissionResult.ACCEPTED:
-            with self._home_call_lock:
-                self._home_calls.pop(command.correlation_id, None)
-            raise AgentHomeAccessError(
-                f"Agent home access admission is {admission.value}"
-            )
-        if not call.event.wait(timeout):
-            raise AgentHomeAccessPending(
-                f"Agent home access remains unsettled: {command.correlation_id}"
-            )
-        if call.error is not None:
-            raise call.error
-        return call.value
+        call, submit = self._home_calls.reserve(command.correlation_id, command_fingerprint(command))
+        if submit:
+            admission = self._runtime.tell(self._handle, command)
+            if admission is not AdmissionResult.ACCEPTED:
+                self._home_calls.abandon_unstarted(command.correlation_id, AgentHomeAccessError(
+                    f"Agent home access admission is {admission.value}"
+                ))
+        return await_home_call(call, command.correlation_id, timeout)
+
+    def wait_home_access(self, operation_id: str, *, timeout: float) -> str | AgentRuntimeContext | None:
+        """Query/wait only; unknown requires durable P2 reconciliation, not resubmit."""
+        result = await_home_call(self._home_calls.lookup(operation_id), operation_id, timeout)
+        return None if isinstance(result, _LegacyRuntimeResult) else result
 
     def read_activity_hints(self, actor: str) -> AgentActivityHints:
         return self._read_effects.activity_hints(actor)

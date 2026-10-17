@@ -3,6 +3,7 @@ import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const MODULE_EXPORTS = {
+  core: ['CORE_TRANSPORT_KINDS', 'createChatCore', 'createDemoConnection', 'mountChat', 'startBrowserChat'],
   studio: ['createStudio', 'registerStudioTools'],
   session: ['createMockSessionAdapter'],
   host: ['createHost'],
@@ -14,6 +15,7 @@ const MODULE_EXPORTS = {
 const MODULES = new Set(Object.keys(MODULE_EXPORTS));
 const TRUSTED_PLUGIN_INPUTS = ['plugins/trusted-panel.mjs'];
 const ALLOWED_DEPENDENCIES = {
+  core: [],
   host: ['session', 'studio', 'client'],
   studio: ['presentation'],
   client: ['presentation'],
@@ -35,6 +37,46 @@ async function sourceFiles(root) {
     else if (/\.(?:mjs|js)$/.test(entry.name)) result.push(path);
   }
   return result;
+}
+
+function importSpecifiers(source) {
+  return [...source.matchAll(/\b(?:import|export)\s+(?:[\s\S]*?\sfrom\s*)?['"]([^'"]+)['"]/g),
+    ...source.matchAll(/\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g)].map(match => match[1]);
+}
+
+/**
+ * The app core runs in a browser/WebView webview with no Node and no bundler
+ * shim, so the whole import closure of its public face must stay inside
+ * `core/` and may only use relative specifiers. Walking the closure from
+ * `index.mjs` keeps Node-capable build tooling out of the shipped runtime.
+ */
+async function coreClosureProblems(root) {
+  const problems = [];
+  const queue = ['index.mjs'];
+  const seen = new Set();
+  while (queue.length) {
+    const name = queue.shift();
+    if (seen.has(name)) continue;
+    seen.add(name);
+    const path = join(root, 'core', name);
+    let source;
+    try {
+      source = await readFile(path, 'utf8');
+    } catch {
+      problems.push(`core/${name}: app core runtime file is missing`);
+      continue;
+    }
+    for (const specifier of importSpecifiers(source)) {
+      if (!specifier.startsWith('./')) {
+        problems.push(`core/${name}: app core runtime must not import '${specifier}' (Node builtin or external dependency)`);
+        continue;
+      }
+      const target = relative(join(root, 'core'), resolve(dirname(path), specifier)).split(sep).join('/');
+      if (target.startsWith('..')) problems.push(`core/${name}: '${specifier}' escapes the app core module`);
+      else queue.push(target);
+    }
+  }
+  return problems;
 }
 
 // A bounded static guard for this one-off, static-ESM reconstruction. This is
@@ -59,8 +101,7 @@ export async function checkArchitecture(root) {
       if (/\b(?:eval\s*\(|new\s+Function\s*\(|cordis_define\b|__ModuleLoader__\b)/.test(source)) {
         problems.push(`${path}: runtime code evaluation/module loader is forbidden`);
       }
-      const specifiers = [...source.matchAll(/\b(?:import|export)\s+(?:[\s\S]*?\sfrom\s*)?['"]([^'"]+)['"]/g),
-        ...source.matchAll(/\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g)].map(match => match[1]);
+      const specifiers = importSpecifiers(source);
       for (const specifier of specifiers) {
         if (FORBIDDEN_PACKAGES.test(specifier) || ['node:child_process', 'child_process'].includes(specifier)) {
           problems.push(`${path}: excluded execution dependency ${specifier}`);
@@ -91,6 +132,7 @@ export async function checkArchitecture(root) {
       }
     }
   }
+  if (MODULES.has('core')) problems.push(...await coreClosureProblems(root));
   if (!problems.length) for (const module of MODULES) {
     const facade = join(root, module, 'index.mjs');
     const namespace = await import(pathToFileURL(facade));

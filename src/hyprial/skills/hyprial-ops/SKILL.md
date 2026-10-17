@@ -71,11 +71,12 @@ hyprial <域> <子命令> --help   # 参数面
   —— hyprial 自己的 worker 代理(Allen 2026-09-25 定):列出的模型厂商(默认 openai、anthropic)的 worker 走代理,
   其它厂商(deepseek、智谱、kimi)的 worker **去掉**代理直连;下一个 worker 启动即生效,不用重启 daemon;
   url 置空即清除。没配置时沿用 daemon 自己环境里的代理(含 all_proxy)。⛔ 重启生产 daemon 时不要剥掉代理变量。
+- `hyprial config set hints.userProxy off|on` —— 关掉/恢复 init、restart、start 时的「user-proxy 未设置」提醒(不想要 user-proxy 的 owner 用);squire 未完成的提醒不受影响。
 - `hyprial config set dispatch.reminder "<text>"` —— `workflow plan` / `workflow run` 附带的派单 tier 提醒
   (Allen 2026-09-28 定:执行节点用 fast、规划设计节点用 strong;只是提醒,不改派单)。
   文本存在 `<HYPRIAL_HOME>/dispatch-policy.json`,文件缺失时用出厂默认;置空字符串即关闭。
-  `hyprial dispatch matrix --json` 的 `reminders` 显示当前生效值;文件损坏时 plan/run 照常派单,
-  只在 `reminderError` 里报原因,而 `dispatch matrix` 会直接报错,用这条 `config set` 覆盖写即可修复。
+  `hyprial agent tiers --json` 的 `reminders` 显示当前生效值;文件损坏时 plan/run 照常派单,
+  只在 `reminderError` 里报原因,而 `agent tiers` 会直接报错,用这条 `config set` 覆盖写即可修复。
 
 ### 应用安装（已退役）
 - 应用安装体系已于 2026-10-03 退役（Allen 裁决）：catalog、制品下载、manifest 命令挂载均已删除。
@@ -129,8 +130,8 @@ hyprial <域> <子命令> --help   # 参数面
 - routine format 2 显式选择 mode: scheduled/source。定时模式串行、跳过重叠与错过周期，source 模式按任务 UUID 去重。
 - routine 默认创建并持有常驻协调 agent，也可执行工作；rm 回收自己拥有的 actor，pause 不回收。
 - `hyprial workflow list [--all]` / `hyprial routine list [--all]`：不加 --json 时输出人读的表格。agent 默认只看到自己派的（或自己拥有的），加 --all 看本节点全部，不需要额外授权；主人在终端里直接运行，默认就能看到全部。--json 每行带 `lastProgressAtMs`（该图最新一条 journal 事件的时间；显式心跳命令 `workflow progress` 尚未提供，计划中，见 #1210）、`currentNode {nodeId,state}`（按依赖顺序第一个未完成的节点）（workflow），以及 `lastDispatchAtMs`、`lastOutcome`（routine）。判断是不是卡住，看这两个字段，别只看 state=running。
-- `hyprial worktrees [REPO ...] [--all]`：只读检查本机 Git worktree；目录或其 gitdir 链接已丢失、有未提交文件或有未推送提交都算 leftover。它只为已合并且干净的树建议 remove，只为 git 标记为 prunable 的树建议 prune；默认同时按 origin/HEAD、origin/dev、origin/main 判断是否已合并，不会执行这些命令。
-- `hyprial workflow overview show|publish <space>`：PAC 总览页。`publish` 把本机的任务线、Workflow 和 Routine 写成 orgfs 空间里的 `pac-overview/nodes/<节点>.js`（blob，只在内容变化时写），并维护合并所有节点的 `pac-overview/index.html`；它还会拉取其他节点尚未到达的文件、刷新本机 checkout，最后输出可以直接用浏览器打开的 `file://…/index.html`。页面每分钟自动重载。数据只包含运行这条命令的调用方看得到的图，节点输出会脱敏并截断。⚠️ 信任边界：空间里任何有写权限的成员都能往页面上放脚本，所以只发布到所有写入者都可信的空间；`publish` 会开启并保持本机对该空间的只读 checkout（`hyprial fs checkout <space> --disable` 关闭）。
+- `hyprial worktrees [REPO ...] [--all]`：只读检查本机 Git worktree；目录或其 gitdir 链接已丢失、有未提交文件或有未推送提交都算 leftover。它只为已合并且干净、且 24 小时内没有活动的树建议 remove(刚从 origin/dev 新建、还在被 worker 用的树看起来和已完成的一样，所以按该树自己的 index/HEAD 修改时间排除)，建议前会提示先确认没人在用；只为 git 标记为 prunable 的树建议 prune；默认同时按 origin/HEAD、origin/dev、origin/main 判断是否已合并，不会执行这些命令。
+- `hyprial workflow overview show|publish <space>`：PAC 总览页。`publish` 把本机的任务线、Workflow 和 Routine 写成 orgfs 空间里的 `pac-overview/nodes/<节点>.js`（blob，只在内容变化时写），维护工作项视图资产 `pac-overview/work_items_view.js`，并维护合并所有节点的 `pac-overview/index.html`；它还会拉取其他节点尚未到达的文件、刷新本机 checkout，最后输出可以直接用浏览器打开的 `file://…/index.html`。页面每分钟自动重载。图数据只包含运行这条命令的调用方看得到的图，节点输出会脱敏并截断；页面另带 org 的全部工作项（状态、负责人/指派人、清单、验收标准、依赖、最近 20 条日志、打开/关闭时间；日志、验收与清单文本脱敏并截断），发布到某个空间即对该空间的读者可见。⚠️ 信任边界：空间里任何有写权限的成员都能往页面上放脚本，所以只发布到所有写入者都可信的空间；`publish` 会开启并保持本机对该空间的只读 checkout（`hyprial fs checkout <space> --disable` 关闭）。
 - workflow history list/status 只读查询旧任务。切换会终止并归档未结束旧任务；空 home 也有旧写入屏障，不代表存在历史任务。
 
 最小任务书示例（先替换工作目录与任务，再 plan/run）：
@@ -251,7 +252,7 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
   里的命令 attach、确认、detach,之后它自己注册。⛔ 不要当作失败重起(重起还是停在同一处)。
   (headless codex 带 `-- -a on-request -s workspace-write`;hyprial 客户端只批准 worker 自己的 harness-bridge MCP 工具调用,其它 elicitation 与命令/文件审批一律拒;reviewer 在 worker 线程级为 user,任何提供方下一致。批准≠授权,授权仍在 daemon 侧)
 - daemon 重启时只恢复近期活跃的 agent:空闲超过全局阈值(默认 12h)的会被标成 `idle-suppressed`,
-  不再自动拉起;有待处理消息/托管、在 keep-list 里、有当前 PAC 请求、或显式 start 时会被唤醒。
+  不再自动拉起;有待处理消息/托管、有当前 PAC 请求、设为 `always`、或显式 start 时会被唤醒。
   `hyprial agent restore-threshold <如 12h>` 改全局阈值;`hyprial agent restore-policy <name> active|always|never`
   按 agent 覆盖(`always` 总是恢复,`never` 从不自动恢复)。
 - 模型额度耗尽或凭据失效时,agent 会进入持久的 `blocked` 状态(`hyprial ps` 里带原因):

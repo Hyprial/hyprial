@@ -91,6 +91,8 @@ class AgentDestroySettlementUnknown(AgentError):
     code = "AGENT_DESTROY_SETTLEMENT_UNKNOWN"
 class AgentEntityConflict(AgentError):
     code = "AGENT_VERSION_CONFLICT"
+class AgentLifecycleFenceUnsupported(AgentError):
+    code = ipc_errors.LIFECYCLE_INCARNATION_UNSUPPORTED
 class InvalidAgentNameError(AgentError):
     code = "INVALID_AGENT_NAME"
 class PinConflictError(AgentError):
@@ -467,7 +469,8 @@ _SCHEMA = "\n".join(
     created_by_operation INTEGER NOT NULL,
     changed INTEGER NOT NULL,
     resource_token TEXT NOT NULL,
-    retired INTEGER NOT NULL DEFAULT 0
+    retired INTEGER NOT NULL DEFAULT 0,
+    expected_entity_token TEXT
 );""",
         """CREATE TABLE IF NOT EXISTS agent_restore_dispositions (
     actor TEXT PRIMARY KEY REFERENCES agents(actor) ON DELETE CASCADE,
@@ -733,6 +736,12 @@ def _connect(database: Path) -> sqlite3.Connection:
             "SET disposition_token = lower(hex(randomblob(16))) "
             "WHERE disposition_token = ''"
         )
+        if "expected_entity_token" not in {
+            row[1] for row in connection.execute("PRAGMA table_info(lifecycle_receipts)")
+        }:
+            connection.execute(
+                "ALTER TABLE lifecycle_receipts ADD COLUMN expected_entity_token TEXT"
+            )
         # CREATE TABLE ran before the old agents table was upgraded, so an old
         # database needs the grants table created once more after the composite
         # parent key exists.

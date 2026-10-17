@@ -224,9 +224,9 @@ def _restore_doctor_check(result: JsonObject) -> JsonObject | None:
             "status": "warn",
             "detail": f"{detail}; {restore.get('degradedReason', 'policy unreadable')}",
             "action": {
-                "command": "hyprial agent keep list",
+                "command": "hyprial agent restore-policy <name> always",
                 "description": (
-                    "Repair the restore policy or keep-list; degraded startup "
+                    "Repair the restore policy; degraded startup "
                     "restores connectors to preserve availability."
                 ),
             },
@@ -237,9 +237,9 @@ def _restore_doctor_check(result: JsonObject) -> JsonObject | None:
             "status": "warn",
             "detail": detail,
             "action": {
-                "command": "hyprial agent keep add <name>",
+                "command": "hyprial agent restore-policy <name> always",
                 "description": (
-                    "Keep or explicitly start dormant agents; clear blocked "
+                    "Always restore or explicitly start dormant agents; clear blocked "
                     "agents with hyprial agent unblock <name>."
                 ),
             },

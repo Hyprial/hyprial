@@ -31,6 +31,7 @@ from hyprial.daemon.impl.harnesses.turn_delivery.turn.turn_ports  import (
     CloseTurnPumpCommand,
     EnqueueTurnCommand,
     InterruptTurnCommand,
+    SteerTurnCommand,
     TurnCommand,
     TurnDeliveryProjection,
     TurnEvent,
@@ -40,11 +41,13 @@ from hyprial.daemon.impl.harnesses.turn_delivery.turn.turn_ports  import (
     TurnPumpClosed,
     TurnResultProjection,
     TurnStarted,
+    TurnSteerIoCompleted,
 )
 
 
 TurnIoSubmit = Callable[[int, int, TurnDeliveryProjection], None]
 TurnIoInterrupt = Callable[[int, int, str, str], None]
+TurnIoSteer = Callable[[int, int, str, str, str], None]
 TurnIoClose = Callable[[int, int, str], None]
 TurnIoAbort = Callable[[int, Callable[[], None]], None]
 TurnIoFailureDecision = Callable[[int, int, str, bool, int, str], None]
@@ -143,6 +146,17 @@ class _InterruptCompleted:
 
 
 @dataclass(frozen=True, slots=True)
+class _SteerCompleted:
+    generation: int
+    version: int
+    correlation_id: str
+    delivery_id: str
+    accepted: bool
+    consumed: bool
+    detail: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class _RecoveryReady:
     generation: int
     failed_delivery_id: str | None
@@ -157,7 +171,13 @@ class _IoFailed:
     allow_retry: bool = True
 
 
-_InternalCompletion = _IoCompleted | _InterruptCompleted | _RecoveryReady | _IoFailed
+_InternalCompletion = (
+    _IoCompleted
+    | _InterruptCompleted
+    | _SteerCompleted
+    | _RecoveryReady
+    | _IoFailed
+)
 
 
 class _TurnProjection:
@@ -294,6 +314,7 @@ class _TurnShard:
         event_sink: TurnEventSink,
         io_submit: TurnIoSubmit,
         io_interrupt: TurnIoInterrupt,
+        io_steer: TurnIoSteer | None,
         io_close: TurnIoClose,
         io_failure_decision: TurnIoFailureDecision,
         max_delivery_attempts: int,
@@ -304,6 +325,7 @@ class _TurnShard:
         self._event_sink = event_sink
         self._io_submit = io_submit
         self._io_interrupt = io_interrupt
+        self._io_steer = io_steer
         self._io_close = io_close
         self._io_failure_decision = io_failure_decision
         self._max_delivery_attempts = max_delivery_attempts
@@ -321,12 +343,16 @@ class _TurnShard:
             self._enqueue(command)
         elif isinstance(command, InterruptTurnCommand):
             self._interrupt(command)
+        elif isinstance(command, SteerTurnCommand):
+            self._steer(command)
         elif isinstance(command, CloseTurnPumpCommand):
             self._close(command)
         elif isinstance(command, _IoCompleted):
             self._complete(command)
         elif isinstance(command, _InterruptCompleted):
             self._interrupt_completed(command)
+        elif isinstance(command, _SteerCompleted):
+            self._steer_completed(command)
         elif isinstance(command, _RecoveryReady):
             self._recovery_ready(command)
         elif isinstance(command, _IoFailed):
@@ -428,6 +454,75 @@ class _TurnShard:
                 version=self._version,
                 delivery_id=command.delivery_id,
                 interrupted=command.interrupted,
+                detail=command.detail,
+            )
+        )
+
+    def _steer(self, command: SteerTurnCommand) -> None:
+        """Fold a QUEUED delivery into the turn running right now.
+
+        A steer needs two live facts at once: a running turn, and a queued
+        delivery that is not itself that turn.  Either missing is a reject
+        (no I/O is attempted), which the daemon reads as "steer failed" and
+        turns into the in-channel notice.  The message is read from the
+        pending command already owned here, never resent by the caller.
+        """
+
+        current = self._current
+        if current is None or self._closing:
+            self._reject(command.correlation_id, "TURN_NOT_IN_FLIGHT")
+            return
+        if current.delivery.delivery_id == command.delivery_id:
+            # The delivery IS the running turn: there is nothing queued to
+            # fold in, and re-steering it would duplicate its own request.
+            self._reject(command.correlation_id, "TURN_NOT_QUEUED")
+            return
+        pending = next(
+            (
+                item
+                for item in self._pending
+                if item.delivery.delivery_id == command.delivery_id
+            ),
+            None,
+        )
+        if pending is None:
+            self._reject(command.correlation_id, "TURN_NOT_QUEUED")
+            return
+        if self._io_steer is None:
+            # A TurnRuntime built without a steer lane (tests, older callers)
+            # answers an explicit reject; it never silently drops the command.
+            self._reject(command.correlation_id, "TURN_STEER_UNSUPPORTED")
+            return
+        self._version += 1
+        self._io_steer(
+            self._generation,
+            self._version,
+            command.correlation_id,
+            command.delivery_id,
+            pending.delivery.message,
+        )
+
+    def _steer_completed(self, command: _SteerCompleted) -> None:
+        if command.generation != self._generation:
+            return
+        if command.accepted and command.consumed:
+            # The native mechanism folded this message INTO the running turn,
+            # so the queued copy must not run again as its own turn.  An
+            # advance mechanism (consumed=False) leaves it queued on purpose.
+            self._pending = deque(
+                item
+                for item in self._pending
+                if item.delivery.delivery_id != command.delivery_id
+            )
+        self._version += 1
+        self._event_sink(
+            TurnSteerIoCompleted(
+                correlation_id=command.correlation_id,
+                generation=self._generation,
+                version=self._version,
+                delivery_id=command.delivery_id,
+                accepted=command.accepted,
+                consumed=command.consumed,
                 detail=command.detail,
             )
         )
@@ -581,6 +676,7 @@ class TurnRuntime:
         name: str,
         io_submit: TurnIoSubmit,
         io_interrupt: TurnIoInterrupt,
+        io_steer: TurnIoSteer | None = None,
         io_close: TurnIoClose,
         io_abort: TurnIoAbort,
         io_failure_decision: TurnIoFailureDecision,
@@ -611,6 +707,7 @@ class TurnRuntime:
                 event_sink=self._events,
                 io_submit=io_submit,
                 io_interrupt=io_interrupt,
+                io_steer=io_steer,
                 io_close=io_close,
                 io_failure_decision=io_failure_decision,
                 max_delivery_attempts=max_delivery_attempts,
@@ -696,6 +793,29 @@ class TurnRuntime:
                 correlation_id=correlation_id,
                 delivery_id=delivery_id,
                 interrupted=interrupted,
+                detail=detail,
+            )
+        )
+
+    def complete_steer(
+        self,
+        *,
+        generation: int,
+        version: int,
+        correlation_id: str,
+        delivery_id: str,
+        accepted: bool,
+        consumed: bool,
+        detail: str | None = None,
+    ) -> PortAdmission:
+        return self._relay.submit(
+            _SteerCompleted(
+                generation=generation,
+                version=version,
+                correlation_id=correlation_id,
+                delivery_id=delivery_id,
+                accepted=accepted,
+                consumed=consumed,
                 detail=detail,
             )
         )

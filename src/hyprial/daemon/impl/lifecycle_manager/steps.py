@@ -116,9 +116,17 @@ def _deactivate_steps(
     )
 
 
+def _resume_steps(spec: LifecycleSpec) -> tuple[_Step, ...]:
+    """Forward mirror of deactivate: the entity and persona route survive."""
+    return tuple(step for step in _create_steps(spec)
+                 if step.name not in {"agent.create", "route.persona.ensure"})
+
+
 def _plan(operation: LifecycleOperation) -> tuple[_Step, ...]:
     if operation.kind is LifecycleKind.CREATE:
         return _create_steps(operation.target)
+    if operation.kind is LifecycleKind.RESUME:
+        return _resume_steps(operation.target)
     if operation.kind is LifecycleKind.DEACTIVATE:
         return _deactivate_steps(operation.target)
     if operation.kind is LifecycleKind.REMOVE:
@@ -248,6 +256,8 @@ def _spec_payload(spec: LifecycleSpec) -> dict[str, object]:
         "harness": harness,
         "route": asdict(spec.route),
         "session": session,
+        **({"expectedEntityToken": spec.expected_entity_token}
+           if spec.expected_entity_token is not None else {}),
         **(
             {"interruptionReason": spec.interruption_reason}
             if spec.interruption_reason is not None
@@ -328,6 +338,7 @@ def _spec_from_payload(raw: dict[str, object]) -> LifecycleSpec:
             )
         ),
         interruption_reason=_optional_str(raw.get("interruptionReason")),
+        expected_entity_token=raw.get("expectedEntityToken"),
     )
 
 

@@ -25,6 +25,7 @@ class RegisterSessionCommand:
     process_pid: int | None = None
     process_identity: str | None = None
     manage_agent: bool = True
+    refuse_live_incumbent: bool = False
 
 
 @dataclass(frozen=True, slots=True)

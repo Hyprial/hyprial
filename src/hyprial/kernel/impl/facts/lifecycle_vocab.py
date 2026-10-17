@@ -34,6 +34,7 @@ class LifecycleMutationRequest:
     operation_id: str
     expected_resource_token: str | None
     payload: object
+    expected_entity_token: str | None = None
 
     def __post_init__(self) -> None:
         if not self.correlation_id.strip() or not self.attempt_token.strip():
@@ -45,6 +46,11 @@ class LifecycleMutationRequest:
             and not self.expected_resource_token.strip()
         ):
             raise ValueError("expected_resource_token must not be blank")
+        if self.expected_entity_token is not None and (
+            not isinstance(self.expected_entity_token, str)
+            or not self.expected_entity_token.strip()
+        ):
+            raise ValueError("expected_entity_token must not be blank")
 
 @dataclass(frozen=True, slots=True)
 class LifecycleMutationCompleted:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from __future__ import annotations
 import threading
+from dataclasses import replace
 import time
 from collections.abc import Callable
 from typing import Any, TYPE_CHECKING
@@ -13,7 +14,6 @@ from hyprial.daemon.impl.correlation.bounded_cadence  import BoundedCadence
 from hyprial.identity import (
     Agent,
 )
-from hyprial.identity import AgentKeepListError
 from hyprial.identity import (
     RestorePolicyError,
     desired_generation,
@@ -24,9 +24,12 @@ from hyprial.kernel import HarnessLaunchSpec
 from hyprial.daemon.impl.composition  import (
     DomainCommandError,
 )
-from hyprial.daemon.impl.harnesses.runtime.ports  import RestoreEligibilityProjection
+from hyprial.daemon.impl.harnesses.runtime.ports  import (
+    RestoreEligibilityProjection,
+)
 from hyprial.daemon.impl.lifecycle_manager  import (
     LifecycleOperation,
+    LifecycleState,
 )
 if TYPE_CHECKING:
     pass
@@ -134,6 +137,10 @@ class _RestoreMixin:
         with self._restore_eligibility_lock:
             self._restore_eligibility_version += 1
             version = self._restore_eligibility_version
+        # Activity/degraded policy cannot clear a migration custody guard.
+        if getattr(self, "_transfer_p2", None) is not None:
+            custody = self._transfer_source_state(spec.name, entity_token)
+            suppressed = suppressed or custody.blocks_start
         eligibility = RestoreEligibilityProjection(
             actor=spec.name,
             entity_token=entity_token,
@@ -218,10 +225,9 @@ class _RestoreMixin:
         try:
             self._restore_policy.refresh(wait=True)
             projection = self._restore_policy.projection()
-            self._agent_keep.list()
             if projection.degraded is not None:
                 raise RestorePolicyError(projection.degraded)
-        except (OSError, RestorePolicyError, AgentKeepListError, TimeoutError) as error:
+        except (OSError, RestorePolicyError, TimeoutError) as error:
             self._restore_policy_degraded = str(error)
             self._log("warn", "daemon", "restore-policy-degraded",
                       errorType=type(error).__name__, detail=str(error)[:500])
@@ -244,7 +250,6 @@ class _RestoreMixin:
             allowed = (
                 policy is None
                 or disposition.desired_generation != desired_generation(spec)
-                or agent.actor in self._agent_keep.list()
                 or self._pending_restore_work(agent)
                 or policy.policy_for(agent.actor) == "always"
                 or projection.block is not None
@@ -264,6 +269,11 @@ class _RestoreMixin:
     def _classify_restore_specs(
         self, specs: tuple[HarnessLaunchSpec, ...]
     ) -> tuple[HarnessLaunchSpec, ...]:
+        if getattr(self, "_transfer_p2", None) is not None:
+            specs = self._filter_transfer_restore_specs(specs)
+        return self._classify_activity_restore_specs(specs)
+
+    def _classify_activity_restore_specs(self, specs):
         self._restore_policy_or_degraded()
         policy_projection = self._restore_policy.projection()
         if policy_projection.degraded is not None or self._restore_policy_degraded is not None:
@@ -290,7 +300,6 @@ class _RestoreMixin:
                 )
             return specs
         policy = policy_projection.policy
-        kept = frozenset(self._agent_keep.list())
         restored: list[HarnessLaunchSpec] = []
         self._restore_activity_unknown.clear()
         now_ms = self._restore_now_ms()
@@ -326,13 +335,9 @@ class _RestoreMixin:
             )
             blocked = projection.block is not None
             override = (
-                "keep-list"
-                if agent.actor in kept
-                else (
-                    "pending-work"
-                    if pending
-                    else ("per-agent" if agent_policy == "always" else "none")
-                )
+                "pending-work"
+                if pending
+                else ("per-agent" if agent_policy == "always" else "none")
             )
             activity_unknown = agent.last_active_at_ms is None
             effective_activity = (
@@ -387,6 +392,35 @@ class _RestoreMixin:
             )
         return tuple(restored)
 
+    def _legacy_restore_wake_running(self, operation_id, spec):
+        """Observe the old CREATE object; never re-submit it as RESUME.
+
+        None defers while an accepted legacy operation is still in progress.
+        Lookup/status failures propagate to the caller's fail-closed retry path.
+        A receipt alone is not proof that the worker is currently running.
+        """
+        try:
+            receipt = self._lifecycle_manager.result(operation_id)
+        except KeyError:
+            return False
+        if receipt.operation_id != operation_id:
+            raise RuntimeError("legacy wake receipt identity mismatch")
+        if receipt.state in {LifecycleState.RUNNING, LifecycleState.COMPENSATING}:
+            return None
+        # A terminal stop receipt may precede publication of the status view.
+        # Ask the runtime owner to refresh it, using its existing bounded port;
+        # neither a historical receipt nor a cached row proves current liveness.
+        # Restore is the only consumer allowed a native read; the port mints a
+        # one-shot capability and the runtime owner validates it.
+        self._harnesses.observe_runtime_facts()
+        running = any(row.get("runtime") == spec.harness and row.get("name") == spec.name
+                      and row.get("running") is True for row in self._harnesses.status())
+        if running and receipt.state is not LifecycleState.COMPLETED:
+            self._log("warn", "daemon", "harness.restore.legacy_inconsistent",
+                      actor=spec.name, operationId=operation_id)
+            return None
+        return running
+
     def _wake_dormant_agent(self, actor: str, *, reason: str) -> bool:
         agent = self.agents.get(actor)
         projection = self.agents.projection(actor)
@@ -426,19 +460,28 @@ class _RestoreMixin:
                     entity_token=agent.entity_token,
                     suppressed=False,
                 )
+        if getattr(self, "_transfer_p2", None) is not None:
+            custody = self._hydrate_transfer_source(agent.actor, agent.entity_token)
+            if custody is None or custody.blocks_start:
+                self._publish_restore_eligibility(
+                    spec=spec, entity_token=agent.entity_token, suppressed=True,
+                )
+                return False
         try:
             if self._lifecycle_manager is not None:
-                self._run_lifecycle_operation(
-                    LifecycleOperation.create(
-                        (
-                            f"restore-wake:{agent.actor}:"
-                            f"{agent.entity_token}:"
-                            f"{disposition.disposition_token}:"
-                            f"{desired_generation(spec)}"
-                        ),
-                        self._lifecycle_spec(spec),
+                suffix = (f"{agent.actor}:{agent.entity_token}:"
+                          f"{disposition.disposition_token}:{desired_generation(spec)}")
+                legacy_running = self._legacy_restore_wake_running(
+                    f"restore-wake:{suffix}", spec)
+                if legacy_running is None:
+                    return False
+                if not legacy_running:
+                    self._run_lifecycle_operation(
+                        LifecycleOperation.resume(
+                            f"resume-wake:{suffix}",
+                            replace(self._lifecycle_spec(spec), expected_entity_token=agent.entity_token),
+                        )
                     )
-                )
             elif self._harnesses is not None:
                 self._harnesses.start(spec)
         except Exception as error:  # noqa: BLE001 - durable intent remains
@@ -471,6 +514,8 @@ class _RestoreMixin:
         return True
 
     def _restore_wake_scan(self, _observed_at_ms: int) -> None:
+        if getattr(self, "_transfer_p2", None) is not None:
+            self._retry_transfer_restore()
         policy = self._restore_policy.projection()
         with self._restore_wake_lock:
             requested = tuple(self._restore_wake_requests.items())[
@@ -512,7 +557,6 @@ class _RestoreMixin:
                 ):
                     self._wake_dormant_agent(agent.actor, reason="policy-degraded")
             return
-        kept = frozenset(self._agent_keep.list())
         for agent in selected:
             if agent.actor in requested_actors:
                 continue
@@ -540,8 +584,6 @@ class _RestoreMixin:
             reason = (
                 "blocked"
                 if projection.block is not None
-                else "keep-list"
-                if agent.actor in kept
                 else "pending-work"
                 if pending
                 else "per-agent-always"

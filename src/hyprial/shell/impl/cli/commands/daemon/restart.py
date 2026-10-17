@@ -6,20 +6,17 @@ from hyprial.shell.impl.cli.output import confirm, render_generic
 
 from hyprial.shell.impl.cli.commands.common.services import get_services
 
-from hyprial.kernel import DaemonLaunchResult
-from pathlib import Path
 from hyprial.kernel import ipc_errors
-import socket
 import sys
 import typer
 
-from hyprial.shell.impl.cli.commands.common.daemon_stop import old_pid_from
 from hyprial.shell.impl.cli.commands.common.pending_restart import (
     _clear_pending_restart,
     _read_pending_restart,
+    restart_daemon,
 )
 from hyprial.shell.impl.cli.commands.common.root import app
-from hyprial.shell.impl.cli.commands.common.support import DAEMON_START_IDLE_BUDGET_SECONDS, JsonObject, _announce_setup_guidance, _append_warning, _squire_setup_warning, _utc_now
+from hyprial.shell.impl.cli.commands.common.support import JsonObject, _announce_setup_guidance, _append_warning, _squire_setup_warning, _utc_now
 def _daemon_restart_identity(status: JsonObject) -> JsonObject:
     """Project the daemon identity fields used by restart reports."""
     services = get_services()
@@ -216,64 +213,17 @@ def restart_command(
             "before": before,
             "interruptedTurns": interrupted,
         }
-        if status is not None:
-            try:
-                services._stop_daemon_gracefully()
-            except (services.CliError, ipc_errors.TransientDaemonError) as stop_error:
-                # Same contract as the upgrade path's stop (see
-                # `_restart_daemon_onto_install` for the 2026-08-30/31 incidents):
-                # a failed stop is recorded, never a reason to skip the launch.
-                result["stopWarning"] = str(stop_error)
-                if stop_error.code == "DAEMON_STOP_SURVIVOR":
-                    # Still launch -- refusing would trade a possible failure for a
-                    # certain absence again, and the claim that the launch is futile
-                    # is not one anyone has verified. What changes is that a person
-                    # hears about it in minutes rather than in nine hours, which was
-                    # the actual cost that day.
-                    result["survivingOldProcess"] = True
-                    survivor = services._describe_survivor(old_pid_from(stop_error))
-                    marker_path: Path | None
-                    try:
-                        # ⛔ No `start_failure` argument, on purpose: a survivor is
-                        # not a start failure, so the question does not apply. The
-                        # key is left out; passing `None` would assert "we looked
-                        # for this launch's daemon.start.failed and found none", a
-                        # search this branch never runs. The omission is the honest
-                        # record, and it keeps `null` meaning only "looked and there
-                        # was none" on the restart-failure path below.
-                        marker_path = services.write_failure_marker(
-                            state_dir=services._state_dir(),
-                            host=socket.gethostname(),
-                            summary="旧 daemon 拆解完成但进程没有退出",
-                            detail=f"{stop_error}\n{survivor}",
-                        )
-                    except OSError:
-                        marker_path = None
-                    survivor_alert = services.notify_upgrade_failure(
-                        hyprial_home=services._hyprial_home(),
-                        state_dir=services._state_dir(),
-                        host=socket.gethostname(),
-                        # ⭐ Deliberately not the same sentence as a stop timeout.
-                        # The two ask for different actions: a timeout means "wait,
-                        # it is probably fine"; this means "go find the survivor, it
-                        # will not leave on its own".
-                        summary="⚠️ 旧 daemon 拆解完成但【进程没有退出】—— 新 daemon 已启动",
-                        detail=f"{stop_error}\n{survivor}",
-                        idempotency_key=f"daemon-stop-survivor:hyprial-restart:{stop_error.data}",
-                    )
-                    result["survivorAlert"] = survivor_alert.to_json()
-                    if marker_path is not None:
-                        services.record_alert_outcome(marker_path, survivor_alert)
-
-        launched = services._launch_daemon_process(
-            ready_timeout=DAEMON_START_IDLE_BUDGET_SECONDS
+        # Same contract as the upgrade path's stop (see `restart_daemon` for
+        # the 2026-08-30/31 incidents): a failed stop is recorded, never a
+        # reason to skip the launch. With no running daemon, neither a stop
+        # nor a fresh-pid verdict is attempted -- the old `status is not
+        # None` gate, kept verbatim.
+        launched = restart_daemon(
+            result,
+            before_pid=before.get("pid") if status is not None else None,
+            survivor_idempotency_scope="hyprial-restart",
+            stop=status is not None,
         )
-        if not isinstance(launched, DaemonLaunchResult):
-            raise services.CliError(
-                "INVALID_RESPONSE", "daemon launch returned an unexpected result shape"
-            )
-        if launched.running is not True:
-            raise services.CliError("INVALID_RESPONSE", "started daemon did not report running")
         after = _daemon_restart_identity(dict(launched.status))
         if status is not None and after["pid"] == before["pid"]:
             raise services.CliError(

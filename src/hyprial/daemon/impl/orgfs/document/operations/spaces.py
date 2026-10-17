@@ -43,6 +43,10 @@ from hyprial.daemon.impl.orgfs.storage.space_authority  import (
 
 
 
+from hyprial.daemon.impl.orgfs.storage.store import state_covers
+
+
+
 
 
 from hyprial.daemon.impl.orgfs.document.model import TreeDocument, _ContentDocument, _MetaWatch, _Node, _Space, _decode_content_frontier, _facade_locked, _now, _version
@@ -359,6 +363,29 @@ class FacadeSpaces:
         return info
 
 
+    @staticmethod
+    def _remote_birth_content_pending(space: "_Space", node: "_Node") -> bool:
+        """Whether a remotely created doc node still lacks its birth content.
+
+        The origin commits a node's creation atomically with its content, but
+        the receiving projection can see the tree envelope first (sync pages
+        flatten documents in meta/tree/content order), so the birth entry must
+        wait until the local content document covers the frontier the origin
+        recorded at creation.  Only text documents with a required frontier
+        can wait; everything else is born immediately.
+        """
+
+        if node.kind != "doc" or not node.doc_id:
+            return False
+        if node.required_content_frontier is None:
+            return False
+        document = space.contents.get(node.doc_id)
+        if document is None:
+            return True
+        return not state_covers(
+            document.doc.get_state(), node.required_content_frontier
+        )
+
     @_facade_locked
     def apply_envelope(self, space_id: str, envelope: bytes) -> None:
         """Refresh an open facade after the durable store admits an envelope."""
@@ -534,8 +561,31 @@ class FacadeSpaces:
                     )
                     if previous.get(node_id) == current:
                         continue
-                    if node_id not in previous:
+                    if node_id in space.birth_pending:
+                        if node.deleted and not previous[node_id][4]:
+                            space.birth_pending.pop(node_id, None)
+                            changed = "removed"
+                        else:
+                            # The remote birth is still waiting for its content;
+                            # keep intermediate projection entries behind the
+                            # finalized birth so the chain never interleaves.
+                            continue
+                    elif node_id not in previous:
                         changed = "created"
+                        if self._remote_birth_content_pending(space, node):
+                            # A cross-node birth must materialize as one
+                            # ``created`` version that already carries its
+                            # content.  The tree envelope can be admitted and
+                            # projected before the sibling content envelope
+                            # (sync pages flatten documents in meta/tree/
+                            # content order), so hold the birth entry until the
+                            # local content document covers the frontier the
+                            # origin recorded at creation.
+                            space.birth_pending[node_id] = (
+                                origin_author,
+                                origin_actor,
+                            )
+                            continue
                     elif node.deleted and not previous[node_id][4]:
                         changed = "removed"
                     elif (node.parent, node.name) != previous[node_id][:2]:
@@ -556,10 +606,37 @@ class FacadeSpaces:
             affected = [
                 node.node_id for node in space.nodes.values() if node.doc_id == doc_id
             ]
-            if affected:
+            born: list[tuple[str, str, str | None]] = []
+            progressed: list[str] = []
+            for node_id in affected:
+                pending = space.birth_pending.get(node_id)
+                if pending is None:
+                    progressed.append(node_id)
+                elif self._remote_birth_content_pending(space, space.nodes[node_id]):
+                    # More of the birth content is still missing; the birth
+                    # entry stays unfinalized.
+                    continue
+                else:
+                    space.birth_pending.pop(node_id, None)
+                    born.append((node_id, pending[0], pending[1]))
+            for attribution in dict.fromkeys(
+                (author, actor) for _node_id, author, actor in born
+            ):
                 self._finish(
                     space,
-                    affected,
+                    [
+                        node_id
+                        for node_id, author, actor in born
+                        if (author, actor) == attribution
+                    ],
+                    "created",
+                    author=attribution[0],
+                    actor=attribution[1],
+                )
+            if progressed:
+                self._finish(
+                    space,
+                    progressed,
                     "content",
                     author=origin_author,
                     actor=origin_actor,

@@ -55,13 +55,25 @@ _HEADER_SCAN_BYTES = 1024 * 1024
 class SessionFileError(RuntimeError):
     """Base class for session-file location failures (always fail-loud)."""
 
+    reason = "unusable"
+
 
 class SessionFileNotFound(SessionFileError):
     """No session file for the ref — a transfer would cold-start silently."""
 
+    reason = "not-found"
+
 
 class SessionFileAmbiguous(SessionFileError):
     """More than one candidate — never guess which file holds the context."""
+
+    reason = "ambiguous"
+
+
+class SessionFileOutsideCwd(SessionFileError):
+    """The exact native session exists, but not for the requested project."""
+
+    reason = "outside-cwd"
 
 
 def _real_cwd(cwd: str) -> str:
@@ -203,6 +215,71 @@ def _pi_session_file_in_dir(session_dir: Path, session_ref: str) -> Path:
             f"the expected id {sanitized!r}"
         )
     return path
+
+
+def resolve_legacy_pi_resume_session(
+    agent_dir: Path, cwd: str, session_id: str
+) -> Path:
+    """Resolve one exact Pi session file in ``cwd`` without prefix fallback.
+
+    Legacy Pi accepts a partial id and searches other projects before offering
+    to fork.  Passing an absolute, header-verified file is the only legacy CLI
+    surface that preserves Hyprial's exact-session and no-fork contract.
+    """
+
+    session_root = Path(agent_dir).expanduser() / "sessions"
+    project_dir = session_root / pi_session_dir_name(cwd)
+    suffix = f"_{session_id}.jsonl"
+
+    def exact_files(directory: Path) -> list[Path]:
+        candidates = (
+            sorted(
+                path
+                for path in directory.iterdir()
+                if path.is_file() and path.name.endswith(suffix)
+            )
+            if directory.is_dir()
+            else []
+        )
+        exact: list[Path] = []
+        for candidate in candidates:
+            if _pi_header_id(candidate) == session_id:
+                exact.append(candidate)
+            else:
+                raise SessionFileError(
+                    f"Pi session candidate {candidate} does not carry exact id "
+                    f"{session_id!r}; use controlled-loader (P2) mode"
+                )
+        return exact
+
+    local = exact_files(project_dir)
+    if len(local) > 1:
+        raise SessionFileAmbiguous(
+            f"Pi session {session_id!r} has multiple exact files in project "
+            f"{project_dir}: " + ", ".join(str(path) for path in local)
+        )
+    if local:
+        return local[0].resolve(strict=True)
+
+    elsewhere: list[Path] = []
+    if session_root.is_dir():
+        for directory in sorted(path for path in session_root.iterdir() if path.is_dir()):
+            if directory == project_dir:
+                continue
+            elsewhere.extend(exact_files(directory))
+    if len(elsewhere) > 1:
+        raise SessionFileAmbiguous(
+            f"Pi session {session_id!r} has multiple exact files outside project "
+            f"{project_dir}: " + ", ".join(str(path) for path in elsewhere)
+        )
+    if elsewhere:
+        raise SessionFileOutsideCwd(
+            f"Pi session {session_id!r} belongs to another project cwd at "
+            f"{elsewhere[0]}; refusing Pi's cross-project fork"
+        )
+    raise SessionFileNotFound(
+        f"no exact Pi session file for {session_id!r} under project {project_dir}"
+    )
 
 
 def pi_session_target(agent_dir: Path, cwd: str, filename: str) -> Path:

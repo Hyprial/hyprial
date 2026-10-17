@@ -28,10 +28,6 @@ migration_app = typer.Typer(
     no_args_is_help=True,
 )
 
-agent_keep_app = typer.Typer(
-    help="Protect named agents from inactivity reports.",
-)
-
 @agent_app.command("list")
 def agent_list(
     inactive_since: str | None = typer.Option(

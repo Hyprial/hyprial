@@ -29,6 +29,16 @@ class _WiringServicesMixin:
         from hyprial.daemon.impl.pac.graphs.authority import PacGraphAuthority
         from hyprial.daemon.impl.pac.storage.store import default_database_path
         from hyprial.daemon.impl.pac.actors.gc  import PacGc
+        from hyprial.kernel import HookEventPublisher
+
+        # H5: one publisher over the same HookBus DaemonHookService owns, so
+        # PAC graph/worker facts and turn facts share one bus and one daemon
+        # source sequence.  Absent bus (unit composition) means no-op.
+        pac_hook_publisher = (
+            HookEventPublisher(self._hook_bus, source="daemon.pac")
+            if self._hook_bus is not None
+            else None
+        )
 
         # U0BRACE: nothing else may live here.  This used to be the call site
         # of ``_bootstrap_lifecycle_harnesses``, which submitted one create
@@ -207,6 +217,7 @@ class _WiringServicesMixin:
                     default_database_path(self.state_dir),
                     DaemonPacNotificationSender(self),
                     logger=self._log,
+                    hook_publisher=pac_hook_publisher,
                 )
             except Exception as error:
                 self._log(
@@ -226,6 +237,7 @@ class _WiringServicesMixin:
                     daemon_epoch=self.epoch,
                     logger=self._log,
                     graph_authority=self._pac_graph_authority,
+                    hook_publisher=pac_hook_publisher,
                 )
             except Exception as error:  # noqa: BLE001 - cadence is optional
                 self._pac_actor_service = None
@@ -264,6 +276,7 @@ class _WiringServicesMixin:
                     admit=self._workflow_admit, logger=self._log,
                     delivery_receipt=self._pac_graph_authority,
                     graph_authority=self._pac_graph_authority,
+                    hook_publisher=pac_hook_publisher,
                 )
             except Exception as error:  # noqa: BLE001 - autoupdate must remain reachable
                 self._log(

@@ -24,6 +24,7 @@ from hyprial.identity.impl.agents.actor.ports import DestroyAgentCommand
 from hyprial.kernel import EffectCompleted
 from hyprial.identity.impl.agents.actor.ports import GrantAgentCapabilityCommand
 from hyprial.identity.impl.agents.actor.ports import GrantAgentSecretCommand
+from hyprial.identity.impl.agents.home.effects import VerifyLandingPayload
 from hyprial.identity.impl.agents.home.effects import MaterialiseLandingHome
 from hyprial.identity.impl.agents.migration.actor import MigrationOwnerCall
 from hyprial.identity.impl.agents.migration.actor import MigrationRequest
@@ -45,6 +46,7 @@ from hyprial.identity.impl.agents.actor.ports import SetRestoreDispositionComman
 from hyprial.identity.impl.agents.actor.ports import SettleAgentDestroyCommand
 from hyprial.identity.impl.agents.actor.ports import UnblockAgentCommand
 from hyprial.identity.impl.agents.actor.ports import UnpinAgentAdapterCommand
+from hyprial.identity.impl.agents.actor.ports import BindAgentConfigCommand
 from hyprial.identity.impl.agents.actor.ports import UpdateAgentCommand
 from hyprial.identity.impl.agents.runtime.context import agent_home_mode
 from hyprial.identity.impl.agents.runtime.context import build_agent_runtime_preparation
@@ -59,6 +61,7 @@ from ._base import (
     AgentUpdateConflict,
     _AGENT_COST_TYPES,
     _AgentStateEffectCompleted,
+    _VerifyLandingPayloadCommand,
     _ConfirmLandingHomeCommand,
     _LegacyRuntimeResult,
     _MaterialiseLandingHomeCommand,
@@ -131,7 +134,7 @@ class _GenerationDispatchMixin:
         if self.migration_conflicts is not None and self.migration_conflicts(command):
             self._reject(command, ipc_errors.AGENT_MIGRATION_BUSY, "Agent migration has an unsettled lease")
             return
-        if isinstance(command, (_PrepareWorkspaceCommand, _PrepareRuntimeCommand, _MaterialiseLandingHomeCommand, _ConfirmLandingHomeCommand)):
+        if isinstance(command, (_PrepareWorkspaceCommand, _PrepareRuntimeCommand, _MaterialiseLandingHomeCommand, _ConfirmLandingHomeCommand, _VerifyLandingPayloadCommand)):
             self._schedule_home_access(command)
             return
         if isinstance(command, AcquireAgentRuntimeLaunchCommand):
@@ -163,6 +166,7 @@ class _GenerationDispatchMixin:
                 CreateHostInvitedAgentCommand,
                 CreateTransferHostedAgentCommand,
                 UpdateAgentCommand,
+                BindAgentConfigCommand,
                 DestroyAgentCommand,
                 SettleAgentDestroyCommand,
                 CleanupRevokedAgentHomeCommand,
@@ -226,6 +230,8 @@ class _GenerationDispatchMixin:
                     command, operation="create", changed=True,
                     version=self.version.bump(), agent=agent,
                 )
+            elif isinstance(command, BindAgentConfigCommand):
+                self._bind_agent_config(command)
             elif isinstance(command, UpdateAgentCommand):
                 self._update(command)
             elif isinstance(command, DestroyAgentCommand):
@@ -605,7 +611,7 @@ class _GenerationDispatchMixin:
                 f"Agent home reservation remains unsettled: {type(error).__name__}: {error}",
             )
     def _schedule_home_access(
-        self, command: _PrepareWorkspaceCommand | _PrepareRuntimeCommand | _MaterialiseLandingHomeCommand | _ConfirmLandingHomeCommand
+        self, command: _PrepareWorkspaceCommand | _PrepareRuntimeCommand | _MaterialiseLandingHomeCommand | _ConfirmLandingHomeCommand | _VerifyLandingPayloadCommand
     ) -> None:
         lane = self.home_effects
         pending_home = self.pending_home
@@ -637,6 +643,12 @@ class _GenerationDispatchMixin:
                     command.actor, validate_mirror=False
                 )
                 plan = PrepareWorkspaceHome(receipt)
+            elif isinstance(command, _VerifyLandingPayloadCommand):
+                receipt = self.registry.home_receipt(
+                    command.actor, expected_entity_token=command.expected_entity_token,
+                    validate_mirror=False,
+                )
+                plan = VerifyLandingPayload(receipt, command.expected_files)
             elif isinstance(command, _MaterialiseLandingHomeCommand):
                 receipt = self.registry.home_receipt(
                     command.actor, expected_entity_token=command.expected_entity_token,
@@ -651,6 +663,7 @@ class _GenerationDispatchMixin:
                     cwd=command.cwd,
                     tool_profile=command.tool_profile,
                     containerized=command.containerized,
+                    expected_entity_token=command.expected_entity_token,
                     validate_home=False,
                 )
                 if preparation is None:
@@ -715,6 +728,11 @@ class _GenerationDispatchMixin:
                         "home-access-completion",
                     )
                 self.registry.confirm_home_authority(pending.receipt)
+                if isinstance(pending.command, _VerifyLandingPayloadCommand):
+                    if event.payload_files != pending.command.expected_files or event.payload_state not in {"present", "absent", "partial"}:
+                        raise AgentHomeAccessError("landing payload completion mismatch")
+                    complete(event.correlation_id, event.payload_state, None)
+                    return
                 value: str | AgentRuntimeContext | None = (
                     event.workspace
                     if isinstance(pending.command, (_PrepareWorkspaceCommand, _MaterialiseLandingHomeCommand))

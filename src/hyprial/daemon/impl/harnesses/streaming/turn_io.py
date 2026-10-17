@@ -10,6 +10,9 @@ import threading
 import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING
+from uuid import uuid4
+
+from hyprial.kernel import PortAdmission, PortCommandRejected
 
 from hyprial.daemon.impl.api import (
     HarnessDelivery,
@@ -23,16 +26,24 @@ if TYPE_CHECKING:
     pass
 
 from hyprial.daemon.impl.harnesses.turn_delivery.turn.turn_ports import (
+    SteerTurnCommand,
     TurnDeliveryProjection,
     TurnInterruptIoCompleted,
     TurnStarted,
+    TurnSteerIoCompleted,
 )
-
-
 from hyprial.daemon.impl.harnesses.streaming.protocol import (
     _STOP,
     ProgressObservation,
 )
+
+
+class _SteerRejected(RuntimeError):
+    """A client proved the native adapter did NOT accept the steer input."""
+
+
+class _SteerUnknown(RuntimeError):
+    """The native write may have landed; acceptance is unprovable."""
 
 
 class _SequentialTurnIoMixin:
@@ -170,6 +181,108 @@ class _SequentialTurnIoMixin:
     
             future.add_done_callback(completed)
 
+        def steer(self, delivery_id: str, *, timeout: float = 5.0) -> bool:
+            """One per-delivery steer attempt; True only on native acceptance.
+
+            Blocking, bounded, and outcome-honest: the caller (the daemon's
+            timeout path) gets a bool and a log line either way.  A steer
+            never kills, restarts or interrupts anything by itself; the
+            harness adapter decides whether its mechanism folds the message
+            into the running turn or asks the turn to advance.
+            """
+
+            correlation_id = f"steer-{delivery_id}-{uuid4().hex}"
+            completed = threading.Event()
+            outcome: list[bool] = []
+            with self._lock:
+                self._interrupt_waiters[correlation_id] = (completed, outcome)
+            admission = self._turn_runtime.submit(
+                SteerTurnCommand(
+                    correlation_id=correlation_id, delivery_id=delivery_id
+                )
+            )
+            if admission is not PortAdmission.ACCEPTED:
+                with self._lock:
+                    self._interrupt_waiters.pop(correlation_id, None)
+                return False
+            if not completed.wait(timeout):
+                with self._lock:
+                    self._interrupt_waiters.pop(correlation_id, None)
+                return False
+            return outcome == [True]
+
+        def _submit_steer_io(
+            self,
+            generation: int,
+            version: int,
+            correlation_id: str,
+            delivery_id: str,
+            message: str,
+        ) -> None:
+            with self._lock:
+                loop = self._loop
+                client = self._client
+                active = self._active_delivery_id
+            if loop is None or client is None or active is None or active == delivery_id:
+                self._turn_runtime.complete_steer(
+                    generation=generation,
+                    version=version,
+                    correlation_id=correlation_id,
+                    delivery_id=delivery_id,
+                    accepted=False,
+                    consumed=False,
+                    detail="no live running turn to steer",
+                )
+                return
+            steer = getattr(client, "steer", None)
+            if not callable(steer):
+                self._turn_runtime.complete_steer(
+                    generation=generation,
+                    version=version,
+                    correlation_id=correlation_id,
+                    delivery_id=delivery_id,
+                    accepted=False,
+                    consumed=False,
+                    detail="harness has no steer mechanism",
+                )
+                return
+            future = asyncio.run_coroutine_threadsafe(steer(message), loop)
+
+            def completed(done: object) -> None:
+                accepted = True
+                consumed = True
+                detail: str | None = None
+                try:
+                    assert hasattr(done, "result")
+                    disposition = done.result()  # type: ignore[union-attr]
+                except _SteerRejected as error:
+                    accepted = False
+                    consumed = False
+                    detail = str(error) or type(error).__name__
+                except _SteerUnknown as error:
+                    accepted = False
+                    consumed = False
+                    detail = str(error) or type(error).__name__
+                except Exception as error:  # noqa: BLE001 - honest unknown
+                    accepted = False
+                    consumed = False
+                    detail = str(error) or type(error).__name__
+                else:
+                    # "advanced" = the mechanism ended the running turn so the
+                    # queued delivery starts next; it must stay queued.
+                    consumed = disposition != "advanced"
+                self._turn_runtime.complete_steer(
+                    generation=generation,
+                    version=version,
+                    correlation_id=correlation_id,
+                    delivery_id=delivery_id,
+                    accepted=accepted,
+                    consumed=consumed,
+                    detail=detail,
+                )
+
+            future.add_done_callback(completed)
+
         def _submit_close_io(
             self, generation: int, version: int, correlation_id: str
         ) -> None:
@@ -259,12 +372,30 @@ class _SequentialTurnIoMixin:
                         # Turn admission is authoritative; hooks are advisory.
                         pass
                 return
-            if not isinstance(event, TurnInterruptIoCompleted):
+            if isinstance(event, PortCommandRejected):
+                # A rejected command produces no IO completion; releasing the
+                # waiter here keeps a rejected interrupt/steer from waiting
+                # out its full timeout for an answer that will never come.
+                with self._lock:
+                    waiter = self._interrupt_waiters.pop(
+                        event.correlation_id, None
+                    )
+                if waiter is not None:
+                    completed, outcome = waiter
+                    outcome.append(False)
+                    completed.set()
+                return
+            if not isinstance(event, (TurnInterruptIoCompleted, TurnSteerIoCompleted)):
                 return
             with self._lock:
                 waiter = self._interrupt_waiters.pop(event.correlation_id, None)
             if waiter is None:
                 return
             completed, outcome = waiter
-            outcome.append(event.interrupted)
+            accepted = (
+                event.interrupted
+                if isinstance(event, TurnInterruptIoCompleted)
+                else event.accepted
+            )
+            outcome.append(accepted)
             completed.set()

@@ -50,7 +50,7 @@ def _describe_survivor(pid: int | None) -> str:
     return f"surviving pid: {pid}; direct children still running: {children}"
 
 
-def _stop_daemon_for_operator() -> JsonObject:
+def _stop_daemon_for_operator(*, expected_epoch: str | None = None) -> JsonObject:
     """`hyprial daemon stop` -- answers as soon as teardown is done, and says what it saw.
 
     It asks "did it stop", not "is it gone so I may start another", so it does
@@ -71,6 +71,10 @@ def _stop_daemon_for_operator() -> JsonObject:
     """
     services = get_services()
 
+    if expected_epoch is not None:
+        return _stop_daemon_with_proof(
+            require_exit=False, require_known_pid=False, expected_epoch=expected_epoch,
+        )
     return services._stop_daemon_gracefully(require_exit=False)
 
 
@@ -87,10 +91,15 @@ def _stop_daemon_for_identity_switch() -> JsonObject:
 
 
 def _stop_daemon_with_proof(
-    *, require_exit: bool, require_known_pid: bool
+    *, require_exit: bool, require_known_pid: bool, expected_epoch: str | None = None
 ) -> JsonObject:
     services = get_services()
-    result = services._daemon_request("shutdown", timeout=2.0)
+    if expected_epoch is None:
+        result = services._daemon_request("shutdown", timeout=2.0)
+    else:
+        result = services._daemon_request(
+            "shutdown", {"expectedEpoch": expected_epoch}, timeout=2.0,
+        )
     old_pid = (
         result.get("pid")
         if isinstance(result, dict)

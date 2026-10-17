@@ -123,6 +123,7 @@ CREATE TABLE IF NOT EXISTS lifecycle_receipts (
     operation_id TEXT NOT NULL,
     resource_key TEXT NOT NULL,
     expected_resource_token TEXT,
+    expected_entity_token TEXT,
     created_by_operation INTEGER NOT NULL,
     changed INTEGER NOT NULL,
     resource_token TEXT NOT NULL,
@@ -231,6 +232,9 @@ class DesiredStateSqliteShadow:
         """
 
         with self._state_db.transaction(schema=_SCHEMA) as db:
+            receipt_columns = {row[1] for row in db.execute("PRAGMA table_info(lifecycle_receipts)")}
+            if "expected_entity_token" not in receipt_columns:
+                db.execute("ALTER TABLE lifecycle_receipts ADD COLUMN expected_entity_token TEXT")
             columns = {row[1] for row in db.execute("PRAGMA table_info(harnesses)")}
             if "execution_runtime_json" not in columns:
                 db.execute("ALTER TABLE harnesses ADD COLUMN execution_runtime_json TEXT")
@@ -707,6 +711,9 @@ class DesiredStateSqliteShadow:
             "operationId": row["operation_id"],
             "resourceKey": row["resource_key"],
             "expectedResourceToken": row["expected_resource_token"],
+            **({"expectedEntityToken": row["expected_entity_token"]}
+               if "expected_entity_token" in row.keys() and row["expected_entity_token"] is not None
+               else {}),
             "createdByOperation": bool(row["created_by_operation"]),
             "changed": bool(row["changed"]),
             "resourceToken": row["resource_token"],
@@ -856,8 +863,8 @@ class DesiredStateSqliteShadow:
             "domain, attempt_token, operation_id, resource_key, "
             "expected_resource_token, created_by_operation, changed, "
             "resource_token, retired, completed, attempts, correlation_id, "
-            "generation, version) "
-            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "generation, version, expected_entity_token) "
+            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (
                     receipt["domain"],
@@ -874,6 +881,7 @@ class DesiredStateSqliteShadow:
                     receipt.get("correlationId"),
                     receipt.get("generation"),
                     receipt.get("version"),
+                    receipt.get("expectedEntityToken"),
                 )
                 for receipt in _items(document, "lifecycleReceipts")
             ],

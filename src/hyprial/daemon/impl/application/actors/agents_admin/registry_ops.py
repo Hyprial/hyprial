@@ -9,17 +9,16 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 from uuid import uuid4
 from hyprial.identity import (
+    Agent,
     RUNTIME_HEADLESS,
     RUNTIME_INTERACTIVE,
     AgentConfig,
     AgentError,
+    AgentHomeError,
     HandoverNotice,
+    RestorePolicyError,
     normalize_capabilities,
     normalize_harness_args,
-)
-from hyprial.identity import AgentKeepListError
-from hyprial.identity import (
-    RestorePolicyError,
 )
 from hyprial.kernel import ipc_errors
 from hyprial.kernel import DaemonRequestError
@@ -46,6 +45,7 @@ from hyprial.daemon.impl.ipc.params import (
 
 
 _AGENT_OPERATION_NAMESPACE = "agent"
+_RESUME_COMMIT_GUARD_VERSION = 1
 
 def _canonical_holder_name(name: str) -> str:
     """Case-insensitive identity for holder names.
@@ -62,6 +62,50 @@ class _AgentRegistryOpsMixin:
     """Application cluster mixin; the state owner is DaemonApplication."""
 
     def _handle_agent(self, method: str, params: JsonObject) -> Any:
+        if method == "agent.resume.restore":
+            name = self.agents.native_actor(
+                _required_string(params.get("name"), "name")
+            )
+            expected = Agent.from_json(params.get("expected"), "expected")
+            requested_replacement = Agent.from_json(
+                params.get("replacement"), "replacement"
+            )
+            if (
+                expected.actor != name
+                or requested_replacement.actor != name
+                or expected.uri != requested_replacement.uri
+                or expected.entity_token != requested_replacement.entity_token
+            ):
+                raise DaemonRequestError(
+                    ipc_errors.INVALID_ARGUMENT,
+                    "guarded resume restore snapshots must name the same Agent incarnation",
+                )
+            with self._interactive_route_effect(expected.uri):
+                guard = self._resume_agent_restore_guards.get(expected.uri)
+                if guard is None or guard[1] != expected:
+                    raise DaemonRequestError(
+                        ipc_errors.RESUME_AGENT_RESTORE_FAILED,
+                        "resume start was refused, but the daemon no longer has the "
+                        "exact agent.create rollback record for this attempt",
+                    )
+                replacement = guard[0]
+                del self._resume_agent_restore_guards[expected.uri]
+                if replacement is None:
+                    raise DaemonRequestError(
+                        ipc_errors.RESUME_AGENT_RESTORE_FAILED,
+                        "resume start was refused after agent.create created a new Agent; "
+                        "automatic removal is not safe, so inspect and retire that Agent "
+                        "explicitly",
+                    )
+                restored = self.agents.compare_and_swap(expected, replacement)
+            if not restored:
+                raise DaemonRequestError(
+                    ipc_errors.RESUME_AGENT_RESTORE_FAILED,
+                    "resume start was refused, but Agent restore was refused because "
+                    "the Agent no longer matched this start attempt; inspect the later "
+                    "Agent write before retrying",
+                )
+            return {"ok": True, "restored": True, "agent": replacement.to_json()}
         if method.startswith("agent.migrate."):
             return self._handle_agent_migration(method, params)
         if method in ("agent.grant", "agent.revoke", "agent.grants"):
@@ -275,6 +319,27 @@ class _AgentRegistryOpsMixin:
                     else {}
                 ),
             }
+        if method == "agent.start.preflight":
+            name = self.agents.native_actor(
+                _required_string(params.get("name"), "name")
+            )
+            agent = self.agents.get(name)
+            if agent is None:
+                raise DaemonRequestError(
+                    ipc_errors.AGENT_NOT_FOUND,
+                    f"no agent named {name!r} on this machine",
+                )
+            harness = _required_string(params.get("harness"), "harness")
+            runtime = str(params.get("runtime") or RUNTIME_HEADLESS)
+            with self._interactive_route_effect(agent.uri):
+                self._refuse_if_running(
+                    agent.uri, harness=harness, runtime=runtime
+                )
+            return {
+                "ok": True,
+                "agent": self._agent_status_json(agent),
+                "resumeCommitGuardVersion": _RESUME_COMMIT_GUARD_VERSION,
+            }
         if method == "agent.create":
             # Decision A5: the one creation path. `hyprial agent create` calls it
             # directly; `hyprial start` calls it first and only then launches a
@@ -337,19 +402,34 @@ class _AgentRegistryOpsMixin:
             # been spawned -- and otherwise hand back the A9 handover notice so
             # it can be put in front of the agent's first turn.
             handover: HandoverNotice | None = None
+            resume_before: Agent | None = None
             if harness_name is not None:
-                self._refuse_if_running(
-                    agent.uri,
-                    harness=harness_name,
-                    runtime=str(params.get("runtime") or RUNTIME_HEADLESS),
-                )
-                agent = self._ensure_agent(
-                    agent.uri, harness=harness_name,
-                    interactive=params.get("runtime") == RUNTIME_INTERACTIVE,
-                    cwd=effective_cwd,
-                    provider=_optional_string_param(params.get("provider"), "provider"),
-                    model=_optional_string_param(params.get("model"), "model"),
-                )
+                with self._interactive_route_effect(agent.uri):
+                    self._refuse_if_running(
+                        agent.uri,
+                        harness=harness_name,
+                        runtime=str(params.get("runtime") or RUNTIME_HEADLESS),
+                    )
+                    if (
+                        params.get("includeResumeSnapshot") is True
+                        and existing is not None
+                    ):
+                        resume_before = self.agents.require(agent.uri)
+                    agent = self._ensure_agent(
+                        agent.uri, harness=harness_name,
+                        interactive=params.get("runtime") == RUNTIME_INTERACTIVE,
+                        cwd=effective_cwd,
+                        provider=_optional_string_param(
+                            params.get("provider"), "provider"
+                        ),
+                        model=_optional_string_param(params.get("model"), "model"),
+                    )
+                    if params.get("includeResumeSnapshot") is True:
+                        assert agent is not None
+                        self._resume_agent_restore_guards[agent.uri] = (
+                            resume_before,
+                            agent,
+                        )
                 assert agent is not None
                 if effective_cwd == self._agent_session_domains.agent.resolve_workspace_path(
                     agent.actor
@@ -370,6 +450,16 @@ class _AgentRegistryOpsMixin:
                 "ok": True,
                 "created": existing is None,
                 "agent": self._agent_status_json(agent),
+                **(
+                    {
+                        "resumePreviousSnapshot": (
+                            None if resume_before is None else resume_before.to_json()
+                        ),
+                        "resumeSnapshot": agent.to_json(),
+                    }
+                    if params.get("includeResumeSnapshot") is True
+                    else {}
+                ),
                 **(
                     {"harnessHandover": handover.to_json()}
                     if handover is not None
@@ -394,12 +484,6 @@ class _AgentRegistryOpsMixin:
                         ipc_errors.INVALID_ARGUMENT, str(error)
                     ) from error
                 cutoff_ms = self._agent_registry.now_ms() - int(seconds * 1_000)
-            try:
-                kept = frozenset(self._agent_keep.list())
-            except AgentKeepListError as error:
-                raise DaemonRequestError(
-                    ipc_errors.INVALID_ARGUMENT, str(error)
-                ) from error
             with self._worker_status_snapshot():
                 agents = []
                 visible_actors: list[str] = []
@@ -410,7 +494,7 @@ class _AgentRegistryOpsMixin:
                         agent.actor
                     ).to_payload()
                     if cutoff_ms is not None and not self._agent_is_inactive(
-                        agent, hints, cutoff_ms=cutoff_ms, kept=kept
+                        agent, hints, cutoff_ms=cutoff_ms
                     ):
                         continue
                     agents.append(self._agent_status_json(agent, activity_hints=hints))
@@ -432,6 +516,26 @@ class _AgentRegistryOpsMixin:
                         actor for actor in visible_actors if actor not in bound_actors
                     ],
                 }
+        if method == "agent.ensure-home":
+            # The registry's two-phase provision is the one official path
+            # for giving an existing agent a P2 home: claim receipt, inactive
+            # lifecycle row, ``provision_claimed`` filesystem effect (0700
+            # tree, 0600 receipt mirror), then activation -- with compensating
+            # rollback on failure.  Idempotent: an active ready row is
+            # validated and returned unchanged.  Legacy agents otherwise have
+            # no official rebuild path once a restart takes the P2 branch
+            # (`not-provisioned` on every read).
+            name = self.agents.normalize_actor(
+                _required_string(params.get("name"), "name")
+            )
+            receipt = self._agent_registry.ensure_home(name)
+            agent = self.agents.require(name)
+            return {
+                "ok": True,
+                "actor": name,
+                "agent": agent.uri,
+                "home": receipt.to_json(),
+            }
         if method == "agent.home-census":
             from collections import Counter
 
@@ -449,11 +553,30 @@ class _AgentRegistryOpsMixin:
 
             rows: list[JsonObject] = []
             counts: Counter[tuple[str, str]] = Counter()
+            legacy_home_root = (
+                self._agent_registry.home_provisioner.agents_root
+                if self._agent_registry.home_enabled
+                else self.hyprial_home / "agents"
+            )
+            unprovisioned = 0
             for agent in self.agents.list():
-                receipt = self._agent_registry.home_receipt(
-                    agent.actor, require_ready=False
+                # The census measures the legacy population too: a missing
+                # home row is a finding (``homeProvisioned: false``), not a
+                # reason to fail the whole read (the pre-fix command died on
+                # the first unprovisioned agent with ``not-provisioned``).
+                receipt = None
+                try:
+                    receipt = self._agent_registry.home_receipt(
+                        agent.actor, require_ready=False
+                    )
+                except AgentHomeError as error:
+                    if error.category != "not-provisioned":
+                        raise
+                    unprovisioned += 1
+                home = (
+                    Path(receipt.path) if receipt is not None
+                    else legacy_home_root / agent.actor
                 )
-                home = Path(receipt.path)
                 harness = agent.preferred_harness or agent.last_harness
                 mode, reason = agent_home_mode(agent, harness)
                 display_harness = harness or "unknown"
@@ -465,6 +588,7 @@ class _AgentRegistryOpsMixin:
                         "preferredHarness": agent.preferred_harness,
                         "lastHarness": agent.last_harness,
                         "harness": harness,
+                        "homeProvisioned": receipt is not None,
                         "explicitConfig": agent.config is not None,
                         "configInsideHome": (
                             False
@@ -495,26 +619,8 @@ class _AgentRegistryOpsMixin:
                         {"mode": mode, "harness": harness, "count": count}
                         for (mode, harness), count in sorted(counts.items())
                     ],
+                    "homeUnprovisioned": unprovisioned,
                 },
-            }
-        if method == "agent.keep.list":
-            return {"ok": True, "agents": list(self._agent_keep.list())}
-        if method in {"agent.keep.add", "agent.keep.remove"}:
-            name = self.agents.normalize_actor(
-                _required_string(params.get("name"), "name")
-            )
-            changed = (
-                self._agent_keep.add(name)
-                if method == "agent.keep.add"
-                else self._agent_keep.remove(name)
-            )
-            if method == "agent.keep.add":
-                self._submit_restore_wake(name, reason="keep-list")
-            return {
-                "ok": True,
-                "agent": name,
-                "changed": changed,
-                "agents": list(self._agent_keep.list()),
             }
         if method == "agent.restore-policy":
             name = self.agents.normalize_actor(
@@ -574,7 +680,6 @@ class _AgentRegistryOpsMixin:
                 AgentRuntimeError,
             )
             from hyprial.identity import AgentConfigError
-            from hyprial.identity import AgentHomeError
 
             try:
                 context = self._agent_session_domains.agent.prepare_runtime_context(

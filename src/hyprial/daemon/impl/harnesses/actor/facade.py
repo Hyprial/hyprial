@@ -23,6 +23,7 @@ from hyprial.daemon.impl.harnesses.runtime.ports  import (
     HarnessAdapterRegistrationProjection,
     HarnessCommand,
     HarnessDeliveryAdmitted,
+    HarnessDeliverySteered,
     HarnessDesiredStateManaged,
     HarnessEvent,
     HarnessFailedDrained,
@@ -45,6 +46,7 @@ from hyprial.daemon.impl.harnesses.runtime.ports  import (
     RestoreAdapterRegistrationCommand,
     RestoreHarnessesCommand,
     StopHarnessesCommand,
+    SteerHarnessDeliveryCommand,
     SnapshotAdapterRegistrationCommand,
     StageHarnessDesiredCommand,
     WaitHarnessReadyCommand,
@@ -53,6 +55,7 @@ from hyprial.kernel import PortCommandRejected
 from hyprial.kernel import ReadinessReport
 
 from .contracts import HarnessProjection, HarnessRestoreSummary, HarnessRuntimeClosed, _AWAIT_SETTLEMENT, _AwaitSettlement, _Reply, _launch_projection
+from .io_port import validate_harness_cwd
 
 if TYPE_CHECKING:  # pragma: no cover - annotation-only, same package
     from hyprial.daemon.impl.harnesses.actor.actor import HarnessRuntimeActor
@@ -127,6 +130,7 @@ class HarnessRuntimeFacade:
         return cast(HarnessTimerCompleted, event).restarted
 
     def start(self, spec: HarnessLaunchSpec) -> bool:
+        validate_harness_cwd(spec)
         event = self._request(
             EnsureHarnessCommand(uuid.uuid4().hex, _launch_projection(spec)),
             HarnessMutationCompleted,
@@ -319,6 +323,21 @@ class HarnessRuntimeFacade:
             HarnessDeliveryAdmitted,
         )
         return cast(HarnessDeliveryAdmitted, event).accepted
+
+    def steer(self, name: str, delivery_id: str, timeout: float = 5.0) -> bool:
+        """Fold ``delivery_id`` into this actor's running turn; False if not.
+
+        ``timeout`` is the actor reply budget.  The native steer itself has
+        its own bounded wait inside the process; this only decides how long
+        the daemon's timeout path is willing to block on the answer.
+        """
+
+        event = self._request(
+            SteerHarnessDeliveryCommand(uuid.uuid4().hex, name, delivery_id),
+            HarnessDeliverySteered,
+            timeout=max(timeout + 1.0, self._reply_timeout),
+        )
+        return cast(HarnessDeliverySteered, event).accepted
 
     def drain_results(self) -> tuple[HarnessResult, ...]:
         event = self._request(

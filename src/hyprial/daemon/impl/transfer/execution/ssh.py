@@ -81,6 +81,14 @@ class RemoteRunner(Protocol):
         """Recursively copy a directory tree (additive; never deletes)."""
         ...
 
+    def make_dirs(self, remote_dir: str) -> None:
+        """Create a remote directory and every parent it is missing."""
+        ...
+
+    def remove_tree(self, remote_dir: str) -> None:
+        """Remove a remote directory and its contents (never fails if absent)."""
+        ...
+
 
 class SshRunner:
     """The production runner: ssh for commands, scp for files, rsync for trees.
@@ -223,6 +231,40 @@ class SshRunner:
             raise RemoteError(
                 self.host,
                 ("rsync", f"{local_dir}/", destination),
+                result.stderr.decode("utf-8", errors="replace").strip(),
+                exit_code=result.returncode,
+            )
+
+    def make_dirs(self, remote_dir: str) -> None:
+        """Create a remote directory and its parents.
+
+        ``rsync -a`` creates the final component of its destination, but not
+        the path above it: GNU rsync (a Linux target) fails outright on a
+        missing parent, while macOS openrsync creates it -- which is exactly
+        how a shipping path that only ever ran locally stayed broken.  This is
+        the one filesystem fact rsync will not supply, and it is transport, so
+        it belongs here rather than in the orchestrator.
+        """
+
+        command = ["ssh", self.host, "mkdir", "-p", quote_remote_path(remote_dir)]
+        result = self._run(command)
+        if result.returncode != 0:
+            raise RemoteError(
+                self.host,
+                tuple(command),
+                result.stderr.decode("utf-8", errors="replace").strip(),
+                exit_code=result.returncode,
+            )
+
+    def remove_tree(self, remote_dir: str) -> None:
+        """Remove one remote directory tree; a missing path is not an error."""
+
+        command = ["ssh", self.host, "rm", "-rf", quote_remote_path(remote_dir)]
+        result = self._run(command)
+        if result.returncode != 0:
+            raise RemoteError(
+                self.host,
+                tuple(command),
                 result.stderr.decode("utf-8", errors="replace").strip(),
                 exit_code=result.returncode,
             )

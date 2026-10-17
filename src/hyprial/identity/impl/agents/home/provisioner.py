@@ -211,6 +211,13 @@ class AgentHomeProvisioner:
             raise AgentHomeError("name-collision", actor, "reserve")
 
         if path.exists() or path.is_symlink():
+            # The scan above and this test are not atomic: a concurrent create
+            # of the aliasing spelling can land in between, and a
+            # case-insensitive volume then answers True for either name.  Only
+            # the directory's own spelling separates a collision from reuse.
+            collision = self._filesystem_alias(actor, path)
+            if collision is not None and collision.name != actor:
+                raise AgentHomeError("name-collision", actor, "reserve")
             if incumbent is None:
                 raise AgentHomeError("unowned-residue", actor, "reserve")
             if incumbent.actor != actor or incumbent.entity_token != entity_token:
@@ -242,7 +249,7 @@ class AgentHomeProvisioner:
             raise AgentHomeError("receipt-mismatch", actor, "provision-claim")
         created = False
         try:
-            path.mkdir(mode=0o700)
+            self._create_home_directory(actor, path)
             created = True
             (path / "state").mkdir(mode=0o700)
             _write_exclusive_json(path / _RECEIPT_RELATIVE, receipt.to_json())
@@ -269,6 +276,9 @@ class AgentHomeProvisioner:
         if collision is not None and collision.name != receipt.actor:
             raise AgentHomeError("name-collision", receipt.actor, "reserve")
         if path.exists() or path.is_symlink():
+            collision = self._filesystem_alias(receipt.actor, path)
+            if collision is not None and collision.name != receipt.actor:
+                raise AgentHomeError("name-collision", receipt.actor, "reserve")
             try:
                 mirrored = self._read_receipt(
                     path / _RECEIPT_RELATIVE, receipt.actor
@@ -358,7 +368,7 @@ class AgentHomeProvisioner:
                     # Destination lifecycle is serialized by this home owner;
                     # source I/O uses the opened FD, never a re-resolved path.
                     target = home / relative
-                    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                    self._ensure_payload_parents(home, target.parent)
                     target_fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, item.mode)
                     with os.fdopen(target_fd, "wb") as destination:
                         os.fchmod(destination.fileno(), item.mode)
@@ -381,6 +391,76 @@ class AgentHomeProvisioner:
             raise AgentHomeError("payload-changed", receipt.actor, "import-home-complete")
         self.validate(receipt)
         return home
+
+    def _ensure_payload_parents(self, home: Path, parent: Path) -> None:
+        """Create every missing level between ``home`` and ``parent`` as 0700.
+
+        ``Path.mkdir(mode=0o700, parents=True)`` applies ``mode`` to the leaf
+        only: an intermediate directory under a topology root (``secrets/native``
+        for a native credential, ``state/sessions`` for a session file) came
+        out at the umbrella default.  The P2 runtime owner validates the whole
+        chain from the home to each root at 0700, so a landed claude home with
+        a native credential was refused as ``runtime directory native is not
+        private`` -- before any launch.  Only levels below a topology root are
+        created here (the roots themselves are provisioned 0700 and validated),
+        and each is explicitly private.  C3-S2-C found this live; see
+        ``docs/notes/c3-claude-run.txt``.
+        """
+
+        missing: list[Path] = []
+        current = parent
+        while current != home and not current.exists():
+            missing.append(current)
+            current = current.parent
+        for directory in reversed(missing):
+            directory.mkdir(mode=0o700)
+
+    def verify_payload(
+        self, receipt: HomeReceipt, expected_files: tuple[HomePayloadFile, ...],
+    ) -> str:
+        """Read-only classification; invalid custody/residue is never absence.
+
+        The source receipt is excluded because the target owns its own receipt.
+        Only a validated empty target is absent; an incomplete/malformed home
+        is partial and requires fenced reconciliation, not blind resubmission.
+        Extra target files are allowed just as in materialise_payload; expected
+        files must all match size, mode and digest for present.
+        """
+        expected = {}
+        for item in expected_files:
+            relative = Path(item.path)
+            if (
+                relative.is_absolute() or ".." in relative.parts
+                or not relative.parts or relative.parts[0] not in {"state", "config", "secrets", "workspace"}
+                or relative.as_posix() != item.path or item.path in expected
+                or item.size < 0 or not 0 <= item.mode <= 0o777
+                or len(item.sha256) != 64 or any(c not in "0123456789abcdef" for c in item.sha256)
+            ):
+                raise ValueError("invalid landing payload manifest")
+            expected[item.path] = item
+        expected.pop(_RECEIPT_RELATIVE.as_posix(), None)
+        if not expected:
+            raise ValueError("landing payload manifest has no payload files")
+        try:
+            home = self.validate(receipt)
+            root_fd = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                origin = os.fstat(root_fd)
+                actual = {item.path: item for item in snapshot_home_payload(home, root_fd=root_fd)}
+                self.validate(receipt)
+                named = os.stat(home, follow_symlinks=False)
+                if (origin.st_dev, origin.st_ino) != (named.st_dev, named.st_ino):
+                    return "partial"
+            finally:
+                os.close(root_fd)
+        except (OSError, ValueError, AgentHomeError):
+            return "partial"
+        actual.pop(_RECEIPT_RELATIVE.as_posix(), None)
+        if not actual:
+            return "absent"
+        if all(actual.get(path) == item for path, item in expected.items()):
+            return "present"
+        return "partial"
 
     def ensure_workspace(self, receipt: HomeReceipt) -> Path:
         """Create the optional private workspace after validating home custody."""
@@ -627,6 +707,25 @@ class AgentHomeProvisioner:
             return False
         return True
 
+    def _create_home_directory(self, actor: str, path: Path) -> None:
+        """Create ``H/agents/<actor>``, classifying a lost creation race.
+
+        ``mkdir`` is the call that decides a race between two provisions of the
+        same or of an aliasing name: on a case-insensitive volume the loser gets
+        ``FileExistsError`` for the other spelling.  The window between the
+        alias scan and this call cannot be closed without a lock spanning both,
+        so the loser is classified here instead of leaking a bare ``OSError``
+        out of a lane whose contract is ``AgentHomeError``.
+        """
+
+        try:
+            path.mkdir(mode=0o700)
+        except FileExistsError as error:
+            collision = self._filesystem_alias(actor, path)
+            if collision is not None and collision.name != actor:
+                raise AgentHomeError("name-collision", actor, "reserve") from error
+            raise AgentHomeError("unowned-residue", actor, "reserve") from error
+
     def _prepare_root(self, actor: str) -> None:
         # The symlink/traversal fence covers the subtree this module manages --
         # H, H/agents and each agent directory are lstat-checked below and in
@@ -637,11 +736,22 @@ class AgentHomeProvisioner:
         if self.hyprial_home.exists() or self.hyprial_home.is_symlink():
             self.safe_directory(self.hyprial_home, actor, "prepare-home-root")
         else:
-            self.hyprial_home.mkdir(mode=0o700, parents=True)
+            try:
+                self.hyprial_home.mkdir(mode=0o700, parents=True)
+            except FileExistsError:
+                # Another provision created H between the test and the call;
+                # an existing H is exactly what the branch above accepts, so
+                # the same fence decides whether it may be used.
+                self.safe_directory(self.hyprial_home, actor, "prepare-home-root")
         if self.agents_root.exists() or self.agents_root.is_symlink():
             self.safe_directory(self.agents_root, actor, "prepare-agents-root", mode=0o700)
         else:
-            self.agents_root.mkdir(mode=0o700)
+            try:
+                self.agents_root.mkdir(mode=0o700)
+            except FileExistsError:
+                self.safe_directory(
+                    self.agents_root, actor, "prepare-agents-root", mode=0o700
+                )
 
     def _filesystem_alias(self, actor: str, candidate: Path) -> Path | None:
         try:

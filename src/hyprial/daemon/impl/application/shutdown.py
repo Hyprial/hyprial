@@ -84,6 +84,11 @@ _CLOSE_UNBUDGETED_STEPS = (
     ("inbox-store", "closes that handle"),
     ("usage-cache", "stops a daemon thread"),
     (
+        "org-casdoor-sync",
+        "closes the loopback webhook listener (2s join) and drains the membership "
+        "actor (2s); one in-flight Casdoor read is bounded by its 15s request timeout",
+    ),
+    (
         "orgfs-runtime",
         "drains only finite blob recoveries; each network query has a 3s timeout, "
         "but total time scales with finite blob size, so there is no honest fixed budget",
@@ -366,6 +371,12 @@ class _ShutdownMixin:
         # down.  Bounded on purpose -- see the join method's docstring.
         attempt(self._join_restore_thread, "restore-thread")
 
+        # A new epoch may acquire home immediately after lock release. Drain
+        # this epoch's metadata writer before any domain or ownership teardown.
+        if self._database_health is not None:
+            if not self._database_health.close(timeout=5.0):
+                raise RuntimeError("database health watchdog still owns metadata writer")
+
         if self._server is not None:
             server = self._server
             self._server = None
@@ -518,6 +529,10 @@ class _ShutdownMixin:
                     "PAC graph authority did not drain before sender teardown"
                 )
             self._pac_graph_authority = None
+        if self._transfer_source is not None:
+            if not self._transfer_source.close(timeout=5.0):
+                raise RuntimeError("P2 source effects did not drain before lifecycle teardown")
+            self._transfer_source = None
         if self._lifecycle_manager is not None:
             lifecycle_manager = self._lifecycle_manager
             if not lifecycle_manager.drain(5.0):
@@ -542,8 +557,6 @@ class _ShutdownMixin:
             lifecycle_router = self._lifecycle_router
             self._lifecycle_router = None
             lifecycle_router.close()
-        if not self._agent_keep.close(5.0):
-            raise RuntimeError("agent keep authority did not drain")
         if not self._restore_policy.close(5.0):
             raise RuntimeError("restore policy authority did not drain")
         self._restore_policy_finalizer.detach()
@@ -556,6 +569,15 @@ class _ShutdownMixin:
             self._registry_management = None
         if management is not None and not management.close(5.0):
             raise RuntimeError("management authority did not drain")
+        if self._delivery_hooks is not None:
+            delivery_hooks = self._delivery_hooks
+            self._delivery_hooks = None
+
+            def close_delivery_hooks() -> None:
+                if not delivery_hooks.close(_TURN_HOOK_CLOSE_TIMEOUT):
+                    raise RuntimeError("delivery intercept port did not drain")
+
+            attempt(close_delivery_hooks, "delivery-hooks")
         if self._hook_bus is not None:
             hook_bus = self._hook_bus
             self._hook_bus = None
@@ -567,15 +589,20 @@ class _ShutdownMixin:
                     raise RuntimeError("hook bus did not drain")
 
             attempt(close_hook_bus, "hook-bus")
-        if self._turn_hooks is not None:
-            turn_hooks = self._turn_hooks
-            self._turn_hooks = None
+        if self._hook_consumers is not None:
+            hook_consumers = self._hook_consumers
+            self._hook_consumers = None
 
-            def close_turn_hooks() -> None:
-                if not turn_hooks.close(_TURN_HOOK_CLOSE_TIMEOUT):
-                    raise RuntimeError("turn-hook recap writer did not drain")
+            def close_hook_consumers() -> None:
+                for name in sorted(hook_consumers):
+                    consumer = hook_consumers[name]
+                    close = getattr(consumer, "close", None)
+                    if not callable(close):
+                        continue
+                    if not close(_TURN_HOOK_CLOSE_TIMEOUT):
+                        raise RuntimeError(f"hook consumer {name!r} did not drain")
 
-            attempt(close_turn_hooks, "turn-hooks")
+            attempt(close_hook_consumers, "hooks-consumers")
         if self._adapters is not None:
             adapters = self._adapters
             self._adapters = None
@@ -616,6 +643,10 @@ class _ShutdownMixin:
             projector = self._org_identity_binding_projector
             self._org_identity_binding_projector = None
             attempt(projector.close, "org-binding-cache")
+        if getattr(self, "_casdoor_membership_sync", None) is not None:
+            from hyprial.daemon.impl.org.network import stop_casdoor_membership_sync
+
+            attempt(lambda: stop_casdoor_membership_sync(self), "org-casdoor-sync")
         if self._orgfs_runtime is not None:
             orgfs_runtime = self._orgfs_runtime
             self._orgfs_runtime = None
@@ -672,6 +703,8 @@ class _ShutdownMixin:
             attempt(lock_stream.close, "home-lock")
         if not self.user_profiles.close(5.0):
             errors.append(RuntimeError("user profile authority did not drain"))
+        if not self._transfer_p2.close(timeout=5.0):
+            errors.append(RuntimeError("P2 journal authority did not drain"))
         if not self._state_persistence.close(5.0):
             errors.append(RuntimeError("state persistence authority did not drain"))
         if not self._maintenance_watchdog.close(timeout=5.0):

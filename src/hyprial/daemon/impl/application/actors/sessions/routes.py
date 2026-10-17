@@ -34,6 +34,7 @@ from hyprial.daemon.impl.route_registration  import (
     RouteRegistrationClient,
 )
 from hyprial.daemon.impl.operations.session_ports  import (
+    RegisterSessionCommand,
     SessionProjection,
     UnregisterSessionCommand,
 )
@@ -55,10 +56,14 @@ from hyprial.daemon.impl.ipc.params import (
 
 
 class _InteractiveRouteEffectGate:
-    """Reference-counted per-actor exclusion for route I/O phases."""
+    """Reference-counted per-actor route and registration boundaries."""
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
+        self.registration_condition = threading.Condition()
+        self.registration_shared = 0
+        self.registration_exclusive = False
+        self.registration_exclusive_waiters = 0
         self.users = 0
 
 _INTERACTIVE_HEARTBEAT_TTL_SECONDS = AGENT_HEARTBEAT_TTL_SECONDS
@@ -204,7 +209,26 @@ class _SessionRoutesMixin:
             assert session_ref is not None
             self._reject_retired_session_ref(actor, session_ref)
         if kind is SessionRouteKind.REGISTER:
-            completed = self._call_session(command)
+            if not isinstance(command, RegisterSessionCommand):
+                raise TypeError("session registration requires a register command")
+            harness = _session_harness(command)
+            with self._interactive_registration_effect(
+                actor, exclusive=command.refuse_live_incumbent
+            ):
+                if command.refuse_live_incumbent:
+                    # Still serialized against this actor's route ensure/close,
+                    # as before the registration boundary existed.
+                    with self._interactive_route_effect(actor):
+                        completed, handover = self._register_session_effect(
+                            command, actor=actor, harness=harness
+                        )
+                else:
+                    command, _existing_agent, _agent, handover = (
+                        self._prepare_session_registration(
+                            command, actor=actor, harness=harness
+                        )
+                    )
+                    completed = self._call_session(command)
             result_actor = completed.result.actor
             agent = self.agents.get(result_actor)
             if agent is not None:
@@ -254,7 +278,7 @@ class _SessionRoutesMixin:
                             generation=request.epoch,
                             version=completed.version,
                         )
-            return completed
+            return completed, handover
         completed = self._call_session(command)
         if kind in {SessionRouteKind.REFRESH, SessionRouteKind.HEARTBEAT}:
             result_actor = completed.result.actor
@@ -355,6 +379,53 @@ class _SessionRoutesMixin:
             yield
         finally:
             gate.lock.release()
+            with self._interactive_route_lock:
+                gate.users -= 1
+                if (
+                    gate.users == 0
+                    and self._interactive_route_effect_gates.get(actor) is gate
+                ):
+                    del self._interactive_route_effect_gates[actor]
+
+    @contextlib.contextmanager
+    def _interactive_registration_effect(
+        self, actor: str, *, exclusive: bool
+    ) -> Iterator[None]:
+        """Share plain registrations while making guarded commits exclusive."""
+
+        with self._interactive_route_lock:
+            gate = self._interactive_route_effect_gates.get(actor)
+            if gate is None:
+                gate = _InteractiveRouteEffectGate()
+                self._interactive_route_effect_gates[actor] = gate
+            gate.users += 1
+        condition = gate.registration_condition
+        with condition:
+            if exclusive:
+                gate.registration_exclusive_waiters += 1
+                try:
+                    condition.wait_for(
+                        lambda: not gate.registration_exclusive
+                        and gate.registration_shared == 0
+                    )
+                finally:
+                    gate.registration_exclusive_waiters -= 1
+                gate.registration_exclusive = True
+            else:
+                condition.wait_for(
+                    lambda: not gate.registration_exclusive
+                    and gate.registration_exclusive_waiters == 0
+                )
+                gate.registration_shared += 1
+        try:
+            yield
+        finally:
+            with condition:
+                if exclusive:
+                    gate.registration_exclusive = False
+                else:
+                    gate.registration_shared -= 1
+                condition.notify_all()
             with self._interactive_route_lock:
                 gate.users -= 1
                 if (

@@ -115,6 +115,13 @@ BASE_CHILD_ENVIRONMENT_NAMES = frozenset(
         "FAKE_PI_MODE",
         "FAKE_PI_LOG",
         "FAKE_PI_ARGV_LOG",
+        # Same rule for the claude double: ``fake_claude_sdk.py`` speaks the
+        # agent_sdk JSONL worker wire and selects its behaviour from
+        # ``FAKE_CLAUDE_MODE`` (default ``settled``).  The claude P2 e2e
+        # daemons set it so the reading names the double exactly as the pi
+        # reading names ``FAKE_PI_MODE=settled``; the other claude switches
+        # (log/argv/session pin) stay fixture-local until a run needs them.
+        "FAKE_CLAUDE_MODE",
     }
 )
 

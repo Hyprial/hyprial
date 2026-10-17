@@ -3,6 +3,10 @@
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from hyprial.identity.impl.agents.actor._home_calls import HomeOperationConflict as HomeOperationConflict
+    from hyprial.identity.impl.agents.actor._home_calls import HomeOperationUnknown as HomeOperationUnknown
+    from hyprial.identity.impl.agents.actor._base import AgentHomeAccessPending as AgentHomeAccessPending
+    from hyprial.identity.impl.agents.actor._base import AgentHomeAccessError as AgentHomeAccessError
     from hyprial.identity.impl.org_directory import ACTION_INVITE as ACTION_INVITE
     from hyprial.identity.impl.org_directory import ACTION_LEAVE as ACTION_LEAVE
     from hyprial.identity.impl.org_directory import ACTION_READ as ACTION_READ
@@ -18,14 +22,14 @@ if TYPE_CHECKING:
     from hyprial.identity.impl.agents.actor.ports import AgentCapabilityGrantCompleted as AgentCapabilityGrantCompleted
     from hyprial.identity.impl.agents.actor.ports import AgentCommand as AgentCommand
     from hyprial.identity.impl.agents.home.config import AgentConfig as AgentConfig
+    from hyprial.identity.impl.agents.registry.config_binding import AgentConfigCasMismatch as AgentConfigCasMismatch
     from hyprial.identity.impl.agents.home.config import AgentConfigError as AgentConfigError
+    from hyprial.identity.impl.agents.registry.config_binding import AgentIncarnationMismatch as AgentIncarnationMismatch
     from hyprial.identity.impl.agents.actor.ports import AgentDestroyReservationCompleted as AgentDestroyReservationCompleted
     from hyprial.identity.impl.agents.actor.ports import AgentDestroySettled as AgentDestroySettled
     from hyprial.identity.impl.agents.registry._base import AgentError as AgentError
     from hyprial.identity.impl.agents.actor.ports import AgentEvent as AgentEvent
     from hyprial.identity.impl.agents.home.provisioner import AgentHomeError as AgentHomeError
-    from hyprial.identity.impl.agents.state.keep_actor import AgentKeepListAuthority as AgentKeepListAuthority
-    from hyprial.identity.impl.agents.state.activity import AgentKeepListError as AgentKeepListError
     from hyprial.identity.impl.agents.actor.ports import AgentLifecycleReceiptCompleted as AgentLifecycleReceiptCompleted
     from hyprial.identity.impl.agents.migration.coordinator import AgentMigrationCoordinator as AgentMigrationCoordinator
     from hyprial.identity.impl.agents.actor.ports import AgentMutationCompleted as AgentMutationCompleted
@@ -36,6 +40,7 @@ if TYPE_CHECKING:
     from hyprial.identity.impl.agents.actor.ports import AgentRuntimeLaunchLeaseCompleted as AgentRuntimeLaunchLeaseCompleted
     from hyprial.identity.impl.agents.migration._bindings import AgentRuntimeMigrationBindings as AgentRuntimeMigrationBindings
     from hyprial.identity.impl.agents.actor.ports import AgentSecretGrantCompleted as AgentSecretGrantCompleted
+    from hyprial.identity.impl.agents.runtime.context import AgentToolProfile as AgentToolProfile
     from hyprial.identity.impl.org_directory import AllowAllPolicy as AllowAllPolicy
     from hyprial.identity.impl.users.store._base import Ambiguous as Ambiguous
     from hyprial.identity.impl.org_directory import BOOTSTRAP_STEP_KINDS as BOOTSTRAP_STEP_KINDS
@@ -161,6 +166,7 @@ if TYPE_CHECKING:
     from hyprial.identity.impl.users.store._base import ResolvedUser as ResolvedUser
     from hyprial.identity.impl.agents.state.worker_state import RestorePolicyAuthority as RestorePolicyAuthority
     from hyprial.identity.impl.agents.state.worker_state import RestorePolicyError as RestorePolicyError
+    from hyprial.identity.impl.agents.state.restore_migration import migrate_legacy_agent_keep_list as migrate_legacy_agent_keep_list
     from hyprial.identity.impl.agents.actor.ports import RetireAgentLifecycleReceiptCommand as RetireAgentLifecycleReceiptCommand
     from hyprial.identity.impl.agents.actor.ports import RetireAgentSessionRefsCommand as RetireAgentSessionRefsCommand
     from hyprial.identity.impl.agents.actor.ports import RollbackRetiredAgentSessionRefsCommand as RollbackRetiredAgentSessionRefsCommand
@@ -170,6 +176,7 @@ if TYPE_CHECKING:
     from hyprial.identity.impl.agents.home.effects import RuntimeHomePreparers as RuntimeHomePreparers
     from hyprial.identity.impl.agents.runtime.visibility import SEE_ACTORS as SEE_ACTORS
     from hyprial.identity.impl.agents.runtime.visibility import SEND_TO as SEND_TO
+    from hyprial.identity.impl.agents.runtime.secrets import SECRET_ENVIRONMENT_NAMES as SECRET_ENVIRONMENT_NAMES
     from hyprial.identity.impl.agents.runtime.secrets import SecretResolver as SecretResolver
     from hyprial.identity.impl.agents.runtime.secrets import SecretResolutionError as SecretResolutionError
     from hyprial.identity.impl.agents.runtime.secrets import SecretSource as SecretSource
@@ -179,6 +186,8 @@ if TYPE_CHECKING:
     from hyprial.identity.impl.users.store._base import USER_NOT_FOUND as USER_NOT_FOUND
     from hyprial.identity.impl.agents.actor.ports import UnblockAgentCommand as UnblockAgentCommand
     from hyprial.identity.impl.agents.actor.ports import UnpinAgentAdapterCommand as UnpinAgentAdapterCommand
+    from hyprial.identity.impl.agents.actor.ports import BindAgentConfigCommand as BindAgentConfigCommand
+    from hyprial.identity.impl.agents.registry.config_binding import agent_config_digest as agent_config_digest
     from hyprial.identity.impl.agents.actor.ports import UpdateAgentCommand as UpdateAgentCommand
     from hyprial.identity.impl.users.home import UserHomeError as UserHomeError
     from hyprial.identity.impl.users.profile import UserProfile as UserProfile
@@ -196,6 +205,7 @@ if TYPE_CHECKING:
     from hyprial.identity.impl.agents.runtime.context import agent_home_mode as agent_home_mode
     from hyprial.identity.impl.agents.state.worker_proxy import ambient_proxy_absent as ambient_proxy_absent
     from hyprial.identity.impl.agents.home.environment import apply_runtime_environment_profile as apply_runtime_environment_profile
+    from hyprial.identity.impl.agents.runtime.context import resolve_agent_runtime_context as resolve_agent_runtime_context
     from hyprial.identity.impl.agents.home.environment import resolve_agent_secrets as resolve_agent_secrets
     from hyprial.identity.impl.org_directory import bootstrap_yaml as bootstrap_yaml
     from hyprial.identity.impl.agents.runtime.enforcement import check_channel as check_channel
@@ -254,19 +264,23 @@ _FACADE_EXPORTS = {
     'AcquireAgentRuntimeLaunchCommand': ('hyprial.identity.impl.agents.actor.ports', 'AcquireAgentRuntimeLaunchCommand'),
     'Agent': ('hyprial.identity.impl.agents.registry._base', 'Agent'),
     'AgentActor': ('hyprial.identity.impl.agents.actor._core', 'AgentActor'),
+    'HomeOperationConflict': ('hyprial.identity.impl.agents.actor._home_calls', 'HomeOperationConflict'),
+    'HomeOperationUnknown': ('hyprial.identity.impl.agents.actor._home_calls', 'HomeOperationUnknown'),
+    'AgentHomeAccessPending': ('hyprial.identity.impl.agents.actor._base', 'AgentHomeAccessPending'),
+    'AgentHomeAccessError': ('hyprial.identity.impl.agents.actor._base', 'AgentHomeAccessError'),
     'AgentAlreadyRunning': ('hyprial.identity.impl.agents.state.liveness', 'AgentAlreadyRunning'),
     'AgentBinding': ('hyprial.identity.impl.agents.state.liveness', 'AgentBinding'),
     'AgentCapabilityGrantCompleted': ('hyprial.identity.impl.agents.actor.ports', 'AgentCapabilityGrantCompleted'),
     'AgentCommand': ('hyprial.identity.impl.agents.actor.ports', 'AgentCommand'),
     'AgentConfig': ('hyprial.identity.impl.agents.home.config', 'AgentConfig'),
+    'AgentConfigCasMismatch': ('hyprial.identity.impl.agents.registry.config_binding', 'AgentConfigCasMismatch'),
     'AgentConfigError': ('hyprial.identity.impl.agents.home.config', 'AgentConfigError'),
+    'AgentIncarnationMismatch': ('hyprial.identity.impl.agents.registry.config_binding', 'AgentIncarnationMismatch'),
     'AgentDestroyReservationCompleted': ('hyprial.identity.impl.agents.actor.ports', 'AgentDestroyReservationCompleted'),
     'AgentDestroySettled': ('hyprial.identity.impl.agents.actor.ports', 'AgentDestroySettled'),
     'AgentError': ('hyprial.identity.impl.agents.registry._base', 'AgentError'),
     'AgentEvent': ('hyprial.identity.impl.agents.actor.ports', 'AgentEvent'),
     'AgentHomeError': ('hyprial.identity.impl.agents.home.provisioner', 'AgentHomeError'),
-    'AgentKeepListAuthority': ('hyprial.identity.impl.agents.state.keep_actor', 'AgentKeepListAuthority'),
-    'AgentKeepListError': ('hyprial.identity.impl.agents.state.activity', 'AgentKeepListError'),
     'AgentLifecycleReceiptCompleted': ('hyprial.identity.impl.agents.actor.ports', 'AgentLifecycleReceiptCompleted'),
     'AgentMigrationCoordinator': ('hyprial.identity.impl.agents.migration.coordinator', 'AgentMigrationCoordinator'),
     'AgentMutationCompleted': ('hyprial.identity.impl.agents.actor.ports', 'AgentMutationCompleted'),
@@ -277,6 +291,7 @@ _FACADE_EXPORTS = {
     'AgentRuntimeLaunchLeaseCompleted': ('hyprial.identity.impl.agents.actor.ports', 'AgentRuntimeLaunchLeaseCompleted'),
     'AgentRuntimeMigrationBindings': ('hyprial.identity.impl.agents.migration._bindings', 'AgentRuntimeMigrationBindings'),
     'AgentSecretGrantCompleted': ('hyprial.identity.impl.agents.actor.ports', 'AgentSecretGrantCompleted'),
+    'AgentToolProfile': ('hyprial.identity.impl.agents.runtime.context', 'AgentToolProfile'),
     'AllowAllPolicy': ('hyprial.identity.impl.org_directory', 'AllowAllPolicy'),
     'Ambiguous': ('hyprial.identity.impl.users.store._base', 'Ambiguous'),
     'BOOTSTRAP_STEP_KINDS': ('hyprial.identity.impl.org_directory', 'BOOTSTRAP_STEP_KINDS'),
@@ -402,6 +417,7 @@ _FACADE_EXPORTS = {
     'ResolvedUser': ('hyprial.identity.impl.users.store._base', 'ResolvedUser'),
     'RestorePolicyAuthority': ('hyprial.identity.impl.agents.state.worker_state', 'RestorePolicyAuthority'),
     'RestorePolicyError': ('hyprial.identity.impl.agents.state.worker_state', 'RestorePolicyError'),
+    'migrate_legacy_agent_keep_list': ('hyprial.identity.impl.agents.state.restore_migration', 'migrate_legacy_agent_keep_list'),
     'RetireAgentLifecycleReceiptCommand': ('hyprial.identity.impl.agents.actor.ports', 'RetireAgentLifecycleReceiptCommand'),
     'RetireAgentSessionRefsCommand': ('hyprial.identity.impl.agents.actor.ports', 'RetireAgentSessionRefsCommand'),
     'RollbackRetiredAgentSessionRefsCommand': ('hyprial.identity.impl.agents.actor.ports', 'RollbackRetiredAgentSessionRefsCommand'),
@@ -409,6 +425,7 @@ _FACADE_EXPORTS = {
     'RevokeAgentSecretCommand': ('hyprial.identity.impl.agents.actor.ports', 'RevokeAgentSecretCommand'),
     'RuntimeCapability': ('hyprial.identity.impl.users.profile', 'RuntimeCapability'),
     'RuntimeHomePreparers': ('hyprial.identity.impl.agents.home.effects', 'RuntimeHomePreparers'),
+    'SECRET_ENVIRONMENT_NAMES': ('hyprial.identity.impl.agents.runtime.secrets', 'SECRET_ENVIRONMENT_NAMES'),
     'SEE_ACTORS': ('hyprial.identity.impl.agents.runtime.visibility', 'SEE_ACTORS'),
     'SEND_TO': ('hyprial.identity.impl.agents.runtime.visibility', 'SEND_TO'),
     'SecretResolver': ('hyprial.identity.impl.agents.runtime.secrets', 'SecretResolver'),
@@ -420,6 +437,8 @@ _FACADE_EXPORTS = {
     'USER_NOT_FOUND': ('hyprial.identity.impl.users.store._base', 'USER_NOT_FOUND'),
     'UnblockAgentCommand': ('hyprial.identity.impl.agents.actor.ports', 'UnblockAgentCommand'),
     'UnpinAgentAdapterCommand': ('hyprial.identity.impl.agents.actor.ports', 'UnpinAgentAdapterCommand'),
+    'BindAgentConfigCommand': ('hyprial.identity.impl.agents.actor.ports', 'BindAgentConfigCommand'),
+    'agent_config_digest': ('hyprial.identity.impl.agents.registry.config_binding', 'agent_config_digest'),
     'UpdateAgentCommand': ('hyprial.identity.impl.agents.actor.ports', 'UpdateAgentCommand'),
     'UserHomeError': ('hyprial.identity.impl.users.home', 'UserHomeError'),
     'UserProfile': ('hyprial.identity.impl.users.profile', 'UserProfile'),
@@ -437,6 +456,7 @@ _FACADE_EXPORTS = {
     'agent_home_mode': ('hyprial.identity.impl.agents.runtime.context', 'agent_home_mode'),
     'ambient_proxy_absent': ('hyprial.identity.impl.agents.state.worker_proxy', 'ambient_proxy_absent'),
     'apply_runtime_environment_profile': ('hyprial.identity.impl.agents.home.environment', 'apply_runtime_environment_profile'),
+    'resolve_agent_runtime_context': ('hyprial.identity.impl.agents.runtime.context', 'resolve_agent_runtime_context'),
     'resolve_agent_secrets': ('hyprial.identity.impl.agents.home.environment', 'resolve_agent_secrets'),
     'bootstrap_yaml': ('hyprial.identity.impl.org_directory', 'bootstrap_yaml'),
     'check_channel': ('hyprial.identity.impl.agents.runtime.enforcement', 'check_channel'),
@@ -514,19 +534,23 @@ __all__ = [
     'AcquireAgentRuntimeLaunchCommand',
     'Agent',
     'AgentActor',
+    'HomeOperationConflict',
+    'HomeOperationUnknown',
+    'AgentHomeAccessPending',
+    'AgentHomeAccessError',
     'AgentAlreadyRunning',
     'AgentBinding',
     'AgentCapabilityGrantCompleted',
     'AgentCommand',
     'AgentConfig',
+    'AgentConfigCasMismatch',
     'AgentConfigError',
+    'AgentIncarnationMismatch',
     'AgentDestroyReservationCompleted',
     'AgentDestroySettled',
     'AgentError',
     'AgentEvent',
     'AgentHomeError',
-    'AgentKeepListAuthority',
-    'AgentKeepListError',
     'AgentLifecycleReceiptCompleted',
     'AgentMigrationCoordinator',
     'AgentMutationCompleted',
@@ -537,6 +561,7 @@ __all__ = [
     'AgentRuntimeLaunchLeaseCompleted',
     'AgentRuntimeMigrationBindings',
     'AgentSecretGrantCompleted',
+    'AgentToolProfile',
     'AllowAllPolicy',
     'Ambiguous',
     'BOOTSTRAP_STEP_KINDS',
@@ -662,6 +687,7 @@ __all__ = [
     'ResolvedUser',
     'RestorePolicyAuthority',
     'RestorePolicyError',
+    'migrate_legacy_agent_keep_list',
     'RetireAgentLifecycleReceiptCommand',
     'RetireAgentSessionRefsCommand',
     'RollbackRetiredAgentSessionRefsCommand',
@@ -669,6 +695,7 @@ __all__ = [
     'RevokeAgentSecretCommand',
     'RuntimeCapability',
     'RuntimeHomePreparers',
+    'SECRET_ENVIRONMENT_NAMES',
     'SEE_ACTORS',
     'SEND_TO',
     'SecretResolver',
@@ -680,6 +707,8 @@ __all__ = [
     'USER_NOT_FOUND',
     'UnblockAgentCommand',
     'UnpinAgentAdapterCommand',
+    'BindAgentConfigCommand',
+    'agent_config_digest',
     'UpdateAgentCommand',
     'UserHomeError',
     'UserProfile',
@@ -697,6 +726,7 @@ __all__ = [
     'agent_home_mode',
     'ambient_proxy_absent',
     'apply_runtime_environment_profile',
+    'resolve_agent_runtime_context',
     'resolve_agent_secrets',
     'bootstrap_yaml',
     'check_channel',

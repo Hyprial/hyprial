@@ -70,7 +70,9 @@ def _overview_model(
             )
     except services.CliError as error:
         problem = str(error)
-    model = overview.build_model(snapshot, node=node, missions=loaded)
+    model = overview.build_model(
+        snapshot, node=node, missions=loaded, window_days=window_days
+    )
     model["invalidWorkItems"] = invalid_work_items
     return ({**model, "missionsError": problem} if problem else model), overview
 
@@ -124,6 +126,11 @@ def overview_publish(
 
     Open <checkout>/<path>/index.html from `hyprial fs checkout <space>` to view
     every publishing node together; the page reloads itself every minute.
+    Graphs are only those the caller can see, with node output redacted and
+    truncated.  The page also carries every work item of the org (status,
+    owner/assignee, checklist, acceptance, depends, the last 20 log lines,
+    opened/closed; log/acceptance/checklist text redacted and truncated), so
+    publishing into a space shows them to that space's readers.
     Publishing enables this node's read-only checkout of the space and leaves
     it on (`hyprial fs checkout <space> --disable` turns it off).  Every member
     who can write the space can put scripts on the page: publish only into a

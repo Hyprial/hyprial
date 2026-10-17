@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import time
+from dataclasses import replace
 from typing import Any, TYPE_CHECKING
 from uuid import uuid4
 from hyprial.daemon.impl.network.routing.session_route_coordinator  import (
@@ -39,6 +40,9 @@ from hyprial.daemon.impl.operations.session_ports  import (
     HeartbeatSessionCommand,
     RefreshSessionCommand,
     RegisterSessionCommand,
+    SessionMutationCompleted,
+    SessionMutationProjection,
+    SessionProjection,
     UnregisterSessionCommand,
 )
 from hyprial.daemon.impl.operations.top  import InteractiveTurnStats
@@ -182,6 +186,30 @@ def _optional_channel_build_version(value: object, label: str) -> str | None:
     return value
 
 
+def _is_guarded_session_commit(
+    observed: SessionProjection | None, command: RegisterSessionCommand
+) -> bool:
+    """Does the independent Session projection prove this exact attempt won?"""
+
+    return observed is not None and (
+        observed.actor == command.actor
+        and observed.session_ref == command.session_ref
+        and observed.cwd == command.cwd
+        and observed.command == command.command
+        and observed.source == command.source
+        and observed.runtime == command.runtime
+        and observed.channel_confirmed == command.channel_confirmed
+        and observed.channel_build_version == command.channel_build_version
+        and observed.channel_protocol_version == command.channel_protocol_version
+        and observed.owner_fence == command.owner_fence
+        and observed.channel_lease_backed
+        == (command.channel_lease_token is not None)
+        and observed.tmux_session == command.tmux_session
+        and observed.process_pid == command.process_pid
+        and observed.process_identity == command.process_identity
+    )
+
+
 class _SessionRegistryMixin:
     """Application cluster mixin; the state owner is DaemonApplication."""
 
@@ -246,7 +274,7 @@ class _SessionRegistryMixin:
         )
 
     def _ipc_session_register(
-        self, params, *, verify_process_claim: bool = False
+        self, params, *, guarded: bool = False, verify_process_claim: bool = False
     ) -> Any:
         actor = self._mcp_actor(params)
         session_ref = _required_string(params.get("sessionRef"), "sessionRef")
@@ -312,31 +340,89 @@ class _SessionRegistryMixin:
             process_pid=process_pid,
             process_identity=process_identity,
         )
-        harness = _session_harness(session)
+        registration = RegisterSessionCommand(
+            correlation_id=f"session:register:{uuid4().hex}",
+            actor=actor,
+            cwd=session.cwd,
+            command=session.command,
+            source=session.source,
+            session_ref=session_ref,
+            runtime=session.runtime or "claude_interactive",
+            channel_confirmed=session.channel_confirmed,
+            channel_build_version=session.channel_build_version,
+            channel_protocol_version=session.channel_protocol_version,
+            owner_fence=session.owner_fence,
+            channel_lease_token=params.get("channelLeaseToken")
+            if isinstance(params.get("channelLeaseToken"), str)
+            else None,
+            tmux_session=session.tmux_session,
+            process_pid=session.process_pid,
+            process_identity=session.process_identity,
+            manage_agent=self.agents.get(actor) is not None,
+            refuse_live_incumbent=guarded,
+        )
+        completed, handover = self._register_interactive_session_with_turn_stats(
+            actor=actor,
+            session_ref=session_ref,
+            command=registration,
+            reporting=(
+                params.get("turnReporting") is True
+                and session.runtime == "claude_interactive"
+            ),
+        )
+        result = completed.result.to_payload()
+        return {
+            **result,
+            **({"liveIncumbentGuardApplied": True} if guarded else {}),
+            **(
+                {"harnessHandover": handover.to_json()}
+                if handover is not None
+                else {}
+            ),
+        }
+
+    def _prepare_session_registration(
+        self,
+        command: RegisterSessionCommand,
+        *,
+        actor: str,
+        harness: str,
+    ) -> tuple[RegisterSessionCommand, Any, Any, HandoverNotice | None]:
+        """Prepare Agent state before a plain or guarded Session commit."""
+        existing_agent = self.agents.get(actor)
+        if command.refuse_live_incumbent and existing_agent is None:
+            raise DaemonRequestError(
+                ipc_errors.AGENT_NOT_FOUND,
+                f"no agent named {actor!r} on this machine",
+            )
         self._refuse_if_running(
             actor,
             harness=harness,
             runtime=RUNTIME_INTERACTIVE,
-            refuse_runtimes=(RUNTIME_HEADLESS,),
+            refuse_runtimes=(
+                (RUNTIME_HEADLESS, RUNTIME_INTERACTIVE)
+                if command.refuse_live_incumbent
+                else (RUNTIME_HEADLESS,)
+            ),
         )
         from hyprial.identity import option_value
 
-        existing_agent = self.agents.get(actor)
         same_harness = existing_agent is not None and (
-            existing_agent.capabilities.get("harness", existing_agent.preferred_harness) == harness
+            existing_agent.capabilities.get(
+                "harness", existing_agent.preferred_harness
+            )
+            == harness
         )
         agent = self._ensure_agent(
             actor,
             harness=harness,
             interactive=True,
-            cwd=session.cwd,
-            session_ref=session_ref,
-            provider=option_value(session.command, "--provider") or (
-                existing_agent.provider if same_harness else None
-            ),
-            model=option_value(session.command, "--model") or (
-                existing_agent.model if same_harness else None
-            ),
+            cwd=command.cwd,
+            session_ref=command.session_ref,
+            provider=option_value(command.command, "--provider")
+            or (existing_agent.provider if same_harness else None),
+            model=option_value(command.command, "--model")
+            or (existing_agent.model if same_harness else None),
         )
         handover = (
             HandoverNotice(
@@ -350,43 +436,89 @@ class _SessionRegistryMixin:
             and agent.last_harness != harness
             else None
         )
-        completed = self._register_interactive_session_with_turn_stats(
-            actor=actor,
-            session_ref=session_ref,
-            command=RegisterSessionCommand(
-                        correlation_id=f"session:register:{uuid4().hex}",
-                        actor=actor,
-                        cwd=session.cwd,
-                        command=session.command,
-                        source=session.source,
-                        session_ref=session_ref,
-                        runtime=session.runtime or "claude_interactive",
-                        channel_confirmed=session.channel_confirmed,
-                        channel_build_version=session.channel_build_version,
-                        channel_protocol_version=session.channel_protocol_version,
-                        owner_fence=session.owner_fence,
-                        channel_lease_token=params.get("channelLeaseToken")
-                        if isinstance(params.get("channelLeaseToken"), str)
-                        else None,
-                        tmux_session=session.tmux_session,
-                        process_pid=session.process_pid,
-                        process_identity=session.process_identity,
-                        manage_agent=agent is not None,
-            ),
-            reporting=(
-                params.get("turnReporting") is True
-                and session.runtime == "claude_interactive"
-            ),
+        return replace(command, manage_agent=agent is not None), existing_agent, agent, handover
+
+    def _register_session_effect(
+        self,
+        command: RegisterSessionCommand,
+        *,
+        actor: str,
+        harness: str,
+    ) -> tuple[Any, HandoverNotice | None]:
+        """Commit guarded Agent plus Session under one per-actor boundary."""
+
+        command, existing_agent, agent, handover = self._prepare_session_registration(
+            command, actor=actor, harness=harness
         )
-        result = completed.result.to_payload()
-        return {
-            **result,
-            **(
-                {"harnessHandover": handover.to_json()}
-                if handover is not None
-                else {}
-            ),
-        }
+        try:
+            completed = self._call_session(command)
+        except BaseException as session_error:
+            if (
+                command.refuse_live_incumbent
+                and existing_agent is not None
+                and agent is not None
+            ):
+                try:
+                    observed = self._agent_session_domains.session.read_session(actor)
+                except BaseException as read_error:
+                    raise DaemonRequestError(
+                        ipc_errors.RESUME_OUTCOME_UNKNOWN,
+                        "guarded resume Session may or may not be committed; "
+                        "authoritative Session read-back failed. Check `hyprial ps` "
+                        f"for actor {actor!r} and sessionRef {command.session_ref!r} "
+                        f"before retrying: {read_error}",
+                    ) from read_error
+                if _is_guarded_session_commit(observed, command):
+                    assert observed is not None
+                    return (
+                        SessionMutationCompleted(
+                            correlation_id=command.correlation_id,
+                            generation=self._agent_session_domains.session.generation,
+                            version=observed.version,
+                            result=SessionMutationProjection(
+                                actor=observed.actor,
+                                session_ref=observed.session_ref,
+                                daemon_epoch=None,
+                                registered=True,
+                                alive=True,
+                            ),
+                        ),
+                        handover,
+                    )
+                if (
+                    not isinstance(session_error, DaemonRequestError)
+                    or session_error.code
+                    in {
+                        "DOMAIN_COMMAND_TIMEOUT",
+                        "DOMAIN_EVENTS_CLOSED",
+                        ipc_errors.IPC_TIMEOUT,
+                    }
+                ):
+                    raise DaemonRequestError(
+                        ipc_errors.RESUME_OUTCOME_UNKNOWN,
+                        "guarded resume Session outcome is unknown: the admitted "
+                        "command did not prove rejection and the authoritative "
+                        "Session read-back is empty or still old. The Agent was not "
+                        "restored because the Session may still commit. Check "
+                        f"`hyprial ps` and the session list for actor {actor!r} and "
+                        f"sessionRef {command.session_ref!r} before retrying",
+                    ) from session_error
+                try:
+                    restored = self.agents.compare_and_swap(agent, existing_agent)
+                except BaseException as restore_error:
+                    raise DaemonRequestError(
+                        ipc_errors.CODEX_RESUME_AGENT_RESTORE_FAILED,
+                        "guarded Session commit failed and Agent restore raised: "
+                        f"{restore_error}",
+                    ) from restore_error
+                if not restored:
+                    raise DaemonRequestError(
+                        ipc_errors.CODEX_RESUME_AGENT_RESTORE_FAILED,
+                        "guarded Session commit failed and Agent restore was "
+                        "refused because the Agent no longer matched this attempt",
+                    ) from session_error
+            raise
+        return completed, handover
 
     def _ipc_session_turn_ended(self, params) -> Any:
         actor = self._mcp_actor(params)

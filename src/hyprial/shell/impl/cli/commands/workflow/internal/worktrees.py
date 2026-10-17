@@ -180,6 +180,45 @@ def _dirty_activity_at_ms(worktree: Path, dirty_paths: list[str]) -> int | None:
     return newest
 
 
+def _worktree_touched_at_ms(worktree: Path) -> int | None:
+    """When git last wrote this worktree's own index or HEAD.
+
+    A worktree just created from origin/dev has an old HEAD commit, no dirty
+    files and nothing unpushed, so commit time alone makes it look abandoned
+    while an agent is still using it.  ``git worktree add``, checkout, commit
+    and add all rewrite the per-worktree index or HEAD, so their mtime is the
+    freshest local sign of use.  Read from the filesystem, no git call.
+    """
+
+    dot_git = worktree / ".git"
+    try:
+        if dot_git.is_dir():
+            git_dir = dot_git
+        else:
+            text = dot_git.read_text(encoding="utf-8", errors="replace").strip()
+            if not text.startswith("gitdir:"):
+                return None
+            git_dir = Path(text.removeprefix("gitdir:").strip())
+            if not git_dir.is_absolute():
+                git_dir = (worktree / git_dir).resolve()
+    except OSError:
+        return None
+    newest: int | None = None
+    for name in ("index", "HEAD"):
+        try:
+            modified = (git_dir / name).stat().st_mtime_ns // 1_000_000
+        except OSError:
+            continue
+        newest = modified if newest is None else max(newest, modified)
+    return newest
+
+
+#: A merged, clean worktree touched this recently may still be in use (a
+#: worker's fresh worktree looks exactly like a finished one), so it is not
+#: offered for removal (hq review of #962, 2026-09-30).
+_WORKTREE_RECENT_MS = 24 * 3600 * 1000
+
+
 def _git_count(arguments: Sequence[str], *, cwd: Path) -> int:
     raw = _worktree_git_output(arguments, cwd=cwd).strip()
     try:
@@ -276,9 +315,10 @@ def _scan_worktree(
         )
         committed_ms = committed_seconds * 1000
         dirty_ms = _dirty_activity_at_ms(path, dirty_paths) if not missing else None
+        touched_ms = _worktree_touched_at_ms(path) if not missing else None
         row["lastCommitAtMs"] = committed_ms
         row["lastActivityAtMs"] = max(
-            committed_ms, dirty_ms if dirty_ms is not None else committed_ms
+            [committed_ms, *(v for v in (dirty_ms, touched_ms) if v is not None)]
         )
 
         dirty_files = int(row["dirtyFiles"] or 0)
@@ -352,6 +392,19 @@ def _scan_worktree_repository(
     }
 
 
+def _printable_cell(value: object) -> str:
+    """Escape control characters so a branch or path can't move the cursor."""
+
+    return "".join(
+        char
+        if char.isprintable()
+        else f"\\x{ord(char):02x}"
+        if ord(char) < 0x100
+        else f"\\u{ord(char):04x}"
+        for char in str(value)
+    )
+
+
 def _display_worktree_path(value: object) -> str:
     path = Path(str(value))
     try:
@@ -422,8 +475,8 @@ def _render_worktree_repository(
     cells = [
         [
             str(row.get("state", "error")),
-            _display_worktree_path(row.get("path", "")),
-            str(row.get("branch") or "-"),
+            _printable_cell(_display_worktree_path(row.get("path", ""))),
+            _printable_cell(row.get("branch") or "-"),
             str(row["dirtyFiles"]) if type(row.get("dirtyFiles")) is int else "-",
             str(row["unpushedCommits"])
             if type(row.get("unpushedCommits")) is int
@@ -459,6 +512,22 @@ def _render_worktree_repository(
         and row.get("unpushedCommits") == 0
         and Path(str(row.get("path"))).resolve() != Path(str(result["repo"])).resolve()
     ]
+    recent = [
+        row
+        for row in removable
+        if type(row.get("lastActivityAtMs")) is int
+        and observed_at - int(row["lastActivityAtMs"]) < _WORKTREE_RECENT_MS
+    ]
+    removable = [row for row in removable if row not in recent]
+    if removable or recent:
+        next_steps.append(
+            "Confirm nobody is using a worktree before removing it"
+            + (
+                f"; {len(recent)} merged worktree(s) active in the last 24h are left out."
+                if recent
+                else "."
+            )
+        )
     next_steps.extend(
         _worktree_remove_command(str(row["path"])) for row in removable[:10]
     )

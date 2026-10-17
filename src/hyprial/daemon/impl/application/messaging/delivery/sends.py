@@ -335,14 +335,6 @@ class _UserDeliveryMixin:
             message=None if accepted else "the live user-proxy refused the delivery",
         )
 
-    def _on_usage_limit_failure(self, recipient: str) -> None:
-        watchdog = self._quota_watchdog
-        if watchdog is None:
-            return
-        alert = watchdog.observe_usage_limit_failure(recipient)
-        if alert is not None:
-            self._log("info", "daemon", "quota_watchdog.alerted", kind=alert.kind, key=alert.key)
-
     def _blocking_failure_entity_token(self, recipient: str) -> str | None:
         projection = self.agents.projection(recipient)
         return None if projection is None else projection.entity_token

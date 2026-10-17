@@ -75,6 +75,10 @@ def _registration(value: object, index: int) -> HookRegistration:
     handler = value.get("handler")
     if (consumer is None) == (handler is None):
         raise ValueError(f"{where} requires exactly one of consumer or handler")
+    if mode == "intercept" and handler is None:
+        # An intercept is a bounded agent exchange; an in-process consumer
+        # has no reply channel to contribute text through.
+        raise ValueError(f"{where}: intercept hooks require a handler")
     if consumer is not None and (
         not isinstance(consumer, str) or not consumer.strip()
     ):

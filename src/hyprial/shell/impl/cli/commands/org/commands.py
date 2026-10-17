@@ -29,6 +29,8 @@ import sys
 import typer
 
 from hyprial.shell.impl.cli.commands.common.support import JsonObject
+from hyprial.shell.impl.cli.commands.org.acl import acl_app
+
 org_app = typer.Typer(
     help=(
         "Inspect and locally adopt organization context, and manage org "
@@ -37,6 +39,7 @@ org_app = typer.Typer(
         "`org import <file>` fills the single accepted slot."
     )
 )
+org_app.add_typer(acl_app, name="acl")
 
 
 # -- org network lifecycle (tailnet cutover §4.4; IPC org.*, W-D §4.3) -------
@@ -336,7 +339,11 @@ def org_remove(
     user: str = typer.Argument(..., help="Username to remove from the org."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
-    """Remove a user from an org and delete their device rows (owner/admin)."""
+    """Remove a user from an org and delete their device rows (owner/admin).
+
+    Removing someone from the org also removes them from the org's Casdoor
+    group, and with it from anything else that relies on that group.
+    """
     services = get_services()
 
     def operation() -> JsonObject:
@@ -346,6 +353,15 @@ def org_remove(
         )
         if not isinstance(result, dict):
             raise services.CliError("INVALID_RESPONSE", "org.remove must return an object")
+        group = result.get("casdoorGroup")
+        if isinstance(group, str) and group.startswith("removed from "):
+            result = {
+                **result,
+                "note": (
+                    f"{user} was also {group}; other applications that rely "
+                    "on that Casdoor group lose them too"
+                ),
+            }
         return {"ok": True, **result}
 
     services._execute(operation, json_output=json_output)

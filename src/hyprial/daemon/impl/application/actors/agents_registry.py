@@ -518,11 +518,28 @@ class _AgentsRegistryMixin:
         from hyprial.identity import runtime_capabilities
         from hyprial.daemon.impl.harnesses.capabilities import declare
 
+        agent = self.agents.get(name)
+        same_harness = agent is not None and (
+            agent.capabilities.get("harness", agent.preferred_harness) == harness
+        )
+        effective_provider = (
+            provider
+            if provider is not None
+            else agent.provider if same_harness and agent is not None else None
+        )
+        effective_model = (
+            model
+            if model is not None
+            else agent.model if same_harness and agent is not None else None
+        )
         facts = runtime_capabilities(
-            harness, interactive=interactive, provider=provider, model=model, args=args,
+            harness,
+            interactive=interactive,
+            provider=effective_provider,
+            model=effective_model,
+            args=args,
             declare=declare,
         )
-        agent = self.agents.get(name)
         if agent is None:
             if session_ref is not None:
                 # A whole destroy can complete between a registration's first
@@ -745,9 +762,8 @@ class _AgentsRegistryMixin:
         hints: Mapping[str, int | bool | None],
         *,
         cutoff_ms: int,
-        kept: frozenset[str],
     ) -> bool:
-        if agent.actor in kept or hints.get("hasLastSessionId") is True:
+        if hints.get("hasLastSessionId") is True:
             return False
         timestamps = (
             agent.last_active_at_ms,

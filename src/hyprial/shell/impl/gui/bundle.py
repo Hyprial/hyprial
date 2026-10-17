@@ -19,6 +19,10 @@ import tarfile
 
 SOURCE_STAMP = "src/hyprial/gui-source.json"
 EXCLUDED = {".agents", ".forgejo", "docs", "tests", "vendor"}
+# An installed dependency tree and the other build products an ignored path
+# leaves behind.  They are never a published input: a source snapshot records
+# the checked-in public tree, and the build refuses them by name below.
+BUILD_PRODUCTS = {".git", "node_modules", ".ci-cache", "__pycache__"}
 # Exact first-party composition closure. Dependencies remain locked by npm;
 # the explicit mock fixture data is not a required production backend.
 PRODUCT_INPUTS = (
@@ -75,11 +79,19 @@ def stamp_snapshot(root: Path, commit: str, timestamp: str) -> None:
     files = []
     gui = root / "src/gui"
     for path in sorted(gui.rglob("*")):
+        relative = path.relative_to(gui)
+        # Refuse-or-skip must come before the symlink check: an installed
+        # dependency tree is full of symlinks (node_modules/.bin/*), and none
+        # of it belongs in a snapshot this function is allowed to write.
+        if relative.parts[0] in EXCLUDED or any(
+            part in BUILD_PRODUCTS for part in relative.parts
+        ):
+            continue
         if path.is_symlink():
             raise ValueError("GUI snapshots must contain only regular inputs")
-        if not path.is_file() or path.relative_to(gui).parts[0] in EXCLUDED:
+        if not path.is_file():
             continue
-        files.append({"path": path.relative_to(gui).as_posix(),
+        files.append({"path": relative.as_posix(),
                       "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                       "executable": bool(path.stat().st_mode & 0o111)})
     (root / SOURCE_STAMP).write_text(json.dumps({
@@ -137,7 +149,7 @@ def build_gui(root: Path, output: Path, version: str, *, product_version: str | 
         relative = Path(name).relative_to("src/gui")
         if relative.parts[0] in EXCLUDED:
             continue
-        if any(part in {".git", "node_modules", ".ci-cache", "__pycache__"} for part in relative.parts):
+        if any(part in BUILD_PRODUCTS for part in relative.parts):
             raise ValueError(f"Unexpected GUI build input: {relative}")
         path = gui / relative
         if path.is_symlink() or not path.is_file():

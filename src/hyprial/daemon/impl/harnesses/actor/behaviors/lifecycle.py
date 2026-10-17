@@ -70,6 +70,10 @@ class _LifecycleBehavior:
         from hyprial.kernel import LifecycleMutationRequest
 
         assert isinstance(request, LifecycleMutationRequest)
+        entity_error = self._lifecycle_entity_error(request)
+        if entity_error is not None:
+            self._reject_correlation(request.correlation_id, *entity_error)
+            return
         if (
             not isinstance(result, tuple)
             or len(result) != 2
@@ -551,6 +555,10 @@ class _LifecycleBehavior:
     ) -> None:
         spec = _launch_spec(command.spec)
         key = self._key(spec)
+        transfer_error = self._transfer_start_error(spec.name)
+        if transfer_error is not None:
+            self._reject(command, transfer_error, "starts held for transfer")
+            return
         if key in self._lifecycle_effect_resources and not lifecycle:
             self._reject(
                 command,
@@ -611,6 +619,7 @@ class _LifecycleBehavior:
             )
         record.spec = spec
         record.failures = 0
+        record.early_exits = 0
         record.restart_after = None
         # An explicit start is the documented way out of both failed
         # states (budget-exhausted and the U0b restore verdict).

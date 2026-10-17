@@ -54,19 +54,18 @@ _IPC_STATS_METHODS = frozenset(
         "agent.create",
         "agent.destroy",
         "agent.destroy.preview",
+        "agent.ensure-home",
         "agent.get",
         "agent.grant",
         "agent.grants",
         "agent.home-census",
         "agent.host-invite",
-        "agent.keep.add",
-        "agent.keep.list",
-        "agent.keep.remove",
         "agent.list",
         "agent.migrate.execute",
         "agent.migrate.preflight",
         "agent.migrate.rollback",
         "agent.resolve",
+        "agent.resume.restore",
         "agent.restore-policy",
         "agent.restore-threshold",
         "agent.revoke",
@@ -79,6 +78,7 @@ _IPC_STATS_METHODS = frozenset(
         # Spelled split exactly like its dispatch site (term lint).
         "agent.secret." + "provider-write",
         "agent.secret.revoke",
+        "agent.start.preflight",
         "agent.unblock",
         "autoupdate.notify",
         "autoupdate.status",
@@ -97,6 +97,7 @@ _IPC_STATS_METHODS = frozenset(
         "identity.users.add",
         "lifecycle.start",
         "lifecycle.start-smolvm",
+        "lifecycle.resume.preflight",
         "management.adapter.remove",
         "management.squire.ensure",
         "message.ack",
@@ -110,6 +111,9 @@ _IPC_STATS_METHODS = frozenset(
         "network.exposures",
         "network.peerKey",
         "network.unexpose",
+        "org.acl.grant",
+        "org.acl.ls",
+        "org.acl.revoke",
         "org.create",
         "org.delete",
         "org.execute",
@@ -172,6 +176,7 @@ _IPC_STATS_METHODS = frozenset(
         "session.heartbeat",
         "session.refresh",
         "session.register",
+        "session.register_guarded",
         "session.turn.ended",
         "session.unregister",
         "service.connect",
@@ -182,11 +187,13 @@ _IPC_STATS_METHODS = frozenset(
         "targets",
         "top.snapshot",
         "transfer.complete",
+        "transfer.custody.override",
         "transfer.land",
         "transfer.plan",
         "transfer.precheck",
         "transfer.quiesce",
         "transfer.receive",
+        "transfer.recipientKey",
         "transfer.resume",
         "workflow.cancel",
         "workflow.complete",
@@ -230,6 +237,15 @@ _ORG_NETWORK_METHODS = {
     "org.list": "ipc_org_list",
     "org.network": "ipc_org_network",
     "org.remove": "ipc_org_remove",
+}
+
+# Owner-node ACL entry authorizations.  Separate from _ORG_NETWORK_METHODS
+# because these handlers authenticate the caller and therefore need the
+# trusted message origin threaded through.
+_ORG_ACL_METHODS = {
+    "org.acl.grant": "ipc_org_acl_grant",
+    "org.acl.ls": "ipc_org_acl_ls",
+    "org.acl.revoke": "ipc_org_acl_revoke",
 }
 
 class _IpcDispatchMixin:
@@ -349,6 +365,10 @@ class _IpcDispatchMixin:
                     )
                 ),
                 "restorePending": not restore_done,
+                "storageHealth": (
+                    self._database_health.status() if self._database_health is not None
+                    else {"healthy": None, "checkedAtMs": None}
+                ),
                 "zenoh": {
                     "listen": list(self.zenoh_listen),
                     "connect": list(self.zenoh_connect),
@@ -453,13 +473,19 @@ class _IpcDispatchMixin:
 
             handler = getattr(org_network_ipc, _ORG_NETWORK_METHODS[method])
             return handler(self, params)
+        if method in _ORG_ACL_METHODS:
+            from hyprial.daemon.impl.org.network import ipc as org_network_ipc
+
+            handler = getattr(org_network_ipc, _ORG_ACL_METHODS[method])
+            return handler(self, params, _trusted_message_origin)
         if method == "targets":
             return self._ipc_targets(params)
         if method == "hosts":
             return self._ipc_hosts()
-        if method == "session.register":
+        if method in {"session.register", "session.register_guarded"}:
             return self._ipc_session_register(
                 params,
+                guarded=method == "session.register_guarded",
                 verify_process_claim=_trusted_message_origin == "ipc",
             )
         if method == "session.turn.ended":
@@ -542,10 +568,16 @@ class _IpcDispatchMixin:
             return self._ipc_outbox_list()
         if method == "outbox.prune":
             return self._ipc_outbox_prune(params)
-        if method in {"lifecycle.start", "lifecycle.start-smolvm"}:
+        if method in {
+            "lifecycle.start",
+            "lifecycle.start-smolvm",
+            "lifecycle.resume.preflight",
+        }:
             return self._ipc_lifecycle_start(method, params)
         if method == "down":
             return self._ipc_down(params)
+        if method == "transfer.custody.override":
+            return self._ipc_transfer_custody_override(params)
         if method == "transfer.land":
             return self._ipc_transfer_land(params)
         if method == "transfer.plan":
@@ -554,6 +586,8 @@ class _IpcDispatchMixin:
             return self._ipc_transfer_quiesce(params)
         if method == "transfer.precheck":
             return self._ipc_transfer_precheck(params)
+        if method == "transfer.recipientKey":
+            return self._ipc_transfer_recipient_key(params)
         if method == "transfer.receive":
             return self._ipc_transfer_receive(params)
         if method == "transfer.resume":
@@ -588,7 +622,7 @@ class _IpcDispatchMixin:
             except RegistryHomeError as error:
                 raise DaemonRequestError(AgentError.code, str(error)) from error
         if method == "shutdown":
-            return self._ipc_shutdown()
+            return self._ipc_shutdown(params)
         raise DaemonRequestError(ipc_errors.METHOD_NOT_FOUND, f"unknown daemon method {method}")
 
     def _ipc_worker_channel_request(self, params) -> Any:
@@ -812,7 +846,15 @@ class _IpcDispatchMixin:
     def _ipc_autoupdate_notify(self, params) -> Any:
         return self._deliver_autoupdate_restart_notification(params)
 
-    def _ipc_shutdown(self) -> Any:
+    def _ipc_shutdown(self, params=None) -> Any:
+        expected = (params or {}).get("expectedEpoch")
+        if "expectedEpoch" in (params or {}):
+            expected = _required_string(expected, "expectedEpoch")
+            if expected != self.epoch:
+                raise DaemonRequestError(
+                    "DAEMON_EPOCH_MISMATCH",
+                    "shutdown plan belongs to another daemon epoch",
+                )
         self._request_stop("ipc-shutdown")
         return {
             "ok": True,

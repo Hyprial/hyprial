@@ -565,6 +565,20 @@ class IsolatedAgentSdkClient:
     async def interrupt(self) -> None:
         await self._write_message({"op": "interrupt"})
 
+    async def steer(self, message: str, *, timeout: float | None = None) -> str:
+        """Claude has no non-destructive same-turn steer; advance the turn.
+
+        The Agent SDK exposes only ``interrupt`` on a live turn, so the
+        honest mechanism for the timeout path is to end the running turn and
+        let the QUEUED delivery start next.  The message argument is ignored
+        on purpose and never injected: Claude's own next turn delivers it, so
+        the runtime keeps it queued (disposition ``advanced``, not consumed).
+        """
+
+        del message, timeout
+        await self.interrupt()
+        return "advanced"
+
     async def _write_message(self, message: dict[str, object]) -> None:
         process = self._process
         if process is None or process.stdin is None or process.returncode is not None:

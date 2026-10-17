@@ -14,7 +14,7 @@ from collections import Counter
 from datetime import UTC, datetime, timedelta
 import sqlite3
 import time
-from typing import Any, Literal, Mapping
+from typing import Any, Mapping
 
 from pycrdt import Array, Doc, Map
 
@@ -28,7 +28,7 @@ from hyprial.identity import (
     protected_directory_doc_id,
 )
 
-from hyprial.daemon.impl.orgfs.storage.store.vocabulary import CommitRecord, ExportPage, ImportResult, StoreError, _LOG, _b64, _binding_proof_update_is_publishable, _changed_meta_entries, _decode_state_vector, _doc_roots, _json_bytes, _now, _tree_node_operation_allowed, _unb64, _wire_doc_id
+from hyprial.daemon.impl.orgfs.storage.store.vocabulary import AdmissionDecision, CommitRecord, ExportPage, ImportResult, StoreError, _LOG, _b64, _binding_proof_update_is_publishable, _changed_meta_entries, _decode_state_vector, _doc_roots, _json_bytes, _now, _tree_node_operation_allowed, _unb64, _wire_doc_id
 
 class StoreAdmission:
     """Responsibility methods on the sole LocalSpaceStore state host.
@@ -486,30 +486,12 @@ class StoreAdmission:
         return protected_directory_author_allowed(
             section=section, path_principal=path_principal, author=principal
         )
-    def admission(
-        self, envelope: bytes
-    ) -> Literal[
-        "ok",
-        "not-a-member",
-        "pending-dependency",
-        "pending-meta",
-        "snapshot-barrier",
-        "unknown-doc",
-    ]:
+    def admission(self, envelope: bytes) -> AdmissionDecision:
         with self._lock:
             return self._admission_locked(envelope)
 
 
-    def _admission_locked(
-        self, envelope: bytes
-    ) -> Literal[
-        "ok",
-        "not-a-member",
-        "pending-dependency",
-        "pending-meta",
-        "snapshot-barrier",
-        "unknown-doc",
-    ]:
+    def _admission_locked(self, envelope: bytes) -> AdmissionDecision:
         try:
             value = self._decode_envelope(envelope)
         except StoreError:
@@ -561,6 +543,16 @@ class StoreAdmission:
                 return "unknown-doc"
         owner, members, baseline = snapshot
         author = str(origin["author"])
+        # R2 removal wins (Allen 2026-10-09 ruling, replacing the 09-26
+        # frontier-only rule): an envelope authored by X is admitted only if
+        # X is a member at the envelope's frontier AND this replica holds no
+        # removal of X that the envelope is concurrent with or later than.
+        # Duplicates the remover already merged never re-enter here, so every
+        # fresh envelope from a removed author is refused, never parked.
+        # Re-adding X opens a new epoch: only frontiers covering the latest
+        # (re-)add are inside it.
+        if author != owner and self._author_removed_wins(author, token):
+            return "removed-author"
         member = members.get(author, {})
         if str(value["docId"]) == "meta":
             try:

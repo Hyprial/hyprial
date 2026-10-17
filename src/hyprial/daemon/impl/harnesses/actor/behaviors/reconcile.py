@@ -14,6 +14,8 @@ from hyprial.daemon.impl.harnesses.runtime.ports  import (
     HarnessAdapterRegistrationProjection,
     HarnessDesiredStateManaged,
     HarnessReadyObserved,
+    HarnessProjectionsRefreshed,
+    ObserveHarnessRuntimeFactsCommand,
     HarnessSessionRefProjection,
     HarnessSessionRefsReconciled,
     HarnessTimerCompleted,
@@ -65,6 +67,25 @@ class _ReconcileBehavior:
         for key, record in self._records.items():
             if not observation and isinstance(record.process, ProcessOwner):
                 record.process.refresh()
+            if (
+                not observation
+                and record.process is not None
+                and record.identity is not None
+                and record.identity.pid is None
+            ):
+                # Async-spawn harnesses (pi rpc) expose their child's pid only
+                # after the connect task runs; the launch captured
+                # ``unidentified`` custody.  The tick is where the late pid
+                # gets backfilled into the record and the orphan registry --
+                # without it the entry stays unprobeable and the stop fence
+                # never sees a PID to reuse-check.
+                late_pid = getattr(record.process, "pid", None)
+                if isinstance(late_pid, int):
+                    marker = self._identity_reader(late_pid)
+                    record.identity = ProcessIdentity(late_pid, marker)
+                    self._orphan_processes.refresh_pid(
+                        key, record.process, pid=late_pid, marker=marker
+                    )
             if key in self._lifecycle_effect_resources:
                 continue
             completed = record.completed_start
@@ -100,10 +121,12 @@ class _ReconcileBehavior:
                     )
                     record.last_error = None
                     record.failures = 0
+                    record.started_at = now
                     record.restart_after = None
                     record.restore_failed_terminal = False
                     self._report_readiness(key, "ready")
                     restarted += 1
+                self._transfer_finish_start(completed.correlation_id)
             if self._is_failed(record):
                 # Failed is terminal: nothing in reconcile ever puts the
                 # harness back into the start queue.  The only ways out are
@@ -118,11 +141,22 @@ class _ReconcileBehavior:
                 continue
             process = record.process
             if process is not None and process.running:
+                if record.started_at is not None and now - record.started_at >= 60.0:
+                    record.early_exits = 0
                 continue
             if process is not None:
                 runtime_error = getattr(process, "last_error", None)
                 if runtime_error:
                     record.last_error = str(runtime_error)
+                if record.started_at is not None and now - record.started_at < 60.0:
+                    # A launcher returning a handle is not proof of a stable run.
+                    # Preserve the crash-loop budget across successful respawns.
+                    record.failures = record.early_exits
+                    self._record_failure(key, record, record.last_error or "harness exited before stable run")
+                    record.early_exits = record.failures
+                else:
+                    record.early_exits = 0
+                record.started_at = None
                 old_identity = record.identity
                 record.process = None
                 record.identity = None
@@ -145,8 +179,11 @@ class _ReconcileBehavior:
                         self._version,
                         lambda binding=old_binding: binding.close(),
                     )
+                if self._is_failed(record):
+                    continue
                 if self._restart_backoff_seconds > 0:
-                    record.restart_after = now + self._restart_backoff_seconds
+                    if record.restart_after is None:
+                        record.restart_after = now + self._restart_backoff_seconds
                     continue
             if self._automatic_restore_allowed is not None:
                 try:
@@ -196,12 +233,18 @@ class _ReconcileBehavior:
 
 
     def _on_reconcile_session_refs(
-        self, command: ReconcileHarnessSessionRefsCommand
+        self,
+        command: ReconcileHarnessSessionRefsCommand | ObserveHarnessRuntimeFactsCommand,
+        *,
+        publish_only: bool = False,
     ) -> None:
-        """Join native facts before persisting the current session refs."""
+        """Join native facts off-mailbox; optionally only publish the snapshot."""
 
         from hyprial.daemon.impl.processes.process_owner  import ProcessOwner
 
+        publish_only = publish_only or isinstance(
+            command, ObserveHarnessRuntimeFactsCommand
+        )
         captured = tuple(
             (
                 key, record.incarnation, record.generation,
@@ -212,7 +255,11 @@ class _ReconcileBehavior:
         )
         if not any(entry[6] is not None for entry in captured):
             self._publish()
-            self._complete_session_ref_reconcile(command, ())
+            if publish_only:
+                self._emit_event(HarnessProjectionsRefreshed(
+                    command.correlation_id, self._handler_generation, self._version))
+            else:
+                self._complete_session_ref_reconcile(command, ())
             return
 
         def observe() -> tuple[_SessionRefObservation, ...]:
@@ -235,7 +282,7 @@ class _ReconcileBehavior:
         correlation = self._register_call(
             f"{command.correlation_id}:observe:{uuid.uuid4().hex}",
             self._handler_generation,
-            operation="session_refs",
+            operation="runtime_facts" if publish_only else "session_refs",
             reply_correlation_id=command.correlation_id,
         )
         assert self._io is not None

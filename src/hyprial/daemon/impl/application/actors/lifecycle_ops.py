@@ -25,6 +25,7 @@ from hyprial.daemon.impl.transport import (
 from hyprial.daemon.impl.transport.session_actor import TransportSessionAuthority
 from hyprial.kernel import HarnessLaunchSpec
 from hyprial.daemon.impl.composition  import (
+    AgentIdentityProjectionView,
     HarnessPortClient,
     harness_launch_projection,
 )
@@ -179,6 +180,7 @@ class _LifecycleOpsMixin:
             lambda _route_id: lambda _selector: b"ok",
             router,
             registration_factory=register_route,
+            agent_identity=AgentIdentityProjectionView(self._agent_session_domains),
         )
         manager = LifecycleCoordinator(
             self.state_db,
@@ -194,6 +196,7 @@ class _LifecycleOpsMixin:
         self._route_registration = route_port
         self._routes = RouteRegistrationClient(route_port, router)
         self._lifecycle_manager = manager
+        self._start_transfer_source(harnesses, manager)
 
     def _lifecycle_spec(self, spec: HarnessLaunchSpec) -> LifecycleSpec:
         actor = self._canonical_harness_uri(spec.name, spec)
@@ -366,6 +369,55 @@ class _LifecycleOpsMixin:
         except Exception:  # noqa: BLE001 - must not mask the failure it describes
             pass
 
+    def _start_failure_with_harness_error(
+        self,
+        spec: HarnessLaunchSpec,
+        error: DaemonRequestError,
+        *,
+        last_error: str | None = None,
+    ) -> DaemonRequestError:
+        """Attach the worker's own launch refusal to a start failure (D3).
+
+        A start can fail before its real cause reaches the caller: the pi SDK
+        bridge refuses a headless launch without ``--approve`` on a background
+        connect thread, so ``lifecycle.start`` answers with a generic resume or
+        deadline code while the concrete refusal sits on the worker's
+        ``last_error``.  Carry that text as additive ``data.lastError`` -- the
+        outer code and message are untouched -- so the operator sees the real,
+        actionable cause.  The text is redacted and bounded; only the static
+        reason the launcher/process published travels.
+        """
+        data = dict(error.data) if isinstance(error.data, dict) else {}
+        if "lastError" in data:
+            return error
+        detail = last_error if last_error is not None else self._harness_last_error(spec)
+        if detail is None:
+            return error
+        data["lastError"] = detail
+        return DaemonRequestError(error.code, str(error), data)
+
+    def _harness_last_error(self, spec: HarnessLaunchSpec) -> str | None:
+        harnesses = self._harnesses
+        if harnesses is None:
+            return None
+        try:
+            rows = harnesses.status()
+        except Exception:  # noqa: BLE001 - diagnostics must not mask the start failure
+            return None
+        for row in rows:
+            detail = row.get("error") if isinstance(row, dict) else None
+            if (
+                isinstance(row, dict)
+                and row.get("runtime") == spec.harness
+                and row.get("name") == spec.name
+                and isinstance(detail, str)
+                and detail
+            ):
+                from hyprial.kernel import redact
+
+                return str(redact(detail))[:500]
+        return None
+
     def _lifecycle_status(self) -> JsonObject:
         """The ps-visible health of the lifecycle consumer thread."""
 
@@ -379,8 +431,11 @@ class _LifecycleOpsMixin:
         }
 
     def _ipc_lifecycle_start(self, method, params) -> Any:
+        resume_preflight = method == "lifecycle.resume.preflight"
         is_smolvm = method == "lifecycle.start-smolvm"
-        if is_smolvm != (params.get("executionRuntime") is not None):
+        if not resume_preflight and is_smolvm != (
+            params.get("executionRuntime") is not None
+        ):
             raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, "executionRuntime requires lifecycle.start-smolvm")
         # The IPC key stays "provider" so new CLIs and old daemons can
         # mix in either direction; locally it names a harness.
@@ -399,6 +454,24 @@ class _LifecycleOpsMixin:
         spec = HarnessLaunchSpec.from_json(
             {**params, "provider": harness, "name": name}, "provider"
         )
+        if resume_preflight:
+            resume_ref = _required_string(params.get("sessionRef"), "sessionRef")
+            self._require_resumable_session(spec, resume_ref)
+            existing_agent = self.agents.get(name)
+            if existing_agent is None:
+                raise DaemonRequestError(
+                    ipc_errors.AGENT_NOT_FOUND,
+                    f"cannot resume {harness} session {resume_ref!r}: "
+                    f"no existing agent named {name!r}",
+                )
+            return {
+                "ok": True,
+                "resumable": True,
+                "harness": harness,
+                "name": name,
+                "sessionRef": resume_ref,
+                "agentSnapshot": existing_agent.to_json(),
+            }
         if is_smolvm:
             from hyprial.daemon.impl.harnesses.smolvm_runtime import validate_materials
             assert spec.execution_runtime is not None
@@ -438,6 +511,19 @@ class _LifecycleOpsMixin:
         )
         agent_for_restore = self.agents.get(spec.name)
         if agent_for_restore is not None:
+            # This IPC caller may wait on the short journal lane; neither the
+            # harness mailbox nor eligibility publication may read SQLite.
+            # This observation does not replace the harness owner's start hold.
+            custody = self._hydrate_transfer_source(
+                spec.name, agent_for_restore.entity_token,
+            )
+            if custody is None or custody.blocks_start:
+                raise DaemonRequestError(
+                    ipc_errors.TRANSFER_STARTS_HELD
+                    if custody is not None and custody.state == "held"
+                    else ipc_errors.TRANSFER_CUSTODY_UNAVAILABLE,
+                    "source custody prevents explicit start; an authenticated override is required",
+                )
             self.agents.clear_restore_disposition(
                 spec.name,
                 expected_entity_token=agent_for_restore.entity_token,
@@ -454,15 +540,23 @@ class _LifecycleOpsMixin:
                     self._lifecycle_spec(spec),
                 )
             )
-        except BaseException:
-            raise
+        except DaemonRequestError as start_error:
+            raise self._start_failure_with_harness_error(spec, start_error) from start_error
         if resume_ref is not None:
             # The create operation has settled; readiness is expected to
             # be there already, so the check waits one margin, not a
-            # budget of its own.
-            self._verify_started_resume(
-                spec, resume_ref, timeout=LIFECYCLE_WAIT_MARGIN_SECONDS
-            )
+            # budget of its own.  Capture the worker's own published refusal
+            # BEFORE the strict check: on failure it deactivates the worker,
+            # which removes the row the refusal lives on.
+            last_error = self._harness_last_error(spec)
+            try:
+                self._verify_started_resume(
+                    spec, resume_ref, timeout=LIFECYCLE_WAIT_MARGIN_SECONDS
+                )
+            except DaemonRequestError as resume_error:
+                raise self._start_failure_with_harness_error(
+                    spec, resume_error, last_error=last_error
+                ) from resume_error
         handover = (
             HandoverNotice(
                 actor=prior_agent.actor,

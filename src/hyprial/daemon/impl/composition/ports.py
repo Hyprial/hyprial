@@ -8,6 +8,10 @@ import uuid
 import json
 from hyprial.kernel import PortAdmission
 from hyprial.daemon.impl.adapters.lark.contracts.wire import HarnessDelivery
+from hyprial.daemon.impl.adapters.lark.contracts.reply_bridge import (
+    lark_alarm_destination,
+    lark_reply_adapter,
+)
 from hyprial.daemon.impl.adapters.lark.ports.ports import (
     AdapterIoCompleted,
     AdapterHealthEventsCompleted,
@@ -181,3 +185,62 @@ class LarkPortClient:
             AdapterIoCompleted,
         )
         return event.succeeded
+
+
+def lark_human_alarm_legs(
+    lark_client: "LarkPortClient",
+) -> tuple:
+    """The two human-chat alarm legs a daemon composition wires.
+
+    Both close over one port client and reply natively into the chat the
+    original message came from -- the adapter owns the chat handle, the
+    daemon owns the decision to alarm:
+
+    * ``deliver_human_alarm(alarm, text)`` -- the delivery-custody alarm leg
+      (terminal delivery failures), correlated by the original message id.
+    * ``deliver_in_channel_notice(message, text)`` -- the fail-loud notice
+      leg for human-originated conversations (Allen 2026-10-13 in-DM alarm
+      ruling): the notice payload carries the original delivery id, which the
+      adapter state maps to the native message to reply to.  A requester
+      address with no Lark chat handle (``user:``, a bare actor name) yields
+      ``False``; the caller holds the notice for retry rather than guessing
+      a chat.
+    """
+
+    def deliver_human_alarm(alarm: object, text: str) -> bool:
+        adapter = lark_reply_adapter(getattr(alarm, "sender", ""))
+        if adapter is None:
+            return False
+        return lark_client.deliver_alarm(
+            adapter,
+            alarm.message_id,  # type: ignore[attr-defined]
+            text,
+            idempotency_key=(
+                f"alarm:{alarm.message_id}:{alarm.reason}"  # type: ignore[attr-defined]
+            ),
+        )
+
+    def deliver_in_channel_notice(message: object, text: str) -> bool:
+        adapter = lark_alarm_destination(getattr(message, "recipient", ""))
+        if adapter is None:
+            return False
+        try:
+            body = json.loads(bytes(message.payload).decode("utf-8"))  # type: ignore[attr-defined]
+        except (AttributeError, UnicodeDecodeError, ValueError):
+            return False
+        correlation_id = (
+            body.get("deliveryId") if isinstance(body, dict) else None
+        )
+        if not isinstance(correlation_id, str) or not correlation_id:
+            return False
+        return lark_client.deliver_alarm(
+            adapter,
+            correlation_id,
+            text,
+            idempotency_key=(
+                message.idempotency_key  # type: ignore[attr-defined]
+                or f"availability-loud:{message.message_id}"  # type: ignore[attr-defined]
+            ),
+        )
+
+    return deliver_human_alarm, deliver_in_channel_notice

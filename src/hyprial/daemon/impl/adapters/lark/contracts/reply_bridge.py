@@ -13,6 +13,7 @@ import json
 from typing import Protocol, runtime_checkable
 
 from hyprial.daemon.impl.inbox.contracts.api import DeliveryTransport, InboxMessage
+from hyprial.kernel import parse_route_uri
 
 from hyprial.daemon.impl.adapters.lark.contracts.wire import (
     ActorTarget,
@@ -52,6 +53,29 @@ def lark_reply_adapter(recipient: str) -> str | None:
             if not adapter or ":" in adapter:
                 return None
             return adapter
+    return None
+
+
+def lark_alarm_destination(recipient: str) -> str | None:
+    """The adapter whose chat a human-facing notice must be replied into.
+
+    Allen 2026-10-13 (in-DM alarm ruling): a fail-loud notice for a
+    human-originated conversation is replied into the chat where the request
+    came from, and the adapter owns that chat handle.  Besides the exact
+    reply-bridge shape (:func:`lark_reply_adapter`), a channel route
+    (``route:<adapter>:<route>``, the grammar owned by
+    ``hyprial.daemon.impl.network.route_delivery.RouteTarget``) names its
+    adapter as the middle component.  Anything else -- a ``user:`` address, a
+    bare actor name -- has no Lark chat handle here; the caller holds the
+    notice for retry rather than guessing a chat.
+    """
+
+    adapter = lark_reply_adapter(recipient)
+    if adapter is not None:
+        return adapter
+    parsed_route = parse_route_uri(recipient)
+    if parsed_route is not None:
+        return parsed_route[0]
     return None
 
 

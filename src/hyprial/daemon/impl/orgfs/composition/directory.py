@@ -41,7 +41,12 @@ from hyprial.daemon.impl.orgfs.network.protocol  import (
     ORGFS_DIRECTORY_SYNC_INTERVAL_SECONDS,
     ORGFS_DIRECTORY_SYNC_JITTER_RATIO)
 
-from hyprial.identity import is_org_acl_space, is_org_directory_space
+from hyprial.identity import (
+    DIRECTORY_DIR,
+    directory_owner_principal,
+    is_org_acl_space,
+    is_org_directory_space,
+)
 
 
 
@@ -57,6 +62,21 @@ def _directory_sync_jitter() -> float:
     return random.uniform(
         -ORGFS_DIRECTORY_SYNC_JITTER_RATIO, ORGFS_DIRECTORY_SYNC_JITTER_RATIO
     )
+
+
+#: Upper bound of deleted nodes scanned per supplier-gate index rebuild.
+#: Removals delete few rows; the bound only caps pathological histories.
+_SUPPLIER_TRASH_SCAN_LIMIT = 4096
+
+
+def _supplier_directory_space(space_id: str) -> str | None:
+    """The org directory space backing an org space's supplier gate."""
+
+    if is_org_directory_space(space_id):
+        return space_id
+    if is_org_acl_space(space_id):
+        return space_id[: -len("-acl")]
+    return None
 
 
 def _next_directory_sync_due(now: float) -> float:
@@ -286,16 +306,17 @@ class RuntimeDirectory:
             if not observed_live and not self._supplier_online(node):
                 diagnostics: list[dict[str, object]] = []
                 self._buffer_announce(node, value, diagnostics=diagnostics)
-                return [
-                    _DirectoryEffect(
-                        "log",
-                        details=tuple(sorted(fields.items())),
+                return list(
+                    self._announce_buffered_effects(
+                        node, value["spaces"], diagnostics
                     )
-                    for fields in diagnostics
-                ]
+                )
             with self._pending_announces_lock:
                 self._pending_announces.pop(node, None)
             newly_held = self._apply_announce(node, value)
+            received = self._announce_effects(
+                "announce.received", node=node, items=value["spaces"]
+            )
             # A live peer whose online edge skipped a space (it was not a
             # known holder yet) pulls that space once its announce lands.
             with self._pending_announces_lock:
@@ -308,8 +329,8 @@ class RuntimeDirectory:
                     (space_id, node) for space_id in catch_up
                 )
             if not catch_up:
-                return []
-            return [_DirectoryEffect("sync", peer=node, space_ids=catch_up)]
+                return list(received)
+            return [*received, _DirectoryEffect("sync", peer=node, space_ids=catch_up)]
         except Exception:
             self._directory_dropped += 1
             return []
@@ -511,6 +532,8 @@ class RuntimeDirectory:
                 )
             elif effect.action == "log" and self.logger is not None:
                 self.logger("warn", "orgfs.announce.buffer-dropped", **dict(effect.details))
+            elif effect.action == "instrument":
+                self._emit_announce_effect(effect)
 
 
     @staticmethod
@@ -603,6 +626,99 @@ class RuntimeDirectory:
                 self._transport_rebuild_completed
             )
 
+
+    def _supplier_owner_for_space(
+        self, space_id: str
+    ) -> Callable[[str], str | None]:
+        """R1 supplier-gate resolver bound to one replica space.
+
+        A mesh imports only from devices whose directory device row belongs to
+        a current member.  The resolver answers ``supplier node -> owning
+        member principal`` from the org's directory space; ``None`` (no device
+        evidence at all) keeps the supplier open so a joining device that has
+        not enrolled yet is not refused — its envelopes still face the
+        removal-wins author judgment.
+        """
+
+        directory_space = _supplier_directory_space(space_id)
+
+        def resolve(supplier: str) -> str | None:
+            if directory_space is None or not supplier:
+                return None
+            return self._device_owner_index(directory_space).get(supplier)
+
+        return resolve
+
+    def _device_owner_index(self, directory_space: str) -> dict[str, str]:
+        """Map every known device id to its owning member principal.
+
+        Live rows come from the directory projection; rows a removal deleted
+        survive as trash history and keep naming their owner, so a removed
+        member's node resolves (and then fails the membership check) instead
+        of masquerading as an unknown device.  The index is cached until the
+        directory space's member table changes, which is exactly when a
+        resolved principal's membership can flip.
+        """
+
+        with self._supplier_device_lock:
+            cached = self._supplier_device_owners.get(directory_space)
+        if cached is not None:
+            return cached
+        index: dict[str, str] = {}
+        try:
+            owner_dirs = self.facade.listdir(directory_space, DIRECTORY_DIR)
+        except OrgFsError:
+            owner_dirs = ()
+        for owner_entry in owner_dirs:
+            if owner_entry.kind != "dir":
+                continue
+            try:
+                principal = directory_owner_principal(owner_entry.name)
+            except ValueError:
+                continue
+            try:
+                devices = self.facade.listdir(
+                    directory_space, f"id:{owner_entry.node_id}"
+                )
+            except (OrgFsError, ValueError):
+                continue
+            for device in devices:
+                if device.kind == "doc" and device.name.endswith(".json"):
+                    index.setdefault(device.name.removesuffix(".json"), principal)
+        try:
+            deleted = self.facade.trash(
+                directory_space, _SUPPLIER_TRASH_SCAN_LIMIT
+            )
+        except OrgFsError:
+            deleted = ()
+        for node in deleted:
+            parts = node.path.split("/") if node.path else []
+            if (
+                node.kind != "doc"
+                or len(parts) != 4
+                or parts[0] != "directory"
+                or parts[1] != "devices"
+                or not parts[3].endswith(".json")
+            ):
+                continue
+            try:
+                principal = directory_owner_principal(parts[2])
+            except ValueError:
+                continue
+            index.setdefault(parts[3].removesuffix(".json"), principal)
+        with self._supplier_device_lock:
+            if directory_space not in self._supplier_device_owners:
+                self._supplier_device_owners[directory_space] = index
+                watch = self.facade.watch_meta(
+                    directory_space,
+                    lambda: self._invalidate_device_owner_index(directory_space),
+                )
+                self._supplier_device_watches[directory_space] = watch
+            return self._supplier_device_owners[directory_space]
+
+    def _invalidate_device_owner_index(self, directory_space: str) -> None:
+        with self._supplier_device_lock:
+            self._supplier_device_owners.pop(directory_space, None)
 
     def _supplier_became_online(self, transition: ActorOnlineTransition) -> None:
         # Presence replays agents as well as hosts. Discard unrelated identities
@@ -723,6 +839,7 @@ class RuntimeDirectory:
             mesh = next(iter(self._meshes.values()), None)
         if mesh is None:
             return
+        self._announce_event("announce.broadcast", node=self.node_id)
         mesh.announce()
 
 
@@ -749,6 +866,9 @@ class RuntimeDirectory:
                 return
             with self._pending_announces_lock:
                 observed_live = key_node in self._lively_peers
+            self._announce_event(
+                "announce.received", node=key_node, items=value["spaces"]
+            )
             if not observed_live and not self._supplier_online(key_node):
                 self._buffer_announce(key_node, value)
                 return
@@ -766,6 +886,10 @@ class RuntimeDirectory:
         *,
         diagnostics: list[dict[str, object]] | None = None,
     ) -> None:
+        if diagnostics is None:
+            self._announce_event(
+                "announce.buffered", node=node, items=value["spaces"]
+            )
         with self._pending_announces_lock:
             spaces = value["spaces"]
             previous = self._pending_announces.get(node)
@@ -819,7 +943,6 @@ class RuntimeDirectory:
                     diagnostics=diagnostics,
                 )
 
-
     def _record_announce_buffer_drop(
         self,
         *,
@@ -868,4 +991,6 @@ class RuntimeDirectory:
                         newly_held.add(space_id)
                     holders.add(node)
                     self._known_holders.setdefault(space_id, set()).add(node)
+        if newly_held:
+            self._announce_event("holder.promoted", node=node, items=newly_held)
         return frozenset(newly_held)

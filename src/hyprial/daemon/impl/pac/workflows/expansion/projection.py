@@ -6,7 +6,7 @@ import json
 from typing import Any
 
 from hyprial.daemon.impl.pac.graphs.flags import write_flag_in_transaction
-from hyprial.daemon.impl.pac.storage.journal import append_event
+from hyprial.daemon.impl.pac.storage.journal import GraphClosedRecord, append_event
 from hyprial.daemon.impl.pac.workflows.expansion.results import child_result_summary
 from hyprial.daemon.impl.pac.workflows.graphs import input_token_from_connection
 
@@ -212,11 +212,11 @@ def cascade_open_children_in_transaction(
                 "WHERE graph_id=? AND state IN ('pending','requested')",
                 (reason, child),
             )
-            db.execute(
+            closed = db.execute(
                 "UPDATE graphs SET closed_at=?,closed_by=? "
                 "WHERE graph_id=? AND closed_at IS NULL",
                 (at, parent_graph_id, child),
-            )
+            ).rowcount
             append_event(
                 db,
                 graph_id=child,
@@ -230,6 +230,16 @@ def cascade_open_children_in_transaction(
                     "reasonRef": reason,
                 },
             )
+            if closed:
+                store.defer_graph_closed(
+                    GraphClosedRecord(
+                        graph_id=child,
+                        end_state="cancelled",
+                        closed_by=parent_graph_id,
+                        reason_ref=reason,
+                        closed_at_ms=at,
+                    )
+                )
             db.execute(
                 "UPDATE workflow_worktrees SET state='cleanup_pending',updated_at=? "
                 "WHERE graph_id=? AND state IN ('planned','prepared')",

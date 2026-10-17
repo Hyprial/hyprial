@@ -244,8 +244,8 @@ class _BridgeReconcileMixin:
                 if callable(notice_reader) and callable(dismiss_notice)
                 else ()
             )
-            if self._turn_hooks is not None:
-                self._turn_hooks.forget_missing_deliveries(
+            if self._delivery_hooks is not None:
+                self._delivery_hooks.forget_missing_deliveries(
                     recipient,
                     {message.message_id for message in (*pending_messages, *notices)},
                 )
@@ -284,9 +284,9 @@ class _BridgeReconcileMixin:
                     origin=self._message_origin(message),
                     hook_request=hook_request,
                 )
-                if self._turn_hooks is not None:
+                if self._delivery_hooks is not None:
                     if not delivery.hook_request:
-                        prepared = self._turn_hooks.prepare_delivery(delivery)
+                        prepared = self._delivery_hooks.prepare_delivery(delivery)
                         if prepared is None:
                             # Inbox order is the actor's delivery order.  A
                             # bounded hook may hold the head, but no younger
@@ -306,8 +306,8 @@ class _BridgeReconcileMixin:
                         break
                     continue
                 if self.harnesses.dispatch(actor, delivery):
-                    if self._turn_hooks is not None:
-                        self._turn_hooks.mark_dispatched(message.message_id)
+                    if self._delivery_hooks is not None:
+                        self._delivery_hooks.mark_dispatched(message.message_id)
                     if is_retry:
                         self._note_delivery_seen(actor, message)
                     accepted += 1
@@ -337,9 +337,9 @@ class _BridgeReconcileMixin:
                         hook_request=is_hook_request(notice),
                         notice=True,
                     )
-                    if self._turn_hooks is not None:
+                    if self._delivery_hooks is not None:
                         if not delivery.hook_request:
-                            prepared = self._turn_hooks.prepare_delivery(delivery)
+                            prepared = self._delivery_hooks.prepare_delivery(delivery)
                             if prepared is None:
                                 break
                             delivery = prepared
@@ -352,9 +352,9 @@ class _BridgeReconcileMixin:
                             break
                         continue
                     if self.harnesses.dispatch(actor, delivery):
-                        if self._turn_hooks is not None:
-                            self._turn_hooks.mark_dispatched(notice.message_id)
-                            self._turn_hooks.forget_delivery(notice.message_id)
+                        if self._delivery_hooks is not None:
+                            self._delivery_hooks.mark_dispatched(notice.message_id)
+                            self._delivery_hooks.forget_delivery(notice.message_id)
                         # System notices are offered once.  They have no result,
                         # acknowledgement, receipt, or FIFO settlement duty.
                         dismiss_notice(notice.message_id)
@@ -376,14 +376,14 @@ class _BridgeReconcileMixin:
                 )
             if not outcome.accepted:
                 continue
-            if self._turn_hooks is not None:
-                self._turn_hooks.mark_dispatched(outcome.delivery_id)
+            if self._delivery_hooks is not None:
+                self._delivery_hooks.mark_dispatched(outcome.delivery_id)
             if outcome.notice:
                 dismiss_notice = getattr(self.inbox, "dismiss_system_notice", None)
                 if callable(dismiss_notice):
                     dismiss_notice(outcome.delivery_id)
-                if self._turn_hooks is not None:
-                    self._turn_hooks.forget_delivery(outcome.delivery_id)
+                if self._delivery_hooks is not None:
+                    self._delivery_hooks.forget_delivery(outcome.delivery_id)
             else:
                 if outcome.retry:
                     self._note_delivery_seen(outcome.worker, outcome.original)

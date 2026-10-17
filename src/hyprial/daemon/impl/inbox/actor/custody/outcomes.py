@@ -11,7 +11,10 @@ from hyprial.daemon.impl.inbox.contracts.ports  import (
     SubmissionBatchCompleted,
     SubmissionProjection,
 )
-from hyprial.daemon.impl.inbox.service.policy import online_retry_next_attempt_ms
+from hyprial.daemon.impl.inbox.service.policy import (
+    OFFLINE_RECHECK_INTERVAL_MS,
+    online_retry_next_attempt_ms,
+)
 
 from ..events import (
     DispatchItem,
@@ -205,7 +208,10 @@ class DeliveryCustodyOutcomesMixin:
                 expires_at_ms=int(row["expires_at_ms"]),
             )
             if count_attempt
-            else int(row["expires_at_ms"])
+            else min(
+                int(row["expires_at_ms"]),
+                now_ms + OFFLINE_RECHECK_INTERVAL_MS,
+            )
         )
         with self._service._db:
             self._service._db.execute(

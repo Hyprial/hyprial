@@ -22,6 +22,7 @@ from hyprial.daemon.impl.inbox.links.pull  import (
 from hyprial.daemon.impl.inbox.service.state import ConsumptionState
 from hyprial.daemon.impl.inbox.service.policy import (
     DELIVERY_RETRY_CLAIM_LIMIT,
+    OFFLINE_RECHECK_INTERVAL_MS,
     RetryPolicy,
     online_retry_next_attempt_ms,
 )
@@ -59,7 +60,7 @@ class InboxServiceCoreMixin:
         self._db = sqlite3.connect(database, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
-        self._db.execute("PRAGMA synchronous=NORMAL")
+        self._db.execute("PRAGMA synchronous=FULL")  # durability: FULL -- F7 accepted inbox/ack commits require WAL fsync before success
         self._transport = transport
         self.retry_policy = retry_policy or RetryPolicy()
         self.max_inbox_items = max_inbox_items
@@ -86,6 +87,20 @@ class InboxServiceCoreMixin:
             deliver_agent=self._deliver_system_notice,
             claim=self._claim_alarm,
         )
+        # Audit only unconsumed durable rows; this is recovery eligibility,
+        # not a claim that a harness already received the delivery. Batches
+        # bound log record size and never include message payloads.
+        pending = self.pending_all()
+        for offset in range(0, len(pending), 64):
+            try:
+                self._logger.log(
+                    "info", "inbox.recovery.pending",
+                    messageIds=[item.message_id for item in pending[offset:offset + 64]],
+                    pendingCount=len(pending),
+                )
+            except Exception:
+                pass  # logging cannot revoke durable inbox custody
+
     def _create_schema(self) -> None:
         # TODO(PR 3): migrate old outbox rows atomically, then drop the legacy
         # retry_started_at_ms / confirmation_* columns. Keep this note out of
@@ -535,17 +550,38 @@ class InboxServiceCoreMixin:
                 return mailbox
         return None
     def _defer_outbox(self, message: InboxMessage, now_ms: int) -> None:
-        """Park an offline row at its TTL; only a liveliness event advances it."""
+        """Park an offline recipient's row for a bounded recheck, not its TTL.
 
-        del now_ms
+        The previous deferral wrote ``next_attempt_ms = expires_at_ms``, so
+        an offline window was a death sentence unless a liveliness wake
+        advanced the row first; several recipient classes never produce one
+        (PR #1463 finding 1).  The row is now rechecked on the shared offline
+        cadence -- capped by the TTL, which still expires the row unchanged
+        when the recipient never appears.  One ``outbox.offline_hold`` log
+        event marks the start of each offline stretch (detected via the
+        ``last_error`` transition), keeping the cadence itself log-silent.
+        """
+
+        row = self._db.execute(
+            "SELECT expires_at_ms, last_error FROM outbox WHERE message_id = ?",
+            (message.message_id,),
+        ).fetchone()
+        if row is None:
+            return
+        next_attempt_ms = min(
+            int(row["expires_at_ms"]), now_ms + OFFLINE_RECHECK_INTERVAL_MS
+        )
+        first_hold = row["last_error"] != "recipient offline"
         with self._db:
             self._db.execute(
                 """UPDATE outbox
-                      SET next_attempt_ms = expires_at_ms,
+                      SET next_attempt_ms = ?,
                           last_error = ?
                     WHERE message_id = ?""",
-                ("recipient offline", message.message_id),
+                (next_attempt_ms, "recipient offline", message.message_id),
             )
+        if first_hold:
+            self._log_offline_hold(message, next_attempt_ms)
     @_synchronized
     def retry_due(self, *, now_ms: int | None = None) -> list[SubmissionResult]:
         now = self._now_ms() if now_ms is None else now_ms

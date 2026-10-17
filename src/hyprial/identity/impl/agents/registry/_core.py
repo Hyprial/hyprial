@@ -26,8 +26,9 @@ from ._lifecycle import _RegistryLifecycleMixin
 from ._home_create import _RegistryHomeCreateMixin
 from ._home_destroy import _RegistryHomeDestroyMixin
 from ._records import _RegistryRecordsMixin
+from .config_binding import _RegistryConfigBindingMixin
 
-class AgentRegistry(_RegistryLifecycleMixin, _RegistryHomeCreateMixin, _RegistryHomeDestroyMixin, _RegistryRecordsMixin):
+class AgentRegistry(_RegistryConfigBindingMixin, _RegistryLifecycleMixin, _RegistryHomeCreateMixin, _RegistryHomeDestroyMixin, _RegistryRecordsMixin):
     """Every agent on this machine, in one real SQLite database.
 
     The database path is a constructor argument so tests (and a second daemon

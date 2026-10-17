@@ -30,10 +30,11 @@ from hyprial.daemon.impl.network.routing.session_route_coordinator  import (
 )
 from hyprial.daemon.impl.adapters.lark.outbound.gateway import GatewayIoAuthority
 from hyprial.daemon.impl.autoupdate.actor import AutoUpdateAuthority as InProcessAutoUpdateScheduler
-from hyprial.identity import AgentKeepListAuthority as AgentKeepList
+from hyprial.identity import Agent
 from hyprial.identity import (
     BlockingFailureAuthority,
     RestorePolicyAuthority,
+    migrate_legacy_agent_keep_list,
 )
 from hyprial.daemon.impl.adapters.lark.runtime.runtime import (
     AdapterRuntime,
@@ -83,7 +84,9 @@ from hyprial.daemon.impl.transport.session_actor import TransportSessionAuthorit
 from hyprial.daemon.impl.application.ports import (
     UsageCollectionFactory,
     QuotaEvaluatorFactory,
+    QuotaHookConsumerFactory,
     QuotaWatchdogDeps,
+    HookConsumersFactory,
     RoutineRuntime as RoutineRuntime,
     RoutineRuntimeFactory,
     RoutineServicePort,
@@ -133,9 +136,6 @@ from hyprial.kernel  import CallCostCounters
 from hyprial.daemon.impl.configuration.home_guard  import keepalive_duration_from_environment
 from hyprial.daemon.impl.configuration.home_lease_actor  import HomeLeaseAuthority as ActiveDaemonHeartbeat
 from hyprial.daemon.impl.runtime  import DaemonEventBridge, ReconcileSummary
-from hyprial.daemon.impl.harnesses.turn_delivery.service  import (
-    TurnHookService,
-)
 from hyprial.daemon.impl.operations.top  import InteractiveTurnStats
 if TYPE_CHECKING:
     pass
@@ -157,6 +157,7 @@ from hyprial.daemon.impl.application.actors.agents_registry import _AgentsRegist
 from hyprial.daemon.impl.application.actors.sessions.routes import _SessionRoutesMixin
 from hyprial.daemon.impl.application.actors.sessions.registry import _SessionRegistryMixin
 from hyprial.daemon.impl.application.actors.transfer import _TransferOpsMixin
+from hyprial.daemon.impl.application.actors.transfer_p2 import _TransferP2Mixin
 from hyprial.daemon.impl.application.actors.lifecycle_ops import _LifecycleOpsMixin
 from hyprial.daemon.impl.application.actors.routines import _RoutinesMixin
 from hyprial.daemon.impl.application.messaging.delivery.lark import _LarkGatewayMixin
@@ -239,6 +240,7 @@ class DaemonApplication(
     _SessionRoutesMixin,
     _SessionRegistryMixin,
     _TransferOpsMixin,
+    _TransferP2Mixin,
     _LifecycleOpsMixin,
     _RoutinesMixin,
     _LarkGatewayMixin,
@@ -261,23 +263,28 @@ class DaemonApplication(
         """Release already-started authorities after a constructor failure."""
 
         for attribute, close_operation in (
+            ("_database_health", "close"),
             ("_maintenance_watchdog", "close"),
             ("_operator_alarm_delivery", "close"),
             ("_inbox_watchdog", "close"),
             ("_quota_watchdog", "close"),
             ("_blocking_failures", "close"),
             ("_restore_policy", "close"),
-            ("_agent_keep", "close"),
+            ("_transfer_source", "close"),
             ("_agent_session_domains", "close"),
             ("user_profiles", "close"),
             ("_state_persistence", "close"),
+            ("_transfer_p2", "close"),
             ("_gateway_logger", "close"),
             ("_logger", "close"),
         ):
             resource = getattr(self, attribute, None)
             if resource is not None:
                 try:
-                    getattr(resource, close_operation)()
+                    if attribute in {"_transfer_p2", "_transfer_source"}:
+                        resource.close(timeout=5.0)
+                    else:
+                        getattr(resource, close_operation)()
                 except BaseException:
                     pass
 
@@ -300,6 +307,7 @@ class DaemonApplication(
         owner: str | None = None,
         usage_cache: UsageCollection | None = None,
         quota_evaluator_factory: QuotaEvaluatorFactory | None = None,
+        quota_hook_consumer_factory: QuotaHookConsumerFactory | None = None,
         routine_runtime_factory: RoutineRuntimeFactory,
         routine_text_loader: RoutineTextLoader,
         routine_template_renderer: RoutineTemplateRenderer,
@@ -309,7 +317,7 @@ class DaemonApplication(
         forwarding_policy: ForwardingPolicy | None = None,
         forwarding_automatic: AutomaticForwarding | None = None,
         forwarding_unavailable: str | None = None,
-        hook_consumers: Mapping[str, Any] | None = None,
+        hook_consumers: HookConsumersFactory | None = None,
     ) -> None:
         self.state_dir = Path(state_dir)
         self._agent_bot_attempts = AgentBotAttemptLedger(
@@ -439,11 +447,12 @@ class DaemonApplication(
             lambda: StatePersistenceAuthority(desired_store)
         )
         self.desired_state = self._state_persistence.desired
+        self._transfer_p2 = self._construct_or_rollback(self._make_transfer_authority)
         self._state_writer_alarm = StateWriterAlarm()
         self._cpu_owner_alarm = CpuOwnerBudgetAlarm()
         self.persistent_config = PersistentConfigStore(self.hyprial_home, self.state_dir)
         self._profile_refresh_due = 0.0
-        self._keep_refresh_due = 0.0
+        self._restore_policy_refresh_due = 0.0
         self.user_adapters = UserAdapterRegistry()
         self.stop_event = threading.Event()
         self._stop_request_trace = _StopRequestTrace()
@@ -458,7 +467,8 @@ class DaemonApplication(
         self._routine_runtime_factory = routine_runtime_factory
         self._routine_text_loader = routine_text_loader
         self._routine_template_renderer = routine_template_renderer
-        self._hook_consumers = dict(hook_consumers or {})
+        self._hook_consumers_factory = hook_consumers
+        self._hook_consumers: Mapping[str, Any] | None = None
         self._routine_coordinator: Any | None = None
         self._routine_legacy_lock = threading.RLock()
         self._pac_notification_io: InboxDeliveryIoAdapter | None = None
@@ -466,6 +476,7 @@ class DaemonApplication(
         self._pac_graph_authority: Any | None = None
         self._pac_gc: Any | None = None
         self._lifecycle_manager: LifecycleCoordinator | None = None
+        self._transfer_source = None
         self._lifecycle_domain_ports: tuple[AtomicLifecycleDomainPort, ...] = ()
         self._route_registration: RouteRegistrationIo | None = None
         self._routes: RouteRegistrationClient | None = None
@@ -474,9 +485,9 @@ class DaemonApplication(
         self._dispatch_cadence: BoundedCadence[ReconcileSummary] | None = None
         self._forwarding_cadence: BoundedCadence[None] | None = None
         self._session_route_coordinator: SessionRouteCoordinator | None = None
-        self._turn_hooks: TurnHookService | None = None
         self._hook_bus: Any | None = None
         self._daemon_hooks: Any | None = None
+        self._delivery_hooks: Any | None = None
         self._transport: TransportSessionAuthority | None = None
         self._fetch_receipt_publisher: FetchReceiptPublisher | None = None
         self._remote_workflow = None
@@ -528,6 +539,9 @@ class DaemonApplication(
         self._interactive_route_effect_gates: dict[
             str, _InteractiveRouteEffectGate
         ] = {}
+        self._resume_agent_restore_guards: dict[
+            str, tuple[Agent | None, Agent]
+        ] = {}
         self._interactive_route_resource_tokens: dict[tuple[str, str], str] = {}
         self._interactive_turn_stats_lock = threading.Lock()
         self._interactive_turn_stats: dict[str, InteractiveTurnStats] = {}
@@ -540,6 +554,7 @@ class DaemonApplication(
             ),
             diagnostics=self._transport_lock_holder,
         ))
+        self._database_health = None
         self._maintenance_generation = 0
         self._owns_process_exit = False
         # The daemon.readiness projection (phase ③): one entry per connector
@@ -608,10 +623,13 @@ class DaemonApplication(
         # environment composition is a read, not a mutation.
         self._agent_registry = self._agent_session_domains._registry  # noqa: SLF001
         self._agent_migration_lock = threading.Lock()
-        self._agent_keep = self._construct_or_rollback(lambda: AgentKeepList(
-            self.state_dir / "agent-keep.json",
-            normalize=self.agents.normalize_actor,
-        ))
+        keep_migration = self._construct_or_rollback(
+            lambda: migrate_legacy_agent_keep_list(
+                self.state_dir / "agent-keep.json",
+                self.state_dir / "agent-restore-policy.json",
+                normalize=self.agents.normalize_actor,
+            )
+        )
         self._restore_policy = self._construct_or_rollback(
             lambda: RestorePolicyAuthority(
                 self.state_dir / "agent-restore-policy.json",
@@ -629,6 +647,9 @@ class DaemonApplication(
         self._restore_eligibility_batch = 64
         self._restore_classifying = False
         self._restore_wake_cadence: BoundedCadence[None] | None = None
+        self._transfer_restore_lock = threading.Lock()
+        self._transfer_custody_reads = {}
+        self._transfer_deferred = {}
         self._restore_wake_cursor = 0
         self._restore_wake_batch = 64
         self._restore_wake_lock = threading.Lock()
@@ -723,11 +744,21 @@ class DaemonApplication(
         self._gateway_logger = self._construct_or_rollback(lambda: Logger.adapter(
             self.state_dir, name=self.node_id, asynchronous=True, capacity=4096
         ))
+        if keep_migration.migrated:
+            self._log(
+                "info",
+                "daemon",
+                "agent.keep_list_migrated",
+                agents=list(keep_migration.agents),
+                overrodeNever=list(keep_migration.overrode_never),
+            )
         self._legacy_agent_home_log_lock = threading.Lock()
         self._legacy_agent_home_logged: set[str] = set()
         self._orgfs_runtime: OrgFsRuntime | None = None
         self._org_identity_binding_projector: Any | None = None
         self._org_identity_binding_suppression: Any | None = None
+        self._casdoor_membership_sync: Any | None = None
+        self._casdoor_webhook: Any | None = None
         # Re-entrant: publication holds it and the deferred branch takes it again.
         self._org_identity_binding_publication_lock = threading.RLock()
         self._org_identity_binding_pending_all = False
@@ -753,10 +784,12 @@ class DaemonApplication(
         # by from_environment so directly-constructed test applications never
         # start a network-touching refresher.
         self._usage_cache = usage_cache
-        # Quota watchdog (Allen 09-17): evaluates each cache refresh and each
-        # PROVIDER_USAGE_LIMIT turn, and tells the owner through Squire.  It
-        # exists only with the cache -- no readings, nothing to watch.
+        # Quota watchdog (Allen 09-17): one bus consumer under biz/hooks/quota
+        # evaluates each ``usage.refreshed`` and each usage-limit ``turn.failed``
+        # (unified hooks H4), and tells the owner through Squire.  It exists
+        # only with the cache -- no readings, nothing to watch.
         self._quota_watchdog: QuotaWatchdog | None = None
+        self._quota_hook_consumer_factory = quota_hook_consumer_factory
         if usage_cache is not None:
             if quota_evaluator_factory is None:
                 self._log(
@@ -794,7 +827,6 @@ class DaemonApplication(
                             on_alert=quota_deps.on_alert,
                             evaluator=evaluator,
                         ))
-                        usage_cache.set_refresh_observer(self._on_usage_refreshed)
                 except (OSError, ValueError) as error:
                     # An unreadable state file disables the watchdog loudly; it
                     # never blocks the daemon from starting.
@@ -858,7 +890,8 @@ class DaemonApplication(
         routine_text_loader: RoutineTextLoader,
         routine_template_renderer: RoutineTemplateRenderer,
         quota_evaluator_factory: QuotaEvaluatorFactory | None = None,
-        hook_consumers: Mapping[str, Any] | None = None,
+        quota_hook_consumer_factory: QuotaHookConsumerFactory | None = None,
+        hook_consumers: HookConsumersFactory | None = None,
     ) -> DaemonApplication:
         node_id = resolve_node_id()
         zenoh_listen = _endpoint_list("HYPRIAL_ZENOH_LISTEN")
@@ -890,6 +923,7 @@ class DaemonApplication(
             # only consumes the injected usage collection port.
             usage_cache=None if isolated else usage_factory(),
             quota_evaluator_factory=quota_evaluator_factory,
+            quota_hook_consumer_factory=quota_hook_consumer_factory,
             hook_consumers=hook_consumers,
             routine_runtime_factory=routine_runtime_factory,
             routine_text_loader=routine_text_loader,

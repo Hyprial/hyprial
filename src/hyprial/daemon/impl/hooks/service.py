@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -19,16 +19,22 @@ from hyprial.daemon.impl.harnesses.turn_delivery.turn.turn_ports import (
     TurnDeliveryProjection,
 )
 from hyprial.kernel import (
+    DEFAULT_LANE_QUEUE,
     HookBus,
     HookEvent,
     HookRegistration,
     HooksConfig,
     LaneProjection,
+    ObserverHook,
     turn_event_payload,
+    usage_refreshed_payload,
 )
 
 
 _TURN_EVENTS = ("turn.started", "turn.completed", "turn.failed")
+_DELIVERY_EVENTS = ("delivery.prepared", "delivery.dispatched", "delivery.settled")
+_ROUTED_EVENTS = (*_TURN_EVENTS, *_DELIVERY_EVENTS)
+USAGE_REFRESHED_EVENT = "usage.refreshed"
 HOOK_CONFIG_REFRESH_SECONDS = 1.0
 HOOK_CONFIG_REFRESH_CAPACITY = 64
 HOOK_CONFIG_ERROR_LOG_INTERVAL_SECONDS = 60.0
@@ -40,7 +46,18 @@ class HookConsumer(Protocol):
 
 
 HandlerNotifier = Callable[..., None]
-TurnCompletedObserver = Callable[..., None]
+
+
+class ConfigPending:
+    """Sentinel: this agent's hooks.json has not finished its first load."""
+
+
+CONFIG_PENDING = ConfigPending()
+
+
+def _frozen_union(current: frozenset[str], added: Iterable[str]) -> frozenset[str]:
+    merged = current | frozenset(added)
+    return current if merged == current else merged
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,17 +146,40 @@ class DaemonHookService:
         self._config_lock = threading.Lock()
         self._handler_lane_lock = threading.Lock()
         self._handler_lane_registered = False
+        self._daemon_consumer_events: frozenset[str] = frozenset()
         for name, consumer in sorted(self._consumers.items()):
             bus.register(
                 f"consumer:{name}",
                 _ConsumerLane(self, name, consumer),
-                _TURN_EVENTS,
+                _ROUTED_EVENTS,
             )
+
+    def register_consumer(
+        self,
+        name: str,
+        observer: ObserverHook,
+        events: Iterable[str],
+        *,
+        queue: int = DEFAULT_LANE_QUEUE,
+    ) -> None:
+        """Register a daemon-level consumer lane (design §3).
+
+        Unlike ``consumers`` entries, a daemon-level consumer is not gated by
+        any agent's hooks.json: its events publish for every actor (the quota
+        watchdog must hear every usage-limit turn, exactly as its deleted
+        callbacks did).  Registration belongs to startup composition, before
+        the first turn or refresh can publish.
+        """
+
+        self._bus.register(name, observer, events, queue=queue)
+        self._daemon_consumer_events = _frozen_union(
+            self._daemon_consumer_events, events
+        )
 
     def observe_started(
         self, delivery: TurnDeliveryProjection, *, started_at_ms: int
     ) -> None:
-        if delivery.hook_request or not self._has_route(
+        if delivery.hook_request or not self._publishes(
             delivery.recipient, "turn.started"
         ):
             return
@@ -175,7 +215,7 @@ class DaemonHookService:
             return
         completed = result.status is HarnessResultStatus.COMPLETED
         event = "turn.completed" if completed else "turn.failed"
-        if not self._has_route(delivery.recipient, event):
+        if not self._publishes(delivery.recipient, event):
             return
         self._publish(
             event=event,
@@ -199,6 +239,81 @@ class DaemonHookService:
                 fidelity="inferred" if tool_names else "observed",
             ),
             emitted_at_ms=ended_at_ms,
+        )
+
+    def observe_delivery(
+        self, *, event: str, actor: str, payload: Mapping[str, Any]
+    ) -> None:
+        """Publish one ``delivery.*`` fact when the actor routed it."""
+
+        if event not in _DELIVERY_EVENTS:
+            raise ValueError(f"not a delivery event: {event!r}")
+        if not self._has_route(actor, event):
+            return
+        self._publish(
+            event=event,
+            actor=actor,
+            payload=payload,
+            emitted_at_ms=self._clock_ms(),
+            source="daemon.delivery",
+        )
+
+    def intercept_registration(
+        self, actor: str
+    ) -> HookRegistration | ConfigPending | None:
+        """The actor's ``delivery.prepared`` intercept entry, if any.
+
+        Returns :data:`CONFIG_PENDING` until the first configuration load for
+        this actor completes, so a delivery pump can hold the head briefly
+        instead of racing past an intercept that is still being read.  After
+        that first load the cached value answers (stale up to the refresh
+        interval), and a missing or invalid config means no intercept.
+        """
+
+        config = self._configuration(actor)
+        if config is None:
+            # The first load may land between the cache miss above and this
+            # check; use what it cached instead of calling the race "absent".
+            with self._config_lock:
+                cached = self._configs.get(actor)
+            if cached is None:
+                return CONFIG_PENDING
+            config = cached.config
+            if config is None:
+                return None
+        for registration in config.hooks:
+            if (
+                registration.mode == "intercept"
+                and "delivery.prepared" in registration.events
+            ):
+                return registration
+        return None
+
+    def sequence(self) -> int:
+        """Reserve the next event sequence number for an external emitter."""
+
+        with self._sequence_lock:
+            value = self._sequence
+            self._sequence += 1
+            return value
+
+    def clock_ms(self) -> int:
+        return self._clock_ms()
+
+    def observe_usage_refreshed(self) -> None:
+        """Emit ``usage.refreshed`` (design §4): the usage cache refreshed.
+
+        Runs as the cache's refresh observer.  The event is actor-less (the
+        readings belong to the daemon's own accounts), so per-agent
+        registrations never match it -- only daemon-level consumer lanes see
+        it.
+        """
+
+        self._publish(
+            event=USAGE_REFRESHED_EVENT,
+            actor=None,
+            payload=usage_refreshed_payload(),
+            emitted_at_ms=self._clock_ms(),
         )
 
     def registrations(self, event: HookEvent) -> tuple[HookRegistration, ...]:
@@ -227,6 +342,13 @@ class DaemonHookService:
             self._ensure_handler_lane()
         return bool(registrations)
 
+    def _publishes(self, actor: str, event: str) -> bool:
+        """A per-agent hooks.json route OR a daemon-level consumer lane."""
+
+        if event in self._daemon_consumer_events:
+            return True
+        return self._has_route(actor, event)
+
     def _ensure_handler_lane(self) -> None:
         with self._handler_lane_lock:
             if self._handler_lane_registered:
@@ -235,7 +357,7 @@ class DaemonHookService:
                 self._bus.register(
                     "agent-handlers",
                     _HandlerLane(self),
-                    _TURN_EVENTS,
+                    _ROUTED_EVENTS,
                 )
             except RuntimeError:
                 # Shutdown may close the bus while a final turn settles. Hook
@@ -253,17 +375,15 @@ class DaemonHookService:
         actor: str,
         payload: Mapping[str, Any],
         emitted_at_ms: int,
+        source: str = "daemon.turns",
     ) -> None:
-        with self._sequence_lock:
-            sequence = self._sequence
-            self._sequence += 1
         self._bus.publish(
             HookEvent(
                 event=event,
                 kind="observe",
                 emitted_at_ms=emitted_at_ms,
-                seq=sequence,
-                source="daemon.turns",
+                seq=self.sequence(),
+                source=source,
                 actor=actor,
                 payload=payload,
             )
@@ -513,13 +633,16 @@ class DaemonHookService:
             )
 
 
-class CombinedTurnObserver:
-    """Keep the H1 bus additive while the legacy recap service stays in place."""
+class TurnObserver:
+    """The turn-event surface the runtime dispatches to (duck-typed).
 
-    def __init__(
-        self, legacy: TurnCompletedObserver, hooks: DaemonHookService
-    ) -> None:
-        self._legacy = legacy
+    ``turn_io`` calls the completed-turn observer as a callable and looks up
+    ``turn_started`` on it for ``TurnStarted`` events, so one object routes
+    both to :class:`DaemonHookService` (unified-hooks H2: the legacy v1 leg
+    is gone, the routing shape stays).
+    """
+
+    def __init__(self, hooks: DaemonHookService) -> None:
         self._hooks = hooks
 
     def __call__(
@@ -529,15 +652,8 @@ class CombinedTurnObserver:
         *,
         started_at_ms: int,
         ended_at_ms: int,
-        tool_names: tuple[str, ...],
+        tool_names: tuple[str, ...] = (),
     ) -> None:
-        self._legacy(
-            delivery,
-            result,
-            started_at_ms=started_at_ms,
-            ended_at_ms=ended_at_ms,
-            tool_names=tool_names,
-        )
         self._hooks.observe_turn(
             delivery,
             result,
@@ -553,10 +669,13 @@ class CombinedTurnObserver:
 
 
 __all__ = [
+    "CONFIG_PENDING",
     "HOOK_CONFIG_ERROR_TRACKING_CAPACITY",
     "HOOK_CONFIG_ERROR_LOG_INTERVAL_SECONDS",
     "HOOK_CONFIG_REFRESH_CAPACITY",
     "HOOK_CONFIG_REFRESH_SECONDS",
-    "CombinedTurnObserver",
+    "ConfigPending",
+    "USAGE_REFRESHED_EVENT",
     "DaemonHookService",
+    "TurnObserver",
 ]

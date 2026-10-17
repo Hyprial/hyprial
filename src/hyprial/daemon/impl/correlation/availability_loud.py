@@ -35,6 +35,7 @@ gate.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
@@ -64,6 +65,15 @@ _NOTICE_NAMESPACE = uuid5(NAMESPACE_URL, "hyprial://provider-availability-loud")
 NOTICE_KIND_UNAVAILABLE = "provider-unavailable"
 NOTICE_KIND_NO_PROGRESS = "provider-no-progress"
 
+#: Operator override for the T1 no-progress/steer deadline, in seconds.  Unset
+#: keeps the per-harness observed-P95 table above (pi = 480s by default); a
+#: positive value applies to every harness, so an operator can shorten the
+#: window in which a queued delivery is first steered (and, failing that,
+#: reported).  ``0`` is refused: a zero deadline would judge every attempt
+#: immediately.  A malformed value fails loudly at the call site rather than
+#: silently resurrecting the default the operator tried to change.
+T1_BUDGET_ENV = "HYPRIAL_T1_BUDGET_SECONDS"
+
 
 #: Requester URI schemes that address a person, not an agent: a chat adapter
 #: (``adapter:lark:…``), a named route into a chat (``route:…``) or a user.
@@ -84,8 +94,25 @@ def is_human_facing_requester(recipient: str) -> bool:
 
 
 def no_progress_budget_seconds(harness: str | None) -> int:
-    """Reporting deadline for one harness; unknown harnesses get the maximum."""
+    """Reporting deadline for one harness; unknown harnesses get the maximum.
 
+    ``HYPRIAL_T1_BUDGET_SECONDS`` overrides the whole table when set, so the
+    T1 deadline is configurable without a code change; unset keeps the data.
+    """
+
+    raw = os.environ.get(T1_BUDGET_ENV)
+    if raw is not None and raw.strip():
+        try:
+            override = int(float(raw))
+        except ValueError as error:
+            raise ValueError(
+                f"{T1_BUDGET_ENV} must be a number, got {raw!r}"
+            ) from error
+        if override <= 0:
+            raise ValueError(
+                f"{T1_BUDGET_ENV} must be positive, got {raw!r}"
+            )
+        return override
     if harness is None:
         return DEFAULT_NO_PROGRESS_BUDGET_SECONDS
     return NO_PROGRESS_BUDGET_SECONDS.get(harness, DEFAULT_NO_PROGRESS_BUDGET_SECONDS)

@@ -5,6 +5,8 @@ from hyprial.daemon.impl.harnesses.codex.app_server import (
     APP_SERVER_STARTUP_TIMEOUT_SECONDS_DEFAULT,
     THREAD_START_TIMEOUT_SECONDS_DEFAULT,
     CodexInteractiveAppServer,
+    CodexInteractiveResumeError,
+    CodexInteractiveResumePending,
 )
 from hyprial.daemon.impl.harnesses.codex.carrier import (
     MANAGED_TURN_IDLE_TIMEOUT_SECONDS,
@@ -28,6 +30,9 @@ from hyprial.daemon.impl.harnesses.codex.native_env import (
     prepare_codex_runtime_context,
     prepare_codex_runtime_roots,
     verify_codex_native_projection,
+)
+from hyprial.daemon.impl.harnesses.codex.projection import (
+    resolve_codex_p2_resume_model,
 )
 from hyprial.daemon.impl.harnesses.codex.process import (
     PROCESS_FORCE_JOIN_SECONDS,
@@ -58,6 +63,8 @@ __all__ = [
     "CodexExecutableResolutionError",
     "CodexConnector",
     "CodexInteractiveAppServer",
+    "CodexInteractiveResumeError",
+    "CodexInteractiveResumePending",
     "CodexInteractiveCarrier",
     "CodexInteractiveTurnClient",
     "CodexNativeLoadEvidence",
@@ -82,6 +89,7 @@ __all__ = [
     "_worker_channel_config",
     "prepare_codex_runtime_context",
     "prepare_codex_runtime_roots",
+    "resolve_codex_p2_resume_model",
     "resolve_codex_executable",
     "verify_codex_native_projection",
 ]

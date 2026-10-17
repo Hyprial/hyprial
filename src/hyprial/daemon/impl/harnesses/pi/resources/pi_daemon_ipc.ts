@@ -39,6 +39,21 @@ export interface WorkerIdentity {
 
 export type DaemonResult = Record<string, unknown>;
 
+/** Keep the daemon's structured custody/failure receipt across the JS boundary.
+ * The CODE: prefix remains stable for carrier session-fence classification.
+ */
+export class DaemonIpcError extends Error {
+  readonly code: string;
+  readonly data: unknown;
+
+  constructor(code: string, message: string, data?: unknown) {
+    super(`${code}: ${message}`);
+    this.name = "DaemonIpcError";
+    this.code = code;
+    this.data = data;
+  }
+}
+
 export interface ProcessBirthIdentityOptions {
   platform?: string;
   readPs?: (pid: number) => string | null;
@@ -172,7 +187,7 @@ export function callDaemon(
         const envelope = failure as Record<string, unknown>;
         const code = String(envelope.code ?? "DAEMON_ERROR");
         const message = String(envelope.message ?? "daemon request failed");
-        finish(() => reject(new Error(`${code}: ${message}`)));
+        finish(() => reject(new DaemonIpcError(code, message, envelope.data)));
         return;
       }
       const result = document.result;

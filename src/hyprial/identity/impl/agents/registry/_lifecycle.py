@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 
 from ._base import (
     Agent,
+    AgentLifecycleFenceUnsupported,
     AgentHomeReservation,
     _is_compensating_attempt,
 )
@@ -44,6 +45,12 @@ class _RegistryLifecycleMixin:
         if not isinstance(request, LifecycleMutationRequest):
             raise TypeError("request must be LifecycleMutationRequest")
         payload = request.payload
+        if request.expected_entity_token is not None and not isinstance(
+            payload, (BindAgentCommand, ReleaseAgentCommand)
+        ):
+            raise AgentLifecycleFenceUnsupported(
+                "Agent lifecycle creation/destruction does not support incarnation fence"
+            )
         if self._home is not None and isinstance(
             payload, (CreateAgentCommand, DestroyAgentCommand)
         ):
@@ -78,6 +85,11 @@ class _RegistryLifecycleMixin:
         else:
             raise TypeError(f"unsupported Agent lifecycle payload: {type(payload).__name__}")
         with self._home_transaction() as home_attempts:
+            if request.expected_entity_token is not None:
+                from .config_binding import AgentIncarnationMismatch
+                current = self.get(payload.actor)
+                if current is None or current.entity_token != request.expected_entity_token:
+                    raise AgentIncarnationMismatch("agent incarnation changed before lifecycle mutation")
             prior = self._db.execute(
                 "SELECT * FROM lifecycle_receipts WHERE attempt_token = ?",
                 (request.attempt_token,),
@@ -88,6 +100,7 @@ class _RegistryLifecycleMixin:
                     or prior["resource_key"] != key
                     or prior["expected_resource_token"]
                     != request.expected_resource_token
+                    or prior["expected_entity_token"] != request.expected_entity_token
                 ):
                     raise ValueError("lifecycle attempt token was reused")
                 return (
@@ -242,7 +255,7 @@ class _RegistryLifecycleMixin:
                 (key, token, int(active), json.dumps(stored_payload, sort_keys=True)),
             )
             self._db.execute(
-                "INSERT INTO lifecycle_receipts VALUES(?, ?, ?, ?, ?, ?, ?, 0)",
+                "INSERT INTO lifecycle_receipts VALUES(?, ?, ?, ?, ?, ?, ?, 0, ?)",
                 (
                     request.attempt_token,
                     request.operation_id,
@@ -251,6 +264,7 @@ class _RegistryLifecycleMixin:
                     int(created),
                     int(changed),
                     token,
+                    request.expected_entity_token,
                 ),
             )
             return MutationProvenance(created, changed, token), operation, False
@@ -266,6 +280,10 @@ class _RegistryLifecycleMixin:
         assert isinstance(request, LifecycleMutationRequest)
         payload = request.payload
         assert isinstance(payload, (CreateAgentCommand, DestroyAgentCommand))
+        if request.expected_entity_token is not None:
+            raise AgentLifecycleFenceUnsupported(
+                "Agent home lifecycle does not support incarnation fence"
+            )
         operation = "create" if isinstance(payload, CreateAgentCommand) else "destroy"
         name = (
             self.native_actor(payload.name)
@@ -360,7 +378,7 @@ class _RegistryLifecycleMixin:
                     (key, token, int(actual_active), json.dumps(stored_payload, sort_keys=True)),
                 )
                 self._db.execute(
-                    "INSERT INTO lifecycle_receipts VALUES(?, ?, ?, ?, ?, ?, ?, 0)",
+                    "INSERT INTO lifecycle_receipts VALUES(?, ?, ?, ?, ?, ?, ?, 0, NULL)",
                     (
                         request.attempt_token, request.operation_id, key, expected,
                         0, 0, token,
@@ -625,7 +643,7 @@ class _RegistryLifecycleMixin:
                 (key, token, int(operation == "create"), json.dumps(payload, sort_keys=True)),
             )
             self._db.execute(
-                "INSERT INTO lifecycle_receipts VALUES(?, ?, ?, ?, ?, 1, ?, 0)",
+                "INSERT INTO lifecycle_receipts VALUES(?, ?, ?, ?, ?, 1, ?, 0, NULL)",
                 (
                     attempt,
                     operation_id,

@@ -8,46 +8,7 @@ import typer
 from hyprial.kernel import DurationParseError, ipc_errors, parse_duration
 from hyprial.shell.impl.cli.commands.common.services import get_services
 
-from hyprial.shell.impl.cli.commands.agent.admin import agent_app, agent_keep_app
-
-
-@agent_keep_app.command("add")
-def agent_keep_add(
-    name: str = typer.Argument(..., help="Agent name to protect."),
-    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
-) -> None:
-    """Add an agent to the inactivity keep-list, idempotently."""
-    services = get_services()
-
-    services._execute(
-        lambda: services._daemon_request("agent.keep.add", {"name": name}),
-        json_output=json_output,
-    )
-
-@agent_keep_app.command("remove")
-def agent_keep_remove(
-    name: str = typer.Argument(..., help="Agent name to unprotect."),
-    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
-) -> None:
-    """Remove an agent from the inactivity keep-list, idempotently."""
-    services = get_services()
-
-    services._execute(
-        lambda: services._daemon_request("agent.keep.remove", {"name": name}),
-        json_output=json_output,
-    )
-
-@agent_keep_app.command("list")
-def agent_keep_list(
-    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
-) -> None:
-    """List agents protected from inactivity reports."""
-    services = get_services()
-
-    services._execute(
-        lambda: services._daemon_request("agent.keep.list"),
-        json_output=json_output,
-    )
+from hyprial.shell.impl.cli.commands.agent.admin import agent_app
 
 @agent_app.command("restore-policy")
 def agent_restore_policy(

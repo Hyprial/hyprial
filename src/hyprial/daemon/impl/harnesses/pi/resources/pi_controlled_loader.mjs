@@ -332,9 +332,10 @@ export async function createControlledPiResourceLoader(rawOptions) {
   return { loader, receipt, receiptForSystemPrompt, settingsManager, sdk, options };
 }
 
-async function openOrCreateSession(sdk, cwd, sessionRoot, sessionId) {
+async function openOrCreateSession(sdk, cwd, sessionRoot, sessionId, requireExisting) {
   const existing = (await sdk.SessionManager.list(cwd, sessionRoot)).find((session) => session.id === sessionId);
   if (existing) return sdk.SessionManager.open(existing.path, sessionRoot);
+  if (requireExisting) fail(`Pi session not found: ${sessionId}`);
   return sdk.SessionManager.create(cwd, sessionRoot, { id: sessionId });
 }
 
@@ -370,6 +371,7 @@ function registerModelDefinitions(modelRuntime, modelDefinitions) {
 async function createControlledRuntime(rawOptions) {
   const sessionRoot = canonicalDirectory(rawOptions.sessionRoot, "sessionRoot");
   const sessionId = requireString(rawOptions.sessionId, "sessionId");
+  const requireExistingSession = rawOptions.requireExistingSession === true;
   const receiptPath = requireString(rawOptions.receiptPath, "receiptPath");
   const modelProvider = optionalString(rawOptions.modelProvider, "modelProvider");
   const modelId = optionalString(rawOptions.model, "model");
@@ -427,6 +429,7 @@ async function createControlledRuntime(rawOptions) {
     options.cwd,
     sessionRoot,
     sessionId,
+    requireExistingSession,
   );
   return sdk.createAgentSessionRuntime(createRuntime, {
     cwd: options.cwd,

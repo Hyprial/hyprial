@@ -235,6 +235,7 @@ class _StepEffects(LifecycleProcessManager):
                 receipt.correlation_id, receipt.attempt_token, operation_id,
                 self._store.forward_resource_token(operation_id, step.name),
                 payload,
+                expected_entity_token=step.spec.expected_entity_token,
             )
             try:
                 settled = self._ports.harness.fail_lifecycle(
@@ -352,6 +353,7 @@ class _StepEffects(LifecycleProcessManager):
             request = LifecycleMutationRequest(
                 receipt.correlation_id, receipt.attempt_token, operation_id,
                 None, payload,
+                expected_entity_token=step.spec.expected_entity_token,
             )
             try:
                 settled = self._ports.harness.fail_lifecycle(

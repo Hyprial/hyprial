@@ -20,17 +20,29 @@ from hyprial.identity import org_space_name
 __all__ = [
     "BOOTSTRAP_PEERS_RELPATH",
     "LEFT_ORGS_RELPATH",
+    "ORG_ACL_GRANTS_RELPATH",
     "add_bootstrap_peer",
     "add_left_org",
+    "add_org_acl_grant",
     "clear_left_org",
     "left_orgs_path",
+    "org_acl_grants_path",
     "read_bootstrap_peers",
     "read_left_orgs",
+    "read_org_acl_grants",
     "remove_bootstrap_peers",
+    "remove_org_acl_grant",
 ]
 
 #: JSON array of org names, relative to the daemon's home.
 LEFT_ORGS_RELPATH = "state/tailcat/left-orgs.json"
+
+#: Owner-node ACL entry authorizations (design-org-orgfs-usage §8.3):
+#: ``{org: {agent URI: {"grantedAtMs": int, "untilMs": int | null}}}``.
+#: Local by design — the entry gate runs only on the owner node, so the
+#: grants never enter orgfs and never synchronize.  They are org state,
+#: not tailcat state, so they live under ``state/org/``.
+ORG_ACL_GRANTS_RELPATH = "state/org/org-acl-grants.json"
 
 #: JSON object ``owner/deviceId -> {"inviter", "deviceId", ...}``: peers the
 #: directory does not name yet but an executed invite link authorizes this
@@ -198,3 +210,95 @@ def remove_bootstrap_peers(home: Path, peers_to_remove: Iterable[str]) -> list[s
         del peers[peer]
     _write_bootstrap_peers(home, peers)
     return sorted(removed)
+
+
+def org_acl_grants_path(home: Path) -> Path:
+    return Path(home) / ORG_ACL_GRANTS_RELPATH
+
+
+def read_org_acl_grants(
+    home: Path, *, now_ms: int | None = None
+) -> dict[str, dict[str, dict[str, int | None]]]:
+    """Live ACL entry grants per org; expired entries never come back.
+
+    # LAX(tailnet-cutover): a corrupt file is treated as empty rather than
+    # failing loudly; the proper shape is a typed state record with a
+    # schema version, like the other files under ``state/tailcat/``.
+    """
+
+    try:
+        raw = org_acl_grants_path(home).read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return {}
+    if not isinstance(value, dict):
+        return {}
+    grants: dict[str, dict[str, dict[str, int | None]]] = {}
+    for org, agents in value.items():
+        if not isinstance(org, str) or not isinstance(agents, dict):
+            continue
+        live: dict[str, dict[str, int | None]] = {}
+        for agent, entry in agents.items():
+            if not isinstance(agent, str) or not isinstance(entry, dict):
+                continue
+            granted_at = entry.get("grantedAtMs")
+            until = entry.get("untilMs")
+            if isinstance(granted_at, bool) or not isinstance(granted_at, int):
+                continue
+            if until is not None and (
+                isinstance(until, bool) or not isinstance(until, int)
+            ):
+                continue
+            if now_ms is not None and until is not None and until <= now_ms:
+                continue
+            live[agent] = {"grantedAtMs": granted_at, "untilMs": until}
+        if live:
+            grants[org] = live
+    return grants
+
+
+def add_org_acl_grant(
+    home: Path,
+    org: str,
+    agent: str,
+    *,
+    granted_at_ms: int,
+    until_ms: int | None = None,
+) -> dict[str, int | None]:
+    """Record (or re-stamp) one agent's ACL entry grant and return the entry."""
+
+    org_space_name(org)  # the same name rule as every org-taking entry point
+    grants = read_org_acl_grants(home, now_ms=granted_at_ms)
+    entry: dict[str, int | None] = {
+        "grantedAtMs": granted_at_ms,
+        "untilMs": until_ms,
+    }
+    grants.setdefault(org, {})[agent] = entry
+    _write_org_acl_grants(home, grants)
+    return entry
+
+
+def remove_org_acl_grant(home: Path, org: str, agent: str) -> bool:
+    """Forget one agent's ACL entry grant; False when nothing was recorded."""
+
+    grants = read_org_acl_grants(home)
+    if agent not in grants.get(org, {}):
+        return False
+    del grants[org][agent]
+    if not grants[org]:
+        del grants[org]
+    _write_org_acl_grants(home, grants)
+    return True
+
+
+def _write_org_acl_grants(
+    home: Path, grants: dict[str, dict[str, dict[str, int | None]]]
+) -> None:
+    path = org_acl_grants_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(grants, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(temporary, path)

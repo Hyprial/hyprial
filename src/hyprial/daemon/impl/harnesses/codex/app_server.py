@@ -31,6 +31,7 @@ from hyprial.identity import (
 from hyprial.daemon.impl.harnesses.codex.native_env import (
     CodexAgentHomeError,
     CodexNativeLoadEvidence,
+    _thread_config,
     _validate_codex_native_load,
     prepare_codex_runtime_roots,
 )
@@ -75,6 +76,18 @@ APP_SERVER_STARTUP_TIMEOUT_SECONDS_DEFAULT = (
     + THREAD_START_TIMEOUT_SECONDS_DEFAULT
     + APP_SERVER_STARTUP_MARGIN_SECONDS
 )
+
+
+class CodexInteractiveResumeError(RuntimeError):
+    """A stable interactive-resume failure that the CLI can report verbatim."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+class CodexInteractiveResumePending(RuntimeError):
+    """A transient TUI attachment observation within the launch deadline."""
 
 class CodexInteractiveAppServer:
     """Own one external Codex app-server plus its launch-time TUI probe.
@@ -329,6 +342,161 @@ class CodexInteractiveAppServer:
         raise ConnectionError(
             "Codex interactive TUI thread was not discoverable through "
             "thread/list, loaded/list, or thread/read"
+        )
+
+    def resume_thread(
+        self,
+        thread_id: str,
+        *,
+        runtime_args: tuple[str, ...] = (),
+        model: str | None = None,
+    ) -> tuple[str, str]:
+        """Resume exactly ``thread_id`` and verify its durable history."""
+
+        execution = _thread_execution_params(runtime_args)
+        if model is not None:
+            execution["model"] = model
+        params: dict[str, object] = {
+            "threadId": thread_id,
+            "cwd": str(self.cwd.resolve()),
+            **execution,
+        }
+        config = _thread_config(
+            self.cwd,
+            execution,
+            None,
+            managed_environment=self._native_root is not None,
+        )
+        if config:
+            params["config"] = config
+        try:
+            result = self.request("thread/resume", params)
+        except CodexAppServerRpcError as error:
+            raise self._resume_error(error, thread_id=thread_id) from error
+        except (ConnectionError, TimeoutError) as error:
+            raise self._resume_rpc_failure(
+                error, thread_id=thread_id, phase="resume RPC"
+            ) from error
+        self._validate_resumed_thread(
+            result,
+            thread_id=thread_id,
+            phase="resume RPC",
+            require_direct_input=False,
+        )
+        self._discovered_thread_id = thread_id
+        try:
+            read = self.request(
+                "thread/read", {"threadId": thread_id, "includeTurns": True}
+            )
+        except CodexAppServerRpcError as error:
+            raise self._resume_error(error, thread_id=thread_id) from error
+        except (ConnectionError, TimeoutError) as error:
+            raise self._resume_rpc_failure(
+                error, thread_id=thread_id, phase="history verification"
+            ) from error
+        self._validate_resumed_thread(
+            read,
+            thread_id=thread_id,
+            phase="history verification",
+            require_direct_input=False,
+        )
+        return thread_id, "thread/resume + thread/read"
+
+    def confirm_resumed_thread(self, thread_id: str) -> tuple[str, str]:
+        """Confirm that the remote TUI exposes the requested thread at new cwd."""
+
+        try:
+            result = self.request(
+                "thread/read", {"threadId": thread_id, "includeTurns": True}
+            )
+        except (ConnectionError, TimeoutError, CodexAppServerRpcError) as error:
+            raise CodexInteractiveResumePending(
+                f"Codex TUI attachment is not readable yet for {thread_id!r}: {error}"
+            ) from error
+        self._validate_resumed_thread(
+            result,
+            thread_id=thread_id,
+            phase="TUI attachment",
+            require_direct_input=True,
+        )
+        return thread_id, "requested thread/read"
+
+    def _validate_resumed_thread(
+        self,
+        result: object,
+        *,
+        thread_id: str,
+        phase: str,
+        require_direct_input: bool,
+    ) -> dict[str, object]:
+        failure_code = (
+            "CODEX_RESUME_TUI_ATTACH_FAILED"
+            if phase == "TUI attachment"
+            else "CODEX_RESUME_RPC_FAILED"
+        )
+        thread = result.get("thread") if isinstance(result, dict) else None
+        if not isinstance(thread, dict):
+            raise CodexInteractiveResumeError(
+                failure_code,
+                f"Codex {phase} returned no thread object for {thread_id!r}",
+            )
+        actual = thread.get("id")
+        actual_cwd = thread.get("cwd")
+        expected_cwd = str(self.cwd.resolve())
+        if actual != thread_id or actual_cwd != expected_cwd:
+            raise CodexInteractiveResumeError(
+                failure_code,
+                f"Codex {phase} returned thread {actual!r} at cwd {actual_cwd!r}; "
+                f"expected {thread_id!r} at {expected_cwd!r}",
+            )
+        if not isinstance(thread.get("turns"), list):
+            raise CodexInteractiveResumeError(
+                failure_code,
+                f"Codex {phase} did not return readable history for {thread_id!r}",
+            )
+        if require_direct_input and thread.get("canAcceptDirectInput") is not True:
+            raise CodexInteractiveResumePending(
+                f"Codex TUI did not expose requested thread {thread_id!r} for input"
+            )
+        return thread
+
+    @staticmethod
+    def _resume_rpc_failure(
+        error: BaseException, *, thread_id: str, phase: str
+    ) -> CodexInteractiveResumeError:
+        return CodexInteractiveResumeError(
+            "CODEX_RESUME_RPC_FAILED",
+            f"Codex {phase} failed for requested thread {thread_id!r}: {error}",
+        )
+
+    @staticmethod
+    def _resume_error(
+        error: CodexAppServerRpcError, *, thread_id: str
+    ) -> CodexInteractiveResumeError:
+        detail = str(error)
+        normalized = detail.lower()
+        if any(
+            marker in normalized
+            for marker in (
+                "outside",
+                "not under",
+                "permission denied",
+                "unauthorized",
+                "session root",
+                "home scope",
+            )
+        ):
+            code = "CODEX_RESUME_OUTSIDE_SCOPE"
+        elif any(
+            marker in normalized
+            for marker in ("no rollout found", "not found", "unknown thread")
+        ):
+            code = "CODEX_RESUME_THREAD_UNKNOWN"
+        else:
+            code = "CODEX_RESUME_RPC_FAILED"
+        return CodexInteractiveResumeError(
+            code,
+            f"Codex could not resume requested thread {thread_id!r}: {detail}",
         )
 
     def start_turn(self, prompt: str) -> str:

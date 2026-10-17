@@ -71,6 +71,27 @@ def register_hidden_session_commands(app, get_dependencies):
         _execute(operation, json_output=json_output)
 
 
+    @app.command("transfer-recipient-key", hidden=True)
+    def transfer_recipient_key(
+        json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+    ) -> None:
+        """This machine's credential-envelope public key (minted on first use).
+
+        The source machine calls this over SSH before sealing a bundle's
+        credentials: only the public half leaves the machine.  The private
+        half stays in the daemon's own home and is what the landing uses to
+        open the sealed envelope.
+        """
+
+        dependencies = get_dependencies()
+        _execute = dependencies.execute
+
+        _execute(
+            lambda: dependencies.daemon_request("transfer.recipientKey", {}),
+            json_output=json_output,
+        )
+
+
     @app.command("transfer-cred-stage", hidden=True)
     def transfer_cred_stage(
         name: str = typer.Option(..., "--name"),
@@ -212,6 +233,7 @@ def register_hidden_session_commands(app, get_dependencies):
     return {
         "transfer_precheck": transfer_precheck,
         "transfer_receive": transfer_receive,
+        "transfer_recipient_key": transfer_recipient_key,
         "transfer_cred_stage": transfer_cred_stage,
         "transfer_container_home": transfer_container_home,
         "transfer_session_path": transfer_session_path,

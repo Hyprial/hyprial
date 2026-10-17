@@ -28,8 +28,10 @@ from hyprial.identity.impl.agents.actor.ports import ReleaseAgentRuntimeLaunchCo
 from hyprial.identity.impl.agents.actor.ports import ReserveAgentDestroyCommand
 from hyprial.identity.impl.agents.actor.ports import SettleAgentDestroyCommand
 from hyprial.identity.impl.agents.actor.ports import UnpinAgentAdapterCommand
+from hyprial.identity.impl.agents.actor.ports import BindAgentConfigCommand
 from hyprial.identity.impl.agents.actor.ports import UpdateAgentCommand
 from hyprial.kernel import ipc_errors
+from hyprial.identity.impl.agents.registry.config_binding import agent_config_digest
 
 from ._base import (
     AgentLaunchInProgress,
@@ -321,6 +323,17 @@ class _GenerationOpsMixin:
             operation="destroy",
             changed=changed,
             version=version,
+        )
+    def _bind_agent_config(self, command: BindAgentConfigCommand) -> None:
+        agent = self.registry.bind_agent_config(
+            command.name, expected_entity_token=command.expected_entity_token,
+            config=command.config_payload(),
+            expected_current_config_digest=command.expected_current_config_digest,
+        )
+        changed = agent_config_digest(agent.config) != command.expected_current_config_digest
+        self._completed(
+            command, operation="bind-config", changed=changed,
+            version=self.version.bump() if changed else self.version.read(), agent=agent,
         )
     def _update(self, command: UpdateAgentCommand) -> None:
         existing = self.registry.require(command.name)

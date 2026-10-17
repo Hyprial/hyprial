@@ -225,6 +225,16 @@ class ManagedHarnessRuntime:
     def dispatch(self, name: str, delivery: HarnessDelivery) -> bool:
         return self._facade.dispatch(name, delivery)
 
+    def steer(self, name: str, delivery_id: str, timeout: float = 5.0) -> bool:
+        """Fold a queued delivery into this worker's running turn.
+
+        Returns False when there is no live steerable turn (no process, idle,
+        nothing queued, no native mechanism, transport failure).  The caller
+        treats False as "steer failed" and reports it, never as silence.
+        """
+
+        return self._facade.steer(name, delivery_id, timeout=timeout)
+
     def wait_ready(self, harness: str, name: str, timeout: float) -> bool:
         return self._facade.wait_ready(harness, name, timeout)
 

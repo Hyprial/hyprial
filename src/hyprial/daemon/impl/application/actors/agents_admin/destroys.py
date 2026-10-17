@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from __future__ import annotations
 import hashlib
+import os
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 from uuid import uuid4
@@ -16,6 +17,7 @@ from hyprial.identity import (
     RUNTIME_INTERACTIVE,
     Agent,
     AgentAlreadyRunning,
+    AgentHomeError,
 )
 from hyprial.kernel import ipc_errors
 from hyprial.kernel import DaemonRequestError
@@ -212,7 +214,7 @@ class _AgentDestroyMixin:
                 )
                 self._release_agent_destroy_reservation(reservation.reservation_token)
                 return {"ok": True, "destroyed": False, "reason": reason}
-            workspace = self._agent_session_domains.agent.read_workspace_summary(name)
+            workspace = self._read_workspace_summary_for_destroy(name)
             stopped = self._stop_agent_runtime(actor, keep=None)
             self._drop_persona_route(actor)
             self._release_agent_binding(actor)
@@ -261,7 +263,23 @@ class _AgentDestroyMixin:
                     detail=str(error),
                 )
             raise
-        workspace_deleted = workspace.exists and not Path(workspace.path).exists()
+        if workspace is None:
+            workspace_payload: JsonObject = {
+                "path": str(Path(self.hyprial_home) / "agents" / name),
+                "exists": False,
+                "files": 0,
+                "bytes": 0,
+                "unreadableEntries": 0,
+                "deleted": True,
+                "absent": True,
+            }
+        else:
+            workspace_payload = {
+                **workspace.to_json(),
+                # An existing workspace whose directory is gone was deleted as
+                # part of the completed transfer-out this destroy is finishing.
+                "deleted": workspace.exists and not Path(workspace.path).exists(),
+            }
         self._log(
             "warn",
             "agents",
@@ -282,11 +300,71 @@ class _AgentDestroyMixin:
             "unpinnedAdapters": unpinned,
             "removedRoutines": removed_routines,
             "irreversible": True,
-            "workspace": {
-                **workspace.to_json(),
-                "deleted": workspace_deleted,
-            },
+            "workspace": workspace_payload,
         }
+
+    def _read_workspace_summary_for_destroy(self, name: str) -> Any | None:
+        """Inventory the workspace, tolerating a home a transfer-out removed.
+
+        AT11 (``transfer-bundle-complete``) deletes the source home by identity
+        fence and leaves the registry row for this operation to clear.  Reading
+        the summary *before* deleting the row is what broke that handover: the
+        home was already gone, the fence raised, and the row -- plus its routes,
+        bindings and undelivered messages -- could never be removed, so the
+        source kept advertising a delivery target nobody could answer.
+
+        Only the two "there is no home to inventory" shapes are tolerated, and
+        only for this read: no home was ever provisioned, or the home root is
+        gone.  Every other fence failure (symlink, wrong owner, wrong mode,
+        receipt mismatch) still refuses, and the deletion, route release and
+        message drain below still run under the destroy reservation.
+        """
+
+        try:
+            return self._agent_session_domains.agent.read_workspace_summary(name)
+        except AgentHomeError as error:
+            home = Path(self.hyprial_home) / "agents" / name
+            if not self._home_is_absent(error, home):
+                raise
+            self._log(
+                "warn",
+                "agents",
+                "agent.destroy.workspace_absent",
+                actor=name,
+                phase=error.phase,
+                category=error.category,
+            )
+            return None
+
+    @staticmethod
+    def _home_is_absent(error: AgentHomeError, home: Path) -> bool:
+        """True only when the fence failure *is* the home being gone."""
+
+        if error.category == "not-provisioned" and error.phase == "read-registry":
+            return True
+        if error.category != "io":
+            # unsafe-path / wrong-owner / unsafe-mode / receipt-mismatch keep
+            # refusing: those are live homes this process must not touch.
+            return False
+        if error.phase not in {
+            "validate-home-root",
+            "validate-agents-root",
+            "validate-agent-root",
+        }:
+            return False
+        # ``safe_directory`` reports every ``lstat`` failure as "io", so the
+        # absence has to be confirmed here: only an explicit ENOENT means the
+        # home is gone.  EACCES or ENOTDIR still raise -- answering False hands
+        # the caller back its classified fence failure, so an unreadable path
+        # can never be read as "the home is absent".
+        try:
+            os.lstat(home)
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+        return False
+
 
     def _remove_agent_routines(self, agent: Agent) -> list[str]:
         routines = self._routines_bound_to(agent.uri)

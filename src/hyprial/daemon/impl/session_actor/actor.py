@@ -42,6 +42,8 @@ from hyprial.daemon.impl.operations.session_ports  import (
 )
 from hyprial.daemon.impl.state_persistence  import StateCommandCompleted, StateCostOrigin
 
+from hyprial.daemon.impl.harnesses.runtime.ports import AgentIdentityProjectionPort
+
 from .generation import (
     _SessionGeneration,
 )
@@ -80,6 +82,7 @@ class SessionActor:
         daemon_epoch: str,
         event_sink: object,
         agent_commands: _CommandSubmitter | None = None,
+        agent_identity: AgentIdentityProjectionPort | None = None,
         clock: Callable[[], float] | None = None,
         clock_ms: Callable[[], int] | None = None,
         lease_ttl_seconds: float = CHANNEL_LIVENESS_TTL_SECONDS,
@@ -173,6 +176,7 @@ class SessionActor:
                 acknowledge_persistence=acknowledge_persistence,
                 redeliver_persistence=redeliver_persistence,
                 command_costs=self._command_costs,
+                agent_identity=agent_identity,
                 deferred_persistence=self._deferred_persistence,
                 deferred_capacity=mailbox_capacity,
                 _mutations=self._mutations,

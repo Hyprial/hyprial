@@ -10,7 +10,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
-from hyprial.kernel import HarnessLaunchSpec
+from hyprial.kernel import HarnessLaunchSpec, HookEventPublisher
 from hyprial.daemon.impl.lifecycle_manager import LifecycleOperation
 from hyprial.daemon.impl.pac.actors.coordinator import (
     ActorCoordinator,
@@ -35,6 +35,28 @@ _PAC_RECONCILE_SLOW_MS = 2000
 # the eighth goes to closed cleanup.  The persistent turn makes that guarantee
 # hold even when the queue exposes only one free slot on each resident tick.
 _ACTOR_CLASS_CYCLE = 8
+
+# The actor supply is event-driven: a durable graph change (activate/close,
+# flag/workflow node change, worker lifecycle) wakes exactly the affected
+# actor(s) through the graph authority.  This constant is the *fallback*
+# period of the one periodic safety sweep that catches a missed event.  On
+# 2026-10-13 the every-tick full re-derivation supplied ~119 open-graph actors
+# per second, drove ~107 effect completions/s and saturated the 128-slot
+# authority mailbox (``pac.actor.queue_full``).  A missed event now costs at
+# most this period of lag, at ~1/300th the supplied commands; 300 s matches
+# ``PAC_GC_INTERVAL_SECONDS`` and is bounded further by every later event on
+# the same graph.
+PAC_RECONCILE_FALLBACK_SECONDS = 300.0
+
+# Tier 2 of the fallback supply: an actor whose activation settled at
+# ``desired='up', op='done'`` is *running*, and a running harness process can
+# die without emitting any PAC event (the harness-outcome write is keyed by
+# ``message_id``, and an idle death has none).  This sweep is therefore the
+# only periodic observer for that class, so it is retained -- but on the
+# cheap tier rather than every tick: 30 s is the tier #1431 already used
+# (``_ACTOR_IDLE_REFRESH_TICKS = 30``), i.e. the pre-existing cadence, not a
+# new mechanism.  Today that is 3 nodes, ~0.10 supplied jobs/s.
+PAC_RECONCILE_RUNNING_REFRESH_SECONDS = 30.0
 
 
 class DaemonActorRuntime:
@@ -94,6 +116,8 @@ class DaemonActorRuntime:
         operation_id: str,
         identity_marker: str,
     ) -> RuntimeObservation:
+        if launch.cwd_policy == "create" and launch.cwd is not None:
+            Path(launch.cwd).mkdir(parents=True, exist_ok=True)
         spec = self._launch_spec(actor_name, launch, identity_marker)
         self.application._run_lifecycle_operation(
             LifecycleOperation.create(
@@ -230,6 +254,7 @@ class PacActorService:
         logger: Callable[..., None],
         workers: int = 4,
         graph_authority: GraphClockAuthority | None = None,
+        hook_publisher: HookEventPublisher | None = None,
     ) -> None:
         self.database = default_database_path(state_dir)
         self.reference_root = reference_root
@@ -238,6 +263,7 @@ class PacActorService:
         self.daemon_epoch = daemon_epoch
         self.logger = logger
         self._graph_authority = graph_authority
+        self._hook_publisher = hook_publisher
         self._actor_queue: queue.Queue[tuple[str, str] | None] = queue.Queue(
             maxsize=128
         )
@@ -251,6 +277,14 @@ class PacActorService:
         self._actor_class_turn = 0
         self._clock_scan_offset = 0
         self._actor_queue_saturated = False
+        # Monotonic deadline of the next fallback actor sweep.  0.0 makes the
+        # first cadence after startup a full sweep, which recovers events the
+        # previous daemon epoch may have missed.  Guarded by ``_lock``.
+        self._actor_fallback_due = 0.0
+        # Monotonic deadline of the next *running-subset* sweep.  0.0 makes the
+        # first cadence after startup observe running actors too, so a restart
+        # also recovers a settled actor whose harness died mid-crash.
+        self._actor_running_due = 0.0
         # Last skip reason logged per (graph, node): logged on change only, so
         # a skip that repeats every tick is one line, not one per second.
         self._skip_reasons: dict[tuple[str, str], str] = {}
@@ -268,6 +302,7 @@ class PacActorService:
                 self.daemon_epoch,
                 on_skip=self._note_skip,
                 logger=self.logger,
+                on_actor_wake=self.note_actor_dirty,
             )
         self._actor_threads = tuple(
             threading.Thread(
@@ -339,6 +374,54 @@ class PacActorService:
                 # The pending scan will read the latest durable graph state.
                 pass
 
+    def note_actor_dirty(self, graph_id: str, node_id: str | None = None) -> int:
+        """Event hook: enqueue a targeted reconcile for the affected actor(s).
+
+        The graph authority calls this after a durable change that can make an
+        actor actionable (graph activate/close, a flag or workflow node change,
+        a worker lifecycle mutation).  Unlike the fallback sweep this does not
+        apply the settled gate: the event is the authority that something
+        changed.  Returns the number of jobs enqueued; a full queue drops the
+        signal and the fallback sweep is the net.
+        """
+
+        jobs = (
+            [(graph_id, node_id)]
+            if node_id is not None
+            else self._graph_actor_jobs(graph_id)
+        )
+        added = 0
+        with self._lock:
+            if self._closed:
+                return 0
+            for job in jobs:
+                if job in self._active_actors:
+                    continue
+                try:
+                    self._actor_queue.put_nowait(job)
+                except queue.Full:
+                    break
+                self._active_actors.add(job)
+                added += 1
+        return added
+
+    def _graph_actor_jobs(self, graph_id: str) -> list[tuple[str, str]]:
+        """Every actor node of one graph, for a graph-level event wake."""
+
+        if not self.database.exists():
+            return []
+        store = PacGraphStore(self.database, read_only=True)
+        try:
+            return [
+                (graph_id, str(node.node_id))
+                for node in store.nodes(graph_id)
+                if node.kind == "actor"
+            ]
+        except Exception:  # noqa: BLE001 - a wake must never break a graph write
+            return []
+        finally:
+            store.close()
+
     def _scan_worker(self) -> None:
         while True:
             scan = self._scan_queue.get()
@@ -355,9 +438,32 @@ class PacActorService:
                     detail=str(error)[:500],
                 )
 
-    def _scan_and_admit(self) -> None:
+    def _scan_and_admit(self, *, force_actors: bool = False) -> None:
+        """One resident cadence: always supply clocks; supply actors when due.
+
+        Actor supply is event-driven (see :meth:`note_actor_dirty`); this scan
+        is the fallback supply, and it has two tiers (``force_actors`` runs
+        both, which is how the deterministic test probe and the first cadence
+        after startup recover durable state):
+
+        * the dirty set -- a committed in-transition activation or a pending
+          cleanup -- once per :data:`PAC_RECONCILE_FALLBACK_SECONDS`; and
+        * the running subset (``desired='up', op='done'``), which no event can
+          announce a death for, once per
+          :data:`PAC_RECONCILE_RUNNING_REFRESH_SECONDS`.
+
+        Never-activated nodes and settled rows that are not running are
+        outside both tiers: they cannot change durable state, and re-deriving
+        them every tick is what saturated the authority mailbox on
+        2026-10-13.  The timer that calls :meth:`submit_tick` still runs at the
+        maintenance cadence -- only the *supplied jobs* shrink.
+        """
+
         if not self.database.exists():
             return
+        now = time.monotonic()
+        actor_due = force_actors or now >= self._actor_fallback_due
+        running_due = force_actors or now >= self._actor_running_due
         store = PacGraphStore(self.database, read_only=True)
         try:
             graphs = list(
@@ -393,28 +499,49 @@ class PacActorService:
             )
             cleanup_pending = "c.state='pending'" if has_cleanup_intents else "0"
             cleanup_absent = "c.state IS NULL" if has_cleanup_intents else "1"
-            actor_rows = list(
-                store._db.execute(
-                    "SELECT n.graph_id,n.node_id,g.activated_at,g.closed_at,"
-                    "a.desired,a.op,"
-                    + cleanup_column
-                    + "r.graph_id AS receipt_graph_id "
-                    "FROM graphs g CROSS JOIN nodes n ON n.graph_id=g.graph_id "
-                    "LEFT JOIN actor_activations a "
-                    "ON a.graph_id=n.graph_id AND a.node_id=n.node_id "
-                    + cleanup_join
-                    + "LEFT JOIN workflow_worker_receipts r "
-                    "ON r.graph_id=n.graph_id AND r.actor_node=n.node_id "
-                    "WHERE n.kind='actor' AND ("
-                    "(g.activated_at IS NOT NULL AND g.closed_at IS NULL) OR "
-                    "(g.closed_at IS NOT NULL AND ("
-                    + cleanup_pending
-                    + " OR ("
-                    + cleanup_absent
-                    + " AND r.graph_id IS NULL AND a.desired IS NOT NULL "
-                    "AND (a.desired!='down' OR a.op!='done'))))) "
-                    "ORDER BY n.graph_id,n.node_id"
+            # Added to the open-graph gate only on the running tier: a running
+            # actor is re-observed on the cheap cadence so a silent harness
+            # death is bounded by PAC_RECONCILE_RUNNING_REFRESH_SECONDS.
+            settled_running = (
+                " OR (a.desired='up' AND a.op='done')" if running_due else ""
+            )
+            # The fallback sweep is the missed-event net, so it must not
+            # re-derive a settled actor (``op='done'``: no reconcile can
+            # change its durable state) or a never-activated node (no
+            # committed request yet).  Both classes arrive by event; the
+            # 2026-10-13 storm was 100% these.  A pending cleanup is always
+            # actionable, settled or not.
+            actor_rows = (
+                list(
+                    store._db.execute(
+                        "SELECT n.graph_id,n.node_id,g.activated_at,g.closed_at,"
+                        "a.desired,a.op,"
+                        + cleanup_column
+                        + "r.graph_id AS receipt_graph_id "
+                        "FROM graphs g CROSS JOIN nodes n ON n.graph_id=g.graph_id "
+                        "LEFT JOIN actor_activations a "
+                        "ON a.graph_id=n.graph_id AND a.node_id=n.node_id "
+                        + cleanup_join
+                        + "LEFT JOIN workflow_worker_receipts r "
+                        "ON r.graph_id=n.graph_id AND r.actor_node=n.node_id "
+                        "WHERE n.kind='actor' AND ("
+                        "(g.activated_at IS NOT NULL AND g.closed_at IS NULL AND ("
+                        + cleanup_pending
+                        + " OR (a.desired IS NOT NULL "
+                        "AND (a.op IS NULL OR a.op!='done'))"
+                        + settled_running
+                        + ")) OR "
+                        "(g.closed_at IS NOT NULL AND ("
+                        + cleanup_pending
+                        + " OR ("
+                        + cleanup_absent
+                        + " AND r.graph_id IS NULL AND a.desired IS NOT NULL "
+                        "AND (a.desired!='down' OR a.op!='done'))))) "
+                        "ORDER BY n.graph_id,n.node_id"
+                    )
                 )
+                if actor_due or running_due
+                else []
             )
             worktree_jobs = [
                 (str(row["graph_id"]), str(row["node_id"]))
@@ -457,6 +584,12 @@ class PacActorService:
         with self._lock:
             if self._closed:
                 return
+            if actor_due:
+                self._actor_fallback_due = now + PAC_RECONCILE_FALLBACK_SECONDS
+            if running_due:
+                self._actor_running_due = now + (
+                    PAC_RECONCILE_RUNNING_REFRESH_SECONDS
+                )
             if not clock_jobs:
                 self._clock_scan_offset = 0
             clock_offset = (
@@ -483,92 +616,8 @@ class PacActorService:
                     )
                     break
                 self._active_clocks.add(graph_id)
-            actor_groups = (
-                ("open", open_actor_jobs),
-                ("closed", closed_actor_jobs),
-            )
-            available = self._actor_queue.maxsize - self._actor_queue.qsize()
-            pending: dict[str, list[tuple[int, tuple[str, str]]]] = {}
-            base_offsets: dict[str, int] = {}
-            for group, jobs in actor_groups:
-                if not jobs:
-                    self._actor_scan_offsets[group] = 0
-                    pending[group] = []
-                    base_offsets[group] = 0
-                    continue
-                offset = self._actor_scan_offsets[group] % len(jobs)
-                base_offsets[group] = offset
-                rotated = jobs[offset:] + jobs[:offset]
-                pending[group] = [
-                    (job_index, job)
-                    for job_index, job in enumerate(rotated)
-                    if job not in self._active_actors
-                ]
-
-            positions = {"open": 0, "closed": 0}
-            while available:
-                open_waiting = positions["open"] < len(pending["open"])
-                closed_waiting = positions["closed"] < len(pending["closed"])
-                if not open_waiting and not closed_waiting:
-                    break
-                if open_waiting and closed_waiting:
-                    group = (
-                        "closed"
-                        if self._actor_class_turn == _ACTOR_CLASS_CYCLE - 1
-                        else "open"
-                    )
-                    self._actor_class_turn = (
-                        self._actor_class_turn + 1
-                    ) % _ACTOR_CLASS_CYCLE
-                else:
-                    group = "open" if open_waiting else "closed"
-
-                job_index, job = pending[group][positions[group]]
-                positions[group] += 1
-                try:
-                    self._actor_queue.put_nowait(job)
-                except queue.Full:
-                    positions[group] -= 1
-                    break
-                self._active_actors.add(job)
-                jobs = open_actor_jobs if group == "open" else closed_actor_jobs
-                self._actor_scan_offsets[group] = (
-                    base_offsets[group] + job_index + 1
-                ) % len(jobs)
-                available -= 1
-
-            open_waiting = positions["open"] < len(pending["open"])
-            closed_waiting = positions["closed"] < len(pending["closed"])
-            deferred_group: str | None = None
-            if open_waiting and closed_waiting:
-                deferred_group = (
-                    "closed"
-                    if self._actor_class_turn == _ACTOR_CLASS_CYCLE - 1
-                    else "open"
-                )
-            elif open_waiting:
-                deferred_group = "open"
-            elif closed_waiting:
-                deferred_group = "closed"
-            deferred = sum(
-                job not in self._active_actors
-                for _group, jobs in actor_groups
-                for job in jobs
-            )
-            if deferred == 0:
-                self._actor_queue_saturated = False
-            elif not self._actor_queue_saturated:
-                warnings.append(
-                    (
-                        "pac.actor.queue_full",
-                        {
-                            "capacity": self._actor_queue.maxsize,
-                            "deferredJobs": deferred,
-                            "jobClass": deferred_group,
-                        },
-                    )
-                )
-                self._actor_queue_saturated = True
+            if actor_due or running_due:
+                self._admit_actor_sweep(open_actor_jobs, closed_actor_jobs, warnings)
 
         for event, fields in warnings:
             self.logger("warn", "pac", event, **fields)
@@ -578,6 +627,105 @@ class PacActorService:
         if callable(reconcile_worktree):
             for graph_id, node_id in worktree_jobs:
                 reconcile_worktree(graph_id, node_id)
+
+    def _admit_actor_sweep(
+        self,
+        open_actor_jobs: list[tuple[str, str]],
+        closed_actor_jobs: list[tuple[str, str]],
+        warnings: list[tuple[str, dict[str, object]]],
+    ) -> None:
+        """Enqueue one bounded, fair sweep of the fallback actor rows.
+
+        Caller holds ``_lock``.  ``warnings`` is appended to, never logged
+        here: logging under the lock would serialize the worker threads
+        behind an I/O call.
+        """
+
+        actor_groups = (
+            ("open", open_actor_jobs),
+            ("closed", closed_actor_jobs),
+        )
+        available = self._actor_queue.maxsize - self._actor_queue.qsize()
+        pending: dict[str, list[tuple[int, tuple[str, str]]]] = {}
+        base_offsets: dict[str, int] = {}
+        for group, jobs in actor_groups:
+            if not jobs:
+                self._actor_scan_offsets[group] = 0
+                pending[group] = []
+                base_offsets[group] = 0
+                continue
+            offset = self._actor_scan_offsets[group] % len(jobs)
+            base_offsets[group] = offset
+            rotated = jobs[offset:] + jobs[:offset]
+            pending[group] = [
+                (job_index, job)
+                for job_index, job in enumerate(rotated)
+                if job not in self._active_actors
+            ]
+
+        positions = {"open": 0, "closed": 0}
+        while available:
+            open_waiting = positions["open"] < len(pending["open"])
+            closed_waiting = positions["closed"] < len(pending["closed"])
+            if not open_waiting and not closed_waiting:
+                break
+            if open_waiting and closed_waiting:
+                group = (
+                    "closed"
+                    if self._actor_class_turn == _ACTOR_CLASS_CYCLE - 1
+                    else "open"
+                )
+                self._actor_class_turn = (
+                    self._actor_class_turn + 1
+                ) % _ACTOR_CLASS_CYCLE
+            else:
+                group = "open" if open_waiting else "closed"
+
+            job_index, job = pending[group][positions[group]]
+            positions[group] += 1
+            try:
+                self._actor_queue.put_nowait(job)
+            except queue.Full:
+                positions[group] -= 1
+                break
+            self._active_actors.add(job)
+            jobs = open_actor_jobs if group == "open" else closed_actor_jobs
+            self._actor_scan_offsets[group] = (
+                base_offsets[group] + job_index + 1
+            ) % len(jobs)
+            available -= 1
+
+        open_waiting = positions["open"] < len(pending["open"])
+        closed_waiting = positions["closed"] < len(pending["closed"])
+        deferred_group: str | None = None
+        if open_waiting and closed_waiting:
+            deferred_group = (
+                "closed"
+                if self._actor_class_turn == _ACTOR_CLASS_CYCLE - 1
+                else "open"
+            )
+        elif open_waiting:
+            deferred_group = "open"
+        elif closed_waiting:
+            deferred_group = "closed"
+        deferred = sum(
+            len(pending[group]) - positions[group]
+            for group in ("open", "closed")
+        )
+        if deferred == 0:
+            self._actor_queue_saturated = False
+        elif not self._actor_queue_saturated:
+            warnings.append(
+                (
+                    "pac.actor.queue_full",
+                    {
+                        "capacity": self._actor_queue.maxsize,
+                        "deferredJobs": deferred,
+                        "jobClass": deferred_group,
+                    },
+                )
+            )
+            self._actor_queue_saturated = True
 
     def _clock_worker(self) -> None:
         while True:
@@ -600,7 +748,8 @@ class PacActorService:
                     store = PacGraphStore(self.database)
                     try:
                         PacReactor(
-                            store, sender=self.sender, logger=self.logger
+                            store, sender=self.sender, logger=self.logger,
+                            publisher=self._hook_publisher,
                         ).tick_clocks(graph_id)
                     finally:
                         store.close()
@@ -667,6 +816,7 @@ class PacActorService:
                             sender=self.sender,
                             on_skip=on_skip,
                             logger=self.logger,
+                            publisher=self._hook_publisher,
                         )
                         coordinator.reconcile(job[0], job[1])
                     finally:

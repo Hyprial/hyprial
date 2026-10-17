@@ -66,9 +66,16 @@ from hyprial.daemon.impl.orgfs.composition.vocabulary import _OpenSpaceMesh as _
 from hyprial.daemon.impl.orgfs.composition.vocabulary import _ServeSpace as _ServeSpace
 from hyprial.daemon.impl.orgfs.composition.vocabulary import _SpaceResourceHandle as _SpaceResourceHandle
 from hyprial.daemon.impl.orgfs.composition.vocabulary import _StoreRegistry as _StoreRegistry
+from hyprial.daemon.impl.orgfs.instrumentation import AnnounceInstrumentation
 
 
-class OrgFsRuntime(RuntimeDirectory, RuntimeLifecycle, RuntimeContent, RuntimeCheckout):
+class OrgFsRuntime(
+    AnnounceInstrumentation,
+    RuntimeDirectory,
+    RuntimeLifecycle,
+    RuntimeContent,
+    RuntimeCheckout,
+):
     """Own all orgfs resources for one daemon generation."""
 
 
@@ -82,12 +89,14 @@ class OrgFsRuntime(RuntimeDirectory, RuntimeLifecycle, RuntimeContent, RuntimeCh
         logger: Callable[..., None] | None = None,
         owner_notifier: Callable[[str, str, dict[str, object]], None] | None = None,
         excluded_orgs: Callable[[], frozenset[str]] | None = None,
+        announce_instrumentation_enabled: bool = False,
     ) -> None:
         self.state_dir = Path(state_dir)
         self.node_id = node_id
         self.author = author
         self.actor = actor
         self.logger = logger
+        self._announce_instrumentation_enabled = announce_instrumentation_enabled
         self.owner_notifier = owner_notifier
         self._excluded_orgs = excluded_orgs or (lambda: frozenset())
         self.blobs = BlobAuthority(self.state_dir)
@@ -123,6 +132,11 @@ class OrgFsRuntime(RuntimeDirectory, RuntimeLifecycle, RuntimeContent, RuntimeCh
         self._session: TransportSession | None = None
         self._supplier_online: Callable[[str], bool] = lambda _supplier: True
         self._holder_candidates: Callable[[], tuple[str, ...]] = lambda: ()
+        # R1 supplier gate: cached device-row owner indexes per directory
+        # space, invalidated by that space's member-table watches.
+        self._supplier_device_owners: dict[str, dict[str, str]] = {}
+        self._supplier_device_watches: dict[str, object] = {}
+        self._supplier_device_lock = Lock()
         self._meshes: dict[str, OrgFsMesh] = {}
         self._announce_registration: Registration | None = None
         self._liveliness_registration: Registration | None = None
@@ -223,6 +237,14 @@ class OrgFsRuntime(RuntimeDirectory, RuntimeLifecycle, RuntimeContent, RuntimeCh
         if self._liveliness_registration is not None:
             self._liveliness_registration.close()
             self._liveliness_registration = None
+        with self._supplier_device_lock:
+            supplier_watches = tuple(self._supplier_device_watches.values())
+            self._supplier_device_watches.clear()
+            self._supplier_device_owners.clear()
+        for watch in supplier_watches:
+            close = getattr(watch, "close", None)
+            if callable(close):
+                close()
         if not self._close_directory_ingress(timeout=5.0):
             raise TimeoutError("orgfs directory effects did not drain")
         with self._resource_lock:

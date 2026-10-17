@@ -11,6 +11,7 @@ docs/evidence/refactor-joint-2026-10-02/tasks/daemon-runtime/.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol, runtime_checkable
@@ -80,6 +81,16 @@ QuotaEvaluatorFactory = Callable[[QuotaWatchdogDeps], QuotaEvaluatorPort]
 """Builds the real upper-layer evaluator from daemon-owned runtime inputs."""
 
 
+QuotaHookConsumerFactory = Callable[[Any], Any]
+"""Wraps the daemon's durable watchdog authority as a biz hook consumer.
+
+Unified hooks H4 (design §3): the shell hands the daemon a factory so the
+quota policy under biz/hooks/quota/ subscribes on the daemon bus without the
+daemon importing biz.  The argument satisfies the watchdog's observation
+surface (readings, usage-limit failure, flush).
+"""
+
+
 @runtime_checkable
 class QuotaWatchdogPort(Protocol):
     """Keeps the original watchdog contract: close() and late callbacks."""
@@ -89,6 +100,25 @@ class QuotaWatchdogPort(Protocol):
 
 QuotaWatchdogFactory = Callable[[QuotaWatchdogDeps], "QuotaWatchdogPort | None"]
 """Returns None only when the watchdog cannot start (loudly logged, as today)."""
+
+
+# --------------------------------------------------------------------------- #
+# Unified daemon hooks (biz/hooks consumers)
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class HookConsumersDeps:
+    """Daemon-owned inputs of the named bus consumers the shell adapter wires."""
+
+    home_for_agent: Callable[[str], "Path | None"]
+    logger: Callable[..., None] | None = None
+
+
+HookConsumersFactory = Callable[
+    [HookConsumersDeps], Mapping[str, Any]
+]
+"""Builds the consumer registry the daemon routes bus events through."""
 
 
 # --------------------------------------------------------------------------- #

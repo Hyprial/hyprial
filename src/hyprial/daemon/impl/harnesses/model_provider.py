@@ -49,19 +49,55 @@ DEEPSEEK_ANTHROPIC_BASE_URL = "https://api.deepseek.com/anthropic"
 OPENAI_BASE_URL_ENV = "HYPRIAL_OPENAI_BASE_URL"
 ANTHROPIC_BASE_URL_ENV = "HYPRIAL_ANTHROPIC_BASE_URL"
 
+# The member entry: agents reach the org's own gateway with their own Casdoor
+# identity, and the gateway routes to a vendor by the model id's
+# ``<vendor>/<model>`` prefix.  Two consequences the rest of this module obeys:
+#
+#   * the credential is a MEMBER credential, not a vendor key -- it comes from
+#     ``hyprial login`` and lives in HYPRIAL_API_KEY.  It must not fall back to
+#     Pi's auth.json, which holds a vendor key for a different upstream: an
+#     unnoticed substitution would bill the wrong account (and hide a broken
+#     login behind a working launch).
+#   * a vendor-qualified model is mandatory: without the prefix the gateway
+#     cannot route anywhere, so a bare model name is refused at launch (see
+#     ``validate_model_selection``) instead of becoming a 400 one hop away.
+HYPRIAL_PROVIDER = "hyprial"
+HYPRIAL_API_KEY_ENV = "HYPRIAL_API_KEY"
+# Anthropic's client appends its own versioned path, so the base is the bare
+# origin; the OpenAI-compatible surface is addressed under /v1.
+HYPRIAL_OPENAI_BASE_URL_DEFAULT = "https://model.hyprial.ai/v1"
+HYPRIAL_ANTHROPIC_BASE_URL_DEFAULT = "https://model.hyprial.ai"
 
-def openai_base_url(environment: Mapping[str, str]) -> str:
-    """OpenAI-compatible endpoint for ``environment`` (vendor URL by default)."""
+
+def openai_base_url(
+    environment: Mapping[str, str], provider: str = DEEPSEEK_PROVIDER
+) -> str:
+    """OpenAI-compatible endpoint, defaulting to the selected provider's own.
+
+    ``provider`` only chooses the DEFAULT: an explicit override still wins for
+    every provider, which is what lets a deployment point a hyprial launch at a
+    staging gateway (or a test at a local one).
+    """
 
     configured = environment.get(OPENAI_BASE_URL_ENV, "").strip()
-    return configured or DEEPSEEK_OPENAI_BASE_URL
+    if configured:
+        return configured
+    if provider == HYPRIAL_PROVIDER:
+        return HYPRIAL_OPENAI_BASE_URL_DEFAULT
+    return DEEPSEEK_OPENAI_BASE_URL
 
 
-def anthropic_base_url(environment: Mapping[str, str]) -> str:
-    """Anthropic-compatible endpoint for ``environment`` (vendor URL by default)."""
+def anthropic_base_url(
+    environment: Mapping[str, str], provider: str = DEEPSEEK_PROVIDER
+) -> str:
+    """Anthropic-compatible endpoint; ``provider`` chooses the default."""
 
     configured = environment.get(ANTHROPIC_BASE_URL_ENV, "").strip()
-    return configured or DEEPSEEK_ANTHROPIC_BASE_URL
+    if configured:
+        return configured
+    if provider == HYPRIAL_PROVIDER:
+        return HYPRIAL_ANTHROPIC_BASE_URL_DEFAULT
+    return DEEPSEEK_ANTHROPIC_BASE_URL
 
 
 class ModelProviderError(ValueError):
@@ -110,13 +146,40 @@ def validate_model_selection(
         )
     if provider is None:
         return
-    if harness == "claude" and provider not in {"anthropic", DEEPSEEK_PROVIDER}:
+    if harness == "claude" and provider not in {
+        "anthropic",
+        DEEPSEEK_PROVIDER,
+        HYPRIAL_PROVIDER,
+    }:
         raise ModelProviderError(
-            "claude supports model providers 'anthropic' and 'deepseek'"
+            "claude supports model providers 'anthropic', 'deepseek' and 'hyprial'"
         )
-    if harness == "codex" and provider not in {"openai", DEEPSEEK_PROVIDER}:
+    if harness == "codex" and provider not in {
+        "openai",
+        DEEPSEEK_PROVIDER,
+        HYPRIAL_PROVIDER,
+    }:
         raise ModelProviderError(
-            "codex supports model providers 'openai' and 'deepseek'"
+            "codex supports model providers 'openai', 'deepseek' and 'hyprial'"
+        )
+    if provider == HYPRIAL_PROVIDER and harness == "pi":
+        # pi resolves a provider through a registered catalog entry, and the
+        # gateway's entry (its models and their ``cost``) is not registered
+        # yet.  Refusing here names that gap; launching anyway would fail
+        # inside pi with a catalog error that says nothing about the cause.
+        raise ModelProviderError(
+            "provider 'hyprial' is not available to pi yet: pi needs a "
+            "registered provider catalog (see hq/notes/"
+            "impl-gateway-quota-and-harness-wiring-2026-10-12.md, P4). "
+            "Use --harness claude or --harness codex for the gateway."
+        )
+    if provider == HYPRIAL_PROVIDER and (not model or "/" not in model):
+        raise ModelProviderError(
+            "provider 'hyprial' requires a vendor-qualified model: the gateway "
+            "routes on the '<vendor>/<model>' prefix, so a bare name reaches "
+            "no upstream. Pass --model <vendor>/<model>, for example "
+            "'anthropic/claude-sonnet-4-6'"
+            f" (got {model!r})."
         )
     if (
         harness == "codex"
@@ -161,6 +224,25 @@ def require_deepseek_key(
     )
 
 
+def require_hyprial_key(environment: Mapping[str, str]) -> str:
+    """Return the member's gateway key, or fail without echoing it.
+
+    Deliberately has no Pi auth.json fallback (unlike ``require_deepseek_key``):
+    that file holds a vendor key, and quietly billing a vendor key for a launch
+    the member asked to route through the org gateway is exactly the confusion
+    this seam exists to prevent.  A missing key here is a missing login.
+    """
+
+    key = environment.get(HYPRIAL_API_KEY_ENV, "").strip()
+    if key:
+        return key
+    raise AgentProviderCredentialMissing(
+        f"provider 'hyprial' requires {HYPRIAL_API_KEY_ENV} (the member "
+        "credential written by `hyprial login`); this provider never falls "
+        "back to a vendor key"
+    )
+
+
 def claude_provider_environment(
     spec: HarnessLaunchSpec,
     environment: Mapping[str, str],
@@ -172,6 +254,20 @@ def claude_provider_environment(
     validate_model_selection(spec.harness, spec.model_provider, spec.model)
     if spec.model_provider in {None, "anthropic"}:
         return {}
+    if spec.model_provider == HYPRIAL_PROVIDER:
+        # The model is already known to be vendor-qualified (validate above),
+        # so it is passed through unchanged: the gateway is what owns the
+        # vendor prefix, and rewriting it here would hide a caller's mistake.
+        return {
+            "ANTHROPIC_BASE_URL": anthropic_base_url(environment, HYPRIAL_PROVIDER),
+            "ANTHROPIC_AUTH_TOKEN": require_hyprial_key(environment),
+            "ANTHROPIC_MODEL": spec.model or "",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL": spec.model or "",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": spec.model or "",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL": spec.model or "",
+            "CLAUDE_CODE_SUBAGENT_MODEL": spec.model or "",
+            "CLAUDE_CODE_EFFORT_LEVEL": "max",
+        }
     key = require_deepseek_key(
         environment,
         allow_legacy_home_fallback=allow_legacy_home_fallback,
@@ -200,6 +296,32 @@ def codex_provider_configuration(
     validate_model_selection(spec.harness, spec.model_provider, spec.model)
     if spec.model_provider in {None, "openai"}:
         return (), {}
+    if spec.model_provider == HYPRIAL_PROVIDER:
+        # ⚠️ wire_api="chat", NOT the "responses" the DeepSeek block below uses:
+        # the gateway serves the chat-completions surface, and a copied
+        # "responses" value would fail on every turn while looking correct.
+        return (
+            (
+                "-c",
+                'model_provider="hyprial"',
+                "-c",
+                f'model="{spec.model or ""}"',
+                "-c",
+                'model_reasoning_effort="high"',
+                "-c",
+                'model_providers.hyprial.name="hyprial"',
+                "-c",
+                "model_providers.hyprial.base_url="
+                f'"{openai_base_url(environment, HYPRIAL_PROVIDER)}"',
+                "-c",
+                'model_providers.hyprial.wire_api="chat"',
+                "-c",
+                f'model_providers.hyprial.env_key="{HYPRIAL_API_KEY_ENV}"',
+                "-c",
+                "model_providers.hyprial.requires_openai_auth=false",
+            ),
+            {HYPRIAL_API_KEY_ENV: require_hyprial_key(environment)},
+        )
     key = require_deepseek_key(
         environment,
         allow_legacy_home_fallback=allow_legacy_home_fallback,

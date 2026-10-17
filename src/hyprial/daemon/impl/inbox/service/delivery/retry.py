@@ -18,6 +18,7 @@ from hyprial.daemon.impl.inbox.links.pull  import (
 )
 from hyprial.daemon.impl.inbox.service.policy import (
     DELIVERY_RETRY_CLAIM_LIMIT,
+    OFFLINE_RECHECK_INTERVAL_MS,
     online_retry_next_attempt_ms,
 )
 from hyprial.daemon.impl.inbox.service.synchronization import _synchronized
@@ -486,11 +487,15 @@ class InboxServiceRetryMixin:
                     SubmissionResult(message.message_id, False, code="TTL_EXPIRED")
                 )
             elif not self._transport.is_online(message.recipient):
+                # Same bounded recheck as ``_defer_outbox``: parking the row
+                # at its own TTL deadline made an offline window a death
+                # sentence (PR #1463 finding 1).  Presence is rechecked on
+                # the shared cadence; expiry still wins when it comes first.
                 with self._db:
                     self._db.execute(
-                        "UPDATE custody SET next_attempt_ms = expires_at_ms "
+                        "UPDATE custody SET next_attempt_ms = MIN(expires_at_ms, ?) "
                         "WHERE message_id = ?",
-                        (message.message_id,),
+                        (now + OFFLINE_RECHECK_INTERVAL_MS, message.message_id),
                     )
                 outcomes.append(
                     SubmissionResult(message.message_id, True, queued=True)
@@ -777,6 +782,30 @@ class InboxServiceRetryMixin:
         self._log_dlq(message, int(row["attempts"]), reason, now_ms)
         if emit_failure:
             self._emit_failure(message, reason)
+    def _log_offline_hold(
+        self, message: InboxMessage, next_attempt_ms: int
+    ) -> None:
+        """Mark the start of one row's offline stretch (identifiers only).
+
+        Emitted once per stretch via the ``last_error`` transition in
+        ``_defer_outbox``: the recheck cadence itself must stay log-silent,
+        but a row entering an offline hold was previously invisible until it
+        died (PR #1463 finding 1 -- the death certificate was the row's only
+        lifecycle event).
+        """
+
+        try:
+            self._logger.log(
+                "info",
+                "outbox.offline_hold",
+                messageId=message.message_id,
+                recipient=message.recipient,
+                sender=message.sender,
+                recheckMs=OFFLINE_RECHECK_INTERVAL_MS,
+                nextAttemptMs=next_attempt_ms,
+            )
+        except Exception:  # noqa: BLE001 - logging must never break delivery
+            pass
     def _log_retry(
         self,
         message: InboxMessage,

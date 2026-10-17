@@ -11,11 +11,12 @@ from collections import deque
 from dataclasses import replace
 from queue import Empty, Full, Queue
 from typing import Callable
-from hyprial.kernel import PortAdmission
+from hyprial.kernel import PortAdmission, ipc_errors
 from hyprial.daemon.impl.transport.api import Registration, TransportSession
 from hyprial.daemon.impl.correlation.correlation  import CompletionReceipt
 from hyprial.kernel  import MutationProvenance
 from hyprial.kernel import LifecycleMutationRequest
+from hyprial.daemon.impl.harnesses.runtime.ports import AgentIdentityProjectionPort
 from hyprial.daemon.impl.network.route_ports  import (
     DropRouteCommand,
     EnsureRouteCommand,
@@ -68,12 +69,14 @@ class RouteRegistrationIo(_RouteReceiptMixin):
         native_workers: int = 8,
         completion_deadline: float = 1.0,
         completion_backoff: tuple[float, ...] = (0.005, 0.01, 0.02),
+        agent_identity: AgentIdentityProjectionPort | None = None,
     ) -> None:
         if capacity < 1 or native_workers < 1:
             raise ValueError("capacity and native_workers must be at least 1")
         if completion_deadline <= 0:
             raise ValueError("completion_deadline must be positive")
         self._transport = transport
+        self._agent_identity = agent_identity
         self._handlers = handlers
         self._registration_factory = registration_factory
         self._completions = completions
@@ -413,6 +416,25 @@ class RouteRegistrationIo(_RouteReceiptMixin):
             self._finish_route_token(route_id, token)
             return
         command = custody.command.payload
+        if custody.command.expected_entity_token is not None:
+            error = ipc_errors.LIFECYCLE_INCARNATION_UNSUPPORTED
+            if self._agent_identity is not None:
+                try:
+                    current = self._agent_identity.entity_token(route_id)
+                except Exception:
+                    current = None
+                error = (ipc_errors.TRANSFER_CUSTODY_UNAVAILABLE if current is None else
+                         ipc_errors.AGENT_INCARNATION_MISMATCH
+                         if current != custody.command.expected_entity_token else None)
+            if error is not None:
+                custody.event = RouteMutationFailed(
+                    command.correlation_id, command.attempt_token,
+                    command.generation, command.version,
+                    "ensure" if isinstance(command, EnsureRouteCommand) else "drop",
+                    route_id, error, "Route owner refused lifecycle incarnation fence",
+                )
+                self._finish_route_token(route_id, token)
+                return
         if isinstance(command, EnsureRouteCommand):
             self._begin_ensure(custody.command, command)
         elif isinstance(command, DropRouteCommand):

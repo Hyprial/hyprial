@@ -65,6 +65,7 @@ _AGENT_COST_TYPES = (
     "CreateHostInvitedAgentCommand",
     "CreateTransferHostedAgentCommand",
     "UpdateAgentCommand",
+    "BindAgentConfigCommand",
     "DestroyAgentCommand",
     "SettleAgentDestroyCommand",
     "CleanupRevokedAgentHomeCommand",
@@ -168,6 +169,7 @@ class _PrepareRuntimeCommand:
     cwd: str | None
     tool_profile: AgentToolProfile
     containerized: bool
+    expected_entity_token: str | None = None
 @dataclass(frozen=True, slots=True)
 class _MaterialiseLandingHomeCommand:
     correlation_id: str
@@ -181,8 +183,14 @@ class _ConfirmLandingHomeCommand:
     actor: str
     expected_entity_token: str
 @dataclass(frozen=True, slots=True)
+class _VerifyLandingPayloadCommand:
+    correlation_id: str
+    actor: str
+    expected_entity_token: str
+    expected_files: tuple[HomePayloadFile, ...]
+@dataclass(frozen=True, slots=True)
 class _PendingHomeAccess:
-    command: _PrepareWorkspaceCommand | _PrepareRuntimeCommand | _MaterialiseLandingHomeCommand | _ConfirmLandingHomeCommand
+    command: _PrepareWorkspaceCommand | _PrepareRuntimeCommand | _MaterialiseLandingHomeCommand | _ConfirmLandingHomeCommand | _VerifyLandingPayloadCommand
     receipt: HomeReceipt
 @dataclass(frozen=True, slots=True)
 class _LegacyRuntimeResult:

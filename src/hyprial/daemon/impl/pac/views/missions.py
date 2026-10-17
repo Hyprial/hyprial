@@ -60,7 +60,12 @@ class PreviousRoundUnreadable(RuntimeError):
 
 
 def parse_mission(text: str) -> dict[str, Any]:
-    """The YAML block of one mission file, validated; the title comes from its heading."""
+    """One work-item file as the full :meth:`WorkItem.to_dict` projection.
+
+    The line view reads id/title/status/owner/pacs; the work-items page
+    (``model["workItems"]``) reads the rest (checklist, depends, acceptance,
+    log, opened/closed, assignee) straight from the same projection.
+    """
 
     try:
         item = parse_work_item(text)
@@ -69,14 +74,13 @@ def parse_mission(text: str) -> dict[str, Any]:
         if str(error).startswith(("keywords must be", "pacs must be")):
             raise MissionParseError("keywords and pacs must be lists") from error
         raise MissionParseError(str(error)) from error
+    projected = item.to_dict()
     return {
-        "id": item.id,
+        **projected,
+        # The heading is the title; a stray YAML ``title:`` key must not
+        # override it (to_dict spreads the head after its own ``title``).
         "title": item.title,
-        "status": item.head["status"],
-        "owner": item.owner,
-        "keywords": item.head["keywords"],
-        "pacs": [str(graph).strip() for graph in item.head["pacs"] if str(graph).strip()],
-        "unverifiedOperator": item.to_dict()["unverifiedOperator"],
+        "pacs": [str(graph).strip() for graph in projected["pacs"] if str(graph).strip()],
     }
 
 

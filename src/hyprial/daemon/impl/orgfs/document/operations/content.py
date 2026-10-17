@@ -692,6 +692,17 @@ class FacadeContent:
         if item.doc_id not in space.contents:
             raise OrgFsError("invalid-argument", {"message": "not a text document"})
         space.contents[item.doc_id].doc.apply_update(snapshot)
+        pending = space.birth_pending.get(item.node_id)
+        if (
+            pending is not None
+            and not self._remote_birth_content_pending(space, item)
+        ):
+            # Snapshot hydration is the other way a held-back remote birth's
+            # content can arrive; finalize it with the origin's attribution.
+            space.birth_pending.pop(item.node_id, None)
+            self._finish(
+                space, [item.node_id], "created", author=pending[0], actor=pending[1]
+            )
 
 
     @_facade_locked

@@ -23,6 +23,10 @@ from hyprial.daemon.impl.lifecycle.lifecycle_receipts  import (
     RetireLifecycleReceiptCommand,
 )
 from hyprial.daemon.impl.harnesses.actor.actor import HarnessRuntimeActor
+from hyprial.daemon.impl.harnesses.runtime.observation import (
+    RESTORE_PURPOSE,
+    RuntimeFactsAuthority,
+)
 from hyprial.daemon.impl.harnesses.runtime.ports import (
     BindHarnessLivenessCommand,
     DispatchHarnessDeliveryCommand,
@@ -36,6 +40,7 @@ from hyprial.daemon.impl.harnesses.runtime.ports import (
     EnsureHarnessCommand,
     HarnessAdapterRegistrationProjection,
     HarnessDeliveryAdmitted,
+    HarnessDeliverySteered,
     HarnessDesiredStateManaged,
     HarnessFailedDrained,
     HarnessLivenessBound,
@@ -53,6 +58,7 @@ from hyprial.daemon.impl.harnesses.runtime.ports import (
     HarnessTimerElapsedCommand,
     HarnessesStopped,
     RefreshHarnessProjectionsCommand,
+    ObserveHarnessRuntimeFactsCommand,
     ReconcileHarnessSessionRefsCommand,
     RemoveAdapterRegistrationCommand,
     RemoveHarnessCommand,
@@ -62,6 +68,7 @@ from hyprial.daemon.impl.harnesses.runtime.ports import (
     UpdateRestoreEligibilityCommand,
     SnapshotAdapterRegistrationCommand,
     StageHarnessDesiredCommand,
+    SteerHarnessDeliveryCommand,
     StopHarnessesCommand,
     WaitHarnessReadyCommand,
 )
@@ -88,10 +95,18 @@ class HarnessPortClient:
         events: CorrelatedDomainEvents,
         *,
         timeout: float = 65.0,
+        runtime_facts_authority: RuntimeFactsAuthority | None = None,
     ) -> None:
         self.actor = actor
         self._events = events
         self._timeout = timeout
+        # The composition edge owns minting for the restore-only native read;
+        # the runtime owner validates against the same authority.
+        self._runtime_facts_authority = (
+            runtime_facts_authority
+            if runtime_facts_authority is not None
+            else actor.runtime_facts_authority
+        )
         self._timer_sequence = 0
         self.drain_complete = True
         self._orphan_collection_lock = threading.Lock()
@@ -313,6 +328,9 @@ class HarnessPortClient:
     def orphan_status(self) -> tuple[dict[str, object], ...]:
         return self.actor.orphan_status()
 
+    def orphan_persistence_stats(self) -> dict[str, int]:
+        return self.actor.orphan_persistence_stats()
+
     def streaming_actors(self) -> tuple[str, ...]:
         return self.actor.read_streaming().actors
 
@@ -330,6 +348,23 @@ class HarnessPortClient:
             (item.harness, item.name): item.session_ref
             for item in self.actor.read_session_refs().refs
         }
+
+    def observe_runtime_facts(self) -> None:
+        """Restore-only: republish the projection from fresh native facts.
+
+        Mints a one-shot capability from the daemon-owned authority and sends
+        the dedicated observation command.  This is publish-only by
+        construction: it can never persist session refs or start/stop a
+        process, and there is no boolean a caller could set to open the path.
+        """
+
+        self.call(
+            ObserveHarnessRuntimeFactsCommand(
+                f"harness:observe:{uuid.uuid4().hex}",
+                self._runtime_facts_authority.mint(purpose=RESTORE_PURPOSE),
+            ),
+            HarnessProjectionsRefreshed,
+        )
 
     def projected_session_refs(self) -> dict[tuple[str, str], str]:
         """Immutable projection read; never refreshes or waits on the actor."""
@@ -445,6 +480,26 @@ class HarnessPortClient:
                 f"harness:dispatch:{uuid.uuid4().hex}", name, delivery
             ),
             HarnessDeliveryAdmitted,
+        ).accepted
+
+    def steer(self, name: str, delivery_id: str, timeout: float = 5.0) -> bool:
+        """Fold a queued delivery into THIS harness's running turn.
+
+        This is the live composition port the daemon bridge receives as
+        ``harnesses`` (see ``application/wiring/transport.py``), routed to the
+        same ``HarnessRuntimeActor`` the ``HarnessRuntimeFacade`` wraps -- not
+        a parallel path.  Returns False when the actor has no live steerable
+        turn (no process, idle, nothing queued, no native mechanism); the T1
+        timeout path reads that as a failed steer and raises the notice, never
+        as silence.
+        """
+
+        return self.call(
+            SteerHarnessDeliveryCommand(
+                f"harness:steer:{uuid.uuid4().hex}", name, delivery_id
+            ),
+            HarnessDeliverySteered,
+            timeout=max(timeout + 1.0, self._timeout),
         ).accepted
 
     def drain_results(self) -> tuple[HarnessResult, ...]:

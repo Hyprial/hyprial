@@ -31,7 +31,15 @@ DAY_MS = 24 * 3600 * 1000
 DEFAULT_WINDOW_DAYS = 7
 OUTPUT_TEXT_LIMIT = 600
 NODE_SCRIPT_DIR = "nodes"
+WORK_VIEW_ASSET = "work_items_view.js"
 CHILD_NODE_LIMIT = 24
+# Work-item page caps (design-work-items-replace-kanban §4): every field is
+# bounded so one bloated file cannot grow the shared page without limit.
+WORK_ITEM_LOG_LINES = 20
+WORK_ITEM_LOG_LINE_LIMIT = 240
+WORK_ITEM_LAST_LOG_TEXT_LIMIT = 200
+WORK_ITEM_ACCEPTANCE_LIMIT = 500
+WORK_ITEM_CHECKLIST_TEXT_LIMIT = 200
 
 Request = Callable[[str, Mapping[str, Any]], Any]
 
@@ -39,6 +47,9 @@ Request = Callable[[str, Mapping[str, Any]], Any]
 _SECRET = re.compile(
     r"(ghp_|github_pat_|gho_|sk-|tskey-|xox[bpas]-|AKIA|glpat-)[A-Za-z0-9_\-]{6,}"
 )
+
+# ``- <iso> <author>: <text>``: the shape every ## Log line must have.
+_LOG_LINE = re.compile(r"^- (\S+) (.+?): (.*)$", re.DOTALL)
 
 _NAME_NOISE = {
     "review",
@@ -167,13 +178,18 @@ def build_model(
     *,
     node: str,
     missions: Sequence[Mapping[str, Any]] = (),
+    window_days: int = DEFAULT_WINDOW_DAYS,
 ) -> dict[str, Any]:
     """Turn a :func:`collect` snapshot into the page's data model.
 
-    ``missions`` are parsed mission files (``hyprial.daemon.impl.pac.missions``): a graph
-    a mission lists sits on that mission's line, under the mission's owner,
-    instead of an inferred one.  Only five fields of a mission reach the
-    page; its background and goal stay in the missions space.
+    ``missions`` are parsed work-item files (``hyprial.daemon.impl.pac.missions``): a graph
+    a work item lists sits on that work item's line, under the work item's owner,
+    instead of an inferred one.  Only five fields of a work item reach
+    ``model["missions"]``; its background and goal stay in the missions space.
+    ``model["workItems"]`` instead carries every loaded work item, whatever its
+    status or age (design-work-items-replace-kanban §4), so the page can show
+    the whole backlog, not only items with graphs inside the run window
+    (``window_days`` also fixes the archive cutoff for done/dropped items).
     """
 
     routines = {
@@ -260,6 +276,8 @@ def build_model(
         )
     runs.sort(key=lambda item: (item["created"] or 0, item["id"]))
 
+    work_items = _work_items_page(missions, {str(item["id"]) for item in runs})
+
     node_links = _expansion_node_links(runs)
 
     # Each graph links to its most recent earlier relative per reason, so a
@@ -327,8 +345,85 @@ def build_model(
             }
             for mission in {id(m): m for m in mission_of.values()}.values()
         ],
+        "workItems": work_items,
+        "workItemsArchiveCutoffMs": int(snapshot.get("observedAt") or 0)
+        - window_days * DAY_MS,
         "visibleNodeGraphs": sum(1 for item in runs if item["nodes"]),
     }
+
+
+def _epoch_ms(value: object) -> int | None:
+    """An epoch-millisecond int as the work-item head normalizes it, else None."""
+
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return None
+
+
+def _work_item_entry(
+    mission: Mapping[str, Any], run_ids: set[str]
+) -> dict[str, Any]:
+    """One work item in the page's exact shape: capped, redacted, no secrets."""
+
+    checklist = [
+        {
+            "text": redact(item.get("text"))[:WORK_ITEM_CHECKLIST_TEXT_LIMIT],
+            "done": bool(item.get("done")),
+        }
+        for item in mission.get("checklist") or []
+        if isinstance(item, dict)
+    ]
+    raw_log = [str(line) for line in mission.get("log") or []]
+    log = [redact(line)[:WORK_ITEM_LOG_LINE_LIMIT] for line in raw_log[-WORK_ITEM_LOG_LINES:]]
+    last_log = None
+    if log:
+        match = _LOG_LINE.match(raw_log[-1])
+        text = match.group(3) if match else raw_log[-1]
+        last_log = {
+            "text": redact(text)[:WORK_ITEM_LAST_LOG_TEXT_LIMIT],
+            "line": log[-1],
+        }
+    pacs = sorted({str(graph) for graph in mission.get("pacs") or []})
+    return {
+        "id": str(mission.get("id")),
+        "title": str(mission.get("title") or ""),
+        "status": str(mission.get("status") or ""),
+        "owner": short_actor(mission.get("owner")),
+        "assignee": (
+            short_actor(mission.get("assignee")) if mission.get("assignee") else None
+        ),
+        "checklist": {
+            "done": sum(1 for item in checklist if item["done"]),
+            "total": len(checklist),
+        },
+        "depends": [str(dep) for dep in mission.get("depends") or []],
+        "lastLog": last_log,
+        "pacs": pacs,
+        "pacsInWindow": [graph for graph in pacs if graph in run_ids],
+        "acceptance": redact(mission.get("acceptance"))[:WORK_ITEM_ACCEPTANCE_LIMIT],
+        "checklistItems": checklist,
+        "log": log,
+        "opened": _epoch_ms(mission.get("opened")),
+        "closed": _epoch_ms(mission.get("closed")),
+        "unverifiedOperator": bool(mission.get("unverifiedOperator")),
+    }
+
+
+def _work_items_page(
+    missions: Sequence[Mapping[str, Any]], run_ids: set[str]
+) -> list[dict[str, Any]]:
+    """Every loaded work item, sorted by id: the page's whole backlog.
+
+    Unlike ``model["missions"]`` (window-linked items only, five fields),
+    this is one entry per parsed file whatever its status or age — done and
+    dropped items closed long before the run window included — so the page's
+    "已完成" archive can tell archived items from recent ones via
+    ``workItemsArchiveCutoffMs``.
+    """
+
+    entries = [_work_item_entry(mission, run_ids) for mission in missions]
+    entries.sort(key=lambda entry: entry["id"])
+    return entries
 
 
 def _expansion_node_links(runs: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -613,7 +708,13 @@ def _topic_title(
 def content_key(model: Mapping[str, Any]) -> str:
     """A hash that ignores when the model was built, only what it says."""
 
-    stable = {key: value for key, value in model.items() if key != "observedAt"}
+    # ``workItemsArchiveCutoffMs`` is ``observedAt - window``: a build-time
+    # value like ``observedAt`` itself, not a state change worth a write.
+    stable = {
+        key: value
+        for key, value in model.items()
+        if key not in {"observedAt", "workItemsArchiveCutoffMs"}
+    }
     stable["lines"] = [
         {
             **line,
@@ -652,11 +753,24 @@ def node_script(model: Mapping[str, Any]) -> str:
 _NODE_FILE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\.js")
 
 
+def work_view_asset() -> str:
+    """The work-item view script shipped beside the page (see :func:`page_html`)."""
+
+    return (
+        resources.files('hyprial.daemon.impl.pac.views')
+        .joinpath(WORK_VIEW_ASSET)
+        .read_text("utf-8")
+    )
+
+
 def page_html(node_files: list[str]) -> str:
     """The page, including every node file :func:`node_file_name` could have named.
 
     Names come from the space listing, which any writer controls; anything
-    outside that shape is left out rather than escaped into the page.
+    outside that shape is left out rather than escaped into the page.  The
+    work-item views live in a sibling asset (the page file itself is close to
+    the structural line limit): it is written by :func:`publish` next to the
+    page and loaded with ``<script src>``, like the node files.
     """
 
     template = (
@@ -666,7 +780,9 @@ def page_html(node_files: list[str]) -> str:
     tags = "\n".join(
         f'<script src="{NODE_SCRIPT_DIR}/{name}"></script>' for name in safe
     )
-    return template.replace("<!--NODE_SCRIPTS-->", tags)
+    return template.replace("<!--NODE_SCRIPTS-->", tags).replace(
+        "<!--WORK_VIEW_SCRIPT-->", f'<script src="{WORK_VIEW_ASSET}"></script>'
+    )
 
 
 def _write_blob(request: Request, space_id: str, path: str, text: str) -> None:
@@ -693,7 +809,8 @@ def publish(
 
     ``last`` holds the keys of the previous publish from this node (the
     caller persists the returned ``keys``).  Nothing is written when neither
-    changed, so an idle node adds nothing to the space's history.
+    the model, the page or the work-item view asset changed, so an idle node
+    adds nothing to the space's history.
     """
 
     base = base.strip("/")
@@ -702,6 +819,13 @@ def publish(
     written: list[str] = []
     _ensure_dir(request, space_id, base)
     _ensure_dir(request, space_id, f"{base}/{NODE_SCRIPT_DIR}")
+    # The asset before the page: the page references it, so a checkout must
+    # never see the page without the script it loads.
+    asset = work_view_asset()
+    asset_key = hashlib.sha256(asset.encode("utf-8")).hexdigest()
+    if force or last.get("asset") != asset_key:
+        _write_blob(request, space_id, f"{base}/{WORK_VIEW_ASSET}", asset)
+        written.append(f"{base}/{WORK_VIEW_ASSET}")
     if force or last.get("node") != key:
         # Bytes go over IPC, not through a local file: orgfs.import only reads
         # files inside the caller's workspace or cwd (path_authz, #1169).
@@ -762,7 +886,7 @@ def publish(
         "page": str(Path(checkout_path) / base / "index.html")
         if checkout_path
         else None,
-        "keys": {"node": key, "page": page_key},
+        "keys": {"node": key, "page": page_key, "asset": asset_key},
     }
 
 

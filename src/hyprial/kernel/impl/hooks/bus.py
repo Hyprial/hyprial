@@ -217,8 +217,9 @@ class HookBus:
     def publish(self, event: HookEvent) -> int:
         """Offer ``event`` to every subscribed lane; return how many accepted.
 
-        Never blocks on an observer.  Intercept events belong to the intercept
-        port (a later slice) and are refused here.
+        Never blocks on an observer.  Intercept events belong to
+        :class:`hyprial.kernel.impl.hooks.intercept.HookInterceptPort` and are
+        refused here.
         """
 
         if event.kind != "observe":

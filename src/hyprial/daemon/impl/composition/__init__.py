@@ -16,6 +16,7 @@ from .domains import (  # noqa: F401
 from .ports import (  # noqa: F401
     LarkDesiredStatePort,
     LarkPortClient,
+    lark_human_alarm_legs,
 )
 from .harness_ports import (  # noqa: F401
     HarnessPortClient,
@@ -35,4 +36,5 @@ __all__ = [
     "AgentSessionDomains", "AgentDirectoryFacade", "AgentIdentityProjectionView",
     "AgentLivenessProjectionFacade", "CorrelatedDomainEvents", "DomainCommandError",
     "HarnessPortClient", "LarkDesiredStatePort", "LarkPortClient", "harness_launch_projection",
+    "lark_human_alarm_legs",
 ]

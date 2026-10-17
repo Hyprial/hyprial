@@ -1,7 +1,7 @@
 {
   "schema": "hyprial.gui-source/v1",
-  "commit": "53de6496adaa9000cbdf179cd97fcb71645aa3fa",
-  "timestamp": "1791456505",
+  "commit": "61c4158803884cb92e11138faa365f4cf59190a0",
+  "timestamp": "1792216206",
   "files": [
     {
       "path": ".gitignore",
@@ -39,6 +39,41 @@
       "executable": false
     },
     {
+      "path": "core/README.md",
+      "sha256": "85098852bc9c7fcf1d52d6eaf046f32aab6d58a4b8d1f0d3375d538834831e7e",
+      "executable": false
+    },
+    {
+      "path": "core/browser.mjs",
+      "sha256": "7b595172eef792cee117333410959dc97f050e685bc45de5a955d1ec068496c9",
+      "executable": false
+    },
+    {
+      "path": "core/chat.mjs",
+      "sha256": "5c3a6c2decda1376ce47b2b5b3a99945e76734864207e3efbdcbcf19277a3df7",
+      "executable": false
+    },
+    {
+      "path": "core/connection.mjs",
+      "sha256": "55d23c5c0e83261dba1fee38fd053c581c8803de16690d6aa5d3c6f77eb43c58",
+      "executable": false
+    },
+    {
+      "path": "core/demo.mjs",
+      "sha256": "2436b6f2b3978dad5b57b5b550881c1cc5a4d7c9edcab3ccf198efe3d0091f5e",
+      "executable": false
+    },
+    {
+      "path": "core/discovery.mjs",
+      "sha256": "e32acd1b8f193b97e7b1be9c66955e889ee0b5d297c728edad4e104b57a59619",
+      "executable": false
+    },
+    {
+      "path": "core/index.mjs",
+      "sha256": "4d37377443f445c841821d88f13f32dad047b956fdc6c5ca67132dd6af6aa4e0",
+      "executable": false
+    },
+    {
       "path": "host/index.mjs",
       "sha256": "84c000280f65b0312c4895f376d7e00469d413e24772078e3212fd13dfd94d77",
       "executable": false
@@ -65,7 +100,7 @@
     },
     {
       "path": "package.json",
-      "sha256": "59d0c36276d6b7466bb533572f257bfd810c07301cf0812ea4938213a72ad341",
+      "sha256": "9b96917d9a5c0ef0acce139e3b161ca4bf09d711a046a06bac3ff02e650f3e85",
       "executable": false
     },
     {
@@ -124,8 +159,13 @@
       "executable": false
     },
     {
+      "path": "scripts/build-core.mjs",
+      "sha256": "7ee16496dbe47ebe1060295b95a6cca1ba293e912c817647ed6db0099ef15a4f",
+      "executable": false
+    },
+    {
       "path": "scripts/check-architecture.mjs",
-      "sha256": "34759cfd43f7321ba50f8d93ea8ba9ca417e3d608cfed94fdb4666aef52971ff",
+      "sha256": "b827f4233d0596f15047fe95523cef2f82d645aadf20e761f4ca36522e8e4017",
       "executable": false
     },
     {

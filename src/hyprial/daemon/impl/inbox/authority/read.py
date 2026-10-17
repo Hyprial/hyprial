@@ -277,6 +277,39 @@ class InboxReadProjection:
         )
         return messages[0] if messages else None
 
+    def harness_failure_route(self, message_id: str) -> InboxMessage | None:
+        """The terminal ledger's route for a message whose inbox row is gone.
+
+        Third-level fallback for the fail-loud sender notice: the inbox row
+        may already be pruned and the settlement absent, while the
+        ``delivery_status`` ledger -- written on every fetched/terminal
+        transition -- still names who was waiting (PR #1463 finding 2:
+        ``availability_loud.route_missing`` with no route in any book).  The
+        reconstructed envelope carries the route fields only; the payload is
+        a placeholder because the notice never quotes the original body.
+        """
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT message_id, sender, recipient, conversation_id, "
+                "idempotency_key, recorded_at_ms FROM delivery_status "
+                "WHERE message_id = ? LIMIT 1",
+                (message_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return InboxMessage(
+            message_id=str(row["message_id"]),
+            conversation_id=str(row["conversation_id"] or ""),
+            sender=str(row["sender"]),
+            recipient=str(row["recipient"]),
+            payload=b"{}",
+            intent="reply",
+            lifecycle=DeliveryLifecycle.DURABLE_SERVICE,
+            created_at_ms=int(row["recorded_at_ms"]),
+            idempotency_key=row["idempotency_key"],
+        )
+
     def system_notices(self, recipient: str) -> tuple[InboxMessage, ...]:
         return self._messages(
             "SELECT * FROM system_notices WHERE recipient = ? "

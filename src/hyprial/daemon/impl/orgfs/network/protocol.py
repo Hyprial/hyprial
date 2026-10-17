@@ -58,6 +58,7 @@ _BLOB_ABSENCE_CODES: Final[frozenset[str]] = frozenset(
 )
 MeshLogger = Callable[..., None]
 SupplierGate = Callable[[str], bool]
+SupplierOwner = Callable[[str], str | None]
 AppliedHook = Callable[[bytes], Iterable[str] | None]
 ReplacementHook = Callable[[str, str, bytes], None]
 AnnouncementSource = Callable[[], Iterable[Mapping[str, Any]]]

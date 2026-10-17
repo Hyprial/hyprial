@@ -30,6 +30,7 @@ class LaunchSpec:
     args: tuple[str, ...]
     tier: str | None = None
     probes: tuple[dict[str, Any], ...] = ()
+    cwd_policy: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -40,6 +41,11 @@ class LaunchSpec:
             "args": list(self.args),
             "tier": self.tier,
             "probes": list(self.probes),
+            **(
+                {"cwdPolicy": self.cwd_policy}
+                if self.cwd_policy is not None
+                else {}
+            ),
         }
 
     @classmethod
@@ -52,7 +58,23 @@ class LaunchSpec:
             args=tuple(value.get("args", [])),
             tier=value.get("tier"),
             probes=tuple(value.get("probes", [])),
+            cwd_policy=value.get("cwdPolicy"),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class WorkerCleanupComplete:
+    """One durable transition of a worker cleanup intent to ``complete``.
+
+    Built inside the transaction that flips the row and published only after
+    the caller's commit, so the fact and its hook event agree.
+    """
+
+    graph_id: str
+    actor_node: str
+    actor_name: str
+    operation_id: str
+    at_ms: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,7 +137,15 @@ class FileLaunchResolver:
         value = yaml.safe_load(payload)
         if not isinstance(value, dict):
             raise ValueError("launch_ref must resolve to an object")
-        allowed = {"harness", "provider", "model", "cwd", "args", "tier"}
+        allowed = {
+            "harness",
+            "provider",
+            "model",
+            "cwd",
+            "cwdPolicy",
+            "args",
+            "tier",
+        }
         unknown = set(value) - allowed
         if unknown:
             raise ValueError(f"unknown launch fields: {', '.join(sorted(unknown))}")
@@ -126,9 +156,13 @@ class FileLaunchResolver:
             raise ValueError("launch spec requires harness when node requires.tier is absent")
         if not isinstance(args, list) or any(not isinstance(item, str) for item in args):
             raise ValueError("launch args must be strings")
-        for key in ("provider", "model", "cwd", "tier"):
+        for key in ("provider", "model", "cwd", "cwdPolicy", "tier"):
             if value.get(key) is not None and not isinstance(value[key], str):
                 raise ValueError(f"launch {key} must be a string")
+        if value.get("cwdPolicy") not in (None, "require", "create"):
+            raise ValueError("launch cwdPolicy must be require or create")
+        if value.get("cwdPolicy") is not None and value.get("cwd") is None:
+            raise ValueError("launch cwdPolicy requires cwd")
         probes: tuple[dict[str, Any], ...] = ()
         if required_tier is not None:
             # #425 defines requires.tier as a minimum: keep declared matrix
@@ -154,6 +188,7 @@ class FileLaunchResolver:
                 args=tuple(args),
                 tier=required_tier or value.get("tier"),
                 probes=probes,
+                cwd_policy=value.get("cwdPolicy"),
             ),
             hashlib.sha256(payload).hexdigest(),
         )

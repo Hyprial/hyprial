@@ -6,6 +6,7 @@ from pathlib import Path
 
 import typer
 
+from hyprial.kernel import ipc_errors
 from hyprial.kernel import resolve_node_id
 
 
@@ -90,7 +91,12 @@ def register_bundle_commands(app, get_dependencies):
         CliError = dependencies.error_type
         _parse_depends = dependencies.parse_depends
 
-        from hyprial.daemon import BundleError, export_bundle
+        from hyprial.daemon import (
+            BundleError,
+            SignatureError,
+            export_bundle,
+            sign_exported_bundle,
+        )
 
         def operation() -> dict[str, object]:
             try:
@@ -108,7 +114,18 @@ def register_bundle_commands(app, get_dependencies):
                     source_epoch=source_epoch or "",
                     allow_live=allow_live,
                 )
+                # Attribution, the second half of the export: the machine's own
+                # key signs the sealed manifest digest, so a target that has
+                # enrolled this key can tell where the box came from.  Fail
+                # loud rather than hand on a bundle nobody can attribute.
+                signature = sign_exported_bundle(
+                    bundle_dir,
+                    home=Path(dependencies.configured_home()[0]),
+                    credential_envelope=manifest.credential_envelope or None,
+                )
             except BundleError as error:
+                raise CliError(error.code, str(error)) from error
+            except SignatureError as error:
                 raise CliError(error.code, str(error)) from error
             return {
                 "bundle": str(bundle_dir),
@@ -128,6 +145,11 @@ def register_bundle_commands(app, get_dependencies):
                     dict(item) for item in manifest.target_must_provide()
                 ],
                 "allow_live": allow_live,
+                "signature": {
+                    "keyId": signature.key_id,
+                    "digest": signature.digest,
+                    "headerDigest": signature.header_digest,
+                },
             }
 
         _execute(operation, json_output=json_output)
@@ -223,6 +245,9 @@ def register_bundle_commands(app, get_dependencies):
 
         from hyprial.daemon import BundleError
         from hyprial.daemon import ReceiveError, receive_bundle
+        from hyprial.daemon import SignatureError, TrustStoreError, trust_policy_for
+
+        configured_home = dependencies.configured_home
 
         def operation() -> dict[str, object]:
             try:
@@ -231,8 +256,16 @@ def register_bundle_commands(app, get_dependencies):
                     destination,
                     expect_actor=expect_actor,
                     dry_run=dry_run,
+                    # AT06 slice 2b: attribution is the target's own offline
+                    # anchor.  The CLI never offers a way to skip it.
+                    signature=trust_policy_for(Path(configured_home()[0])),
                 )
-            except (BundleError, ReceiveError) as error:
+            except (
+                BundleError,
+                ReceiveError,
+                SignatureError,
+                TrustStoreError,
+            ) as error:
                 raise CliError(
                     getattr(error, "code", "receive_error"), str(error)
                 ) from error
@@ -350,12 +383,32 @@ def register_bundle_complete_command(app, get_dependencies):
                 "paths are refused."
             ),
         ),
+        keep_registration: bool = typer.Option(
+            False,
+            "--keep-registration",
+            help=(
+                "Leave this machine's registration (agent row, routes, "
+                "undelivered messages) in place after the files are cleaned. "
+                "Without it a completed transfer-out also deregisters the "
+                "source, because 'transferred away' means the source no longer "
+                "holds the identity."
+            ),
+        ),
         json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
     ) -> None:
-        """Complete a transfer-out: clean the source by identity fence (AT11)."""
+        """Complete a transfer-out: clean the source by identity fence (AT11).
+
+        Cleaning the files is only half of "the agent left this machine": the
+        registration row, routes and undelivered messages live in the daemon,
+        so a completed cleanup also asks the daemon to destroy the source agent
+        (``--keep-registration`` opts out).  Without that step the source keeps
+        advertising a delivery target whose home is gone: senders get an
+        acknowledgement and nobody answers.
+        """
 
         dependencies = get_dependencies()
         _execute = dependencies.execute
+        _daemon_request = dependencies.daemon_request
         CliError = dependencies.error_type
 
         from hyprial.daemon import (
@@ -363,6 +416,63 @@ def register_bundle_complete_command(app, get_dependencies):
             execute_cleanup,
             plan_cleanup,
         )
+
+        #: A daemon that cannot be reached cannot tell us whether this machine
+        #: still holds the agent, so the cleanup stands and the payload says so.
+        #: Every other refusal is a registration that exists and did not come
+        #: off -- that one is fatal, because it is exactly the ghost this step
+        #: exists to prevent.
+        #:
+        #: This set is a DOMAIN judgment, not the daemon's transient-code list:
+        #: it holds only "the daemon could not answer at all" (unreachable, not
+        #: ready, transport deadline).  A reachable daemon that refuses has
+        #: answered.  ``DAEMON_RESTORING`` deliberately stays out: the request
+        #: layer already waits out the restore gate for its bounded budget
+        #: (``_restore_wait_budget``), so a refusal arriving here means the
+        #: daemon kept refusing past that window -- a hard failure
+        #: (``registration_not_removed``), not an unverifiable state.
+        #: (Design answer, kanban e75fa678 [0]: the hard failure is intended.)
+        unverifiable = frozenset(
+            {
+                ipc_errors.DAEMON_UNAVAILABLE,
+                ipc_errors.DAEMON_DISCONNECTED,
+                ipc_errors.DAEMON_NOT_READY,
+                ipc_errors.DAEMON_START_FAILED,
+                ipc_errors.DAEMON_START_TIMEOUT,
+                ipc_errors.IPC_TIMEOUT,
+            }
+        )
+
+        def deregister() -> dict[str, object]:
+            if keep_registration:
+                return {"removed": False, "reason": "kept"}
+            try:
+                result = _daemon_request("agent.destroy", {"name": actor})
+            except Exception as error:  # noqa: BLE001 - classified by code below
+                code = getattr(error, "code", None)
+                if code == ipc_errors.AGENT_NOT_FOUND:
+                    return {"removed": False, "reason": "not-registered"}
+                if code in unverifiable:
+                    return {
+                        "removed": False,
+                        "reason": "unverified",
+                        "code": code,
+                        "error": str(error),
+                        "hint": f"hyprial agent destroy {actor} --yes",
+                    }
+                return {
+                    "removed": False,
+                    "reason": "failed",
+                    "code": code,
+                    "error": str(error),
+                    "hint": f"hyprial agent destroy {actor} --yes",
+                }
+            return {
+                "removed": True,
+                "actor": result.get("actor"),
+                "stopped": result.get("stopped"),
+                "destroyedMessages": result.get("destroyedMessages"),
+            }
 
         def operation() -> dict[str, object]:
             try:
@@ -386,10 +496,40 @@ def register_bundle_complete_command(app, get_dependencies):
                 raise CliError(error.code, str(error)) from error
             payload = result.as_dict()
             if not result.complete:
+                if dry_run:
+                    # A preview is not an incomplete cleanup.  Nothing is
+                    # removed by construction, so every planned path lands in
+                    # ``leftover`` and the receipt answers complete=False --
+                    # that IS the plan.  Answering with the real-run failure
+                    # code made every successful preview exit as
+                    # ``cleanup_incomplete`` (kanban 61364374).
+                    payload["registration"] = {
+                        "removed": False,
+                        "reason": "dry-run",
+                    }
+                    return payload
                 raise CliError(
                     "cleanup_incomplete",
                     "transfer-out is not complete: "
                     + ("; ".join(f"{path}" for path, _reason in result.failed) or "dry run"),
+                    payload,
+                )
+            if dry_run:
+                # A dry run cleans nothing, so it deregisters nothing either.
+                # (The receipt already refuses to call a dry run complete.)
+                # Reachable when the plan had nothing left to remove -- and
+                # the fail-safe if a future receipt ever calls a preview
+                # complete with paths still present (kanban e75fa678 [1]:
+                # keep this branch, it is the only guard that stops a preview
+                # from deregistering).
+                payload["registration"] = {"removed": False, "reason": "dry-run"}
+                return payload
+            payload["registration"] = deregister()
+            if payload["registration"].get("reason") == "failed":
+                raise CliError(
+                    "registration_not_removed",
+                    "cleaned up the files, but this machine still holds the "
+                    f"agent registration: {payload['registration'].get('error')}",
                     payload,
                 )
             return payload

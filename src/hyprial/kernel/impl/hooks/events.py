@@ -52,13 +52,17 @@ EVENT_NAMES: frozenset[str] = frozenset(
         "delivery.held",
         "graph.finished",
         "graph.closed",
+        "usage.refreshed",
         "worker.cleanup.complete",
     }
 )
 
+GRAPH_END_STATES: frozenset[str] = frozenset({"completed", "failed", "cancelled"})
+
 #: The only event an intercept hook may bind this release (design §4.2).
 INTERCEPT_EVENT_NAMES: frozenset[str] = frozenset({"delivery.prepared"})
 
+GraphEndState = Literal["completed", "failed", "cancelled"]
 HookKind = Literal["observe", "intercept"]
 TurnFidelity = Literal["observed", "inferred"]
 
@@ -139,6 +143,123 @@ def turn_event_payload(
     return MappingProxyType(payload)
 
 
+def delivery_event_payload(
+    *,
+    delivery_id: str,
+    sender: str,
+    conversation: str,
+    message: str | None = None,
+    outcome: str | None = None,
+    failure_code: str | None = None,
+) -> Mapping[str, Any]:
+    """Build the schema-v2 neutral payload shared by all ``delivery.*`` events.
+
+    ``delivery.prepared`` carries ``messageExcerpt`` (redacted, bounded like
+    turn excerpts); ``delivery.dispatched`` carries identifiers only;
+    ``delivery.settled`` adds ``outcome`` (the turn's terminal status) and,
+    for failed turns, ``failureCode``.  ``sender`` and ``conversation`` are
+    empty strings when the emitting daemon no longer knows them (a settlement
+    after restart).
+    """
+
+    payload: dict[str, Any] = {
+        "deliveryId": safe_turn_identifier(delivery_id),
+        "sender": safe_turn_identifier(sender),
+        "conversation": safe_turn_identifier(conversation),
+        "collectionMethod": "daemon",
+        "fidelity": "observed",
+    }
+    if message is not None:
+        payload["messageExcerpt"] = redact_turn_excerpt(message)
+    if outcome is not None:
+        payload["outcome"] = str(outcome)
+    if failure_code is not None:
+        payload["failureCode"] = safe_turn_identifier(failure_code)
+    return MappingProxyType(payload)
+
+
+def usage_refreshed_payload() -> Mapping[str, Any]:
+    """Payload for ``usage.refreshed``: a tick, not a data carrier.
+
+    The event says the daemon's usage cache finished a refresh; consumers
+    read the current readings from the cache themselves.  Provenance labels
+    follow design §2.2: the daemon observed the refresh directly.
+    """
+
+    return MappingProxyType(
+        {"collectionMethod": "daemon", "fidelity": "observed"}
+    )
+
+
+def _hook_fidelity(fidelity: TurnFidelity) -> str:
+    if fidelity not in ("observed", "inferred"):
+        raise ValueError("hook event fidelity must be observed or inferred")
+    return fidelity
+
+
+def graph_closed_event_payload(
+    *,
+    graph_id: str,
+    end_state: GraphEndState | None,
+    closed_by: str | None,
+    reason_ref: str | None,
+    closed_at_ms: int,
+    fidelity: TurnFidelity = "observed",
+) -> Mapping[str, Any]:
+    """Build the schema-v2 payload for one ``graph.closed`` transition.
+
+    ``end_state`` is null for an unmanaged graph closed by its end flag: that
+    path records no state, and none is invented.  ``reason_ref`` is null when
+    absent (never the empty string).
+    """
+
+    if end_state is not None and end_state not in GRAPH_END_STATES:
+        raise ValueError(
+            "graph.closed end_state must be completed, failed, cancelled or None"
+        )
+    return MappingProxyType(
+        {
+            "graphId": safe_turn_identifier(graph_id),
+            "endState": end_state,
+            "closedBy": (
+                None if closed_by is None else safe_turn_identifier(closed_by)
+            ),
+            "reasonRef": (
+                None if not reason_ref else safe_turn_identifier(reason_ref)
+            ),
+            "closedAtMs": int(closed_at_ms),
+            "collectionMethod": "daemon",
+            "fidelity": _hook_fidelity(fidelity),
+        }
+    )
+
+
+def worker_cleanup_complete_event_payload(
+    *,
+    graph_id: str,
+    actor_node: str,
+    actor_name: str,
+    operation_id: str,
+    at_ms: int,
+    worker_state: str = "stopped",
+    fidelity: TurnFidelity = "observed",
+) -> Mapping[str, Any]:
+    """Build the schema-v2 payload for one ``worker.cleanup.complete``."""
+
+    return MappingProxyType(
+        {
+            "graphId": safe_turn_identifier(graph_id),
+            "actorNode": safe_turn_identifier(actor_node),
+            "actorName": safe_turn_identifier(actor_name),
+            "operationId": safe_turn_identifier(operation_id),
+            "workerState": str(worker_state),
+            "atMs": int(at_ms),
+            "collectionMethod": "daemon",
+            "fidelity": _hook_fidelity(fidelity),
+        }
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class HookEvent:
     event: str
@@ -170,14 +291,20 @@ class HookEvent:
 
 __all__ = [
     "EVENT_NAMES",
+    "GRAPH_END_STATES",
     "HOOK_EVENT_SCHEMA_VERSION",
     "INTERCEPT_EVENT_NAMES",
     "TURN_EXCERPT_CHARS",
     "HookEvent",
     "HookKind",
+    "GraphEndState",
     "TurnFidelity",
+    "delivery_event_payload",
     "redact_turn_excerpt",
     "safe_turn_identifier",
     "safe_turn_tool_names",
     "turn_event_payload",
+    "usage_refreshed_payload",
+    "graph_closed_event_payload",
+    "worker_cleanup_complete_event_payload",
 ]

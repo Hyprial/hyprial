@@ -1,6 +1,6 @@
 """Business quota evaluation; daemon still owns persistence and delivery."""
 
-from hyprial.biz import QuotaWatchdog
+from hyprial.biz import QuotaHookConsumer, QuotaWatchdog
 from hyprial.daemon import QuotaWatchdogDeps
 
 
@@ -16,3 +16,12 @@ def quota_evaluator_factory(deps: QuotaWatchdogDeps):
         state_dir=deps.state_dir, deliver=deps.deliver,
         readings=deps.readings, clock_ms=deps.clock_ms,
     )
+
+
+def quota_hook_consumer_factory(watchdog):
+    """Unified hooks H4: wrap the durable authority as the biz bus consumer."""
+
+    return QuotaHookConsumer(watchdog)
+
+
+__all__ = ["quota_evaluator_factory", "quota_hook_consumer_factory"]

@@ -54,6 +54,7 @@ from hyprial.daemon.impl.harnesses.codex.native_env import (
     _validate_codex_native_load,
     prepare_codex_runtime_context,
 )
+from hyprial.daemon.impl.harnesses.codex.projection import resolve_codex_p2_resume_model
 from hyprial.daemon.impl.harnesses.codex.process import (
     MAX_PENDING_REQUESTS,
     REQUEST_TIMEOUT_SECONDS_DEFAULT,
@@ -254,6 +255,14 @@ class CodexAppServerClient(
             self._next_request_id = 1
             self._active_turn_id: str | None = None
             self._native_load_evidence: CodexNativeLoadEvidence | None = None
+            self._resume_model: str | None = None
+            if self._p2_runtime and self._session.thread_id is not None:
+                self._resume_model = resolve_codex_p2_resume_model(
+                    self._native_root,
+                    explicit_model=spec.model,
+                    model_provider=spec.model_provider,
+                    runtime_args=spec.args,
+                )
 
         @property
         def session_ref(self) -> str | None:
@@ -470,6 +479,14 @@ class CodexAppServerClient(
             execution = _thread_execution_params(self.spec.args)
             if self.spec.model is not None:
                 execution["model"] = self.spec.model
+            elif "model" not in execution and self._resume_model is not None:
+                execution["model"] = self._resume_model
+                if self._logger is not None:
+                    self._logger.info(
+                        "codex.resume.model.target_default",
+                        model=self._resume_model,
+                        threadId=thread_id,
+                    )
             params: dict[str, object] = {
                 "threadId": thread_id,
                 **execution,
@@ -531,23 +548,44 @@ class CodexAppServerClient(
             self._active_turn_id = turn_id
 
         async def steer_turn(self, prompt: str) -> str:
-            thread_id = self._require_thread_id()
+            """Legacy exact-turn steer; returns the steered turn id verbatim."""
+
             turn_id = self._active_turn_id
             if turn_id is None:
                 raise ConnectionError("Codex app-server has no active turn to steer")
-            result = await self.request(
-                "turn/steer",
-                {
-                    "threadId": thread_id,
-                    "expectedTurnId": turn_id,
-                    "input": [{"type": "text", "text": prompt}],
-                },
+            await self.steer(prompt)
+            return turn_id
+
+        async def steer(
+            self, prompt: str, *, timeout: float | None = None
+        ) -> str:
+            """Native same-turn steer; never turn/start nor turn/interrupt.
+
+            The thread and expected turn ids are re-read from this client's
+            own live turn at call time, so a stale caller snapshot can never
+            steer a replaced turn.  The shared helper owns the
+            accept/reject/unknown verdict.
+            """
+
+            from hyprial.daemon.impl.harnesses.streaming.steer_io import (
+                steer_codex_turn,
             )
-            steered = result.get("turnId") if isinstance(result, dict) else None
-            if not isinstance(steered, str) or not steered:
-                raise ConnectionError("Codex app-server did not return a steered turn ID")
-            self._active_turn_id = steered
-            return steered
+            from hyprial.daemon.impl.harnesses.streaming.turn_io import (
+                _SteerRejected,
+            )
+
+            turn_id = self._active_turn_id
+            if turn_id is None:
+                raise _SteerRejected(
+                    "Codex app-server has no active turn to steer"
+                )
+            return await steer_codex_turn(
+                self,
+                prompt,
+                thread_id=self._require_thread_id(),
+                turn_id=turn_id,
+                timeout=timeout,
+            )
 
         async def receive_response(self) -> AsyncIterator[object]:
             turn_id = self._active_turn_id

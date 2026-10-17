@@ -126,8 +126,15 @@ def daemon_run(
 @daemon_app.command("stop")
 def daemon_stop(
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+    expected_epoch: str | None = typer.Option(
+        None, "--expected-epoch", help="Refuse to stop a different daemon generation.",
+    ),
 ) -> None:
     """Ask the isolated daemon owning this socket to stop gracefully."""
     services = get_services()
 
-    services._execute(_stop_daemon_for_operator, json_output=json_output)
+    action = (
+        _stop_daemon_for_operator if expected_epoch is None
+        else lambda: _stop_daemon_for_operator(expected_epoch=expected_epoch)
+    )
+    services._execute(action, json_output=json_output)

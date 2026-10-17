@@ -104,6 +104,12 @@ class MaterialiseLandingHome:
     expected_files: tuple[HomePayloadFile, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class VerifyLandingPayload:
+    receipt: HomeReceipt
+    expected_files: tuple[HomePayloadFile, ...]
+
+
 HomeFilesystemPlan = (
     ProvisionHome
     | ReplaceHome
@@ -111,6 +117,7 @@ HomeFilesystemPlan = (
     | PrepareWorkspaceHome
     | PrepareRuntimeHome
     | MaterialiseLandingHome
+    | VerifyLandingPayload
 )
 
 
@@ -131,6 +138,8 @@ class AgentHomeEffectCompleted:
     settled: bool = True
     error_code: str | None = None
     error_detail: str | None = None
+    payload_state: str | None = None
+    payload_files: tuple[HomePayloadFile, ...] | None = None
 
 
 class AgentHomeEffectLane:
@@ -271,6 +280,12 @@ class AgentHomeEffectLane:
                     effect.generation,
                     receipt=plan.receipt,
                     workspace=str(workspace),
+                )
+            elif isinstance(plan, VerifyLandingPayload):
+                state = self._provisioner.verify_payload(plan.receipt, plan.expected_files)
+                return AgentHomeEffectCompleted(
+                    effect.correlation_id, effect.generation, receipt=plan.receipt,
+                    payload_state=state, payload_files=plan.expected_files,
                 )
             elif isinstance(plan, MaterialiseLandingHome):
                 try:

@@ -608,6 +608,7 @@ def _stored_receipt(
         receipt.operation_id != request.operation_id
         or receipt.resource_key != resource_key
         or receipt.expected_resource_token != request.expected_resource_token
+        or receipt.expected_entity_token != request.expected_entity_token
     ):
         raise ValueError("lifecycle attempt token was reused")
     return receipt
@@ -640,6 +641,7 @@ def _new_stored_receipt(
         operation_id=request.operation_id,
         resource_key=resource_key,
         expected_resource_token=request.expected_resource_token,
+        expected_entity_token=request.expected_entity_token,
         provenance=provenance,
         completed=completed,
         correlation_id=request.correlation_id,

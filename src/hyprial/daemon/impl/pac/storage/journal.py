@@ -98,6 +98,23 @@ def activation_id(graph_id: str, node_id: str, round_no: int | None) -> str:
     return str(uuid5(NAMESPACE_URL, json.dumps(["pac-assignment", graph_id, node_id, round_no])))
 
 
+@dataclass(frozen=True, slots=True)
+class GraphClosedRecord:
+    """One durable transition of a graph to closed, deferred to post-commit.
+
+    ``end_state`` is null only for an unmanaged graph closed by its end flag or
+    owner, because that path records no state.  A record is created inside the
+    transaction that flips ``closed_at`` and published by the transaction owner
+    after it commits, so the fact and its ``graph.closed`` hook event agree.
+    """
+
+    graph_id: str
+    end_state: str | None
+    closed_by: str | None
+    reason_ref: str | None
+    closed_at_ms: int
+
+
 def append_event(
     db: sqlite3.Connection, *, graph_id: str, version: int, type: str,
     at: int, data: dict[str, Any], event_id: str | None = None,

@@ -8,7 +8,7 @@ from typing import Any
 
 import typer
 
-from hyprial.kernel import ipc_errors, parse_agent_uri
+from hyprial.kernel import DaemonRequestError, ipc_errors, parse_agent_uri
 from hyprial.shell.impl.cli.commands.common.services import get_services
 from hyprial.shell.impl.cli.commands.common.support import JsonObject
 
@@ -26,6 +26,156 @@ def agent_home_census(
         lambda: services._daemon_request("agent.home-census"),
         json_output=json_output,
     )
+
+@agent_app.command("ensure-home")
+def agent_ensure_home(
+    names: list[str] = typer.Argument(
+        None,
+        help=(
+            "One or more registered agent names. Omit with --all-legacy to "
+            "select from the census instead."
+        ),
+    ),
+    all_legacy: bool = typer.Option(
+        False,
+        "--all-legacy",
+        help=(
+            "Select every registered agent whose home row is missing "
+            "(homeProvisioned=false), excluding wf-* workers unless "
+            "--include-wf is given."
+        ),
+    ),
+    include_wf: bool = typer.Option(
+        False,
+        "--include-wf",
+        help="Let --all-legacy select wf-* workflow workers too.",
+    ),
+    include_running: bool = typer.Option(
+        False,
+        "--include-running",
+        help=(
+            "Also provision agents with a live binding. By default only "
+            "offline agents are provisioned and running ones are listed "
+            "as deferred."
+        ),
+    ),
+    limit: int = typer.Option(
+        None,
+        "--limit",
+        min=1,
+        help="Provision at most N agents in this run.",
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Show the selection without changing anything."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Provision the official P2 agent home for existing (legacy) agents.
+
+    Walks the registry's two-phase provision (0700 home tree, 0600 receipt
+    mirror, durable lifecycle row) -- the same path a fresh ``agent create``
+    takes, not a direct database write. Idempotent per agent: an already
+    provisioned home is validated and reported as skipped.
+    """
+    services = get_services()
+
+    def operation() -> Any:
+        services = get_services()
+        selected: list[str] = list(names or [])
+        deferred: list[str] = []
+        running: dict[str, bool] = {}
+        if all_legacy:
+            if selected:
+                raise services.CliError(
+                    ipc_errors.INVALID_ARGUMENT,
+                    "pass either agent names or --all-legacy, not both",
+                )
+            census = services._daemon_request("agent.home-census")
+            if not isinstance(census, dict) or not isinstance(
+                census.get("agents"), list
+            ):
+                raise services.CliError(
+                    "INVALID_RESPONSE", "agent.home-census must return agents"
+                )
+            live = _agent_running_status(services)
+            selected = [
+                str(row["actor"])
+                for row in census["agents"]
+                if isinstance(row, dict)
+                and row.get("homeProvisioned") is False
+                and (include_wf or not str(row.get("actor", "")).startswith("wf-"))
+            ]
+            running = {
+                actor: live.get(actor, False) for actor in selected
+            }
+            if not include_running:
+                deferred = sorted(
+                    actor for actor in selected if running.get(actor)
+                )
+                selected = [
+                    actor for actor in selected if not running.get(actor)
+                ]
+        if limit is not None:
+            overflow = selected[limit:]
+            deferred = overflow + [
+                actor for actor in deferred if actor not in overflow
+            ]
+            selected = selected[:limit]
+        if dry_run:
+            return {
+                "ok": True,
+                "dryRun": True,
+                "selected": selected,
+                "deferred": deferred,
+                "running": {a: v for a, v in running.items() if v},
+            }
+        results: list[JsonObject] = []
+        failures = 0
+        for actor in selected:
+            try:
+                outcome = services._daemon_request(
+                    "agent.ensure-home", {"name": actor}
+                )
+            except DaemonRequestError as error:
+                failures += 1
+                results.append(
+                    {"actor": actor, "ok": False, "error": str(error)}
+                )
+                continue
+            results.append(
+                {
+                    "actor": actor,
+                    "ok": True,
+                    "home": outcome.get("home"),
+                    "agent": outcome.get("agent"),
+                }
+            )
+        return {
+            "ok": failures == 0,
+            "provisioned": sum(1 for item in results if item.get("ok")),
+            "failed": failures,
+            "deferred": deferred,
+            "results": results,
+        }
+
+    services._execute(operation, json_output=json_output)
+
+def _agent_running_status(services: Any) -> dict[str, bool]:
+    """Actor -> has-live-binding, from the ordinary agent list read."""
+
+    listing = services._daemon_request("agent.list", {})
+    if not isinstance(listing, dict) or not isinstance(listing.get("agents"), list):
+        raise services.CliError(
+            "INVALID_RESPONSE", "agent.list must return agents"
+        )
+    status: dict[str, bool] = {}
+    for row in listing["agents"]:
+        if not isinstance(row, dict):
+            continue
+        actor = row.get("actor")
+        if isinstance(actor, str):
+            status[actor] = row.get("status") not in (None, "offline")
+    return status
 
 def _migration_manifest(path: Path) -> JsonObject:
     services = get_services()

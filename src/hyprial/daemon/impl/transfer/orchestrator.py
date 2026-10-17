@@ -17,6 +17,11 @@ source back with ``transfer.resume`` — the worker comes back where it was,
 with its ref, and the error says so.  A failure IN complete is reported
 loudly but never rolls back: the worker is already live on the target and
 killing it would trade a cosmetic leftover for real downtime.
+
+An agent-home worker does not take this sequence: it takes the journaled P2
+chain in ``agent_home_chain`` (quiesce -> bundle -> ship -> receive ->
+complete), where the same rule is drawn one call earlier -- a failure before
+the target could have been reached rolls back, and anything after that holds.
 """
 
 from __future__ import annotations
@@ -244,6 +249,28 @@ def _preflight(
     return session_file
 
 
+def _refuse_target_conflicts(
+    remote: RemoteRunner, *, harness: str, name: str, remote_node: str
+) -> None:
+    """The target's own admission -- before anything on the source is touched.
+
+    One spelling for both sequences: P0 runs it before the preflight and the
+    quiesce, and an agent-home worker reaches the same invariant through the
+    chain (B2).  A name already taken on the target stops the attempt while the
+    source is still running, instead of after its home has shipped.
+    """
+
+    precheck = remote.run_json(
+        ["transfer-precheck", "--harness", harness, "--name", name]
+    )
+    conflicts = precheck.get("conflicts") or []
+    if conflicts:
+        raise TransferError(
+            ipc_errors.TRANSFER_CONFLICT,
+            f"target {remote_node} cannot take {name!r}: " + "; ".join(conflicts),
+        )
+
+
 def run_transfer(
     *,
     name: str,
@@ -291,15 +318,13 @@ def run_transfer(
     old_actor = str(plan["actor"])
     emit(f"plan: {harness}:{name} on {plan['nodeId']} ({old_actor})")
     agent = plan.get("agent")
-    if isinstance(agent, dict) and agent.get("config") is not None:
-        raise TransferError(
-            ipc_errors.TRANSFER_UNSUPPORTED_HARNESS,
-            f"agent-home P2 transfer is unsupported for {harness}:{name}: "
-            "the target cannot yet rebind the source identity, config, native "
-            "root, and session root as one authorized context; refusing to "
-            "fall back to either host HOME",
-            {"harness": harness, "name": name, "mode": "agent-home-p2"},
-        )
+    # An agent-home worker takes the P2 chain (identity + config + native root
+    # + session root rebound as one authorized context).  This is the same
+    # predicate the refusal used to test; what changed is that the chain is now
+    # wired, and the capability fence lives in the daemon (``transfer.quiesce``
+    # refuses a harness no two-daemon run has proved, with the P0 code and mode
+    # string), so the CLI no longer decides it a second time.
+    agent_home = isinstance(agent, dict) and agent.get("config") is not None
     if plan.get("unreadInbox"):
         emit(
             f"note: {plan['unreadInbox']} undrained inbox row(s) stay on "
@@ -368,16 +393,59 @@ def run_transfer(
             remote_facts,
         )
 
-    # -- 3. precheck ----------------------------------------------------------
-    precheck = remote.run_json(
-        ["transfer-precheck", "--harness", harness, "--name", name]
-    )
-    conflicts = precheck.get("conflicts") or []
-    if conflicts:
-        raise TransferError(
-            ipc_errors.TRANSFER_CONFLICT,
-            f"target {remote_node} cannot take {name!r}: " + "; ".join(conflicts),
+    if agent_home:
+        # -- 3p. an agent-home worker: the P2 chain, not the P0 copy ----------
+        # The chain lives in its own module (this one owns the P0 sequence);
+        # the import is local so neither module needs the other at import time.
+        from hyprial.daemon.impl.transfer.agent_home_chain import (
+            _agent_home_dry_run,
+            _run_agent_home_chain,
         )
+        from hyprial.daemon.impl.transfer.p2.orchestration.lift import P2_CHAIN_MODE
+
+        if containerized or container_image is not None:
+            # An agent-home worker lands through the P2 chain, which rebinds the
+            # identity, config, native root and session root inside the worker's
+            # own home; landing that inside a container is a different pipeline
+            # this line has not proved.  Before ③-4 the CLI refused the worker
+            # outright, so nobody could reach agent-home + container -- silently
+            # running it non-containerized would answer a request nobody made.
+            raise TransferError(
+                ipc_errors.TRANSFER_PREREQUISITE,
+                f"{harness}:{name} is an agent-home worker, so it cannot land "
+                "inside a container: the container flags (--containerized / "
+                "--image) request a landing this chain does not perform. Drop "
+                "them, or transfer a worker that is not agent-home",
+                {"harness": harness, "name": name, "mode": P2_CHAIN_MODE},
+            )
+        # -- 3p.0 the target answers for its own name before anything moves --
+        _refuse_target_conflicts(
+            remote, harness=harness, name=name, remote_node=remote_node
+        )
+        if dry_run:
+            return _agent_home_dry_run(
+                name=name, harness=harness, host=host, plan=plan, remote_node=remote_node,
+                remote_facts=remote_facts, emit=emit,
+            )
+        return _run_agent_home_chain(
+            name=name,
+            harness=harness,
+            host=host,
+            plan=plan,
+            spec=spec,
+            destination_cwd=_resolve_destination_cwd(target_cwd, spec.get("cwd"), remote),
+            local_request=local_request,
+            remote=remote,
+            remote_node=remote_node,
+            remote_socket=remote_socket,
+            remote_facts=remote_facts,
+            old_actor=old_actor,
+            emit=emit,
+            strict_timeout=strict_timeout,
+        )
+
+    # -- 3. precheck ----------------------------------------------------------
+    _refuse_target_conflicts(remote, harness=harness, name=name, remote_node=remote_node)
 
     # -- 4. all infrastructure prerequisites, before any source mutation ----
     image = container_image or default_image()
@@ -563,10 +631,18 @@ def run_transfer(
             code = "TRANSFER_REMOTE_FAILED"
         else:
             code = "TRANSFER_FAILED"
+        # Say which of the two happened: a resume that failed is not a
+        # rollback, and the operator's next move differs.
+        outcome = (
+            f"the source could NOT be rolled back ({rollback_error}); resume it "
+            "with 'hyprial agent resume' on the source"
+            if rollback_error
+            else "the source was rolled back"
+        )
         raise TransferError(
             code,
             f"transfer of {harness}:{name} to {host} failed after quiesce; "
-            f"the source was rolled back: {error}",
+            f"{outcome}: {error}",
             {
                 "rollback": rollback,
                 "rollbackError": rollback_error,

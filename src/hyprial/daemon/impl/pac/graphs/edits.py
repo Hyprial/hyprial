@@ -33,7 +33,7 @@ from time import time_ns
 from typing import Any
 from uuid import uuid4
 
-from hyprial.kernel import TIERS, is_identity_id_segment
+from hyprial.kernel import HookEventPublisher, TIERS, is_identity_id_segment
 
 from hyprial.identity import (
     PAC_EDGE_EXISTS,
@@ -53,7 +53,7 @@ from hyprial.identity import (
 )
 from hyprial.identity import parse_principal
 from hyprial.daemon.impl.pac.storage.store  import MAX_BRIEF_REF_LENGTH, MAX_OPERATION_KEY_LENGTH, PacGraphStore
-from hyprial.daemon.impl.pac.storage.journal  import append_event
+from hyprial.daemon.impl.pac.storage.journal  import GraphClosedRecord, append_event
 from hyprial.daemon.impl.pac.storage.migrations  import unrewritten_owners_note
 
 #: Actor names stay LOCAL short names (the run-owned runtime key); only the
@@ -557,8 +557,16 @@ def activate_graph(store: PacGraphStore, graph_id: str, *, actor: str) -> dict[s
     return show_graph(store, graph_id)
 
 
-def close_graph(store: PacGraphStore, graph_id: str, *, actor: str) -> dict[str, Any]:
+def close_graph(
+    store: PacGraphStore,
+    graph_id: str,
+    *,
+    actor: str,
+    publisher: HookEventPublisher | None = None,
+) -> dict[str, Any]:
     """Owner closes a task/clock run monotonically; no flags or actors inferred."""
+    if publisher is not None:
+        store.hook_publisher = publisher
     with store.write() as db:
         graph = _require_graph(store, graph_id)
         if actor != graph["created_by"]:
@@ -597,6 +605,17 @@ def close_graph(store: PacGraphStore, graph_id: str, *, actor: str) -> dict[str,
                     at=at,
                     data={"at": at, "by": actor},
                 )
+                # Unmanaged owner close records no state: endState is null.
+                store.defer_graph_closed(
+                    GraphClosedRecord(
+                        graph_id=graph_id,
+                        end_state=None,
+                        closed_by=actor,
+                        reason_ref=None,
+                        closed_at_ms=at,
+                    )
+                )
+    store.flush_graph_closed()
     return show_graph(store, graph_id)
 
 

@@ -58,11 +58,12 @@ _CODEX_MUTABLE_ROOT_FILE = re.compile(
 )
 
 # Codex 0.157+ keeps an arg0 dispatch directory in CODEX_HOME across runs:
-# one regular .lock file plus three exact alias symlinks that resolve to the
-# executable this daemon launches. Anything else under tmp/ stays refused.
+# one regular .lock file plus alias symlinks that resolve to the executable
+# this daemon launches. Linux adds ``codex-linux-sandbox`` on top of the three
+# aliases seen on macOS. Anything else under tmp/ stays refused.
 _CODEX_ARG0_ENTRY = re.compile(r"tmp/arg0/codex-arg0[A-Za-z0-9]+/(?P<name>[^/]+)\Z")
 _CODEX_ARG0_ALIASES = frozenset(
-    {"apply_patch", "applypatch", "codex-execve-wrapper"}
+    {"apply_patch", "applypatch", "codex-execve-wrapper", "codex-linux-sandbox"}
 )
 
 _CODEX_MUTABLE_FILES = frozenset(
@@ -71,6 +72,9 @@ _CODEX_MUTABLE_FILES = frozenset(
         "auth.json",
         "history.jsonl",
         "installation_id",
+        # Codex refreshes this account/version-scoped model catalog after boot.
+        # It is codex runtime state, not an agent-authored personality item.
+        "models_cache.json",
         "version.json",
     }
 )
@@ -78,8 +82,12 @@ _CODEX_MUTABLE_FILES = frozenset(
 _CODEX_MUTABLE_PREFIXES = (
     ".tmp/",
     "archived_sessions/",
+    # Codex-written caches.  These carry no personality projection; the
+    # projected config files keep their own byte/drift verification below.
+    "cache/",
     "log/",
     "logs/",
+    "plugins/",
     "shell_snapshots/",
     "skills/.system/",
     "thread-writer-locks/",
@@ -720,8 +728,29 @@ def _git_metadata_roots(cwd: str | Path) -> list[str]:
     """
 
     root = Path(cwd)
-    if not (root / ".git").exists():
-        return []
+    metadata = root / ".git"
+    if not metadata.exists():
+        if not root.is_dir():
+            return []
+        # A cwd below an existing worktree root is layout F: it already works
+        # and must not gain a fictitious nested repository grant.  A genuine
+        # non-repository cwd, however, needs permission for the `.git` path
+        # before `git init`/clone-in-cwd can create it.
+        try:
+            existing_worktree = subprocess.run(
+                ("git", "-C", str(root), "rev-parse", "--show-toplevel"),
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            ).returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            existing_worktree = False
+        if existing_worktree:
+            return []
+        given = str(Path(os.path.abspath(metadata)))
+        resolved = str(metadata.resolve(strict=False))
+        return list(dict.fromkeys((given, resolved)))
     candidates: list[str] = []
     for arguments in (
         ("--absolute-git-dir",),

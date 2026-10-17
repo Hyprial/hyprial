@@ -27,7 +27,7 @@ dependencies = [
     "rich",
     "pykka>=4.2,<5",
     "typesafe-sdk==0.7.0",
-    "pycrdt==0.14.6",
+    "pycrdt==0.14.9",
     "pycasbin>=2.8,<3",
 ]
 

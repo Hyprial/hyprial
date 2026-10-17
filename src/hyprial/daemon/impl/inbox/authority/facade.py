@@ -284,6 +284,9 @@ class DeliveryCustodyFacade:
     def harness_failure_original(self, message_id: str) -> InboxMessage | None:
         return self._reads.harness_failure_original(message_id)
 
+    def harness_failure_route(self, message_id: str) -> InboxMessage | None:
+        return self._reads.harness_failure_route(message_id)
+
     def terminal_failure_settlements(
         self, *, since_ms: int
     ) -> tuple[HarnessFailureSettlement, ...]:

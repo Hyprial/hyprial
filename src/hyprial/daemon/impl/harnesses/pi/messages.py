@@ -232,9 +232,11 @@ def _final_assistant_text(messages: list[object]) -> str | None:
     for candidate in reversed(messages):
         if not isinstance(candidate, dict) or candidate.get("role") != "assistant":
             continue
+        if candidate.get("stopReason") in {"error", "aborted"}:
+            return None
         content = candidate.get("content")
         if not isinstance(content, list):
-            continue
+            return None
         parts = [
             item["text"]
             for item in content
@@ -243,6 +245,6 @@ def _final_assistant_text(messages: list[object]) -> str | None:
             and isinstance(item.get("text"), str)
         ]
         text = "\n".join(parts)
-        if text:
-            return text
+        # An empty actual final is not permission to reuse earlier commentary.
+        return text if text.strip() else None
     return None

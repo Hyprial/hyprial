@@ -1,4 +1,5 @@
-"""``hyprial autoupdate`` family and ``hyprial config set``."""
+"""The ``hyprial autoupdate`` family (the ``hyprial config set`` group lives
+in ``commands/config/settings.py``)."""
 
 from __future__ import annotations
 

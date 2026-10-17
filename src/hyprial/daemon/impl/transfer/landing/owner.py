@@ -33,11 +33,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, Sequence, runtime_checkable
 
-from hyprial.daemon.impl.transfer.archive.bundle import BundleManifest, validate_bundle
+from hyprial.daemon.impl.transfer.archive.bundle import (
+    BundleManifest,
+    validate_bundle,
+)
 from hyprial.daemon.impl.transfer.landing.credentials import (
     CredentialLanding,
     plan_credential_landing)
 from hyprial.daemon.impl.transfer.landing.receive import ReceiveResult, receive_bundle
+from hyprial.daemon.impl.transfer.landing.signature_gate import (
+    SignatureAttestation,
+    SignaturePolicy,
+    require_trusted_signature)
+from hyprial.daemon.impl.transfer.manifest_reading import load_sealed_manifest
 
 __all__ = [
     "LandingActorMismatch",
@@ -116,6 +124,7 @@ class LandingResult:
     dry_run: bool
     credential_policy: str = ""
     credentials: tuple[CredentialLanding, ...] = ()
+    signature: SignatureAttestation | None = None
 
     @property
     def needs_reauth(self) -> tuple[str, ...]:
@@ -146,6 +155,7 @@ class LandingResult:
             "dryRun": self.dry_run,
             "credentialPolicy": self.credential_policy,
             "credentials": [item.as_dict() for item in self.credentials],
+            "signature": None if self.signature is None else self.signature.as_dict(),
         }
 
 
@@ -156,6 +166,7 @@ def land_agent_home(
     authority: LandingAuthority,
     expect_actor: str | None = None,
     dry_run: bool = False,
+    signature: SignaturePolicy,
 ) -> LandingResult:
     """Adopt a validated bundle as this target's copy of the agent.
 
@@ -165,7 +176,16 @@ def land_agent_home(
     what a real landing would do without touching the registry or the disk.
     """
 
-    manifest = validate_bundle(bundle_dir)
+    # One reading of the manifest, threaded through validation, the gate and
+    # the receive below: what is validated is what is attested is what lands.
+    reading = load_sealed_manifest(bundle_dir)
+    manifest = validate_bundle(bundle_dir, manifest=reading.manifest)
+    attestation = require_trusted_signature(
+        bundle_dir,
+        policy=signature,
+        credential_envelope=manifest.credential_envelope or None,
+        sealed=reading,
+    )
     if expect_actor is not None and manifest.actor != expect_actor:
         raise LandingActorMismatch(
             f"bundle carries actor {manifest.actor!r}, expected {expect_actor!r}"
@@ -194,10 +214,14 @@ def land_agent_home(
             dry_run=True,
             credential_policy=credential_plan.policy.strategy,
             credentials=credential_plan.credentials,
+            signature=attestation,
         )
 
     destination_existed = dest.exists()
-    landed = receive_bundle(bundle_dir, dest, expect_actor=manifest.actor)
+    landed = receive_bundle(
+        bundle_dir, dest, expect_actor=manifest.actor, signature=signature,
+        sealed=reading,
+    )
 
     grants: list[str] = []
     adopted = False
@@ -241,6 +265,7 @@ def land_agent_home(
         dry_run=False,
         credential_policy=credential_plan.policy.strategy,
         credentials=credential_plan.credentials,
+        signature=attestation,
     )
 
 

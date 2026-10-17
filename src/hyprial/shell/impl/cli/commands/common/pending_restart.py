@@ -137,32 +137,39 @@ def _install_locked_requirement(
             ) from error
     return completed, installed
 
-def _restart_daemon_onto_install(
+def restart_daemon(
     result: JsonObject,
     *,
-    before: JsonObject,
-    installed_version: str,
-    resolution: Any,
-    resolved: JsonObject,
-    confirmation_via: str | None = None,
-) -> JsonObject:
-    """Restart the running daemon onto the version already installed.
+    before_pid: int | None,
+    survivor_idempotency_scope: str,
+    stop: bool = True,
+) -> DaemonLaunchResult:
+    """Shared restart skeleton: graceful stop, survivor bookkeeping, launch, verdicts.
 
-    Shared by the upgrade path and ``hyprial autoupdate restart`` (the
-    person-confirmed restart of an upgrade that was installed without one).
-    ``resolution`` needs only ``tag`` and ``commit``.
+    F5 (2026-10-12, Allen direct ruling): ``hyprial restart`` and
+    ``_restart_daemon_onto_install`` (upgrade + ``autoupdate restart``)
+    carried near-identical stop/survivor/launch/verdict blocks -- the
+    2026-08-30/31 incident discipline lived in two places that had already
+    drifted once in wording. This is the one copy; the callers keep their
+    own result shapes and post-success bookkeeping.
+
+    - ``result`` receives ``stopWarning`` / ``survivingOldProcess`` /
+      ``survivorAlert`` exactly as before.
+    - ``survivor_idempotency_scope`` keeps each surface's alert key stable
+      (``hyprial-restart`` vs the resolution commit): deduplication windows
+      do not merge across commands.
+    - ``before_pid=None`` (no before daemon to be fresh against) skips the
+      fresh-pid verdict.
+    - ``stop=False`` skips the graceful stop entirely (``hyprial restart``
+      with no running daemon never attempted a stop; keep it that way).
+
+    Returns the typed launch answer. Raises ``CliError(INVALID_RESPONSE)``
+    on shape/running/freshness verdict failures. Stop errors are recorded,
+    never fatal -- that is the point of the annotations below.
     """
-    from hyprial.daemon import latest_start_failure, restart_failure_detail, start_failure_line
     services = get_services()
 
-    restart_result: JsonObject = {
-        "attempted": True,
-        "restarted": False,
-        "reason": "daemon restart did not complete",
-        "before": before,
-    }
-    restart_started_at: datetime | None = None
-    try:
+    if stop:
         try:
             services._stop_daemon_gracefully()
         except (services.CliError, ipc_errors.TransientDaemonError) as stop_error:
@@ -186,14 +193,14 @@ def _restart_daemon_onto_install(
             # the launch looks wrong. So the launcher cannot be relied on here;
             # that is what DAEMON_STOP_SURVIVOR exists to say, and why it does
             # not share this path's silence.
-            restart_result["stopWarning"] = str(stop_error)
+            result["stopWarning"] = str(stop_error)
             if stop_error.code == "DAEMON_STOP_SURVIVOR":
                 # Still launch -- refusing would trade a possible failure for a
                 # certain absence again, and the claim that the launch is futile
                 # is not one anyone has verified. What changes is that a person
                 # hears about it in minutes rather than in nine hours, which was
                 # the actual cost that day.
-                restart_result["survivingOldProcess"] = True
+                result["survivingOldProcess"] = True
                 survivor = services._describe_survivor(old_pid_from(stop_error))
                 marker_path: Path | None
                 try:
@@ -223,23 +230,81 @@ def _restart_daemon_onto_install(
                     summary="⚠️ 旧 daemon 拆解完成但【进程没有退出】—— 新 daemon 已启动",
                     detail=f"{stop_error}\n{survivor}",
                     idempotency_key=(
-                        f"daemon-stop-survivor:{resolution.commit}:{stop_error.data}"
+                        f"daemon-stop-survivor:{survivor_idempotency_scope}:{stop_error.data}"
                     ),
                 )
-                restart_result["survivorAlert"] = survivor_alert.to_json()
+                result["survivorAlert"] = survivor_alert.to_json()
                 if marker_path is not None:
                     services.record_alert_outcome(marker_path, survivor_alert)
-        # The restart wait covers only the serving boundary, so it uses init's
-        # progress-idle budget and hard cap -- not a fleet-scaled one.  The 2026-08-31
-        # measurement that justified 90s here (a six-adapter machine needing
-        # 161s) was adapter restore time, and restore is no longer inside this
-        # wait: it runs on the daemon's own thread and reports through ping's
-        # phase.  A timeout therefore means the new daemon never came up, which
-        # `_launch_daemon_process` raises and the restart-failed path below
-        # reports -- the "still starting" third verdict this replaces existed
-        # only because restore used to sit inside the readiness budget.
-        # Parent-side wall clock is captured immediately before the launch
-        # primitive. Every event from the child generation must be at or after
+    # The restart wait covers only the serving boundary, so it uses init's
+    # progress-idle budget and hard cap -- not a fleet-scaled one.  The 2026-08-31
+    # measurement that justified 90s here (a six-adapter machine needing
+    # 161s) was adapter restore time, and restore is no longer inside this
+    # wait: it runs on the daemon's own thread and reports through ping's
+    # phase.  A timeout therefore means the new daemon never came up, which
+    # `_launch_daemon_process` raises and the caller's restart-failed path
+    # reports -- the "still starting" third verdict this replaces existed
+    # only because restore used to sit inside the readiness budget.
+    launched = services._launch_daemon_process(
+        ready_timeout=DAEMON_START_IDLE_BUDGET_SECONDS
+    )
+    # F2 (2026-09-04): this used to dig for the nested ps shape
+    # ``launched["daemon"]`` against the flat launch answer, so every
+    # upgrade ended in UPGRADE_RESTART_FAILED with a false alert, and a
+    # hand-written stub returning the nested shape kept the tests green.
+    # The launch answer is the typed ``DaemonLaunchResult`` now; anything
+    # that is not the type is a contract break and takes the loud path
+    # below, never a silent misread.
+    if not isinstance(launched, DaemonLaunchResult):
+        raise services.CliError(
+            "INVALID_RESPONSE",
+            "daemon launch returned an unexpected result shape",
+        )
+    if launched.running is not True:
+        raise services.CliError(
+            "INVALID_RESPONSE", "restarted daemon did not report running"
+        )
+    after_pid = launched.pid
+    if not isinstance(after_pid, int) or after_pid <= 0:
+        raise services.CliError(
+            "INVALID_RESPONSE", "restarted daemon did not report a valid pid"
+        )
+    if before_pid is not None and after_pid == before_pid:
+        raise services.CliError(
+            "INVALID_RESPONSE", "daemon restart did not yield a fresh pid"
+        )
+    return launched
+
+
+def _restart_daemon_onto_install(
+    result: JsonObject,
+    *,
+    before: JsonObject,
+    installed_version: str,
+    resolution: Any,
+    resolved: JsonObject,
+    confirmation_via: str | None = None,
+) -> JsonObject:
+    """Restart the running daemon onto the version already installed.
+
+    Shared by the upgrade path and ``hyprial autoupdate restart`` (the
+    person-confirmed restart of an upgrade that was installed without one).
+    ``resolution`` needs only ``tag`` and ``commit``.
+    """
+    from hyprial.daemon import latest_start_failure, restart_failure_detail, start_failure_line
+    services = get_services()
+
+    restart_result: JsonObject = {
+        "attempted": True,
+        "restarted": False,
+        "reason": "daemon restart did not complete",
+        "before": before,
+    }
+    restart_started_at: datetime | None = None
+    try:
+        # Parent-side wall clock is captured immediately before the restart
+        # skeleton (whose only launch primitive is the child generation this
+        # bound is for). Every event from that generation must be at or after
         # this lower bound; prior daemon generations are therefore ineligible
         # for the failure diagnosis even when they are the last matching line.
         now = datetime.now(UTC)
@@ -247,34 +312,12 @@ def _restart_daemon_onto_install(
         # that same precision so an event emitted later in this millisecond is
         # not made to look earlier merely by JSON timestamp truncation.
         restart_started_at = now.replace(microsecond=now.microsecond // 1000 * 1000)
-        launched = services._launch_daemon_process(
-            ready_timeout=DAEMON_START_IDLE_BUDGET_SECONDS
+        launched = restart_daemon(
+            restart_result,
+            before_pid=before["pid"],
+            survivor_idempotency_scope=str(resolution.commit),
         )
-        # F2 (2026-09-04): this used to dig for the nested ps shape
-        # ``launched["daemon"]`` against the flat launch answer, so every
-        # upgrade ended in UPGRADE_RESTART_FAILED with a false alert, and a
-        # hand-written stub returning the nested shape kept the tests green.
-        # The launch answer is the typed ``DaemonLaunchResult`` now; anything
-        # that is not the type is a contract break and takes the loud path
-        # below, never a silent misread.
-        if not isinstance(launched, DaemonLaunchResult):
-            raise services.CliError(
-                "INVALID_RESPONSE",
-                "daemon launch returned an unexpected result shape",
-            )
-        if launched.running is not True:
-            raise services.CliError(
-                "INVALID_RESPONSE", "restarted daemon did not report running"
-            )
         after_pid = launched.pid
-        if not isinstance(after_pid, int) or after_pid <= 0:
-            raise services.CliError(
-                "INVALID_RESPONSE", "restarted daemon did not report a valid pid"
-            )
-        if after_pid == before["pid"]:
-            raise services.CliError(
-                "INVALID_RESPONSE", "daemon restart did not yield a fresh pid"
-            )
     except (services.CliError, ipc_errors.TransientDaemonError, OSError) as error:
         restart_result["reason"] = f"daemon restart failed: {error}"
         failure: JsonObject = {

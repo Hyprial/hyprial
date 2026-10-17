@@ -65,6 +65,7 @@ from hyprial.daemon.impl.orgfs.network.protocol import ORGFS_WIRE_VERSION as ORG
 from hyprial.daemon.impl.orgfs.network.protocol import RecoveryCandidates as RecoveryCandidates
 from hyprial.daemon.impl.orgfs.network.protocol import ReplacementHook as ReplacementHook
 from hyprial.daemon.impl.orgfs.network.protocol import SupplierGate as SupplierGate
+from hyprial.daemon.impl.orgfs.network.protocol import SupplierOwner as SupplierOwner
 from hyprial.daemon.impl.orgfs.network.protocol import _BLOB_ABSENCE_CODES as _BLOB_ABSENCE_CODES
 from hyprial.daemon.impl.orgfs.network.protocol import _LogIngress as _LogIngress
 from hyprial.daemon.impl.orgfs.network.protocol import _READ_DIRECT as _READ_DIRECT
@@ -91,6 +92,7 @@ class OrgFsMesh(MeshRecovery, MeshIngress, MeshQueries, MeshSync):
         author: str,
         blob_store: BlobStore | None = None,
         supplier_online: SupplierGate | None = None,
+        supplier_owner: SupplierOwner | None = None,
         on_applied: AppliedHook | None = None,
         on_replacement: ReplacementHook | None = None,
         announcement_source: AnnouncementSource | None = None,
@@ -102,6 +104,7 @@ class OrgFsMesh(MeshRecovery, MeshIngress, MeshQueries, MeshSync):
         replica_store: ReplicaStore | None = None,
         space_authority: Any | None = None,
         projection_clock: Callable[[], float] = time.monotonic,
+        announce_instrumentation_enabled: bool = False,
     ) -> None:
         if not node_id:
             raise ValueError("node_id must not be empty")
@@ -112,6 +115,7 @@ class OrgFsMesh(MeshRecovery, MeshIngress, MeshQueries, MeshSync):
         self.blob_store = blob_store
         self.durable = bool(durable)
         self._supplier_online = supplier_online or (lambda _supplier: True)
+        self._supplier_owner = supplier_owner
         self._on_applied = on_applied
         self._on_replacement = on_replacement
         self._announcement_source = announcement_source
@@ -122,6 +126,7 @@ class OrgFsMesh(MeshRecovery, MeshIngress, MeshQueries, MeshSync):
             lambda: tuple(self._announced_nodes)
         )
         self._logger = logger
+        self._announce_instrumentation_enabled = announce_instrumentation_enabled
         self._keys = keys or KeySpace()
         self.replica_store = replica_store
         self.space_authority = space_authority
@@ -257,6 +262,35 @@ class OrgFsMesh(MeshRecovery, MeshIngress, MeshQueries, MeshSync):
             return bool(supplier) and bool(self._supplier_online(supplier))
         except Exception:
             return False
+
+    def _supplier_member_allowed(self, supplier: str) -> bool:
+        """R1 supplier gate: import only from a current member's device.
+
+        The resolver maps a supplier node to the principal owning its device
+        row; ``None`` means no member-device evidence exists for that node
+        (never seen here), which stays open so join enrollment is not
+        blocked.  A resolved principal that is no longer an active member of
+        this space refuses the supplier outright.
+        """
+
+        resolver = self._supplier_owner
+        if resolver is None:
+            return True
+        try:
+            principal = resolver(supplier)
+        except Exception:
+            # A broken resolver must not partition working members; R2 still
+            # judges every envelope's author on its own.
+            self._log(
+                "warn",
+                "orgfs.update.rejected",
+                reason="supplier-owner-unresolved",
+                supplier=supplier,
+            )
+            return True
+        if principal is None:
+            return True
+        return self._member_mode(principal) is not None
 
 
     @property

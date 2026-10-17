@@ -38,9 +38,10 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from hyprial.daemon.impl.pac.storage.journal  import envelope
+from hyprial.daemon.impl.pac.storage.journal  import GraphClosedRecord, envelope
 from hyprial.daemon.impl.pac.storage.migrations  import migrate
 from hyprial.daemon.impl.pac.contracts.restore  import PacRestoreFacts
+from hyprial.kernel import HookEventPublisher, graph_closed_event_payload
 
 DATABASE_NAME = "pac-graph.sqlite3"
 
@@ -299,9 +300,58 @@ class PacGraphStore:
     def __init__(self, path: Path, *, read_only: bool = False) -> None:
         self.path = Path(path)
         self._db = connect(self.path, read_only=read_only)
+        # Optional H5 hook publisher; None is the hooks-off no-op path.
+        self.hook_publisher: HookEventPublisher | None = None
+        # Optional event wake invoked with the graph id after a committed
+        # close is flushed.  Set by the graph authority / workflow service so
+        # worker cleanup is driven by the close event, not a periodic sweep.
+        self.graph_closed_wake: Any = None
+        self._pending_graph_closed: list[GraphClosedRecord] = []
 
     def close(self) -> None:
         self._db.close()
+
+    # -- deferred graph.closed emits ---------------------------------------
+
+    def defer_graph_closed(self, record: GraphClosedRecord) -> None:
+        """Remember one transaction's close; the commit owner flushes it."""
+
+        self._pending_graph_closed.append(record)
+
+    def discard_graph_closed(self) -> None:
+        """Drop deferred closes whose transaction rolled back."""
+
+        self._pending_graph_closed.clear()
+
+    def flush_graph_closed(self) -> int:
+        """Publish every committed close, after the caller's commit."""
+
+        records, self._pending_graph_closed = self._pending_graph_closed, []
+        wake = self.graph_closed_wake
+        if wake is not None:
+            for record in records:
+                try:
+                    wake(record.graph_id)
+                except Exception:  # noqa: BLE001 - a wake is best-effort
+                    pass
+        publisher = self.hook_publisher
+        if publisher is None:
+            return 0
+        published = 0
+        for record in records:
+            published += publisher.publish(
+                "graph.closed",
+                payload=graph_closed_event_payload(
+                    graph_id=record.graph_id,
+                    end_state=record.end_state,
+                    closed_by=record.closed_by,
+                    reason_ref=record.reason_ref,
+                    closed_at_ms=record.closed_at_ms,
+                ),
+                emitted_at_ms=record.closed_at_ms,
+                graph_id=record.graph_id,
+            )
+        return published
 
     # -- transactions ------------------------------------------------------
 

@@ -38,6 +38,7 @@ if TYPE_CHECKING:
 
 
 from hyprial.daemon.impl.orgfs.network.protocol import _LogIngress, _READ_DIRECT, _decode_update_header, _json_bytes
+from hyprial.daemon.impl.orgfs.instrumentation import emit_announce_event
 
 class MeshIngress:
     """Responsibility methods on the sole OrgFsMesh state host.
@@ -224,6 +225,15 @@ class MeshIngress:
                 }
             )
         self.session.put(self._keys.orgfs_announce(self.node_id), payload)
+        emit_announce_event(
+            self._announce_instrumentation_enabled,
+            self._logger,
+            "announce.published",
+            node=self.node_id,
+            items=spaces,
+            count_field="spaceCount",
+            payload=payload,
+        )
 
 
     def attach_replica(self, replica_store: ReplicaStore) -> None:

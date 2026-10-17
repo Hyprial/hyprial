@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./core": "./core/index.mjs",
     "./studio": "./studio/index.mjs",
     "./session": "./session/index.mjs",
     "./host": "./host/index.mjs",
@@ -22,6 +23,7 @@
     "check": "node scripts/check-architecture.mjs",
     "verify": "npm run check && npm test",
     "build": "node product/build.mjs",
+    "build:core": "node scripts/build-core.mjs",
     "start": "node product/server.mjs"
   },
   "dependencies": {

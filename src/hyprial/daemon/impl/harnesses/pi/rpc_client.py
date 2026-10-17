@@ -38,6 +38,7 @@ from hyprial.daemon.impl.harnesses.pi.messages import (
     _assistant_provider_error,
     _bounded,
     _final_assistant_text,
+    _last_assistant_message,
     _pi_progress_observation,
 )
 
@@ -186,6 +187,10 @@ class PiRpcClient:
             self._stderr_tail = bytearray()
             self._turn_id: str | None = None
             self._turn_prompt: str | None = None
+            # Multiplexed command responses: the ONE stdout reader inside
+            # receive_response resolves these; steer never reads the wire.
+            self._steer_waiters: dict[str, asyncio.Future[dict[str, object]]] = {}
+            self._reading_response = False
             self._expected_stop = False
             # Set only when the startup probe answered: the difference between
             # "never came up" and "came up, then died" decides whether a stored
@@ -479,6 +484,56 @@ class PiRpcClient:
                 {"id": self._turn_id, "type": "prompt", "message": prompt}
             )
 
+        async def steer(self, message: str, *, timeout: float = 10.0) -> str:
+            """One native same-turn steer via pi's RPC steering command.
+
+            Sends ``{"id": <steer id>, "type": "steer", "message": ...}``
+            and waits for the MATCHING response, multiplexed through the one
+            stdout reader inside ``receive_response`` — two coroutines never
+            read the transport at once.  ``success: true`` with disposition
+            ``queued``/``handled`` is native acceptance only, never proof of
+            model consumption.  An explicit failure is a safe reject; a lost
+            or unclassifiable response is UNKNOWN, never a fallback.
+            """
+
+            from hyprial.daemon.impl.harnesses.streaming.turn_io import (
+                _SteerRejected,
+                _SteerUnknown,
+            )
+
+            if self._process is None or self._process.returncode is not None:
+                raise _SteerRejected("pi RPC process is not running")
+            if not self._reading_response:
+                raise _SteerRejected("pi RPC has no active run to steer")
+            steer_id = f"hyprial-steer-{uuid4().hex}"
+            loop = asyncio.get_running_loop()
+            waiter: asyncio.Future[dict[str, object]] = loop.create_future()
+            self._steer_waiters[steer_id] = waiter
+            try:
+                await self._write(
+                    {"id": steer_id, "type": "steer", "message": message}
+                )
+                try:
+                    response = await asyncio.wait_for(waiter, timeout)
+                except TimeoutError as error:
+                    raise _SteerUnknown(
+                        "pi steer response never arrived; the write may have"
+                        " landed"
+                    ) from error
+            finally:
+                self._steer_waiters.pop(steer_id, None)
+            if response.get("success") is not True:
+                raise _SteerRejected(
+                    str(response.get("error") or "pi rejected the steer")
+                )
+            data = response.get("data")
+            disposition = data.get("disposition") if isinstance(data, dict) else None
+            if disposition not in {"queued", "handled"}:
+                raise _SteerUnknown(
+                    "pi steer response carries no provable disposition"
+                )
+            return "steered"
+
         async def receive_response(self) -> AsyncIterator[object]:
             turn_id = self._turn_id
             if turn_id is None:
@@ -488,26 +543,37 @@ class PiRpcClient:
                 raise ConnectionError("pi RPC turn prompt was not retained")
             self._turn_id = None
             self._turn_prompt = None
+            # Busy marker for the steer multiplexer: while this generator is
+            # alive it is the ONLY stdout reader, so steer responses are
+            # resolved here.
+            self._reading_response = True
+            try:
+                async for item in self._receive_response_locked(turn_id, prompt):
+                    yield item
+            finally:
+                self._reading_response = False
+
+        async def _receive_response_locked(
+            self, turn_id: str, prompt: str
+        ) -> AsyncIterator[object]:
             recovery_attempted = False
             while True:
                 last_run_messages: list[object] = []
                 pending_settle = False
+                settle_probe: str | None = None
                 while True:
-                    if pending_settle:
+                    if pending_settle and settle_probe is None:
                         try:
                             message = await self._read(
                                 timeout=self._settle_grace_seconds
                             )
                         except TimeoutError:
-                            # Older builds never emit agent_settled; a quiet grace
-                            # window after a non-retrying agent_end is the fallback
-                            # completion check.
-                            yield ProgressObservation(
-                                phase="turn-end",
-                                summary="pi turn settled",
-                                terminal=True,
-                            )
-                            break
+                            # Silence is not a terminal event. Older builds may
+                            # omit agent_settled: require positive native idle
+                            # evidence, multiplexed by this same wire reader.
+                            settle_probe = f"hyprial-settle-{uuid4().hex}"
+                            await self._write({"type": "get_state", "id": settle_probe})
+                            continue
                     else:
                         message = await self._read()
                     kind = message.get("type")
@@ -515,6 +581,25 @@ class PiRpcClient:
                     if observation is not None:
                         yield observation
                     if kind == "response":
+                        if message.get("id") == settle_probe and settle_probe is not None:
+                            settle_probe = None
+                            state = message.get("data")
+                            if message.get("success") is True and isinstance(state, dict) and (
+                                state.get("isStreaming") is False
+                                and state.get("isCompacting") is False
+                                and type(state.get("pendingMessageCount")) is int
+                                and state["pendingMessageCount"] == 0
+                            ):
+                                yield ProgressObservation(
+                                    phase="turn-end", summary="pi turn settled", terminal=True,
+                                )
+                                break
+                            continue
+                        waiter = self._steer_waiters.pop(
+                            str(message.get("id")), None
+                        )
+                        if waiter is not None and not waiter.done():
+                            waiter.set_result(message)
                         if (
                             message.get("id") == turn_id
                             and message.get("success") is not True
@@ -533,11 +618,13 @@ class PiRpcClient:
                         if isinstance(messages, list):
                             last_run_messages = messages
                         pending_settle = message.get("willRetry") is not True
+                        settle_probe = None
                         continue
                     if kind == "agent_settled":
                         break
                     if kind in _CONTINUATION_EVENTS:
                         pending_settle = False
+                        settle_probe = None
     
                 # A provider-level stop error outranks any text: the run whose last
                 # assistant message errored did not answer, agent_settled means pi
@@ -578,7 +665,10 @@ class PiRpcClient:
                     continue
     
                 text = _final_assistant_text(last_run_messages)
-                if text is None:
+                if text is None and _last_assistant_message(last_run_messages) is None:
+                    # Older Pi versions can omit agent_end messages entirely.
+                    # A concrete current empty/failed final must not recover
+                    # an older answer from the session-wide fallback.
                     text = await self._last_assistant_text_fallback()
                 if text is None:
                     yield _PiTurnOutcome(
@@ -659,7 +749,7 @@ class PiRpcClient:
             )
             data = response.get("data")
             text = data.get("text") if isinstance(data, dict) else None
-            return text if isinstance(text, str) and text else None
+            return text if isinstance(text, str) and text.strip() else None
 
         async def _compact_session(self) -> str | None:
             """Ask pi to compact once; return failure detail when unsupported."""
@@ -884,14 +974,15 @@ _RESERVED_VALUE_OPTIONS = {"--mode", "--session-id", "--session", "--fork"}
 
 _RESERVED_FLAG_OPTIONS = {"--print", "-p", "--continue", "-c", "--resume", "-r"}
 
-# Events that mean the run continues after an agent_end (auto retry,
-# overflow compaction, or another queued run) — they disarm the
-# settled-fallback grace window.
+# Native continuation invalidates any in-flight idle probe after agent_end.
 _CONTINUATION_EVENTS = {
     "agent_start",
+    "turn_start",
+    "message_start",
     "auto_retry_start",
     "compaction_start",
     "summarization_retry_attempt_start",
+    "tool_execution_start",
 }
 
 # Dialog-style extension UI requests block the agent until answered; a

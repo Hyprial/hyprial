@@ -32,13 +32,30 @@ class InterruptTurnCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class SteerTurnCommand:
+    """Deliver a QUEUED delivery into the turn that is running right now.
+
+    Carries only the queued delivery id; the message text stays in the
+    pending command the runtime already owns, so the steering path never
+    mints a second copy of message custody.  ``close`` rejects rather than
+    queues: a steer with no running turn has nothing to steer.
+    """
+
+    correlation_id: str
+    delivery_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class CloseTurnPumpCommand:
     correlation_id: str
     deadline_ms: int
 
 
 TurnCommand: TypeAlias = (
-    EnqueueTurnCommand | InterruptTurnCommand | CloseTurnPumpCommand
+    EnqueueTurnCommand
+    | InterruptTurnCommand
+    | SteerTurnCommand
+    | CloseTurnPumpCommand
 )
 
 
@@ -107,6 +124,27 @@ class TurnInterruptIoCompleted:
 
 
 @dataclass(frozen=True, slots=True)
+class TurnSteerIoCompleted:
+    """One queued delivery's steer outcome, keyed to the queued delivery.
+
+    ``accepted`` is the harness's native acceptance only, never proof the
+    model consumed the text.  ``consumed`` is true when the native mechanism
+    folded the message INTO the running turn (the queued delivery must not
+    run again); it is false for an advance mechanism (Claude: interrupt the
+    running turn so the queued delivery starts next) where the queued
+    delivery stays pending.
+    """
+
+    correlation_id: str
+    generation: int
+    version: int
+    delivery_id: str
+    accepted: bool
+    consumed: bool
+    detail: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class TurnPumpClosed:
     correlation_id: str
     generation: int
@@ -119,6 +157,7 @@ TurnEvent: TypeAlias = (
     | TurnProgressObserved
     | TurnIoCompleted
     | TurnInterruptIoCompleted
+    | TurnSteerIoCompleted
     | TurnPumpClosed
     | PortCommandRejected
 )

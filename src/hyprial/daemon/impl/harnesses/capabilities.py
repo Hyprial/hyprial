@@ -169,7 +169,8 @@ _DECLARATIONS: dict[tuple[str, bool], dict[Capability, CapabilitySupport]] = {
         Capability.PROACTIVE_SEND: _unsupported(),
         Capability.SESSION_LIFECYCLE: _degraded(
             "app_server",
-            "PR1 owns the current app-server/TUI launch; daemon-restart recovery lands in PR2",
+            "exact thread resume is supported; daemon-restart recovery of the "
+            "interactive app-server/TUI is not yet supported",
         ),
         Capability.TOOL_INJECTION: _unsupported(),
         Capability.PLUGIN_INJECTION: _degraded(
@@ -199,10 +200,13 @@ _DECLARATIONS: dict[tuple[str, bool], dict[Capability, CapabilitySupport]] = {
         Capability.MODEL_SELECT: _native("dsh_api"),
     },
     ("dsh", False): {
-        Capability.INTERACTIVE_ATTACH: _unsupported(),
+        Capability.INTERACTIVE_ATTACH: _unsupported("no interactive DSH TUI connector"),
         Capability.WAKE_PUSH: _unsupported(),
         Capability.PROACTIVE_SEND: _unsupported(),
-        Capability.SESSION_LIFECYCLE: _unsupported(),
+        Capability.SESSION_LIFECYCLE: _unsupported(
+            "no interactive DSH TUI connector; headless workers cannot resume "
+            "because each launch mints a fresh worker MCP identity"
+        ),
         Capability.TOOL_INJECTION: _unsupported(),
         Capability.PLUGIN_INJECTION: _unsupported(),
         Capability.TURN_CONTROL: _unsupported(),
@@ -221,10 +225,10 @@ _DECLARATIONS: dict[tuple[str, bool], dict[Capability, CapabilitySupport]] = {
         Capability.MODEL_SELECT: _native("python_worker"),
     },
     ("jev", False): {
-        Capability.INTERACTIVE_ATTACH: _unsupported(),
+        Capability.INTERACTIVE_ATTACH: _unsupported("jev is a headless stateless caller"),
         Capability.WAKE_PUSH: _unsupported(),
         Capability.PROACTIVE_SEND: _unsupported(),
-        Capability.SESSION_LIFECYCLE: _unsupported(),
+        Capability.SESSION_LIFECYCLE: _unsupported("no persistent session"),
         Capability.TOOL_INJECTION: _unsupported(),
         Capability.PLUGIN_INJECTION: _unsupported(),
         Capability.TURN_CONTROL: _unsupported(),
@@ -250,10 +254,10 @@ _DECLARATIONS: dict[tuple[str, bool], dict[Capability, CapabilitySupport]] = {
         Capability.MODEL_SELECT: _unsupported("no model"),
     },
     ("user-proxy", False): {
-        Capability.INTERACTIVE_ATTACH: _unsupported(),
+        Capability.INTERACTIVE_ATTACH: _unsupported("user-proxy is a headless stateless relay"),
         Capability.WAKE_PUSH: _unsupported(),
         Capability.PROACTIVE_SEND: _unsupported(),
-        Capability.SESSION_LIFECYCLE: _unsupported(),
+        Capability.SESSION_LIFECYCLE: _unsupported("stateless relay"),
         Capability.TOOL_INJECTION: _unsupported(),
         Capability.PLUGIN_INJECTION: _unsupported(),
         Capability.TURN_CONTROL: _unsupported(),

@@ -9,17 +9,40 @@ here as callbacks, never imported.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any
 
 from hyprial.kernel import DaemonRequestError, ipc_errors
+from hyprial.kernel import canonical_user_uri, parse_agent_uri
+from hyprial.daemon.impl.configuration.identity import normalize_agent_recipient
 from hyprial.daemon.impl.ipc.params import JsonObject, _required_string
 from hyprial.daemon.impl.orgfs.api import OrgFsError
+from hyprial.daemon.impl.org.network.casdoor import casdoor_groups_for_home
+from hyprial.daemon.impl.org.network.casdoor.client import CasdoorGroupError
+from hyprial.daemon.impl.org.network.casdoor.membership import (
+    CasdoorConfigError,
+    casdoor_credential_file,
+)
+from hyprial.daemon.impl.org.network.casdoor.sync import (
+    CasdoorMembershipSync,
+    ConfirmedMembers,
+)
+from hyprial.daemon.impl.org.network.casdoor.webhook import (
+    CasdoorWebhookReceiver,
+    Trigger,
+    webhook_settings,
+)
 from hyprial.daemon.impl.org.network.dialing import DialState, dial_peers
 from hyprial.daemon.impl.org.network.directory import OrgFsDirectoryStore
 from hyprial.daemon.impl.org.network.service import (
     OrgNetworkError,
     OrgNetworkService,
+)
+from hyprial.daemon.impl.org.network.state import (
+    add_org_acl_grant,
+    read_org_acl_grants,
+    remove_org_acl_grant,
 )
 from hyprial.identity import address_path
 from hyprial.identity import InviteError
@@ -69,9 +92,9 @@ def _build_service(app: Any) -> OrgNetworkService:
         request_redial=lambda: app._reconcile_forwarding_endpoints(),
         read_own_address=read_own_address,
         forwarding_status=lambda: app._forwarding_status_json(),
-        # LAX(tailnet-cutover): Casdoor group creation is not wired yet;
-        # create() treats the group as best effort and only warns.
-        casdoor_create_group=None,
+        # Casdoor group membership is the authority (design §2): owner-side
+        # commands write it first; absent config = not this node's job.
+        casdoor=casdoor_groups_for_home(Path(app.hyprial_home)),
         logger=lambda level, domain, event, **fields: app._log(
             level, domain, event, **fields
         ),
@@ -104,7 +127,9 @@ def ipc_org_invite(app: Any, params: JsonObject) -> dict:
     org = _required_string(params.get("org"), "org")
     user = _required_string(params.get("user"), "user")
     try:
-        return _build_service(app).invite(org, user)
+        result = _build_service(app).invite(org, user)
+        _membership_changed(app, org, user)
+        return result
     except OrgFsError as error:
         raise _translate(error) from error
     except (InviteError, OrgNetworkError, ValueError) as error:
@@ -165,7 +190,9 @@ def ipc_org_remove(app: Any, params: JsonObject) -> dict:
     org = _required_string(params.get("org"), "org")
     user = _required_string(params.get("user"), "user")
     try:
-        return _build_service(app).remove(org, user)
+        result = _build_service(app).remove(org, user)
+        _membership_changed(app, org, user)
+        return result
     except OrgFsError as error:
         raise _translate(error) from error
     except (InviteError, OrgNetworkError, ValueError) as error:
@@ -198,11 +225,167 @@ def ipc_org_network(app: Any, params: JsonObject) -> dict:
             ipc_errors.INVALID_ARGUMENT, "org must be a string when present"
         )
     try:
-        return _build_service(app).network(org)
+        result = _build_service(app).network(org)
     except OrgFsError as error:
         raise _translate(error) from error
     except (InviteError, OrgNetworkError, ValueError) as error:
         raise _translate(error) from error
+    sync = getattr(app, "_casdoor_membership_sync", None)
+    # Owner side only (design §3): casdoorOnly, last sync time, last error.
+    result["casdoorSync"] = (
+        {name: sync.status(name) for name in result.get("orgs", [])} if sync is not None else None
+    )
+    return result
+
+
+# -- org.acl.*: owner-node entry authorizations (design §8 ruling 3) ---------
+#
+# The grants feed the ACL-space entry gate in ``orgfs_bridge``.  They live in
+# the owner node's local state only — never in orgfs, never synchronized —
+# because the gate itself exists only where the writes can be authored.
+
+
+def _org_acl_entry_or_forbidden(
+    app: Any, params: JsonObject, *, method: str, trusted_origin: str | None
+) -> None:
+    """Only the owner's terminal or the owner's user-proxy manages grants."""
+
+    entry = app._org_acl_entry_caller(
+        params, method=method, trusted_origin=trusted_origin
+    )
+    if entry is not None and entry[0] in ("terminal", "user-proxy"):
+        return
+    raise DaemonRequestError(
+        ipc_errors.ORG_ACL_GRANT_FORBIDDEN,
+        f"{method} is available only to the owner's terminal or the "
+        "owner's user-proxy",
+        {"method": method}
+        | ({"caller": entry[1]} if entry is not None else {}),
+    )
+
+
+def _org_acl_owner_space(app: Any, org: str) -> None:
+    """The org must exist here and this daemon's owner must own it."""
+
+    try:
+        space = _build_service(app)._require_space(org)
+    except (OrgFsError, ValueError) as error:
+        raise _translate(error) from error
+    author = (
+        app.owner
+        if str(app.owner).startswith("user:")
+        else canonical_user_uri(app.owner)
+    )
+    if space.owner != author:
+        raise DaemonRequestError(
+            ipc_errors.ORG_ACL_GRANT_FORBIDDEN,
+            "ACL entry grants live on the owner node; this node does not "
+            f"own {org}",
+            {"org": org, "reason": "not-owner-node"},
+        )
+
+
+def _org_acl_owned_agent(app: Any, value: str) -> str:
+    """Resolve a grantee to an agent this daemon runs for its own owner.
+
+    The daemon's registration is the authority: a short name must resolve in
+    the local alias table, and a canonical URI must name this owner, this
+    node, and a registered local agent — anything else is not "an agent of
+    the owner's own" and cannot be granted.
+    """
+
+    not_owned = DaemonRequestError(
+        ipc_errors.ORG_ACL_GRANT_NOT_OWNED,
+        f"{value!r} is not an agent registered to this node's owner",
+        {"agent": value},
+    )
+    normalized = normalize_agent_recipient(value)
+    if ":" not in normalized:
+        resolved = app._resolve_agent_alias(normalized)
+        if resolved == normalized:
+            raise not_owned
+        normalized = resolved
+    parsed = parse_agent_uri(normalized)
+    if parsed is None:
+        raise not_owned
+    owner, machine, short = parsed
+    if owner != app.owner or machine != app.node_id:
+        raise not_owned
+    if app._resolve_agent_alias(short) != normalized:
+        raise not_owned
+    return normalized
+
+
+def ipc_org_acl_grant(
+    app: Any, params: JsonObject, trusted_origin: str | None = None
+) -> dict:
+    org = _required_string(params.get("org"), "org")
+    _org_acl_entry_or_forbidden(
+        app, params, method="org.acl.grant", trusted_origin=trusted_origin
+    )
+    _org_acl_owner_space(app, org)
+    agent = _org_acl_owned_agent(
+        app, _required_string(params.get("agent"), "agent")
+    )
+    now_ms = int(time.time() * 1000)
+    until_ms = params.get("untilMs")
+    if until_ms is not None:
+        if isinstance(until_ms, bool) or not isinstance(until_ms, int):
+            raise DaemonRequestError(
+                ipc_errors.INVALID_ARGUMENT, "untilMs must be an integer"
+            )
+        if until_ms <= now_ms:
+            raise DaemonRequestError(
+                ipc_errors.INVALID_ARGUMENT,
+                "untilMs must be in the future",
+                {"untilMs": until_ms, "nowMs": now_ms},
+            )
+    entry = add_org_acl_grant(
+        Path(app.hyprial_home), org, agent,
+        granted_at_ms=now_ms, until_ms=until_ms,
+    )
+    app._log("info", "org", "org.acl.grant", org=org, agent=agent, untilMs=until_ms)
+    return {"org": org, "agent": agent, **entry}
+
+
+def ipc_org_acl_revoke(
+    app: Any, params: JsonObject, trusted_origin: str | None = None
+) -> dict:
+    org = _required_string(params.get("org"), "org")
+    agent = _required_string(params.get("agent"), "agent")
+    _org_acl_entry_or_forbidden(
+        app, params, method="org.acl.revoke", trusted_origin=trusted_origin
+    )
+    _org_acl_owner_space(app, org)
+    # Revoke takes the grant's own spelling: resolve when it is a live local
+    # agent, else fall back to the literal so a grant for a since-removed
+    # agent can still be revoked.
+    try:
+        agent = _org_acl_owned_agent(app, agent)
+    except DaemonRequestError:
+        pass
+    revoked = remove_org_acl_grant(Path(app.hyprial_home), org, agent)
+    app._log("info", "org", "org.acl.revoke", org=org, agent=agent, revoked=revoked)
+    return {"org": org, "agent": agent, "revoked": revoked}
+
+
+def ipc_org_acl_ls(
+    app: Any, params: JsonObject, trusted_origin: str | None = None
+) -> dict:
+    org = _required_string(params.get("org"), "org")
+    _org_acl_entry_or_forbidden(
+        app, params, method="org.acl.ls", trusted_origin=trusted_origin
+    )
+    _org_acl_owner_space(app, org)
+    now_ms = int(time.time() * 1000)
+    grants = read_org_acl_grants(Path(app.hyprial_home), now_ms=now_ms).get(org, {})
+    return {
+        "org": org,
+        "grants": [
+            {"agent": agent, **entry}
+            for agent, entry in sorted(grants.items())
+        ],
+    }
 
 
 def publish_self_for_app(app: Any) -> dict:
@@ -229,7 +412,10 @@ def process_leave_requests_for_app(app: Any) -> dict:
     """
 
     try:
-        return _build_service(app).process_leave_requests()
+        result = _build_service(app).process_leave_requests()
+        for item in result.get("processed", []):
+            _membership_changed(app, str(item.get("org")), str(item.get("user")))
+        return result
     except Exception as error:  # noqa: BLE001 - the reconcile tick must survive
         try:
             app._log("warn", "org", "org.leave_requests.failed", detail=str(error))
@@ -279,6 +465,77 @@ def directory_peers_for_app(app: Any) -> dict[str, str]:
             return {}
 
 
+def _membership_changed(app: Any, org: str, user: str) -> None:
+    """A local membership command: let the owner's actor re-read that user."""
+
+    sync = getattr(app, "_casdoor_membership_sync", None)
+    if sync is not None:
+        sync.user_changed(user, org)
+
+
+def start_casdoor_membership_sync(app: Any) -> None:
+    """Start the owner-side membership actor and its webhook (design §3).
+
+    Nothing starts on a node whose settings name no Casdoor credential.  A
+    webhook that cannot bind is logged; the start-up pass and the backstop
+    still run.  Never raises: daemon start must not depend on Casdoor.
+    """
+
+    def log(level: str, domain: str, event: str, **fields: Any) -> None:
+        app._log(level, domain, event, **fields)
+
+    try:
+        credential_file = casdoor_credential_file(Path(app.hyprial_home))
+    except CasdoorConfigError as config:
+        log("warn", "org", "org.sync.unavailable", code=config.error.code)
+        return
+    if credential_file is None:
+        return
+    sync = CasdoorMembershipSync(
+        service_factory=lambda: _build_service(app),
+        confirmed=ConfirmedMembers(Path(app.hyprial_home) / "org-sync" / "confirmed-members.json"),
+        log=log,
+    )
+    app._casdoor_membership_sync = sync
+    sync.start()
+    try:
+        settings = webhook_settings(credential_file)
+    except CasdoorGroupError as error:
+        log("warn", "org", "org.sync.webhook-unavailable", code=error.code)
+        return
+    if settings is None:
+        log("info", "org", "org.sync.webhook-unconfigured")
+        return
+
+    def on_trigger(trigger: Trigger) -> None:
+        if trigger.kind == "user" and trigger.name:
+            sync.user_changed(trigger.name)
+        else:
+            sync.reconcile(trigger.name if trigger.kind == "org" else None)
+
+    try:
+        receiver = CasdoorWebhookReceiver(settings, on_trigger, log=log)
+    except OSError as error:
+        log("warn", "org", "org.sync.webhook-unavailable", code=type(error).__name__)
+        return
+    receiver.start()
+    app._casdoor_webhook = receiver
+
+
+def stop_casdoor_membership_sync(app: Any) -> None:
+    receiver = getattr(app, "_casdoor_webhook", None)
+    app._casdoor_webhook = None
+    sync = getattr(app, "_casdoor_membership_sync", None)
+    app._casdoor_membership_sync = None
+    failures: list[str] = []
+    if receiver is not None and not receiver.close():
+        failures.append("webhook listener")
+    if sync is not None and not sync.stop():
+        failures.append("membership actor")
+    if failures:
+        raise RuntimeError(f"org Casdoor sync did not stop: {', '.join(failures)}")
+
+
 def _host_liveliness(app: Any):  # type: ignore[no-untyped-def]
     """``device id -> currently live?`` from OrgFS host liveliness, if running."""
 
@@ -287,8 +544,12 @@ def _host_liveliness(app: Any):  # type: ignore[no-untyped-def]
         return lambda _device: False
     return lambda device: device in getattr(runtime, "_lively_peers", ())
 
+
 __all__ = [
     "directory_peers_for_app",
+    "ipc_org_acl_grant",
+    "ipc_org_acl_ls",
+    "ipc_org_acl_revoke",
     "ipc_org_create",
     "ipc_org_delete",
     "ipc_org_execute",
@@ -299,4 +560,6 @@ __all__ = [
     "ipc_org_network",
     "ipc_org_remove",
     "publish_self_for_app",
+    "start_casdoor_membership_sync",
+    "stop_casdoor_membership_sync",
 ]

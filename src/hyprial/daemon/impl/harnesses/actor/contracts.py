@@ -266,6 +266,8 @@ class _Record:
     attempt_correlation_id: str | None = None
     restore_batch: str | None = None
     failures: int = 0
+    started_at: float | None = None
+    early_exits: int = 0
     # `failed` is NOT stored: it is `failures >= failure_budget`, and keeping
     # a boolean alongside the counter it is computed from is a second source
     # of truth that can disagree with the first.  Within budget the harness is

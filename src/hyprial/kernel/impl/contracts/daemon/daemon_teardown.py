@@ -7,9 +7,9 @@ from __future__ import annotations
 # steps that have no timeout of their own.
 DAEMON_EXIT_BACKSTOP_SECONDS = 15.0
 
-# Recap persistence is mechanism-owned and must finish before its agent homes
-# and inbox collaborators are closed.  This is a join budget, never a reason to
-# loosen any existing teardown step.
+# Recap persistence (unified hook consumers) is mechanism-owned and must
+# finish before agent homes and inbox collaborators are closed.  This is a
+# join budget, never a reason to loosen any existing teardown step.
 TURN_HOOK_CLOSE_TIMEOUT_SECONDS = 5.0
 
 # Every bounded close step is named here so shutdown waiters and observers can
@@ -25,8 +25,11 @@ DAEMON_CLOSE_STEP_BUDGETS = (
     ("route-registration", 5.0),
     ("harnesses", 5.0),
     ("operator-alarms", 5.0),
+    ("delivery-hooks", TURN_HOOK_CLOSE_TIMEOUT_SECONDS),
     ("hook-bus", TURN_HOOK_CLOSE_TIMEOUT_SECONDS),
-    ("turn-hooks", TURN_HOOK_CLOSE_TIMEOUT_SECONDS),
+    # Named consumers (biz/hooks) drain their writers here; the legacy v1
+# turn-hook service is retired (unified hooks H2).
+("hooks-consumers", TURN_HOOK_CLOSE_TIMEOUT_SECONDS),
     ("restore-thread", 2.0),
     ("org-binding-cache", 5.0),
     ("remote-workflow", 5.0),

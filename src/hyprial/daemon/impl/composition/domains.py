@@ -39,6 +39,7 @@ from .events import (
     _check_domain_receipt,
 )
 from .views import (
+    AgentIdentityProjectionView,
     AgentDirectoryFacade,
     AgentLivenessProjectionFacade,
 )
@@ -142,6 +143,7 @@ class AgentSessionDomains:
             daemon_epoch=daemon_epoch,
             event_sink=self._session_events.publish,
             agent_commands=self.agent,
+            agent_identity=AgentIdentityProjectionView(self),
             clock=clock,
             persistence_late_result=persistence_late_result,
         )

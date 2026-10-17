@@ -18,6 +18,7 @@ from typing import Any
 from uuid import uuid4
 
 from hyprial.kernel import ActorRuntime, ActorSpec, AdmissionResult
+from hyprial.kernel import HookEventPublisher
 from hyprial.kernel import PAC_WORKTREE_GIT_TIMEOUT_SECONDS
 
 from hyprial.daemon.impl.pac.actors.coordinator  import FileLaunchResolver
@@ -84,6 +85,7 @@ class PacGraphAuthority:
         mailbox_capacity: int = 128, completion_capacity: int = 256,
         call_timeout: float = 15.0,
         logger: Callable[..., None] | None = None,
+        hook_publisher: HookEventPublisher | None = None,
     ) -> None:
         if mailbox_capacity < 1 or completion_capacity < mailbox_capacity:
             raise ValueError("invalid PAC graph authority capacity")
@@ -117,6 +119,10 @@ class PacGraphAuthority:
         self._actor_epoch = ""
         self._actor_skip: Any = None
         self._actor_logger: Any = None
+        # Event hook: called by a committed graph write to wake exactly the
+        # affected actor(s) instead of re-deriving every actor each tick.
+        self._actor_wake: Any = None
+        self.hook_publisher = hook_publisher
         self._restore_facts_lock = threading.Lock()
         self._restore_facts: dict[str, PacRestoreFacts] = {}
         self._actor_effects: queue.Queue[_ActorEffect] = queue.Queue(maxsize=128)
@@ -243,6 +249,7 @@ class PacGraphAuthority:
     def attach_reconciler(
         self, runtime: Any, reference_root: Path, daemon_epoch: str, *,
         on_skip: Any = None, logger: Any = None,
+        on_actor_wake: Any = None,
     ) -> None:
         if not daemon_epoch:
             raise ValueError("PAC actor reconciler requires daemon epoch")
@@ -254,6 +261,24 @@ class PacGraphAuthority:
             self._actor_epoch = daemon_epoch
             self._actor_skip = on_skip
             self._actor_logger = logger
+            self._actor_wake = on_actor_wake
+
+    def wake_actor(self, graph_id: str, node_id: str | None = None) -> int:
+        """Signal that a committed change made an actor actionable.
+
+        Event-driven supply seam.  ``node_id`` targets one actor; ``None``
+        means every actor node of ``graph_id`` (graph activate/close, flag or
+        workflow-state change).  Never raises: a reconcile wake is best-effort
+        and the fallback sweep is the net.
+        """
+
+        wake = self._actor_wake
+        if wake is None:
+            return 0
+        try:
+            return int(wake(graph_id, node_id))
+        except Exception:  # noqa: BLE001 - a wake must not break the graph write
+            return 0
 
     def reconcile_actor(self, graph_id: str, node_id: str) -> AdmissionResult:
         key = (graph_id, node_id)

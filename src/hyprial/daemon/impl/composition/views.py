@@ -8,6 +8,7 @@ import uuid
 from dataclasses import replace
 from hyprial.identity import (
     Agent,
+    AgentConfig,
     AgentBinding,
     AgentRegistry,
     HandoverNotice,
@@ -16,12 +17,17 @@ from hyprial.identity import (
 from hyprial.identity import HomePayloadFile
 from hyprial.identity import (
     AgentCapabilityGrantCompleted,
+    AgentSecretGrantCompleted,
     GrantAgentCapabilityCommand,
+    GrantAgentSecretCommand,
     RevokeAgentCapabilityCommand,
+    RevokeAgentSecretCommand,
+    SecretSource,
     AgentDestroySettled,
     AgentMutationCompleted,
     AgentProjection,
     BindAgentCommand,
+    BindAgentConfigCommand,
     BlockAgentCommand,
     ClearRestoreDispositionCommand,
     CreateAgentCommand,
@@ -47,7 +53,8 @@ from hyprial.daemon.impl.harnesses.runtime.ports import (
 )
 from hyprial.kernel import HarnessLaunchSpec
 
-from typing import TYPE_CHECKING
+from collections.abc import Iterable
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     # Annotation-only: domains constructs these facades at runtime; the
@@ -273,6 +280,20 @@ class AgentDirectoryFacade:
             )
         return _agent(event.agent)
 
+    def bind_agent_config(
+        self, actor: str, *, expected_entity_token: str,
+        config: AgentConfig | None, expected_current_config_digest: str,
+    ) -> Agent:
+        command = BindAgentConfigCommand(
+            correlation_id=f"agent-command:bind-config:{uuid.uuid4().hex}",
+            name=actor, expected_entity_token=expected_entity_token,
+            config=None if config is None else config.to_json(),
+            expected_current_config_digest=expected_current_config_digest,
+        )
+        event = self._domains.call_agent(command, AgentMutationCompleted)
+        assert event.agent is not None
+        return _agent(event.agent)
+
     def save(self, agent: Agent) -> Agent:
         command = UpdateAgentCommand(
                 correlation_id=f"agent-command:update:{uuid.uuid4().hex}",
@@ -292,6 +313,50 @@ class AgentDirectoryFacade:
         event = self._domains.call_agent(command, AgentMutationCompleted)
         assert event.agent is not None
         return _agent(event.agent)
+
+    def compare_and_swap(self, expected: Agent, replacement: Agent) -> bool:
+        """Restore an exact durable snapshot without overwriting a later write."""
+
+        version = self._domains.agent.version
+        current = self.get(expected.actor)
+        if current is None:
+            return False
+        comparable = replace(
+            current,
+            last_active_at_ms=expected.last_active_at_ms,
+            pinned_adapters=expected.pinned_adapters,
+        )
+        if comparable != expected:
+            return False
+        command = UpdateAgentCommand(
+            correlation_id=f"agent-command:cas:{uuid.uuid4().hex}",
+            name=replacement.actor,
+            cwd=replacement.cwd,
+            config=(
+                None
+                if replacement.config is None
+                else replacement.config.to_json()
+            ),
+            provider=replacement.provider,
+            model=replacement.model,
+            capabilities=tuple(sorted(replacement.capabilities.items())),
+            harness_args=tuple(
+                (name, tuple(args))
+                for name, args in sorted(replacement.harness_args.items())
+            ),
+            preferred_harness=replacement.preferred_harness,
+            last_harness=replacement.last_harness,
+            last_session_id=replacement.last_session_id,
+            expected_version=version,
+            expected_entity_token=expected.entity_token,
+        )
+        try:
+            event = self._domains.call_agent(command, AgentMutationCompleted)
+        except DomainCommandError as error:
+            if error.code == "AGENT_VERSION_CONFLICT":
+                return False
+            raise
+        return event.agent is not None
 
     def record_session(
         self, actor: str, *, harness: str, session_id: str | None
@@ -400,6 +465,32 @@ class AgentDirectoryFacade:
             AgentMutationCompleted,
         ).changed
 
+    def settle_landing_destroy(
+        self, actor: str, *, expected_entity_token: str, operation_id: str,
+    ) -> Literal["destroyed", "already-cleaned", "stale-incarnation"]:
+        """Join exact cleanup settlement; pending/rejection never means gone.
+
+        This is a blocking edge for the P2 effect lane, not its mailbox. P2
+        owns any deadline and durable recovery; this port does not add one.
+        """
+        if not isinstance(operation_id, str) or not operation_id.strip():
+            raise ValueError("operation_id must be a non-empty string")
+        if not isinstance(expected_entity_token, str) or not expected_entity_token:
+            raise ValueError("expected_entity_token must be a non-empty string")
+        event = self.settle_destroy(operation_id, actor, expected_entity_token=expected_entity_token)
+        if event.disposition not in {"destroyed", "already-cleaned", "stale-incarnation"}:
+            raise DomainCommandError("DOMAIN_CORRELATION_CONFLICT", "invalid destroy disposition")
+        return event.disposition
+
+    def verify_landing_payload(
+        self, actor: str, *, expected_entity_token: str,
+        expected_files: tuple[HomePayloadFile, ...],
+    ) -> str:
+        return self._domains.agent.verify_landing_payload(
+            actor, expected_entity_token=expected_entity_token,
+            expected_files=expected_files,
+        )
+
     def destroy_landing_home(self, actor: str, *, expected_entity_token: str) -> bool:
         event = self.settle_destroy(
             f"landing-rollback:{uuid.uuid4().hex}", actor,
@@ -447,6 +538,33 @@ class AgentDirectoryFacade:
                 revoked_by, expected_entity_token,
             ),
             AgentCapabilityGrantCompleted,
+        ).changed
+
+    def grant_secret(
+        self, actor: str, *, grant_id: str, source: SecretSource,
+        entry_id: str, field_name: str | None,
+        environment_names: "Iterable[str]", revision: int,
+        prevalidated_home_token: str | None = None,
+    ) -> object:
+        """Bind one restored secret entry to the current incarnation."""
+
+        event = self._domains.call_agent(
+            GrantAgentSecretCommand(
+                f"agent-command:grant-secret:{uuid.uuid4().hex}", actor,
+                grant_id, source, entry_id, field_name,
+                tuple(environment_names), revision, prevalidated_home_token,
+            ),
+            AgentSecretGrantCompleted,
+        )
+        assert event.grant is not None
+        return event.grant
+
+    def revoke_secret_grant(self, actor: str, grant_id: str) -> bool:
+        return self._domains.call_agent(
+            RevokeAgentSecretCommand(
+                f"agent-command:revoke-secret:{uuid.uuid4().hex}", actor, grant_id,
+            ),
+            AgentSecretGrantCompleted,
         ).changed
 
     def destroy(

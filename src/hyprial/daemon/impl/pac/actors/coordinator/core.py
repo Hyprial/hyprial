@@ -7,12 +7,17 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from hyprial.daemon.impl.pac.storage.journal  import append_event
+from hyprial.kernel import (
+    HookEventPublisher,
+    worker_cleanup_complete_event_payload,
+)
 from hyprial.daemon.impl.pac.graphs.reactor  import NullSender, PacReactor
 from hyprial.daemon.impl.pac.storage.store  import NodeRow, PacGraphStore
 from hyprial.daemon.impl.pac.actors.coordinator.types import (
     ActorRuntime,
     LaunchResolver,
     RuntimeObservation,
+    WorkerCleanupComplete,
     now_ms,
 )
 
@@ -32,6 +37,7 @@ class _CoordinatorCore:
         clock: Any = now_ms,
         on_skip: Callable[[str, str, str, dict[str, Any]], None] | None = None,
         logger: Any = None,
+        publisher: HookEventPublisher | None = None,
     ) -> None:
         self.store = store
         self.runtime = runtime
@@ -43,11 +49,13 @@ class _CoordinatorCore:
         self.resolver = resolver
         self.sender = sender
         self.clock = clock
+        self.publisher = publisher
         self.reactor = PacReactor(
             store,
             sender=(None if defer_notifications else sender if sender is not None else NullSender()),
             clock=clock,
             logger=logger,
+            publisher=publisher,
         )
 
     def reconcile_all(self) -> None:
@@ -294,13 +302,34 @@ class _CoordinatorCore:
                     at,
                 ),
             )
-            self._complete_cleanup_row(
+            record = self._complete_cleanup_row(
                 db, graph, node, current, at, observation=observation
             )
             db.commit()
         except BaseException:
             db.rollback()
             raise
+        self._publish_cleanup_complete(record)
+
+    def _publish_cleanup_complete(
+        self, record: WorkerCleanupComplete | None
+    ) -> None:
+        """Publish one worker cleanup fact after its transaction committed."""
+
+        if record is None or self.publisher is None:
+            return
+        self.publisher.publish(
+            "worker.cleanup.complete",
+            payload=worker_cleanup_complete_event_payload(
+                graph_id=record.graph_id,
+                actor_node=record.actor_node,
+                actor_name=record.actor_name,
+                operation_id=record.operation_id,
+                at_ms=record.at_ms,
+            ),
+            emitted_at_ms=record.at_ms,
+            graph_id=record.graph_id,
+        )
 
     def _complete_cleanup_row(
         self,
@@ -311,7 +340,7 @@ class _CoordinatorCore:
         at: int,
         *,
         observation: RuntimeObservation,
-    ) -> None:
+    ) -> WorkerCleanupComplete:
         document = self._observation_document(observation)
         db.execute(
             "UPDATE workflow_worker_cleanup_intents SET state='complete',"
@@ -345,4 +374,11 @@ class _CoordinatorCore:
                 "lastObservation": document,
                 "workerState": "stopped",
             },
+        )
+        return WorkerCleanupComplete(
+            graph_id=str(graph["graph_id"]),
+            actor_node=str(node.node_id),
+            actor_name=str(node.actor_name),
+            operation_id=str(intent["operation_id"]),
+            at_ms=int(at),
         )

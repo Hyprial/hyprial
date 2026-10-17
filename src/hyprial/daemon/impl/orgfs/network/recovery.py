@@ -511,6 +511,14 @@ class MeshRecovery:
                 supplier=supplier,
             )
             return ImportResult("rejected", "supplier-offline")
+        if not self._supplier_member_allowed(supplier):
+            self._log(
+                "warn",
+                "orgfs.update.rejected",
+                reason="supplier-not-member",
+                supplier=supplier,
+            )
+            return ImportResult("rejected", "supplier-not-member")
         try:
             result = self._import_envelope(envelope, supplier=supplier)
         except StoreError as exc:
@@ -820,8 +828,14 @@ class MeshRecovery:
                     )
                     return
                 except Exception as exc:  # noqa: BLE001 - best-effort lane
+                    # A non-member supplier never becomes one inside this
+                    # budget; retrying only burns the sync window.
+                    member_refusal = (
+                        getattr(exc, "details", None) or {}
+                    ).get("reason") == "supplier-not-member"
                     retry_scheduled = (
                         attempt < len(delays)
+                        and not member_refusal
                         and self._supplier_allowed(supplier)
                         and time.monotonic() + delays[attempt] < deadline
                     )
@@ -971,4 +985,9 @@ class MeshRecovery:
                 )
             except Exception:
                 pass
-            self._log("warn", "orgfs.update.rejected", **fields)
+            event = (
+                "orgfs.import.rejected"
+                if result.code == "removed-author"
+                else "orgfs.update.rejected"
+            )
+            self._log("warn", event, **fields)

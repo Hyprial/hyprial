@@ -22,16 +22,19 @@ from hyprial.daemon.impl.harnesses.runtime.ports  import (
     DrainHarnessResultsCommand,
     ClaimHarnessResultsCommand,
     SettleHarnessResultCommand,
+    SteerHarnessDeliveryCommand,
     ClaimedHarnessResult,
     HarnessResultsClaimed,
     HarnessResultSettled,
     HarnessCallIoCompleted,
     HarnessDeliveryAdmitted,
+    HarnessDeliverySteered,
     HarnessLivenessBound,
     HarnessMutationCompleted,
     HarnessProcessStarted,
     HarnessProgressObserved,
     HarnessReadyObserved,
+    HarnessProjectionsRefreshed,
     HarnessResultObserved,
     HarnessSessionRefProjection,
     HarnessStartTimerElapsedCommand,
@@ -104,6 +107,72 @@ class _DeliveryBehavior:
             lambda: process.enqueue(command.delivery),
         )
 
+
+    def _on_steer(self, command: SteerHarnessDeliveryCommand) -> None:
+        """Route one steer to the live process that owns the queued delivery.
+
+        Selection mirrors ``_on_dispatch``: a steer is only meaningful for a
+        running streaming process with a turn in flight.  No process found is
+        an explicit ``accepted=False`` (never a silent no-op), because the
+        daemon's timeout path reads that as "steer failed" and raises the
+        in-channel notice.
+        """
+
+        selected = next(
+            (
+                (key, record)
+                for key, record in self._records.items()
+                if record.spec.name == command.name
+                and isinstance(record.process, StreamingHarnessProcess)
+                and record.process.running
+            ),
+            None,
+        )
+        if selected is None or selected[1].process is None:
+            self._emit_event(
+                HarnessDeliverySteered(
+                    command.correlation_id,
+                    self._handler_generation,
+                    self._version,
+                    "",
+                    command.delivery_id,
+                    False,
+                )
+            )
+            return
+        selected_key, selected_record = selected
+        process = cast(StreamingHarnessProcess, selected_record.process)
+        # ``steer`` is an OPTIONAL process capability: it is deliberately NOT
+        # part of the StreamingHarnessProcess runtime-checkable protocol, so a
+        # runtime without it is still a valid streaming process.  Missing here
+        # is an explicit not-accepted answer, never a silent no-op.
+        steer = getattr(process, "steer", None)
+        if not callable(steer):
+            self._emit_event(
+                HarnessDeliverySteered(
+                    command.correlation_id,
+                    self._handler_generation,
+                    self._version,
+                    selected_key,
+                    command.delivery_id,
+                    False,
+                )
+            )
+            return
+        correlation = self._register_call(
+            command.correlation_id,
+            selected_record.generation,
+            operation="steer",
+            harness_id=selected_key,
+            delivery_id=command.delivery_id,
+        )
+        assert self._io is not None
+        self._io.call(
+            correlation,
+            selected_record.generation,
+            self._version,
+            lambda: steer(command.delivery_id),
+        )
 
     def _on_drain_results(self, command: DrainHarnessResultsCommand) -> None:
         processes = tuple(
@@ -467,13 +536,14 @@ class _DeliveryBehavior:
                 record.explicit_correlation_id = None
                 record.attempt_correlation_id = None
             if event.process is not None:
-                self._schedule_ensure_failure_stop(
+                stop_correlation = self._schedule_ensure_failure_stop(
                     attempt_token,
                     harness_id,
                     event.generation,
                     cast(ManagedHarnessProcess, event.process),
                     ProcessIdentity(event.pid, event.identity_marker),
                 )
+                self._transfer_stops[stop_correlation] = event.correlation_id
             self._publish()
             self._maybe_finish_ensure_failure_fence(attempt_token)
             return
@@ -487,8 +557,10 @@ class _DeliveryBehavior:
         ):
             if event.process is not None:
                 assert self._io is not None
+                stop_correlation = uuid.uuid4().hex
+                self._transfer_stops[stop_correlation] = event.correlation_id
                 self._io.stop(
-                    uuid.uuid4().hex,
+                    stop_correlation,
                     event.harness_id,
                     event.generation,
                     self._version,
@@ -497,7 +569,7 @@ class _DeliveryBehavior:
                 )
             return
         record.starting = False
-        if record.attempt_kind == "automatic":
+        if record.attempt_kind == "automatic" and self._transfer_start_error(record.spec.name) is None:
             record.starting = True
             record.completed_start = event
             return
@@ -517,6 +589,7 @@ class _DeliveryBehavior:
         record.identity = ProcessIdentity(event.pid, event.identity_marker)
         record.last_error = None
         record.failures = 0
+        record.started_at = self._clock()
         record.restart_after = None
         record.restore_failed_terminal = False
         self._finish_start_attempt(event.harness_id, record, True, None)
@@ -612,8 +685,9 @@ class _DeliveryBehavior:
                 str(event.error),
             )
             return
-        if pending.operation == "session_refs":
-            self._settle_session_refs_completion(event, pending)
+        if pending.operation in {"session_refs", "runtime_facts"}:
+            self._settle_session_refs_completion(
+                event, pending, publish_only=pending.operation == "runtime_facts")
             return
         self._dispatch_call_completion(event, pending)
 
@@ -621,10 +695,15 @@ class _DeliveryBehavior:
         self,
         event: HarnessCallIoCompleted,
         pending,
+        *,
+        publish_only: bool = False,
     ) -> None:
         from hyprial.daemon.impl.processes.process_owner  import ProcessOwner
 
         observed = event.value
+        # A publish-only settle re-joins the owner's own convergence path; it
+        # is not a caller and never needs (or holds) an observation grant.
+        command = ReconcileHarnessSessionRefsCommand(event.correlation_id)
         if (
             not isinstance(observed, tuple)
             or not all(isinstance(item, _SessionRefObservation) for item in observed)
@@ -636,9 +715,7 @@ class _DeliveryBehavior:
             )
             return
         if len(observed) != len(self._records):
-            self._on_reconcile_session_refs(
-                ReconcileHarnessSessionRefsCommand(event.correlation_id)
-            )
+            self._on_reconcile_session_refs(command, publish_only=publish_only)
             return
         for item in observed:
             record = self._records.get(item.key)
@@ -657,11 +734,13 @@ class _DeliveryBehavior:
                 # while native facts were read. Join the new owner (or
                 # settle empty after removal) under the same correlation;
                 # never write the old process's ref into a new row.
-                self._on_reconcile_session_refs(
-                    ReconcileHarnessSessionRefsCommand(event.correlation_id)
-                )
+                self._on_reconcile_session_refs(command, publish_only=publish_only)
                 return
         self._publish()
+        if publish_only:
+            self._emit_event(HarnessProjectionsRefreshed(
+                event.correlation_id, self._handler_generation, self._version))
+            return
         refs = tuple(
             HarnessSessionRefProjection(item.harness, item.name, item.session_ref)
             for item in observed
@@ -718,6 +797,17 @@ class _DeliveryBehavior:
                 self._release_unclaimed_delivery(pending.delivery_id)
             self._emit_event(
                 HarnessDeliveryAdmitted(
+                    event.correlation_id,
+                    self._handler_generation,
+                    self._version,
+                    pending.harness_id or "",
+                    pending.delivery_id or "",
+                    bool(event.value),
+                )
+            )
+        elif pending.operation == "steer":
+            self._emit_event(
+                HarnessDeliverySteered(
                     event.correlation_id,
                     self._handler_generation,
                     self._version,

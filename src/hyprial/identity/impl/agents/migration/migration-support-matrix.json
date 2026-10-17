@@ -7,8 +7,8 @@
       "operatingSystem": "Darwin 25.5.0 arm64",
       "entrypoint": "cross-host-transfer",
       "authMode": "all-p2",
-      "status": "UNSUPPORTED",
-      "evidence": "The target cannot yet rebind the source identity, config, native root, and session root as one authorized context; transfer refuses before host-HOME lookup"
+      "status": "PASS",
+      "evidence": "C3-S2-C two-daemon run, docs/notes/c3-claude-run.txt (2026-10-15, hyprial 0.5.4). PASS holds exactly for this tuple: harness=claude, mode=agent-home-p2, one machine running two real daemons (own home, state, socket, node id), the claude process is the repository's protocol double (tests/fixtures/harnesses/fake_claude_sdk.py, FAKE_CLAUDE_MODE=settled) and the launch-auth credential is a fixture placeholder, not a real credential. Within that tuple the run read: source quiesce through the custody hold, bundle export and ship, target land+activate under a fresh entity token, source restart still held, completion on the target's own report, and the anti-dual-active read from both ps; the call-boundary crash windows W2/W3/W5/W6 were rerun on the same tuple. NOT proved by this row: two real physical machines, the real vendor claude-code binary, the real claude-agent-sdk and its model credential remain NOT_RUN (TC012 BLOCKED)."
     },
     {
       "harness": "claude",
@@ -52,8 +52,8 @@
       "operatingSystem": "Darwin 25.5.0 arm64",
       "entrypoint": "cross-host-transfer",
       "authMode": "all-p2",
-      "status": "UNSUPPORTED",
-      "evidence": "The target cannot yet rebind the source identity, config, native root, and session root as one authorized context; transfer refuses before host-HOME lookup"
+      "status": "PASS",
+      "evidence": "C3-S2-C two-daemon run, docs/notes/c3-claude-run.txt (2026-10-15, hyprial 0.5.4). PASS holds exactly for this tuple: harness=claude, mode=agent-home-p2, one machine running two real daemons (own home, state, socket, node id), the claude process is the repository's protocol double (tests/fixtures/harnesses/fake_claude_sdk.py, FAKE_CLAUDE_MODE=settled) and the launch-auth credential is a fixture placeholder, not a real credential. Within that tuple the run read: source quiesce through the custody hold, bundle export and ship, target land+activate under a fresh entity token, source restart still held, completion on the target's own report, and the anti-dual-active read from both ps; the call-boundary crash windows W2/W3/W5/W6 were rerun on the same tuple. NOT proved by this row: two real physical machines, the real vendor claude-code binary, the real claude-agent-sdk and its model credential remain NOT_RUN (TC012 BLOCKED)."
     },
     {
       "harness": "claude",
@@ -115,8 +115,8 @@
       "operatingSystem": "Darwin 25.5.0 arm64",
       "entrypoint": "cross-host-transfer",
       "authMode": "all-p2",
-      "status": "UNSUPPORTED",
-      "evidence": "The target cannot yet rebind the source identity, config, native root, and session root as one authorized context; transfer refuses before host-HOME lookup"
+      "status": "PASS",
+      "evidence": "C3-S1-C two-daemon run, docs/notes/c3-codex-run.txt (hyprial 0.5.4, run tree 98cbf418). PASS holds exactly for this tuple: harness=codex, mode=agent-home-p2, single machine running two real daemons (own home, state, socket, node id), the codex app-server process is the repository's protocol double (tests/fixtures/harnesses/fake_codex_app_server.py) and one crash window is really injected (the source daemon is killed while the hold is armed); the target landing's sandbox smoke ran the machine's real codex 0.161.0 binary. Within that tuple the run read: source quiesce through the custody hold, bundle export and ship (config/native/codex/config.toml, cli_auth_credentials_store=ephemeral), target land+activate under a fresh entity token, source restart still held, completion on the target's own report, and the anti-dual-active read from both ps; all call-boundary crash windows (W2/W3, W5, W6) were re-run. NOT proved by this row: two real physical machines, a real target worker with strict resume, a real vendor codex binary as the worker or its model credential (NOT_RUN; TC012 BLOCKED), the sealed credential envelope with operator keys (S3-C NOT_RUN), and the override-plus-resume recovery landing on an activate-pending half (NOT_TESTED)."
     },
     {
       "harness": "codex",
@@ -196,8 +196,8 @@
       "operatingSystem": "Darwin 25.5.0 arm64",
       "entrypoint": "cross-host-transfer",
       "authMode": "all-p2",
-      "status": "UNSUPPORTED",
-      "evidence": "The target cannot yet rebind the source identity, config, native root, and session root as one authorized context; transfer refuses before host-HOME lookup"
+      "status": "PASS",
+      "evidence": "AT07 I4 two-daemon run, docs/notes/at07-i4-run.txt (hyprial 0.5.4, run tree 91ba5133). PASS holds exactly for this tuple: harness=pi, mode=agent-home-p2, single machine running two real daemons (own home, state, socket, node id), the pi process is the repository's protocol double (tests/fixtures/harnesses/fake_pi_rpc.py) and one crash window is really injected (the source daemon is killed while the hold is armed). Within that tuple the run read: source quiesce through the custody hold, bundle export and ship, target land+activate under a fresh entity token, source restart still held, completion on the target's own report, and the anti-dual-active read from both ps. NOT proved by this row: two real physical machines, a real target worker with strict resume, a real vendor pi 0.85.1 binary and its model credential (NOT_RUN; TC012 BLOCKED), the other five crash windows, and the override-plus-resume recovery landing on an activate-pending half (both NOT_TESTED)."
     }
   ]
 }

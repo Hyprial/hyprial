@@ -6,7 +6,11 @@ if TYPE_CHECKING:
     from hyprial.biz.impl.routine.execution.coordinator.generation import AgentCreationCompensation as AgentCreationCompensation
     from hyprial.biz.impl.routine.templates import BUILTIN_TEMPLATES as BUILTIN_TEMPLATES
     from hyprial.biz.impl.routine.execution.pac_dispatch import PacRoutineDispatch as PacRoutineDispatch
-    from hyprial.biz.impl.quota_watchdog import QuotaWatchdog as QuotaWatchdog
+    from hyprial.biz.impl.hooks.quota.consumer import QuotaHookConsumer as QuotaHookConsumer
+    from hyprial.biz.impl.hooks.quota.consumer import QuotaWatchdogAuthority as QuotaWatchdogAuthority
+    from hyprial.biz.impl.hooks.quota.policy import QuotaWatchdog as QuotaWatchdog
+    from hyprial.biz.impl.hooks.recap import RecapHookConsumer as RecapHookConsumer
+    from hyprial.biz.impl.hooks.recap import RecapWriter as RecapWriter
     from hyprial.biz.impl.routine.execution.coordinator import RoutineCoordinator as RoutineCoordinator
     from hyprial.biz.impl.routine.execution.coordinator.generation import RoutineCoordinatorError as RoutineCoordinatorError
     from hyprial.biz.impl.routine.execution.coordinator.generation import RoutineCoordinatorTimeout as RoutineCoordinatorTimeout
@@ -33,7 +37,11 @@ _FACADE_EXPORTS = {
     'AgentCreationCompensation': ('hyprial.biz.impl.routine.execution.coordinator.generation', 'AgentCreationCompensation'),
     'BUILTIN_TEMPLATES': ('hyprial.biz.impl.routine.templates', 'BUILTIN_TEMPLATES'),
     'PacRoutineDispatch': ('hyprial.biz.impl.routine.execution.pac_dispatch', 'PacRoutineDispatch'),
-    'QuotaWatchdog': ('hyprial.biz.impl.quota_watchdog', 'QuotaWatchdog'),
+    'QuotaHookConsumer': ('hyprial.biz.impl.hooks.quota.consumer', 'QuotaHookConsumer'),
+    'QuotaWatchdog': ('hyprial.biz.impl.hooks.quota.policy', 'QuotaWatchdog'),
+    'QuotaWatchdogAuthority': ('hyprial.biz.impl.hooks.quota.consumer', 'QuotaWatchdogAuthority'),
+    'RecapHookConsumer': ('hyprial.biz.impl.hooks.recap', 'RecapHookConsumer'),
+    'RecapWriter': ('hyprial.biz.impl.hooks.recap', 'RecapWriter'),
     'RoutineCoordinator': ('hyprial.biz.impl.routine.execution.coordinator', 'RoutineCoordinator'),
     'RoutineCoordinatorError': ('hyprial.biz.impl.routine.execution.coordinator.generation', 'RoutineCoordinatorError'),
     'RoutineCoordinatorTimeout': ('hyprial.biz.impl.routine.execution.coordinator.generation', 'RoutineCoordinatorTimeout'),
@@ -79,7 +87,11 @@ __all__ = [
     'AgentCreationCompensation',
     'BUILTIN_TEMPLATES',
     'PacRoutineDispatch',
+    'QuotaHookConsumer',
     'QuotaWatchdog',
+    'QuotaWatchdogAuthority',
+    'RecapHookConsumer',
+    'RecapWriter',
     'RoutineCoordinator',
     'RoutineCoordinatorError',
     'RoutineCoordinatorTimeout',

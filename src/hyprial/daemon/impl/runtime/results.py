@@ -119,7 +119,7 @@ class _BridgeResultsMixin:
                         result.recipient, result.delivery_id
                     ).acknowledged
                     if acknowledged:
-                        self._forget_turn_hook_delivery(result.delivery_id)
+                        self._settle_delivery_hooks(result)
                         self._pending_workflow_results.pop(result.delivery_id, None)
                         self._pending_workflow_attempts.pop(result.delivery_id, None)
                     return acknowledged
@@ -146,7 +146,7 @@ class _BridgeResultsMixin:
                 result.recipient, result.delivery_id
             ).acknowledged
             if acknowledged:
-                self._forget_turn_hook_delivery(result.delivery_id)
+                self._settle_delivery_hooks(result)
             return acknowledged
         if result.status is HarnessResultStatus.INTERRUPTED:
             return True
@@ -167,9 +167,11 @@ class _BridgeResultsMixin:
             None,
         )
         if original is None:
-            self._forget_turn_hook_delivery(result.delivery_id)
+            self._settle_delivery_hooks(result)
             if result.status is HarnessResultStatus.FAILED:
                 fallback = self._failure_original(result.delivery_id)
+                if fallback is None:
+                    fallback = self._failure_route(result.delivery_id)
                 if fallback is not None:
                     self._loud_harness_failure(
                         result, fallback, attempt=terminal_attempt
@@ -238,7 +240,7 @@ class _BridgeResultsMixin:
                 ).acknowledged
                 if acknowledged:
                     self._pending_forward_outcomes[result.delivery_id] = outcome
-                    self._forget_turn_hook_delivery(result.delivery_id)
+                    self._settle_delivery_hooks(result)
                 return acknowledged
             failed = replace(
                 result,
@@ -266,7 +268,7 @@ class _BridgeResultsMixin:
             )
         if acknowledged:
             self._pending_reply_results.pop(result.delivery_id, None)
-            self._forget_turn_hook_delivery(result.delivery_id)
+            self._settle_delivery_hooks(result)
         return acknowledged
 
     def _complete_harness_results(self) -> int:
@@ -281,7 +283,7 @@ class _BridgeResultsMixin:
             if outcome.accepted:
                 self._finish_attempt(result.delivery_id)
                 if self.inbox.ack(original.recipient, original.message_id).acknowledged:
-                    self._forget_turn_hook_delivery(result.delivery_id)
+                    self._settle_delivery_hooks(result)
                     settled += 1
                 continue
             failed = replace(
@@ -318,7 +320,7 @@ class _BridgeResultsMixin:
                     handled = self._workflow_outcome(result)
                     if handled:
                         self.inbox.ack(result.recipient, result.delivery_id)
-                        self._forget_turn_hook_delivery(result.delivery_id)
+                        self._settle_delivery_hooks(result)
                         self._pending_workflow_results.pop(result.delivery_id, None)
                         self._pending_workflow_attempts.pop(result.delivery_id, None)
                         settled += 1
@@ -349,7 +351,7 @@ class _BridgeResultsMixin:
             ):
                 self.inbox.ack(result.recipient, result.delivery_id)
                 self._finish_attempt(result.delivery_id)
-                self._forget_turn_hook_delivery(result.delivery_id)
+                self._settle_delivery_hooks(result)
                 settled += 1
                 continue
             if result.status is HarnessResultStatus.INTERRUPTED:
@@ -363,13 +365,15 @@ class _BridgeResultsMixin:
                 None,
             )
             if original is None:
-                self._forget_turn_hook_delivery(result.delivery_id)
+                self._settle_delivery_hooks(result)
                 # The row can be fetched/consumed (or already carry a terminal
                 # settlement) before this failure lands.  That used to be a
                 # silent drop; the authoritative sender is still durable in
                 # the settlement tombstone, so look it up and report instead.
                 if result.status is HarnessResultStatus.FAILED:
                     fallback = self._failure_original(result.delivery_id)
+                    if fallback is None:
+                        fallback = self._failure_route(result.delivery_id)
                     if fallback is not None:
                         self._loud_harness_failure(
                             result, fallback, attempt=terminal_attempt
@@ -423,7 +427,7 @@ class _BridgeResultsMixin:
                     else False
                 )
             if acknowledged:
-                self._forget_turn_hook_delivery(result.delivery_id)
+                self._settle_delivery_hooks(result)
                 settled += 1
         return settled
 
@@ -502,7 +506,7 @@ class _BridgeResultsMixin:
             # A concurrent public ack can retire the row after the
             # read above.  That is a completed ownership decision,
             # not a reason to crash/restart the inbox authority.
-            self._forget_turn_hook_delivery(result.delivery_id)
+            self._settle_delivery_hooks(result)
             return False
         if self._logger is not None:
             self._logger(
@@ -527,21 +531,6 @@ class _BridgeResultsMixin:
                 ),
             )
         if (
-            failure.failure_code == "PROVIDER_USAGE_LIMIT"
-            and self._usage_limit_observer is not None
-        ):
-            try:
-                self._usage_limit_observer(failure.recipient)
-            except Exception as error:  # noqa: BLE001 - an observer never breaks settlement
-                if self._logger is not None:
-                    self._logger(
-                        "error",
-                        "daemon",
-                        "quota_watchdog.observe_failed",
-                        recipient=failure.recipient,
-                        error=type(error).__name__,
-                    )
-        if (
             failure.failure_code
             in {"PROVIDER_USAGE_LIMIT", "PROVIDER_AUTHENTICATION_FAILED"}
             and self._blocking_failure_observer is not None
@@ -563,14 +552,15 @@ class _BridgeResultsMixin:
                         error=type(error).__name__,
                     )
         # The sender that is waiting for this receipt is told with
-        # this attempt's own evidence.  The owner's quota watchdog
-        # above is a separate, retained channel and does not stand in
+        # this attempt's own evidence.  The owner's quota alert (the
+        # unified hook bus carries it as turn.failed today) is a
+        # separate, retained channel and does not stand in
         # for this one (the 2026-09-21 incident: the owner was told
         # within a second and the sender was told nothing).
         self._loud_harness_failure(result, original, failure=failure, attempt=attempt)
         self._finish_attempt(result.delivery_id)
         if failure.terminal:
-            self._forget_turn_hook_delivery(result.delivery_id)
+            self._settle_delivery_hooks(result)
         return True
 
     def _observe_blocking_failure(

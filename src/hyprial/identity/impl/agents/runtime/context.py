@@ -498,8 +498,15 @@ def build_agent_runtime_preparation(
     containerized: bool = False,
     validate_home: bool = True,
     legacy_reporter: Callable[[str, str], None] | None = None,
+    expected_entity_token: str | None = None,
 ) -> AgentRuntimePreparation | None:
     agent = registry.require(agent_name)
+    if expected_entity_token is not None and agent.entity_token != expected_entity_token:
+        # Registry imports filesystem plans, which import this module. Resolve
+        # its existing domain error lazily, after module composition is complete.
+        from hyprial.identity.impl.agents.registry._base import AgentEntityConflict
+
+        raise AgentEntityConflict(f"agent {agent_name!r} changed before runtime preparation")
     mode, legacy_reason = agent_home_mode(agent, harness)
     if mode == "legacy":
         assert legacy_reason is not None

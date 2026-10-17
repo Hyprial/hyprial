@@ -384,6 +384,15 @@ class _StatusViewsMixin:
                 },
                 "duplicateInstance": self._duplicate_instance_payload(),
                 "maintenance": self._maintenance_watchdog.status(),
+                "storageHealth": (
+                    self._database_health.status() if self._database_health is not None
+                    else {"healthy": None, "checkedAtMs": None}
+                ),
+                "orphanPersistence": (
+                    self._harnesses.orphan_persistence_stats()
+                    if callable(getattr(self._harnesses, "orphan_persistence_stats", None))
+                    else {}
+                ),
                 "forwarding": self._forwarding_status_json(),
                 "tailnet": self._tailnet_status_json(
                     refresh=params.get("refreshTailnetStatus") is True
@@ -776,12 +785,7 @@ class _StatusViewsMixin:
 
     def _ipc_hosts(self) -> Any:
         with self._worker_status_snapshot():
-            nodes = sorted(
-                actor
-                for actor in self._presence.raw_online_actors()
-                if classify_target_identity(actor) == TARGET_KIND_HOST
-                and self._presence.liveness_keeps(actor)
-            )
+            nodes = self._online_host_nodes()
             self._trace_presence_snapshot(nodes)
             return {
                 "hosts": [

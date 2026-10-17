@@ -11,9 +11,10 @@ in fact unusable fails at execution time and is reported loudly to the sender
 that is waiting for the receipt (see ``hyprial.availability_loud``) -- never
 routed around silently.
 
-``diagnose()`` keeps the explicit, human-requested probe as a read-only
-inspection of every candidate.  Its readings are returned to the caller and
-read by nothing else: they cannot influence ``resolve()``.
+Recorded availability is displayed by ``hyprial agent tiers`` and is never an
+input to selection. Explicit probes use the ``classify_run`` referee.
+``diagnose`` returns read-only readings; ``agent tiers probe`` records facts
+through the existing Squire profile authority. Neither changes selection.
 """
 
 from __future__ import annotations
@@ -31,7 +32,8 @@ from hyprial.kernel import ipc_errors
 
 if TYPE_CHECKING:
     from hyprial.identity import UserProfile
-    from hyprial.daemon.impl.squire.probe import ProbeRunner
+    from hyprial.daemon.impl.squire.probe import ComboSpec, ProbeRunner
+
 TIER_RANK = {tier: rank for rank, tier in enumerate(TIERS)}
 
 DISPATCH_POLICY_FILENAME = "dispatch-policy.json"
@@ -95,7 +97,7 @@ def dispatch_reminders() -> tuple[list[str], str | None]:
 
     The reminder is advice, not a gate: a malformed or unreadable operator
     policy yields no reminder plus the reason, and dispatch proceeds.
-    ``hyprial dispatch matrix`` and ``config set`` keep the strict read, so
+    ``hyprial agent tiers`` and ``config set`` keep the strict read, so
     the operator still sees the error loudly where policy is managed.
     """
     try:
@@ -233,11 +235,27 @@ def active_profile() -> UserProfile | None:
     from hyprial.identity import UserProfileStore
 
     configured = os.environ.get("HARNESS_STATE_DIR")
-    state = Path(configured).expanduser().resolve() if configured else configured_hyprial_home()[0] / "state"
+    state = (
+        Path(configured).expanduser().resolve()
+        if configured else configured_hyprial_home()[0] / "state"
+    )
     store = UserProfileStore(state / "users.json")
     if not store.path.exists():
         return None
     return store.get_by_owner(resolve_node_owner())
+
+
+def recorded_candidate_json(
+    candidate: Candidate, profile: UserProfile | None,
+) -> dict[str, object]:
+    """Display an owner's recorded fact without probing or selecting."""
+    row = candidate_json(candidate)
+    availability = (
+        profile.runtime_capability(candidate.harness, candidate.model, candidate.provider)
+        if profile is not None else None
+    )
+    row["availability"] = availability.to_json() if availability is not None else None
+    return row
 
 
 def minimum_pool(required_tier: str) -> tuple[Candidate, ...]:
@@ -295,20 +313,12 @@ def diagnose(
     profile: UserProfile | None = None,
     runner: ProbeRunner | None = None,
 ) -> tuple[ProbeReading, ...]:
-    """Probe every candidate and return the raw readings; never select.
+    """Probe every candidate for a read-only report; never select or persist.
 
-    This is the only remaining caller of the probe machinery, and it exists
-    for the explicit human request ``hyprial dispatch matrix --probe``.  Its
-    result is returned to that caller and read by nothing else: it is not
-    cached, not written to the profile, and never consulted by :func:`resolve`
-    or :func:`resolve_minimum_tier`.  A provider that answers badly here
-    changes a report, not a route.
-
-    The owner's diagnostic mark is attached to each reading (when one exists)
-    so the report can show it beside the probe result; the mark neither
-    suppresses a probe nor reorders the candidates.
+    Marks neither suppress probes nor reorder candidates. The F2 referee is
+    the only source of the verdict; these readings never feed selection.
     """
-    from hyprial.daemon.impl.squire.probe import ProbeRun, RuntimeProber
+    from hyprial.daemon.impl.squire.probe import ProbeRun, RuntimeProber, classify_run
 
     if tier not in TIERS:
         raise ValueError(f"tier must be one of {', '.join(TIERS)}")
@@ -321,8 +331,7 @@ def diagnose(
             profile.runtime_capability(
                 candidate.harness, candidate.model, candidate.provider
             )
-            if profile is not None
-            else None
+            if profile is not None else None
         )
         mark = None
         if observed is not None:
@@ -331,15 +340,54 @@ def diagnose(
             run = prober.runner(candidate.probe_cmd, prober.timeout)
         except OSError as error:
             run = ProbeRun(None, str(error))
-        alive = run.exit_code == 0 and not run.timed_out and bool(run.output.strip())
-        readings.append(
-            ProbeReading(
-                candidate,
-                "available" if alive else "unavailable",
-                run.output,
-                run.exit_code,
-                run.timed_out,
-                diagnostic_mark=mark,
-            )
-        )
+        status, _reason, _retry_at = classify_run(run)
+        readings.append(ProbeReading(
+            candidate, status, run.output, run.exit_code, run.timed_out,
+            diagnostic_mark=mark,
+        ))
     return tuple(readings)
+
+
+def probe_profile(
+    state_dir: Path,
+    owner_key: str | None,
+    combos: tuple[ComboSpec, ...],
+    *,
+    timeout: float = 180.0,
+    dry_run: bool = False,
+) -> dict[str, object]:
+    """Run the explicit profile probe through the existing Squire authority."""
+    from hyprial.daemon.impl import squire
+    from hyprial.identity import UserProfileError, UserProfileStore
+
+    store = UserProfileStore(state_dir / "users.json")
+    if owner_key is None:
+        profiles = store.list()
+        if not profiles:
+            raise UserProfileError("no user profile; run hyprial squire setup first")
+        if len(profiles) > 1:
+            raise ValueError("multiple user profiles; pass --owner-key")
+        owner_key = profiles[0].owner_key
+    if not combos:
+        profile = store.get(owner_key)
+        declared = () if profile is None else profile.runtime_capabilities
+        combos = tuple((cap.harness, cap.provider, cap.model) for cap in declared)
+    if not combos:
+        raise ValueError(
+            "no runtime capability combinations declared; "
+            "pass --combo harness:provider:model"
+        )
+    results, changed, profile = squire.probe_combinations(
+        store, owner_key, combos,
+        prober=squire.RuntimeProber(timeout=timeout), dry_run=dry_run,
+    )
+    return {
+        "ok": True,
+        "probe": "squire-runtime-capability",
+        "schemaVersion": 1,
+        "ownerKey": owner_key,
+        "dryRun": dry_run,
+        "changed": list(changed),
+        "results": [result.to_json() for result in results],
+        "profile": profile.to_json(),
+    }

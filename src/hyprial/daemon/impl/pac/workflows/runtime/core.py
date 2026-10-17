@@ -11,7 +11,7 @@ from time import time_ns, monotonic
 from typing import Any
 from uuid import uuid4
 
-from hyprial.kernel import ipc_errors
+from hyprial.kernel import HookEventPublisher, ipc_errors
 
 from hyprial.identity import PacError
 from hyprial.daemon.impl.pac.graphs.reactor  import (
@@ -55,6 +55,7 @@ class _GraphWorkflowServiceCore:
         start_thread: bool = True,
         delivery_receipt: NotificationReceiptAuthority | None = None,
         graph_authority: WorkflowTickAuthority | None = None,
+        hook_publisher: HookEventPublisher | None = None,
     ):
         if graph_authority is not None and not start_thread:
             raise ValueError("PAC graph authority requires asynchronous workflow delivery")
@@ -67,6 +68,7 @@ class _GraphWorkflowServiceCore:
         self.logger = logger
         self._delivery_receipt = delivery_receipt
         self._graph_authority = graph_authority
+        self._hook_publisher = hook_publisher
         self._queue: queue.Queue[int | None] = queue.Queue(maxsize=1)
         self._closed = False
         self._asynchronous = start_thread
@@ -100,11 +102,18 @@ class _GraphWorkflowServiceCore:
 
     def _open(self, *, read_only: bool = False) -> PacGraphStore:
         try:
-            return PacGraphStore(self.database, read_only=read_only)
+            store = PacGraphStore(self.database, read_only=read_only)
         except (sqlite3.Error, OSError, RuntimeError, PacError) as error:
             raise WorkflowServiceError(
                 ipc_errors.WORKFLOW_UNAVAILABLE, str(error)
             ) from error
+        store.hook_publisher = self._hook_publisher
+        wake = getattr(self._graph_authority, "wake_actor", None)
+        if callable(wake):
+            # A workflow close commits through this store; wake the graph's
+            # workers when the close is durable instead of at the next sweep.
+            store.graph_closed_wake = lambda graph_id: wake(graph_id)
+        return store
 
     def _queue_delivery(self, graph_id: str, *, closed: bool) -> None:
         with self._delivery_lock:
@@ -295,6 +304,7 @@ class _GraphWorkflowServiceCore:
         token: str,
         at: int,
         reactor: PacReactor,
+        dirty: set[tuple[str, str]] | None = None,
     ):
         if row["node_kind"] == "expansion":
             binding = store._db.execute(
@@ -401,6 +411,11 @@ class _GraphWorkflowServiceCore:
             graph_id=graph["graph_id"],
             version=graph["version"],
         )
+        if dirty is not None:
+            # Recording only: the caller wakes after the transaction commits.
+            # Waking here would let the actor worker read pre-commit state and
+            # consume the event without ever starting the worker.
+            dirty.add((graph["graph_id"], row["actor_node"] or node.node_id))
 
     def _failure(
         self,
@@ -457,7 +472,13 @@ class _GraphWorkflowServiceCore:
                 (graph["graph_id"],),
             )
 
-    def _project(self, store: PacGraphStore, graph_id: str, at: int):
+    def _project(
+        self,
+        store: PacGraphStore,
+        graph_id: str,
+        at: int,
+        dirty: set[tuple[str, str]] | None = None,
+    ):
         db = store.write()
         try:
             from hyprial.daemon.impl.pac.workflows.expansion.projection import (
@@ -482,6 +503,7 @@ class _GraphWorkflowServiceCore:
                     at=at,
                 )
                 db.commit()
+                store.flush_graph_closed()
                 return
             project_child_terminals_in_transaction(store, graph, at=at)
             reactor = PacReactor(store, clock=lambda: at)
@@ -500,6 +522,7 @@ class _GraphWorkflowServiceCore:
                         at=at,
                     )
                 db.commit()
+                store.flush_graph_closed()
                 return
             nodes = {n.node_id: n for n in store.nodes(graph_id)}
             for row in db.execute(
@@ -586,6 +609,7 @@ class _GraphWorkflowServiceCore:
             graph = store.graph(graph_id)
             if graph["closed_at"] is not None:
                 db.commit()
+                store.flush_graph_closed()
                 return
             failed = db.execute(
                 "SELECT node_id FROM workflow_nodes WHERE graph_id=? AND state='failed'",
@@ -646,8 +670,11 @@ class _GraphWorkflowServiceCore:
                                 token,
                                 at,
                                 reactor,
+                                dirty=dirty,
                             )
             db.commit()
         except BaseException:
             db.rollback()
+            store.discard_graph_closed()
             raise
+        store.flush_graph_closed()

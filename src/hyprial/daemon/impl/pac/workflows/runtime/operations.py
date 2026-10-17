@@ -106,7 +106,14 @@ class _GraphWorkflowServiceOps:
             ]
             for graph_id in ids:
                 try:
-                    self._project(store, graph_id, at)
+                    dirty: set[tuple[str, str]] = set()
+                    self._project(store, graph_id, at, dirty)
+                    wake = getattr(self._graph_authority, "wake_actor", None)
+                    if dirty and callable(wake):
+                        # The project transaction committed above; only now can
+                        # a targeted reconcile observe the requested node.
+                        for actor_graph, actor_node in dirty:
+                            wake(actor_graph, actor_node)
                     if self._asynchronous:
                         self._queue_delivery(
                             graph_id,
@@ -207,6 +214,7 @@ class _GraphWorkflowServiceOps:
                         self.clock(),
                         PacReactor(store),
                     )
+            store.flush_graph_closed()
         finally:
             store.close()
         self.submit_timer(self.clock())
@@ -270,6 +278,7 @@ class _GraphWorkflowServiceOps:
                     PacReactor(store),
                 )
                 failed = True
+            store.flush_graph_closed()
         finally:
             store.close()
         if failed:
@@ -536,6 +545,8 @@ class _GraphWorkflowServiceOps:
                     )
         finally:
             store.close()
+        # close_workflow deferred the record; publish it post-commit.
+        store.flush_graph_closed()
         return self.status(run_id=run_id)
 
     def _workflow_actor(self, store: PacGraphStore, graph_id: str, actor_name: str):
@@ -629,6 +640,7 @@ class _GraphWorkflowServiceOps:
                             (reason, graph_id),
                         )
                 store._db.commit()
+            store.flush_graph_closed()
             try:
                 request_actor_stop(store, graph_id, worker.actor_name, actor=actor)
             except (RuntimeError, KeyError):
@@ -793,6 +805,7 @@ class _GraphWorkflowServiceOps:
                         node_id,
                     ),
                 )
+            store.flush_graph_closed()
         finally:
             store.close()
         # Production cadence owns follow-up projection and notification

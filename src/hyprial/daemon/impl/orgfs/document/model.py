@@ -900,6 +900,13 @@ class _Space:
     snapshot_marks: dict[str, tuple[_NodeSnapshot, Any, Any]] = field(
         default_factory=dict
     )
+    #: Remote doc births whose tree envelope was projected before the birth
+    #: content envelope; node_id -> (origin author, origin actor).  The birth
+    #: history entry is finalized only once the local content document covers
+    #: the node's required content frontier, so a cross-node birth stays one
+    #: atomic ``created`` version instead of splitting into an empty ``created``
+    #: followed by ``content`` (which no strict chain consumer can repair).
+    birth_pending: dict[str, tuple[str, str | None]] = field(default_factory=dict)
 
 
 class _OrgDoc:

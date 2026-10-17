@@ -338,6 +338,7 @@ svg.arrows .arrowhead { fill: var(--accent); }
 </div>
 
 <!--NODE_SCRIPTS-->
+<!--WORK_VIEW_SCRIPT-->
 <script>
 (() => {
   // Every node publishes nodes/<node>.js into the same orgfs folder; each
@@ -364,6 +365,8 @@ svg.arrows .arrowhead { fill: var(--accent); }
     links: PARTS.flatMap(p => p.links),
     nodeLinks: PARTS.flatMap(p => p.nodeLinks || []),
     missions: PARTS.flatMap(p => p.missions || []),
+    workItems: PARTS.flatMap(p => p.workItems || []),
+    workItemsArchiveCutoffMs: PARTS.map(p => p.workItemsArchiveCutoffMs).filter(Number.isFinite).reduce((a, b) => (a == null || b > a ? b : a), null),
     invalidWorkItems: PARTS.flatMap(p => p.invalidWorkItems || []),
     visibleNodeGraphs: PARTS.reduce((n, p) => n + (p.visibleNodeGraphs || 0), 0),
   };
@@ -378,7 +381,7 @@ svg.arrows .arrowhead { fill: var(--accent); }
   const saved = (() => { try { return JSON.parse(sessionStorage.getItem("pac-overview") || "null"); } catch { return null; } })();
   let T = saved && !saved.followNow && saved.T >= T0 && saved.T <= NOW ? saved.T : NOW;
   let WIN = saved?.WIN || 24;
-  let view = saved?.view && (saved.view.level === "lines" || (saved.view.level === "line" && DATA.lines.some(l => l.id === saved.view.id)) || (saved.view.level === "pac" && DATA.runs.some(r => r.id === saved.view.id))) ? saved.view : { level: "lines" };
+  let view = saved?.view && (saved.view.level === "lines" || (saved.view.level === "line" && DATA.lines.some(l => l.id === saved.view.id)) || (saved.view.level === "pac" && DATA.runs.some(r => r.id === saved.view.id)) || saved.view.level === "work" || (saved.view.level === "workItem" && DATA.workItems.some(w => w.id === saved.view.id))) ? saved.view : { level: "lines" };
   let selectedNode = null;
   let hotId = null;
   let showOlder = false;
@@ -625,23 +628,28 @@ svg.arrows .arrowhead { fill: var(--accent); }
   /* ---------- navigation ---------- */
   function go(v) { view = v; selectedNode = null; hotId = null; showOlder = false; render(); document.getElementById("stage").scrollIntoView({ block: "start", behavior: "smooth" }); }
   function up() {
-    if (view.level === "pac") go(view.from ? { level: "line", id: view.from } : { level: "lines" });
+    if (view.level === "pac") go(view.back || (view.from ? { level: "line", id: view.from } : { level: "lines" }));
     else if (view.level === "line") go({ level: "lines" });
+    else if (view.level === "workItem") go({ level: "work" });
+    else if (view.level === "work") go({ level: "lines" });
   }
   function renderCrumbs() {
     const parts = [`<button data-go="lines">全部任务线</button>`];
+    if (view.level === "lines") parts.push(`<span>›</span><button data-go="work">工作项</button>`);
     if (view.level === "line") parts.push(`<span>›</span><span class="here">${esc(LINES.get(view.id).title)}</span>`);
     if (view.level === "pac") {
       const r = RUNS.get(view.id), line = LINES.get(r.line);
       parts.push(`<span>›</span><button data-go="line" data-id="${esc(line.id)}">${esc(line.title)}</button>`);
       parts.push(`<span>›</span><span class="here mono">${esc(r.name)}</span>`);
     }
+    if (view.level === "work") parts.push(`<span>›</span><span class="here">工作项</span>`);
+    if (view.level === "workItem") parts.push(`<span>›</span><button data-go="work">工作项</button><span>›</span><span class="here mono">${esc(view.id)}</span>`);
     parts.push(tip("note", "这一页怎么看"));
     const el = document.getElementById("crumbs");
     el.innerHTML = parts.join("");
     el.onclick = e => {
       const b = e.target.closest("button[data-go]"); if (!b) return;
-      go(b.dataset.go === "line" ? { level: "line", id: b.dataset.id } : { level: "lines" });
+      go(b.dataset.go === "line" ? { level: "line", id: b.dataset.id } : b.dataset.go === "work" ? { level: "work" } : { level: "lines" });
     };
   }
   function renderNote() {
@@ -649,6 +657,7 @@ svg.arrows .arrowhead { fill: var(--accent); }
     n.hidden = !openTips.has("note");
     if (view.level === "lines") n.innerHTML = `外层是人和 agent，里层是他们名下的任务线：squire 在 missions 空间登记过的 PAC 归到对应的 mission（排在最前，带编号）；其余互相关联的 PAC（同一个 PR、同一主题、重跑）归为一条，其余零散的归到“其他”，例行各占一条细线。没有登记到 mission 的任务线是推断的。空心点是别人为这条线跑的 PAC。圆点是一次性任务（Workflow），位置是开始时间、颜色是状态，还在跑的拖一条线到当前时刻；小刻度是例行（Routine）的每次运行。鼠标移到圆点上会高亮它的关联箭头。点圆点看这个 PAC，点线名展开这条线。窗口内没有任务的 agent 任务线收成一行“另有 N 条没有任务的线”，点它展开。时间轴范围就是统计窗口。拖动时间轴，或在面板上方的叠层上滚动，可以回看任意时刻。`;
     else if (view.level === "line") n.innerHTML = `上面是例行：每条心跳条是一个 routine，每一格是它产生的一次运行。下面是一次性任务，卡片按创建时间排列。实线箭头：名字里有同一个 PR 号或主题词；虚线：同名重跑。点开卡片看这张 PAC 图的节点。`;
+    else if (view.level === "work" || view.level === "workItem") n.innerHTML = `工作项来自 org 空间 work/ 目录的登记文件：按状态分组（进行中、受阻、待办在前，已完成、已放弃在后），组内按指派人或负责人归组。默认隐藏在统计窗口开始之前就关闭的已完成/已放弃项（归档），点“另有 N 个已归档”展开；统计窗口之外的关联 PAC 只显示编号，点不开。点一行看工作项详情，依赖编号可跳转。`;
     else {
       const r = RUNS.get(view.id);
       n.innerHTML = r.nodes.length ? `节点状态按所选时刻回放：节点在完成时刻之前显示为“等待中”。点节点看它的输出。`
@@ -911,7 +920,7 @@ svg.arrows .arrowhead { fill: var(--accent); }
         ${rel.length ? `<div class="box"><h5>关联的 PAC</h5><ul>${relList}</ul></div>` : ""}
         ${expansion.length ? `<div class="box"><h5>Expansion 关系</h5><ul>${expansion.slice(0, 24).map(k => `<li><span class="mono">${esc(k.from.graphId)}:${esc(k.from.nodeId)} → ${esc(k.to.graphId)}:${esc(k.to.nodeId)}</span></li>`).join("")}</ul></div>` : ""}
       </div></div>`;
-    el.querySelector(".side").onclick = e => { const b = e.target.closest("[data-open]"); if (b) go({ level: "pac", id: b.dataset.open, from: view.from }); };
+    el.querySelector(".side").onclick = e => { const b = e.target.closest("[data-open]"); if (b) go({ level: "pac", id: b.dataset.open, from: view.from, back: view.back }); };
     const svg = el.querySelector(".dag");
     if (svg) svg.onclick = e => { const g = e.target.closest("[data-node]"); if (g) { selectedNode = g.dataset.node; renderPac(el, id); } };
     if (selectedNode) {
@@ -962,6 +971,8 @@ svg.arrows .arrowhead { fill: var(--accent); }
     const el = document.getElementById("content");
     if (view.level === "lines") renderLines(el);
     else if (view.level === "line") renderLine(el, view.id);
+    else if (view.level === "work") window.PAC_WORK_ITEMS?.renderList(el, { data: DATA, runs: RUNS, esc, full, go });
+    else if (view.level === "workItem") window.PAC_WORK_ITEMS?.renderItem(el, { data: DATA, runs: RUNS, esc, full, go }, view.id);
     else renderPac(el, view.id);
   }
   let resizeTimer;

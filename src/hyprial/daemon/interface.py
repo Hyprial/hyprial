@@ -20,9 +20,19 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.harnesses.claude.runtime import CLAUDE_RUNTIME_ENVIRONMENT as CLAUDE_RUNTIME_ENVIRONMENT
     from hyprial.daemon.impl.harnesses.claude.runtime import ClaudeRuntimeError as ClaudeRuntimeError
     from hyprial.daemon.impl.transfer.cleanup import CleanupError as CleanupError
+    from hyprial.daemon.impl.context_snapshot import ContextSnapshotBody as ContextSnapshotBody
+    from hyprial.daemon.impl.context_snapshot import ContextSnapshotError as ContextSnapshotError
+    from hyprial.daemon.impl.context_snapshot import ContextSnapshotExporter as ContextSnapshotExporter
+    from hyprial.daemon.impl.context_snapshot import ContextSnapshotRequest as ContextSnapshotRequest
+    from hyprial.daemon.impl.context_snapshot import ContextSnapshotResult as ContextSnapshotResult
+    from hyprial.daemon.impl.context_snapshot import ContextSnapshotSource as ContextSnapshotSource
+    from hyprial.daemon.impl.context_snapshot import ContextSnapshotTarget as ContextSnapshotTarget
+    from hyprial.daemon.impl.context_snapshot import ContextSnapshotWorker as ContextSnapshotWorker
     from hyprial.daemon.impl.harnesses.codex.process import CodexAppServerRpcError as CodexAppServerRpcError
     from hyprial.daemon.impl.harnesses.codex.process import resolve_codex_executable as resolve_codex_executable
     from hyprial.daemon.impl.harnesses.codex.app_server import CodexInteractiveAppServer as CodexInteractiveAppServer
+    from hyprial.daemon.impl.harnesses.codex.app_server import CodexInteractiveResumeError as CodexInteractiveResumeError
+    from hyprial.daemon.impl.harnesses.codex.app_server import CodexInteractiveResumePending as CodexInteractiveResumePending
     from hyprial.daemon.impl.harnesses.codex.carrier import CodexInteractiveCarrier as CodexInteractiveCarrier
     from hyprial.daemon.impl.harnesses.capabilities import DECLARED_HARNESSES as DECLARED_HARNESSES
     from hyprial.daemon.impl.configuration.network_profile import DEFAULT_PROFILE as DEFAULT_PROFILE
@@ -60,8 +70,10 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.pac.storage.store import PacGraphStore as PacGraphStore
     from hyprial.daemon.impl.pac.graphs.reactor import PacReactor as PacReactor
     from hyprial.daemon.impl.pac.graphs.projection import Projection as Projection
+    from hyprial.daemon.impl.application.ports import QuotaHookConsumerFactory as QuotaHookConsumerFactory
     from hyprial.daemon.impl.application.ports import QuotaWatchdogDeps as QuotaWatchdogDeps
     from hyprial.daemon.impl.transfer.landing.receive import ReceiveError as ReceiveError
+    from hyprial.daemon.impl.context_snapshot import RecapCaptureState as RecapCaptureState
     from hyprial.daemon.impl.autoupdate.alert import RestartProcessObservation as RestartProcessObservation
     from hyprial.daemon.impl.autoupdate.alert import RestartProcessState as RestartProcessState
     from hyprial.daemon.impl.bootstrap.adapter_registration import RouteInput as RouteInput
@@ -77,6 +89,9 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.correlation.readiness_budget import START_ADMISSION_WIDTH_DEFAULT as START_ADMISSION_WIDTH_DEFAULT
     from hyprial.daemon.impl.correlation.readiness_budget import START_TIMEOUT_SECONDS_DEFAULT as START_TIMEOUT_SECONDS_DEFAULT
     from hyprial.daemon.impl.transfer.archive.session_files import SessionFileError as SessionFileError
+    from hyprial.daemon.impl.transfer.archive.signature import SignatureError as SignatureError
+    from hyprial.daemon.impl.transfer.archive.signature import SignatureFormatError as SignatureFormatError
+    from hyprial.daemon.impl.transfer.archive.signature import public_key_id as public_key_id
     from hyprial.daemon.impl.operations.management import SquireRegistryResult as SquireRegistryResult
     from hyprial.daemon.impl.squire.setup import SquireSetup as SquireSetup
     from hyprial.daemon.impl.transfer.execution.ssh import SshRunner as SshRunner
@@ -85,6 +100,12 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.network.tailcat import TailcatSidecarError as TailcatSidecarError
     from hyprial.daemon.impl.autoupdate import TimerConfig as TimerConfig
     from hyprial.daemon.impl.transfer.orchestrator import TransferError as TransferError
+    from hyprial.daemon.impl.transfer.archive.trust import TrustStore as TrustStore
+    from hyprial.daemon.impl.transfer.archive.trust import TrustStoreError as TrustStoreError
+    from hyprial.daemon.impl.transfer.archive.trust import add_trusted_source_key as add_trusted_source_key
+    from hyprial.daemon.impl.transfer.archive.trust import load_trust_store as load_trust_store
+    from hyprial.daemon.impl.transfer.archive.trust import retire_trusted_source_key as retire_trusted_source_key
+    from hyprial.daemon.impl.transfer.archive.trust import trust_store_path as trust_store_path
     from hyprial.daemon.impl.autoupdate.alert import UPGRADE_ALREADY_CURRENT as UPGRADE_ALREADY_CURRENT
     from hyprial.daemon.impl.autoupdate.alert import UPGRADE_AWAITING_RESTART as UPGRADE_AWAITING_RESTART
     from hyprial.daemon.impl.autoupdate.alert import UPGRADE_DECLINED_DOWNGRADE as UPGRADE_DECLINED_DOWNGRADE
@@ -104,6 +125,7 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.bootstrap.adapter_registration import add_lark_gateway as add_lark_gateway
     from hyprial.daemon.impl.pac.graphs.edits import add_node as add_node
     from hyprial.daemon.impl.application.netendpoints.endpoints import _lock_wait_timeout as application_lock_wait_timeout
+    from hyprial.daemon.impl.transfer.landing.signature_gate import trust_policy_for as trust_policy_for
     from hyprial.daemon.impl.transfer.archive.bundle import assert_bundle_identity as assert_bundle_identity
     from hyprial.daemon.impl.correlation.alarm import audience_for_sender as audience_for_sender
     from hyprial.daemon.impl.owner_migration.planning import build_plan as build_plan
@@ -113,6 +135,8 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.network.peer_reachability import classify_peer_reachability as classify_peer_reachability
     from hyprial.daemon.impl.harnesses.model_provider import claude_provider_environment as claude_provider_environment
     from hyprial.daemon.impl.transfer.archive.session_files import claude_session_target as claude_session_target
+    from hyprial.daemon.impl.transfer.archive.session_files import claude_session_file as claude_session_file
+    from hyprial.daemon.impl.transfer.archive.session_files import claude_session_file_in_session_root as claude_session_file_in_session_root
     from hyprial.daemon.impl.harnesses.runtime._launch_cleanup import cleanup_launch_resources as cleanup_launch_resources
     from hyprial.daemon.impl.pac.graphs.edits import close_graph as close_graph
     from hyprial.daemon.impl.harnesses.model_provider import codex_provider_configuration as codex_provider_configuration
@@ -129,7 +153,6 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.autoupdate import detect_platform as detect_platform
     from hyprial.daemon.impl.owner_migration.apply import detect_previous_owner as detect_previous_owner
     from hyprial.daemon.impl.adapters.lark.credentials.scopes import developer_console_permission_url as developer_console_permission_url
-    from hyprial.daemon.impl.dispatch.matrix import diagnose as diagnose
     from hyprial.daemon.impl.adapters.lark.credentials.scopes import diagnose_scopes as diagnose_scopes
     from hyprial.daemon.impl.dispatch.matrix import dispatch_reminders as dispatch_reminders
     from hyprial.daemon.impl.org.document import document_summary as document_summary
@@ -177,6 +200,7 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.harnesses.pi.loader import pi_sdk_launch_from_public_projection as pi_sdk_launch_from_public_projection
     from hyprial.daemon.impl.harnesses.pi.session import pi_session_id as pi_session_id
     from hyprial.daemon.impl.transfer.archive.session_files import pi_session_target as pi_session_target
+    from hyprial.daemon.impl.transfer.archive.session_files import resolve_legacy_pi_resume_session as resolve_legacy_pi_resume_session
     from hyprial.daemon.impl.transfer.cleanup import plan_cleanup as plan_cleanup
     from hyprial.daemon.impl.pac.graphs.reactor import planned_to_json as planned_to_json
     from hyprial.daemon.impl.squire.probe import probe_combinations as probe_combinations
@@ -193,6 +217,10 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.bootstrap.adapter_registration import remove_lark_gateway as remove_lark_gateway
     from hyprial.daemon.impl.adapters.lark.state.readers import replied_chats as replied_chats
     from hyprial.daemon.impl.adapters.lark.credentials.scopes import request_scope_authorization as request_scope_authorization
+    from hyprial.daemon.impl.dispatch.matrix import active_profile as active_profile
+    from hyprial.daemon.impl.dispatch.matrix import diagnose as diagnose
+    from hyprial.daemon.impl.dispatch.matrix import probe_profile as probe_profile
+    from hyprial.daemon.impl.dispatch.matrix import recorded_candidate_json as recorded_candidate_json
     from hyprial.daemon.impl.dispatch.matrix import resolve as resolve
     from hyprial.daemon.impl.harnesses.pi.loader import resolve_approved_pi_project as resolve_approved_pi_project
     from hyprial.daemon.impl.adapters.lark.credentials.onboarding import resolve_lark_app_credential as resolve_lark_app_credential
@@ -211,11 +239,13 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.mcp.server import serve_worker_stdio as serve_worker_stdio
     from hyprial.daemon.impl.harnesses.runtime.tmux import session_name_for_actor as session_name_for_actor
     from hyprial.daemon.impl.mcp.channel.loops import signal_channel_recovery as signal_channel_recovery
+    from hyprial.daemon.impl.transfer.archive.attribution import sign_exported_bundle as sign_exported_bundle
     from hyprial.daemon.impl.pac.graphs.events import silence_broken_pipe as silence_broken_pipe
     from hyprial.daemon.impl.transfer.execution.smolvm import _regular_read as smolvm_regular_read
     from hyprial.daemon.impl.pac.graphs.subscription import snapshot as snapshot
     from hyprial.daemon.impl.autoupdate.alert import start_failure_line as start_failure_line
     from hyprial.daemon.impl.harnesses.capabilities import support as support
+    from hyprial.daemon.impl.application.ports import HookConsumersDeps as HookConsumersDeps
     from hyprial.daemon.impl.adapters.lark.credentials.identities import sync_identities as sync_identities
     from hyprial.daemon.impl.network.peer_reachability import tcp_probe as tcp_probe
     import hyprial.daemon.impl.transfer.execution.container as transfer_container
@@ -261,8 +291,18 @@ _FACADE_EXPORTS = {
     'CLAUDE_RUNTIME_ENVIRONMENT': ('hyprial.daemon.impl.harnesses.claude.runtime', 'CLAUDE_RUNTIME_ENVIRONMENT'),
     'ClaudeRuntimeError': ('hyprial.daemon.impl.harnesses.claude.runtime', 'ClaudeRuntimeError'),
     'CleanupError': ('hyprial.daemon.impl.transfer.cleanup', 'CleanupError'),
+    'ContextSnapshotBody': ('hyprial.daemon.impl.context_snapshot', 'ContextSnapshotBody'),
+    'ContextSnapshotError': ('hyprial.daemon.impl.context_snapshot', 'ContextSnapshotError'),
+    'ContextSnapshotExporter': ('hyprial.daemon.impl.context_snapshot', 'ContextSnapshotExporter'),
+    'ContextSnapshotRequest': ('hyprial.daemon.impl.context_snapshot', 'ContextSnapshotRequest'),
+    'ContextSnapshotResult': ('hyprial.daemon.impl.context_snapshot', 'ContextSnapshotResult'),
+    'ContextSnapshotSource': ('hyprial.daemon.impl.context_snapshot', 'ContextSnapshotSource'),
+    'ContextSnapshotTarget': ('hyprial.daemon.impl.context_snapshot', 'ContextSnapshotTarget'),
+    'ContextSnapshotWorker': ('hyprial.daemon.impl.context_snapshot', 'ContextSnapshotWorker'),
     'CodexAppServerRpcError': ('hyprial.daemon.impl.harnesses.codex.process', 'CodexAppServerRpcError'),
     'CodexInteractiveAppServer': ('hyprial.daemon.impl.harnesses.codex.app_server', 'CodexInteractiveAppServer'),
+    'CodexInteractiveResumeError': ('hyprial.daemon.impl.harnesses.codex.app_server', 'CodexInteractiveResumeError'),
+    'CodexInteractiveResumePending': ('hyprial.daemon.impl.harnesses.codex.app_server', 'CodexInteractiveResumePending'),
     'CodexInteractiveCarrier': ('hyprial.daemon.impl.harnesses.codex.carrier', 'CodexInteractiveCarrier'),
     'resolve_codex_executable': ('hyprial.daemon.impl.harnesses.codex.process', 'resolve_codex_executable'),
     'DECLARED_HARNESSES': ('hyprial.daemon.impl.harnesses.capabilities', 'DECLARED_HARNESSES'),
@@ -276,6 +316,7 @@ _FACADE_EXPORTS = {
     'EnvelopeError': ('hyprial.daemon.impl.transfer.archive.envelope', 'EnvelopeError'),
     'FORWARDING_SETTINGS_KEY': ('hyprial.daemon.impl.forwarding_config', 'FORWARDING_SETTINGS_KEY'),
     'ForwardingConfigurationError': ('hyprial.daemon.impl.forwarding_config', 'ForwardingConfigurationError'),
+    'HookConsumersDeps': ('hyprial.daemon.impl.application.ports', 'HookConsumersDeps'),
     'IDENTITY_KINDS': ('hyprial.daemon.impl.adapters.lark.state.records', 'IDENTITY_KINDS'),
     'Identity': ('hyprial.daemon.impl.adapters.lark.state.records', 'Identity'),
     'LARK_ONBOARDING_REQUIRED_EVENTS': ('hyprial.daemon.impl.adapters.lark.credentials.onboarding', 'LARK_ONBOARDING_REQUIRED_EVENTS'),
@@ -301,8 +342,10 @@ _FACADE_EXPORTS = {
     'PacGraphStore': ('hyprial.daemon.impl.pac.storage.store', 'PacGraphStore'),
     'PacReactor': ('hyprial.daemon.impl.pac.graphs.reactor', 'PacReactor'),
     'Projection': ('hyprial.daemon.impl.pac.graphs.projection', 'Projection'),
+    'QuotaHookConsumerFactory': ('hyprial.daemon.impl.application.ports', 'QuotaHookConsumerFactory'),
     'QuotaWatchdogDeps': ('hyprial.daemon.impl.application.ports', 'QuotaWatchdogDeps'),
     'ReceiveError': ('hyprial.daemon.impl.transfer.landing.receive', 'ReceiveError'),
+    'RecapCaptureState': ('hyprial.daemon.impl.context_snapshot', 'RecapCaptureState'),
     'RestartProcessObservation': ('hyprial.daemon.impl.autoupdate.alert', 'RestartProcessObservation'),
     'RestartProcessState': ('hyprial.daemon.impl.autoupdate.alert', 'RestartProcessState'),
     'RouteInput': ('hyprial.daemon.impl.bootstrap.adapter_registration', 'RouteInput'),
@@ -318,6 +361,8 @@ _FACADE_EXPORTS = {
     'START_ADMISSION_WIDTH_DEFAULT': ('hyprial.daemon.impl.correlation.readiness_budget', 'START_ADMISSION_WIDTH_DEFAULT'),
     'START_TIMEOUT_SECONDS_DEFAULT': ('hyprial.daemon.impl.correlation.readiness_budget', 'START_TIMEOUT_SECONDS_DEFAULT'),
     'SessionFileError': ('hyprial.daemon.impl.transfer.archive.session_files', 'SessionFileError'),
+    'SignatureError': ('hyprial.daemon.impl.transfer.archive.signature', 'SignatureError'),
+    'SignatureFormatError': ('hyprial.daemon.impl.transfer.archive.signature', 'SignatureFormatError'),
     'SquireRegistryResult': ('hyprial.daemon.impl.operations.management', 'SquireRegistryResult'),
     'SquireSetup': ('hyprial.daemon.impl.squire.setup', 'SquireSetup'),
     'SshRunner': ('hyprial.daemon.impl.transfer.execution.ssh', 'SshRunner'),
@@ -326,6 +371,8 @@ _FACADE_EXPORTS = {
     'TailcatSidecarError': ('hyprial.daemon.impl.network.tailcat', 'TailcatSidecarError'),
     'TimerConfig': ('hyprial.daemon.impl.autoupdate', 'TimerConfig'),
     'TransferError': ('hyprial.daemon.impl.transfer.orchestrator', 'TransferError'),
+    'TrustStore': ('hyprial.daemon.impl.transfer.archive.trust', 'TrustStore'),
+    'TrustStoreError': ('hyprial.daemon.impl.transfer.archive.trust', 'TrustStoreError'),
     'UPGRADE_ALREADY_CURRENT': ('hyprial.daemon.impl.autoupdate.alert', 'UPGRADE_ALREADY_CURRENT'),
     'UPGRADE_AWAITING_RESTART': ('hyprial.daemon.impl.autoupdate.alert', 'UPGRADE_AWAITING_RESTART'),
     'UPGRADE_DECLINED_DOWNGRADE': ('hyprial.daemon.impl.autoupdate.alert', 'UPGRADE_DECLINED_DOWNGRADE'),
@@ -344,6 +391,7 @@ _FACADE_EXPORTS = {
     'add_gateway_route': ('hyprial.daemon.impl.bootstrap.adapter_registration', 'add_gateway_route'),
     'add_lark_gateway': ('hyprial.daemon.impl.bootstrap.adapter_registration', 'add_lark_gateway'),
     'add_node': ('hyprial.daemon.impl.pac.graphs.edits', 'add_node'),
+    'add_trusted_source_key': ('hyprial.daemon.impl.transfer.archive.trust', 'add_trusted_source_key'),
     'application_lock_wait_timeout': ('hyprial.daemon.impl.application.netendpoints.endpoints', '_lock_wait_timeout'),
     'assert_bundle_identity': ('hyprial.daemon.impl.transfer.archive.bundle', 'assert_bundle_identity'),
     'audience_for_sender': ('hyprial.daemon.impl.correlation.alarm', 'audience_for_sender'),
@@ -353,6 +401,8 @@ _FACADE_EXPORTS = {
     'check_config': ('hyprial.daemon.impl.orgfs.webserver.config', 'check_config'),
     'classify_peer_reachability': ('hyprial.daemon.impl.network.peer_reachability', 'classify_peer_reachability'),
     'claude_provider_environment': ('hyprial.daemon.impl.harnesses.model_provider', 'claude_provider_environment'),
+    'claude_session_file': ('hyprial.daemon.impl.transfer.archive.session_files', 'claude_session_file'),
+    'claude_session_file_in_session_root': ('hyprial.daemon.impl.transfer.archive.session_files', 'claude_session_file_in_session_root'),
     'claude_session_target': ('hyprial.daemon.impl.transfer.archive.session_files', 'claude_session_target'),
     'cleanup_launch_resources': ('hyprial.daemon.impl.harnesses.runtime._launch_cleanup', 'cleanup_launch_resources'),
     'close_graph': ('hyprial.daemon.impl.pac.graphs.edits', 'close_graph'),
@@ -370,7 +420,6 @@ _FACADE_EXPORTS = {
     'detect_platform': ('hyprial.daemon.impl.autoupdate', 'detect_platform'),
     'detect_previous_owner': ('hyprial.daemon.impl.owner_migration.apply', 'detect_previous_owner'),
     'developer_console_permission_url': ('hyprial.daemon.impl.adapters.lark.credentials.scopes', 'developer_console_permission_url'),
-    'diagnose': ('hyprial.daemon.impl.dispatch.matrix', 'diagnose'),
     'diagnose_scopes': ('hyprial.daemon.impl.adapters.lark.credentials.scopes', 'diagnose_scopes'),
     'dispatch_reminders': ('hyprial.daemon.impl.dispatch.matrix', 'dispatch_reminders'),
     'document_summary': ('hyprial.daemon.impl.org.document', 'document_summary'),
@@ -395,6 +444,7 @@ _FACADE_EXPORTS = {
     'list_gateway_routes': ('hyprial.daemon.impl.bootstrap.adapter_registration', 'list_gateway_routes'),
     'live_daemon_pid': ('hyprial.daemon.impl.configuration.home_guard', 'live_daemon_pid'),
     'load_envelope': ('hyprial.daemon.impl.transfer.archive.envelope', 'load_envelope'),
+    'load_trust_store': ('hyprial.daemon.impl.transfer.archive.trust', 'load_trust_store'),
     'load_workflow_text': ('hyprial.daemon.impl.pac.contracts.workflow', 'load_workflow_text'),
     'locate_tailcat_sidecar': ('hyprial.daemon.impl.network.tailcat', 'locate_tailcat_sidecar'),
     'name': ('hyprial.daemon.impl.pac.contracts.workflow', 'name'),
@@ -418,6 +468,7 @@ _FACADE_EXPORTS = {
     'pi_sdk_launch_from_public_projection': ('hyprial.daemon.impl.harnesses.pi.loader', 'pi_sdk_launch_from_public_projection'),
     'pi_session_id': ('hyprial.daemon.impl.harnesses.pi.session', 'pi_session_id'),
     'pi_session_target': ('hyprial.daemon.impl.transfer.archive.session_files', 'pi_session_target'),
+    'resolve_legacy_pi_resume_session': ('hyprial.daemon.impl.transfer.archive.session_files', 'resolve_legacy_pi_resume_session'),
     'plan_cleanup': ('hyprial.daemon.impl.transfer.cleanup', 'plan_cleanup'),
     'planned_to_json': ('hyprial.daemon.impl.pac.graphs.reactor', 'planned_to_json'),
     'probe_combinations': ('hyprial.daemon.impl.squire.probe', 'probe_combinations'),
@@ -434,6 +485,10 @@ _FACADE_EXPORTS = {
     'remove_lark_gateway': ('hyprial.daemon.impl.bootstrap.adapter_registration', 'remove_lark_gateway'),
     'replied_chats': ('hyprial.daemon.impl.adapters.lark.state.readers', 'replied_chats'),
     'request_scope_authorization': ('hyprial.daemon.impl.adapters.lark.credentials.scopes', 'request_scope_authorization'),
+    'active_profile': ('hyprial.daemon.impl.dispatch.matrix', 'active_profile'),
+    'diagnose': ('hyprial.daemon.impl.dispatch.matrix', 'diagnose'),
+    'probe_profile': ('hyprial.daemon.impl.dispatch.matrix', 'probe_profile'),
+    'recorded_candidate_json': ('hyprial.daemon.impl.dispatch.matrix', 'recorded_candidate_json'),
     'resolve': ('hyprial.daemon.impl.dispatch.matrix', 'resolve'),
     'resolve_approved_pi_project': ('hyprial.daemon.impl.harnesses.pi.loader', 'resolve_approved_pi_project'),
     'resolve_lark_app_credential': ('hyprial.daemon.impl.adapters.lark.credentials.onboarding', 'resolve_lark_app_credential'),
@@ -452,6 +507,7 @@ _FACADE_EXPORTS = {
     'serve_worker_stdio': ('hyprial.daemon.impl.mcp.server', 'serve_worker_stdio'),
     'session_name_for_actor': ('hyprial.daemon.impl.harnesses.runtime.tmux', 'session_name_for_actor'),
     'signal_channel_recovery': ('hyprial.daemon.impl.mcp.channel.loops', 'signal_channel_recovery'),
+    'sign_exported_bundle': ('hyprial.daemon.impl.transfer.archive.attribution', 'sign_exported_bundle'),
     'silence_broken_pipe': ('hyprial.daemon.impl.pac.graphs.events', 'silence_broken_pipe'),
     'smolvm_regular_read': ('hyprial.daemon.impl.transfer.execution.smolvm', '_regular_read'),
     'snapshot': ('hyprial.daemon.impl.pac.graphs.subscription', 'snapshot'),
@@ -460,6 +516,10 @@ _FACADE_EXPORTS = {
     'sync_identities': ('hyprial.daemon.impl.adapters.lark.credentials.identities', 'sync_identities'),
     'tcp_probe': ('hyprial.daemon.impl.network.peer_reachability', 'tcp_probe'),
     'transfer_container': ('hyprial.daemon.impl.transfer.execution.container', None),
+    'public_key_id': ('hyprial.daemon.impl.transfer.archive.signature', 'public_key_id'),
+    'retire_trusted_source_key': ('hyprial.daemon.impl.transfer.archive.trust', 'retire_trusted_source_key'),
+    'trust_policy_for': ('hyprial.daemon.impl.transfer.landing.signature_gate', 'trust_policy_for'),
+    'trust_store_path': ('hyprial.daemon.impl.transfer.archive.trust', 'trust_store_path'),
     'unavailable_notice': ('hyprial.daemon.impl.correlation.availability_loud', 'unavailable_notice'),
     'updates': ('hyprial.daemon.impl.updates', None),
     'url_opener': ('hyprial.daemon.impl.network.proxy_route', 'url_opener'),
@@ -521,8 +581,18 @@ __all__ = [
     'CLAUDE_RUNTIME_ENVIRONMENT',
     'ClaudeRuntimeError',
     'CleanupError',
+    'ContextSnapshotBody',
+    'ContextSnapshotError',
+    'ContextSnapshotExporter',
+    'ContextSnapshotRequest',
+    'ContextSnapshotResult',
+    'ContextSnapshotSource',
+    'ContextSnapshotTarget',
+    'ContextSnapshotWorker',
     'CodexAppServerRpcError',
     'CodexInteractiveAppServer',
+    'CodexInteractiveResumeError',
+    'CodexInteractiveResumePending',
     'CodexInteractiveCarrier',
     'resolve_codex_executable',
     'DECLARED_HARNESSES',
@@ -536,6 +606,7 @@ __all__ = [
     'EnvelopeError',
     'FORWARDING_SETTINGS_KEY',
     'ForwardingConfigurationError',
+    'HookConsumersDeps',
     'IDENTITY_KINDS',
     'Identity',
     'LARK_ONBOARDING_REQUIRED_EVENTS',
@@ -561,8 +632,10 @@ __all__ = [
     'PacGraphStore',
     'PacReactor',
     'Projection',
+    'QuotaHookConsumerFactory',
     'QuotaWatchdogDeps',
     'ReceiveError',
+    'RecapCaptureState',
     'RestartProcessObservation',
     'RestartProcessState',
     'RouteInput',
@@ -578,6 +651,8 @@ __all__ = [
     'START_ADMISSION_WIDTH_DEFAULT',
     'START_TIMEOUT_SECONDS_DEFAULT',
     'SessionFileError',
+    'SignatureError',
+    'SignatureFormatError',
     'SquireRegistryResult',
     'SquireSetup',
     'SshRunner',
@@ -586,6 +661,8 @@ __all__ = [
     'TailcatSidecarError',
     'TimerConfig',
     'TransferError',
+    'TrustStore',
+    'TrustStoreError',
     'UPGRADE_ALREADY_CURRENT',
     'UPGRADE_AWAITING_RESTART',
     'UPGRADE_DECLINED_DOWNGRADE',
@@ -604,6 +681,7 @@ __all__ = [
     'add_gateway_route',
     'add_lark_gateway',
     'add_node',
+    'add_trusted_source_key',
     'application_lock_wait_timeout',
     'assert_bundle_identity',
     'audience_for_sender',
@@ -613,6 +691,8 @@ __all__ = [
     'check_config',
     'classify_peer_reachability',
     'claude_provider_environment',
+    'claude_session_file',
+    'claude_session_file_in_session_root',
     'claude_session_target',
     'cleanup_launch_resources',
     'close_graph',
@@ -630,7 +710,6 @@ __all__ = [
     'detect_platform',
     'detect_previous_owner',
     'developer_console_permission_url',
-    'diagnose',
     'diagnose_scopes',
     'dispatch_reminders',
     'document_summary',
@@ -655,6 +734,7 @@ __all__ = [
     'list_gateway_routes',
     'live_daemon_pid',
     'load_envelope',
+    'load_trust_store',
     'load_workflow_text',
     'locate_tailcat_sidecar',
     'name',
@@ -678,6 +758,7 @@ __all__ = [
     'pi_sdk_launch_from_public_projection',
     'pi_session_id',
     'pi_session_target',
+    'resolve_legacy_pi_resume_session',
     'plan_cleanup',
     'planned_to_json',
     'probe_combinations',
@@ -694,6 +775,10 @@ __all__ = [
     'remove_lark_gateway',
     'replied_chats',
     'request_scope_authorization',
+    'active_profile',
+    'diagnose',
+    'probe_profile',
+    'recorded_candidate_json',
     'resolve',
     'resolve_approved_pi_project',
     'resolve_lark_app_credential',
@@ -712,6 +797,7 @@ __all__ = [
     'serve_worker_stdio',
     'session_name_for_actor',
     'signal_channel_recovery',
+    'sign_exported_bundle',
     'silence_broken_pipe',
     'smolvm_regular_read',
     'snapshot',
@@ -720,6 +806,10 @@ __all__ = [
     'sync_identities',
     'tcp_probe',
     'transfer_container',
+    'public_key_id',
+    'retire_trusted_source_key',
+    'trust_policy_for',
+    'trust_store_path',
     'unavailable_notice',
     'updates',
     'url_opener',

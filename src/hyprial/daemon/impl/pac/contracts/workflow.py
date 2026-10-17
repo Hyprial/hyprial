@@ -76,7 +76,9 @@ def principal(value: Any, label: str) -> str:
 
 def launch(value: Any, label: str) -> dict[str, Any]:
     value = mapping(
-        value, {"tier", "harness", "provider", "model", "cwd", "args"}, label
+        value,
+        {"tier", "harness", "provider", "model", "cwd", "cwdPolicy", "args"},
+        label,
     )
     result = dict(value)
     if "tier" in value:
@@ -107,6 +109,11 @@ def launch(value: Any, label: str) -> dict[str, Any]:
         cwd = text(value["cwd"], f"{label}.cwd", maximum=4096)
         if not Path(cwd).is_absolute():
             raise WorkflowSchemaError(f"{label}.cwd must be absolute")
+    cwd_policy = value.get("cwdPolicy")
+    if cwd_policy is not None and cwd_policy not in ("require", "create"):
+        raise WorkflowSchemaError(f"{label}.cwdPolicy must be require or create")
+    if cwd_policy is not None and "cwd" not in value:
+        raise WorkflowSchemaError(f"{label}.cwdPolicy requires cwd")
     args = value.get("args", [])
     if not isinstance(args, list) or any(
         not isinstance(arg, str) or "\0" in arg for arg in args
@@ -354,6 +361,18 @@ def load_workflow_text(raw: str) -> WorkflowSpec:
                 else launch(item.get("launch", default_launch), label + ".launch")
             )
         )
+        if runtime is not None and runtime.get("cwd") is not None:
+            cwd = Path(str(runtime["cwd"]))
+            cwd_policy = runtime.get("cwdPolicy", "require")
+            if cwd_policy == "create":
+                if cwd.exists() and not cwd.is_dir():
+                    raise WorkflowSchemaError(
+                        f"{label}.launch.cwd is not a directory: {cwd}"
+                    )
+            elif not cwd.is_dir():
+                raise WorkflowSchemaError(
+                    f"{label}.launch.cwd does not exist or is not a directory: {cwd}"
+                )
         task_value = item.get("task", f"expand {node_id}") if kind == "expansion" else item.get("task")
         task = text(task_value, label + ".task")
         try:

@@ -3,9 +3,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 from hashlib import blake2b
 
-from hyprial.kernel import DEFAULT_POLICIES, EXTERNAL_IO
+from hyprial.kernel import DEFAULT_POLICIES, EXTERNAL_IO, capped_exponential
 
 DELIVERY_RETRY_CLAIM_LIMIT = 32
+
+#: Recipient-offline recheck cadence for outbox and custody rows.
+#: Deferral used to park an offline row at its own TTL deadline, which made
+#: the row's only rescue a liveliness wake: a recipient that never produced
+#: one died with ``attempts=0`` and nothing but the wake coordinator to save
+#: it (PR #1463 finding 1 -- advisor->user reply, six same-shape deaths in
+#: one window).  The pump now rechecks presence on this fixed short cadence;
+#: the TTL contract itself is unchanged, expiry still wins when it comes
+#: first, and a delivery attempt still only happens once presence says the
+#: recipient is reachable.
+OFFLINE_RECHECK_INTERVAL_MS = 60_000
 
 
 def online_retry_next_attempt_ms(
@@ -26,7 +37,7 @@ def online_retry_next_attempt_ms(
     if attempts < 1:
         raise ValueError("online retry attempts must be positive")
     policy = DEFAULT_POLICIES[EXTERNAL_IO]
-    nominal = min(policy.max_backoff, policy.base_backoff * 2 ** (attempts - 1))
+    nominal = capped_exponential(policy.base_backoff, policy.max_backoff, attempts - 1)
     digest = blake2b(message_id.encode("utf-8"), digest_size=8).digest()
     sample = int.from_bytes(digest, "big") / ((1 << 64) - 1)
     if nominal < policy.max_backoff:

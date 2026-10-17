@@ -155,6 +155,44 @@ class StoreMembership:
         members = roots.get("members")
         return members if isinstance(members, dict) else {}
 
+    def _author_removed_wins(self, author: str, token: bytes) -> bool:
+        """R2 removal-wins judgment for one (author, envelope frontier).
+
+        True when this replica must refuse the envelope because its author is
+        removed now, or because the author's current membership epoch began
+        at a (re-)add whose causal frontier the envelope does not include.
+        Callers hold the store lock; ``token`` is the envelope's stamped
+        metaFrontier.
+        """
+
+        current = self._membership().get(author)
+        if isinstance(current, dict) and current.get("removedAt"):
+            return True
+        floor = self._author_epoch_floor(author)
+        return floor is not None and not _state_covers(token, floor)
+
+    def _author_epoch_floor(self, author: str) -> bytes | None:
+        """Covering-max causal frontier among the author's indexed (re-)adds.
+
+        A never-removed member has exactly its original invite row, and any
+        frontier that reconstructs the member as active covers it, so this
+        floor is a no-op there.  After a re-add the covering-max row is the
+        re-add itself (owner lanes only accumulate), which is the new epoch's
+        floor.  Unlike :meth:`member_latest_add_frontier` this lookup does not
+        require the current member row to still match an add row byte for
+        byte, so a later mode change cannot silently erase the epoch.
+        """
+
+        latest: bytes | None = None
+        for row in self._db.execute(
+            "SELECT frontier FROM member_add_frontiers WHERE user = ?", (author,)
+        ).fetchall():
+            frontier = bytes(row[0])
+            if latest is None or _state_covers(frontier, latest):
+                latest = frontier
+        return latest
+
+
     def member_latest_add_frontier(self, user: str) -> bytes | None:
         """Return the indexed causal owner frontier of the latest active add."""
 

@@ -1,9 +1,6 @@
 """The agent-effect worker and session generation: replay, custody and effect execution."""
 
 from __future__ import annotations
-
-from __future__ import annotations
-from __future__ import annotations
 import time
 import uuid
 from collections.abc import Callable
@@ -40,6 +37,9 @@ from hyprial.daemon.impl.operations.session_ports  import (
 )
 from hyprial.daemon.impl.state_persistence  import StateCostOrigin
 
+from .lifecycle import _SessionLifecycle
+from hyprial.daemon.impl.harnesses.runtime.ports import AgentIdentityProjectionPort
+
 from .internals import (
     SessionOwnershipError,
     _AgentEffectResult,
@@ -59,7 +59,7 @@ from .internals import (
 
 
 @dataclass(slots=True)
-class _SessionGeneration:
+class _SessionGeneration(_SessionLifecycle):
     generation: int
     store: DesiredStateStore
     daemon_epoch: str
@@ -79,6 +79,7 @@ class _SessionGeneration:
     redeliver_persistence: Callable[[DesiredStateIoRequest], None]
     deferred_persistence: dict[str, DesiredStateIoRequest]
     deferred_capacity: int
+    agent_identity: AgentIdentityProjectionPort | None = None
     command_costs: CallCostCounters | None = None
     _mutations: dict[str, _PendingMutation] = field(default_factory=dict)
     _effect_owners: dict[str, str] = field(default_factory=dict)
@@ -187,26 +188,6 @@ class _SessionGeneration:
             self._reject(command, error.code, error.detail)
         except ValueError as error:
             self._reject(command, ipc_errors.INVALID_ARGUMENT, str(error))
-
-    def _lifecycle(self, request: object) -> None:
-        from hyprial.kernel import LifecycleMutationRequest
-
-        assert isinstance(request, LifecycleMutationRequest)
-        payload = request.payload
-        if not isinstance(payload, (RegisterSessionCommand, UnregisterSessionCommand)):
-            self._reject(
-                request,
-                ipc_errors.INVALID_ARGUMENT,
-                f"unsupported Session lifecycle payload: {type(payload).__name__}",
-            )
-            return
-        self._persist(
-            DesiredStateOperation.APPLY_SESSION_LIFECYCLE,
-            request,
-            (request,),
-            context=("lifecycle", request),
-            cost_origin=StateCostOrigin.BACKGROUND,
-        )
 
     def _register(self, command: RegisterSessionCommand) -> None:
         _required(command.correlation_id, "correlation_id")
@@ -554,75 +535,6 @@ class _SessionGeneration:
             self.session_projection.replace(
                 completion.snapshot.interactive_sessions, self.version.read()
             )
-
-    def _finish_lifecycle(
-        self, request: object, result: object, snapshot: object
-    ) -> None:
-        from hyprial.kernel import (
-            LifecycleMutationCompleted,
-            LifecycleMutationRequest,
-            MutationProvenance,
-        )
-
-        assert isinstance(request, LifecycleMutationRequest)
-        if (
-            not isinstance(result, tuple)
-            or len(result) != 2
-            or not isinstance(result[0], MutationProvenance)
-        ):
-            raise TypeError("session lifecycle persistence returned invalid result")
-        provenance, superseded = result
-        payload = request.payload
-        if isinstance(payload, RegisterSessionCommand):
-            if provenance.changed:
-                for actor in superseded:
-                    self.runtime_projection.drop(actor)
-            sessions = getattr(snapshot, "interactive_sessions")
-            persisted = next(
-                (item for item in sessions if item.actor == payload.actor), None
-            )
-            if persisted is not None and persisted.session_ref is not None:
-                self.runtime_projection.register(
-                    persisted.actor,
-                    persisted.session_ref,
-                    self.clock_ms(),
-                    confirmed=persisted.source in SESSION_CARRIER_SOURCES,
-                )
-            projection = SessionMutationProjection(
-                actor=payload.actor,
-                session_ref=payload.session_ref,
-                daemon_epoch=self.daemon_epoch if provenance.changed else None,
-                registered=provenance.changed,
-                superseded_actors=tuple(superseded),
-            )
-        elif isinstance(payload, UnregisterSessionCommand):
-            if provenance.changed:
-                self.runtime_projection.drop(payload.actor)
-            projection = SessionMutationProjection(
-                actor=payload.actor,
-                session_ref=payload.session_ref,
-                daemon_epoch=None,
-                unregistered=provenance.changed,
-            )
-        else:
-            raise TypeError(
-                f"unsupported Session lifecycle payload: {type(payload).__name__}"
-            )
-        version = self.version.bump() if provenance.changed else self.version.read()
-        base = SessionMutationCompleted(
-            request.correlation_id, self.generation, version, projection
-        )
-        self._publish(
-            LifecycleMutationCompleted(
-                request.correlation_id,
-                request.attempt_token,
-                self.generation,
-                version,
-                "session",
-                provenance,
-                base,
-            )
-        )
 
     def _finish_register(
         self,

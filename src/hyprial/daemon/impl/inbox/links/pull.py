@@ -50,10 +50,10 @@ from hyprial.kernel import parse_agent_uri
 
 STATUS_FRAME_SCHEMA = "hyprial-delivery-status/v1"
 
-# Section 6 defaults, decided by Allen 2026-08-14.  Time is the primary
-# criterion because "stale" is a time concept; the item cap is a storage
-# ceiling.  Both are per-daemon configurable through the environment.
-DEFAULT_HOLD_TTL_MS = 30 * 60 * 1000
+# Section 6 policy; Allen extended the default hold to 12h on 2026-10-08.
+# Time measures staleness; the item cap is a storage ceiling. Both are
+# per-daemon configurable through the environment.
+DEFAULT_HOLD_TTL_MS = 12 * 60 * 60 * 1000
 DEFAULT_HOLD_MAX_ITEMS = 100
 # How long a terminal record stays pullable.  Not specified by the design; it
 # only has to outlive the message TTL by a wide margin so a sender that was

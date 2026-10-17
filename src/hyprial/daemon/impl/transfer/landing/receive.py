@@ -6,11 +6,14 @@ it created when any step fails.  It does not rotate entity tokens, re-grant
 capabilities or rewrite the registry yet — those need the target daemon and
 are the next slice.
 
-Known limit: the payload is validated before the copy (AT06 gate) and the
-copied file is written whole, but the digest is not re-checked afterwards, so a
-bundle that is rewritten *while* it is being received is not detected.  The
-transport is expected to hand over a quiescent bundle (the exporter refuses a
-live source for the same reason).
+Read binding: the manifest is read once (``load_sealed_manifest``) and that
+one reading is handed to every gate -- payload validation, the signature gate
+and the copy loop -- so a writer cannot swap the file between gates and have
+"validated", "signed" and "landed" describe three different manifests.  Every
+copied file is also re-hashed against its manifest entry while it is staged,
+and only a verified file is moved to its final name; a bundle rewritten
+*while* it is being received is refused with ``BundleTamperError`` and the
+whole attempt is undone.
 """
 
 from __future__ import annotations
@@ -18,13 +21,23 @@ from __future__ import annotations
 import os
 import shutil
 import stat
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 from hyprial.daemon.impl.transfer.archive.bundle import (
     BundleError,
     BundleManifest,
+    BundleTamperError,
+    sha256_file,
     validate_bundle)
+from hyprial.daemon.impl.transfer.landing.signature_gate import (
+    SignatureAttestation,
+    SignaturePolicy,
+    require_trusted_signature)
+from hyprial.daemon.impl.transfer.manifest_reading import (
+    SealedManifest,
+    load_sealed_manifest)
 
 __all__ = [
     "ReceiveError",
@@ -72,6 +85,7 @@ class ReceiveResult:
     bytes: int
     dry_run: bool
     manifest: BundleManifest
+    signature: SignatureAttestation | None = None
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -82,6 +96,9 @@ class ReceiveResult:
             "files": self.files,
             "bytes": self.bytes,
             "dry_run": self.dry_run,
+            # AT06 slice 2b: who signed this bundle, as this target recorded
+            # it, or ``null`` on a rehearsal path that lands unsigned bundles.
+            "signature": None if self.signature is None else self.signature.as_dict(),
             # Card 355 item 1: a declaration with ``present=False`` is not a
             # failure, it is a job for the target side.  The receipt repeats
             # it so nothing is silently assumed to have come across.
@@ -106,14 +123,28 @@ def receive_bundle(
     *,
     expect_actor: str | None = None,
     dry_run: bool = False,
+    signature: SignaturePolicy,
+    sealed: SealedManifest | None = None,
 ) -> ReceiveResult:
     """Validate ``bundle_dir`` and materialise it at ``destination``.
 
-    Raises ``BundleError`` when the bundle itself is bad, and the
+    Raises ``BundleError`` when the bundle itself is bad, the ``SignatureError``
+    family when it cannot be attributed to a trusted source key, and the
     ``ReceiveError`` family for refusals and failed landings.
+
+    ``sealed`` is the bundle's single manifest reading when the caller already
+    took one; everything below then binds to it instead of re-opening the
+    file.
     """
 
-    manifest = validate_bundle(bundle_dir)
+    reading = sealed if sealed is not None else load_sealed_manifest(bundle_dir)
+    manifest = validate_bundle(bundle_dir, manifest=reading.manifest)
+    attestation = require_trusted_signature(
+        bundle_dir,
+        policy=signature,
+        credential_envelope=manifest.credential_envelope or None,
+        sealed=reading,
+    )
 
     if expect_actor is not None and manifest.actor != expect_actor:
         raise ReceiveActorMismatch(
@@ -142,6 +173,7 @@ def receive_bundle(
             bytes=total_bytes,
             dry_run=True,
             manifest=manifest,
+            signature=attestation,
         )
 
     payload_root = Path(bundle_dir) / "payload"
@@ -181,9 +213,34 @@ def receive_bundle(
             source_file = payload_root / entry.path
             target = dest / entry.path
             _ensure_parents(target.parent)
-            shutil.copyfile(source_file, target)
-            os.chmod(target, stat.S_IMODE(entry.mode))
-            created.append(target)
+            # Stage beside the target: the copy is verified against the
+            # manifest entry *before* it is moved to its final name, so a
+            # payload rewritten between validation and this copy never lands
+            # (and a partial copy is never visible under the final name).
+            handle, staging_name = tempfile.mkstemp(
+                prefix=".hyprial-receive-", suffix=".partial",
+                dir=str(target.parent),
+            )
+            os.close(handle)
+            staging = Path(staging_name)
+            created.append(staging)
+            shutil.copyfile(source_file, staging)
+            actual_size = staging.stat().st_size
+            if actual_size != entry.size:
+                raise BundleTamperError(
+                    f"payload changed while receiving: size mismatch for "
+                    f"{entry.path!r}: manifest={entry.size} actual={actual_size}"
+                )
+            actual_digest = sha256_file(staging)
+            if actual_digest != entry.sha256:
+                raise BundleTamperError(
+                    f"payload changed while receiving: sha256 mismatch for "
+                    f"{entry.path!r}: manifest={entry.sha256} "
+                    f"actual={actual_digest}"
+                )
+            os.chmod(staging, stat.S_IMODE(entry.mode))
+            os.replace(staging, target)
+            created[-1] = target
     except Exception as error:  # noqa: BLE001 - every failure undoes the attempt
         _undo()
         if isinstance(error, BundleError):
@@ -199,4 +256,5 @@ def receive_bundle(
         bytes=total_bytes,
         dry_run=False,
         manifest=manifest,
+        signature=attestation,
     )

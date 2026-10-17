@@ -16,7 +16,10 @@ from hyprial.kernel import ipc_errors
 from hyprial.kernel import DaemonRequestError
 from hyprial.daemon.impl.orgfs.composition.vocabulary import ORGFS_CONTENT_WAIT_S
 from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
-from hyprial.daemon.impl.org.network.state import read_left_orgs
+from hyprial.daemon.impl.org.network.state import (
+    read_left_orgs,
+    read_org_acl_grants,
+)
 from hyprial.daemon.impl.squire import (
     UserDeliveryRequest,
 )
@@ -92,6 +95,25 @@ _ORGFS_READ_METHODS = frozenset(
 )
 
 
+#: ACL-space mutations the owner-node entry gate may admit: content only.
+#: Membership and lifecycle (create/invite/join/remove_member/purge/serve/
+#: unban/checkout) stay exclusively with the daemon's internal org lifecycle.
+_ORG_ACL_CONTENT_WRITE_METHODS = frozenset(
+    {
+        "orgfs.import",
+        "orgfs.mkdir",
+        "orgfs.move",
+        "orgfs.remove",
+        "orgfs.restore",
+        "orgfs.write",
+    }
+)
+
+#: The reserved name suffix binding ``group-NAME-acl`` to org ``group-NAME``
+#: (kept in lockstep with ``is_org_acl_space`` / the service's ``create``).
+_ORG_ACL_SPACE_SUFFIX = "-acl"
+
+
 def _targets_org_acl_space(fs: Any, method: str, params: JsonObject) -> bool:
     if method == "orgfs.create":
         return is_org_acl_space(params.get("name"))
@@ -162,6 +184,9 @@ class _OrgFsBridgeMixin(_IdentityBindingMixin):
                 ),
                 owner_notifier=self._notify_orgfs_owner,
                 excluded_orgs=lambda: frozenset(read_left_orgs(self.hyprial_home)),
+                announce_instrumentation_enabled=getattr(
+                    self, "_trace_presence_enabled", False
+                ),
             )
         return self._orgfs_runtime
 
@@ -246,11 +271,7 @@ class _OrgFsBridgeMixin(_IdentityBindingMixin):
         if method in _ORGFS_MUTATING_METHODS and _targets_org_acl_space(
             fs, method, params
         ):
-            raise DaemonRequestError(
-                ipc_errors.ORGFS_ACL_SPACE_EXTERNAL_MUTATION,
-                "ACL spaces can be changed only by the daemon's internal org lifecycle",
-                {"method": method},
-            )
+            self._admit_org_acl_mutation(fs, method, params, trusted_origin)
 
         if method in _ORG_CONTEXT_READ_METHODS:
             self._enforce_org_context(self._capability_caller(params))
@@ -535,6 +556,128 @@ class _OrgFsBridgeMixin(_IdentityBindingMixin):
         except (TypeError, ValueError) as exc:
             raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, str(exc)) from exc
         raise DaemonRequestError(ipc_errors.METHOD_NOT_FOUND, f"unknown orgfs method: {method}")
+
+    def _admit_org_acl_mutation(
+        self,
+        fs: Any,
+        method: str,
+        params: JsonObject,
+        trusted_origin: str | None,
+    ) -> None:
+        """Every ACL-space mutation stops here unless the entry gate admits it.
+
+        Only content writes are gatable, and only on the owner node (the one
+        whose daemon owner is the space owner): the default admits the owner's
+        terminal and the owner's user-proxy, plus agents the owner explicitly
+        granted via ``org.acl.grant``.  Everything else — membership and
+        lifecycle methods anywhere, any mutation on a member replica — keeps
+        the flat external-mutation refusal from the daemon-owned ACL spaces
+        ruling (a member replica could never get such a write admitted by the
+        other replicas anyway).
+        """
+
+        external = DaemonRequestError(
+            ipc_errors.ORGFS_ACL_SPACE_EXTERNAL_MUTATION,
+            "ACL spaces can be changed only by the daemon's internal org lifecycle",
+            {"method": method},
+        )
+        if method not in _ORG_ACL_CONTENT_WRITE_METHODS:
+            raise external
+        space_id = params.get("spaceId")
+        space = next(
+            (item for item in fs.spaces() if item.space_id == space_id), None
+        )
+        if space is None:
+            raise external
+        author = (
+            self.owner
+            if str(self.owner).startswith("user:")
+            else canonical_user_uri(self.owner)
+        )
+        if space.owner != author:
+            raise external
+        org = space.name.removesuffix(_ORG_ACL_SPACE_SUFFIX)
+        entry = self._org_acl_entry_caller(
+            params, method=method, trusted_origin=trusted_origin
+        )
+        if entry is None:
+            raise DaemonRequestError(
+                ipc_errors.ORG_ACL_WRITE_DENIED,
+                "ACL-space writes need the owner's terminal, the owner's "
+                "user-proxy, or an agent session the owner granted",
+                {"method": method, "org": org, "reason": "caller-not-authenticated"},
+            )
+        kind, subject = entry
+        if kind in ("terminal", "user-proxy"):
+            return
+        if self._org_acl_grant_active(org, subject):
+            return
+        raise DaemonRequestError(
+            ipc_errors.ORG_ACL_WRITE_DENIED,
+            f"agent {subject} is not granted to write the ACL space of {org}",
+            {"method": method, "org": org, "caller": subject, "reason": "not-granted"},
+        )
+
+    def _org_acl_entry_caller(
+        self, params: JsonObject, *, method: str, trusted_origin: str | None
+    ) -> tuple[str, str] | None:
+        """Classify the authenticated caller for ACL entry decisions (#1166).
+
+        ``("terminal", user)`` — the local operator speaking as itself;
+        ``("user-proxy", actor)`` — a caller whose actor THIS daemon launched
+        as a user-proxy harness; ``("agent", actor)`` — any other
+        authenticated agent identity (operator ``onBehalfOf`` included);
+        ``None`` — nothing authenticated.
+        """
+
+        try:
+            caller = self._authenticated_message_caller(
+                params, method=method, trusted_origin=trusted_origin
+            )
+        except DaemonRequestError:
+            return None
+        if caller.via == "operator":
+            if caller.on_behalf_of is None:
+                return ("terminal", caller.sender)
+            return self._org_acl_agent_kind(caller.on_behalf_of)
+        if caller.via == "session":
+            return self._org_acl_agent_kind(caller.subject)
+        if caller.via == "daemon" and trusted_origin in (None, "daemon"):
+            # A genuine in-process call under an agent identity: judge the
+            # agent it speaks for.  The unauthenticated observe-mode socket
+            # claim shares this ``via`` but keeps trusted_origin == "ipc" and
+            # falls through to None.
+            return self._org_acl_agent_kind(caller.subject)
+        return None
+
+    def _org_acl_agent_kind(self, actor: str) -> tuple[str, str]:
+        kind = "user-proxy" if self._org_acl_user_proxy_actor(actor) else "agent"
+        return (kind, actor)
+
+    def _org_acl_user_proxy_actor(self, actor: str) -> bool:
+        """Is ``actor`` a user-proxy THIS daemon launched for its own owner?
+
+        The judgement reads only the harness launch spec the daemon wrote at
+        worker launch.  A session's self-reported runtime string
+        (``session.register`` params) never reaches it, so claiming the
+        user-proxy name cannot mint the kind.
+        """
+
+        for spec in self.desired_state.load().harnesses:
+            if spec.harness != "user-proxy":
+                continue
+            if spec.pinned_owner not in (None, self.owner):
+                # A hosted worker keeps its admitted foreign owner; it is
+                # never "the owner's user-proxy" on this node.
+                continue
+            if self._canonical_harness_uri(spec.name, spec) == actor:
+                return True
+        return False
+
+    def _org_acl_grant_active(self, org: str, actor: str) -> bool:
+        now_ms = int(time.time() * 1000)
+        grants = read_org_acl_grants(self.hyprial_home, now_ms=now_ms)
+        return actor in grants.get(org, {})
 
     def _orgfs_path_policy(
         self, params: JsonObject, method: str, trusted_origin: str | None

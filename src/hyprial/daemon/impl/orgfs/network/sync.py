@@ -156,6 +156,12 @@ class MeshSync:
                 "supplier is not an online host",
                 reason="supplier-not-online",
             )
+        if not self._supplier_member_allowed(supplier):
+            raise StoreError(
+                "not-a-member",
+                "supplier's device owner is not a current member",
+                reason="supplier-not-member",
+            )
         cursor: str | None = None
         applied = 0
         starting_vectors = {
@@ -289,6 +295,12 @@ class MeshSync:
 
         if not self._supplier_allowed(supplier):
             raise StoreError("not-a-member", "supplier is not an online host")
+        if not self._supplier_member_allowed(supplier):
+            raise StoreError(
+                "not-a-member",
+                "supplier's device owner is not a current member",
+                reason="supplier-not-member",
+            )
         request = _json_bytes(
             {
                 "schemaVersion": 1,
@@ -392,6 +404,12 @@ class MeshSync:
     ) -> bytes:
         if not self._supplier_allowed(supplier):
             raise StoreError("not-a-member", "blob supplier is not an online host")
+        if not self._supplier_member_allowed(supplier):
+            raise StoreError(
+                "not-a-member",
+                "supplier's device owner is not a current member",
+                reason="supplier-not-member",
+            )
         chunks: list[bytes] = []
         offset = 0
         total: int | None = None

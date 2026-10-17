@@ -23,19 +23,35 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { callDaemon, identityFromEnv } from "./pi_daemon_ipc.ts";
+import {
+  callDaemon, DaemonIpcError, identityFromEnv, type DaemonResult,
+} from "./pi_daemon_ipc.ts";
 
 function textResult(value: DaemonResult) {
   return {
     content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
     details: value,
+    ...(value.ok === false ? { isError: true } : {}),
   };
 }
 
-function errorResult(message: string) {
+function errorResult(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  const details = {
+    error: message,
+    ...(error instanceof DaemonIpcError ? {
+      code: error.code,
+      ...(error.data !== undefined ? { data: error.data } : {}),
+    } : {}),
+  };
   return {
-    content: [{ type: "text" as const, text: message }],
-    details: { error: message },
+    content: [{
+      type: "text" as const,
+      text: error instanceof DaemonIpcError && error.data !== undefined
+        ? JSON.stringify(details, null, 2)
+        : message,
+    }],
+    details,
     isError: true,
   };
 }
@@ -70,7 +86,7 @@ export default function (pi: ExtensionAPI, observer?: BridgeObserver) {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       observer?.rejection(message);
-      return errorResult(message);
+      return errorResult(error);
     }
   }
 

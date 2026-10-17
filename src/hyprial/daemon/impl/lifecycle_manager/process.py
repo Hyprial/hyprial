@@ -508,6 +508,7 @@ class LifecycleProcessManager:
                         operation_id,
                         None,
                         payload,
+                        expected_entity_token=step.spec.expected_entity_token,
                     )
                     try:
                         settled = self._ports.harness.fail_lifecycle(
@@ -631,6 +632,7 @@ class LifecycleProcessManager:
             operation_id,
             expected_resource_token,
             command,
+            expected_entity_token=step.spec.expected_entity_token,
         )
         try:
             waiter = self._router.register(

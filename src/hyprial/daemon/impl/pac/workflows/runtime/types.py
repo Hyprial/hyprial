@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from uuid import uuid4
 
 from hyprial.identity import PacError
-from hyprial.daemon.impl.pac.storage.journal  import append_event
+from hyprial.daemon.impl.pac.storage.journal  import GraphClosedRecord, append_event
 from hyprial.daemon.impl.pac.graphs.reactor  import NotificationSender
 from hyprial.daemon.impl.pac.storage.store  import PacGraphStore
 from hyprial.daemon.impl.pac.workflows.graphs  import input_token, read_specification
@@ -191,6 +191,17 @@ def close_workflow(
                 "state": state,
                 "reasonRef": reason,
             },
+        )
+        # The single managed funnel: every close_workflow caller commits after
+        # this, and flushes the store's deferred record post-commit.
+        store.defer_graph_closed(
+            GraphClosedRecord(
+                graph_id=graph["graph_id"],
+                end_state=state,
+                closed_by=closer,
+                reason_ref=reason,
+                closed_at_ms=at,
+            )
         )
     _changed(store, graph, at, state=state, reasonRef=reason)
 

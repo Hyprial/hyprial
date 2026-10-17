@@ -41,6 +41,22 @@ class _ProcessEventsBehavior:
         replace: tuple[ManagedHarnessProcess, ProcessIdentity | None] | None = None,
         allow_lifecycle: bool = False,
     ) -> None:
+        transfer_error = self._transfer_start_error(record.spec.name)
+        if transfer_error is None and kind == "automatic" and not self._automatic_custody_clear(record.spec.name):
+            transfer_error = ipc_errors.TRANSFER_CUSTODY_UNAVAILABLE
+        if transfer_error is None and len(self._transfer_inflight) >= self._start_admission_width * 4:
+            # Same slots as ProcessIoPort. A caller timeout cannot make room
+            # while its native start/late cleanup still owns a process.
+            transfer_error = "PORT_OVERLOADED"
+        if transfer_error is not None:
+            batch_id = record.restore_batch
+            if batch_id is not None:
+                record.restore_batch = None
+                self._settle_deferred_restore_target(key, batch_id)
+            elif kind == "explicit":
+                record.explicit_correlation_id = None
+                self._reject_correlation(correlation_id, transfer_error, "starts held for transfer")
+            return
         if key in self._lifecycle_effect_resources and not allow_lifecycle:
             # A lifecycle effect claimed the resource while this key sat in
             # the batch queue (admission drains one settlement at a time),
@@ -67,6 +83,7 @@ class _ProcessEventsBehavior:
         # report completion; projection readers never observe a ghost gap.
         self._publish()
         assert self._io is not None
+        self._transfer_inflight[correlation_id] = record.spec.name
         self._io.start(
             correlation_id,
             key,
@@ -178,7 +195,7 @@ class _ProcessEventsBehavior:
             if base > 0
             else 0.0
         )
-        record.restart_after = self._clock() + delay
+        record.restart_after = self._clock() + delay if delay > 0 else None
 
 
     def _finish_start_attempt(
@@ -660,7 +677,7 @@ class _ProcessEventsBehavior:
         generation: int,
         process: ManagedHarnessProcess,
         identity: ProcessIdentity | None,
-    ) -> None:
+    ) -> str:
         correlation = f"harness:fail-stop:{uuid.uuid4().hex}"
         self._lifecycle_ensure_failure_stops[correlation] = (
             attempt_token,
@@ -678,6 +695,7 @@ class _ProcessEventsBehavior:
             process,
             identity,
         )
+        return correlation
 
 
     def _drive_ensure_failure_fence(self, attempt_token: str) -> None:
@@ -772,6 +790,10 @@ class _ProcessEventsBehavior:
 
         assert isinstance(command, FailHarnessLifecycleCommand)
         request = command.request
+        entity_error = self._lifecycle_entity_error(request)
+        if entity_error is not None:
+            self._reject(command, *entity_error)
+            return
         if not isinstance(
             request.payload, (EnsureHarnessCommand, RemoveHarnessCommand)
         ):
@@ -783,6 +805,10 @@ class _ProcessEventsBehavior:
             return
         assert self._desired_state is not None
         receipt = self._durable_lifecycle_receipt(request.attempt_token)
+        if receipt is not None and receipt.expected_entity_token != request.expected_entity_token:
+            self._reject(command, ipc_errors.INVALID_ARGUMENT,
+                         "lifecycle attempt token was reused with another incarnation fence")
+            return
         if receipt is not None and receipt.completed:
             # The process completion won the mailbox race. Do not turn success
             # into deletion of a newer incarnation or lie to the journal.

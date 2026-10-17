@@ -83,6 +83,43 @@ def _start_interactive_claude(
         if model is not None and model_provider in {None, "anthropic"}
         else ()
     )
+    runtime_payload = services._runtime_context_environment(
+        name=name, harness="claude", cwd=cwd, include_projection=True
+    )
+    runtime_projection = (
+        runtime_payload
+        if runtime_payload is not None
+        and isinstance(runtime_payload.get("environment"), dict)
+        else None
+    )
+    if resume is not None:
+        from hyprial.daemon import (
+            SessionFileError,
+            claude_session_file,
+            claude_session_file_in_session_root,
+        )
+
+        try:
+            if runtime_projection is None:
+                config_root = Path(
+                    os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude"))
+                ).expanduser()
+                claude_session_file(config_root, str(cwd), resume)
+            else:
+                raw_session_root = runtime_projection.get("sessionRoot")
+                if not isinstance(raw_session_root, str) or not raw_session_root:
+                    raise SessionFileError(
+                        "Claude P2 runtime context does not expose a session root"
+                    )
+                claude_session_file_in_session_root(
+                    Path(raw_session_root), str(cwd), resume
+                )
+        except SessionFileError as error:
+            raise services.CliError(
+                ipc_errors.RESUME_SESSION_NOT_FOUND,
+                f"cannot resume Claude session {resume!r}: {error}; "
+                "no Agent was changed and nothing was started",
+            ) from error
     handover = _handover_prompt(
         services._create_agent_for_start(
             name=name,
@@ -92,15 +129,6 @@ def _start_interactive_claude(
             provider=model_provider,
             model=model,
         )
-    )
-    runtime_payload = services._runtime_context_environment(
-        name=name, harness="claude", cwd=cwd, include_projection=True
-    )
-    runtime_projection = (
-        runtime_payload
-        if runtime_payload is not None
-        and isinstance(runtime_payload.get("environment"), dict)
-        else None
     )
     runtime_environment = (
         runtime_payload

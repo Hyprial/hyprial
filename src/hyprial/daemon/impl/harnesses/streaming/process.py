@@ -197,8 +197,8 @@ class SequentialTurnProcess(
             self.repeated_failure_count = 0
             self._turn_runtime = TurnRuntime(
                 name=thread_name,
-                io_submit=self._submit_turn_io,
-                io_interrupt=self._submit_interrupt_io,
+                io_submit=self._submit_turn_io, io_interrupt=self._submit_interrupt_io,
+                io_steer=self._submit_steer_io,
                 io_close=self._submit_close_io,
                 io_abort=self._abort_generation_io,
                 io_failure_decision=self._turn_failure_decision,

@@ -177,6 +177,17 @@ class RetirementRecord:
         }
 
 
+AdmissionDecision: TypeAlias = Literal[
+    "ok",
+    "not-a-member",
+    "removed-author",
+    "pending-dependency",
+    "pending-meta",
+    "snapshot-barrier",
+    "unknown-doc",
+]
+
+
 class SpaceStore(Protocol):
     def commit(
         self, doc_id: str, mutate: DocMutator, *, author: str, actor: str | None
@@ -200,16 +211,7 @@ class SpaceStore(Protocol):
         self, doc_id: str, *, shallow_since: bytes | None
     ) -> SnapshotManifest: ...
 
-    def admission(
-        self, envelope: bytes
-    ) -> Literal[
-        "ok",
-        "not-a-member",
-        "pending-dependency",
-        "pending-meta",
-        "snapshot-barrier",
-        "unknown-doc",
-    ]: ...
+    def admission(self, envelope: bytes) -> AdmissionDecision: ...
 
 
 def _b64(value: bytes) -> str:

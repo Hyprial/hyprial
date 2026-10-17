@@ -651,6 +651,7 @@ class FacadeProjection:
         space.history.clear()
         space.snapshots.clear()
         space.snapshot_marks.clear()
+        space.birth_pending.clear()
         current = self._snapshot(space)
         for version in {node.version for node in space.nodes.values()}:
             space.snapshots[version] = current

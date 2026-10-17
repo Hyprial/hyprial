@@ -20,7 +20,11 @@ from hyprial.daemon.impl.transfer.landing.owner import (
     LandingError,
     LandingNameTaken,
 )
+from hyprial.daemon.impl.transfer.archive.env_credentials import env_credentials_for_quiesce
 from hyprial.daemon.impl.transfer.landing.registry import land_bundle_into_registry
+from hyprial.daemon.impl.transfer.archive.signature import SignatureError
+from hyprial.daemon.impl.transfer.archive.trust import TrustStoreError
+from hyprial.daemon.impl.transfer.landing.signature_gate import trust_policy_for
 from hyprial.daemon.impl.transfer.execution.sandbox_smoke import run_sandbox_smoke
 from hyprial.daemon.impl.transfer.archive.session_files import (
     TRANSFERABLE_HARNESSES,
@@ -46,6 +50,30 @@ from hyprial.daemon.impl.ipc.params import (
     JsonObject,
     _required_string,
 )
+from dataclasses import replace
+from hyprial.daemon.impl.transfer.p2.actor import Command, Operation
+from hyprial.daemon.impl.transfer.p2.model import AdmissionConflict
+from hyprial.daemon.impl.transfer.p2.orchestration.lift import (
+    P2_CHAIN_MODE,
+    ChainPlan,
+    ChainPlanError,
+    chain_bindings,
+    chain_is_proven,
+)
+from hyprial.daemon.impl.transfer.admission import (
+    TransferAdmissionError,
+    resolve_transfer_target,
+    transferable_spec,
+)
+from hyprial.daemon.impl.transfer.p2.source.effect import (
+    SOURCE_QUIESCE_DEADLINE_SECONDS,
+    QuiesceRequest,
+)
+
+#: How long this caller waits for the P2 source effect.  It outlasts the
+#: effect's own budget so a timeout here is the effect's verdict, not ours.
+P2_QUIESCE_WAIT_SECONDS = SOURCE_QUIESCE_DEADLINE_SECONDS + 30.0
+P2_ADMISSION_WAIT_SECONDS = 10.0
 
 
 _CREDENTIAL_LANDING_WIRE_CODES: dict[str, str] = {
@@ -87,24 +115,17 @@ class _TransferOpsMixin:
             else None
         )
         name = _required_string(params.get("name"), "name")
-        state = self.desired_state.load()
-        matches = [
-            spec
-            for spec in state.harnesses
-            if spec.name == name and (harness is None or spec.harness == harness)
-        ]
-        if not matches:
-            raise DaemonRequestError(
-                ipc_errors.TRANSFER_WORKER_NOT_FOUND,
-                f"no managed harness named {name!r} in desired state",
+        try:
+            # Two tables, one decision: a managed harness is headless, an
+            # interactive session is TUI, and a name in both is an ambiguity
+            # (never a silent first-table pick).
+            target = resolve_transfer_target(
+                self.desired_state.load(), name=name, harness=harness
             )
-        if len(matches) > 1:
-            raise DaemonRequestError(
-                ipc_errors.TRANSFER_AMBIGUOUS,
-                f"more than one managed harness named {name!r}; "
-                "pass --harness to disambiguate",
-            )
-        spec = matches[0]
+            # The entrypoint fence runs before any headless-only assumption.
+            spec = transferable_spec(target)
+        except TransferAdmissionError as error:
+            raise DaemonRequestError(error.code, str(error), error.data) from error
         if spec.execution_runtime is not None:
             raise DaemonRequestError(ipc_errors.TRANSFER_UNSUPPORTED_HARNESS, "smolvm cross-machine transfer awaits AT07")
         if spec.harness not in TRANSFERABLE_HARNESSES:
@@ -184,14 +205,18 @@ class _TransferOpsMixin:
         operation_id = str(
             params.get("operationId") or f"transfer-quiesce:{uuid4().hex}"
         )
-        self._run_lifecycle_operation(
-            LifecycleOperation.deactivate(
-                operation_id,
-                self._lifecycle_spec(spec),
+        chain = self._p2_chain_for_quiesce(params, spec, operation_id)
+        if chain is None:
+            self._run_lifecycle_operation(
+                LifecycleOperation.deactivate(
+                    operation_id,
+                    self._lifecycle_spec(spec),
+                )
             )
-        )
-        payload = self._transfer_payload(spec)
-        payload["stopped"] = True
+            payload = self._transfer_payload(spec)
+            payload["stopped"] = True
+        else:
+            payload = self._quiesce_p2_chain(chain, spec, operation_id)
         self._log(
             "info",
             "transfer",
@@ -199,6 +224,135 @@ class _TransferOpsMixin:
             actor=payload["actor"],
             sessionRef=spec.session_ref,
         )
+        return payload
+
+    def _p2_chain_for_quiesce(
+        self, params: JsonObject, spec: HarnessLaunchSpec, operation_id: str
+    ) -> ChainPlan | None:
+        """The P2 chain this caller asked for, or ``None`` for a P0 transfer.
+
+        The P2 facts are additive: without a ``planDigest`` this is exactly the
+        P0 path it has always been, and no ledger is touched.  When they are
+        present, both halves of the chain are derived here from one fact set, so
+        they cannot drift (``lift.chain_bindings``).
+        """
+
+        digest = params.get("planDigest")
+        if digest is None:
+            return None
+        if not chain_is_proven(spec.harness):
+            # The P2 branch is a capability the source does not have yet: it
+            # records a durable custody hold and stops the worker *through* it,
+            # so it is closed until a real two-daemon run proves this harness.
+            # The code and the mode string are the P0 refusal's own, so the
+            # negative arm can be compared field by field.
+            raise DaemonRequestError(
+                ipc_errors.TRANSFER_UNSUPPORTED_HARNESS,
+                f"agent-home P2 transfer is unsupported for {spec.harness}:"
+                f"{spec.name}: the P2 chain has not been proven on two real "
+                "daemons for this harness; refusing to hold and stop the "
+                "source through it",
+                {"harness": spec.harness, "name": spec.name, "mode": P2_CHAIN_MODE},
+            )
+        agent = self.agents.require(spec.name)
+        try:
+            return chain_bindings(
+                operation_id=operation_id,
+                owner=self.owner,
+                source_node=self.node_id,
+                source_actor=spec.name,
+                source_entity_token=agent.entity_token,
+                target_node=_required_string(params.get("targetNode"), "targetNode"),
+                target_actor=_required_string(params.get("targetActor"), "targetActor"),
+                plan_digest=_required_string(digest, "planDigest"),
+            )
+        except ChainPlanError as error:
+            # A caller-supplied plan that cannot describe one chain is a bad
+            # request, refused before either ledger is touched.
+            raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
+
+    def _quiesce_p2_chain(
+        self, chain: ChainPlan, spec: HarnessLaunchSpec, operation_id: str
+    ) -> JsonObject:
+        """Stop the worker *through* the P2 chain.
+
+        Order matters and is the point of the chain: the admission is recorded
+        first, so a crash before the worker stops still leaves a durable intent
+        the recovery reader finds; then the effect derives the harness hold and
+        stops the worker, so the source cannot be started again under the fence
+        this chain owns.  ``unknown`` is reported as-is -- it is never rounded
+        down to "stopped", and no rollback happens here.
+        """
+
+        if self._transfer_p2 is None or self._transfer_source is None:
+            raise DaemonRequestError(
+                ipc_errors.TRANSFER_CUSTODY_UNAVAILABLE,
+                "the P2 source lane is unavailable on this daemon",
+            )
+        # All ledger writes go through the authority mailbox, never around it.
+        try:
+            self._transfer_p2.submit(
+                Command(Operation.PREPARE, chain.operation_id, chain.source)
+            ).result(P2_ADMISSION_WAIT_SECONDS)
+        except AdmissionConflict as error:
+            # ``reserved`` alone is not actionable: the refusal names the
+            # preparation that holds this worker and the release that exists.
+            raise self._reserved_preparation_refusal(
+                chain, error.reason.value
+            ) from error
+        agent = self.agents.require(spec.name)
+        outcome = self._quiesce_p2_source(
+            QuiesceRequest(
+                operation_id,
+                spec.name,
+                replace(
+                    self._lifecycle_spec(spec), expected_entity_token=agent.entity_token
+                ),
+            )
+        ).result(P2_QUIESCE_WAIT_SECONDS)
+        payload = self._transfer_payload(spec)
+        payload["stopped"] = outcome.state == "quiesced"
+        payload["chain"] = {
+            "operationId": chain.operation_id,
+            "targetNode": chain.target.target_node,
+            "targetActor": chain.target.target_actor,
+            "planDigest": chain.target.plan_digest,
+            "quiesce": {"state": outcome.state, "reason": outcome.reason},
+            # The target's admission binds the SOURCE incarnation, and the
+            # receiving API has always required the caller to carry it across.
+            # Until now the only way to obtain it was the daemon's own SQLite
+            # (the I4 run had to read it there), which made the documented flow
+            # unrunnable end to end.  It is published here and ONLY here: on
+            # the proven P2 branch of a quiesce the caller already asked for,
+            # never by ``transfer.plan`` and never on the P0 path.  It is an
+            # incarnation fence, not a credential: the same value already
+            # travels inside the bundle as a digest, and the daemon's own
+            # verdicts are still computed from its own registry row.
+            "sourceEntityToken": agent.entity_token,
+            # The home the CLI is about to export.  The CLI resolves its own
+            # ``configured_hyprial_home()``, which names the same directory only
+            # while both processes read the same environment; in a split-env
+            # run (the state dir pointed at the daemon, HYPRIAL_HOME unset) the
+            # guess names a *different* home and the bundle would carry the
+            # right identity stamp over the wrong tree.  The daemon answers
+            # with the path it actually serves (B6).
+            "sourceHome": str(self.hyprial_home / "agents" / spec.name),
+            # The home whose Ed25519 key stamps the exported bundle.  It is the
+            # DAEMON's own home, never the CLI's resolved one: the key is the
+            # machine's identity, the bundle is signed after quiesce by whoever
+            # exports it, and a split-env CLI would otherwise sign with a home
+            # this daemon never served (B6's lesson, applied to the signature).
+            # The key itself is minted on first export and never leaves the
+            # machine -- it is nowhere inside the exported payload.
+            "signingHome": str(self.hyprial_home),
+            # Env-key credentials, resolved by this daemon's own gate (see
+            # archive/env_credentials.py); the CLI seals them into the envelope.
+            "envCredentials": env_credentials_for_quiesce(
+                registry=self._agent_registry,
+                hyprial_home=self.hyprial_home,
+                spec=spec,
+            ),
+        }
         return payload
 
     def _transfer_land(self, params: JsonObject) -> JsonObject:
@@ -236,10 +390,12 @@ class _TransferOpsMixin:
                 bundle_dir,
                 registry=self.agents,
                 home_root=self.hyprial_home / "agents",
+                machine_home=self.hyprial_home,
                 staging=staging,
                 granted_by=canonical_user_uri(self.owner),
                 expected_actor=expected_actor,
                 dry_run=dry_run,
+                signature=trust_policy_for(self.hyprial_home),
             )
         except LandingNameTaken as error:
             raise DaemonRequestError(ipc_errors.TRANSFER_CONFLICT, str(error)) from error
@@ -254,6 +410,15 @@ class _TransferOpsMixin:
                     error.code, ipc_errors.TRANSFER_LANDING_FAILED
                 ),
                 str(error),
+            ) from error
+        except (SignatureError, TrustStoreError) as error:
+            # AT06 slice 2b: attribution is a precondition, not a warning.  The
+            # refusal reuses the landing-failed wire code (no new wire surface);
+            # ``error.code`` in the text is what names the reason.
+            raise DaemonRequestError(
+                ipc_errors.TRANSFER_LANDING_FAILED,
+                f"the bundle was not attributed "
+                f"({getattr(error, 'code', '')}): {error}",
             ) from error
         except LandingError as error:
             raise DaemonRequestError(
@@ -334,6 +499,8 @@ class _TransferOpsMixin:
         worker and rolls back cleanly.
         """
 
+        if params.get("planDigest") is not None:
+            return self._transfer_receive_p2(params)
         spec = HarnessLaunchSpec.from_json(params.get("spec"), "spec")
         if spec.pinned_owner is not None and is_identity_id_segment(
             spec.pinned_owner.lower()
@@ -698,7 +865,9 @@ class _TransferOpsMixin:
                 "transfer",
                 "container.retire.leftovers",
                 harness=harness,
-                name=name,
+                # Not ``name=``: the logger owns that field and refuses it from
+                # callers, so this path crashed instead of reporting leftovers.
+                agent=name,
                 leftovers=problems,
             )
         return problems
@@ -770,6 +939,11 @@ class _TransferOpsMixin:
         delivery it can no longer drain into a live worker.
         """
 
+        if params.get("chain") is not None:
+            # Additive P2 facts: the caller brings the target's report, and the
+            # decision (in the P2 package) says whether this chain is complete.
+            # Without them this is the P0 path it has always been.
+            return self._transfer_complete_p2(params)
         name = self.agents.normalize_actor(
             _required_string(params.get("name"), "name")
         )

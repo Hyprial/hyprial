@@ -7,7 +7,8 @@ The family is split by responsibility: runtime.py (runtime-intent export and
 VM probe), move.py (the visible worker transfer), internal.py (hidden
 receive-side protocol commands), bundle.py (bundle
 export/validate/receive/land/complete),
-credentials.py (credential seal/open).  register_transfer_commands wires them
+credentials.py (credential seal/open), trust.py (the target's offline
+trust-source enrollment).  register_transfer_commands wires them
 at the caller's original composition position and in the original order.
 """
 from __future__ import annotations
@@ -25,6 +26,7 @@ from hyprial.shell.impl.cli.commands.transfer import (
     internal,
     move,
     runtime,
+    trust,
 )
 
 
@@ -69,9 +71,13 @@ class TransferCommands:
     transfer_bundle_land: Callable[..., None]
     transfer_credential_seal: Callable[..., None]
     transfer_credential_open: Callable[..., None]
+    transfer_trust_source_add: Callable[..., None]
+    transfer_trust_source_list: Callable[..., None]
+    transfer_trust_source_retire: Callable[..., None]
     transfer_bundle_complete: Callable[..., None]
     transfer_precheck: Callable[..., None]
     transfer_receive: Callable[..., None]
+    transfer_recipient_key: Callable[..., None]
     transfer_cred_stage: Callable[..., None]
     transfer_container_home: Callable[..., None]
     transfer_session_path: Callable[..., None]
@@ -87,12 +93,14 @@ def register_transfer_commands(
     callbacks: dict[str, Any] = {}
     # Original statement order: transfer_runtime commands, transfer +
     # parse_depends, bundle export/validate/receive/land, credential
-    # seal/open, bundle complete, then the hidden receive-side commands.
+    # seal/open, bundle complete, trust-source enrollment, then the hidden
+    # receive-side commands.
     callbacks.update(runtime.register_runtime_commands(transfer_runtime_app, get_dependencies))
     callbacks.update(move.register_session_commands(app, get_dependencies))
     callbacks.update(bundle.register_bundle_commands(app, get_dependencies))
     callbacks.update(credentials.register_credential_commands(app, get_dependencies))
     callbacks.update(bundle.register_bundle_complete_command(app, get_dependencies))
+    callbacks.update(trust.register_trust_commands(app, get_dependencies))
     callbacks.update(internal.register_hidden_session_commands(app, get_dependencies))
     return TransferCommands(
         transfer_runtime_downgrade_state=callbacks["transfer_runtime_downgrade_state"],
@@ -104,9 +112,13 @@ def register_transfer_commands(
         transfer_bundle_land=callbacks["transfer_bundle_land"],
         transfer_credential_seal=callbacks["transfer_credential_seal"],
         transfer_credential_open=callbacks["transfer_credential_open"],
+        transfer_trust_source_add=callbacks["transfer_trust_source_add"],
+        transfer_trust_source_list=callbacks["transfer_trust_source_list"],
+        transfer_trust_source_retire=callbacks["transfer_trust_source_retire"],
         transfer_bundle_complete=callbacks["transfer_bundle_complete"],
         transfer_precheck=callbacks["transfer_precheck"],
         transfer_receive=callbacks["transfer_receive"],
+        transfer_recipient_key=callbacks["transfer_recipient_key"],
         transfer_cred_stage=callbacks["transfer_cred_stage"],
         transfer_container_home=callbacks["transfer_container_home"],
         transfer_session_path=callbacks["transfer_session_path"],

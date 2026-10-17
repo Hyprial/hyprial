@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 from uuid import uuid4
 from hyprial.daemon.impl.transfer.execution.container import CONTAINER_PYTHON as _CONTAINER_PYTHON
+from hyprial.daemon.impl.application.wiring.quota_hooks import wire_quota_hooks
 from hyprial.daemon.impl.adapters.lark.runtime.runtime import (
     AdapterRuntime,
     )
@@ -19,7 +20,6 @@ from hyprial.daemon.impl.adapters.lark.worker.process import (
 )
 from hyprial.daemon.impl.adapters.lark.contracts.reply_bridge import (
     LarkReplyBridgeTransport,
-    lark_reply_adapter,
 )
 from hyprial.kernel import DaemonStartupPhase, HOOKS_CONFIG_NAME, HookBus
 from hyprial.kernel import PortAdmission
@@ -67,6 +67,7 @@ from hyprial.daemon.impl.composition  import (
     HarnessPortClient,
     LarkDesiredStatePort,
     LarkPortClient,
+    lark_human_alarm_legs,
 )
 from hyprial.daemon.impl.configuration.identity import (
     classify_target_identity,
@@ -75,18 +76,19 @@ from hyprial.daemon.impl.configuration.identity import (
 from hyprial.kernel import (
     TARGET_KIND_HOST,
     canonical_agent_uri,
-    parse_agent_uri,
 )
 from hyprial.daemon.impl.runtime  import DaemonEventBridge
-from hyprial.daemon.impl.harnesses.turn_delivery.protocol  import (
-    HOOK_CONFIG_NAME,
-    harness_supports_before_delivery,
-)
 from hyprial.daemon.impl.harnesses.turn_delivery.service  import (
     InboxTurnHookInvoker,
-    TurnHookService,
     )
-from hyprial.daemon.impl.hooks import CombinedTurnObserver, DaemonHookService
+from hyprial.daemon.impl.application.ports import (
+    HookConsumersDeps,
+)
+from hyprial.daemon.impl.application.wiring.delivery_hooks import wire_delivery_hooks
+from hyprial.daemon.impl.hooks import (
+    DaemonHookService,
+    TurnObserver,
+)
 from hyprial.daemon.impl.harnesses.actor.actor  import HarnessRuntimeActor
 if TYPE_CHECKING:
     pass
@@ -514,6 +516,9 @@ class _WiringTransportMixin:
             ),
         )
         self._start_org_identity_bindings_safely()
+        from hyprial.daemon.impl.org.network import start_casdoor_membership_sync
+
+        start_casdoor_membership_sync(self)  # owner side of the Casdoor group sync
         network_delivery = ZenohDeliveryTransport(
             transport, presence, origin_node=self.node_id
         )
@@ -545,19 +550,9 @@ class _WiringTransportMixin:
             desired_state=LarkDesiredStatePort(self.desired_state),
         )
         lark_client = LarkPortClient(adapters, lark_events)
-
-        def deliver_human_alarm(alarm: Any, text: str) -> bool:
-            adapter = lark_reply_adapter(alarm.sender)
-            if adapter is None:
-                return False
-            return lark_client.deliver_alarm(
-                adapter,
-                alarm.message_id,
-                text,
-                idempotency_key=(
-                    f"alarm:{alarm.message_id}:{alarm.reason}"
-                ),
-            )
+        deliver_human_alarm, deliver_in_channel_notice = lark_human_alarm_legs(
+            lark_client
+        )
         # Correlated replies to channel:lark:<adapter> remain ordinary durable
         # outbox rows.  The outer transport recognizes only that exact shape
         # and asks the supervised worker to run its native-reply path; every
@@ -599,49 +594,28 @@ class _WiringTransportMixin:
         )
         self._pac_notification_io = shared_inbox_io
 
-        def before_delivery_supported(actor: str) -> bool:
-            parsed = parse_agent_uri(actor)
-            if parsed is None or parsed[1] != self.node_id:
-                return True
-            spec = next(
-                (
-                    item
-                    for item in self.desired_state.load().harnesses
-                    if item.name == parsed[2]
-                ),
-                None,
-            )
-            if spec is None:
-                return True
-            return harness_supports_before_delivery(spec.harness)
-
         hook_invoker = InboxTurnHookInvoker(
             inbox,
             callback_actor=canonical_agent_uri(
                 self.owner, self.node_id, "_turn-hooks"
             ),
         )
-        turn_hooks = TurnHookService(
-            home_for_agent=lambda actor: Path(
-                self._agent_session_domains.agent.prevalidate_home(actor).path
-            ),
-            invoker=hook_invoker,
-            logger=lambda level, component, event, **fields: self._log(
-                level, component, event, **fields
-            ),
-            before_delivery_supported=before_delivery_supported,
-            config_path_for_agent=lambda actor: (
-                Path(self._agent_session_domains.agent.resolve_workspace_path(actor)).parent
-                / "config"
-                / HOOK_CONFIG_NAME
-            ),
-            actor_mode=True,
-        )
-        hook_bus = HookBus(
-            logger=lambda level, component, event, **fields: self._log(
-                level, component, event, **fields
+        hook_consumers_factory = self._hook_consumers_factory
+        hook_consumers = (
+            hook_consumers_factory(
+                HookConsumersDeps(
+                    home_for_agent=lambda actor: Path(
+                        self._agent_session_domains.agent.prevalidate_home(actor).path
+                    ),
+                    logger=lambda level, component, event, **fields: self._log(
+                        level, component, event, **fields
+                    ),
+                )
             )
+            if hook_consumers_factory is not None
+            else {}
         )
+        hook_bus = HookBus(logger=self._log)
         daemon_hooks = DaemonHookService(
             bus=hook_bus,
             config_path_for_agent=lambda actor: (
@@ -649,15 +623,28 @@ class _WiringTransportMixin:
                 / "config"
                 / HOOKS_CONFIG_NAME
             ),
-            consumers=self._hook_consumers,
+            consumers=hook_consumers,
             handler_notifier=hook_invoker.notify,
-            logger=lambda level, component, event, **fields: self._log(
-                level, component, event, **fields
-            ),
+            logger=self._log,
         )
-        self._turn_hooks = turn_hooks
+        delivery_hooks = wire_delivery_hooks(
+            daemon_hooks=daemon_hooks,
+            hook_invoker=hook_invoker,
+            hook_consumers=hook_consumers,
+            node_id=self.node_id,
+            desired_state=self.desired_state,
+            logger=self._log,
+        )
+        self._hook_consumers = hook_consumers
         self._hook_bus = hook_bus
         self._daemon_hooks = daemon_hooks
+        self._delivery_hooks = delivery_hooks
+        wire_quota_hooks(
+            usage_cache=self._usage_cache,
+            watchdog=self._quota_watchdog,
+            consumer_factory=self._quota_hook_consumer_factory,
+            daemon_hooks=daemon_hooks,
+        )
         # Deferred import: hyprial.harnesses eagerly imports .agent_sdk, which
         # imports hyprial.daemon.impl.api; hyprial.daemon eagerly imports this module, so a
         # module-level import here would re-enter while hyprial.harnesses is still
@@ -733,9 +720,7 @@ class _WiringTransportMixin:
                     if provider_auth is not None
                     else None
                 ),
-                turn_completed_observer=CombinedTurnObserver(
-                    turn_hooks.observe_turn, daemon_hooks
-                ),
+                turn_completed_observer=TurnObserver(daemon_hooks),
             ),
             # A dead child is first exposed as stopped/error and its actor
             # registration is withdrawn.  Desired-state recovery starts a
@@ -751,6 +736,9 @@ class _WiringTransportMixin:
             persistence_late_result=self._state_persistence.result,
             agent_identity=AgentIdentityProjectionView(
                 self._agent_session_domains
+            ),
+            source_custody_clear=lambda actor, token: (
+                not self._transfer_source_state(actor, token).blocks_start
             ),
         )
         harnesses = HarnessPortClient(harness_actor, harness_events)
@@ -776,8 +764,9 @@ class _WiringTransportMixin:
             inbox=inbox,
             shared_inbox_events=shared_inbox_events,
             hold_policy=hold_policy,
-            turn_hooks=turn_hooks,
+            delivery_hooks=delivery_hooks,
             harnesses=harnesses,
+            in_channel_notice_delivery=deliver_in_channel_notice,
         )
 
     def _startup_compose_runtime_bridge(self, graph: _StartupGraph, desired: DesiredState) -> None:
@@ -854,19 +843,15 @@ class _WiringTransportMixin:
                 self._record_workflow_outcome(result)
                 if self._workflow_service is not None and result.delivery_id.startswith("workflow-") else False
             ),
-            usage_limit_observer=(
-                self._on_usage_limit_failure
-                if self._quota_watchdog is not None
-                else None
-            ),
             blocking_failure_observer=self._blocking_failures.submit,
             blocking_failure_identity=self._blocking_failure_entity_token,
             blocked_actor=self.agents.is_blocked,
             forwarder=self._forward_as_actor,
             owner_notifier=self._owner_alert_notifier,
+            in_channel_notice_delivery=graph.in_channel_notice_delivery,
             owner_requester_addresses=self._owner_requester_addresses(),
             hold_ttl_ms=graph.hold_policy.ttl_ms,
-            turn_hooks=graph.turn_hooks,
+            delivery_hooks=graph.delivery_hooks,
             actor_mode=True,
         )
         recipient_wakes: RecipientWakeCoordinator | None = None
@@ -899,7 +884,7 @@ class _WiringTransportMixin:
             self._recipient_wakes = recipient_wakes
             self._stop_recipient_wake_observer = stop_recipient_wake_observer
             self._harnesses = graph.harnesses
-            self._turn_hooks = graph.turn_hooks
+            self._delivery_hooks = graph.delivery_hooks
             self._adapters = graph.adapters
             self._lark_events = graph.lark_events
             self._lark_client = graph.lark_client

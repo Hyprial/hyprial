@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from .transfer_ports import (
+    HoldStartsForTransfer, ReleaseStartsHold, StartsHeld, StartsHoldReleased,
+)
+from .observation import RuntimeFactsGrant
+
 from hyprial.kernel import SmolvmRuntimeSpec
 
 from dataclasses import dataclass
@@ -140,6 +145,20 @@ class DispatchHarnessDeliveryCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class SteerHarnessDeliveryCommand:
+    """Fold a queued delivery into THIS harness's running turn.
+
+    The message text is not carried: the process owns the queued delivery
+    and reads its message from there, so message custody is never duplicated
+    across the daemon/actor boundary.
+    """
+
+    correlation_id: str
+    name: str
+    delivery_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class DrainHarnessResultsCommand:
     correlation_id: str
 
@@ -180,7 +199,22 @@ class HarnessStartTimerElapsedCommand:
 
 @dataclass(frozen=True, slots=True)
 class RefreshHarnessProjectionsCommand:
+    """Republish the cached harness projection.  Never reads native facts."""
+
     correlation_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class ObserveHarnessRuntimeFactsCommand:
+    """Restore-only native read; the owner validates ``grant`` provenance.
+
+    Publish-only by construction: this command can never persist session refs
+    or start/stop a process.  There is no boolean opt-in; a caller must hold a
+    grant minted by the daemon-owned :class:`RuntimeFactsAuthority`.
+    """
+
+    correlation_id: str
+    grant: "RuntimeFactsGrant"
 
 
 @dataclass(frozen=True, slots=True)
@@ -252,6 +286,8 @@ def harness_desired_generation(spec: object) -> str:
 
 HarnessCommand: TypeAlias = (
     EnsureHarnessCommand
+    | HoldStartsForTransfer
+    | ReleaseStartsHold
     | RemoveHarnessCommand
     | HarnessTimerElapsedCommand
     | StopHarnessesCommand
@@ -260,6 +296,7 @@ HarnessCommand: TypeAlias = (
     | DrainHarnessReadinessCommand
     | WaitHarnessReadyCommand
     | DispatchHarnessDeliveryCommand
+    | SteerHarnessDeliveryCommand
     | DrainHarnessResultsCommand
     | ClaimHarnessResultsCommand
     | SettleHarnessResultCommand
@@ -267,6 +304,7 @@ HarnessCommand: TypeAlias = (
     | BindHarnessLivenessCommand
     | HarnessStartTimerElapsedCommand
     | RefreshHarnessProjectionsCommand
+    | ObserveHarnessRuntimeFactsCommand
     | ReconcileHarnessSessionRefsCommand
     | StageHarnessDesiredCommand
     | SnapshotAdapterRegistrationCommand
@@ -413,6 +451,16 @@ class HarnessReadyObserved:
 
 @dataclass(frozen=True, slots=True)
 class HarnessDeliveryAdmitted:
+    correlation_id: str
+    generation: int
+    version: int
+    harness_id: str
+    delivery_id: str
+    accepted: bool
+
+
+@dataclass(frozen=True, slots=True)
+class HarnessDeliverySteered:
     correlation_id: str
     generation: int
     version: int
@@ -573,12 +621,15 @@ class HarnessesStopped:
 
 HarnessEvent: TypeAlias = (
     HarnessMutationCompleted
+    | StartsHeld
+    | StartsHoldReleased
     | HarnessRestoreCompleted
     | HarnessTimerCompleted
     | HarnessFailedDrained
     | HarnessReadinessDrained
     | HarnessReadyObserved
     | HarnessDeliveryAdmitted
+    | HarnessDeliverySteered
     | HarnessProgressObserved
     | HarnessResultObserved
     | HarnessResultsClaimed
