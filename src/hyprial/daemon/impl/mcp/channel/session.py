@@ -158,6 +158,7 @@ async def run_channel_session(
         command=command,
         owner_fence=owner_pid is not None and owner_identity is not None,
         tmux_session=tmux_session,
+        turn_signal_dir=turn_signal_dir,
     )
     # Import lazily to keep the server's TYPE_CHECKING-only adapter edge and
     # avoid a module initialization cycle.

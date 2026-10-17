@@ -25,7 +25,7 @@ from .settlement import (  # noqa: F401
     _notice_kind,
     _notice_text,
     _owner_facing_notice_text,
-    _reply_already_answered,
+    _answer_already_committed,
     _stale_fence_rejection,
 )
 from .bridge import (  # noqa: F401

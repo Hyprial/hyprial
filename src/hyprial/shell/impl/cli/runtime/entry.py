@@ -68,8 +68,10 @@ from hyprial.shell.impl.cli.commands.common.support import _render_routine_list,
 from hyprial.shell.impl.cli.commands.message.send import _validate_from_identity, send
 from hyprial.shell.impl.cli.commands.message.ack import ack
 from hyprial.shell.impl.cli.commands.message.reply import reply
+from hyprial.shell.impl.cli.commands.message.read import read_body
 from hyprial.shell.impl.cli.commands.message.outbox import outbox_app, outbox_list, outbox_prune
 from hyprial.shell.impl.cli.commands.message.delivery import delivery_app, delivery_status
+from hyprial.shell.impl.cli.commands.link.commands import link_add, link_app, link_drop, link_list, link_stats
 from hyprial.shell.impl.cli.commands.log.history import RFC3339, _entry_timestamp, _is_log_entry, _read_log_history
 from hyprial.shell.impl.cli.commands.log.query import query_command
 from hyprial.shell.impl.cli.commands.log.log import _log_result, _parse_boundary, log_command
@@ -283,6 +285,7 @@ app.add_typer(mcp_app, name="mcp")
 app.add_typer(squire_app, name="squire")
 app.add_typer(user_proxy_app, name="user-proxy")
 app.add_typer(outbox_app, name="outbox")
+app.add_typer(link_app, name="link")
 app.add_typer(delivery_app, name="delivery")
 app.add_typer(autoupdate_app, name="autoupdate")
 app.add_typer(config_app, name="config")
@@ -459,6 +462,7 @@ __all__ = [
     "fs_write", "grants_check", "grants_visibility", "gui_command", "gui_status",
     "help_command", "hosts", "identities_app", "init", "initialize_hyprial_home",
     "install", "lark_auth_app", "lark_auth_check", "lark_auth_complete",
+    "link_add", "link_app", "link_drop", "link_list", "link_stats",
     "log_command", "login", "main", "mcp_agent_channel", "mcp_app",
     "mcp_claude_channel", "mcp_claude_channel_recover", "mcp_claude_turn_ended", "media_app", "migration_app",
     "network_app", "network_expose", "network_exposures", "network_peer_key", "network_unexpose",
@@ -467,7 +471,7 @@ __all__ = [
     "org_invite", "org_network", "org_show",
     "org_status", "outbox_app", "outbox_list", "outbox_prune", "process_cpu_seconds",
     "process_status", "profile_app", "profile_create", "profile_list", "profile_use",
-    "query_command", "record_alert_outcome", "reply", "require_initialized_hyprial_home", "resolve_profile",
+    "query_command", "read_body", "record_alert_outcome", "reply", "require_initialized_hyprial_home", "resolve_profile",
     "restart_command", "route_app", "routine_add", "routine_app", "routine_list",
     "routine_pause", "routine_resume", "routine_rm", "routine_set", "routine_status",
     "secret_app", "send", "service_app", "shutil", "socket",

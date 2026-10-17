@@ -225,6 +225,7 @@ class WorkflowSender:
         sender: str,
         conversation_id: str,
         idempotency_key: str,
+        summary: str,
     ) -> str:
         request_expires_at_ms = None
         if idempotency_key.startswith("pac-notify:workflow-request:"):
@@ -347,6 +348,7 @@ class WorkflowSender:
             sender=sender,
             conversation_id=conversation_id,
             idempotency_key=idempotency_key,
+            summary=summary,
             **expiry,
         )
 

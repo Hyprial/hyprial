@@ -251,6 +251,10 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
   开发通道警告)。这两个确认是 CC 故意留给人的,没有受支持的预先同意 ⇒ 会话**保留**,按 `data.attach`
   里的命令 attach、确认、detach,之后它自己注册。⛔ 不要当作失败重起(重起还是停在同一处)。
   (headless codex 带 `-- -a on-request -s workspace-write`;hyprial 客户端只批准 worker 自己的 harness-bridge MCP 工具调用,其它 elicitation 与命令/文件审批一律拒;reviewer 在 worker 线程级为 user,任何提供方下一致。批准≠授权,授权仍在 daemon 侧)
+- interactive codex(`hyprial start codex`,不带 `--headless`)的 harness 工具(`harness_reply/ack/read_body/send`)是 MCP 工具,
+  需要 `on-request` 审批才能被调用:启动与 `--resume` 都自动带 `-a on-request`,审批弹窗在 TUI 里由人批准;
+  `-a never` 与 `--dangerously-bypass-approvals-and-sandbox` 会被 `INVALID_ARGUMENT` 拒绝(`never` 下 codex 拒绝所有 MCP 调用)。
+  `-a never` 只用于 headless。
 - daemon 重启时只恢复近期活跃的 agent:空闲超过全局阈值(默认 12h)的会被标成 `idle-suppressed`,
   不再自动拉起;有待处理消息/托管、有当前 PAC 请求、设为 `always`、或显式 start 时会被唤醒。
   `hyprial agent restore-threshold <如 12h>` 改全局阈值;`hyprial agent restore-policy <name> active|always|never`
@@ -266,7 +270,7 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
   `hyprial routine set <name> <file>` 原地修改；最后一个绑定不能直接 `routine rm`。
   `hyprial agent list --json` 的 `agentsWithoutRoutine` 只读列出尚无绑定的既有 agent。
   managed worker 内的 `hyprial send|reply|ack --from <自身 actor>` 会从环境携带
-  daemon session fence；本机人工代发必须用
+  daemon session fence；`send`/`reply` 还必须带 `--summary`；本机人工代发必须用
   `--from user:<owner> --on-behalf-of <actor>`，线上 sender 始终是 user 而不是 actor。
   `hyprial ack <mid> --from <自身 actor>` 只适用于有匹配 session 的 worker。
 - `hyprial query <actor> inbox|outbox [--json]` — 人查看某个本机 actor 的收件箱(待处理消息 +
@@ -274,8 +278,58 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
   agent 之后照样收到。⛔ 不要拿 MCP 的 harness_read 或 daemon 的 message.pending.list 来"看一眼":
   后者每次调用都会清掉该 actor 的系统通知。
 - MCP 会话内:harness_whoami/read/reply/ack/send/targets;
-  **回入站消息用 harness_reply(回复+消费一步),新话题才用 hyprial send**
-- **发文件/图片到飞书**:`hyprial send --from <URI> --to route:<adapter>:<route> --file <路径> "说明文字"`
+  **回入站消息用 harness_reply(回复+消费一步),新话题才用 hyprial send;新话题不是回复,会占你的 W**
+- **发消息:link、summary、回复**(2026-10-15 硬切后):
+  1. 发送前提:agent 只能向持有 link 的对端发送。第一次发送时 daemon 自动铸造 link:写本方
+     `link/<uri>.json`,等对端写回;这期间消息留在本方 outbox,`send` 当场返回
+     `queued: true, holdReason: LINK_MINTING`,不需要也不能手工批准。owner(`user:<owner>`)、
+     所有 `user:` 目标、`route:` 目标不受 link 约束。
+  2. 命令面:
+     - `hyprial send --from <自身> --to <对端> [--to …] --summary "<≤512 字节>" "<正文>"`;
+       `--summary` 必填,缺失、全空白、超长都在本地报 `SUMMARY_REQUIRED`(退出 1,`--json` 带
+       `data.summaryBytes/maxBytes`),不发出任何消息。
+     - `hyprial reply <messageId> --from <自身> --summary "…" "<正文>"`:唯一能闭合请求的方式。
+     - `hyprial read <messageId> --from <自身>`:取正文;是消费动作(记 fetched),不闭合,仍要
+       reply 或 ack。
+     - `hyprial ack <messageId> --from <自身>`:不需回复时结算。
+     - `hyprial link list|stats --from <自身>`:看 link、k、W、cwnd、在途;`hyprial link add|drop
+       <peer> --from <自身>`:运维动作,`drop` 返回 `reclaiming`,回收异步完成,排干数见
+       `link.reclaimed` 事件。
+     - `hyprial outbox list [--json]`:被 hold 的消息与 `holdReason`(该命令不接受 `--from`)。
+     - `hyprial top`:`W`(本节点容量)、`OUT`(出站在途)、`INJQ`(入站等待注入)三列,`—` 表示该
+       actor 没有这项数据。
+  3. 收到的消息:上下文里只有发送者、意图、messageId、summary、正文字节数;正文用 `hyprial read`
+     或 `harness_read_body` 取。
+  4. 回复规则:只有带 reply-to 的消息才是回复(`hyprial reply`、`harness_reply`)。对请求方再 `send`
+     一条新消息不是回复:它占你的 W,原请求仍未闭合、继续占对方的 W;`send` 返回 `openRequestsFrom`
+     时 CLI 会在 stderr 提示。载体(pi、codex、claude、headless)不会在轮末替你回复(不承诺自动回复)
+     ;轮末未回复的请求会收到一条 system notice「N 条请求未回复」。
+  5. hold 原因与该做什么(四码八 detail):
+
+     | holdReason / detail | 意思 | agent 该做什么 |
+     | --- | --- | --- |
+     | `LINK_MINTING` / `minting`、`awaiting-peer` | 已写本方引用,等对端写回 | 什么都不做;daemon 放行。⛔ 不要重发 |
+     | `LINK_PEER_FULL` / `awaiting-peer` | 对端 link 数已满(v1 为估计) | 等;确有急事走 owner 升级。⛔ 不要换个话题重发 |
+     | `LINK_SELF_FULL` / `k` | 本方 link 已满且都有在途请求 | 先收回复或闭合自己的请求;需要时请运维 `link drop` |
+     | `LINK_SELF_FULL` / `churn` | 短时间回收过多 | 等一个周期 |
+     | `LINK_SELF_FULL` / `org-unavailable` | 本节点不在 org 空间或 orgfs 不可用 | 只剩 owner 通道;报 owner |
+     | `LINK_SELF_FULL` / `gate-unavailable` | daemon 的 link 服务未就绪 | 报运维;不要重发 |
+     | `LINK_WINDOW_FULL` / `cwnd` | 对该对端在途已达窗口 | 等它的回复 |
+     | `LINK_WINDOW_FULL` / `W` | 本节点未闭合事项已达 W | 先 reply 或 ack 入站的 pending,再发 |
+
+     hold 永远是 `ok: true`;被 hold 的消息到 TTL 未放行时写 `expired`。
+  6. 拒绝码(`ok: false`,退出 1):`SUMMARY_REQUIRED`;`LINK_WINDOW_FULL`(向非 owner 的人发新
+     请求而 W 已满,同步拒绝);`LINK_UNKNOWN`(对方节点找不到你的 link 文件:本节点没有加入 org
+     空间);`LINK_RECLAIMED`(link 已回收,那条请求已被排干,不能再回复);`MESSAGE_BODY_UNAVAILABLE`
+     (不可读或不存在);`MESSAGE_REPLY_UNAVAILABLE`(reply 的原请求已闭合或不存在:ack 你这侧的行,
+     若仍要对话另发新消息,它占 W);保留名 `dispatch-coordinator`、`_turn-hooks` 不能注册为 agent
+     (`INVALID_AGENT_NAME`)。
+  7. MCP:`harness_send(to, summary, message)`,`to` 可为数组;`harness_reply(messageId, summary,
+     message)`;`harness_read` 返回 summary 与 bodyBytes;`harness_read_body(messageId)` 取正文。
+  8. 载体审批(裁定 77):interactive codex 以 `on-request` 审批策略启动(有人在场,工具审批交给 TUI
+     用户);`-a never` 只用于 headless,该策略下 codex 拒绝全部 MCP 调用。agent 在 interactive
+     codex 里调用 `harness_reply`/`harness_read_body` 时出现审批提示是正常流程,由 TUI 前的人批准。
+- **发文件/图片到飞书**:`hyprial send --from <URI> --to route:<adapter>:<route> --summary "<≤512 字节>" --file <路径> "说明文字"`
   (图片用 `--image`,可重复多个)。adapter 会上传后发成飞书的文件/图片消息,返回里
   `resourceDeliveries[].kind` 为 `file`/`image`。限制:只支持 `route:` 目标(不支持 agent、`user:`),
   不能挂在 replyTo 上;文件 ≤30MB、图片 ≤10MB、不能是空文件、要有扩展名。
@@ -290,8 +344,9 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
   **路径规则**:源文件和导出目标都必须是 workspace 或会话工作目录下的**绝对路径**,
   hyprial home 与 daemon 状态目录一律拒绝(`ATTACHMENT_PATH_REFUSED`)。导出不会覆盖已存在的文件,
   要覆盖显式传 `overwrite=true`(CLI `--overwrite`),否则报 `reason: exists`。
-- **每条收到的消息都带 `from` 与 `to`**(harness_read 行、headless worker 收到的正文首行
-  `[Harness Network message from <from> to <to> …]`、pi 附着注入都一样)。飞书进来的消息 `from`
+- **注入只含 summary;每条收到的消息都带 `from` 与 `to`**(harness_read 行、headless worker
+  注入首行 `[Harness Network message from <from> to <to> …]`、pi 附着注入都一样;首行格式不变,
+  正文用 `hyprial read` 取)。飞书进来的消息 `from`
   是 adapter(`adapter:lark:<名>`,回复走它),**真正说话的人在 `origin.sender`**:
   `displayName`、`owner`、`standing`。**只有 `standing: verified` 且有 `owner` 才算"这是 <owner> 本人"**;
   `verified` 而 `owner` 为空 = 身份已确认的访客(没有 hyprial 账号),名字可信,但不是任何人的授权;

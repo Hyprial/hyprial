@@ -15,6 +15,10 @@ from hyprial.daemon.impl.inbox.contracts.api  import (
     HarnessFailureSettlement,
     InboxMessage,
     InboxPruneItem,
+    LinkInboundRow,
+    LinkLedgerOpen,
+    LinkLedgerResult,
+    LinkLedgerRow,
     OutboxItem,
     OutboxPruneItem,
     ReceiveResult,
@@ -22,6 +26,8 @@ from hyprial.daemon.impl.inbox.contracts.api  import (
 )
 from hyprial.daemon.impl.inbox.contracts.ports  import (
     AcceptCustodyCommand,
+    AdmittedDispatchableCommand,
+    AdmittedPendingCommand,
     AlarmCompleted,
     AcknowledgeCompleted,
     AcknowledgeMessageCommand,
@@ -56,6 +62,7 @@ from hyprial.daemon.impl.inbox.contracts.ports  import (
     SubmitMessageCommand,
     SubmitProgressCommand,
     WakeOutboxRecipientCommand,
+    LinkLedgerUpdated,
 )
 from hyprial.daemon.impl.inbox.tracking.progress  import ProgressEvent
 from hyprial.daemon.impl.inbox.links.pull  import DeliveryStatus
@@ -126,6 +133,9 @@ class DeliveryCustodyFacade:
         now_ms: int | None = None,
         defer_direct: bool = False,
         correlation_id: str | None = None,
+        link_hold: str | None = None,
+        link_open: LinkLedgerOpen | None = None,
+        link_reply_close: bool = False,
     ) -> SubmissionResult:
         # Correlated reply messages retain the same message id across public
         # message.reply retries.  Use it as the durable command identity so a
@@ -147,6 +157,9 @@ class DeliveryCustodyFacade:
                     message,
                     now_ms,
                     defer_direct,
+                    link_hold,
+                    link_open,
+                    link_reply_close,
                 ),
                 SubmissionCompleted,
             )
@@ -423,9 +436,49 @@ class DeliveryCustodyFacade:
         recipient: str,
         *,
         now_ms: int | None = None,
+        only: frozenset[str] | None = None,
+        completed_turn: bool = False,
     ) -> tuple[InboxMessage, ...]:
         return self._messages(
-            FetchPendingCommand(self._correlation("fetch"), recipient, now_ms)
+            FetchPendingCommand(
+                self._correlation("fetch"),
+                recipient,
+                now_ms,
+                tuple(sorted(only)) if only is not None else None,
+                completed_turn,
+            )
+        )
+
+    def admitted_pending(
+        self,
+        recipient: str,
+        *,
+        now_ms: int | None = None,
+        exclude: frozenset[str] = frozenset(),
+    ) -> tuple[InboxMessage, ...]:
+        return self._messages(
+            AdmittedPendingCommand(
+                self._correlation("admitted-pending"),
+                recipient,
+                now_ms,
+                tuple(sorted(exclude)),
+            )
+        )
+
+    def admitted_dispatchable(
+        self,
+        recipient: str,
+        *,
+        now_ms: int | None = None,
+        exclude: frozenset[str] = frozenset(),
+    ) -> tuple[InboxMessage, ...]:
+        return self._messages(
+            AdmittedDispatchableCommand(
+                self._correlation("admitted-dispatchable"),
+                recipient,
+                now_ms,
+                tuple(sorted(exclude)),
+            )
         )
 
     def prune_inbox(
@@ -538,6 +591,23 @@ class DeliveryCustodyFacade:
     ) -> tuple[InboxMessage, ...]:
         return self._reads.dispatchable_messages(recipient, now_ms=now_ms)
 
+    def fetched_between(
+        self,
+        recipient: str,
+        *,
+        since_ms: int,
+        until_ms: int,
+        since_inclusive: bool,
+    ) -> tuple[str, ...]:
+        """Read-only injection window; same semantics as the inbox service."""
+
+        return self._reads.fetched_between(
+            recipient,
+            since_ms=since_ms,
+            until_ms=until_ms,
+            since_inclusive=since_inclusive,
+        )
+
     def system_notices(self, recipient: str) -> tuple[InboxMessage, ...]:
         return self._reads.system_notices(recipient)
 
@@ -579,11 +649,59 @@ class DeliveryCustodyFacade:
     def custody_count(self) -> int:
         return self._reads.custody_count()
 
+    # -- send-link ledger (WP2 §3.9) ------------------------------------
+
+    def update_link_ledger(
+        self, command: object
+    ) -> LinkLedgerResult:
+        """Run one durable ledger update on the inbox actor thread."""
+
+        event = self._call(command, LinkLedgerUpdated)
+        assert isinstance(event, LinkLedgerUpdated)
+        return event.result
+
+    def link_ledger_snapshot(self, now_ms: int) -> tuple[LinkLedgerRow, ...]:
+        return self._reads.link_ledger_snapshot(now_ms)
+
+    def link_outbound_row(self, actor: str, message_id: str) -> LinkLedgerRow | None:
+        return self._reads.link_outbound_row(actor, message_id)
+
+    def link_held_outbox(self) -> tuple[OutboxItem, ...]:
+        return self._reads.link_held_outbox()
+
+    def link_inbound_live(
+        self, actor: str, peer: str | None = None
+    ) -> tuple[LinkInboundRow, ...]:
+        return self._reads.link_inbound_live(actor, peer)
+
+    def link_inbound_row(
+        self, actor: str, message_id: str
+    ) -> LinkInboundRow | None:
+        return self._reads.link_inbound_row(actor, message_id)
+
+    def link_task_bindings(self) -> tuple[tuple[str, str, str, int], ...]:
+        return self._reads.link_task_bindings()
+
+    def outbox_item_for_message(self, message_id: str) -> OutboxItem | None:
+        return self._reads.outbox_item_for_message(message_id)
+
+    def submission_result_for_message(self, message_id: str) -> SubmissionResult | None:
+        """The latest durable submit receipt for one message id, or None."""
+
+        return self._reads.submission_result_by_message(message_id)
+
     def dlq_count(self) -> int:
         return self._reads.dlq_count()
 
     def pending_count(self, recipient: str) -> int:
         return self._reads.pending_count(recipient)
+
+    def inbound_awaiting_injection(
+        self, recipient: str, candidate_ids: frozenset[str]
+    ) -> int:
+        """Read-only: alive inbox rows still held out of the context (B6)."""
+
+        return self._reads.held_unfetched_count(recipient, candidate_ids)
 
     def has_pending_work(self, recipient: str) -> bool:
         """Cache-only actor projection; never opens SQLite on its caller."""

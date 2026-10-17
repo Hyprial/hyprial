@@ -25,6 +25,7 @@ TURN_STARTED = "TURN_STARTED"
 FINAL_OBSERVED = "FINAL_OBSERVED"
 SETTLED = "SETTLED"
 REMOTE_SETTLED = "REMOTE_SETTLED"
+KEPT = "KEPT"
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +40,9 @@ class CarrierDeliverySnapshot:
     settlement_attempts: int = 0
     next_settlement_at: float = 0.0
     last_reconcile_error: str | None = None
+    #: Per-shard injection attempt.  A re-offer of the same delivery id gets a
+    #: new attempt, so a delayed turn-start fact cannot attach to it.
+    attempt: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +56,9 @@ class CarrierTurnStarted:
     generation: int
     delivery_id: str
     turn_id: str
+    #: The attempt the turn was started for; 0 keeps old constructors valid
+    #: but a live fetch never uses 0.
+    attempt: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +83,18 @@ class CarrierSettled:
 
 
 @dataclass(frozen=True, slots=True)
+class CarrierKept:
+    """A ``keep`` hint: remember the id (store KEPT), release the projection.
+
+    One command does both so a KEPT row is never deleted by a ``CarrierSettled``
+    and never half-written; a stale generation is dropped like every fact.
+    """
+
+    generation: int
+    delivery_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class CarrierRemoved:
     generation: int
     delivery_id: str
@@ -94,6 +113,7 @@ CarrierCommand = (
     | CarrierFinalObserved
     | CarrierSettlementDeferred
     | CarrierSettled
+    | CarrierKept
     | CarrierRemoved
     | CarrierReconcileError
 )
@@ -135,6 +155,7 @@ class _State:
     next_settlement_at: float = 0.0
     last_reconcile_error: str | None = None
     version: int = 0
+    attempt: int = 0
 
 
 class _Projection:
@@ -162,7 +183,12 @@ class _CarrierShard:
         self._store = store
         self._projection = projection
         self._states: dict[str, _State] = {}
+        self._attempt_seq = 0
         self._recover()
+
+    def _next_attempt(self) -> int:
+        self._attempt_seq += 1
+        return self._attempt_seq
 
     def __call__(self, command: object) -> None:
         if isinstance(command, CarrierFetched):
@@ -179,6 +205,9 @@ class _CarrierShard:
         elif isinstance(command, CarrierSettled):
             if self._current(command.generation, command.delivery_id) is not None:
                 self._settled(command)
+        elif isinstance(command, CarrierKept):
+            if self._current(command.generation, command.delivery_id) is not None:
+                self._kept(command)
         elif isinstance(command, CarrierRemoved):
             if self._current(command.generation, command.delivery_id) is not None:
                 self._remove(command.delivery_id)
@@ -200,13 +229,32 @@ class _CarrierShard:
         self._store.record_fetched(
             self._actor, self._session_ref, command.delivery, command.intent
         )
-        state = _State(delivery=command.delivery, intent=command.intent, version=1)
+        state = _State(
+            delivery=command.delivery,
+            intent=command.intent,
+            version=1,
+            attempt=self._next_attempt(),
+        )
         self._states[message_id] = state
         self._publish(state)
         self._log_transition(state, None, FETCHED)
 
     def _turn_started(self, command: CarrierTurnStarted) -> None:
         state = self._states[command.delivery_id]
+        if state.stage != FETCHED or state.attempt != command.attempt:
+            self._log(
+                "warn",
+                "worker.carrier.error",
+                self._snapshot(state),
+                {
+                    "stage": "turn-start-fence",
+                    "error": "stale or non-fetched CarrierTurnStarted",
+                    "expectedAttempt": command.attempt,
+                    "actualAttempt": state.attempt,
+                    "actualStage": state.stage,
+                },
+            )
+            return
         self._store.record_turn_started(self._actor, command.delivery_id, command.turn_id)
         previous = state.stage
         state.stage = TURN_STARTED
@@ -249,6 +297,18 @@ class _CarrierShard:
         with self._projection.lock:
             self._projection.rows.pop(command.delivery_id, None)
 
+    def _kept(self, command: CarrierKept) -> None:
+        state = self._states[command.delivery_id]
+        previous = state.stage
+        self._store.record_kept(self._actor, command.delivery_id)
+        state.stage = KEPT
+        state.final_output = None
+        state.version += 1
+        self._log_transition(state, previous, KEPT)
+        self._states.pop(command.delivery_id, None)
+        with self._projection.lock:
+            self._projection.rows.pop(command.delivery_id, None)
+
     def _remove(self, delivery_id: str) -> None:
         self._store.delete(self._actor, delivery_id)
         self._states.pop(delivery_id, None)
@@ -278,6 +338,7 @@ class _CarrierShard:
             settlement_attempts=state.settlement_attempts,
             next_settlement_at=state.next_settlement_at,
             last_reconcile_error=state.last_reconcile_error,
+            attempt=state.attempt,
         )
 
     def _log_transition(
@@ -320,6 +381,16 @@ class _CarrierShard:
             if stored.state == SETTLED:
                 self._store.delete(self._actor, stored.delivery.delivery_id)
                 continue
+            if stored.state == KEPT:
+                # Kept ids only feed the carrier's ``known`` set (store.kept_ids):
+                # recovery never re-enqueues, supplies a final, or restarts them.
+                self._log(
+                    "info",
+                    "worker.carrier.recovered",
+                    None,
+                    {"messageId": stored.delivery.delivery_id, "recoveredState": KEPT},
+                )
+                continue
             if stored.state == REMOTE_SETTLED:
                 # Remote reply+ack already succeeded. Recovery is strictly a
                 # local journal cleanup and must never ask the daemon to reply
@@ -338,7 +409,9 @@ class _CarrierShard:
                 )
                 continue
             if stored.state == FETCHED:
-                if not stored.delivery.message:
+                if not stored.delivery.message or stored.injection_format is None:
+                    # Empty, or written before summary-only injection: its text
+                    # is an old body.  Wait for daemon metadata to rebuild it.
                     self._log(
                         "warn",
                         "worker.carrier.recovered",
@@ -354,6 +427,7 @@ class _CarrierShard:
                     intent=stored.intent,
                     stage=FETCHED,
                     version=1,
+                    attempt=self._next_attempt(),
                 )
                 self._states[state.delivery.delivery_id] = state
                 self._publish(state)
@@ -394,6 +468,7 @@ class _CarrierShard:
                 final_output=stored.final_output,
                 settlement_attempts=stored.settlement_attempts,
                 version=1,
+                attempt=self._next_attempt(),
             )
             self._states[state.delivery.delivery_id] = state
             self._publish(state)
@@ -513,11 +588,13 @@ class InteractiveCarrierRuntime:
 __all__ = [
     "FETCHED",
     "FINAL_OBSERVED",
+    "KEPT",
     "SETTLED",
     "TURN_STARTED",
     "CarrierDeliverySnapshot",
     "CarrierFetched",
     "CarrierFinalObserved",
+    "CarrierKept",
     "CarrierReconcileError",
     "CarrierRemoved",
     "CarrierSettled",

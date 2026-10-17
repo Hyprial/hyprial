@@ -163,16 +163,18 @@ _DECLARATIONS: dict[tuple[str, bool], dict[Capability, CapabilitySupport]] = {
     ("codex", False): {
         Capability.INTERACTIVE_ATTACH: _native("app_server"),
         Capability.WAKE_PUSH: _native("app_server"),
-        # Interactive Codex has no injected Harness MCP surface: the carrier
-        # can deliver an inbound turn and auto-reply, but the model cannot
-        # proactively address a new target from this session.
-        Capability.PROACTIVE_SEND: _unsupported(),
+        # the carrier delivers summaries; the model replies through the thread's harness-bridge MCP
+        # Native only while the session runs with on-request approvals: under
+        # `-a never` codex refuses every MCP tool call. The interactive launch
+        # pins on-request and rejects `-a never`/bypass (ruling 77); the TUI user approves.
+        Capability.PROACTIVE_SEND: _native("app_server"),
         Capability.SESSION_LIFECYCLE: _degraded(
             "app_server",
             "exact thread resume is supported; daemon-restart recovery of the "
             "interactive app-server/TUI is not yet supported",
         ),
-        Capability.TOOL_INJECTION: _unsupported(),
+        # same on-request approval condition as PROACTIVE_SEND above
+        Capability.TOOL_INJECTION: _native("app_server"),
         Capability.PLUGIN_INJECTION: _degraded(
             "app_server",
             "session-scoped MCP servers are supported; skills and extensions are not",

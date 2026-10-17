@@ -20,6 +20,7 @@ from uuid import uuid4
 from hyprial.kernel import ActorRuntime, ActorSpec, AdmissionResult
 from hyprial.kernel import HookEventPublisher
 from hyprial.kernel import PAC_WORKTREE_GIT_TIMEOUT_SECONDS
+from hyprial.daemon import summary_from_text
 
 from hyprial.daemon.impl.pac.actors.coordinator  import FileLaunchResolver
 from hyprial.daemon.impl.pac.graphs.reactor  import NotificationSender, permanent_delivery_failure
@@ -899,6 +900,7 @@ class PacGraphAuthority:
                         sender=item.sender,
                         conversation_id=f"pac-{item.graph_id}",
                         idempotency_key=f"pac-notify:{item.event_id}:{item.edge}",
+                        summary=summary_from_text(item.text),
                     )
                 except Exception as error:
                     terminal = permanent_delivery_failure(error)

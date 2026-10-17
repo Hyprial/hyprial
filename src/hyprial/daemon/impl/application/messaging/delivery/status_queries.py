@@ -16,6 +16,7 @@ from hyprial.daemon.impl.inbox import (
     merge_delivery_status,
     query_delivery_status,
 )
+from hyprial.daemon.impl.links.ports import HOLD_REASON_KEY
 from hyprial.kernel import (
     canonical_agent_uri,
     parse_agent_uri,
@@ -61,7 +62,7 @@ def _query_entry(message: InboxMessage, *, kind: str) -> JsonObject:
     return entry
 
 def _outbox_entry_json(item: OutboxItem) -> JsonObject:
-    return {
+    entry: JsonObject = {
         "messageId": item.message.message_id,
         "conversationId": item.message.conversation_id,
         "sender": item.message.sender,
@@ -75,6 +76,10 @@ def _outbox_entry_json(item: OutboxItem) -> JsonObject:
             item.message.recipient
         ),
     }
+    # A row parked by the send-link gate names why (WP2 section 3.6).
+    if item.link_hold is not None:
+        entry[HOLD_REASON_KEY] = item.link_hold
+    return entry
 
 def _status_query_timeout(params: JsonObject) -> float:
     """Bound the mesh leg of message.status; the local read never blocks."""

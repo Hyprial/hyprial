@@ -1,13 +1,17 @@
 """ClaudeChannelAdapter: per-session daemon adapter for the channel edge."""
 from __future__ import annotations
 
+import json
 import logging
 import os
 import secrets
 import time
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
+import anyio
 from mcp import types
 from mcp.server.lowlevel import Server
 from mcp.server.models import InitializationOptions
@@ -17,6 +21,7 @@ from hyprial import __version__
 from hyprial.kernel import (
     CHANNEL_HEARTBEAT_INTERVAL_SECONDS,
     CHANNEL_PROTOCOL_VERSION,
+    ipc_errors,
 )
 from hyprial.kernel import session_fetch_params
 
@@ -137,6 +142,7 @@ class ClaudeChannelAdapter:
         owner_fence: bool = False,
         lease_token: str | None = None,
         tmux_session: str | None = None,
+        turn_signal_dir: Path | None = None,
         poll_interval_ms: int = 500,
         heartbeat_interval_ms: int = int(CHANNEL_HEARTBEAT_INTERVAL_SECONDS * 1000),
     ) -> None:
@@ -161,6 +167,16 @@ class ClaudeChannelAdapter:
         # Deliveries the coordinator tracked when the in-flight list was sent:
         # only those may be completed against its answer.
         self._tracked_before_list: tuple[str, ...] = ()
+        # Model-turn state (wp5c.md §4.2).  The open turn survives a child
+        # restart on disk; the injected ids live only in this process.
+        self.turn_signal_dir = turn_signal_dir
+        self.open_turn: str | None = None
+        self._turn_origin = "pulse"
+        self._turn_started = False
+        self.turn_injected: set[str] = set()
+        self.owed_settle: set[str] = set()
+        self._turn_lock = anyio.Lock()
+        self._load_open_turn()
 
     # -- the requests the core asks for ------------------------------------
 
@@ -318,10 +334,18 @@ class ClaudeChannelAdapter:
     # -- MCP tools ----------------------------------------------------------
 
     async def harness_read(self) -> dict[str, Any]:
+        # The start signal may trail the first fetched read: report the turn
+        # start before the daemon stamps the fetch (a late start misses the
+        # reminder window).  A start that cannot be confirmed fails the read.
+        async with self._turn_lock:
+            if self.open_turn is None:
+                self._begin_turn(uuid4().hex, "read")
+            await self._ensure_started(self._tool_call)
         tracked = self.coordinator.pending_deliveries(self.actor)
         result = await self._tool_call(
             "message.pending.list", session_fetch_params(), mutation=False
         )
+        self._note_injected(result)
         # A tool read can be the first to see a restarted daemon.
         self.watch.observe(result)
         delivery_ids = self._remember_messages(result, observed=True)
@@ -329,9 +353,13 @@ class ClaudeChannelAdapter:
         self.coordinator.observe_read(self.actor, delivery_ids)
         return result
 
-    async def harness_reply(self, message_id: str, message: str) -> dict[str, Any]:
+    async def harness_reply(
+        self, message_id: str, summary: str, message: str
+    ) -> dict[str, Any]:
         result = await self._tool_call(
-            "message.reply", {"messageId": message_id, "message": message}, mutation=True
+            "message.reply",
+            {"messageId": message_id, "summary": summary, "message": message},
+            mutation=True,
         )
         self._complete_if_terminal(message_id, result)
         return result
@@ -347,6 +375,138 @@ class ClaudeChannelAdapter:
         return await self._call(
             "session.turn.ended", {"reportIds": list(report_ids)}, mutation=True
         )
+
+    # -- model turns (wp5c.md §4) ------------------------------------------
+
+    async def apply_turn_start(self, report_id: str) -> None:
+        """Handle one ``UserPromptSubmit`` pulse; raises when unconfirmed."""
+
+        async with self._turn_lock:
+            if self.open_turn is not None and self.open_turn != report_id:
+                if self._turn_origin == "read":
+                    # The late start of a turn ``harness_read`` already opened.
+                    self._turn_origin = "pulse"
+                    self._save_open_turn()
+                    return
+                # A started turn that never saw Stop (StopFailure): close it
+                # failed -- nothing it injected is settled -- and open this one.
+                await self._call(
+                    "session.turn.ended",
+                    {"reportIds": [self.open_turn], "status": "failed"},
+                    mutation=True,
+                )
+                self._clear_open_turn()
+                self.turn_injected.clear()
+            if self.open_turn is None:
+                self._begin_turn(report_id, "pulse")
+            await self._ensure_started(self._call)
+
+    async def apply_turn_end(self) -> bool:
+        """Close the open turn under its own reportId; False when none is open.
+
+        Raises when the daemon did not confirm: the pulse and the on-disk
+        state stay and the next round retries the same reportId.
+        """
+
+        async with self._turn_lock:
+            if self.open_turn is None:
+                return False
+            await self._ensure_started(self._call)
+            await self._call(
+                "session.turn.ended", {"reportIds": [self.open_turn]}, mutation=True
+            )
+            self.owed_settle |= self.turn_injected
+            self.turn_injected = set()
+            self._clear_open_turn()
+            return True
+
+    async def settle_owed(self) -> None:
+        """Do the daemon's settle hint for each id a finished turn injected.
+
+        ``ack`` acks, ``keep`` writes nothing, an exception leaves the id for
+        the next round.  Nothing is ever replied on the model's behalf.
+        """
+
+        for message_id in sorted(self.owed_settle):
+            try:
+                hint = await self._call(
+                    "message.settle_hint", {"messageId": message_id}, mutation=False
+                )
+                if hint.get("hint") == "ack":
+                    try:
+                        result = await self._call(
+                            "message.ack", {"messageId": message_id}, mutation=True
+                        )
+                    except DaemonRequestRejected as error:
+                        if error.code != ipc_errors.MESSAGE_ACK_UNAVAILABLE:
+                            raise
+                    else:
+                        self._complete_if_terminal(message_id, result)
+                        if result.get("acknowledged") is not True:
+                            continue
+                elif hint.get("hint") != "keep":
+                    continue
+            except DaemonRequestRejected as error:
+                if error.code == SESSION_SUPERSEDED_CODE:
+                    self.watch.observe_rejection(error.code)
+                    return
+                continue
+            except _DAEMON_CONTACT_ERRORS:
+                return
+            self.owed_settle.discard(message_id)
+
+    def _begin_turn(self, report_id: str, origin: str) -> None:
+        self.open_turn, self._turn_origin, self._turn_started = report_id, origin, False
+        self._save_open_turn()
+
+    async def _ensure_started(self, call: Any) -> None:
+        if self.open_turn is not None and not self._turn_started:
+            await call("session.turn.started", {"reportId": self.open_turn}, mutation=True)
+            self._turn_started = True
+            self._save_open_turn()
+
+    def _note_injected(self, result: dict[str, Any]) -> None:
+        """Remember what this turn's fetched read put in front of the model."""
+
+        for row in result.get("messages", ()):
+            if isinstance(row, dict) and row.get("kind") != "notice":
+                message_id = row.get("messageId")
+                if isinstance(message_id, str):
+                    self.turn_injected.add(message_id)
+
+    def _open_turn_path(self) -> Path | None:
+        directory = self.turn_signal_dir
+        return None if directory is None else directory / "state" / "open-turn"
+
+    def _save_open_turn(self) -> None:
+        path = self._open_turn_path()
+        if path is None or self.open_turn is None:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        scratch = path.with_name(f"open-turn.{secrets.token_hex(4)}.tmp")
+        state = {"reportId": self.open_turn, "origin": self._turn_origin}
+        scratch.write_text(
+            json.dumps({**state, "started": self._turn_started}), encoding="utf-8"
+        )
+        os.replace(scratch, path)
+
+    def _clear_open_turn(self) -> None:
+        self.open_turn, self._turn_started = None, False
+        path = self._open_turn_path()
+        if path is not None:
+            path.unlink(missing_ok=True)
+
+    def _load_open_turn(self) -> None:
+        path = self._open_turn_path()
+        try:
+            state = json.loads(path.read_text(encoding="utf-8")) if path else {}
+            report_id = state.get("reportId")
+        except (OSError, ValueError, AttributeError):
+            return
+        if isinstance(report_id, str) and report_id:
+            self.open_turn = report_id
+            self._turn_origin = "read" if state.get("origin") == "read" else "pulse"
+            self._turn_started = state.get("started") is True
 
     # -- coordinator bookkeeping -------------------------------------------
 

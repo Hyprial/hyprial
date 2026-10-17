@@ -89,6 +89,30 @@ class CodexInteractiveResumeError(RuntimeError):
 class CodexInteractiveResumePending(RuntimeError):
     """A transient TUI attachment observation within the launch deadline."""
 
+def interactive_channel_config_args(
+    *, actor: str, session_ref_file: Path, hyprial_home: Path, state_dir: Path
+) -> tuple[str, ...]:
+    """``codex app-server -c`` overrides mounting harness-bridge for the TUI thread.
+
+    The TUI sends thread/start itself and a second connection cannot rebind its
+    thread (WP5-B probe, wp5b.md section 1), so the stdio server is mounted on
+    the app-server and reads its sessionRef from ``session_ref_file`` once the
+    launcher has registered the discovered thread.
+    """
+
+    from hyprial.daemon.impl.harnesses.worker_channel import build_worker_channel
+
+    server = build_worker_channel(
+        actor=actor, session_ref="pending", hyprial_home=hyprial_home, state_dir=state_dir
+    ).mcp_server
+    args = [*server["args"], "--session-ref-file", str(session_ref_file)]  # type: ignore[misc]
+    env = {k: v for k, v in server["env"].items() if k != "HYPRIAL_WORKER_SESSION_REF"}  # type: ignore[attr-defined]
+    pairs = ",".join(f"{json.dumps(k)}={json.dumps(v)}" for k, v in sorted(env.items()))
+    prefix = "mcp_servers.harness-bridge"
+    values = {"command": json.dumps(server["command"]), "args": json.dumps(args), "env": "{" + pairs + "}"}
+    return tuple(x for key, value in values.items() for x in ("-c", f"{prefix}.{key}={value}"))
+
+
 class CodexInteractiveAppServer:
     """Own one external Codex app-server plus its launch-time TUI probe.
 

@@ -105,10 +105,32 @@ class DeliveryCustodyNoticesMixin:
             alarm_claimed=True,
         )
         self._request_io(request, completion_kind="alarm")
+    def _stage_pending_link_notices(self) -> None:
+        """Deliver notices staged by refused receives (review B4).
+
+        Delegates to the one already-sanctioned notice staging path so the
+        inbox-authority manifest does not grow; only the log event name
+        differs.
+        """
+
+        take = getattr(self._service, "take_pending_link_notices", None)
+        notices = take() if callable(take) else ()
+        if not notices:
+            return
+        self._stage_expired_sender_notices(
+            f"link-unknown:{self._version}",
+            notices,
+            log_event="inbox.link_unknown_notice",
+            completion_kind="link_unknown_notice",
+        )
+
     def _stage_expired_sender_notices(
         self,
         prune_correlation_id: str,
         notices: tuple[_ExpiredSenderNotice, ...],
+        *,
+        log_event: str | None = None,
+        completion_kind: str = "expiry_notice",
     ) -> None:
         remote: list[DispatchItem] = []
         for item in notices:
@@ -117,6 +139,7 @@ class DeliveryCustodyNoticesMixin:
                     item.original_message_id,
                     None,
                     False,
+                    event=log_event,
                 )
                 continue
             if item.target_node == self._service.node_id:
@@ -128,6 +151,7 @@ class DeliveryCustodyNoticesMixin:
                     item.original_message_id,
                     item.target_node,
                     delivered,
+                    event=log_event,
                 )
                 continue
             remote.append(
@@ -146,4 +170,4 @@ class DeliveryCustodyNoticesMixin:
             kind=DispatchIoKind.NOTICE,
             items=tuple(remote),
         )
-        self._request_io(request, completion_kind="expiry_notice")
+        self._request_io(request, completion_kind=completion_kind)

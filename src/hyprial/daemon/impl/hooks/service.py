@@ -8,7 +8,7 @@ import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from hyprial.daemon.impl.api import (
     HarnessDelivery,
@@ -140,6 +140,11 @@ class DaemonHookService:
         self._monotonic = monotonic
         self._sequence = 0
         self._sequence_lock = threading.Lock()
+        #: All daemon ``turn.*`` events allocate their sequence and enter the
+        #: bus under this one lock, so every lane sees them in seq order even
+        #: when publishers race (review B8).  The critical section never waits
+        #: for a consumer or holds a registry/inbox lock.
+        self._publish_lock = threading.Lock()
         self._configs: dict[str, _CachedConfig] = {}
         self._config_refreshing: set[str] = set()
         self._config_error_logged_at: dict[tuple[str, str], float] = {}
@@ -239,6 +244,45 @@ class DaemonHookService:
                 fidelity="inferred" if tool_names else "observed",
             ),
             emitted_at_ms=ended_at_ms,
+        )
+
+    def observe_carrier_turn(
+        self,
+        *,
+        actor: str,
+        phase: Literal["started", "completed", "failed"],
+        at_ms: int,
+        started_at_ms: int | None,
+        delivery_id: str = "",
+    ) -> None:
+        """Publish an interactive carrier's turn boundary (WP5-A §4.3).
+
+        The daemon stamps the clock; the carrier's own times are never read.
+        Same publish gate as headless turns: a routed agent or a daemon-level
+        consumer lane hears it.
+        """
+
+        event = f"turn.{phase}"
+        if not self._publishes(actor, event):
+            return
+        self._publish(
+            event=event,
+            actor=actor,
+            payload=turn_event_payload(
+                delivery_id=delivery_id,
+                sender="",
+                conversation="",
+                started_at_ms=started_at_ms if started_at_ms is not None else at_ms,
+                ended_at_ms=at_ms,
+                status=phase,
+                tool_names=(),
+                output="",
+                prompt="",
+                tool_calls=(),
+                fidelity="observed",
+                failure_code=None,
+            ),
+            emitted_at_ms=at_ms,
         )
 
     def observe_delivery(
@@ -377,17 +421,22 @@ class DaemonHookService:
         emitted_at_ms: int,
         source: str = "daemon.turns",
     ) -> None:
-        self._bus.publish(
-            HookEvent(
-                event=event,
-                kind="observe",
-                emitted_at_ms=emitted_at_ms,
-                seq=self.sequence(),
-                source=source,
-                actor=actor,
-                payload=payload,
+        # Sequence allocation and bus enqueue share one critical section, so
+        # no publisher can hand a lower seq to a lane after a higher one.  The
+        # bus ``publish`` only offers to each lane and never waits for it.
+        with self._publish_lock:
+            seq = self.sequence()
+            self._bus.publish(
+                HookEvent(
+                    event=event,
+                    kind="observe",
+                    emitted_at_ms=emitted_at_ms,
+                    seq=seq,
+                    source=source,
+                    actor=actor,
+                    payload=payload,
+                )
             )
-        )
 
     def _configuration(self, actor: str) -> HooksConfig | None:
         now = self._monotonic()

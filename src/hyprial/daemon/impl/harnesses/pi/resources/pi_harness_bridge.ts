@@ -94,22 +94,41 @@ export default function (pi: ExtensionAPI, observer?: BridgeObserver) {
     name: "harness_send",
     label: "Harness Send",
     description:
-      "Send one independent durable asynchronous Harness Network message to an " +
-      "explicit agent, user:<owner>, or route:<adapter>:<route> target. User " +
+      "Send one independent durable asynchronous Harness Network message to one " +
+      "or more explicit agent, user:<owner>, or route:<adapter>:<route> targets. " +
+      "``to`` may be an array for fan-out. ``summary`` is required and is the only " +
+      "part the recipient's context shows first (at most 512 UTF-8 bytes). User " +
       "delivery is performed by the receiving user's own Squire adapter; route " +
       "delivery posts to the Lark chat configured as that route's nativeId and " +
       "requires the adapter's app to be a member of the chat. Any other address " +
-      "scheme is rejected.",
+      "scheme is rejected. A first send to an agent without a link is held " +
+      "(ok, queued, holdReason) while the daemon mints the link; do not resend. " +
+      "A send is never a reply: to answer a request use harness_reply, otherwise " +
+      "the request stays open and the new message counts against your window.",
     parameters: Type.Object({
-      to: Type.String({
-        description: "Target agent URI, user:<owner>, or route:<adapter>:<route>",
+      to: Type.Union([
+        Type.String({
+          description: "Target agent URI, user:<owner>, or route:<adapter>:<route>",
+        }),
+        Type.Array(
+          Type.String({ description: "One target URI" }),
+          { minItems: 1, description: "One or more target URIs (fan-out)" },
+        ),
+      ]),
+      summary: Type.String({
+        description: "Short summary the recipient reads first; required",
       }),
       message: Type.String({ description: "Message text" }),
     }),
-    // The MCP contract is one explicit target; the daemon contract is a
-    // non-empty target array. Wrap here, mirroring server.py.
+    // The MCP contract is one target or a non-empty list; the daemon contract
+    // is always a non-empty target array. Wrap here, mirroring server.py.
     async execute(_toolCallId, params) {
-      return invoke("message.send", { to: [params.to], message: params.message }, true);
+      const targets = typeof params.to === "string" ? [params.to] : params.to;
+      return invoke(
+        "message.send",
+        { to: targets, summary: params.summary, message: params.message },
+        true,
+      );
     },
   });
 
@@ -118,17 +137,41 @@ export default function (pi: ExtensionAPI, observer?: BridgeObserver) {
     label: "Harness Reply",
     description:
       "Reply to one pending Harness request and acknowledge it only after the " +
-      "daemon durably accepts the reply.",
+      "daemon durably accepts the reply. ``summary`` is required and is what the " +
+      "recipient sees first. Only a reply closes a request. LINK_RECLAIMED means " +
+      "the link was reclaimed and the request was drained; ack instead.",
     parameters: Type.Object({
       messageId: Type.String({ description: "Pending message ID to reply to" }),
+      summary: Type.String({
+        description: "Short summary the recipient reads first; required",
+      }),
       message: Type.String({ description: "Reply text" }),
     }),
     async execute(_toolCallId, params) {
       return invoke(
         "message.reply",
-        { messageId: params.messageId, message: params.message },
+        {
+          messageId: params.messageId,
+          summary: params.summary,
+          message: params.message,
+        },
         true,
       );
+    },
+  });
+
+  pi.registerTool({
+    name: "harness_read_body",
+    label: "Harness Read Body",
+    description:
+      "Read one message body by ID. A consuming action: the daemon records it " +
+      "as fetched, but the message stays pending until harness_reply or " +
+      "harness_ack.",
+    parameters: Type.Object({
+      messageId: Type.String({ description: "Message ID whose body to read" }),
+    }),
+    async execute(_toolCallId, params) {
+      return invoke("message.read_body", { messageId: params.messageId }, true);
     },
   });
 
@@ -136,8 +179,9 @@ export default function (pi: ExtensionAPI, observer?: BridgeObserver) {
     name: "harness_read",
     label: "Harness Read",
     description:
-      "Read the daemon-owned durable inbox. Messages remain pending until " +
-      "harness_reply or harness_ack succeeds.",
+      "Read the daemon-owned durable inbox, returning each message's summary and " +
+      "body byte count. Use harness_read_body for the full body. Messages remain " +
+      "pending until harness_reply or harness_ack succeeds.",
     parameters: Type.Object({}),
     async execute() {
       // Shared interactive session-carrier fetch contract. Keep in sync with

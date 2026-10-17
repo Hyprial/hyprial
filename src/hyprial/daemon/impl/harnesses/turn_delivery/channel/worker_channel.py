@@ -33,6 +33,7 @@ WORKER_HARNESS_TOOLS = (
     "harness_delegate",
     "harness_progress",
     "harness_read",
+    "harness_read_body",
     "harness_reply",
     "harness_send",
     "harness_targets",

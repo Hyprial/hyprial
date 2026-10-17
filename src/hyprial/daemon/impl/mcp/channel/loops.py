@@ -147,11 +147,38 @@ async def _run_channel_poll_loop(
 async def _forward_turn_signals(
     adapter: ClaudeChannelAdapter, turn_signal_dir: Path | None
 ) -> None:
-    turn_signals = _pending_turn_signals(turn_signal_dir)
-    if not turn_signals:
+    """Forward start and Stop pulses in the order the hooks wrote them.
+
+    ``<dir>/start`` holds ``UserPromptSubmit`` pulses, ``<dir>`` itself the
+    Stop pulses.  An unconfirmed report leaves its pulse (and the adapter's
+    ``open-turn`` file) on disk and ends the round, so the same reportId is
+    retried and order is never skipped.
+    """
+
+    if turn_signal_dir is None:
         return
+    pulses = sorted(
+        (path.stat().st_mtime_ns, kind, path.name, path)
+        for kind, directory in ((0, turn_signal_dir / "start"), (1, turn_signal_dir))
+        for path in _pending_turn_signals(directory)
+        if path.exists()
+    )
+    legacy: list[Path] = []  # Stop pulses of turns the channel never saw start
     try:
-        await adapter.report_turns(tuple(signal.name for signal in turn_signals))
+        for _mtime, kind, name, path in pulses:
+            if kind == 0:
+                if legacy:
+                    await _report_legacy_ends(adapter, legacy)
+                await adapter.apply_turn_start(name)
+                path.unlink(missing_ok=True)
+            elif adapter.open_turn is None:
+                legacy.append(path)
+            else:
+                await adapter.apply_turn_end()
+                path.unlink(missing_ok=True)
+                await adapter.settle_owed()
+        if legacy:
+            await _report_legacy_ends(adapter, legacy)
     except DaemonRequestRejected as error:
         if error.code == SESSION_SUPERSEDED_CODE:
             # Same fence, same verdict: both lanes go quiet.
@@ -167,9 +194,19 @@ async def _forward_turn_signals(
         )
     except _DAEMON_CONTACT_ERRORS as error:
         _logger.debug("turn report for actor %s failed: %s", adapter.actor, error)
-    else:
-        for signal in turn_signals:
-            signal.unlink(missing_ok=True)
+    if adapter.owed_settle:
+        await adapter.settle_owed()
+
+
+async def _report_legacy_ends(
+    adapter: ClaudeChannelAdapter, pulses: list[Path]
+) -> None:
+    """Stop pulses with no open turn report under their own names (WP7 rule 2)."""
+
+    await adapter.report_turns(tuple(path.name for path in pulses))
+    for path in pulses:
+        path.unlink(missing_ok=True)
+    pulses.clear()
 
 
 async def _run_channel_heartbeat_loop(

@@ -9,6 +9,8 @@ from hyprial.daemon.impl.inbox.contracts.ports  import (
     AcceptCustodyCommand,
     AcknowledgeCompleted,
     AcknowledgeMessageCommand,
+    AdmittedDispatchableCommand,
+    AdmittedPendingCommand,
     CloseInboxCommand,
     DismissSystemNoticeCommand,
     DrainSystemNoticesCommand,
@@ -35,6 +37,8 @@ from hyprial.daemon.impl.inbox.contracts.ports  import (
     SubmitMessageCommand,
     SubmitProgressCommand,
     WakeOutboxRecipientCommand,
+    LinkLedgerUpdated,
+    UpdateLinkLedgerCommand,
 )
 from hyprial.daemon.impl.inbox.tracking.progress  import PROGRESS_INTENT
 from hyprial.daemon.impl.inbox.service.policy  import (
@@ -144,6 +148,7 @@ class DeliveryCustodyLifecycleMixin:
                 )
             else:
                 result = self._service.receive(command.message, now_ms=command.now_ms)
+                self._stage_pending_link_notices()
             version = self._committed_version()
             self._publish(
                 ReceiveCompleted(
@@ -317,13 +322,41 @@ class DeliveryCustodyLifecycleMixin:
                 self._service.receive_progress_event(command.message),
             )
             return
+        if isinstance(command, AdmittedPendingCommand):
+            self._publish_messages(
+                command.correlation_id,
+                "admitted_pending",
+                self._service.admitted_pending(
+                    command.recipient,
+                    now_ms=command.now_ms,
+                    exclude=frozenset(command.exclude),
+                ),
+            )
+            return
+        if isinstance(command, AdmittedDispatchableCommand):
+            self._publish_messages(
+                command.correlation_id,
+                "admitted_dispatchable",
+                self._service.admitted_dispatchable(
+                    command.recipient,
+                    now_ms=command.now_ms,
+                    exclude=frozenset(command.exclude),
+                ),
+            )
+            return
         if isinstance(command, FetchPendingCommand):
             self._publish_messages(
                 command.correlation_id,
                 "fetch_pending",
-                self._service.fetch_pending(
+                self._service.fetch_pending_admitted(
                     command.recipient,
                     now_ms=command.now_ms,
+                    only=(
+                        frozenset(command.only)
+                        if command.only is not None
+                        else None
+                    ),
+                    completed_turn=command.completed_turn,
                 ),
             )
             return
@@ -387,6 +420,18 @@ class DeliveryCustodyLifecycleMixin:
                 CompletionReceiptState.SETTLED
                 if settled
                 else CompletionReceiptState.RETRY,
+            )
+            return
+        if isinstance(command, UpdateLinkLedgerCommand):
+            result = self._service.update_link_ledger(command)
+            version = self._committed_version()
+            self._publish(
+                LinkLedgerUpdated(
+                    correlation_id=command.correlation_id,
+                    generation=self._generation,
+                    version=version,
+                    result=result,
+                )
             )
             return
         if isinstance(command, CloseInboxCommand):

@@ -40,6 +40,7 @@ from dataclasses import dataclass
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from hyprial.daemon.impl.inbox.contracts.api import DeliveryLifecycle, InboxMessage
+from hyprial.daemon.impl.inbox.contracts.summary import summary_from_text
 
 #: Externally observed P95 *completed* turn durations, rounded up to the next
 #: whole minute, used as the no-progress reporting budget per harness.  The
@@ -148,6 +149,7 @@ def _message(
     kind: str,
     key: str,
     text: str,
+    summary: str,
     fields: dict[str, object],
 ) -> InboxMessage:
     nonce = uuid4().hex
@@ -180,6 +182,7 @@ def _message(
         lifecycle=DeliveryLifecycle.DURABLE_SERVICE,
         created_at_ms=identity.observed_at_ms,
         idempotency_key=f"availability-loud:{key}",
+        summary=summary,
     )
 
 
@@ -219,6 +222,9 @@ def unavailable_notice(
         kind=NOTICE_KIND_UNAVAILABLE,
         key=f"unavailable:{identity.attempt_id}:{failure_code}",
         text=text,
+        # A notice is a message too; the derived summary is deterministic on
+        # ``text`` (the nonce lives in the payload), so a retry reuses it.
+        summary=summary_from_text(text),
         fields={
             "failureCode": failure_code,
             "terminal": terminal,
@@ -261,6 +267,7 @@ def no_progress_notice(
         kind=NOTICE_KIND_NO_PROGRESS,
         key=f"no-progress:{identity.attempt_id}:{budget_ms}",
         text=text,
+        summary=summary_from_text(text),
         fields={
             "waitedMs": waited_ms,
             "budgetMs": budget_ms,

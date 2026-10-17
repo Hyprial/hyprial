@@ -28,6 +28,11 @@ from typing import Any
 from hyprial.kernel import route_path
 
 from hyprial.kernel import canonical_agent_uri, short_actor_name
+from hyprial.daemon.impl.links.ports import (
+    TOP_FIELD_CAPACITY_W,
+    TOP_FIELD_INBOUND_AWAITING_INJECTION,
+    TOP_FIELD_OUTBOUND_IN_FLIGHT,
+)
 
 JsonObject = dict[str, Any]
 
@@ -323,6 +328,8 @@ def build_actor_row(
     now_ms: int,
     thresholds: TopThresholds = DEFAULT_THRESHOLDS,
     interactive_turn_stats: InteractiveTurnStats | None = None,
+    inbound_awaiting_injection: int = 0,
+    link_fields: dict[str, int | None] | None = None,
 ) -> JsonObject:
     """Enrich one shared actor-status row for ``top.snapshot``."""
 
@@ -425,6 +432,13 @@ def build_actor_row(
             if oldest_pending_at_ms is not None
             else None
         ),
+        # WP4 provides the inbound-waiting-injection count (B6); the field name
+        # is the ports constant so WP6 renders exactly one key.
+        TOP_FIELD_INBOUND_AWAITING_INJECTION: inbound_awaiting_injection,
+        TOP_FIELD_CAPACITY_W: (link_fields or {}).get(TOP_FIELD_CAPACITY_W),
+        TOP_FIELD_OUTBOUND_IN_FLIGHT: (link_fields or {}).get(
+            TOP_FIELD_OUTBOUND_IN_FLIGHT
+        ),
         "state": state,
     }
     if interactive_claude:
@@ -458,11 +472,14 @@ def build_top_snapshot(
     interactive_turn_stats: dict[str, InteractiveTurnStats] | None = None,
     dispatch_without_pac_count: int = 0,
     dispatch_conversation_count: int = 0,
+    inbound_awaiting_injection: dict[str, int] | None = None,
+    link_fields: dict[str, dict[str, int | None]] | None = None,
 ) -> JsonObject:
     """The full ``top.snapshot`` IPC result."""
 
     statuses = actor_statuses if actor_statuses is not None else connectors
     stats_by_actor = interactive_turn_stats or {}
+    awaiting_by_actor = inbound_awaiting_injection or {}
     actors: list[JsonObject] = []
     for status in statuses:
         status_actor = (
@@ -485,6 +502,8 @@ def build_top_snapshot(
                 now_ms=now_ms,
                 thresholds=thresholds,
                 interactive_turn_stats=stats_by_actor.get(status_actor),
+                inbound_awaiting_injection=awaiting_by_actor.get(status_actor, 0),
+                link_fields=(link_fields or {}).get(status_actor),
             )
         )
     return {

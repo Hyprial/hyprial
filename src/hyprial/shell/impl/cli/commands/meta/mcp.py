@@ -8,6 +8,7 @@ from hyprial.kernel import Logger
 from pathlib import Path
 from hyprial.kernel import ipc_errors
 import os
+from typing import Any
 import typer
 
 from hyprial.shell.impl.cli.commands.common.support import _resolved_agent_cwd
@@ -99,16 +100,35 @@ def mcp_claude_turn_ended(
         return
 
 
+class SessionRefFileProxy:
+    """Sign calls with the sessionRef published after launch (placeholder until then)."""
+
+    def __init__(self, inner: Any, path: Path, placeholder: str) -> None:
+        self._inner, self._path, self._placeholder = inner, path, placeholder
+
+    async def call(self, **kwargs: Any) -> Any:
+        try:
+            kwargs["session_ref"] = self._path.read_text().strip() or self._placeholder
+        except OSError:
+            kwargs["session_ref"] = self._placeholder
+        return await self._inner.call(**kwargs)
+
+
 @mcp_app.command("agent-channel")
 def mcp_agent_channel(
     actor: str = typer.Option(..., "--actor"),
     session_ref: str | None = typer.Option(None, "--session-ref", hidden=True),
+    session_ref_file: Path | None = typer.Option(
+        None, "--session-ref-file", hidden=True, help="Path to a file holding the session ref (managed launch only)."
+    ),
 ) -> None:
     """Run one managed-worker stdio MCP server with a fixed daemon identity."""
     services = get_services()
 
     services.require_initialized_hyprial_home()
     session_ref = session_ref or os.environ.get("HYPRIAL_WORKER_SESSION_REF")
+    if session_ref_file is not None:
+        session_ref = session_ref or "pending"
     if not session_ref:
         raise services.CliError(
             ipc_errors.INVALID_ARGUMENT,
@@ -126,6 +146,8 @@ def mcp_agent_channel(
     async def run() -> None:
         services = get_services()
         proxy = StatelessDaemonProxy(UnixDaemonConnectionFactory(services._socket_path()))
+        if session_ref_file is not None:
+            proxy = SessionRefFileProxy(proxy, session_ref_file, session_ref)  # type: ignore[assignment]
         await serve_worker_stdio(proxy, actor=actor, session_ref=session_ref)
 
     # stdout belongs exclusively to the MCP stdio wire.

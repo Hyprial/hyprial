@@ -6,6 +6,7 @@ from collections.abc import Callable
 from pathlib import Path
 import json
 from hyprial.identity.impl.agents.home.config import normalize_agent_config
+from hyprial.kernel import RESERVED_AGENT_ACTOR_NAMES
 import sqlite3
 import threading
 
@@ -123,13 +124,29 @@ class AgentRegistry(_RegistryConfigBindingMixin, _RegistryLifecycleMixin, _Regis
             )
         return candidate
     def native_actor(self, value: str) -> str:
-        """Validate a public creation name without discarding URI ownership."""
+        """Validate a public creation name without discarding URI ownership.
+
+        README ruling 63: the reserved daemon actor names are refused here, at
+        the single creation gate.  ``link_governed`` exempts these names as
+        sender or recipient on ANY node, so an ordinary agent registered under
+        one would bypass every link constraint.  The check is exact and reads
+        the name before the pattern guard, so ``_turn-hooks`` reports the
+        reserved reason rather than a generic shape error.  Read paths keep
+        using :meth:`normalize_actor`, so a legacy persisted row stays
+        resolvable and destroyable.
+        """
 
         parsed = _uri().parse_agent_uri(value)
         if parsed is not None and (parsed[0] != self.owner or parsed[1] != self.machine):
             raise InvalidAgentNameError(
                 f"cannot create foreign agent {value!r} on {self.owner}@{self.machine}; "
                 "hosting requires transfer receive"
+            )
+        raw_name = parsed[2] if parsed is not None else value
+        if raw_name in RESERVED_AGENT_ACTOR_NAMES:
+            raise InvalidAgentNameError(
+                f"agent name {raw_name!r} is reserved for a daemon internal "
+                "actor and cannot be registered"
             )
         candidate = self.normalize_actor(value)
         if _uri().is_identity_id_segment(candidate.lower()):

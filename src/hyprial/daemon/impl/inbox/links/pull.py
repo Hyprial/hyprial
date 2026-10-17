@@ -7,7 +7,7 @@ information** about what happened to the message -- the same value has been
 observed on a delivery that provably landed and on one that provably vanished.
 
 The fix is not a better return value; a send-time answer cannot know a fact
-that has not happened yet.  Instead every message ends in exactly one of two
+that has not happened yet.  Instead every message ends in exactly one of three
 **persisted** terminal states, written by whoever observed the outcome:
 
 ``fetched``
@@ -22,6 +22,14 @@ that has not happened yet.  Instead every message ends in exactly one of two
     inside the same transaction that removes the held row. Capacity and other
     non-TTL deletion paths remain explicitly scoped to PR 4; they are not
     relabelled as TTL.
+
+``refused``
+    The receiving daemon's ingress boundary refused the message because its
+    local orgfs copy holds no link file for the sender at all (WP4 §4.6).
+    Written by the recipient inside the transaction that records the refusal,
+    with no inbox row and no signed receipt.  Unlike the other two it can be
+    superseded: once the sender joins the org space, a retry is accepted and
+    the record upgrades to ``fetched``.
 
 Both are queryable **after the fact** over ``msg/status/<sender>``: a sender is
 routinely offline at the moment its message reaches a terminal state, so a
@@ -46,7 +54,7 @@ from functools import wraps
 from typing import Any, TypeVar
 
 from hyprial.daemon.impl.transport import KeySpace, Registration, TransportSession
-from hyprial.kernel import parse_agent_uri
+from hyprial.kernel import ipc_errors, parse_agent_uri
 
 STATUS_FRAME_SCHEMA = "hyprial-delivery-status/v1"
 
@@ -62,17 +70,28 @@ DEFAULT_STATUS_RETENTION_MS = 7 * 86_400_000
 
 
 class TerminalState(StrEnum):
-    """The only two ways a message may end.  Both are persisted."""
+    """The only three ways a message may end.  All are persisted.
+
+    ``refused`` is written only by the receiving daemon's ingress boundary and
+    only means the local orgfs copy holds no link file for the sender at all
+    (§4.6, WP4).  It is the one terminal state a later retry can supersede:
+    once the sender joins the org space the same message id is accepted, and
+    the record upgrades to ``fetched`` (review B4 / wp4 §2.5).
+    """
 
     FETCHED = "fetched"
     EXPIRED = "expired"
+    REFUSED = "refused"
 
 
 class HoldReason(StrEnum):
-    """Why a terminal record was written.  Narrows the two states."""
+    """Why a terminal record was written.  Narrows the states."""
 
     ACK_RECEIVED = "ACK_RECEIVED"
     TTL_EXPIRED = "TTL_EXPIRED"
+    #: Ingress refusal: the sender has no link file in the local orgfs copy.
+    #: Value equals ``ipc_errors.LINK_UNKNOWN`` on purpose (wp4 §2.5).
+    LINK_UNKNOWN = ipc_errors.LINK_UNKNOWN
     # TODO(PR 4): capacity becomes a pre-admission refusal, never an outcome.
     HOLD_CAPACITY_EXCEEDED = "HOLD_CAPACITY_EXCEEDED"
 
@@ -201,14 +220,17 @@ def _precedence(record: DeliveryStatus) -> tuple[int, int]:
 
     Three tiers, strongest first:
 
-    2. ``fetched`` observed by the recipient (legacy commit reasons or a
+    3. ``fetched`` observed by the recipient (legacy commit reasons or a
        canonical ``ACK_RECEIVED`` held by the recipient node) -- the message is
        in its inbox, committed in
        the same transaction as the record.
-    1. ``fetched`` mirrored by a holder off a receipt -- true only if the
+    2. ``fetched`` mirrored by a holder off a receipt -- true only if the
        receipt leg told the truth, and that leg is defect #4.  An unrecognised
        reason lands here too: ``reason`` is a free-form string, and an unknown
        claim must never be promoted to first-hand evidence.
+    1. ``refused`` observed by the recipient at ingress -- the message is NOT
+       in its inbox, but a later retry can still be accepted, so a landed
+       ``fetched`` and a mirrored ``fetched`` both outrank it (wp4 §2.5).
     0. ``expired`` -- the holder observed only the *absence* of a receipt.
 
     The second element is a deterministic tie-break **within** a tier, not
@@ -225,7 +247,9 @@ def _precedence(record: DeliveryStatus) -> tuple[int, int]:
             and record.holder.casefold() == parsed[1].casefold()
         )
         if recipient_observed:
-            return (2, -record.recorded_at_ms)
+            return (3, -record.recorded_at_ms)
+        return (2, -record.recorded_at_ms)
+    if record.state is TerminalState.REFUSED:
         return (1, -record.recorded_at_ms)
     return (0, record.recorded_at_ms)
 
@@ -357,7 +381,14 @@ class DeliveryStatusStore:
                    reason = excluded.reason,
                    recorded_at_ms = excluded.recorded_at_ms,
                    purge_after_ms = excluded.purge_after_ms
-               WHERE delivery_status.state = ? AND excluded.state = ?""",
+               WHERE (CASE delivery_status.state
+                          WHEN 'expired' THEN 0
+                          WHEN 'refused' THEN 1
+                          ELSE 2 END)
+                     < (CASE excluded.state
+                            WHEN 'expired' THEN 0
+                            WHEN 'refused' THEN 1
+                            ELSE 2 END)""",
             (
                 message_id,
                 sender,
@@ -369,8 +400,6 @@ class DeliveryStatusStore:
                 idempotency_key,
                 now_ms,
                 now_ms + self.retention_ms,
-                TerminalState.EXPIRED.value,
-                TerminalState.FETCHED.value,
             ),
         )
         return DeliveryStatus(

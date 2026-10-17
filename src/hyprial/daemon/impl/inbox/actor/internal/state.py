@@ -49,6 +49,24 @@ class _ActorOwnedInboxService(InboxService):
         self._failure_sink = failure_sink
         options = dict(service_options or {})
         options.pop("alarm_human_delivery", None)
+        # The production inbox actor is a context-entry authority: with no
+        # injected slot it holds agent-to-agent dispatch until WP2 binds the
+        # real gate (wp4 §2.2).  A raw ``InboxService`` built by tests keeps the
+        # permissive default so the state machine stays usable in isolation;
+        # it never injects into an agent's context.
+        if "link_admission" not in options:
+            from hyprial.daemon.impl.dispatch.admission import LinkAdmission
+
+            logger = options.get("logger")
+            options["link_admission"] = LinkAdmission(
+                logger=(
+                    (lambda level, component, event, **fields: logger.log(
+                        level, event, **fields
+                    ))
+                    if logger is not None
+                    else None
+                )
+            )
         super().__init__(
             database,
             _NoStateActorIo(),

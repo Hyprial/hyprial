@@ -161,6 +161,11 @@ from hyprial.kernel.impl.contracts.ports import (
     PortCommandRejected,
     RequestPortError,
 )
+from hyprial.kernel.impl.contracts.reserved_actors import (
+    DISPATCH_SERVICE_ACTOR_NAME,
+    RESERVED_AGENT_ACTOR_NAMES,
+    TURN_HOOKS_ACTOR_NAME,
+)
 from hyprial.kernel.impl.facts.capabilities import (
     Capability,
     SupportLevel,
@@ -332,6 +337,7 @@ __all__ = [
     "DEFAULT_PEER_PORT",
     "DEFAULT_POLICIES",
     "delivery_address_error",
+    "DISPATCH_SERVICE_ACTOR_NAME",
     "is_agent_id_segment",
     "is_device_id_segment",
     "is_identity_id_segment",
@@ -445,6 +451,7 @@ __all__ = [
     "redact",
     "reply_message_id",
     "require_initialized_hyprial_home",
+    "RESERVED_AGENT_ACTOR_NAMES",
     "resolve_hostname",
     "route_path",
     "ROUTE_URI_PREFIX",
@@ -472,6 +479,7 @@ __all__ = [
     "tier_for_model",
     "TIERS",
     "TURN_HOOK_CLOSE_TIMEOUT_SECONDS",
+    "TURN_HOOKS_ACTOR_NAME",
     "turn_event_payload",
     "usage_refreshed_payload",
     "unlock",

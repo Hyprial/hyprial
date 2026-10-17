@@ -186,6 +186,16 @@ def _top_state_label(row: JsonObject, now_ms: int) -> str:
     return "ok"
 
 
+def _format_top_link_count(value: object) -> str:
+    """A link counter cell: a real int, or the em dash placeholder.
+
+    ``bool`` is an ``int`` subclass but never a window count, and a string
+    ``"6"`` is not a reading -- both render as the dash rather than raising.
+    """
+
+    return str(value) if type(value) is int else "\u2014"
+
+
 def _render_top(
     payload: JsonObject,
     *,
@@ -193,6 +203,14 @@ def _render_top(
     sampler: Callable[[], dict[int, tuple[int, float, int, float, float]]]
     | None = None,
 ) -> str:
+    # Imported lazily: ``hyprial.daemon`` resolves its facade on first access,
+    # and the shell must not pay for it while composing the CLI.
+    from hyprial.daemon import (
+        TOP_FIELD_CAPACITY_W,
+        TOP_FIELD_INBOUND_AWAITING_INJECTION,
+        TOP_FIELD_OUTBOUND_IN_FLIGHT,
+    )
+
     services = get_services()
     daemon = payload.get("daemon")
     daemon = daemon if isinstance(daemon, dict) else {}
@@ -211,7 +229,19 @@ def _render_top(
     headers = ["ACTOR", "RT", "PID"]
     if wide:
         headers.append("CPU%")
-    headers += ["RSS", "CPUTIME", "UPTIME", "TURNS", "AVG5", "IDLE", "Q", "STATE"]
+    headers += [
+        "RSS",
+        "CPUTIME",
+        "UPTIME",
+        "TURNS",
+        "AVG5",
+        "IDLE",
+        "Q",
+        "W",
+        "OUT",
+        "INJQ",
+        "STATE",
+    ]
     rows: list[list[str]] = []
     for row in actors:
         pid = row.get("pid")
@@ -252,6 +282,9 @@ def _render_top(
             _format_top_age(avg5),
             _format_top_age(idle_ms),
             str(row.get("pendingCount", 0)),
+            _format_top_link_count(row.get(TOP_FIELD_CAPACITY_W)),
+            _format_top_link_count(row.get(TOP_FIELD_OUTBOUND_IN_FLIGHT)),
+            _format_top_link_count(row.get(TOP_FIELD_INBOUND_AWAITING_INJECTION)),
             _top_state_label(row, now_ms),
         ]
         rows.append(cells)
@@ -428,6 +461,10 @@ def top_status(
     session registers or its next Stop pulse arrives; relaunch for a known zero.
     Queue fields always come from the durable inbox and are independent of turn
     reporting.
+    ``W`` (``capacityW``), ``OUT`` (``outboundInFlight``) and ``INJQ``
+    (``inboundAwaitingInjection``) are the send-link window readings supplied by
+    the daemon (WP2 provides the first two, WP4 the third); a field the daemon
+    does not send renders as an em dash, never as a recomputed or zero value.
     """
     services = get_services()
 

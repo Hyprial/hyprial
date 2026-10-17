@@ -15,6 +15,8 @@ from hyprial.kernel import Logger
 from hyprial.kernel import ipc_errors
 from hyprial.kernel import DaemonRequestError
 
+from hyprial.daemon.impl.inbox.contracts.summary import summary_from_text
+
 from hyprial.daemon.impl.adapters.lark.contracts.wire import (
     MAX_RUNTIME_TARGET_ITEM_BYTES,
     AgentDirectoryEntry,
@@ -102,6 +104,7 @@ class _Harness:
                 "actor": request.from_actor_id,
                 "to": [request.to.actor_id],
                 "message": request.text,
+                "summary": summary_from_text(request.text),
                 "conversationId": request.conversation_id,
                 "providerMetadata": dict(request.provider_metadata),
                 "idempotencyKey": operation_id,

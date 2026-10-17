@@ -85,6 +85,7 @@ class _RoutinesMixin:
                 target=target,
                 conversation_id=conversation_id,
                 text=text,
+                summary=io.derive_summary(text),
             )
         except Exception as error:  # noqa: BLE001 - reported as a dispatch failure
             self._log(

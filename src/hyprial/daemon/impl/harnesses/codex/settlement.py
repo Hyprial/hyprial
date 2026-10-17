@@ -7,9 +7,10 @@ import time
 
 from hyprial.kernel import capped_exponential
 from hyprial.kernel import PortAdmission
-from hyprial.kernel import reply_message_id
 from hyprial.daemon.impl.api import HarnessDelivery
 
+from hyprial.daemon.impl.harnesses.carrier.codex_carrier_support import HintPort
+from hyprial.daemon.impl.harnesses.carrier.contract import settle_injected
 from hyprial.daemon.impl.harnesses.carrier.interactive_carrier_runtime  import (
     FINAL_OBSERVED,
     TURN_STARTED,
@@ -17,6 +18,7 @@ from hyprial.daemon.impl.harnesses.carrier.interactive_carrier_runtime  import (
     CarrierCommand,
     CarrierFetched,
     CarrierFinalObserved,
+    CarrierKept,
     CarrierLogRequested,
     CarrierReconcileError,
     CarrierRemoved,
@@ -118,6 +120,7 @@ class _CarrierSettlementMixin:
                         )
                     )
                 elif turn.get("status") in {"failed", "interrupted"}:
+                    self._report_turn_ended(state.turn_id, "failed", state.delivery.delivery_id)
                     self._log(
                         "error",
                         "worker.carrier.error",
@@ -160,62 +163,46 @@ class _CarrierSettlementMixin:
                     )
 
         def _settle_final(self, state: CarrierDeliverySnapshot) -> None:
+            """Report the turn's end, then do exactly what the daemon's hint says.
+
+            Never answers on the model's behalf: ``ack`` acks, ``keep`` does
+            nothing but remember the id.  An unconfirmed turn report does not
+            block settlement; it is retried from the journal.
+            """
+
             message_id = state.delivery.delivery_id
-            if state.intent in {"reply", "event"}:
-                method = "message.ack"
-                params = self._signed({"messageId": message_id})
-            else:
-                method = "message.reply"
-                params = self._signed(
-                    {"messageId": message_id, "message": state.final_output}
-                )
-            try:
-                result = self.daemon_request(method, params)
-            except ipc_errors.TransientDaemonError as error:
-                # Daemon down / restoring / timed out: the target's fate is
-                # unknown, so this must stay a retry and never a terminal call.
-                self._defer_settlement(state, method=method, error=str(error))
-                return
-            except Exception as error:  # noqa: BLE001 - settlement is retried
-                if getattr(error, "code", None) == ipc_errors.MESSAGE_REPLY_UNAVAILABLE:
-                    self._settle_reply_unavailable(state, error=error)
-                    return
-                self._defer_settlement(state, method=method, error=str(error))
-                return
-            acknowledged = result.get("acknowledged") is True
-            replied = method == "message.ack" or result.get("replied") is True
-            if (
-                method == "message.ack"
-                and not acknowledged
-                and result.get("code") == ipc_errors.MESSAGE_ACK_UNAVAILABLE
-            ):
+            if state.turn_id is not None:
+                self._report_turn_ended(state.turn_id, "completed", message_id)
+            port = HintPort(self.daemon_request, self._signed, self._daemon_error_code)
+            outcome = settle_injected(port, [message_id])
+            if outcome.acked:
+                self._settle_confirmed(state)
+            elif outcome.kept:
+                self._settle_kept(state)
+            elif message_id in port.ack_unavailable:
                 self._settle_ack_unavailable(state)
-                return
-            if (
-                method == "message.reply"
-                and replied
-                and not acknowledged
-                and result.get("code") == ipc_errors.MESSAGE_ACK_UNAVAILABLE
-            ):
-                # The reply was durably queued but another path consumed the
-                # inbound row between the reply and its ack: settled.
-                self._settle_elsewhere(
-                    state,
-                    method=method,
-                    event="worker.carrier.settlement.superseded",
-                    code=ipc_errors.MESSAGE_ACK_UNAVAILABLE,
-                    replied=True,
-                )
-                return
-            if not (replied and acknowledged):
+            else:
                 self._defer_settlement(
                     state,
-                    method=method,
-                    error="daemon did not confirm durable settlement",
-                    result=result,
+                    method="message.settle_hint",
+                    error=port.errors.get(message_id, "settlement not confirmed"),
                 )
-                return
-            self._settle_confirmed(state)
+
+        def _settle_kept(self, state: CarrierDeliverySnapshot) -> None:
+            message_id = state.delivery.delivery_id
+            self._carrier_settled_pending.add(message_id)
+            self._submit_carrier_fact(
+                CarrierKept(generation=state.generation, delivery_id=message_id)
+            )
+            self._log("info", "worker.carrier.settlement.kept", state=state)
+            with self._carrier_io_lock:
+                self._carrier_clients.pop(message_id, None)
+
+        def _report_turn_ended(self, turn_id: str, status: str, delivery_id: str) -> None:
+            if turn_id not in self._carrier_reported_ended:
+                self._turn_reports.record(turn_id, "ended", status, delivery_id)
+                self._carrier_reported_ended.add(turn_id)
+            self._turn_reports.flush()
 
         def _settle_ack_unavailable(self, state: CarrierDeliverySnapshot) -> None:
             """Require durable delivery evidence before terminalising an ack miss."""
@@ -248,90 +235,6 @@ class _CarrierSettlementMixin:
                 deliveryStatus=status_state,
             )
 
-        def _settle_reply_unavailable(
-            self, state: CarrierDeliverySnapshot, *, error: Exception
-        ) -> None:
-            """Classify MESSAGE_REPLY_UNAVAILABLE with wire facts, not text.
-    
-            The code alone cannot tell "the pending row is gone" from "the row
-            exists but its reply path is unavailable", so the judgment reads two
-            further facts: whether a reply with the deterministic reply id was
-            delivered, and whether the original row is still pending.
-            """
-    
-            message_id = state.delivery.delivery_id
-            reply_id = reply_message_id(message_id)
-            try:
-                status = self.daemon_request(
-                    "message.status", self._signed({"messageId": reply_id})
-                )
-            except Exception as status_error:  # noqa: BLE001 - classify only with a reading
-                self._defer_settlement(
-                    state,
-                    method="message.reply",
-                    error=f"{error}; reply status unavailable: {status_error}",
-                )
-                return
-            reply_state = str(status.get("state") or "unknown")
-            if reply_state == "fetched":
-                # A reply to this message was durably delivered -- the model
-                # answered it inside its own turn.  Verified settled elsewhere.
-                self._settle_elsewhere(
-                    state,
-                    method="message.reply",
-                    event="worker.carrier.settlement.superseded",
-                    code=ipc_errors.MESSAGE_REPLY_UNAVAILABLE,
-                    replyMessageId=reply_id,
-                    replyStatus=reply_state,
-                )
-                return
-            if reply_state == "pending":
-                self._defer_settlement(
-                    state,
-                    method="message.reply",
-                    error=f"{error}; reply delivery still pending",
-                )
-                return
-            try:
-                # Observation-only listing (no fetched flag: that would commit
-                # custody).  Consumed=0 rows appear here whether fetched or not.
-                pending = self.daemon_request(
-                    "message.pending.list", self._signed()
-                ).get("messages", [])
-            except Exception as pending_error:  # noqa: BLE001 - classify only with a reading
-                self._defer_settlement(
-                    state,
-                    method="message.reply",
-                    error=f"{error}; pending probe unavailable: {pending_error}",
-                )
-                return
-            still_pending = any(
-                isinstance(item, dict) and item.get("messageId") == message_id
-                for item in (pending if isinstance(pending, list) else [])
-            )
-            if still_pending:
-                # The row exists; the refusal is about the reply path (a channel
-                # sender without a reply bridge, an unconfigured adapter).  Keep
-                # the final and keep retrying.
-                self._defer_settlement(
-                    state,
-                    method="message.reply",
-                    error=str(error),
-                )
-                return
-            # The request is gone and no delivery record exists for any reply to
-            # it: the final has no reachable target left.  Terminal, but loudly
-            # -- the requester, as far as this node can see, never got an answer.
-            self._settle_elsewhere(
-                state,
-                method="message.reply",
-                event="worker.carrier.settlement.reply_lost",
-                level="error",
-                code=ipc_errors.MESSAGE_REPLY_UNAVAILABLE,
-                replyMessageId=reply_id,
-                replyStatus=reply_state,
-            )
-
         def _settle_elsewhere(
             self,
             state: CarrierDeliverySnapshot,
@@ -342,9 +245,6 @@ class _CarrierSettlementMixin:
             level: str = "warn",
             **fields: object,
         ) -> None:
-            # Uniform schema on every terminal settlement event: reply facts
-            # default to None on the ack path, where no reply is owed.
-            merged = {"replyMessageId": None, "replyStatus": None, **fields}
             self._log(
                 level,
                 event,
@@ -352,7 +252,7 @@ class _CarrierSettlementMixin:
                 stage=method,
                 daemonCode=code,
                 attempts=state.settlement_attempts,
-                **merged,
+                **fields,
             )
             self._settle_confirmed(state)
 
@@ -409,7 +309,6 @@ class _CarrierSettlementMixin:
                 error=error or "unknown settlement error",
                 **(
                     {
-                        "replied": result.get("replied"),
                         "acknowledged": result.get("acknowledged"),
                         "queued": result.get("queued"),
                     }
@@ -541,6 +440,7 @@ class _CarrierSettlementMixin:
                 if (
                     stored.state != "FETCHED"
                     or not stored.delivery.message
+                    or stored.injection_format is None
                     or message_id in known
                     or message_id in relayed
                 ):

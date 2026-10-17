@@ -1,4 +1,4 @@
-"""Cross-module executor for the frozen 27-case wire contract.
+"""Cross-module executor for the frozen 35-case wire contract.
 
 This is intentionally a scenario adapter, not a second implementation of the
 protocol.  Envelope fixtures are consumed directly as JSON (2026-08-25 IRC
@@ -31,13 +31,24 @@ from pathlib import Path
 from typing import Any
 
 from hyprial.kernel import ipc_errors
+from hyprial.daemon.impl.application.messaging.inbox_surface.link_send import (
+    _LinkSendMixin,
+)
+from hyprial.daemon.impl.application.messaging.inbox_surface.queries import (
+    _MessageQueriesMixin,
+)
+from hyprial.daemon.impl.application.messaging.visibility import _MessageCaller
 from hyprial.daemon.impl.inbox import (
     DeliveryLifecycle,
     InboxMessage,
     InboxService,
     MemoryDeliveryTransport,
 )
+from hyprial.daemon.impl.dispatch.admission import LinkAdmission
+from hyprial.daemon.impl.inbox.contracts.settlement import settle_hint_for
+from hyprial.daemon.impl.inbox.contracts.summary import check_summary
 from hyprial.kernel import ADAPTER_URI_PREFIX, CHANNEL_URI_PREFIX
+from hyprial.kernel import DaemonRequestError
 
 JsonObject = dict[str, Any]
 
@@ -112,11 +123,13 @@ class _Stack(AbstractContextManager["_Stack"]):
         transport: MemoryDeliveryTransport | None = None,
         *,
         max_inbox_items: int = 10_000,
+        link_admission: LinkAdmission | None = None,
     ) -> InboxService:
         service = InboxService(
             self.root / f"{name}.sqlite3",
             transport or MemoryDeliveryTransport(),
             max_inbox_items=max_inbox_items,
+            link_admission=link_admission,
         )
         self._services.append(service)
         return service
@@ -159,6 +172,7 @@ def _message(
     was IRC-only and never production-reachable)."""
 
     recipient = _target(envelope, target_index)
+    summary = envelope.get("summary")
     message = InboxMessage(
         message_id=str(envelope["messageId"]),
         conversation_id=str(envelope["conversationId"]),
@@ -169,6 +183,10 @@ def _message(
         lifecycle=lifecycle or _lifecycle(None, recipient),
         idempotency_key=envelope.get("idempotencyKey"),
         created_at_ms=int(envelope.get("timestamp", 0)),
+        # Additive (ruling 40): a fixture without ``summary`` keeps
+        # ``summary=None`` and the golden bytes are unchanged; the hard cut to
+        # require one on the wire lands with WP8's new fixtures.
+        summary=summary if isinstance(summary, str) else None,
     )
     return message, envelope
 
@@ -176,6 +194,75 @@ def _message(
 def _text(envelope: JsonObject) -> str:
     content = envelope.get("content")
     return str(content.get("text", "")) if isinstance(content, dict) else ""
+
+
+class _DenyIngressGate:
+    """A gate that says the sender has no link file (WG-037, WP4 §4.6)."""
+    def sender_known(self, *, recipient: str, sender: str) -> bool:
+        return False
+
+    def admit_dispatch(self, *, recipient: str, sender: str, message_id: str,
+                       now_ms: int, intent: str = "request",
+                       reply_to: str | None = None) -> bool:
+        return False
+
+    def admit_send(self, *, sender: str, target: str, intent: str,
+                   reply_to: str | None, now_ms: int):  # type: ignore[no-untyped-def]
+        raise AssertionError("WG-037 never asks admit_send")
+
+    def settle_hint(self, *, actor: str, message_id: str) -> str:
+        return "keep"
+
+
+class _AllowGate(_DenyIngressGate):
+    """A gate that admits everything (WG-033 reads an admitted row)."""
+
+    def sender_known(self, *, recipient: str, sender: str) -> bool:
+        return True
+
+    def admit_dispatch(self, *, recipient: str, sender: str, message_id: str,
+                       now_ms: int, intent: str = "request",
+                       reply_to: str | None = None) -> bool:
+        return True
+
+    def admit_send(self, *, sender: str, target: str, intent: str,
+                   reply_to: str | None, now_ms: int):  # type: ignore[no-untyped-def]
+        from hyprial.daemon.impl.links.ports import Allow
+
+        return Allow()
+
+
+class _SurfaceHost(_MessageQueriesMixin):
+    """The real inbox-surface readers over one real ``InboxService``.
+
+    WG-032/033 cross the product handlers rather than re-deriving their
+    output: ``_ipc_message_pending_list`` builds the pending row (C07) and
+    ``_ipc_message_read_body`` raises the frozen error code (C04).  Only the
+    identity fence is replaced (the corpus never authenticates); the pinned
+    values are product-constructed.
+    """
+
+    def __init__(self, inbox: InboxService, admission: LinkAdmission | None = None) -> None:
+        self._inbox = inbox
+        self.link_admission = admission or LinkAdmission()
+        self.epoch = "wire-contract"
+        self._fetch_receipt_publisher = None
+
+    def _log(self, *_: object, **__: object) -> None:
+        """The golden runner has no daemon logger."""
+
+    def _authenticated_message_caller(
+        self, params: JsonObject, *, method: str, trusted_origin: str | None = None,
+    ) -> _MessageCaller:
+        """A daemon-owned caller bound to the actor under test."""
+
+        claim = str(params.get("actor") or params.get("from"))
+        return _MessageCaller(claim, claim, "session")
+
+    def pending_rows(self, actor: str) -> list[JsonObject]:  # C07 rows
+        answer = self._ipc_message_pending_list(
+            "message.pending.list", {"actor": actor, "sessionRef": "wire-session"})
+        return list(answer["messages"])
 
 
 class _WireEvaluator:
@@ -215,7 +302,7 @@ class _WireEvaluator:
         return {
             "accepted": submitted.accepted,
             "wake": received.wake,
-            "autoReply": received.auto_reply,
+            "replyOwed": received.reply_owed,
             "receiptFields": list(receipt),
         }
 
@@ -227,7 +314,7 @@ class _WireEvaluator:
             "replyTo": decoded["replyTo"],
             "conversationId": decoded["conversationId"],
             "wake": result.wake,
-            "autoReply": result.auto_reply,
+            "replyOwed": result.reply_owed,
         }
 
     def _WG_003(self, fixtures: list[JsonObject], context: JsonObject) -> JsonObject:
@@ -249,7 +336,7 @@ class _WireEvaluator:
         message, _ = _message(fixtures[0])
         with _Stack() as stack:
             result = stack.service("recipient").receive(message, now_ms=0)
-        return {"wake": result.wake, "autoReply": result.auto_reply}
+        return {"wake": result.wake, "replyOwed": result.reply_owed}
 
     def _WG_005(self, fixtures: list[JsonObject], context: JsonObject) -> JsonObject:
         message, _ = _message(fixtures[0])
@@ -257,7 +344,7 @@ class _WireEvaluator:
             inbox = stack.service("recipient")
             result = inbox.receive(message, now_ms=0)
             recorded = inbox.pending_count(message.recipient) == 1
-        return {"record": recorded, "wake": result.wake, "autoReply": result.auto_reply}
+        return {"record": recorded, "wake": result.wake, "replyOwed": result.reply_owed}
 
     def _WG_006(self, fixtures: list[JsonObject], context: JsonObject) -> JsonObject:
         envelope = fixtures[0]
@@ -577,6 +664,133 @@ class _WireEvaluator:
                 "agent:alice:mac:sender", message_id
             )
         return {"acknowledged": result.acknowledged, "code": result.code}
+
+    def _WG_030(self, fixtures: list[JsonObject], context: JsonObject) -> JsonObject:
+        message, _ = _message(fixtures[0])
+        accepted, code = True, None
+        try:
+            check_summary(message.summary, required=True)
+        except DaemonRequestError as error:
+            accepted, code = False, error.code
+        with _Stack() as stack:
+            inbox = stack.service("recipient")
+            outbox = inbox.outbox_count()
+            pending = inbox.pending_count(message.recipient)
+        return {
+            "accepted": accepted,
+            "code": code,
+            "outboxRows": outbox,
+            "inboxRows": pending,
+        }
+
+    def _WG_031(self, fixtures: list[JsonObject], context: JsonObject) -> JsonObject:
+        message, _ = _message(fixtures[0])
+        try:
+            check_summary(message.summary, required=True)
+        except DaemonRequestError as error:
+            return {"accepted": False, "code": error.code, "data": error.data}
+        raise AssertionError("a 513-byte summary must be refused")
+
+    def _WG_032(self, fixtures: list[JsonObject], context: JsonObject) -> JsonObject:
+        message, _ = _message(fixtures[0])
+        admission = LinkAdmission()
+        admission.bind(_AllowGate())
+        with _Stack() as stack:
+            inbox = stack.service("recipient", link_admission=admission)
+            inbox.receive(message)
+            rows = _SurfaceHost(inbox, admission).pending_rows(message.recipient)
+        assert rows, "the pending reader returned no row for a received message"
+        row = rows[0]
+        return {
+            "rowKeys": list(row),
+            "hasBody": "message" in row or "topic" in row,
+            "summary": row["summary"],
+        }
+
+    def _WG_033(self, fixtures: list[JsonObject], context: JsonObject) -> JsonObject:
+        message, decoded = _message(fixtures[0])
+        admission = LinkAdmission()
+        admission.bind(_AllowGate())
+        with _Stack() as stack:
+            inbox = stack.service("recipient", link_admission=admission)
+            inbox.receive(message)
+            host = _SurfaceHost(inbox, admission)
+            params: JsonObject = {"actor": message.recipient, "messageId": message.message_id,
+                                 "sessionRef": "wire-session"}
+            body = host._ipc_message_read_body("message.read_body", params)
+            fetched = bool(body["fetched"])
+            still_pending = any(
+                row["messageId"] == message.message_id
+                for row in host.pending_rows(message.recipient)
+            )
+            try:
+                host._ipc_message_read_body(
+                    "message.read_body",
+                    {**params, "messageId": "msg-not-in-this-inbox"},
+                )
+                unavailable = None
+            except DaemonRequestError as error:
+                unavailable = error.code
+        try:
+            body_payload = json.loads(str(body["message"]))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            body_payload = None
+        return {
+            "bodyMatchesEnvelope": body_payload == decoded,
+            "fetched": fetched,
+            "pendingAfter": still_pending,
+            "unavailableCode": unavailable,
+        }
+
+    def _WG_034(self, fixtures: list[JsonObject], context: JsonObject) -> JsonObject:
+        message, _ = _message(fixtures[0])
+        actor = message.recipient
+        pending = settle_hint_for(
+            pending=message, gate=None, actor=actor,
+            message_id=message.message_id)
+        after_reply = settle_hint_for(
+            pending=None, gate=None, actor=actor,
+            message_id=message.message_id)
+        return {"pendingRequest": pending, "afterReply": after_reply}
+
+    def _WG_035(self, fixtures: list[JsonObject], context: JsonObject) -> JsonObject:
+        reply, _ = _message(fixtures[0])
+        event, _ = _message(fixtures[1])
+        return {
+            "reply": settle_hint_for(
+                pending=reply, gate=None, actor=reply.recipient,
+                message_id=reply.message_id),
+            "event": settle_hint_for(
+                pending=event, gate=None, actor=event.recipient,
+                message_id=event.message_id),
+        }
+
+    def _WG_036(self, fixtures: list[JsonObject], context: JsonObject) -> JsonObject:
+        _, decoded = _message(fixtures[0])
+        # The real validator the ``message.send`` boundary calls (ruling 39):
+        # never a second copy of the rule.
+        reply_to = _LinkSendMixin._link_reply_to_param(decoded.get("replyTo"))
+        try:
+            _LinkSendMixin._link_reply_to_param("")
+            empty = None
+        except DaemonRequestError as error:
+            empty = error.code
+        return {"replyTo": reply_to, "emptyReplyTo": empty}
+
+    def _WG_037(self, fixtures: list[JsonObject], context: JsonObject) -> JsonObject:
+        message, _ = _message(fixtures[0])
+        admission = LinkAdmission()
+        admission.bind(_DenyIngressGate())
+        with _Stack() as stack:
+            inbox = stack.service("ingress", link_admission=admission)
+            result = inbox.receive(message, now_ms=0)
+            state = inbox.consumption_state(message.message_id)
+        return {
+            "accepted": result.accepted,
+            "code": result.code,
+            "state": state.value,
+        }
+
 
 def evaluate_case(case: JsonObject, envelopes: dict[str, JsonObject]) -> JsonObject:
     """Execute one declared case without consulting its expected output."""

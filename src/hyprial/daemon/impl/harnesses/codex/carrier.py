@@ -20,6 +20,11 @@ from hyprial.daemon.impl.api import HarnessDelivery, HarnessResultStatus
 from hyprial.kernel import Logger
 
 from hyprial.daemon.impl.harnesses.carrier.codex_carrier_store  import CodexCarrierStore
+from hyprial.daemon.impl.harnesses.carrier.codex_carrier_support import TurnReportRelay
+from hyprial.daemon.impl.harnesses.carrier.contract import (
+    injection_from_row,
+    render_injection,
+)
 from hyprial.daemon.impl.harnesses.carrier.interactive_carrier_runtime  import (
     FETCHED,
     FINAL_OBSERVED,
@@ -249,6 +254,10 @@ class CodexInteractiveCarrier(_CarrierSettlementMixin):
             # work after a process restart.
             self._carrier_enqueued: set[tuple[str, int, int]] = set()
             self._carrier_settled_pending: set[str] = set()
+            # Turn ids whose ended report was journaled by this process; the
+            # journal's primary key makes a repeat harmless, this avoids
+            # re-adding a row the daemon already confirmed.
+            self._carrier_reported_ended: set[str] = set()
             self._thread = threading.Thread(
                 target=self._poll_main,
                 name=f"hyprial-codex-interactive-carrier-{session_ref[:8]}",
@@ -271,6 +280,16 @@ class CodexInteractiveCarrier(_CarrierSettlementMixin):
                 store=self._store,
             )
             self._carrier_fact_capacity = self._carrier_runtime.capacity
+            self._turn_reports = TurnReportRelay(
+                self._store,
+                actor=actor,
+                session_ref=session_ref,
+                request=self.daemon_request,
+                signed=self._signed,
+                code_of=self._daemon_error_code,
+                retry_seconds=self.settlement_retry_seconds,
+                log=lambda level, event, **fields: self._log(level, event, **fields),
+            )
 
         @property
         def running(self) -> bool:
@@ -340,6 +359,7 @@ class CodexInteractiveCarrier(_CarrierSettlementMixin):
             # Drain it on every step, not only after the next list: otherwise a
             # woken message waits a whole poll interval to start its turn.
             self._drain_carrier_effects()
+            self._turn_reports.flush()
             self._inbox_watch.poll_interval_ms = max(
                 1, int(self.poll_seconds * 1000)
             )
@@ -488,10 +508,7 @@ class CodexInteractiveCarrier(_CarrierSettlementMixin):
         def _list_may_hold(self, response: Mapping[str, object]) -> bool:
             if not self._inbox_hold_allowed():
                 return False
-            known = {
-                state.delivery.delivery_id
-                for state in self._carrier_runtime.snapshots()
-            }
+            known = self._known_ids()
             rows = response.get("messages", ())
             return not any(
                 isinstance(item, Mapping)
@@ -499,6 +516,38 @@ class CodexInteractiveCarrier(_CarrierSettlementMixin):
                 and item["messageId"] not in known
                 for item in rows if isinstance(rows, list)
             )
+
+        def _known_ids(self) -> set[str]:
+            """Ids the carrier already owns: live deliveries plus KEPT ones."""
+
+            known = {
+                state.delivery.delivery_id
+                for state in self._carrier_runtime.snapshots()
+            }
+            if self._store is not None:
+                known |= self._store.kept_ids(self.actor)
+            return known
+
+        def _forget_gone_ids(self, response: Mapping[str, object]) -> None:
+            """Drop KEPT and pre-upgrade FETCHED rows an authoritative list lacks.
+
+            Only a successful list counts (``ok`` true and ``messages`` an
+            array); a failed, malformed or incremental answer proves nothing.
+            """
+
+            rows = response.get("messages")
+            store = self._store
+            if store is None or response.get("ok") is not True or not isinstance(rows, list):
+                return
+            listed = {
+                item["messageId"]
+                for item in rows
+                if isinstance(item, Mapping) and isinstance(item.get("messageId"), str)
+            }
+            for message_id in store.kept_ids(self.actor) - listed:
+                store.delete_in_state(self.actor, message_id, "KEPT")
+            for message_id in store.legacy_fetched_ids(self.actor) - listed:
+                store.delete_in_state(self.actor, message_id, "FETCHED")
 
         def _apply_inbox_list(
             self,
@@ -518,10 +567,8 @@ class CodexInteractiveCarrier(_CarrierSettlementMixin):
                 for state in self._carrier_runtime.snapshots()
             )
             self._drain_carrier_effects()
-            known = {
-                state.delivery.delivery_id
-                for state in self._carrier_runtime.snapshots()
-            }
+            self._forget_gone_ids(response)
+            known = self._known_ids()
             # Every listed message the carrier does not hold yet -- not only
             # the core's "new" ones: a row whose staging failed once must be
             # retried on the next list, as before.
@@ -539,10 +586,12 @@ class CodexInteractiveCarrier(_CarrierSettlementMixin):
                 for item in fetched if isinstance(fetched, list) else []:
                     if not isinstance(item, dict):
                         continue
-                    message_id = item.get("messageId")
-                    text = item.get("message")
-                    if not isinstance(message_id, str) or not isinstance(text, str):
+                    # Only the contract's summary block reaches the model; the
+                    # row's body is never read.
+                    injection = injection_from_row(item)
+                    if injection is None:
                         continue
+                    message_id = injection.message_id
                     if message_id in known:
                         # The fetched listing keeps returning a row until it is
                         # settled, so a delivery that already progressed past
@@ -556,7 +605,7 @@ class CodexInteractiveCarrier(_CarrierSettlementMixin):
                         conversation_id=str(item.get("conversationId") or message_id),
                         sender=str(item.get("from") or "unknown"),
                         recipient=self.actor,
-                        message=text,
+                        message=render_injection(injection),
                         origin=(
                             item.get("origin")
                             if isinstance(item.get("origin"), dict)
@@ -621,13 +670,27 @@ class CodexInteractiveCarrier(_CarrierSettlementMixin):
                         error=result.error or result.status.value,
                     )
                 else:
+                    # The pump can report a terminal turn before the actor
+                    # applies CarrierTurnStarted (mailbox lag on a loaded host).
+                    # _on_turn_started already wrote the durable mapping before
+                    # submitting that fact, so journal the ended report from it
+                    # before removing the delivery.  The relay's created_ms
+                    # order then keeps this turn ahead of the re-injection.
+                    turn_id = (
+                        self._store.persisted_turn_id(self.actor, result.delivery_id)
+                        if self._store is not None
+                        else None
+                    )
                     self._log(
                         "error",
                         "worker.carrier.error",
                         state=state,
                         stage="turn-result",
                         error=result.error or result.status.value,
+                        **({"turnId": turn_id} if turn_id is not None else {}),
                     )
+                    if turn_id is not None:
+                        self._report_turn_ended(turn_id, "failed", result.delivery_id)
                     self._submit_carrier_fact(
                         CarrierRemoved(
                             generation=state.generation,
@@ -661,6 +724,7 @@ class CodexInteractiveCarrier(_CarrierSettlementMixin):
             # and must never create a second native turn.
             if self._store is not None:
                 self._store.record_turn_started(self.actor, delivery.delivery_id, turn_id)
+                self._turn_reports.record(turn_id, "started", None, delivery.delivery_id)
             with self._carrier_io_lock:
                 self._carrier_clients[delivery.delivery_id] = client
             generation = (
@@ -673,5 +737,6 @@ class CodexInteractiveCarrier(_CarrierSettlementMixin):
                     generation=generation,
                     delivery_id=delivery.delivery_id,
                     turn_id=turn_id,
+                    attempt=state.attempt if state is not None else 0,
                 )
             )

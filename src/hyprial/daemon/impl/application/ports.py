@@ -11,7 +11,7 @@ docs/evidence/refactor-joint-2026-10-02/tasks/daemon-runtime/.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol, runtime_checkable
@@ -119,6 +119,43 @@ HookConsumersFactory = Callable[
     [HookConsumersDeps], Mapping[str, Any]
 ]
 """Builds the consumer registry the daemon routes bus events through."""
+
+
+@runtime_checkable
+class ReplyReminderPort(Protocol):
+    """The daemon-authoritative surface the reply-reminder consumer drives.
+
+    WP7 (design-send-links §4.5): the biz consumer never imports an inbox
+    implementation.  It asks this port which turn-injected requests are
+    still unanswered and writes one notice per newly-unanswered group.
+    Reading is side-effect free: it never acks, replies, re-sends a body or
+    touches any link, W or controller state.
+    """
+
+    def unreplied_requests(
+        self,
+        actor: str,
+        *,
+        delivery_ids: Collection[str],
+        fetched_since_ms: int | None,
+        fetched_until_ms: int,
+        since_inclusive: bool,
+    ) -> tuple[str, ...]: ...
+
+    def post_reply_reminder(
+        self, actor: str, request_ids: Sequence[str], text: str
+    ) -> bool: ...
+
+    def log(self, level: str, event: str, **fields: Any) -> None: ...
+
+
+ReplyReminderConsumerFactory = Callable[[ReplyReminderPort], Any]
+"""Wraps the daemon's inbox reminder adapter as a biz hook consumer.
+
+The shell hands the daemon a factory so the reminder policy under
+``biz/hooks/reminder/`` subscribes to turn events without the daemon
+importing biz.  The argument satisfies :class:`ReplyReminderPort`.
+"""
 
 
 # --------------------------------------------------------------------------- #

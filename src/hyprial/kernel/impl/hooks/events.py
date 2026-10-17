@@ -54,6 +54,10 @@ EVENT_NAMES: frozenset[str] = frozenset(
         "graph.closed",
         "usage.refreshed",
         "worker.cleanup.complete",
+        # Send links (design-send-links §3, §4.4): a link became effective
+        # (both files reference each other) or stopped being effective.
+        "link.minted",
+        "link.reclaimed",
     }
 )
 

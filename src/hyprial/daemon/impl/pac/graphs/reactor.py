@@ -53,6 +53,7 @@ from hyprial.identity import (
     PacError,
 )
 from hyprial.kernel import HookEventPublisher
+from hyprial.daemon import summary_from_text
 from hyprial.daemon.impl.pac.contracts.expansion.types import PreparedExpansion
 from hyprial.daemon.impl.pac.graphs.edits  import BACK, FORWARD, canonical_edge
 from hyprial.daemon.impl.pac.storage.journal  import GraphClosedRecord, activation_id, append_event
@@ -138,9 +139,10 @@ class NotificationSender(Protocol):
         sender: str,
         conversation_id: str,
         idempotency_key: str,
+        summary: str,
         expires_at_ms: int | None = None,
     ) -> str:
-        """Deliver one notification; returns the wire ``message_id``."""
+        """Deliver one notification; ``summary`` comes from ``summary_from_text(text)``."""
 
         ...
 
@@ -159,6 +161,7 @@ class NullSender:
         sender: str,
         conversation_id: str,
         idempotency_key: str,
+        summary: str,
         expires_at_ms: int | None = None,
     ) -> str:
         self.sent.append(
@@ -168,6 +171,7 @@ class NullSender:
                 "sender": sender,
                 "conversationId": conversation_id,
                 "idempotencyKey": idempotency_key,
+                "summary": summary,
                 **(
                     {"expiresAtMs": expires_at_ms}
                     if expires_at_ms is not None
@@ -486,6 +490,7 @@ class PacReactor:
                     sender=item.sender,
                     conversation_id=f"pac-{graph_id}",
                     idempotency_key=f"pac-notify:{item.event_id}:{item.edge}",
+                    summary=summary_from_text(item.text),
                 )
             except Exception as failure:  # noqa: BLE001 - delivery must not undo the durable fact
                 undelivered.append(item)
@@ -957,6 +962,7 @@ class PacReactor:
                     sender=row.sender,
                     conversation_id=f"pac-{graph_id}",
                     idempotency_key=f"pac-notify:{row.event_id}:{row.edge}",
+                    summary=summary_from_text(row.text),
                 )
             except Exception as failure:  # noqa: BLE001
                 error = f"{type(failure).__name__}: {failure}"

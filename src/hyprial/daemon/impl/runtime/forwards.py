@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 from hyprial.daemon.impl.runtime.settlement import (
+    _NoticeRecoveryMixin,
     HARNESS_FAILURE_MAX_ATTEMPTS,
     ForwardOutcome,
     HarnessActorRegistration,
     _InflightAttempt,
+    _answer_already_committed,
     _notice_kind,
     _owner_facing_notice_text,
 )
@@ -16,6 +18,11 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Callable
 from uuid import NAMESPACE_URL, uuid5
 from hyprial.daemon.impl.inbox.contracts.api import DeliveryLifecycle, InboxMessage
+from hyprial.daemon.impl.inbox import (
+    InboxAuthorityTimeout,
+    InboxAuthorityUnavailable,
+)
+from hyprial.daemon import summary_from_text
 from hyprial.kernel import parse_agent_uri
 from hyprial.daemon import (
     Alarm,
@@ -47,7 +54,7 @@ def _notice_is_terminal(message: InboxMessage) -> bool:
     return isinstance(body, dict) and body.get("terminal") is True
 
 
-class _BridgeForwardsMixin:
+class _BridgeForwardsMixin(_NoticeRecoveryMixin):
     """DaemonEventBridge cluster; the composing class owns the state."""
 
     def _settle_delivery_hooks(self, result: HarnessResult) -> None:
@@ -377,101 +384,6 @@ class _BridgeForwardsMixin:
         self._submit_loud(message)
         return message
 
-    def _notice_already_durable(self, message_id: str) -> bool:
-        """True when the notice is already delivered and acknowledged.
-
-        Delivery without acknowledgement is deliberately not treated as done:
-        re-submitting the same deterministic id is idempotent at the inbox, so
-        re-sending is the safe side of that ambiguity.
-        """
-
-        reader = getattr(self.inbox, "is_acknowledged", None)
-        if not callable(reader):
-            return False
-        try:
-            return bool(reader(message_id))
-        except Exception:  # noqa: BLE001 - an unknown id is simply not durable
-            return False
-
-    def _recover_owed_notices(self, since_ms: int | None) -> int:
-        """Re-derive sender notices the previous (unclean) run may have owed.
-
-        A notice that could not be *submitted* before a crash lived only in
-        this process's ``_pending_notices``, which is exactly the "silence
-        replaced by another silence" shape this unit exists to remove.  The
-        durable half -- the terminal settlement row -- still exists, so the
-        restart reads it and re-emits the same deterministic notice.  Events
-        that only *schedule* a retry need no recovery here: their inbox row is
-        still pending, so the ordinary dispatch path re-derives them.
-        """
-
-        reader = getattr(self.inbox, "terminal_failure_settlements", None)
-        if not callable(reader) or since_ms is None:
-            return 0
-        try:
-            settlements = reader(since_ms=since_ms)
-        except Exception as error:  # noqa: BLE001 - recovery is best-effort, but loud
-            if self._logger is not None:
-                self._logger(
-                    "error",
-                    "daemon",
-                    "availability_loud.recovery_failed",
-                    errorType=type(error).__name__,
-                    sinceMs=since_ms,
-                )
-            return 0
-        recovered = 0
-        for settlement in settlements:
-            original = self._failure_original(settlement.message_id)
-            if original is None:
-                continue
-            message = self._unavailable_notice_for(
-                original,
-                recipient=settlement.recipient,
-                failure_code=settlement.failure_code,
-                settlement=settlement,
-                observed_at_ms=self._clock_ms(),
-            )
-            if self._notice_already_durable(message.message_id):
-                continue
-            if self._submit_loud(message):
-                recovered += 1
-        if self._logger is not None and settlements:
-            self._logger(
-                "warn",
-                "daemon",
-                "availability_loud.recovery",
-                candidates=len(settlements),
-                recovered=recovered,
-                sinceMs=since_ms,
-            )
-        return recovered
-
-    def _flush_pending_notices_on_stop(self) -> None:
-        """Last chance for held notices, and a loud record of any that remain.
-
-        On a clean shutdown there is no next start to recover from, so an
-        undeliverable notice must at least say so -- the identifiers go to the
-        log rather than disappearing with the process.
-        """
-
-        try:
-            self._retry_pending_notices()
-        except Exception:  # noqa: BLE001 - shutdown must not be masked
-            pass
-        if not self._pending_notices or self._logger is None:
-            return
-        for message in self._pending_notices.values():
-            self._logger(
-                "error",
-                "daemon",
-                "availability_loud.delivery_abandoned",
-                messageId=message.message_id,
-                recipient=message.recipient,
-                idempotencyKey=message.idempotency_key,
-                detail="shutdown with the notice still undelivered",
-            )
-
     def _submit_loud(self, message: InboxMessage) -> bool:
         """Submit one notice; hold it for retry if the inbox refuses it.
 
@@ -765,10 +677,20 @@ class _BridgeForwardsMixin:
             )
         return accepted
 
-    def _reply_and_ack(self, original: InboxMessage, result: HarnessResult) -> bool:
+    def _answer_hook_request(self, original: InboxMessage, result: HarnessResult) -> bool:
+        """Ruling 58: the hook exchange's own reply, authenticated by sender.
+
+        The mechanism request is a daemon-internal protocol exchange, not a
+        model turn: its output is the answer by definition.  The daemon replies
+        deterministically (same id on retry), then acks the original request.
+        """
+
         reply = InboxMessage(
             message_id=str(
-                uuid5(NAMESPACE_URL, f"hyprial-agent-sdk-reply:{original.message_id}")
+                uuid5(
+                    NAMESPACE_URL,
+                    f"hyprial-turn-hook-reply:{original.message_id}",
+                )
             ),
             conversation_id=original.conversation_id,
             sender=original.recipient,
@@ -776,8 +698,10 @@ class _BridgeForwardsMixin:
             payload=json.dumps(
                 {
                     "message": result.output,
+                    "replyTo": original.message_id,
                     "origin": {
                         "via": "daemon",
+                        "mechanism": "turn-hook",
                         "onBehalfOf": original.recipient,
                     },
                 },
@@ -787,11 +711,73 @@ class _BridgeForwardsMixin:
             lifecycle=DeliveryLifecycle.DURABLE_SERVICE,
             idempotency_key=f"reply:{original.message_id}",
             created_at_ms=time.time_ns() // 1_000_000,
+            summary=summary_from_text(
+                result.output if result.output else "(empty result)"
+            ),
         )
-        submitted = self.inbox.submit(reply)
-        if not submitted.accepted:
+        return self._confirm_mechanism_answer(original, reply)
+
+    def _answer_mechanism_result(
+        self, original: InboxMessage, result: HarnessResult
+    ) -> bool:
+        """Ruling 59: a python_worker/user-proxy ``result`` frame answers.
+
+        The worker has no model and no tool surface; its result is the
+        mechanism's answer, with the same deterministic retry contract.
+        """
+
+        reply = InboxMessage(
+            message_id=str(
+                uuid5(
+                    NAMESPACE_URL,
+                    f"hyprial-mechanism-reply:{original.message_id}",
+                )
+            ),
+            conversation_id=original.conversation_id,
+            sender=original.recipient,
+            recipient=original.sender,
+            payload=json.dumps(
+                {
+                    "message": result.output,
+                    "replyTo": original.message_id,
+                    "origin": {
+                        "via": "daemon",
+                        "mechanism": "python_worker",
+                        "onBehalfOf": original.recipient,
+                    },
+                },
+                separators=(",", ":"),
+            ).encode(),
+            intent="reply",
+            lifecycle=DeliveryLifecycle.DURABLE_SERVICE,
+            idempotency_key=f"reply:{original.message_id}",
+            created_at_ms=time.time_ns() // 1_000_000,
+            summary=summary_from_text(
+                result.output if result.output else "(empty result)"
+            ),
+        )
+        return self._confirm_mechanism_answer(original, reply)
+
+    def _confirm_mechanism_answer(
+        self, original: InboxMessage, reply: InboxMessage
+    ) -> bool:
+        """Submit a mechanism answer, then ack the request once it committed.
+
+        A committed-but-unconfirmed submit leaves only the ack to do; the same
+        deterministic id is retried, never a new answer.
+        """
+
+        try:
+            submitted = self.inbox.submit(reply)
+        except (InboxAuthorityTimeout, InboxAuthorityUnavailable) as error:
+            if not _answer_already_committed(error):
+                raise
+            submitted = None
+        if submitted is not None and not submitted.accepted:
             return False
-        return self.inbox.ack(original.recipient, original.message_id).acknowledged
+        return bool(
+            self.inbox.ack(original.recipient, original.message_id).acknowledged
+        )
 
     @staticmethod
     def _message_origin(message: InboxMessage) -> dict[str, Any] | None:

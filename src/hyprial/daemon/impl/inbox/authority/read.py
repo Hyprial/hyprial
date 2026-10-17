@@ -1,4 +1,5 @@
 from __future__ import annotations
+import json
 import sqlite3
 import time
 from collections.abc import Callable, Iterator
@@ -9,6 +10,8 @@ from hyprial.daemon.impl.inbox.contracts.api  import (
     HarnessFailureAttempt,
     HarnessFailureSettlement,
     InboxMessage,
+    LinkInboundRow,
+    LinkLedgerRow,
     OutboxItem,
     SubmissionResult,
 )
@@ -16,6 +19,59 @@ from hyprial.daemon.impl.inbox.links.pull  import DEFAULT_HOLD_TTL_MS, DeliveryS
 from hyprial.daemon.impl.inbox.service.state  import ConsumptionState
 
 _REPLY_COMPLETION_HANDOFF_GRACE_SECONDS = 0.5
+
+
+def _ledger_row(row: sqlite3.Row) -> LinkLedgerRow:
+    return LinkLedgerRow(
+        actor=str(row["actor"]),
+        message_id=str(row["message_id"]),
+        direction=str(row["direction"]),
+        peer=str(row["peer"]),
+        intent=str(row["intent"]),
+        reply_to=(str(row["reply_to"]) if row["reply_to"] is not None else None),
+        state=str(row["state"]),
+        opened_at_ms=int(row["opened_at_ms"]),
+        sent_at_ms=(
+            int(row["sent_at_ms"]) if row["sent_at_ms"] is not None else None
+        ),
+        event_at_ms=(
+            int(row["event_at_ms"]) if row["event_at_ms"] is not None else None
+        ),
+        threshold_ms=(
+            int(row["threshold_ms"]) if row["threshold_ms"] is not None else None
+        ),
+        sample_pending=bool(row["sample_pending"]),
+        expires_at_ms=int(row["expires_at_ms"]),
+    )
+
+
+def _inbound_row(row: sqlite3.Row) -> LinkInboundRow:
+    fetched = row["fetched_at_ms"]
+    return LinkInboundRow(
+        message_id=str(row["message_id"]),
+        sender=str(row["sender"]),
+        recipient=str(row["recipient"]),
+        intent=str(row["intent"]),
+        reply_to=_payload_reply_to(row["payload"]),
+        received_at_ms=int(row["received_at_ms"]),
+        fetched_at_ms=int(fetched) if fetched is not None else None,
+        injected=fetched is not None,
+        state=str(row["link_state"]),
+        expires_at_ms=int(row["expires_at_ms"]),
+    )
+
+
+def _payload_reply_to(payload: object) -> str | None:
+    try:
+        body = json.loads(bytes(payload))  # type: ignore[arg-type]
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError, TypeError):
+        return None
+    if not isinstance(body, dict):
+        return None
+    reply_to = body.get("replyTo")
+    if isinstance(reply_to, str) and reply_to:
+        return reply_to
+    return None
 
 
 def delivery_pending(
@@ -88,6 +144,11 @@ class InboxReadProjection:
             origin_node=(
                 str(row["origin_node"])
                 if "origin_node" in row.keys() and row["origin_node"] is not None
+                else None
+            ),
+            summary=(
+                str(row["summary"])
+                if "summary" in row.keys() and row["summary"] is not None
                 else None
             ),
         )
@@ -188,9 +249,40 @@ class InboxReadProjection:
                             OR harness_failure_settlements.next_attempt_ms > ?
                         )
                  )
+                 AND (inbox.fetched_at_ms IS NULL
+                      OR EXISTS (
+                          SELECT 1 FROM harness_failure_settlements s
+                           WHERE s.message_id = inbox.message_id
+                             AND s.terminal = 0 AND s.next_attempt_ms <= ?
+                      ))
                ORDER BY arrival_id""",
-            (recipient, now, now),
+            (recipient, now, now, now),
         )
+
+    def fetched_between(
+        self,
+        recipient: str,
+        *,
+        since_ms: int,
+        until_ms: int,
+        since_inclusive: bool,
+    ) -> tuple[str, ...]:
+        """Message ids whose first fetch stamp falls in the window.
+
+        ``fetched_at_ms`` is written once (``COALESCE``): this is the
+        injection evidence for session carriers, never a reassembly cursor.
+        """
+
+        comparison = ">=" if since_inclusive else ">"
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""SELECT message_id FROM inbox
+                     WHERE recipient = ? AND fetched_at_ms IS NOT NULL
+                       AND fetched_at_ms {comparison} ? AND fetched_at_ms <= ?
+                     ORDER BY arrival_id""",  # noqa: S608
+                (recipient, since_ms, until_ms),
+            ).fetchall()
+        return tuple(str(row["message_id"]) for row in rows)
 
     def harness_failure_settlement(
         self, message_id: str
@@ -364,6 +456,11 @@ class InboxReadProjection:
                     else None
                 ),
                 confirmation_attempts=int(row["confirmation_attempts"]),
+                link_hold=(
+                    str(row["link_hold"])
+                    if "link_hold" in row.keys() and row["link_hold"] is not None
+                    else None
+                ),
             )
             for row in rows
         )
@@ -451,6 +548,158 @@ class InboxReadProjection:
     def custody_count(self) -> int:
         return self._count("custody")
 
+    def submission_result_by_message(
+        self, message_id: str
+    ) -> SubmissionResult | None:
+        """Latest durable submit receipt for one message id (send replay)."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT message_id, accepted, queued, code, custody_mailbox"
+                " FROM actor_submission_receipts WHERE message_id = ?"
+                " ORDER BY recorded_at_ms DESC LIMIT 1",
+                (message_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return SubmissionResult(
+            message_id,
+            bool(row["accepted"]),
+            queued=bool(row["queued"]),
+            code=(str(row["code"]) if row["code"] is not None else None),
+            custody_mailbox=(
+                str(row["custody_mailbox"])
+                if row["custody_mailbox"] is not None
+                else None
+            ),
+        )
+
+    # -- send-link ledger (WP2 §3.9) ------------------------------------
+
+    def link_ledger_snapshot(self, now_ms: int) -> tuple[LinkLedgerRow, ...]:
+        """Every unexpired ledger row, both directions (B14)."""
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM link_ledger WHERE expires_at_ms > ? "
+                "ORDER BY opened_at_ms, rowid",
+                (now_ms,),
+            ).fetchall()
+        return tuple(_ledger_row(row) for row in rows)
+
+    def link_outbound_row(self, actor: str, message_id: str) -> LinkLedgerRow | None:
+        """One outbound ledger row by (actor, message id), or None (B6).
+
+        The send boundary reads this to recognise a replayed ``user:`` send
+        before it asks the gate again.
+        """
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM link_ledger "
+                "WHERE actor = ? AND message_id = ? AND direction = 'out'",
+                (actor, message_id),
+            ).fetchone()
+        return None if row is None else _ledger_row(row)
+
+    def link_held_outbox(self) -> tuple[OutboxItem, ...]:
+        """Only the parked outbox rows, with their hold reason (B15)."""
+
+        return tuple(
+            item for item in self.outbox_items() if item.link_hold is not None
+        )
+
+    def link_inbound_live(
+        self, actor: str, peer: str | None = None
+    ) -> tuple[LinkInboundRow, ...]:
+        """Live inbound rows for one actor, injected or still waiting (B10)."""
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT inbox.message_id, inbox.sender, inbox.recipient,
+                          inbox.intent, inbox.payload, inbox.received_at_ms,
+                          inbox.fetched_at_ms,
+                          COALESCE(inbox.expires_at_ms,
+                                   inbox.received_at_ms) AS expires_at_ms,
+                          COALESCE(link_ledger.state, 'open') AS link_state
+                     FROM inbox
+                     LEFT JOIN link_ledger
+                       ON link_ledger.actor = inbox.recipient
+                      AND link_ledger.message_id = inbox.message_id
+                      AND link_ledger.direction = 'in'
+                    WHERE inbox.recipient = ?
+                      AND inbox.consumed = 0
+                      AND (? IS NULL OR inbox.sender = ?)
+                      AND NOT EXISTS (
+                          SELECT 1 FROM harness_failure_settlements
+                           WHERE harness_failure_settlements.message_id
+                                 = inbox.message_id
+                             AND harness_failure_settlements.terminal = 1
+                      )
+                    ORDER BY inbox.arrival_id""",
+                (actor, peer, peer),
+            ).fetchall()
+        return tuple(_inbound_row(row) for row in rows)
+
+    def link_inbound_row(
+        self, actor: str, message_id: str
+    ) -> LinkInboundRow | None:
+        """One live inbound row by (actor, message id), or None."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT inbox.message_id, inbox.sender, inbox.recipient,
+                          inbox.intent, inbox.payload, inbox.received_at_ms,
+                          inbox.fetched_at_ms,
+                          COALESCE(inbox.expires_at_ms,
+                                   inbox.received_at_ms) AS expires_at_ms,
+                          COALESCE(link_ledger.state, 'open') AS link_state
+                     FROM inbox
+                     LEFT JOIN link_ledger
+                       ON link_ledger.actor = inbox.recipient
+                      AND link_ledger.message_id = inbox.message_id
+                      AND link_ledger.direction = 'in'
+                    WHERE inbox.recipient = ? AND inbox.message_id = ?
+                      AND inbox.consumed = 0""",
+                (actor, message_id),
+            ).fetchone()
+        return None if row is None else _inbound_row(row)
+
+    def link_task_bindings(self) -> tuple[tuple[str, str, str, int], ...]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT actor, peer, task_id, bound_at_ms FROM link_task_bindings"
+                " ORDER BY bound_at_ms, actor, peer, task_id"
+            ).fetchall()
+        return tuple(
+            (
+                str(row["actor"]),
+                str(row["peer"]),
+                str(row["task_id"]),
+                int(row["bound_at_ms"]),
+            )
+            for row in rows
+        )
+
+    def outbox_item_for_message(self, message_id: str) -> OutboxItem | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM outbox WHERE message_id = ?", (message_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        return OutboxItem(
+            self._message(row),
+            attempts=int(row["attempts"]),
+            next_attempt_ms=int(row["next_attempt_ms"]),
+            expires_at_ms=int(row["expires_at_ms"]),
+            link_hold=(
+                str(row["link_hold"])
+                if "link_hold" in row.keys() and row["link_hold"] is not None
+                else None
+            ),
+        )
+
     def dlq_count(self) -> int:
         return self._count("dlq")
 
@@ -468,6 +717,42 @@ class InboxReadProjection:
                     (recipient,),
             ).fetchone()[0]
         )
+
+    def held_unfetched_count(
+        self, recipient: str, candidate_ids: frozenset[str]
+    ) -> int:
+        """Read-only count of alive inbox rows still waiting for injection.
+
+        WP4's ``inboundAwaitingInjection`` (review B6): ``candidate_ids`` is the
+        read-only governed set the caller derived from inbox rows and the
+        admission state; this projection keeps only the live, unconsumed,
+        unexpired, non-terminal rows that nobody has taken
+        (``fetched_at_ms IS NULL``).  It never calls ``admit_dispatch``, never
+        stamps ``fetched`` and never drains notices, so a top query changes no
+        link or inbox state.
+        """
+
+        if not candidate_ids:
+            return 0
+        now = time.time_ns() // 1_000_000
+        placeholders = ",".join("?" for _ in candidate_ids)
+        params: tuple[object, ...] = (recipient, now, *candidate_ids)
+        with self._connect() as connection:
+            return int(
+                connection.execute(
+                    f"""SELECT COUNT(*) FROM inbox
+                        WHERE recipient = ? AND consumed = 0
+                          AND (expires_at_ms IS NULL OR expires_at_ms > ?)
+                          AND fetched_at_ms IS NULL
+                          AND message_id IN ({placeholders})
+                          AND NOT EXISTS (
+                              SELECT 1 FROM harness_failure_settlements
+                               WHERE harness_failure_settlements.message_id = inbox.message_id
+                                 AND harness_failure_settlements.terminal = 1
+                          )""",
+                    params,
+                ).fetchone()[0]
+            )
 
     def has_pending_work(self, recipient: str) -> bool:
         """Whether inbox or custody owns unconsumed work for this recipient."""
@@ -631,11 +916,11 @@ class InboxReadProjection:
             ).fetchone()
         if status is None:
             return ConsumptionState.UNKNOWN
-        return (
-            ConsumptionState.CONSUMED
-            if status["state"] == TerminalState.FETCHED.value
-            else ConsumptionState.EXPIRED
-        )
+        if status["state"] == TerminalState.FETCHED.value:
+            return ConsumptionState.CONSUMED
+        if status["state"] == TerminalState.REFUSED.value:
+            return ConsumptionState.REFUSED
+        return ConsumptionState.EXPIRED
 
     def delivery_status_for_recipient(
         self, recipient: str, message_id: str

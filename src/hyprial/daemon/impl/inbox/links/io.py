@@ -31,6 +31,10 @@ from hyprial.daemon.impl.inbox.contracts.ports import (
     SubmissionCompleted,
     SubmitMessageCommand,
 )
+from hyprial.daemon.impl.inbox.contracts.summary import (
+    check_summary,
+    summary_from_text,
+)
 from hyprial.daemon.impl.inbox.service.state import ConsumptionState
 
 
@@ -208,6 +212,12 @@ class InboxDeliveryIoAdapter:
     def message_id(effect_id: str) -> str:
         return dispatch_message_id(effect_id)
 
+    @staticmethod
+    def derive_summary(text: str) -> str:
+        """The deterministic summary a relaying component derives from text."""
+
+        return summary_from_text(text)
+
     def deliver(
         self,
         *,
@@ -216,8 +226,14 @@ class InboxDeliveryIoAdapter:
         target: str,
         conversation_id: str,
         text: str,
+        summary: str,
         expires_at_ms: int | None = None,
     ) -> DeliveredMessage:
+        # Validate before the recipient split: both the durable inbox row and
+        # the owner DM path must see a legal summary, and neither may write
+        # anything else.  ``required=True`` is the WP5-D contract; the hard cut
+        # for ``message.send`` callers is WP3-B.
+        summary = check_summary(summary, required=True)
         message_id = self.message_id(effect_id)
         recipient = str(self._resolve_target(target))
         if recipient.startswith("user:"):
@@ -242,6 +258,7 @@ class InboxDeliveryIoAdapter:
             created_at_ms=int(self._clock_ms()),
             idempotency_key=f"workflow:{effect_id}",
             expires_at_ms=expires_at_ms,
+            summary=summary,
         )
         event = self._submit_and_wait(
             effect_id,

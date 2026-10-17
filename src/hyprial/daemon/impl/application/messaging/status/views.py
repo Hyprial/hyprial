@@ -493,7 +493,54 @@ class _StatusViewsMixin:
                 "mailboxes": list(self._presence.online_mailboxes()),
             }
 
+    def _inbound_awaiting_injection(
+        self, actor_statuses: tuple[JsonObject, ...] | list[JsonObject]
+    ) -> dict[str, int]:
+        """Per-canonical-recipient held-row count for ``top`` (review B6).
+
+        The candidate set comes from inbox ROWS plus the read-only
+        ``governs`` predicate, so a bound gate no longer needs a prior list or
+        tick to make waiting mail visible; the admission state only subtracts
+        rows the gate already admitted.  It never calls ``admit_dispatch``
+        (no W reservation), stamps ``fetched`` or drains notices, so repeated
+        top queries are inert.
+        """
+
+        governs = getattr(self.link_admission, "governs", None)
+        pending = getattr(self._inbox, "pending_messages", None)
+        counter = getattr(self._inbox, "inbound_awaiting_injection", None)
+        admitted_reader = getattr(
+            self.link_admission, "admitted_message_ids", None
+        )
+        if not (callable(governs) and callable(pending) and callable(counter)):
+            return {}
+        awaiting: dict[str, int] = {}
+        for status in actor_statuses:
+            raw_actor = status.get("actor")
+            actor = (
+                raw_actor
+                if isinstance(raw_actor, str)
+                else canonical_agent_uri(
+                    self.owner, self.node_id, str(status.get("name"))
+                )
+            )
+            candidates = frozenset(
+                message.message_id
+                for message in pending(actor)
+                if governs(message.sender, actor)
+            )
+            if callable(admitted_reader):
+                candidates = candidates - admitted_reader(actor)
+            if not candidates:
+                continue
+            count = counter(actor, candidates)
+            if count:
+                awaiting[actor] = count
+        return awaiting
+
     def _ipc_top_snapshot(self) -> Any:
+        from hyprial.daemon.impl.composition.links import link_top_fields
+
         now_ms = int(time.time() * 1000)
         # A batch path like ps: without the request snapshot every online
         # actor's liveness probe falls back to one supervisor round trip
@@ -527,6 +574,10 @@ class _StatusViewsMixin:
             now_ms=now_ms,
             dispatch_without_pac_count=self._dispatch_without_pac_snapshot(),
             dispatch_conversation_count=self._dispatch_conversation_snapshot(),
+            inbound_awaiting_injection=self._inbound_awaiting_injection(
+                actor_statuses
+            ),
+            link_fields=link_top_fields(self, actor_statuses),
         )
         result["quota"] = (
             self._usage_cache.snapshot_payload(now_ms)

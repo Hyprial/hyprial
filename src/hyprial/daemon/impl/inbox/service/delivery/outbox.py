@@ -113,8 +113,8 @@ class InboxServiceOutboxMixin:
         return self._db.execute(
             """INSERT OR IGNORE INTO system_notices(
                    message_id, conversation_id, sender, recipient, payload,
-                   intent, lifecycle, idempotency_key, created_at_ms
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   intent, lifecycle, idempotency_key, created_at_ms, summary
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 notice.message_id,
                 notice.conversation_id,
@@ -125,6 +125,7 @@ class InboxServiceOutboxMixin:
                 notice.lifecycle.value,
                 notice.idempotency_key,
                 notice.created_at_ms,
+                notice.summary,
             ),
         )
     def _has_system_notice(self, message_id: str) -> bool:

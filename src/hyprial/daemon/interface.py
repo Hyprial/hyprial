@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.harnesses.codex.app_server import CodexInteractiveAppServer as CodexInteractiveAppServer
     from hyprial.daemon.impl.harnesses.codex.app_server import CodexInteractiveResumeError as CodexInteractiveResumeError
     from hyprial.daemon.impl.harnesses.codex.app_server import CodexInteractiveResumePending as CodexInteractiveResumePending
+    from hyprial.daemon.impl.harnesses.codex.app_server import interactive_channel_config_args as interactive_channel_config_args
     from hyprial.daemon.impl.harnesses.codex.carrier import CodexInteractiveCarrier as CodexInteractiveCarrier
     from hyprial.daemon.impl.harnesses.capabilities import DECLARED_HARNESSES as DECLARED_HARNESSES
     from hyprial.daemon.impl.configuration.network_profile import DEFAULT_PROFILE as DEFAULT_PROFILE
@@ -74,6 +75,8 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.application.ports import QuotaWatchdogDeps as QuotaWatchdogDeps
     from hyprial.daemon.impl.transfer.landing.receive import ReceiveError as ReceiveError
     from hyprial.daemon.impl.context_snapshot import RecapCaptureState as RecapCaptureState
+    from hyprial.daemon.impl.application.ports import ReplyReminderConsumerFactory as ReplyReminderConsumerFactory
+    from hyprial.daemon.impl.application.ports import ReplyReminderPort as ReplyReminderPort
     from hyprial.daemon.impl.autoupdate.alert import RestartProcessObservation as RestartProcessObservation
     from hyprial.daemon.impl.autoupdate.alert import RestartProcessState as RestartProcessState
     from hyprial.daemon.impl.bootstrap.adapter_registration import RouteInput as RouteInput
@@ -158,14 +161,27 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.org.document import document_summary as document_summary
     from hyprial.daemon.impl.transfer.landing.runtime import downgrade_state as downgrade_state
     from hyprial.daemon.impl.network.tailcat import ensure_device_key as ensure_device_key
+    from hyprial.daemon.impl.links.ports import HOLD_REASON_KEY as HOLD_REASON_KEY
     from hyprial.daemon.impl.dispatch.matrix import ensure_dispatch_policy as ensure_dispatch_policy
     from hyprial.daemon.impl.bootstrap.adapter_registration import ensure_lark_gateway_addable as ensure_lark_gateway_addable
     from hyprial.daemon.impl.pac.graphs.subscription import events_since as events_since
     from hyprial.daemon.impl.transfer.cleanup import execute_cleanup as execute_cleanup
     import hyprial.daemon.impl.transfer.execution.container as execution_container
+    from hyprial.daemon.impl.links.ports import HOLD_REASONS as HOLD_REASONS
+    from hyprial.daemon.impl.links.ports import IPC_LINK_ADD as IPC_LINK_ADD
+    from hyprial.daemon.impl.links.ports import IPC_LINK_DROP as IPC_LINK_DROP
+    from hyprial.daemon.impl.links.ports import IPC_LINK_LIST as IPC_LINK_LIST
+    from hyprial.daemon.impl.links.ports import IPC_LINK_STATS as IPC_LINK_STATS
+    from hyprial.daemon.impl.links.ports import LinkAdmin as LinkAdmin
+    from hyprial.daemon.impl.links.ports import IPC_MESSAGE_READ_BODY as IPC_MESSAGE_READ_BODY
+    from hyprial.daemon.impl.links.ports import IPC_MESSAGE_SETTLE_HINT as IPC_MESSAGE_SETTLE_HINT
     from hyprial.daemon.impl.transfer.archive.bundle import export_bundle as export_bundle
     from hyprial.daemon.impl.adapters.lark.media.media import fetch_media as fetch_media
     from hyprial.daemon.impl.adapters.lark.credentials.reauth import find_lark_cli as find_lark_cli
+    from hyprial.daemon.impl.links.ports import LinkGate as LinkGate
+    from hyprial.daemon.impl.links.ports import LinkQueries as LinkQueries
+    from hyprial.daemon.impl.links.ports import LinkChangeSource as LinkChangeSource
+    from hyprial.daemon.impl.links.ports import LinkSendObserver as LinkSendObserver
     from hyprial.daemon.impl.harnesses.pi.loader import find_pi_package_root as find_pi_package_root
     from hyprial.daemon.impl.pac.graphs.events import follow_lifetime as follow_lifetime
     import hyprial.daemon.impl.harnesses.runtime.tmux as harnesses_tmux
@@ -229,6 +245,7 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.configuration.network_profile import resolve_profile as resolve_profile
     from hyprial.daemon.impl.autoupdate.alert import restart_failure_detail as restart_failure_detail
     from hyprial.daemon.impl.correlation.readiness_budget import restore_followup_budget_seconds as restore_followup_budget_seconds
+    from hyprial.daemon.impl.links.ports import SettleHint as SettleHint
     from hyprial.daemon.impl.autoupdate.alert import run_self_check as run_self_check
     from hyprial.daemon.impl.transfer.orchestrator import run_transfer as run_transfer
     from hyprial.daemon.impl.adapters.lark.credentials.scopes import scope_apply_url as scope_apply_url
@@ -236,8 +253,14 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.org.document import serialize_document as serialize_document
     from hyprial.daemon.impl.orgfs.webserver.server import serve as serve
     from hyprial.daemon.impl.mcp.channel.session import serve_channel_stdio as serve_channel_stdio
+    from hyprial.daemon.impl.links.ports import SUMMARY_MAX_BYTES as SUMMARY_MAX_BYTES
+    from hyprial.daemon.impl.links.ports import SUMMARY_REQUIRED_DATA_KEYS as SUMMARY_REQUIRED_DATA_KEYS
+    from hyprial.daemon.impl.inbox.contracts.summary import summary_from_text as summary_from_text
     from hyprial.daemon.impl.mcp.server import serve_worker_stdio as serve_worker_stdio
     from hyprial.daemon.impl.harnesses.runtime.tmux import session_name_for_actor as session_name_for_actor
+    from hyprial.daemon.impl.links.ports import TOP_FIELD_CAPACITY_W as TOP_FIELD_CAPACITY_W
+    from hyprial.daemon.impl.links.ports import TOP_FIELD_INBOUND_AWAITING_INJECTION as TOP_FIELD_INBOUND_AWAITING_INJECTION
+    from hyprial.daemon.impl.links.ports import TOP_FIELD_OUTBOUND_IN_FLIGHT as TOP_FIELD_OUTBOUND_IN_FLIGHT
     from hyprial.daemon.impl.mcp.channel.loops import signal_channel_recovery as signal_channel_recovery
     from hyprial.daemon.impl.transfer.archive.attribution import sign_exported_bundle as sign_exported_bundle
     from hyprial.daemon.impl.pac.graphs.events import silence_broken_pipe as silence_broken_pipe
@@ -303,6 +326,7 @@ _FACADE_EXPORTS = {
     'CodexInteractiveAppServer': ('hyprial.daemon.impl.harnesses.codex.app_server', 'CodexInteractiveAppServer'),
     'CodexInteractiveResumeError': ('hyprial.daemon.impl.harnesses.codex.app_server', 'CodexInteractiveResumeError'),
     'CodexInteractiveResumePending': ('hyprial.daemon.impl.harnesses.codex.app_server', 'CodexInteractiveResumePending'),
+    'interactive_channel_config_args': ('hyprial.daemon.impl.harnesses.codex.app_server', 'interactive_channel_config_args'),
     'CodexInteractiveCarrier': ('hyprial.daemon.impl.harnesses.codex.carrier', 'CodexInteractiveCarrier'),
     'resolve_codex_executable': ('hyprial.daemon.impl.harnesses.codex.process', 'resolve_codex_executable'),
     'DECLARED_HARNESSES': ('hyprial.daemon.impl.harnesses.capabilities', 'DECLARED_HARNESSES'),
@@ -346,6 +370,8 @@ _FACADE_EXPORTS = {
     'QuotaWatchdogDeps': ('hyprial.daemon.impl.application.ports', 'QuotaWatchdogDeps'),
     'ReceiveError': ('hyprial.daemon.impl.transfer.landing.receive', 'ReceiveError'),
     'RecapCaptureState': ('hyprial.daemon.impl.context_snapshot', 'RecapCaptureState'),
+    'ReplyReminderConsumerFactory': ('hyprial.daemon.impl.application.ports', 'ReplyReminderConsumerFactory'),
+    'ReplyReminderPort': ('hyprial.daemon.impl.application.ports', 'ReplyReminderPort'),
     'RestartProcessObservation': ('hyprial.daemon.impl.autoupdate.alert', 'RestartProcessObservation'),
     'RestartProcessState': ('hyprial.daemon.impl.autoupdate.alert', 'RestartProcessState'),
     'RouteInput': ('hyprial.daemon.impl.bootstrap.adapter_registration', 'RouteInput'),
@@ -430,9 +456,22 @@ _FACADE_EXPORTS = {
     'events_since': ('hyprial.daemon.impl.pac.graphs.subscription', 'events_since'),
     'execute_cleanup': ('hyprial.daemon.impl.transfer.cleanup', 'execute_cleanup'),
     'execution_container': ('hyprial.daemon.impl.transfer.execution.container', None),
+    'HOLD_REASONS': ('hyprial.daemon.impl.links.ports', 'HOLD_REASONS'),
+    'IPC_LINK_ADD': ('hyprial.daemon.impl.links.ports', 'IPC_LINK_ADD'),
+    'IPC_LINK_DROP': ('hyprial.daemon.impl.links.ports', 'IPC_LINK_DROP'),
+    'IPC_LINK_LIST': ('hyprial.daemon.impl.links.ports', 'IPC_LINK_LIST'),
+    'IPC_LINK_STATS': ('hyprial.daemon.impl.links.ports', 'IPC_LINK_STATS'),
+    'HOLD_REASON_KEY': ('hyprial.daemon.impl.links.ports', 'HOLD_REASON_KEY'),
+    'IPC_MESSAGE_READ_BODY': ('hyprial.daemon.impl.links.ports', 'IPC_MESSAGE_READ_BODY'),
+    'IPC_MESSAGE_SETTLE_HINT': ('hyprial.daemon.impl.links.ports', 'IPC_MESSAGE_SETTLE_HINT'),
     'export_bundle': ('hyprial.daemon.impl.transfer.archive.bundle', 'export_bundle'),
     'fetch_media': ('hyprial.daemon.impl.adapters.lark.media.media', 'fetch_media'),
     'find_lark_cli': ('hyprial.daemon.impl.adapters.lark.credentials.reauth', 'find_lark_cli'),
+    'LinkGate': ('hyprial.daemon.impl.links.ports', 'LinkGate'),
+    'LinkQueries': ('hyprial.daemon.impl.links.ports', 'LinkQueries'),
+    'LinkAdmin': ('hyprial.daemon.impl.links.ports', 'LinkAdmin'),
+    'LinkChangeSource': ('hyprial.daemon.impl.links.ports', 'LinkChangeSource'),
+    'LinkSendObserver': ('hyprial.daemon.impl.links.ports', 'LinkSendObserver'),
     'find_pi_package_root': ('hyprial.daemon.impl.harnesses.pi.loader', 'find_pi_package_root'),
     'follow_lifetime': ('hyprial.daemon.impl.pac.graphs.events', 'follow_lifetime'),
     'harnesses_tmux': ('hyprial.daemon.impl.harnesses.runtime.tmux', None),
@@ -497,16 +536,23 @@ _FACADE_EXPORTS = {
     'resolve_profile': ('hyprial.daemon.impl.configuration.network_profile', 'resolve_profile'),
     'restart_failure_detail': ('hyprial.daemon.impl.autoupdate.alert', 'restart_failure_detail'),
     'restore_followup_budget_seconds': ('hyprial.daemon.impl.correlation.readiness_budget', 'restore_followup_budget_seconds'),
+    'SettleHint': ('hyprial.daemon.impl.links.ports', 'SettleHint'),
     'run_self_check': ('hyprial.daemon.impl.autoupdate.alert', 'run_self_check'),
     'run_transfer': ('hyprial.daemon.impl.transfer.orchestrator', 'run_transfer'),
     'scope_apply_url': ('hyprial.daemon.impl.adapters.lark.credentials.scopes', 'scope_apply_url'),
     'seal_envelope': ('hyprial.daemon.impl.transfer.archive.envelope', 'seal_envelope'),
     'serialize_document': ('hyprial.daemon.impl.org.document', 'serialize_document'),
+    'SUMMARY_MAX_BYTES': ('hyprial.daemon.impl.links.ports', 'SUMMARY_MAX_BYTES'),
+    'SUMMARY_REQUIRED_DATA_KEYS': ('hyprial.daemon.impl.links.ports', 'SUMMARY_REQUIRED_DATA_KEYS'),
+    'summary_from_text': ('hyprial.daemon.impl.inbox.contracts.summary', 'summary_from_text'),
     'serve': ('hyprial.daemon.impl.orgfs.webserver.server', 'serve'),
     'serve_channel_stdio': ('hyprial.daemon.impl.mcp.channel.session', 'serve_channel_stdio'),
     'serve_worker_stdio': ('hyprial.daemon.impl.mcp.server', 'serve_worker_stdio'),
     'session_name_for_actor': ('hyprial.daemon.impl.harnesses.runtime.tmux', 'session_name_for_actor'),
     'signal_channel_recovery': ('hyprial.daemon.impl.mcp.channel.loops', 'signal_channel_recovery'),
+    'TOP_FIELD_CAPACITY_W': ('hyprial.daemon.impl.links.ports', 'TOP_FIELD_CAPACITY_W'),
+    'TOP_FIELD_INBOUND_AWAITING_INJECTION': ('hyprial.daemon.impl.links.ports', 'TOP_FIELD_INBOUND_AWAITING_INJECTION'),
+    'TOP_FIELD_OUTBOUND_IN_FLIGHT': ('hyprial.daemon.impl.links.ports', 'TOP_FIELD_OUTBOUND_IN_FLIGHT'),
     'sign_exported_bundle': ('hyprial.daemon.impl.transfer.archive.attribution', 'sign_exported_bundle'),
     'silence_broken_pipe': ('hyprial.daemon.impl.pac.graphs.events', 'silence_broken_pipe'),
     'smolvm_regular_read': ('hyprial.daemon.impl.transfer.execution.smolvm', '_regular_read'),
@@ -593,6 +639,7 @@ __all__ = [
     'CodexInteractiveAppServer',
     'CodexInteractiveResumeError',
     'CodexInteractiveResumePending',
+    'interactive_channel_config_args',
     'CodexInteractiveCarrier',
     'resolve_codex_executable',
     'DECLARED_HARNESSES',
@@ -636,6 +683,8 @@ __all__ = [
     'QuotaWatchdogDeps',
     'ReceiveError',
     'RecapCaptureState',
+    'ReplyReminderConsumerFactory',
+    'ReplyReminderPort',
     'RestartProcessObservation',
     'RestartProcessState',
     'RouteInput',
@@ -726,11 +775,24 @@ __all__ = [
     'find_pi_package_root',
     'follow_lifetime',
     'harnesses_tmux',
+    'HOLD_REASON_KEY',
+    'HOLD_REASONS',
+    'IPC_LINK_ADD',
+    'IPC_LINK_DROP',
+    'IPC_LINK_LIST',
+    'IPC_LINK_STATS',
+    'IPC_MESSAGE_READ_BODY',
+    'IPC_MESSAGE_SETTLE_HINT',
     'is_human_facing_requester',
     'lark_lifecycle',
     'lark_reauth',
     'latest_start_failure',
     'launch',
+    'LinkAdmin',
+    'LinkChangeSource',
+    'LinkGate',
+    'LinkQueries',
+    'LinkSendObserver',
     'list_gateway_routes',
     'live_daemon_pid',
     'load_envelope',
@@ -796,18 +858,25 @@ __all__ = [
     'serve_channel_stdio',
     'serve_worker_stdio',
     'session_name_for_actor',
+    'SettleHint',
     'signal_channel_recovery',
     'sign_exported_bundle',
     'silence_broken_pipe',
     'smolvm_regular_read',
     'snapshot',
     'start_failure_line',
+    'SUMMARY_MAX_BYTES',
     'support',
     'sync_identities',
     'tcp_probe',
     'transfer_container',
     'public_key_id',
     'retire_trusted_source_key',
+    'SUMMARY_REQUIRED_DATA_KEYS',
+    'summary_from_text',
+    'TOP_FIELD_CAPACITY_W',
+    'TOP_FIELD_INBOUND_AWAITING_INJECTION',
+    'TOP_FIELD_OUTBOUND_IN_FLIGHT',
     'trust_policy_for',
     'trust_store_path',
     'unavailable_notice',

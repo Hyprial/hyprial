@@ -7,6 +7,7 @@ from hyprial.daemon.impl.harnesses.codex.app_server import (
     CodexInteractiveAppServer,
     CodexInteractiveResumeError,
     CodexInteractiveResumePending,
+    interactive_channel_config_args,
 )
 from hyprial.daemon.impl.harnesses.codex.carrier import (
     MANAGED_TURN_IDLE_TIMEOUT_SECONDS,
@@ -65,6 +66,7 @@ __all__ = [
     "CodexInteractiveAppServer",
     "CodexInteractiveResumeError",
     "CodexInteractiveResumePending",
+    "interactive_channel_config_args",
     "CodexInteractiveCarrier",
     "CodexInteractiveTurnClient",
     "CodexNativeLoadEvidence",

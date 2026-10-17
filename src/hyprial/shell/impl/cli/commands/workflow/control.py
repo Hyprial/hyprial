@@ -32,6 +32,7 @@ class _WorkflowNotificationSender:
         sender: str,
         conversation_id: str,
         idempotency_key: str,
+        summary: str,
     ) -> str:
         services = get_services()
 
@@ -49,6 +50,7 @@ class _WorkflowNotificationSender:
                 **identity,
                 "to": [recipient],
                 "message": text,
+                "summary": summary,
                 "conversationId": conversation_id,
                 "idempotencyKey": idempotency_key,
             },

@@ -18,8 +18,15 @@ from hyprial.daemon.impl.inbox.tracking.progress import ProgressEvent
 from hyprial.daemon.impl.api  import (
     HarnessDelivery,
 )
-from hyprial.kernel import DesiredStateError
-from hyprial.daemon.impl.harnesses.turn_delivery.protocol  import is_hook_request
+from hyprial.kernel import DesiredStateError, parse_agent_uri
+from hyprial.daemon.impl.harnesses.carrier.contract import (
+    injection_from_inbox,
+    render_injection,
+)
+from hyprial.daemon.impl.harnesses.turn_delivery.protocol import (
+    is_mechanism_hook_request,
+    mechanism_of,
+)
 from hyprial.kernel import AdmissionResult
 if TYPE_CHECKING:
     pass
@@ -218,12 +225,28 @@ class _BridgeReconcileMixin:
                 initiator="daemon-runtime",
             )
 
+    def _injection_message_text(self, message: InboxMessage) -> str:
+        """What a model carrier injects (WP5-A §3.5).
+
+        Hook exchanges and python_worker frames keep the raw event/body; every
+        model context gets the summary-only block, so a forged hook marker on
+        an ordinary request cannot smuggle the body in.
+        """
+
+        if is_mechanism_hook_request(message):
+            return self._message_text(message)
+        parsed = parse_agent_uri(message.recipient)
+        harness = self._harness_kind(parsed[2]) if parsed is not None else None
+        if harness is not None and mechanism_of(harness) == "python_worker":
+            return self._message_text(message)
+        return render_injection(injection_from_inbox(message))
+
     def _dispatch_harness_deliveries(self) -> int:
         accepted = self._drain_dispatch_offer_outcomes()
         pending_result_ids = getattr(
             self.harnesses, "pending_result_delivery_ids", lambda: frozenset()
         )()
-        dispatchable = getattr(self.inbox, "dispatchable_messages", None)
+        admission_reader = getattr(self.inbox, "admitted_dispatchable", None)
         notice_reader = getattr(self.inbox, "system_notices", None)
         dismiss_notice = getattr(self.inbox, "dismiss_system_notice", None)
         for actor in self.harnesses.streaming_actors():
@@ -234,9 +257,20 @@ class _BridgeReconcileMixin:
             if self._blocked_actor is not None and self._blocked_actor(recipient):
                 continue
             pending_messages = self.inbox.pending_messages(recipient)
+            # The link gate runs on the inbox actor thread (review B3); the
+            # runtime only names rows it has already answered or is settling so
+            # those never newly occupy W.
+            exclude = frozenset(
+                message.message_id
+                for message in pending_messages
+                if message.message_id in pending_result_ids
+                or message.message_id in self._pending_settle_results
+            )
             messages = (
-                dispatchable(recipient, now_ms=self._clock_ms())
-                if callable(dispatchable)
+                admission_reader(
+                    recipient, now_ms=self._clock_ms(), exclude=exclude
+                )
+                if callable(admission_reader)
                 else pending_messages
             )
             notices = (
@@ -250,7 +284,7 @@ class _BridgeReconcileMixin:
                     {message.message_id for message in (*pending_messages, *notices)},
                 )
             for message in messages:
-                hook_request = is_hook_request(message)
+                hook_request = is_mechanism_hook_request(message)
                 if actor_held and not hook_request:
                     # Keep scanning only for mechanism-owned hook requests.
                     # They must be able to reach a dedicated handler even
@@ -261,7 +295,7 @@ class _BridgeReconcileMixin:
                     # accepted enqueue, even if TurnRuntime already released
                     # its own admission during drain_results().
                     continue
-                if message.message_id in self._pending_reply_results:
+                if message.message_id in self._pending_settle_results:
                     # Already answered; only its reply is still settling.
                     # drain_results() released the worker's dedup, so a
                     # dispatch here would run the whole turn again.
@@ -280,7 +314,7 @@ class _BridgeReconcileMixin:
                     conversation_id=message.conversation_id,
                     sender=message.sender,
                     recipient=message.recipient,
-                    message=self._message_text(message),
+                    message=self._injection_message_text(message),
                     origin=self._message_origin(message),
                     hook_request=hook_request,
                 )
@@ -332,9 +366,11 @@ class _BridgeReconcileMixin:
                         conversation_id=notice.conversation_id,
                         sender=notice.sender,
                         recipient=notice.recipient,
-                        message=self._message_text(notice),
+                        message=render_injection(
+                            injection_from_inbox(notice, notice=True)
+                        ),
                         origin=self._message_origin(notice),
-                        hook_request=is_hook_request(notice),
+                        hook_request=is_mechanism_hook_request(notice),
                         notice=True,
                     )
                     if self._delivery_hooks is not None:

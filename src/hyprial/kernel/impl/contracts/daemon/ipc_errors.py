@@ -115,6 +115,28 @@ CHANNEL_NOT_AUTHORIZED = "CHANNEL_NOT_AUTHORIZED"
 ORG_CONTEXT_NOT_AUTHORIZED = "ORG_CONTEXT_NOT_AUTHORIZED"
 MESSAGE_REPLY_UNAVAILABLE = "MESSAGE_REPLY_UNAVAILABLE"
 MESSAGE_REPLY_RESOURCES_UNSUPPORTED = "MESSAGE_REPLY_RESOURCES_UNSUPPORTED"
+# -- send links (docs/design/design-send-links-2026-10-14.md §4, §7, §9) --
+# A send without ``summary``: refused at the send boundary, nothing queued.
+SUMMARY_REQUIRED = "SUMMARY_REQUIRED"
+# Hold reasons.  A held send is ``ok: true, queued: true``: the daemon keeps
+# the message in the sender's outbox and releases it itself.  None of these
+# three is a failure and none may surface as ``ok: false``.
+LINK_PEER_FULL = "LINK_PEER_FULL"
+LINK_SELF_FULL = "LINK_SELF_FULL"
+LINK_WINDOW_FULL = "LINK_WINDOW_FULL"
+# The sender's one-sided reference is written; the peer has not referenced
+# back yet (§4.2).  Also a hold, released when the link becomes effective.
+LINK_MINTING = "LINK_MINTING"
+# Refusals.  LINK_UNKNOWN: the receiving daemon's local orgfs copy holds no
+# link file for the sender at all (the sender never joined the org space;
+# this never self-heals, so it is refused at ingress and recorded as
+# ``refused``).  LINK_RECLAIMED: a reply to a request whose link has since
+# been reclaimed; the residue is drained, not delivered (R11).
+LINK_UNKNOWN = "LINK_UNKNOWN"
+LINK_RECLAIMED = "LINK_RECLAIMED"
+# message.read_body: the caller may not read this body (not its inbox row,
+# already pruned, or fenced out).  Distinct from MESSAGE_ACK_UNAVAILABLE.
+MESSAGE_BODY_UNAVAILABLE = "MESSAGE_BODY_UNAVAILABLE"
 # Minted by the inbox ack path (row missing / already consumed / TTL-pruned
 # all fold into this one result code) and returned through message.ack's
 # IPC result field.  Entered the registry when the codex interactive

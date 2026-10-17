@@ -15,6 +15,7 @@ from hyprial.daemon.impl.pac.workflows.graphs  import input_token
 from hyprial.daemon.impl.pac.workflows.outputs  import validate_workflow_output_text
 from hyprial.daemon.impl.pac.workflows.runtime.types import WorkflowServiceError, _changed, close_workflow
 from hyprial.kernel import canonical_user_uri
+from hyprial.daemon import summary_from_text
 
 # Graphs one workflow tick projects: open ones, unfinished workflows, and closed
 # ones still holding an undelivered actor alert.  The alert test is an
@@ -58,6 +59,8 @@ class _GraphWorkflowServiceOps:
                     sender=item.sender,
                     conversation_id=f"pac-{graph_id}",
                     idempotency_key=f"pac-notify:{item.event_id}:{item.edge}",
+                    # Derived after the rework suffix, which is part of the text.
+                    summary=summary_from_text(text),
                 )
                 if self._delivery_receipt is None:
                     reactor._mark_delivered(item.event_id, item.edge, message)

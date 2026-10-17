@@ -18,6 +18,7 @@ from hyprial.kernel import session_fetch_params
 
 from hyprial.daemon.impl.mcp.api  import DaemonRequestRejected
 from hyprial.daemon.impl.mcp.proxy  import StatelessDaemonProxy
+from hyprial.daemon.impl.links.ports import IPC_MESSAGE_READ_BODY
 
 if TYPE_CHECKING:
     from hyprial.daemon.impl.mcp.channel.adapter  import ClaudeChannelAdapter
@@ -132,45 +133,83 @@ def create_mcp_server(
     @server.tool(
         description=(
             "Send one independent durable asynchronous Harness Network message "
-            "to an explicit agent, user:<owner>, or route:<adapter>:<route> "
-            "target. User delivery is performed by the receiving user's own "
+            "to one or more explicit agent, user:<owner>, or "
+            "route:<adapter>:<route> targets. ``to`` may be an array for "
+            "fan-out. ``summary`` is required and is the only part the "
+            "recipient's context shows first (at most 512 UTF-8 bytes). User "
+            "delivery is performed by the receiving user's own "
             "Squire adapter; route delivery posts to the Lark chat configured "
             "as that route's nativeId and requires the adapter's app to be a "
-            "member of the chat. Any other address scheme is rejected."
+            "member of the chat. Any other address scheme is rejected. "
+            "A first send to an agent without a link is held (ok, queued, "
+            "holdReason) while the daemon mints the link; do not resend. A send "
+            "is never a reply: to answer a request use harness_reply, otherwise "
+            "the request stays open and the new message counts against your "
+            "window."
         )
     )
     async def harness_send(
-        to: NonEmpty, message: NonEmpty, ctx: Context
+        to: NonEmpty | Annotated[list[NonEmpty], Field(min_length=1)],
+        summary: NonEmpty,
+        message: NonEmpty,
+        ctx: Context,
     ) -> dict[str, Any]:
-        # The tool contract is one explicit target; the daemon contract is a
-        # non-empty target array. Wrap here so the string schema never reaches
-        # the daemon unwrapped (INVALID_ARGUMENT: to must be a non-empty array).
-        return await invoke(
-            ctx, "message.send", {"to": [to], "message": message}, mutation=True
-        )
-
-    @server.tool(
-        description=(
-            "Reply to one pending Harness request and acknowledge it only after "
-            "the daemon durably accepts the reply."
-        )
-    )
-    async def harness_reply(
-        messageId: NonEmpty, message: NonEmpty, ctx: Context
-    ) -> dict[str, Any]:
-        if channel_adapter is not None:
-            return await channel_adapter.harness_reply(messageId, message)
+        # The tool contract is one target or a non-empty list; the daemon
+        # contract is always a non-empty target array. Wrap here so the string
+        # schema never reaches the daemon unwrapped (INVALID_ARGUMENT: to must
+        # be a non-empty array).
+        targets = [to] if isinstance(to, str) else list(to)
         return await invoke(
             ctx,
-            "message.reply",
-            {"messageId": messageId, "message": message},
+            "message.send",
+            {"to": targets, "summary": summary, "message": message},
             mutation=True,
         )
 
     @server.tool(
         description=(
-            "Read the daemon-owned durable inbox. Messages remain pending until "
-            "harness_reply or harness_ack succeeds."
+            "Reply to one pending Harness request and acknowledge it only after "
+            "the daemon durably accepts the reply. ``summary`` is required and "
+            "is what the recipient sees first. Only a reply closes a request. "
+            "LINK_RECLAIMED means the link was reclaimed and the request was "
+            "drained; ack instead."
+        )
+    )
+    async def harness_reply(
+        messageId: NonEmpty, summary: NonEmpty, message: NonEmpty, ctx: Context
+    ) -> dict[str, Any]:
+        if channel_adapter is not None:
+            return await channel_adapter.harness_reply(messageId, summary, message)
+        return await invoke(
+            ctx,
+            "message.reply",
+            {"messageId": messageId, "summary": summary, "message": message},
+            mutation=True,
+        )
+
+    @server.tool(
+        description=(
+            "Read one message body by ID. A consuming action: the daemon "
+            "records it as fetched, but the message stays pending until "
+            "harness_reply or harness_ack."
+        )
+    )
+    async def harness_read_body(
+        messageId: NonEmpty, ctx: Context
+    ) -> dict[str, Any]:
+        return await invoke(
+            ctx,
+            IPC_MESSAGE_READ_BODY,
+            {"messageId": messageId},
+            mutation=True,
+        )
+
+    @server.tool(
+        description=(
+            "Read the daemon-owned durable inbox, returning each message's "
+            "summary and body byte count. Use harness_read_body for the full "
+            "body. Messages remain pending until harness_reply or harness_ack "
+            "succeeds."
         )
     )
     async def harness_read(ctx: Context) -> dict[str, Any]:

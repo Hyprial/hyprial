@@ -30,6 +30,9 @@ class _WiringServicesMixin:
         from hyprial.daemon.impl.pac.storage.store import default_database_path
         from hyprial.daemon.impl.pac.actors.gc  import PacGc
         from hyprial.kernel import HookEventPublisher
+        from hyprial.daemon.impl.composition.links import compose_link_service
+
+        compose_link_service(self, graph)  # WP2: before PAC (W10); never raises
 
         # H5: one publisher over the same HookBus DaemonHookService owns, so
         # PAC graph/worker facts and turn facts share one bus and one daemon

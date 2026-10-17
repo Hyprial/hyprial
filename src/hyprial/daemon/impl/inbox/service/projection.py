@@ -1,4 +1,5 @@
 from __future__ import annotations
+import json
 from collections.abc import Callable
 from typing import Self
 from hyprial.daemon.impl.inbox.contracts.api  import (
@@ -14,6 +15,26 @@ from hyprial.daemon.impl.inbox.service.delivery.notices import _ExpiredSenderNot
 from hyprial.daemon.impl.inbox.service.synchronization import _synchronized
 
 """SQLite-backed outbox, inbox, deduplication, FIFO, DLQ and custody state."""
+
+
+def _dispatch_reply_to(message: InboxMessage) -> str | None:
+    """The reply association of a message, from its JSON body (review B1.2).
+
+    Only a non-empty ``replyTo`` string counts.  A missing key, a wrong type
+    or un-decodable body is no association -- never guessed from the text,
+    the conversation id or the message id.
+    """
+
+    try:
+        body = json.loads(message.payload)
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(body, dict):
+        return None
+    reply_to = body.get("replyTo")
+    if isinstance(reply_to, str) and reply_to:
+        return reply_to
+    return None
 
 class InboxServiceProjectionMixin:
     @_synchronized
@@ -132,6 +153,10 @@ class InboxServiceProjectionMixin:
             and (notice := self._expired_sender_notice(row, now_ms)) is not None
         )
         with self._db:
+            for row in rows:
+                self._ledger_expire_inbound_locked(
+                    str(row["recipient"]), str(row["message_id"])
+                )
             self._db.execute(
                 """DELETE FROM inbox
                    WHERE consumed = 0
@@ -139,6 +164,8 @@ class InboxServiceProjectionMixin:
                      AND expires_at_ms <= ?""",
                 (now_ms,),
             )
+        for row in rows:
+            self._forget_admission(str(row["message_id"]))
         items = tuple(
             InboxPruneItem(
                 message_id=str(row["message_id"]),
@@ -295,20 +322,64 @@ class InboxServiceProjectionMixin:
                             OR harness_failure_settlements.next_attempt_ms > ?
                         )
                  )
+                 AND (inbox.fetched_at_ms IS NULL
+                      OR EXISTS (
+                          SELECT 1 FROM harness_failure_settlements s
+                           WHERE s.message_id = inbox.message_id
+                             AND s.terminal = 0 AND s.next_attempt_ms <= ?
+                      ))
                ORDER BY arrival_id""",
-            (recipient, now, now),
+            (recipient, now, now, now),
         ).fetchall()
         return tuple(self._row_message(row) for row in rows)
+
+    @_synchronized
+    def fetched_between(
+        self,
+        recipient: str,
+        *,
+        since_ms: int,
+        until_ms: int,
+        since_inclusive: bool,
+    ) -> tuple[str, ...]:
+        """Message ids whose first fetch stamp falls in the window.
+
+        ``fetched_at_ms`` is written once (``COALESCE``): this is the
+        injection evidence for session carriers, not a reassembly cursor.
+        """
+
+        comparison = ">=" if since_inclusive else ">"
+        rows = self._db.execute(
+            f"""SELECT message_id FROM inbox
+                 WHERE recipient = ? AND fetched_at_ms IS NOT NULL
+                   AND fetched_at_ms {comparison} ? AND fetched_at_ms <= ?
+                 ORDER BY arrival_id""",  # noqa: S608
+            (recipient, since_ms, until_ms),
+        ).fetchall()
+        return tuple(str(row["message_id"]) for row in rows)
+
     @_synchronized
     def fetch_pending(
-        self, recipient: str, *, now_ms: int | None = None
+        self,
+        recipient: str,
+        *,
+        now_ms: int | None = None,
+        only: frozenset[str] | None = None,
+        completed_turn: bool = False,
     ) -> tuple[InboxMessage, ...]:
         """Record one real pull and retire same-daemon sender holds.
 
         Background Channel observation must use ``pending_messages``.  This
         method is reserved for the public ``harness_read`` fetch boundary.
+        ``only`` restricts the pull to a candidate set; it is only a filter,
+        not an admission decision (that lives in ``fetch_pending_admitted``).
+
+        ``completed_turn`` (WP5-A §3.3) additionally clears the row's
+        non-terminal failure retries, in the same transaction as the stamp.
         """
 
+        if completed_turn and only is None:
+            raise ValueError("completed_turn requires an explicit candidate id")
         now = self._now_ms() if now_ms is None else now_ms
         rows = self._db.execute(
             """SELECT * FROM inbox
@@ -323,15 +394,191 @@ class InboxServiceProjectionMixin:
             (recipient, now),
         ).fetchall()
         messages = tuple(self._row_message(row) for row in rows)
+        if only is not None:
+            messages = tuple(m for m in messages if m.message_id in only)
+        if not messages:
+            return ()
+        meta = self._inbound_ledger_meta(messages)
         with self._db:
             self._db.executemany(
                 """UPDATE inbox SET fetched_at_ms = COALESCE(fetched_at_ms, ?)
                     WHERE message_id = ?""",
                 ((now, message.message_id) for message in messages),
             )
+            fresh = [
+                message
+                for message in messages
+                if self._write_inbound_ledger_locked(
+                    actor=recipient,
+                    message=message,
+                    received_at_ms=meta[message.message_id][0],
+                    expires_at_ms=meta[message.message_id][1],
+                )
+            ]
+            self._clear_nonterminal_failures(messages, completed_turn)
+        for message in fresh:
+            self._sink_injected(recipient, message, meta[message.message_id][0])
         for message in messages:
             self.retire_outbox_receipt(message.sender, message.message_id, now_ms=now)
         return messages
+
+    @_synchronized
+    def admitted_pending(
+        self,
+        recipient: str,
+        *,
+        now_ms: int | None = None,
+        exclude: frozenset[str] = frozenset(),
+    ) -> tuple[InboxMessage, ...]:
+        """Live pending rows this recipient may inject (review B3).
+
+        Runs on the inbox actor thread so every ``admit_dispatch`` call shares
+        one W reservation authority.  ``exclude`` are rows the runtime already
+        answered or is settling; they are dropped before the gate is asked, so
+        they never newly occupy W.
+        """
+
+        now = self._now_ms() if now_ms is None else now_ms
+        return self._admit_dispatch(
+            self.pending_messages(recipient, now_ms=now), now, exclude
+        )
+
+    @_synchronized
+    def admitted_dispatchable(
+        self,
+        recipient: str,
+        *,
+        now_ms: int | None = None,
+        exclude: frozenset[str] = frozenset(),
+    ) -> tuple[InboxMessage, ...]:
+        """Dispatchable rows (failure backoff elapsed) this recipient may inject."""
+
+        now = self._now_ms() if now_ms is None else now_ms
+        return self._admit_dispatch(
+            self.dispatchable_messages(recipient, now_ms=now), now, exclude
+        )
+
+    @_synchronized
+    def fetch_pending_admitted(
+        self,
+        recipient: str,
+        *,
+        now_ms: int | None = None,
+        only: frozenset[str] | None = None,
+        completed_turn: bool = False,
+    ) -> tuple[InboxMessage, ...]:
+        """Admit, then stamp fetched, in one actor command (review B3.3).
+
+        Re-reads live rows inside the actor, keeps only ``only`` candidates,
+        asks the gate for each and stamps only what it admitted.  A row that
+        expired, was consumed or was acked between the candidate query and this
+        command is not live and therefore never returned or stamped.
+
+        ``completed_turn`` (WP5-A §3.3): a successful headless turn also
+        clears the row's non-terminal failure retries in the same transaction,
+        so the durable fetched stamp never blocks a later retry.
+        """
+
+        if completed_turn and only is None:
+            raise ValueError("completed_turn requires an explicit candidate id")
+        now = self._now_ms() if now_ms is None else now_ms
+        candidates = self.pending_messages(recipient, now_ms=now)
+        if only is not None:
+            candidates = tuple(m for m in candidates if m.message_id in only)
+        admitted = self._admit_dispatch(candidates, now, frozenset())
+        if not admitted:
+            return ()
+        meta = self._inbound_ledger_meta(admitted)
+        with self._db:
+            self._db.executemany(
+                """UPDATE inbox SET fetched_at_ms = COALESCE(fetched_at_ms, ?)
+                    WHERE message_id = ?""",
+                ((now, message.message_id) for message in admitted),
+            )
+            fresh = [
+                message
+                for message in admitted
+                if self._write_inbound_ledger_locked(
+                    actor=recipient,
+                    message=message,
+                    received_at_ms=meta[message.message_id][0],
+                    expires_at_ms=meta[message.message_id][1],
+                )
+            ]
+            self._clear_nonterminal_failures(admitted, completed_turn)
+        for message in fresh:
+            self._sink_injected(recipient, message, meta[message.message_id][0])
+        for message in admitted:
+            self.retire_outbox_receipt(message.sender, message.message_id, now_ms=now)
+        return admitted
+
+    def _clear_nonterminal_failures(
+        self, messages: tuple[InboxMessage, ...], completed_turn: bool
+    ) -> None:
+        """Drop retry eligibility for a successfully completed turn only.
+
+        The append-only attempt log and any terminal tombstone stay; a FAILED
+        turn never calls this.
+        """
+
+        if not completed_turn:
+            return
+        self._db.executemany(
+            """DELETE FROM harness_failure_settlements
+                WHERE message_id = ? AND terminal = 0""",
+            ((message.message_id,) for message in messages),
+        )
+
+    def _inbound_ledger_meta(
+        self, messages: tuple[InboxMessage, ...]
+    ) -> dict[str, tuple[int, int]]:
+        """Each message id's durable ``(received_at_ms, expires_at_ms)`` (B7)."""
+
+        placeholders = ", ".join("?" for _ in messages)
+        rows = self._db.execute(
+            f"""SELECT message_id, received_at_ms, expires_at_ms FROM inbox
+                 WHERE message_id IN ({placeholders})""",  # noqa: S608
+            tuple(message.message_id for message in messages),
+        ).fetchall()
+        meta: dict[str, tuple[int, int]] = {}
+        now = self._now_ms()
+        for row in rows:
+            received_at_ms = int(row["received_at_ms"])
+            expires = row["expires_at_ms"]
+            meta[str(row["message_id"])] = (
+                received_at_ms,
+                int(expires) if expires is not None else now + self.durable_ttl_ms,
+            )
+        return meta
+
+    def _admit_dispatch(
+        self,
+        messages: tuple[InboxMessage, ...],
+        now_ms: int,
+        exclude: frozenset[str],
+    ) -> tuple[InboxMessage, ...]:
+        admission = self._link_admission
+        admitted: list[InboxMessage] = []
+        for message in messages:
+            if message.message_id in exclude:
+                continue
+            if admission.dispatch_admitted(
+                sender=message.sender,
+                recipient=message.recipient,
+                intent=message.intent,
+                message_id=message.message_id,
+                now_ms=now_ms,
+                reply_to=_dispatch_reply_to(message),
+            ):
+                admitted.append(message)
+        return tuple(admitted)
+    def _forget_admission(self, message_id: str) -> None:
+        """Drop in-memory held/admitted state once a row is no longer live."""
+
+        forget = getattr(self._link_admission, "forget", None)
+        if callable(forget):
+            forget(message_id)
+
     @_synchronized
     def has_fetched(self, message_id: str) -> bool:
         row = self._db.execute(

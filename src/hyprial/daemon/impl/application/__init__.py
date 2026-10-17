@@ -18,7 +18,7 @@ import time
 import weakref
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import Any
 from uuid import uuid4
 from hyprial.kernel import GenerationScheduler
 from hyprial.daemon.impl.correlation.bounded_cadence  import BoundedCadence
@@ -86,6 +86,7 @@ from hyprial.daemon.impl.application.ports import (
     QuotaEvaluatorFactory,
     QuotaHookConsumerFactory,
     QuotaWatchdogDeps,
+    ReplyReminderConsumerFactory,
     HookConsumersFactory,
     RoutineRuntime as RoutineRuntime,
     RoutineRuntimeFactory,
@@ -136,9 +137,11 @@ from hyprial.kernel  import CallCostCounters
 from hyprial.daemon.impl.configuration.home_guard  import keepalive_duration_from_environment
 from hyprial.daemon.impl.configuration.home_lease_actor  import HomeLeaseAuthority as ActiveDaemonHeartbeat
 from hyprial.daemon.impl.runtime  import DaemonEventBridge, ReconcileSummary
+from hyprial.daemon.impl.dispatch.admission import (
+    LinkAdmission,
+)
+from hyprial.kernel import RESERVED_AGENT_ACTOR_NAMES
 from hyprial.daemon.impl.operations.top  import InteractiveTurnStats
-if TYPE_CHECKING:
-    pass
 
 from hyprial.daemon.impl.application.startup import _StartupMixin
 from hyprial.daemon.impl.application.shutdown import _ShutdownMixin
@@ -156,6 +159,9 @@ from hyprial.daemon.impl.application.actors.agents_admin.destroys import _AgentD
 from hyprial.daemon.impl.application.actors.agents_registry import _AgentsRegistryMixin
 from hyprial.daemon.impl.application.actors.sessions.routes import _SessionRoutesMixin
 from hyprial.daemon.impl.application.actors.sessions.registry import _SessionRegistryMixin
+from hyprial.daemon.impl.application.actors.sessions.turns import (
+    _SessionTurnsMixin,
+)
 from hyprial.daemon.impl.application.actors.transfer import _TransferOpsMixin
 from hyprial.daemon.impl.application.actors.transfer_p2 import _TransferP2Mixin
 from hyprial.daemon.impl.application.actors.lifecycle_ops import _LifecycleOpsMixin
@@ -239,6 +245,7 @@ class DaemonApplication(
     _AgentsRegistryMixin,
     _SessionRoutesMixin,
     _SessionRegistryMixin,
+    _SessionTurnsMixin,
     _TransferOpsMixin,
     _TransferP2Mixin,
     _LifecycleOpsMixin,
@@ -258,6 +265,12 @@ class DaemonApplication(
     _IpcServerMixin,
 ):
     """Own the real runtime graph and expose it through newline-delimited IPC."""
+
+    @property
+    def link_admission(self) -> LinkAdmission:
+        """The one composed send-link admission slot (WP2 binds it once)."""
+
+        return self._link_admission
 
     def _abort_initialization(self) -> None:
         """Release already-started authorities after a constructor failure."""
@@ -308,6 +321,7 @@ class DaemonApplication(
         usage_cache: UsageCollection | None = None,
         quota_evaluator_factory: QuotaEvaluatorFactory | None = None,
         quota_hook_consumer_factory: QuotaHookConsumerFactory | None = None,
+        reply_reminder_consumer_factory: ReplyReminderConsumerFactory | None = None,
         routine_runtime_factory: RoutineRuntimeFactory,
         routine_text_loader: RoutineTextLoader,
         routine_template_renderer: RoutineTemplateRenderer,
@@ -497,6 +511,10 @@ class DaemonApplication(
         self._interactive_route_versions: dict[tuple[str, str | None], int] = {}
         self._directory: LivelinessDirectory | None = None
         self._inbox: DeliveryCustodyFacade | None = None
+        # There is no second gate slot (README ruling 67 / WP4): the one gate
+        # lives in ``self._link_admission`` and composition binds it once
+        # through ``app.link_admission``.  Until then an agent-to-agent body
+        # is not readable and dispatch holds (README ruling 26).
         self._outbox_recipient_wakes = _BoundedRecipientWakes()
         self._inbox_coordinator: DeliveryCustodyCoordinator | None = None
         self._recipient_wakes: RecipientWakeCoordinator | None = None
@@ -545,6 +563,8 @@ class DaemonApplication(
         self._interactive_route_resource_tokens: dict[tuple[str, str], str] = {}
         self._interactive_turn_stats_lock = threading.Lock()
         self._interactive_turn_stats: dict[str, InteractiveTurnStats] = {}
+        #: Per ``(actor, sessionRef)`` started/ended report receipts (WP5-A §4.2).
+        self._carrier_turn_ledgers: dict[tuple[str, str], object] = {}
         self._clock: Callable[[], float] = time.monotonic
         self._maintenance_scheduler = GenerationScheduler()
         # Sees the tick that never returns, which reconcile_overrun cannot.
@@ -744,6 +764,17 @@ class DaemonApplication(
         self._gateway_logger = self._construct_or_rollback(lambda: Logger.adapter(
             self.state_dir, name=self.node_id, asynchronous=True, capacity=4096
         ))
+        # One send-link admission slot for the whole daemon (WP4).  Composition
+        # passes this exact object to the inbox custody actor and the runtime
+        # bridge; WP2 binds the real gate once through ``app.link_admission``.
+        # The exempt set is the kernel's reserved-name contract (README rulings
+        # 45/51/63): the parsed actor segment is compared exactly on any owner
+        # and node, so an ordinary agent's intent, hook flag or ``_``-prefixed
+        # name must never widen the exemption (review B2).
+        self._link_admission = LinkAdmission(
+            internal_actors=RESERVED_AGENT_ACTOR_NAMES,
+            logger=self._log,
+        )
         if keep_migration.migrated:
             self._log(
                 "info",
@@ -790,6 +821,7 @@ class DaemonApplication(
         # only with the cache -- no readings, nothing to watch.
         self._quota_watchdog: QuotaWatchdog | None = None
         self._quota_hook_consumer_factory = quota_hook_consumer_factory
+        self._reply_reminder_consumer_factory = reply_reminder_consumer_factory
         if usage_cache is not None:
             if quota_evaluator_factory is None:
                 self._log(
@@ -891,6 +923,7 @@ class DaemonApplication(
         routine_template_renderer: RoutineTemplateRenderer,
         quota_evaluator_factory: QuotaEvaluatorFactory | None = None,
         quota_hook_consumer_factory: QuotaHookConsumerFactory | None = None,
+        reply_reminder_consumer_factory: ReplyReminderConsumerFactory | None = None,
         hook_consumers: HookConsumersFactory | None = None,
     ) -> DaemonApplication:
         node_id = resolve_node_id()
@@ -924,6 +957,7 @@ class DaemonApplication(
             usage_cache=None if isolated else usage_factory(),
             quota_evaluator_factory=quota_evaluator_factory,
             quota_hook_consumer_factory=quota_hook_consumer_factory,
+            reply_reminder_consumer_factory=reply_reminder_consumer_factory,
             hook_consumers=hook_consumers,
             routine_runtime_factory=routine_runtime_factory,
             routine_text_loader=routine_text_loader,

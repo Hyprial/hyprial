@@ -54,7 +54,30 @@ class DeliveryCustodySubmitMixin:
             self._reject_correlation(command.correlation_id)
             return
         now = self._service._now_ms() if command.now_ms is None else command.now_ms
-        self._service._insert_outbox(command.message, now)
+        self._service._insert_outbox(
+            command.message,
+            now,
+            link_hold=command.link_hold,
+            link_open=command.link_open,
+            link_reply_close=command.link_reply_close,
+        )
+        if command.link_hold is not None:
+            # A held message only enters durable state: no I/O on this command
+            # (WP2 §2.4, §3.6).  The receipt stays queued so a replay joins it.
+            version = self._committed_version()
+            result = SubmissionResult(command.message.message_id, True, queued=True)
+            self._persist_submission_receipt(
+                command.correlation_id,
+                command.message,
+                result,
+                now,
+            )
+            self._publish_submission(
+                command.correlation_id,
+                version,
+                result,
+            )
+            return
         if command.defer_direct:
             version = self._committed_version()
             result = SubmissionResult(command.message.message_id, True, queued=True)
@@ -280,16 +303,22 @@ class DeliveryCustodySubmitMixin:
             )
     @staticmethod
     def _submission_command_digest(message: InboxMessage) -> str:
+        command: dict[str, object] = {
+            "conversation_id": message.conversation_id,
+            "sender": message.sender,
+            "recipient": message.recipient,
+            "payload": message.payload.hex(),
+            "intent": message.intent,
+            "lifecycle": message.lifecycle.value,
+            "idempotency_key": message.idempotency_key,
+        }
+        # Only when a summary exists: a summary-less command keeps the exact
+        # historical digest, so already-settled receipts still join their
+        # retry after an upgrade.
+        if message.summary is not None:
+            command["summary"] = message.summary
         body = json.dumps(
-            {
-                "conversation_id": message.conversation_id,
-                "sender": message.sender,
-                "recipient": message.recipient,
-                "payload": message.payload.hex(),
-                "intent": message.intent,
-                "lifecycle": message.lifecycle.value,
-                "idempotency_key": message.idempotency_key,
-            },
+            command,
             sort_keys=True,
             separators=(",", ":"),
         ).encode()

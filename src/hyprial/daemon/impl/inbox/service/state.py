@@ -13,4 +13,5 @@ class ConsumptionState(StrEnum):
     CONSUMED = "consumed"    # inbox row consumed, or pruned with a FETCHED record
     FAILED = "failed"        # retained row has a durable terminal failure tombstone
     EXPIRED = "expired"      # terminal record says expired (TTL eviction)
+    REFUSED = "refused"      # terminal record says ingress refused LINK_UNKNOWN
     UNKNOWN = "unknown"      # no row and no record (never seen, or purged)

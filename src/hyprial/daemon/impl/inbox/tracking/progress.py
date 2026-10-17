@@ -17,9 +17,8 @@ Consumer rules pinned by this contract (golden-tested):
    self-contained.  This is the wall between route C and chunked streaming.
 3. The only legal uses of ``seq`` are ordering and "how much did I miss"
    (with ``droppedSinceSeq``).
-4. A progress event is never authoritative output: the terminal reply via
-   ``_reply_and_ack`` is the only authority.  Losing every event must lose
-   nothing.
+4. A progress event is never authoritative output: the daemon-side terminal result settlement is the only authority.
+   Losing every event must lose nothing.
 5. Progress events are not replyable, not ackable, and never enter the
    inbox FIFO (offered-once semantics, like notices).
 """

@@ -59,6 +59,9 @@ class DeliveryCustodyOutcomesMixin:
                     reason=HoldReason.ACK_RECEIVED,
                     now_ms=now_ms,
                 )
+                self._service._ledger_sent_for_outbox_locked(
+                    item.message.message_id, now_ms
+                )
                 self._service._db.execute(
                     "DELETE FROM outbox WHERE message_id = ?",
                     (item.message.message_id,),
@@ -78,6 +81,9 @@ class DeliveryCustodyOutcomesMixin:
                 custody_mailbox=outcome.custody_mailbox,
             )
             with self._service._db:
+                self._service._ledger_sent_for_outbox_locked(
+                    item.message.message_id, now_ms
+                )
                 self._service._db.execute(
                     "DELETE FROM outbox WHERE message_id = ?",
                     (item.message.message_id,),
@@ -99,6 +105,9 @@ class DeliveryCustodyOutcomesMixin:
                 code="TARGET_OFFLINE",
             )
             with self._service._db:
+                self._service._ledger_sent_for_outbox_locked(
+                    item.message.message_id, now_ms
+                )
                 self._service._db.execute(
                     "DELETE FROM outbox WHERE message_id = ?",
                     (item.message.message_id,),

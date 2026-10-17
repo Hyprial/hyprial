@@ -17,11 +17,15 @@
  *      { deliverAs: "followUp" })`. deliverAs is ALWAYS passed: it is ignored
  *      when idle (message sends immediately) and queues safely while the user
  *      is mid-turn, so there is no idle/streaming check to race;
- *   4. completes deliveries only after the run actually settled: request
- *      intents get `message.reply` with the run's final assistant text,
- *      everything else gets `message.ack`. Injection/acceptance is never
- *      treated as delivery — completion is reply/ack or nothing;
- *   5. unregisters on `session_shutdown`.
+ *   4. reports the turn: `session.turn.started` before the fetched read,
+ *      `session.turn.ended` when the run settles, both under one reportId,
+ *      held and retried until the daemon confirms (an extension restart is a
+ *      new session and drops unconfirmed reports);
+ *   5. after the turn ends, asks `message.settle_hint` for every injected id
+ *      and obeys it: "ack" -> `message.ack`, "keep" -> send nothing. The
+ *      carrier never replies on anyone's behalf and injects a summary only;
+ *      the body is read on demand by the model through the harness tools;
+ *   6. unregisters on `session_shutdown`.
  *
  * Fence semantics inherited from the Claude Channel carrier:
  *   - SESSION_SUPERSEDED is terminal: go quiet, never re-register;
@@ -34,6 +38,8 @@
  *
  * Test hook: HYPRIAL_PI_ATTACH_POLL_MS overrides the poll cadence.
  */
+
+import { randomUUID } from "node:crypto";
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import bridgeFactory from "./pi_harness_bridge.ts";
@@ -72,14 +78,25 @@ const MAX_INJECT_RETRIES = 2;
 
 /** Daemon error codes produced by the fenced interactive-session calls. */
 const CODE_SUPERSEDED = "SESSION_SUPERSEDED";
-const CODE_REPLY_UNAVAILABLE = "MESSAGE_REPLY_UNAVAILABLE";
+const CODE_STALE = "STALE_SESSION";
+const CODE_ACK_UNAVAILABLE = "MESSAGE_ACK_UNAVAILABLE";
+const SUMMARY_FREE = "(none; the sender gave no summary)";
+const REPORT_RETRY_CAP_MS = 5000; // ceiling of the turn-report retry backoff
+
+interface TurnReport {
+  phase: "started" | "ended";
+  reportId: string;
+  status?: "completed" | "failed";
+}
 
 interface PendingMessage {
   messageId: string;
   from: string;
   to: string;
   intent: string;
-  text: string;
+  kind: "message" | "notice";
+  summary: string | null;
+  bodyBytes: number;
   /** Resolved human sender line, or null when the adapter reported none. */
   sender: string | null;
 }
@@ -133,13 +150,10 @@ interface OutstandingBatch {
   /** True once a user message_start carried injectedText into a real run. */
   consumed: boolean;
   injectRetries: number;
-  /** Final assistant text captured at agent_end of the consuming run. */
-  finalText: string | null;
   /**
-   * True once agent_settled started completing this batch.  Only then may the
-   * poll lane retry a completion (card b84cbc44: before this flag a poll tick
-   * between agent_end and agent_settled replied early, and settled replied
-   * again while that reply was still in flight).
+   * True once agent_settled started settling this batch.  Only then may the
+   * poll lane retry a settlement (a poll tick between agent_end and
+   * agent_settled must not settle early).
    */
   settled: boolean;
 }
@@ -148,29 +162,6 @@ function errorCode(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   const colon = message.indexOf(":");
   return colon > 0 ? message.slice(0, colon) : message;
-}
-
-/** Mirror hyprial.harnesses.pi_rpc._final_assistant_text. */
-function finalAssistantText(messages: unknown): string | null {
-  if (!Array.isArray(messages)) return null;
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const candidate = messages[index] as {
-      role?: unknown;
-      content?: unknown;
-      stopReason?: unknown;
-    };
-    if (candidate?.role !== "assistant") continue;
-    if (!Array.isArray(candidate.content) ||
-        candidate.stopReason === "error" || candidate.stopReason === "aborted") return null;
-    const parts = (candidate.content as Array<{ type?: unknown; text?: unknown }>)
-      .filter(
-        (item) => item?.type === "text" && typeof item.text === "string",
-      )
-      .map((item) => item.text as string);
-    const text = parts.join("\n");
-    return text.trim() ? text : null;
-  }
-  return null;
 }
 
 /** Extract the plain text of a message_start user message, mirroring pi's
@@ -189,15 +180,17 @@ function parsePending(result: Record<string, unknown>): PendingMessage[] {
   if (!Array.isArray(raw)) return [];
   const messages: PendingMessage[] = [];
   for (const item of raw) {
-    const record = item as Record<string, unknown>;
-    if (typeof record.messageId !== "string" || !record.messageId) continue;
+    const row = item as Record<string, unknown>;
+    if (typeof row.messageId !== "string" || !row.messageId) continue;
     messages.push({
-      messageId: record.messageId,
-      from: typeof record.from === "string" ? record.from : "unknown",
-      to: typeof record.to === "string" ? record.to : "unknown",
-      intent: typeof record.intent === "string" ? record.intent : "event",
-      text: typeof record.message === "string" ? record.message : "",
-      sender: describeSender(record.origin),
+      messageId: row.messageId,
+      from: typeof row.from === "string" ? row.from : "unknown",
+      to: typeof row.to === "string" ? row.to : "unknown",
+      intent: typeof row.intent === "string" ? row.intent : "event",
+      kind: row.kind === "notice" ? "notice" : "message",
+      summary: typeof row.summary === "string" ? row.summary : null,
+      bodyBytes: Number.isInteger(row.bodyBytes) ? (row.bodyBytes as number) : 0,
+      sender: describeSender(row.origin),
     });
   }
   return messages;
@@ -205,6 +198,19 @@ function parsePending(result: Record<string, unknown>): PendingMessage[] {
 
 function senderSuffix(message: PendingMessage): string {
   return message.sender === null ? "" : `; sender: ${message.sender}`;
+}
+
+/** wp5.md 2.3, byte for byte; tests/daemon/harnesses/carrier/injection_golden.json. */
+function injectionBlock(message: PendingMessage): string {
+  if (message.kind === "notice") return `notice: ${message.summary ?? ""}`;
+  const id = message.messageId;
+  return (
+    `summary: ${message.summary ? message.summary : SUMMARY_FREE}\n` +
+    `(intent: ${message.intent}, kind: message, messageId: ${id}, ` +
+    `bodyBytes: ${message.bodyBytes})\n` +
+    `Full body: harness_read_body("${id}") or \`hyprial read ${id}\`. ` +
+    `Reply with harness_reply("${id}", …); if no reply is needed, harness_ack("${id}").`
+  );
 }
 
 function formatBatch(messages: PendingMessage[]): string {
@@ -215,7 +221,7 @@ function formatBatch(messages: PendingMessage[]): string {
       `(intent: ${message.intent}, messageId: ${message.messageId})` +
       senderSuffix(message) +
       `]\n` +
-      message.text
+      injectionBlock(message)
     );
   }
   const body = messages
@@ -225,13 +231,12 @@ function formatBatch(messages: PendingMessage[]): string {
         `(intent: ${message.intent}, messageId: ${message.messageId})` +
         senderSuffix(message) +
         `\n` +
-        message.text,
+        injectionBlock(message),
     )
     .join("\n\n");
   return (
     `[Harness Network: ${messages.length} pending messages. ` +
-    `Answer each in this transcript; your final reply is sent back ` +
-    `to every requester.]\n\n${body}`
+    `Each item below is a summary only; read a body on demand and reply or ack each item explicitly.]\n\n${body}`
   );
 }
 
@@ -273,7 +278,16 @@ export default function (pi: ExtensionAPI) {
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
   let heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
   let outstanding: OutstandingBatch | null = null;
-  const completed = new Set<string>(); // reply/ack accepted (or already done)
+  const completed = new Set<string>(); // ack accepted (or already done)
+  const kept = new Set<string>();
+  let openTurn: string | null = null;
+  const reportQueue: TurnReport[] = [];
+  let reportFlight: Promise<boolean> | null = null;
+  let reportFailures = 0;
+  let reportRetryAt = 0;
+  let reportTimer: ReturnType<typeof setTimeout> | null = null;
+  let agentRunning = false;
+  let lastUi: { notify(msg: string, type?: "info" | "warning" | "error"): void } | null = null;
   const queuedForInjection = new Set<string>();
 
   function signed(params: Record<string, unknown> = {}) {
@@ -301,6 +315,85 @@ export default function (pi: ExtensionAPI) {
     if (heartbeatTimer !== null) clearTimeout(heartbeatTimer);
     pollTimer = null;
     heartbeatTimer = null;
+    if (reportTimer !== null) clearTimeout(reportTimer);
+    reportTimer = null;
+  }
+
+  function notify(message: string, type: "info" | "warning" | "error" = "warning") {
+    lastUi?.notify(message, type);
+  }
+
+  /** One wakeup for the held queue head; re-armed wherever it is found early. */
+  function armReportTimer() {
+    if (stopped || watch.quiet || reportTimer !== null) return;
+    reportTimer = setTimeout(() => {
+      reportTimer = null;
+      void flushReports();
+    }, Math.max(reportRetryAt - Date.now(), 0));
+  }
+
+  async function sendHeadReport(): Promise<boolean> {
+    const head = reportQueue[0];
+    try {
+      const started = head.phase === "started";
+      await callDaemon(
+        started
+          ? "session.turn.started"
+          : "session.turn.ended",
+        signed(started ? { reportId: head.reportId } : { reportIds: [head.reportId], status: head.status }),
+        true,
+      );
+    } catch (error) {
+      const code = errorCode(error);
+      if (code === CODE_SUPERSEDED || code === CODE_STALE) {
+        // Never acceptable for this session: drop, do not retry.
+        reportQueue.length = 0;
+        openTurn = null;
+        watch.observeRejection(code);
+        if (watch.quiet) stopLaneTimers();
+        notify(`Harness attach dropped its turn reports: ${String(error)}`);
+        return false;
+      }
+      reportFailures += 1;
+      const delay = Math.min(pollBaseMs * 2 ** (reportFailures - 1), REPORT_RETRY_CAP_MS);
+      reportRetryAt = Date.now() + delay;
+      armReportTimer();
+      return false;
+    }
+    reportQueue.shift();
+    reportFailures = reportRetryAt = 0;
+    return true;
+  }
+
+  /** In order; the head must be confirmed before the next report is sent. */
+  async function flushReports(force = false): Promise<void> {
+    while (reportQueue.length > 0) {
+      if (reportFlight !== null) {
+        await reportFlight;
+        continue;
+      }
+      if (!force && Date.now() < reportRetryAt) return armReportTimer(); // never strand a held head
+      reportFlight = sendHeadReport().finally(() => {
+        reportFlight = null;
+      });
+      if (!(await reportFlight)) return;
+    }
+  }
+
+  async function openTurnIfNeeded(): Promise<boolean> {
+    if (openTurn === null) {
+      openTurn = randomUUID();
+      reportQueue.push({ phase: "started", reportId: openTurn });
+    }
+    await flushReports();
+    const id = openTurn;
+    return id !== null && !reportQueue.some((r) => r.phase === "started" && r.reportId === id);
+  }
+
+  function endTurn(status: "completed" | "failed") {
+    if (openTurn === null) return;
+    reportQueue.push({ phase: "ended", reportId: openTurn, status });
+    openTurn = null;
   }
 
   function registerParams(): Record<string, unknown> {
@@ -313,13 +406,10 @@ export default function (pi: ExtensionAPI) {
           ...(processIdentity
             ? { processPid: process.pid, processIdentity }
             : {}),
-          // Detached-tmux launches (`hyprial start pi --tmux`, the #218 pattern):
-          // the daemon records the session name on the registration so
-          // `hyprial ps` shows where to attach. No claude-style owner-fence
-          // rewiring is needed here: this carrier is in-process, so its
-          // lifetime already equals the pane's (kill-session -> SIGHUP ->
-          // pi dies -> this carrier dies with it; session_shutdown
-          // unregisters best-effort, the daemon TTL reclaims the rest).
+          // Detached-tmux launches (`hyprial start pi --tmux`, #218): the daemon
+          // records the session name so `hyprial ps` shows where to attach. This
+          // carrier is in-process: its lifetime already equals the pane's, and
+          // session_shutdown unregisters best-effort (the TTL reclaims the rest).
           ...(identity.tmuxSession ? { tmuxSession: identity.tmuxSession } : {}),
     });
   }
@@ -397,26 +487,37 @@ export default function (pi: ExtensionAPI) {
   }
 
   async function injectQueuedOnce(): Promise<void> {
+    // wp5.md 4.4: turn.started must be accepted before the fetched read.
+    const turnWasOpen = openTurn !== null;
+    const abandonEmptyTurn = () => {
+      if (!turnWasOpen && !agentRunning && outstanding === null) {
+        endTurn("completed");
+        void flushReports();
+      }
+    };
+    if (!(await openTurnIfNeeded())) return;
     let fetched: PendingMessage[];
     try {
       ({ messages: fetched } = await fetchPending());
     } catch (error) {
       watch.observeRejection(errorCode(error));
       if (watch.quiet) stopLaneTimers();
+      abandonEmptyTurn();
       return;
     }
     // The fetched read is the consumption boundary. Include every still
     // pending row it returns so a message arriving between observation and
     // fetch is never marked fetched without being injected.
-    const fresh = fetched.filter(
-      (message) => !completed.has(message.messageId),
-    );
+    const fresh = fetched.filter((m) => !completed.has(m.messageId) && !kept.has(m.messageId));
     for (const messageId of [...queuedForInjection]) {
       if (!fetched.some((message) => message.messageId === messageId)) {
         queuedForInjection.delete(messageId);
       }
     }
-    if (fresh.length === 0) return;
+    if (fresh.length === 0) {
+      abandonEmptyTurn();
+      return;
+    }
     for (const message of fresh) queuedForInjection.delete(message.messageId);
     const text = formatBatch(fresh);
     outstanding = {
@@ -424,21 +525,27 @@ export default function (pi: ExtensionAPI) {
       injectedText: text,
       consumed: false,
       injectRetries: 0,
-      finalText: null,
       settled: false,
     };
     inject(text);
   }
 
   async function applyChange(change: InboxChange | null): Promise<void> {
-    if (change === null) return;
+    if (change !== null) applyChangeRows(change);
+    await injectQueued();
+  }
+
+  function applyChangeRows(change: InboxChange) {
+    // A new daemon epoch allows exactly one more injection of what was kept.
+    if (change.rewakeReason !== null) kept.clear();
     for (const messageId of change.completed) {
       completed.add(messageId);
+      kept.delete(messageId);
       queuedForInjection.delete(messageId);
     }
     for (const row of [...change.newMessages, ...change.rewake]) {
       const messageId = row.messageId;
-      if (typeof messageId === "string" && !completed.has(messageId)) {
+      if (typeof messageId === "string" && !completed.has(messageId) && !kept.has(messageId)) {
         queuedForInjection.add(messageId);
       }
     }
@@ -457,11 +564,10 @@ export default function (pi: ExtensionAPI) {
         inject(formatBatch(backlog));
       }
     }
-    await injectQueued();
   }
 
-  // Single flight: concurrent callers share the one completion in progress,
-  // so a batch is never replied to twice.
+  // Single flight: concurrent callers share the one settlement in progress,
+  // so a batch is never settled twice.
   let completing: Promise<void> | null = null;
 
   function completeOutstanding(): Promise<void> {
@@ -473,71 +579,40 @@ export default function (pi: ExtensionAPI) {
     return completing;
   }
 
-  async function settleMessage(message: PendingMessage, text: string): Promise<void> {
-    const isRequest = message.intent === "request";
-    try {
-      const result = await callDaemon(
-        isRequest ? "message.reply" : "message.ack",
-        signed({
-          messageId: message.messageId,
-          ...(isRequest ? { message: text } : {}),
-        }),
-        true,
-      );
-      // Transport success is not settlement. A duplicate receipt may have
-      // ok:false while positively confirming reply delivery and inbound ACK.
-      if (result.ok !== true && !(
-        result.acknowledged === true && (!isRequest || result.replied === true)
-      )) {
-        throw new DaemonIpcError(
-          String(result.code ?? "MESSAGE_SETTLEMENT_PENDING"),
-          "daemon has not confirmed reply/ack settlement",
-          result,
-        );
-      }
-    } catch (error) {
-      if (!isRequest || errorCode(error) !== CODE_REPLY_UNAVAILABLE) throw error;
-      // This code also means the original exists but has no usable reply path.
-      // Only an observation proves it disappeared; never fetch/ACK to probe.
-      const pending = await callDaemon("message.pending.list", signed(), false);
-      if (pending.ok !== true || !Array.isArray(pending.messages) ||
-          !pending.messages.every((row) =>
-            row && typeof row === "object" &&
-            typeof row.messageId === "string" && row.messageId.trim().length > 0
-          )) {
-        throw new DaemonIpcError(
-          "MESSAGE_SETTLEMENT_PENDING", "pending-message observation unavailable",
-        );
-      }
-      if (pending.messages.some((row) =>
-        row && typeof row === "object" &&
-        (row as Record<string, unknown>).messageId === message.messageId
-      )) throw error;
-      // Consumed/expired elsewhere: no pending request remains to settle.
-      // This is not evidence that the user read a reply.
-    }
-  }
-
   async function completeOutstandingOnce(): Promise<void> {
-    if (outstanding === null || outstanding.finalText === null) return;
+    if (outstanding === null) return;
     for (const message of outstanding.messages) {
-      if (completed.has(message.messageId)) continue;
-      await settleMessage(message, outstanding.finalText);
-      completed.add(message.messageId);
-      queuedForInjection.delete(message.messageId);
+      const id = message.messageId;
+      if (completed.has(id) || kept.has(id)) continue;
+      const answer = await callDaemon("message.settle_hint", signed({ messageId: id }), false);
+      if (answer.hint === "ack") {
+        try {
+          const result = await callDaemon("message.ack", signed({ messageId: id }), true);
+          if (result.ok !== true && result.acknowledged !== true && result.code !== CODE_ACK_UNAVAILABLE) {
+            throw new DaemonIpcError(
+              String(result.code ?? "MESSAGE_SETTLEMENT_PENDING"),
+              "daemon has not confirmed the ack",
+              result,
+            );
+          }
+        } catch (error) {
+          // Already acked or gone: settled all the same.
+          if (errorCode(error) !== CODE_ACK_UNAVAILABLE) throw error;
+        }
+        completed.add(id);
+      } else if (answer.hint === "keep") {
+        kept.add(id);
+      } else {
+        throw new DaemonIpcError(
+          "MESSAGE_SETTLEMENT_PENDING",
+          "daemon returned no usable settle hint",
+        );
+      }
+      queuedForInjection.delete(id);
     }
     outstanding = null;
     watch.listNow();
     schedulePoll(0);
-  }
-
-  async function failOutstanding(reason: string): Promise<void> {
-    if (outstanding === null) return;
-    // Keep the same failure body on the ordinary settlement retry lane.
-    // A rejected injection must not drop its reply while native delivery waits.
-    outstanding.finalText = reason;
-    outstanding.settled = true;
-    await completeOutstanding();
   }
 
   async function runPollLane(
@@ -550,7 +625,10 @@ export default function (pi: ExtensionAPI) {
     // is already "known" to the doorbell, so a hold would sit out its full
     // length (review 849). The core then paces by the interval instead --
     // no hold, and no fake "unheld" answer inflating wait.unheld.
-    watch.useWait = outstanding === null && queuedForInjection.size === 0;
+    watch.useWait =
+      outstanding === null &&
+      queuedForInjection.size === 0 &&
+      reportQueue.length === 0;
     const action = watch.pollNext(Date.now());
     if (action instanceof Quiet) return;
     if (action instanceof Sleep) {
@@ -585,12 +663,9 @@ export default function (pi: ExtensionAPI) {
           "warning",
         );
       }
-      if (
-        outstanding !== null &&
-        outstanding.settled &&
-        outstanding.finalText !== null
-      ) {
-        // A previous completion attempt hit a transient error; retry it.
+      if (reportQueue.length > 0) void flushReports(); // poll lane retries the head too
+      if (outstanding !== null && outstanding.settled) {
+        // A previous settlement attempt hit a transient error; retry it.
         try {
           await completeOutstanding();
         } catch (error) {
@@ -648,6 +723,7 @@ export default function (pi: ExtensionAPI) {
   }
 
   pi.on("session_start", async (_event, ctx) => {
+    lastUi = ctx.ui;
     if (stopped || watch.quiet) return;
     scheduleHeartbeat(0);
     await runPollLane(ctx.ui);
@@ -663,42 +739,45 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  pi.on("agent_end", async (event) => {
-    if (outstanding === null || !outstanding.consumed) return;
-    const text = finalAssistantText(event.messages);
-    outstanding.finalText =
-      text ??
-      "[hyprial] the interactive session produced no final assistant text " +
-        "(the turn was aborted or empty)";
+  pi.on("agent_start", async (_event, ctx) => {
+    lastUi = ctx?.ui ?? lastUi;
+    agentRunning = true;
+    if (stopped || watch.quiet) return;
+    await openTurnIfNeeded();
   });
 
-  pi.on("agent_settled", async () => {
-    if (outstanding === null || watch.quiet) return;
-    if (!outstanding.consumed) {
+  pi.on("agent_settled", async (_event, ctx) => {
+    lastUi = ctx?.ui ?? lastUi;
+    agentRunning = false;
+    if (watch.quiet) return;
+    if (outstanding !== null && !outstanding.consumed) {
       // The run settled without our message ever entering it (aborted queue,
-      // /new mid-flight). Re-inject a bounded number of times, then complete
-      // with an honest failure instead of leaving the delivery pending.
+      // /new mid-flight). Re-inject a bounded number of times, then give up
+      // honestly: the turn failed, nothing is acked or replied, and the
+      // messages stay pending (held back until the next epoch).
       if (outstanding.injectRetries < MAX_INJECT_RETRIES) {
         outstanding.injectRetries += 1;
         inject(outstanding.injectedText);
-      } else {
-        try {
-          await failOutstanding(
-            "[hyprial] the interactive session never ran this message " +
-              "(repeatedly aborted before delivery)",
-          );
-        } catch (error) {
-          watch.observeRejection(errorCode(error));
-          if (watch.quiet) stopLaneTimers();
-        }
+        return;
       }
+      for (const message of outstanding.messages) kept.add(message.messageId);
+      outstanding = null;
+      endTurn("failed");
+      await flushReports();
+      notify(
+        "Harness attach: pending messages were never run (repeatedly aborted " +
+          "before delivery); they stay pending",
+      );
       return;
     }
+    endTurn("completed");
+    await flushReports();
+    if (outstanding === null) return;
     outstanding.settled = true;
     try {
       await completeOutstanding();
     } catch (error) {
-      // Transient completion failure: retried on the next poll tick.
+      // Transient settlement failure: retried on the next poll tick.
       watch.observeRejection(errorCode(error));
       if (watch.quiet) stopLaneTimers();
     }
@@ -708,6 +787,12 @@ export default function (pi: ExtensionAPI) {
     stopped = true;
     stopLaneTimers();
     if (!watch.registered) return;
+    if (openTurn !== null) endTurn("failed");
+    try {
+      await flushReports(true);
+    } catch {
+      // Best effort: the daemon drops the session's reports with the session.
+    }
     try {
       await callDaemon("session.unregister", signed(), true);
     } catch {

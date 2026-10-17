@@ -40,6 +40,12 @@ class InboxMessage:
     # from their effective expiry so retries and custody transfers do not turn
     # a local TTL into a cross-machine absolute timestamp.
     expires_at_ms: int | None = None
+    # The sender-written summary (design-send-links §7): the only part of a
+    # message a carrier may inject into an agent's context.  ``payload`` is
+    # the body and is read on demand by message id.  None on frames from
+    # pre-summary peers and on rows written before the column existed; the
+    # send boundary refuses a new send without one (SUMMARY_REQUIRED).
+    summary: str | None = None
 
     def with_payload(self, payload: bytes) -> InboxMessage:
         return replace(self, payload=payload)
@@ -61,7 +67,7 @@ class ReceiveResult:
     acknowledged: bool
     duplicate: bool = False
     wake: bool = False
-    auto_reply: bool = False
+    reply_owed: bool = False
     code: str | None = None
 
 
@@ -120,6 +126,91 @@ class OutboxItem:
     retry_started_at_ms: int | None = None
     confirmation_started_at_ms: int | None = None
     confirmation_attempts: int = 0
+    #: Send-link hold reason (WP2).  Non-None means the row is parked until
+    #: the link gate releases it or its TTL expires; the retry pump must not
+    #: attempt it.  Published on ``outbox list`` as ``holdReason``.
+    link_hold: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class LinkLedgerOpen:
+    """One outbound ledger row written in the submit transaction (§3.9)."""
+
+    actor: str
+    message_id: str
+    peer: str
+    intent: str
+    reply_to: str | None
+    state: str
+    opened_at_ms: int
+    expires_at_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class LinkLedgerRow:
+    """One durable link-ledger row (§1.2, §3.9)."""
+
+    actor: str
+    message_id: str
+    direction: str
+    peer: str
+    intent: str
+    reply_to: str | None
+    state: str
+    opened_at_ms: int
+    sent_at_ms: int | None = None
+    event_at_ms: int | None = None
+    threshold_ms: int | None = None
+    sample_pending: bool = False
+    expires_at_ms: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class LinkInboundRow:
+    """One live inbound row with its ledger state, injected or not (B10)."""
+
+    message_id: str
+    sender: str
+    recipient: str
+    intent: str
+    reply_to: str | None
+    received_at_ms: int
+    fetched_at_ms: int | None
+    injected: bool
+    state: str
+    expires_at_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class LinkLedgerCensor:
+    """An inbound row this node stopped waiting for but may still answer (B9)."""
+
+    actor: str
+    message_id: str
+    threshold_ms: int
+    expires_at_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class LinkLedgerResult:
+    """What the durable update actually did, so memory merges only facts (B15)."""
+
+    released: tuple[str, ...] = ()
+    expired: tuple[str, ...] = ()
+    failed: tuple[str, ...] = ()
+    drained: tuple[tuple[str, str], ...] = ()
+    cancelled: tuple[str, ...] = ()
+
+    def as_mapping(self) -> dict[str, object]:
+        """The wire shape the composition adapter hands back to the engine."""
+
+        return {
+            "released": self.released,
+            "expired": self.expired,
+            "failed": self.failed,
+            "drained": self.drained,
+            "cancelled": self.cancelled,
+        }
 
 
 @dataclass(frozen=True, slots=True)

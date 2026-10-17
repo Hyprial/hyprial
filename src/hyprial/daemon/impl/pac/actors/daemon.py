@@ -18,6 +18,7 @@ from hyprial.daemon.impl.pac.actors.coordinator import (
     LaunchSpec,
     RuntimeObservation,
 )
+from hyprial.daemon.impl.pac.actors.marker import pac_worker_marker
 from hyprial.daemon.impl.pac.graphs.reactor import NotificationSender, PacReactor
 from hyprial.daemon.impl.pac.storage.store import PacGraphStore, default_database_path
 
@@ -79,11 +80,7 @@ class DaemonActorRuntime:
         agent = self.application.agents.get(actor_name)
         return RuntimeObservation(
             present=running is True,
-            identity_marker=(
-                spec.nickname
-                if spec.nickname and spec.nickname.startswith("pac:")
-                else None
-            ),
+            identity_marker=pac_worker_marker(spec.nickname),
             harness=spec.harness,
             agent_entity_token=(agent.entity_token if agent is not None else None),
             # A non-running lifecycle record is still a durable desired intent.
@@ -199,6 +196,7 @@ class DaemonPacNotificationSender:
         sender: str,
         conversation_id: str,
         idempotency_key: str,
+        summary: str,
         expires_at_ms: int | None = None,
     ) -> str:
         delivery_io = self.application._pac_notification_io
@@ -209,14 +207,29 @@ class DaemonPacNotificationSender:
         # creator when nothing did (deadline, timeout).  Allen, 2026-09-25:
         # ownership and the source of a handoff are separate; a hard-coded
         # service identity (the dispatch coordinator) is not acceptable.
+        # WP2 §3.7: register the PAC task link before the typed inbox write,
+        # and only count the in-flight request once delivery really happened.
+        binder = getattr(self.application, "_link_task_binder", None)
+        on_delivered = (
+            binder(
+                sender=sender,
+                recipient=recipient,
+                conversation_id=conversation_id,
+            )
+            if binder is not None
+            else None
+        )
         delivered = delivery_io.deliver(
             effect_id=f"pac:{idempotency_key}",
             sender=sender,
             target=recipient,
             conversation_id=conversation_id,
             text=text,
+            summary=summary,
             expires_at_ms=expires_at_ms,
         )
+        if on_delivered is not None:
+            on_delivered(str(delivered.message_id))
         return str(delivered.message_id)
 
     def send_workflow_request(self, request, *, text, idempotency_key):

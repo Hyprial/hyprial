@@ -97,6 +97,7 @@ if TYPE_CHECKING:
     from hyprial.identity.impl.org_directory import INVITE_SCHEME as INVITE_SCHEME
     from hyprial.identity.impl.identity_transaction import IdentityTransactionBusy as IdentityTransactionBusy
     from hyprial.identity.impl.identity_transaction import IdentityTransactionLock as IdentityTransactionLock
+    from hyprial.identity.impl.agents.registry._base import InvalidAgentNameError as InvalidAgentNameError
     from hyprial.identity.impl.org_directory import InviteError as InviteError
     from hyprial.identity.impl.org_directory import InviteLink as InviteLink
     from hyprial.identity.impl.org_directory import LEAVES_DIR as LEAVES_DIR
@@ -348,6 +349,7 @@ _FACADE_EXPORTS = {
     'INVITE_SCHEME': ('hyprial.identity.impl.org_directory', 'INVITE_SCHEME'),
     'IdentityTransactionBusy': ('hyprial.identity.impl.identity_transaction', 'IdentityTransactionBusy'),
     'IdentityTransactionLock': ('hyprial.identity.impl.identity_transaction', 'IdentityTransactionLock'),
+    'InvalidAgentNameError': ('hyprial.identity.impl.agents.registry._base', 'InvalidAgentNameError'),
     'InviteError': ('hyprial.identity.impl.org_directory', 'InviteError'),
     'InviteLink': ('hyprial.identity.impl.org_directory', 'InviteLink'),
     'LEAVES_DIR': ('hyprial.identity.impl.org_directory', 'LEAVES_DIR'),
@@ -618,6 +620,7 @@ __all__ = [
     'INVITE_SCHEME',
     'IdentityTransactionBusy',
     'IdentityTransactionLock',
+    'InvalidAgentNameError',
     'InviteError',
     'InviteLink',
     'LEAVES_DIR',

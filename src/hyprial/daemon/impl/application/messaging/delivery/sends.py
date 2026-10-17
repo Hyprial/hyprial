@@ -19,6 +19,7 @@ from hyprial.kernel import (
 from hyprial.daemon.impl.inbox import (
     InboxMessage,
 )
+from hyprial.daemon.impl.inbox.contracts.summary import summary_from_text
 from hyprial.daemon.impl.squire import (
     display_sender,
     UserDeliveryRequest,
@@ -309,6 +310,9 @@ class _UserDeliveryMixin:
                 f"转述自 {display_sender(request.sender)}{_UNCONFIRMED_SENDER_MARK}"
                 f"\n\n{request.message}"
             )
+        # A person writes no summary; the relaying component derives one from
+        # the exact text it is about to send (after the attribution line).
+        params["summary"] = summary_from_text(str(params["message"]))
         try:
             sent = self.handle(
                 "message.send",
@@ -435,6 +439,13 @@ class _UserDeliveryMixin:
                     "message": text,
                     "conversationId": original.conversation_id,
                     "idempotencyKey": operation_id,
+                    # Carry the original summary when there is one, else
+                    # derive a deterministic one from the relayed text.
+                    "summary": (
+                        original.summary
+                        if original.summary is not None
+                        else summary_from_text(text)
+                    ),
                 },
                 _trusted_message_origin="daemon",
             )

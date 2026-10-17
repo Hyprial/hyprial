@@ -19,6 +19,7 @@ _CLAUDE_HARNESS_TOOLS = (
     "harness_ack",
     "harness_progress",
     "harness_read",
+    "harness_read_body",
     "harness_reply",
     "harness_send",
     "harness_targets",
@@ -268,6 +269,25 @@ def _start_interactive_claude(
                                 "--signal-path",
                                 str(recovery_path),
                             ],
+                        }
+                    ],
+                }
+            ],
+            # A model turn starts at a submitted prompt.  SessionStart and
+            # compact are not model turns, so they never write this pulse.
+            "UserPromptSubmit": [
+                {
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": sys.executable,
+                            "args": [
+                                "-m",
+                                "hyprial.biz.impl.turn_pulse",
+                                "--signal-dir",
+                                str(turn_signal_dir / "start"),
+                            ],
+                            "timeout": 5,
                         }
                     ],
                 }

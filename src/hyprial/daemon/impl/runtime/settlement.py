@@ -436,14 +436,13 @@ def _stale_fence_rejection(error: BaseException) -> bool:
     )
 
 
-def _reply_already_answered(error: BaseException) -> bool:
-    """A reply submit refused because this delivery's reply is already durable.
+def _answer_already_committed(error: BaseException) -> bool:
+    """A mechanism answer submit refused because it is already durable.
 
-    ``_reply_and_ack`` derives the reply id from the delivery it answers, so
-    the authority's ``SUBMISSION_RECEIPT_CONFLICT`` on it means a reply with
-    different text already committed (typically: the first submit timed out
-    after the reply was sent, and a re-run turn answered again).  Same raise
-    shape as ``_stale_fence_rejection``.
+    The mechanism answer functions derive the reply id from the delivery they
+    answer, so the authority's ``SUBMISSION_RECEIPT_CONFLICT`` on it means the
+    answer already committed (typically: the first submit timed out after the
+    answer was sent).  Same raise shape as ``_stale_fence_rejection``.
     """
 
     return isinstance(error, InboxAuthorityUnavailable) and str(error).startswith(
@@ -481,3 +480,107 @@ def _coalesce_progress_events(
             )
         output.extend(retained)
     return tuple(output)
+
+
+class _NoticeRecoveryMixin:
+    """Sender-notice durability across restart and shutdown.
+
+    Split out of ``forwards.py`` (structural 1000-line gate); the methods run
+    on ``DaemonEventBridge`` and rely on its ``inbox``, ``_logger``,
+    ``_pending_notices`` and the notice helpers of ``_BridgeForwardsMixin``.
+    """
+
+    def _notice_already_durable(self, message_id: str) -> bool:
+        """True when the notice is already delivered and acknowledged.
+
+        Delivery without acknowledgement is deliberately not treated as done:
+        re-submitting the same deterministic id is idempotent at the inbox, so
+        re-sending is the safe side of that ambiguity.
+        """
+
+        reader = getattr(self.inbox, "is_acknowledged", None)
+        if not callable(reader):
+            return False
+        try:
+            return bool(reader(message_id))
+        except Exception:  # noqa: BLE001 - an unknown id is simply not durable
+            return False
+
+    def _recover_owed_notices(self, since_ms: int | None) -> int:
+        """Re-derive sender notices the previous (unclean) run may have owed.
+
+        A notice that could not be *submitted* before a crash lived only in
+        this process's ``_pending_notices``, which is exactly the "silence
+        replaced by another silence" shape this unit exists to remove.  The
+        durable half -- the terminal settlement row -- still exists, so the
+        restart reads it and re-emits the same deterministic notice.  Events
+        that only *schedule* a retry need no recovery here: their inbox row is
+        still pending, so the ordinary dispatch path re-derives them.
+        """
+
+        reader = getattr(self.inbox, "terminal_failure_settlements", None)
+        if not callable(reader) or since_ms is None:
+            return 0
+        try:
+            settlements = reader(since_ms=since_ms)
+        except Exception as error:  # noqa: BLE001 - recovery is best-effort, but loud
+            if self._logger is not None:
+                self._logger(
+                    "error",
+                    "daemon",
+                    "availability_loud.recovery_failed",
+                    errorType=type(error).__name__,
+                    sinceMs=since_ms,
+                )
+            return 0
+        recovered = 0
+        for settlement in settlements:
+            original = self._failure_original(settlement.message_id)
+            if original is None:
+                continue
+            message = self._unavailable_notice_for(
+                original,
+                recipient=settlement.recipient,
+                failure_code=settlement.failure_code,
+                settlement=settlement,
+                observed_at_ms=self._clock_ms(),
+            )
+            if self._notice_already_durable(message.message_id):
+                continue
+            if self._submit_loud(message):
+                recovered += 1
+        if self._logger is not None and settlements:
+            self._logger(
+                "warn",
+                "daemon",
+                "availability_loud.recovery",
+                candidates=len(settlements),
+                recovered=recovered,
+                sinceMs=since_ms,
+            )
+        return recovered
+
+    def _flush_pending_notices_on_stop(self) -> None:
+        """Last chance for held notices, and a loud record of any that remain.
+
+        On a clean shutdown there is no next start to recover from, so an
+        undeliverable notice must at least say so -- the identifiers go to the
+        log rather than disappearing with the process.
+        """
+
+        try:
+            self._retry_pending_notices()
+        except Exception:  # noqa: BLE001 - shutdown must not be masked
+            pass
+        if not self._pending_notices or self._logger is None:
+            return
+        for message in self._pending_notices.values():
+            self._logger(
+                "error",
+                "daemon",
+                "availability_loud.delivery_abandoned",
+                messageId=message.message_id,
+                recipient=message.recipient,
+                idempotencyKey=message.idempotency_key,
+                detail="shutdown with the notice still undelivered",
+            )

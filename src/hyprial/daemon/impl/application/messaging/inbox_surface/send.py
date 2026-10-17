@@ -15,12 +15,14 @@ from hyprial.daemon.impl.inbox import (
     InboxAuthorityUnavailable,
     InboxMessage,
 )
+from hyprial.daemon.impl.inbox.contracts.summary import check_summary
 from hyprial.daemon.impl.squire import (
     UserDeliveryRequest,
     UserDeliveryTarget,
     is_user_target,
 )
 from hyprial.daemon.impl.dispatch.admission import dispatch_gate
+from hyprial.daemon.impl.links.ports import HOLD_REASON_KEY
 from hyprial.daemon.impl.alias_resolver import AliasSurface
 from hyprial.daemon.impl.configuration.identity import (
     classify_target_identity,
@@ -48,6 +50,12 @@ from hyprial.daemon.impl.application.messaging.delivery.sends import (
 from hyprial.daemon.impl.application.messaging.inbox_surface.agent_bot import (
     AgentBotSendSupport,
 )
+from hyprial.daemon.impl.application.messaging.inbox_surface.link_send import (
+    _LinkSendMixin,
+)
+from hyprial.daemon.impl.application.messaging.inbox_surface.reply_reminders import (
+    open_requests_by_sender,
+)
 from hyprial.daemon.impl.application.messaging.visibility import (
     _message_origin,
 )
@@ -58,7 +66,7 @@ from hyprial.daemon.impl.ipc.params import (
 )
 
 
-class _MessageSendMixin(AgentBotSendSupport):
+class _MessageSendMixin(_LinkSendMixin, AgentBotSendSupport):
     """Application cluster mixin; the state owner is DaemonApplication."""
 
     def _ipc_message_send(self, method, params, _trusted_message_origin: str | None = None) -> Any:
@@ -67,6 +75,21 @@ class _MessageSendMixin(AgentBotSendSupport):
             method=method,
             trusted_origin=_trusted_message_origin,
         )
+        # Validated before any side effect: a refused send does not enter the
+        # outbox, register a conversation or reach the dispatch gate.
+        summary = check_summary(params.get("summary"), required=True)
+        # README ruling 39: an explicit reply association must name a message
+        # id, so a non-string or empty ``replyTo`` is refused before the
+        # payload is built (a malformed id could never close a request).
+        reply_to = params.get("replyTo")
+        if reply_to is not None and (
+            not isinstance(reply_to, str) or not reply_to
+        ):
+            raise DaemonRequestError(
+                ipc_errors.INVALID_ARGUMENT,
+                "replyTo must be a non-empty string naming the request this "
+                "message answers; no message was queued or sent",
+            )
         source = caller.sender
         alias_surface = {
             "adapter": AliasSurface.ADAPTER,
@@ -126,6 +149,7 @@ class _MessageSendMixin(AgentBotSendSupport):
         except RouteDeliveryError as error:
             raise DaemonRequestError(error.code, str(error), error.data) from error
         text = _required_string(params.get("message"), "message")
+        reply_to = self._link_reply_to_param(params.get("replyTo"))
         metadata = params.get("providerMetadata")
         sender_open_id = (
             metadata.get("senderId")
@@ -171,6 +195,35 @@ class _MessageSendMixin(AgentBotSendSupport):
                     "dispatch diagnostic authority is overloaded",
                 ) from error
         deliveries: list[JsonObject] = []
+        # Optional advisory read (WP7 §2.5): which requests from these
+        # targets are still unanswered.  It never blocks the send -- a
+        # reminder read is not part of the delivery decision -- and a
+        # failing reminder authority is reported, not raised.
+        open_requests: dict[str, tuple[str, ...]] = {}
+        if reply_to is None:
+            request_senders = tuple(
+                target
+                for target in requested_targets
+                if not is_route_target(target)
+            )
+            if request_senders:
+                try:
+                    open_requests = open_requests_by_sender(
+                        self._inbox,
+                        recipient=source,
+                        senders=request_senders,
+                    )
+                except (
+                    InboxAuthorityUnavailable,
+                    InboxAuthorityTimeout,
+                ) as error:
+                    self._log(
+                        "warn",
+                        "daemon",
+                        "send.open_requests_unavailable",
+                        sender=source,
+                        error=type(error).__name__,
+                    )
         for index, target in enumerate(requested_targets):
             _require_deliverable_send_target(target)
             if is_user_target(target):
@@ -178,25 +231,56 @@ class _MessageSendMixin(AgentBotSendSupport):
                 message_id = str(
                     uuid5(NAMESPACE_URL, f"hyprial:send:{target_key}:{index}")
                 )
+                # user: targets are never link-governed, but ruling 53 still
+                # measures the sender's W through the same gate call.
+                link_plan = self._link_user_plan(
+                    sender=source,
+                    target=target,
+                    intent="reply" if reply_to else "request",
+                    reply_to=reply_to,
+                    message_id=message_id,
+                )
+                # A recognised replay (``link_plan.replay``) skipped the gate
+                # and books no second ledger row, but it still goes through
+                # delivery: ``user_delivery`` owns the durable duplicate
+                # result (original ``nativeMessageId``), delivers for real
+                # when the first send never did, and serialises a retry
+                # behind a first send that is still running (§2.4 step 2).
+                if link_plan.ledger_open is not None:
+                    self._link_user_open(link_plan.ledger_open)
                 try:
                     user_target = UserDeliveryTarget.parse(target)
                 except ValueError as error:
+                    # §2.4 step 6: a failed send releases its ledger row in
+                    # the same request instead of leaking it to the TTL.
+                    self._link_user_release(source, message_id)
                     raise DaemonRequestError(
                         ipc_errors.INVALID_ARGUMENT, str(error)
                     ) from error
-                agent_bot = self._deliver_user_via_agent_bot(
-                    caller=caller,
-                    target=target,
-                    owner=user_target.owner,
-                    text=text,
-                    target_key=target_key,
-                    message_id=message_id,
-                    conversation_id=conversation,
-                    trusted_origin=_trusted_message_origin,
-                )
+                try:
+                    agent_bot = self._deliver_user_via_agent_bot(
+                        caller=caller,
+                        target=target,
+                        owner=user_target.owner,
+                        text=text,
+                        target_key=target_key,
+                        message_id=message_id,
+                        conversation_id=conversation,
+                        trusted_origin=_trusted_message_origin,
+                    )
+                except Exception:
+                    self._link_user_release(source, message_id)
+                    raise
                 if agent_bot is not None:
                     deliveries.append(agent_bot)
                     if agent_bot["accepted"]:
+                        if not agent_bot.get("duplicate"):
+                            self._link_user_sent(
+                                sender=source,
+                                target=target,
+                                message_id=message_id,
+                                reply_to=reply_to,
+                            )
                         self._log(
                             "info",
                             "daemon",
@@ -209,23 +293,31 @@ class _MessageSendMixin(AgentBotSendSupport):
                             target=target,
                             nativeMessageId=agent_bot["nativeMessageId"],
                         )
+                    else:
+                        self._link_user_release(source, message_id)
                     continue
                 if self._user_delivery is None:
+                    self._link_user_release(source, message_id)
                     raise DaemonRequestError(
                         ipc_errors.USER_DELIVERY_UNAVAILABLE,
                         "user delivery transport is unavailable",
                     )
-                outcome = self._user_delivery.deliver(
-                    UserDeliveryRequest(
-                        message_id=message_id,
-                        idempotency_key=target_key,
-                        owner=user_target.owner,
-                        sender=source,
-                        message=text,
-                        conversation_id=conversation,
+                try:
+                    outcome = self._user_delivery.deliver(
+                        UserDeliveryRequest(
+                            message_id=message_id,
+                            idempotency_key=target_key,
+                            owner=user_target.owner,
+                            sender=source,
+                            message=text,
+                            conversation_id=conversation,
+                        )
                     )
-                )
+                except Exception:
+                    self._link_user_release(source, message_id)
+                    raise
                 if not outcome.accepted:
+                    self._link_user_release(source, message_id)
                     raise DaemonRequestError(
                         outcome.code or ipc_errors.USER_DELIVERY_FAILED,
                         outcome.message or "user delivery failed",
@@ -246,6 +338,15 @@ class _MessageSendMixin(AgentBotSendSupport):
                         **({"duplicate": True} if outcome.duplicate else {}),
                     }
                 )
+                if not outcome.duplicate:
+                    # A duplicate result means an earlier send already
+                    # delivered and notified ``submitted`` (B6).
+                    self._link_user_sent(
+                        sender=source,
+                        target=target,
+                        message_id=message_id,
+                        reply_to=reply_to,
+                    )
                 self._log(
                     "info",
                     "daemon",
@@ -295,11 +396,16 @@ class _MessageSendMixin(AgentBotSendSupport):
             # daemon to deduplicate.  User and route targets already derive
             # an idempotent id from the operation; agent targets minted a
             # fresh uuid4 with no idempotency key, so a replayed send
-            # enqueued a second distinct probe.  The delivery pump then
-            # dispatched both and the auto-reply path answered each — the
-            # observed "two replies to one probe".  Derive the id the same
+            # enqueued a second distinct probe; the pump then dispatched both
+            # and each probe drew its own reply — the observed "two replies to
+            # one probe".  Derive the id the same
             # way so a replay dedups at the recipient instead.
             agent_key = f"{operation_id}:{target}:{index}"
+            message_id = str(uuid5(NAMESPACE_URL, f"hyprial:send:{agent_key}"))
+            replay = self._link_replay_delivery(message_id, target=target)
+            if replay is not None:
+                deliveries.append(replay)
+                continue
             entity = self.agents.get(target)
             dispatch_gate(
                 target=target,
@@ -311,8 +417,15 @@ class _MessageSendMixin(AgentBotSendSupport):
                 emit=self._log,
                 source="message.send",
             )
+            link_plan = self._link_send_plan(
+                sender=source,
+                target=target,
+                intent="reply" if reply_to else "request",
+                reply_to=reply_to,
+                message_id=message_id,
+            )
             message = InboxMessage(
-                message_id=str(uuid5(NAMESPACE_URL, f"hyprial:send:{agent_key}")),
+                message_id=message_id,
                 conversation_id=conversation,
                 sender=source,
                 recipient=target,
@@ -320,17 +433,30 @@ class _MessageSendMixin(AgentBotSendSupport):
                     {
                         "message": text,
                         "topic": params.get("topic"),
+                        # Ruling 39: the reply association belongs in the
+                        # body of a message.send reply too, so the receiver
+                        # can close the request's ledger row.
+                        **({"replyTo": reply_to} if reply_to else {}),
                         # Absent when the adapter reports no origin: rows
                         # written before this change and messages from an
                         # adapter with no such concept simply lack the key.
                         "origin": origin,
+                        # The explicit request this message answers, saved in
+                        # the payload so the link gate and the link's RTT can
+                        # see the association end to end (review blocking R2).
+                        **(
+                            {"replyTo": params.get("replyTo")}
+                            if params.get("replyTo") is not None
+                            else {}
+                        ),
                     },
                     separators=(",", ":"),
                 ).encode(),
-                intent="reply" if params.get("replyTo") else "request",
+                intent="reply" if reply_to else "request",
                 lifecycle=DeliveryLifecycle.DURABLE_SERVICE,
                 idempotency_key=agent_key,
                 created_at_ms=time.time_ns() // 1_000_000,
+                summary=summary,
             )
             self._log(
                 "info",
@@ -348,9 +474,16 @@ class _MessageSendMixin(AgentBotSendSupport):
                     else {}
                 ),
             )
-            result = self._inbox.submit(message)
+            result = self._inbox.submit(message, **link_plan.submit_kwargs())
             if result.accepted:
                 self._wake_dormant_agent(target, reason="pending-work")
+                self._link_note_submitted(
+                    sender=source,
+                    target=target,
+                    message_id=message.message_id,
+                    reply_to=reply_to,
+                    hold_reason=link_plan.hold_reason,
+                )
             # A3 dispatch gate (design-dispatch-always-pac §三②,
             # narrowed by spec-dispatch-gate-classifier-2026-09-04):
             # classify an accepted coordinator→worker send — a dispatch
@@ -395,6 +528,12 @@ class _MessageSendMixin(AgentBotSendSupport):
                     "messageId": message.message_id,
                     "accepted": result.accepted,
                     "queued": result.queued,
+                    **(link_plan.delivery_fields() if result.accepted else {}),
+                    **(
+                        {"openRequestsFrom": list(open_requests[target])}
+                        if open_requests.get(target)
+                        else {}
+                    ),
                     **(
                         {"outcomeKnown": False}
                         if result.code == ipc_errors.SUBMIT_OUTCOME_UNKNOWN
@@ -412,11 +551,19 @@ class _MessageSendMixin(AgentBotSendSupport):
                     ),
                 }
             )
+        merged_requests: list[str] = []
+        for target in requested_targets:
+            for message_id in open_requests.get(target, ()):
+                if message_id not in merged_requests:
+                    merged_requests.append(message_id)
         return {
             "ok": all(item["accepted"] for item in deliveries),
             "operationId": operation_id,
             "conversationId": conversation,
             "deliveries": deliveries,
+            **(
+                {"openRequestsFrom": merged_requests} if merged_requests else {}
+            ),
             **(
                 {"replyPathUnavailable": True}
                 if self._reply_path_unavailable(source)
@@ -425,6 +572,14 @@ class _MessageSendMixin(AgentBotSendSupport):
             **(
                 {"messageId": deliveries[0]["messageId"]}
                 if len(deliveries) == 1
+                else {}
+            ),
+            # Single-target sends lift the hold to the top level so a
+            # carrier can read ``queued``/``holdReason`` without walking
+            # the deliveries array (WP2 §2.4 step 7, WP6 ``_lift_hold``).
+            **(
+                {"queued": True, HOLD_REASON_KEY: deliveries[0][HOLD_REASON_KEY]}
+                if len(deliveries) == 1 and HOLD_REASON_KEY in deliveries[0]
                 else {}
             ),
         }
@@ -479,6 +634,9 @@ class _MessageSendMixin(AgentBotSendSupport):
             method=method,
             trusted_origin=_trusted_message_origin,
         )
+        # Validated before any side effect: a refused reply does not ack the
+        # original request.
+        summary = check_summary(params.get("summary"), required=True)
         actor = caller.subject
         self._queue_agent_activity(actor)
         raw_resources = params.get("resourcePaths")
@@ -535,6 +693,16 @@ class _MessageSendMixin(AgentBotSendSupport):
                 or retained is None
                 or retained.recipient not in consumer_keys
             ):
+                # B5: let the gate address the code.  A drained id answers
+                # LINK_RECLAIMED; everything else falls through to the
+                # historic MESSAGE_REPLY_UNAVAILABLE here.
+                self._link_reply_unavailable(
+                    sender=caller.sender,
+                    target=(
+                        retained.sender if retained is not None else caller.sender
+                    ),
+                    message_id=message_id,
+                )
                 raise DaemonRequestError(
                     ipc_errors.MESSAGE_REPLY_UNAVAILABLE,
                     "pending message was not found",
@@ -569,8 +737,9 @@ class _MessageSendMixin(AgentBotSendSupport):
         if caller.on_behalf_of is not None:
             reply_origin["onBehalfOf"] = caller.on_behalf_of
         reply_body: JsonObject = {"message": text, "origin": reply_origin}
-        if adapter_name is not None:
-            reply_body["replyTo"] = message_id
+        # The explicit association is stored for every reply, not only the
+        # adapter bridge: the gate and the link RTT read it back (R2).
+        reply_body["replyTo"] = message_id
         # A dispatcher that sent with a bare --from leaves a bare sender
         # on the pending message; queued under that spelling the reply is
         # an outbox island no mailbox drains (it expires silently). Resolve
@@ -598,6 +767,18 @@ class _MessageSendMixin(AgentBotSendSupport):
         # not a connector currently claims it, and the read side
         # canonicalizes the same way — the row is drainable, so the
         # refusal would be a false rejection.
+        # Ruling 55: a reply to an agent carries its association too.  The
+        # receiver's dispatch correlation and its outbound ledger close both
+        # read it, and previously only adapter replies wrote it.
+        if classify_target_identity(recipient) == TARGET_KIND_AGENT:
+            reply_body["replyTo"] = message_id
+        # WP2 §2.4 message.reply: ask the gate before anything is
+        # acknowledged.  A Hold keeps the question pending; an exception
+        # (LINK_RECLAIMED, MESSAGE_REPLY_UNAVAILABLE, INVALID_ARGUMENT)
+        # propagates untouched.
+        reply_plan = self._link_reply_plan(
+            sender=caller.sender, target=recipient, message_id=message_id
+        )
         reply = InboxMessage(
             # Retrying the same harness_reply must address the same outbox
             # row.  Old rows use the same reply:<inbound-id> key but had a
@@ -611,9 +792,14 @@ class _MessageSendMixin(AgentBotSendSupport):
             lifecycle=DeliveryLifecycle.DURABLE_SERVICE,
             idempotency_key=f"reply:{message_id}",
             created_at_ms=time.time_ns() // 1_000_000,
+            summary=summary,
         )
         try:
-            submitted = self._inbox.submit(reply)
+            submitted = self._inbox.submit(
+                reply,
+                link_hold=reply_plan.hold_reason,
+                link_reply_close=reply_plan.hold_reason is None,
+            )
         except (InboxAuthorityTimeout, InboxAuthorityUnavailable) as error:
             if isinstance(error, InboxAuthorityUnavailable) and str(error).startswith(
                 "SUBMISSION_RECEIPT_CONFLICT"
@@ -696,6 +882,42 @@ class _MessageSendMixin(AgentBotSendSupport):
                 "retryable": True,
                 "hint": "the reply is queued; retrying returns its state and never sends different text",
             }
+        if reply_plan.hold_reason is not None:
+            if not submitted.accepted:
+                return {
+                    "ok": False,
+                    "messageId": message_id,
+                    "replyMessageId": reply.message_id,
+                    "replied": False,
+                    "acknowledged": False,
+                    "queued": submitted.queued,
+                    "code": submitted.code or "REPLY_DELIVERY_PENDING",
+                    HOLD_REASON_KEY: reply_plan.hold_reason,
+                    **(
+                        {"detail": reply_plan.detail}
+                        if reply_plan.detail
+                        else {}
+                    ),
+                }
+            self._link_note_submitted(
+                sender=caller.sender,
+                target=recipient,
+                message_id=reply.message_id,
+                reply_to=message_id,
+                hold_reason=reply_plan.hold_reason,
+            )
+            # A held reply must not acknowledge the original: it stays
+            # pending until the link releases the reply (§3.6).
+            return {
+                "ok": True,
+                "messageId": message_id,
+                "replyMessageId": reply.message_id,
+                "replied": False,
+                "acknowledged": False,
+                "queued": True,
+                HOLD_REASON_KEY: reply_plan.hold_reason,
+                **({"detail": reply_plan.detail} if reply_plan.detail else {}),
+            }
         if not submitted.accepted:
             return {
                 "ok": False,
@@ -706,6 +928,13 @@ class _MessageSendMixin(AgentBotSendSupport):
                 "queued": submitted.queued,
                 "code": submitted.code or "REPLY_DELIVERY_PENDING",
             }
+        self._link_note_submitted(
+            sender=caller.sender,
+            target=recipient,
+            message_id=reply.message_id,
+            reply_to=message_id,
+            hold_reason=None,
+        )
         if not original_is_pending:
             return {
                 "ok": True,

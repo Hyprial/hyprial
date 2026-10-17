@@ -286,6 +286,9 @@ def fs_invite(
                 ensure_ascii=False,
                 separators=(",", ":"),
             )
+            # The body is JSON; the reader only needs this line.
+            from hyprial.daemon import summary_from_text
+
             services._daemon_request(
                 "message.send",
                 {
@@ -296,6 +299,7 @@ def fs_invite(
                     ),
                     "to": [user],
                     "message": payload,
+                    "summary": summary_from_text(f"orgfs 邀请：{name}"),
                 },
             )
             notified = True

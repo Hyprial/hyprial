@@ -5,6 +5,7 @@ from __future__ import annotations
 from __future__ import annotations
 import os
 import threading
+import time
 import traceback
 from collections.abc import Callable
 from pathlib import Path
@@ -12,6 +13,7 @@ from typing import Any, TYPE_CHECKING
 from uuid import uuid4
 from hyprial.daemon.impl.transfer.execution.container import CONTAINER_PYTHON as _CONTAINER_PYTHON
 from hyprial.daemon.impl.application.wiring.quota_hooks import wire_quota_hooks
+from hyprial.daemon.impl.application.wiring import reply_reminder_hooks
 from hyprial.daemon.impl.adapters.lark.runtime.runtime import (
     AdapterRuntime,
     )
@@ -75,6 +77,7 @@ from hyprial.daemon.impl.configuration.identity import (
 )
 from hyprial.kernel import (
     TARGET_KIND_HOST,
+    TURN_HOOKS_ACTOR_NAME,
     canonical_agent_uri,
 )
 from hyprial.daemon.impl.runtime  import DaemonEventBridge
@@ -571,6 +574,9 @@ class _WiringTransportMixin:
                     "hold_policy": hold_policy,
                     "logger": self._logger,
                     "alarm_human_delivery": deliver_human_alarm,
+                    # The one shared link admission slot (WP4): the actor asks
+                    # the gate for ingress and dispatch on its own thread.
+                    "link_admission": self._link_admission,
                     # Resolve the actor projection live; session mutations no
                     # longer require rebuilding delivery policy.
                     "interactive_recipient": lambda recipient: recipient
@@ -597,7 +603,7 @@ class _WiringTransportMixin:
         hook_invoker = InboxTurnHookInvoker(
             inbox,
             callback_actor=canonical_agent_uri(
-                self.owner, self.node_id, "_turn-hooks"
+                self.owner, self.node_id, TURN_HOOKS_ACTOR_NAME
             ),
         )
         hook_consumers_factory = self._hook_consumers_factory
@@ -644,6 +650,14 @@ class _WiringTransportMixin:
             watchdog=self._quota_watchdog,
             consumer_factory=self._quota_hook_consumer_factory,
             daemon_hooks=daemon_hooks,
+        )
+        reply_reminder_hooks.wire_reply_reminder_hooks(
+            inbox=inbox,
+            node_id=self.node_id,
+            clock_ms=lambda: time.time_ns() // 1_000_000,
+            consumer_factory=self._reply_reminder_consumer_factory,
+            daemon_hooks=daemon_hooks,
+            logger=self._log,
         )
         # Deferred import: hyprial.harnesses eagerly imports .agent_sdk, which
         # imports hyprial.daemon.impl.api; hyprial.daemon eagerly imports this module, so a
@@ -852,6 +866,7 @@ class _WiringTransportMixin:
             owner_requester_addresses=self._owner_requester_addresses(),
             hold_ttl_ms=graph.hold_policy.ttl_ms,
             delivery_hooks=graph.delivery_hooks,
+            link_admission=self._link_admission,
             actor_mode=True,
         )
         recipient_wakes: RecipientWakeCoordinator | None = None

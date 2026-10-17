@@ -25,6 +25,7 @@ from hyprial.daemon.impl.api  import (
 )
 from hyprial.daemon.impl.desired_state  import DesiredStateStore, InteractiveSession
 from hyprial.daemon.impl.processes.supervisor  import ManagedHarnessRuntime
+from hyprial.daemon.impl.dispatch.admission import LinkAdmission
 from hyprial.daemon.impl.dispatch.runtime.state  import (
     DispatchOwnedMap,
     DispatchOwnedSet,
@@ -171,6 +172,7 @@ class DaemonEventBridge(_BridgeForwardsMixin, _BridgeReconcileMixin, _BridgeResu
         owner_requester_addresses: Collection[str] = (),
         hold_ttl_ms: int = DEFAULT_HOLD_TTL_MS,
         delivery_hooks: "DeliveryHookService | None" = None,
+        link_admission: object | None = None,
         actor_mode: bool = False,
     ) -> None:
         if hold_ttl_ms <= 0:
@@ -206,6 +208,11 @@ class DaemonEventBridge(_BridgeForwardsMixin, _BridgeReconcileMixin, _BridgeResu
         self.harness_actor_registrar = harness_actor_registrar
         self._logger = logger
         self._delivery_hooks = delivery_hooks
+        # The shared send-link admission slot (WP4).  The runtime reaches the
+        # gate through the inbox actor command, but it still holds the one
+        # composed slot so WP2's single bind is visible here (see wp4 T17).
+        # There is exactly one default: a fresh, unbound slot (review item 3).
+        self._link_admission = link_admission or LinkAdmission(logger=logger)
         self._blocking_failure_observer = blocking_failure_observer
         self._blocking_failure_identity = blocking_failure_identity
         self._blocked_actor = blocked_actor
@@ -221,7 +228,7 @@ class DaemonEventBridge(_BridgeForwardsMixin, _BridgeReconcileMixin, _BridgeResu
         # delivery they answer.  Retried as the SAME reply (idempotent) and
         # never re-dispatched meanwhile: the answer exists, asking the model
         # again is what looped wangshuo-sprite on 2026-09-24.
-        self._pending_reply_results: dict[str, HarnessResult] = {}
+        self._pending_settle_results: dict[str, HarnessResult] = {}
         self._pending_forward_outcomes: dict[str, ForwardOutcome] = {}
         self._clock_ms = clock_ms or (lambda: time.time_ns() // 1_000_000)
         # Refresh halfway through the existing hold budget.  This leaves one
@@ -364,7 +371,7 @@ class DaemonEventBridge(_BridgeForwardsMixin, _BridgeReconcileMixin, _BridgeResu
             self._pending_workflow_attempts = DispatchOwnedMap(
                 owner, DispatchTable.PENDING_WORKFLOW_ATTEMPTS
             )
-            self._pending_reply_results = DispatchOwnedMap(
+            self._pending_settle_results = DispatchOwnedMap(
                 owner, DispatchTable.PENDING_REPLY_RESULTS
             )
             self._pending_forward_outcomes = DispatchOwnedMap(
@@ -433,6 +440,7 @@ class DaemonEventBridge(_BridgeForwardsMixin, _BridgeReconcileMixin, _BridgeResu
         )
         self._retry_pump_thread.start()
         self._reconcile_harness_actors()
+        self._settle_stranded_rows(state.harnesses)
         if previous_unclean:
             # A crash may have eaten a sender notice that was only held in
             # memory.  The terminal settlement rows are durable, so re-derive

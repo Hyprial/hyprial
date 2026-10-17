@@ -20,6 +20,7 @@ from hyprial.identity import (
     SEND_TO,
     CallerIdentity,
     GrantRecord,
+    InvalidAgentNameError,
     VisibilityError,
     may_send,
 )
@@ -35,6 +36,7 @@ from hyprial.kernel import (
     ADAPTER_URI_PREFIX,
     AGENT_URI_PREFIX,
     CHANNEL_URI_PREFIX,
+    RESERVED_AGENT_ACTOR_NAMES,
     TARGET_KIND_AGENT,
     TARGET_KIND_CHANNEL_ROUTE,
     agent_uri_actor,
@@ -48,6 +50,26 @@ if TYPE_CHECKING:
 from hyprial.daemon.impl.ipc.params import (
     JsonObject,
     _actor,
+)
+from hyprial.daemon.impl.links.ports import (
+    IPC_MESSAGE_READ_BODY,
+    IPC_MESSAGE_SETTLE_HINT,
+)
+
+#: Consumer-plane methods: resolved as a read key (never as a send sender), so
+#: a bare name reads its own durable rows instead of failing sender
+#: authentication.  ``message.read_body`` and ``message.settle_hint`` join
+#: ``message.ack`` here (WP3): same identity rule, same read keys.
+_CONSUMER_METHODS = frozenset(
+    {
+        "message.ack",
+        "message.pending.list",
+        "message.pending.wait",
+        "message.status",
+        "progress.list",
+        IPC_MESSAGE_READ_BODY,
+        IPC_MESSAGE_SETTLE_HINT,
+    }
 )
 
 
@@ -248,6 +270,7 @@ class _VisibilityMixin:
 
         if "sessionRef" in params:
             actor = self._canonical_interactive_actor(raw)
+            self._refuse_reserved_interactive_actor(actor)
             try:
                 actor = self._fence_interactive_session(actor, params)
             except DaemonRequestError:
@@ -289,13 +312,7 @@ class _VisibilityMixin:
         if trusted_origin not in (None, "daemon", "ipc"):
             raise ValueError("unknown trusted message origin")
         if trusted_origin in (None, "daemon"):
-            if method in {
-                "message.ack",
-                "message.pending.list",
-                "message.pending.wait",
-                "message.status",
-                "progress.list",
-            }:
+            if method in _CONSUMER_METHODS:
                 sender = self._message_consumer_actor(params)
             else:
                 sender = (
@@ -317,14 +334,7 @@ class _VisibilityMixin:
 
         claimed = (
             self._message_consumer_actor(params)
-            if method
-            in {
-                "message.ack",
-                "message.pending.list",
-                "message.pending.wait",
-                "message.status",
-                "progress.list",
-            }
+            if method in _CONSUMER_METHODS
             else self._resolve_send_sender(raw)
         )
         self._record_unauthenticated_sender(method, claimed)
@@ -421,6 +431,28 @@ class _VisibilityMixin:
                 or adapter not in self._lark_gateway_names()
             )
         return False
+
+    def _refuse_reserved_interactive_actor(self, actor: str) -> None:
+        """Refuse a daemon mechanism name as a session identity (ruling 63).
+
+        ``link_governed`` exempts the reserved actor names as sender or
+        recipient on ANY node, so a session claiming one would send with the
+        exemption and bypass every link constraint.  ``session.register`` needs
+        no registry row, so the AgentRegistry creation guard alone does not
+        close this path: this boundary and the session-register entry point
+        both call this check.  The comparison is exact equality on the actor
+        segment of the canonical URI, never a prefix, so ``turn-hooks`` and
+        ``dispatch-coordinator2`` stay ordinary agents.
+        """
+
+        parsed = parse_agent_uri(actor)
+        name = actor if parsed is None else parsed[2]
+        if name in RESERVED_AGENT_ACTOR_NAMES:
+            raise DaemonRequestError(
+                InvalidAgentNameError.code,
+                f"actor {actor!r} is reserved for a daemon internal actor and "
+                "cannot own an interactive session",
+            )
 
     def _canonical_interactive_actor(self, actor: str) -> str:
         """Normalize one local MCP/Channel actor at the daemon boundary.

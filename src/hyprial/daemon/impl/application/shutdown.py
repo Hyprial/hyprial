@@ -66,6 +66,12 @@ _CLOSE_UNBUDGETED_STEPS = (
     ("routine-service", "joins a queue the step before it drained"),
     ("workflow-service", "same shape as routine-service"),
     (
+        "link-service",
+        "close_link_service rejects new passes, joins the link-service thread and "
+        "flushes its orgfs intents; the close has its own 5s deadline but is not "
+        "registered in the kernel aggregate (wp2-composition §11 G5)",
+    ),
+    (
         "degraded-workflow-component",
         "retries close() on workflow/remote/PAC-actor handles that already failed "
         "to drain at a degraded startup; same shapes as the steps above, and the "
@@ -529,6 +535,10 @@ class _ShutdownMixin:
                     "PAC graph authority did not drain before sender teardown"
                 )
             self._pac_graph_authority = None
+        if getattr(self, "_link_service", None) is not None:
+            from hyprial.daemon.impl.composition.links import close_link_service
+
+            attempt(lambda: close_link_service(self), "link-service")
         if self._transfer_source is not None:
             if not self._transfer_source.close(timeout=5.0):
                 raise RuntimeError("P2 source effects did not drain before lifecycle teardown")

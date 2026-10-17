@@ -66,6 +66,8 @@ def _lark_auth_send(sender: str, route: str, text: str) -> None:
             "onBehalfOf": sender,
             "to": [route],
             "message": text,
+            # The handoff text is the body; the summary is this fixed line.
+            "summary": "Lark 用户授权已过期，请按正文完成交接",
         },
     )
 

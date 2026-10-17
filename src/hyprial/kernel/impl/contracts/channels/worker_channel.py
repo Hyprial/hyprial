@@ -21,9 +21,14 @@ METHOD_PARAMS = {
     "targets": frozenset({"kind"}),
     "message.pending.list": frozenset({"fetched"}),
     "progress.list": frozenset({"deliveryId", "sinceSeq"}),
-    "message.send": frozenset({"to", "message"}),
-    "message.reply": frozenset({"messageId", "message"}),
+    "message.send": frozenset({"to", "message", "summary"}),
+    "message.reply": frozenset({"messageId", "message", "summary"}),
     "message.ack": frozenset({"messageId"}),
+    # Literal by necessity: kernel cannot import the daemon's ports module.
+    # tests/daemon/application/transport/channel/summary pins these equal to
+    # IPC_MESSAGE_READ_BODY / IPC_MESSAGE_SETTLE_HINT.
+    "message.read_body": frozenset({"messageId"}),
+    "message.settle_hint": frozenset({"messageId"}),
     "workflow.complete": frozenset(
         {"graphId", "nodeId", "requestId", "reasonRef", "outputText"}
     ),

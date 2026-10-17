@@ -751,6 +751,7 @@ class RemoteWorkflow:
                 target=grant["owner"],
                 conversation_id=f"pac-{grant['graphId']}",
                 text=text,
+                summary=self.app._pac_notification_io.derive_summary(text),
                 expires_at_ms=grant["deadlineMs"],
             )
             return {"ok": True, "messageId": str(delivered.message_id)}

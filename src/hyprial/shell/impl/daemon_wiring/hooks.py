@@ -1,6 +1,6 @@
 """Named business hook consumers registered by the shell composition root."""
 
-from hyprial.biz import RecapHookConsumer
+from hyprial.biz import RecapHookConsumer, ReplyReminderConsumer
 from hyprial.daemon import HookConsumersDeps
 
 
@@ -20,4 +20,14 @@ def hook_consumers(deps: HookConsumersDeps):
     }
 
 
-__all__ = ["hook_consumers"]
+def reply_reminder_consumer_factory(port):
+    """Wrap the daemon's reminder port as the biz bus consumer (WP7 §1.3).
+
+    The logger comes from the port itself, so the shell needs no second deps
+    object for the reminder lane.
+    """
+
+    return ReplyReminderConsumer(port=port, logger=port.log)
+
+
+__all__ = ["hook_consumers", "reply_reminder_consumer_factory"]

@@ -111,8 +111,11 @@ class InboxServiceRetryMixin:
                    WHERE recipient = ? AND message_id = ? AND consumed = 0""",
                 (now, now, recipient, message_id),
             )
+            if cursor.rowcount == 1:
+                self._ledger_ack_inbound_locked(recipient, message_id)
         if cursor.rowcount != 1:
             return AckResult(message_id, False, ipc_errors.MESSAGE_ACK_UNAVAILABLE)
+        self._forget_admission(message_id)
         message = self._row_message(row)
         self.retire_outbox_receipt(message.sender, message_id, now_ms=now)
         return AckResult(message_id, True)
@@ -438,8 +441,8 @@ class InboxServiceRetryMixin:
                        message_id, mailbox_node, conversation_id, sender, recipient,
                        payload, intent, lifecycle, idempotency_key, created_at_ms,
                        accepted_at_ms, message_expires_at_ms, expires_at_ms,
-                       next_attempt_ms
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       next_attempt_ms, summary
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     message.message_id,
                     mailbox_node,
@@ -461,6 +464,7 @@ class InboxServiceRetryMixin:
                         else now + self.custody_ttl_ms
                     ),
                     now,
+                    message.summary,
                 ),
             )
         self._enforce_hold_capacity("custody", now)
@@ -602,6 +606,14 @@ class InboxServiceRetryMixin:
                 if "origin_node" in row.keys() and row["origin_node"] is not None
                 else None
             ),
+            # inbox/outbox/custody (WP3-A) and system_notices (WP7) all
+            # carry the column; progress_events rows flow through this same
+            # helper without it and decode to None.
+            summary=(
+                str(row["summary"])
+                if "summary" in row.keys() and row["summary"] is not None
+                else None
+            ),
         )
     def _record_terminal(
         self,
@@ -680,6 +692,7 @@ class InboxServiceRetryMixin:
                 self._outbox_to_dlq(row, reason, now_ms)
     def _delete_outbox(self, message_id: str) -> None:
         with self._db:
+            self._ledger_sent_for_outbox_locked(message_id, self._now_ms())
             self._db.execute("DELETE FROM outbox WHERE message_id = ?", (message_id,))
     @_synchronized
     def retire_outbox_receipt(
@@ -761,6 +774,16 @@ class InboxServiceRetryMixin:
             "INSERT INTO dlq(message_id, owner, payload, reason, failed_at_ms) "
             "VALUES (?, ?, ?, ?, ?)",
             (row["message_id"], row["sender"], row["payload"], reason, now_ms),
+        )
+        # The outbound ledger row reaches its terminal state with the same
+        # transaction that evicts the outbox row, so a release never follows
+        # a message that is already gone (WP2 §3.9).
+        self._db.execute(
+            """UPDATE link_ledger
+                  SET state = 'released', event_at_ms = ?, expires_at_ms = ?
+                WHERE actor = ? AND message_id = ? AND direction = 'out'
+                  AND state IN ('held', 'open')""",
+            (now_ms, now_ms + self.durable_ttl_ms, str(row["sender"]), str(row["message_id"])),
         )
         self._db.execute(
             "DELETE FROM outbox WHERE message_id = ?", (row["message_id"],)

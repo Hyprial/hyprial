@@ -58,6 +58,13 @@ def encode_delivery_frame(message: InboxMessage) -> bytes:
                 if message.origin_node is not None
                 else {}
             ),
+            # Optional and additive (design-send-links §7): pre-summary
+            # decoders ignore the key, pre-summary frames decode to None.
+            **(
+                {"summary": message.summary}
+                if message.summary is not None
+                else {}
+            ),
         },
         separators=(",", ":"),
         sort_keys=True,
@@ -86,6 +93,7 @@ def decode_delivery_frame(frame: bytes) -> InboxMessage:
         origin_node=(
             str(value["origin_node"]) if value.get("origin_node") is not None else None
         ),
+        summary=(str(value["summary"]) if value.get("summary") is not None else None),
     )
 
 

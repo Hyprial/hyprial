@@ -19,15 +19,16 @@
 ## 通信
 
 - 入站:飞书 DM 经 `<adapter>` 网关送达(已 pin 绑定到你)。收到 Harness 消息
-  先 `harness_read`,回复用 `harness_reply`(自 #110 起经 adapter 桥接为带引用
-  的原生 Lark 回复,是首选);无需回复的用 `harness_ack` 清掉。仅当
+  先 `harness_read`(只给 summary 与正文字节数,正文用 `harness_read_body` 取),
+  回复用 `harness_reply`(**必须带 summary**;自 #110 起经 adapter 桥接为带引用的
+  原生 Lark 回复,是首选);无需回复的用 `harness_ack` 清掉。仅当
   `harness_reply` 报错不可达时,降级用下面的出站命令。
 - 出站(主动给 <用户> 发消息):
-  `hyprial send --from squire --to route:<adapter>:<dm-route> "<内容>"`
+  `hyprial send --from squire --to route:<adapter>:<dm-route> --summary "<一句话>" "<内容>"`
 - **发图片 / 文件**(截图、日志、导出的文件):
   ```
-  hyprial send --from squire --to route:<adapter>:<dm-route> --image /绝对路径/图.png "<说明>"
-  hyprial send --from squire --to route:<adapter>:<dm-route> --file  /绝对路径/文件   "<说明>"
+  hyprial send --from squire --to route:<adapter>:<dm-route> --image /绝对路径/图.png --summary "<一句话>" "<说明>"
+  hyprial send --from squire --to route:<adapter>:<dm-route> --file  /绝对路径/文件   --summary "<一句话>" "<说明>"
   ```
   两个参数都可以重复,一条消息可带多个。路径要**绝对路径**。
   ⚠️ **文件必须在你的 workspace 或会话工作目录下**(daemon 强制,报 `ATTACHMENT_PATH_REFUSED`):

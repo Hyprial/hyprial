@@ -466,12 +466,21 @@ class DeliveryCustodyRetryMixin:
         with self._service._db:
             for message_id, wake_ms in pending.online_wakes:
                 due_ms = max(now_ms, wake_ms)
-                table = "custody" if message_id in custody_ids else "outbox"
-                self._service._db.execute(
-                    f"UPDATE {table} SET next_attempt_ms = MIN(next_attempt_ms, ?) "
-                    "WHERE message_id = ? AND expires_at_ms > ?",
-                    (due_ms, message_id, due_ms),
-                )
+                if message_id in custody_ids:
+                    self._service._db.execute(
+                        "UPDATE custody SET next_attempt_ms = MIN(next_attempt_ms, ?) "
+                        "WHERE message_id = ? AND expires_at_ms > ?",
+                        (due_ms, message_id, due_ms),
+                    )
+                else:
+                    # A held row is not eligible for an online wake: only the
+                    # link release (or TTL) may make it due (WP2 §3.6).
+                    self._service._db.execute(
+                        "UPDATE outbox SET next_attempt_ms = MIN(next_attempt_ms, ?) "
+                        "WHERE message_id = ? AND expires_at_ms > ? "
+                        "AND link_hold IS NULL",
+                        (due_ms, message_id, due_ms),
+                    )
     def _pop_current_completion(
         self,
         event: DispatchIoCompleted | DispatchIoFailed,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from __future__ import annotations
+import inspect
 import json
 import threading
 import time
@@ -20,6 +21,9 @@ from hyprial.kernel import (
 )
 if TYPE_CHECKING:
     pass
+
+from hyprial.daemon.impl.inbox.contracts.settlement import settle_hint_for
+from hyprial.daemon.impl.inbox.contracts.summary import body_bytes, body_text
 
 from hyprial.daemon.impl.application.messaging.delivery.sends import (
     _undeliverable_outbox_recipient,
@@ -55,6 +59,19 @@ MESSAGE_WAIT_SLICE_SECONDS = 0.5
 #: caps one waiter at ~4 rescans/s -- about the cost of the 0.5 s polling it
 #: replaces -- while the first change after a quiet spell still wakes at once.
 MESSAGE_WAIT_RESCAN_SECONDS = 0.25
+
+
+def _payload_reply_to(payload: bytes) -> str | None:
+    """The explicit request id a reply carries inside its payload, if any."""
+
+    try:
+        body = json.loads(payload)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    if not isinstance(body, dict):
+        return None
+    value = body.get("replyTo")
+    return value if isinstance(value, str) else None
 
 
 def new_message_wait_slots() -> threading.BoundedSemaphore:
@@ -153,6 +170,34 @@ class _MessageQueriesMixin:
             return False
         return True
 
+    def _candidate_message_ids(self, keys: tuple[str, ...]) -> list[str]:
+        """Live pending ids for one fetch candidate set (review B3.3).
+
+        The actor command re-reads the rows and re-runs admission; this is
+        only the candidate list the carrier asked about.
+        """
+
+        seen: set[str] = set()
+        candidates: list[str] = []
+        for key in keys:
+            for message in self._inbox.pending_messages(key):
+                if message.message_id not in seen:
+                    seen.add(message.message_id)
+                    candidates.append(message.message_id)
+        return candidates
+
+    def _admitted_for_consumer(self, key: str) -> tuple[Any, ...]:
+        """The context-entry visible set for one consumer key (review B3).
+
+        The gate call runs on the inbox actor thread through the admitted
+        command; the IPC thread never calls the gate itself.
+        """
+
+        admitted_pending = getattr(self._inbox, "admitted_pending", None)
+        if not callable(admitted_pending):
+            return tuple(self._inbox.pending_messages(key))
+        return tuple(admitted_pending(key, now_ms=time.time_ns() // 1_000_000))
+
     def _ipc_message_query(self, params) -> Any:
         return self._message_query(params)
 
@@ -185,13 +230,31 @@ class _MessageQueriesMixin:
             for notice in (drain_notices(key) if callable(drain_notices) else ())
         )
         fetch_pending = getattr(self._inbox, "fetch_pending", None)
+        admitted_pending = getattr(self._inbox, "admitted_pending", None)
+        now_ms = time.time_ns() // 1_000_000
         if is_session_fetch(params) and callable(fetch_pending):
-            pending = fetch_pending(actor)
+            candidates = self._candidate_message_ids(keys)
+            # The real facade accepts ``only`` (its actor re-reads and admits);
+            # light test doubles expose today's single-argument signature.
+            if "only" in inspect.signature(fetch_pending).parameters:
+                pending = fetch_pending(actor, only=frozenset(candidates))
+            else:
+                pending = fetch_pending(actor)
         else:
             seen: set[str] = set()
             pending_list: list[Any] = []
             for key in keys:
-                for item in self._inbox.pending_messages(key):
+                reader = (
+                    admitted_pending
+                    if callable(admitted_pending)
+                    else self._inbox.pending_messages
+                )
+                items = (
+                    reader(key, now_ms=now_ms)
+                    if callable(admitted_pending)
+                    else reader(key)
+                )
+                for item in items:
                     if item.message_id not in seen:
                         seen.add(item.message_id)
                         pending_list.append(item)
@@ -205,12 +268,13 @@ class _MessageQueriesMixin:
                         reason=admitted.value,
                     )
                     break
-        for message in (*notices, *pending):
+        for kind, message in [("notice", item) for item in notices] + [
+            ("message", item) for item in pending
+        ]:
             try:
                 body = json.loads(message.payload)
             except (json.JSONDecodeError, UnicodeDecodeError):
                 body = {}
-            text = body.get("message", "") if isinstance(body, dict) else ""
             row: JsonObject = {
                 "messageId": message.message_id,
                 # Stable across daemon restart/resume; never use queue index.
@@ -223,7 +287,13 @@ class _MessageQueriesMixin:
                 # tell which of its identities was addressed.
                 "to": message.recipient,
                 "intent": message.intent,
-                "message": text if isinstance(text, str) else str(text),
+                # A notice is daemon-authored and drained on read: its whole
+                # text is the summary, and there is no body to fetch later.
+                "kind": kind,
+                "summary": (
+                    body_text(message) if kind == "notice" else message.summary
+                ),
+                "bodyBytes": 0 if kind == "notice" else body_bytes(message),
             }
             row["origin"] = _visible_message_origin(body, message.sender)
             messages.append(row)
@@ -264,7 +334,7 @@ class _MessageQueriesMixin:
         def unseen() -> bool:
             for key in keys:
                 for item in (
-                    *self._inbox.pending_messages(key),
+                    *self._admitted_for_consumer(key),
                     *self._inbox.system_notices(key),
                 ):
                     if item.message_id not in known:
@@ -298,6 +368,11 @@ class _MessageQueriesMixin:
                     version, min(MESSAGE_WAIT_SLICE_SECONDS, remaining)
                 )
                 if current == version:
+                    # A link or window change does not move the inbox version;
+                    # re-ask the admitted set at least once per slice so a
+                    # released row is seen without a fresh wait (review B5).
+                    if unseen():
+                        return reply(changed=True, held=True)
                     continue
                 version = current
                 if unseen():
@@ -380,6 +455,257 @@ class _MessageQueriesMixin:
             "acknowledged": result.acknowledged,
             **({"code": result.code} if result.code else {}),
         }
+
+    def _ipc_message_read_body(
+        self, method, params, _trusted_message_origin: str | None = None
+    ) -> Any:
+        """Pull one message body by id (design §7).
+
+        Reading records consumption for exactly that row: it stamps the fetch
+        time, retires the sender's receipt and publishes a fetch receipt.  It
+        is not an acknowledgement -- the request stays open and keeps its W
+        slot until a reply, an ack or abandonment.
+        """
+
+        caller = self._authenticated_message_caller(
+            params,
+            method=method,
+            trusted_origin=_trusted_message_origin,
+        )
+        actor = caller.subject
+        self._require_body_fence(caller, params, _trusted_message_origin)
+        keys = self._message_consumer_keys(params, actor=actor)
+        message_id = _required_string(params.get("messageId"), "messageId")
+        pending: tuple[Any, str] | None = None
+        for key in keys:
+            for item in self._inbox.pending_messages(key):
+                if item.message_id == message_id:
+                    pending = (item, key)
+                    break
+            if pending is not None:
+                break
+        if pending is not None:
+            message, key = pending
+            # Only a row that was never fetched needs admission.  A row that
+            # already carries the fetch stamp was admitted by the one gate at
+            # its first read (``fetch_pending_admitted`` stamps only what it
+            # admitted), so a repeated read is read-only: it neither asks the
+            # gate for a second W decision nor re-publishes the fetch receipt
+            # (review rework 4; ports' ``admit_dispatch`` stays idempotent for
+            # callers that do re-ask).
+            if not self._read_body_already_fetched(message_id):
+                if not self._admit_read_body(message):
+                    # Held by the link gate (no mutual reference yet, W full,
+                    # or no gate bound): the row must not enter any reader's
+                    # context.  Stale held rows must not leak through the
+                    # retained-row fallback below either.
+                    raise DaemonRequestError(
+                        ipc_errors.MESSAGE_BODY_UNAVAILABLE,
+                        "the message body is not available to this reader yet",
+                        {"messageId": message_id},
+                    )
+                fetch_pending = getattr(self._inbox, "fetch_pending", None)
+                if callable(fetch_pending):
+                    fetch_pending(key, only=frozenset({message_id}))
+                if self._fetch_receipt_publisher is not None:
+                    admitted = self._fetch_receipt_publisher.submit(message)
+                    if admitted is not AdmissionResult.ACCEPTED:
+                        self._log(
+                            "warn",
+                            "daemon",
+                            "inbox.fetch_receipt_hint_rejected",
+                            reason=admitted.value,
+                        )
+            self._log(
+                "info",
+                "daemon",
+                "message.body_read",
+                messageId=message_id,
+                actor=actor,
+                bodyBytes=body_bytes(message),
+                pending=True,
+            )
+            return self._read_body_row(message, pending=True, fetched=True)
+        # Not pending for any of this caller's keys.  Only a retained row that
+        # was admitted while it was live may be read back read-only.  A
+        # governed row that was never admitted (a row acked out of hold, or an
+        # expired one) must not leak its body through this fallback (review
+        # R3): the gate answers idempotently for an id it admitted, and denies
+        # one it never admitted.
+        retained_reader = getattr(self._inbox, "harness_failure_original", None)
+        retained = retained_reader(message_id) if callable(retained_reader) else None
+        if retained is None or retained.recipient not in keys:
+            raise DaemonRequestError(
+                ipc_errors.MESSAGE_BODY_UNAVAILABLE,
+                "no message body is readable for this id",
+                {"messageId": message_id},
+            )
+        if not self._admit_read_body(retained):
+            raise DaemonRequestError(
+                ipc_errors.MESSAGE_BODY_UNAVAILABLE,
+                "no message body is readable for this id",
+                {"messageId": message_id},
+            )
+        has_fetched = getattr(self._inbox, "has_fetched", None)
+        fetched = bool(has_fetched(message_id)) if callable(has_fetched) else False
+        self._log(
+            "info",
+            "daemon",
+            "message.body_read",
+            messageId=message_id,
+            actor=actor,
+            bodyBytes=body_bytes(retained),
+            pending=False,
+        )
+        return self._read_body_row(retained, pending=False, fetched=fetched)
+
+    def _read_body_row(
+        self, message: Any, *, pending: bool, fetched: bool
+    ) -> JsonObject:
+        try:
+            body = json.loads(message.payload)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            body = {}
+        return {
+            "ok": True,
+            "messageId": message.message_id,
+            "conversationId": message.conversation_id,
+            "from": message.sender,
+            "to": message.recipient,
+            "intent": message.intent,
+            "summary": message.summary,
+            "message": body_text(message),
+            "bodyBytes": body_bytes(message),
+            "origin": _visible_message_origin(body, message.sender),
+            "pending": pending,
+            "fetched": fetched,
+        }
+
+    def _ipc_message_settle_hint(
+        self, method, params, _trusted_message_origin: str | None = None
+    ) -> Any:
+        """Answer a carrier whether an injected message still needs keeping.
+
+        Read-only: it never acks, never stamps and never publishes.  A link
+        gate, when bound, owns the reclaimed-residue verdict (design §4.4).
+        """
+
+        caller = self._authenticated_message_caller(
+            params,
+            method=method,
+            trusted_origin=_trusted_message_origin,
+        )
+        self._require_body_fence(caller, params, _trusted_message_origin)
+        keys = self._message_consumer_keys(params, actor=caller.subject)
+        message_id = _required_string(params.get("messageId"), "messageId")
+        pending_message = None
+        for key in keys:
+            for item in self._inbox.pending_messages(key):
+                if item.message_id == message_id:
+                    pending_message = item
+                    break
+            if pending_message is not None:
+                break
+        # README ruling 67: the one gate slot is ``link_admission.gate``;
+        # there is no second binding point to read here.  The decision itself
+        # is the single ``settle_hint_for`` the headless end also calls.
+        hint = settle_hint_for(
+            pending=pending_message,
+            gate=self.link_admission.gate,
+            actor=caller.subject,
+            message_id=message_id,
+            log=self._log,
+        )
+        return {
+            "ok": True,
+            "messageId": message_id,
+            "hint": hint,
+            "pending": pending_message is not None,
+        }
+
+    def _require_body_fence(
+        self,
+        caller: Any,
+        params: JsonObject,
+        trusted_origin: str | None,
+    ) -> None:
+        """A body read is fenced exactly like an explicit inbox fetch.
+
+        An authenticated session presents ``sessionRef`` and is fenced by the
+        authenticated caller.  The local operator's verified read and trusted
+        daemon/adapter callers access by their existing boundary; a bare claim
+        over the socket never buys another session's custody.
+        """
+
+        if "sessionRef" in params:
+            return
+        if caller.via in ("operator", "adapter"):
+            return
+        if trusted_origin in (None, "daemon"):
+            return
+        raise DaemonRequestError(
+            ipc_errors.STALE_SESSION,
+            "reading a message body requires the session fence (sessionRef); "
+            "an unfenced caller cannot commit another session's read",
+        )
+
+    def _admit_read_body(self, message: Any) -> bool:
+        """Consumer admission for one pending agent-to-agent message.
+
+        Owner, adapter, system and self-send traffic is not link-governed and
+        passes.  A governed message needs the injected LinkGate to admit it;
+        with no gate bound it stays unreadable rather than leaking a held row
+        (README ruling 26).  Daemon-internal mechanism actors are exempt in
+        both directions by reserved actor name, judged by the one
+        ``LinkAdmission`` the composition owns (rulings 45/51/63).
+        """
+
+        if not self.link_admission.governs(message.sender, message.recipient):
+            return True
+        gate = self.link_admission.gate
+        if gate is None:
+            self._log(
+                "warn",
+                "daemon",
+                "link.gate_unbound",
+                recipient=message.recipient,
+            )
+            return False
+        try:
+            return bool(
+                gate.admit_dispatch(
+                    recipient=message.recipient,
+                    sender=message.sender,
+                    message_id=message.message_id,
+                    now_ms=time.time_ns() // 1_000_000,
+                    intent=message.intent,
+                    reply_to=_payload_reply_to(message.payload),
+                )
+            )
+        except Exception as error:  # noqa: BLE001 - a broken gate must fail closed
+            self._log(
+                "warn",
+                "daemon",
+                "link.gate_error",
+                stage="read_body",
+                sender=message.sender,
+                recipient=message.recipient,
+                errorType=type(error).__name__,
+            )
+            return False
+
+    def _read_body_already_fetched(self, message_id: str) -> bool:
+        """Does this live row already carry the one-way fetch stamp?
+
+        ``fetched_at_ms`` is written with ``COALESCE`` by the admitted fetch
+        path (and by the public single-row fetch), so it proves the row passed
+        consumer admission once.  Test doubles without the query keep the
+        gate-asking default (a repeated read then just re-asks an idempotent
+        gate).
+        """
+
+        reader = getattr(self._inbox, "has_fetched", None)
+        return bool(reader(message_id)) if callable(reader) else False
 
     def _ipc_outbox_list(self) -> Any:
         return {

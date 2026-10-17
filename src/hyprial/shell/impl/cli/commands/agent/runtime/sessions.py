@@ -159,8 +159,8 @@ def _start_interactive_pi(
     append_system_prompt = (
         "Harness Network is connected through the hyprial pi harness-bridge "
         "extension. Harness messages arrive as user messages prefixed "
-        "with [Harness Network ...]; answer them in the transcript and "
-        "the bridge sends your final reply back when the turn settles. "
+        "with [Harness Network ...]; each carries only a summary; read a body with harness_read_body, "
+        "and answer each with harness_reply or harness_ack — nothing is sent on your behalf. "
         "Use the harness_send/harness_read/harness_progress/harness_reply/harness_ack/"
         "harness_targets/harness_whoami tools for proactive Harness "
         "Network access." + (f"\n\n{handover}" if handover else "")
@@ -387,6 +387,45 @@ def _reject_codex_session_args(runtime_args: tuple[str, ...]) -> None:
             )
 
 
+_CODEX_APPROVAL_OPTIONS = ("--ask-for-approval", "-a")
+_CODEX_NO_APPROVAL = "never"
+_CODEX_BYPASS_FLAGS = frozenset({"--dangerously-bypass-approvals-and-sandbox", "--yolo"})
+
+
+def _interactive_codex_runtime_args(runtime_args: tuple[str, ...]) -> tuple[str, ...]:
+    """Pin ``on-request`` approvals: under ``never`` codex refuses every MCP call.
+
+    The harness-bridge tools are MCP tools, so an interactive launch that
+    disables approvals would mount them and then have each call refused.
+    There is no operator flag that legitimately opts out, hence rejection.
+    """
+
+    services = get_services()
+    approvals: list[str] = []
+    for index, arg in enumerate(runtime_args):
+        name, eq, inline = arg.partition("=")
+        if name in _CODEX_APPROVAL_OPTIONS:
+            approvals.append(
+                inline if eq else (runtime_args[index + 1] if index + 1 < len(runtime_args) else "")
+            )
+        elif arg.startswith("-a") and not arg.startswith("--"):
+            approvals.append(arg[2:])
+    if (
+        _CODEX_NO_APPROVAL in approvals
+        or _CODEX_BYPASS_FLAGS.intersection(runtime_args)
+    ):
+        raise services.CliError(
+            ipc_errors.INVALID_ARGUMENT,
+            "an interactive Codex session needs on-request approvals for its "
+            "harness-bridge tools; '-a never', '--yolo' and "
+            "'--dangerously-bypass-approvals-and-sandbox' make Codex refuse every "
+            "MCP tool call (use them only with --headless)",
+        )
+    if approvals or "--approve-for-me" in runtime_args:
+        return runtime_args
+    return ("--ask-for-approval", "on-request", *runtime_args)
+
+
 def _codex_tmux_module() -> Any:
     """The daemon's tmux boundary, imported lazily like the pi/claude paths."""
 
@@ -444,12 +483,14 @@ def _start_interactive_codex(
         CodexInteractiveCarrier,
         CodexInteractiveResumeError,
         CodexInteractiveResumePending,
+        interactive_channel_config_args,
     )
     from hyprial.daemon import codex_provider_configuration as codex_model_provider_configuration
 
     from hyprial.shell.impl.plugins import PluginManifestError, codex_plan, load_manifest
 
     _reject_codex_session_args(runtime_args)
+    launch_args = _interactive_codex_runtime_args(runtime_args)
     provider_spec = HarnessLaunchSpec(
         "codex",
         name,
@@ -528,6 +569,7 @@ def _start_interactive_codex(
         session_name = None
         root = Path(tempfile.mkdtemp(prefix="hyprial-codex-attach-", dir="/tmp"))
     socket_path = root / "app.sock"
+    session_ref_file = root / "session-ref"
     session_ref: str | None = None
     registered = False
     raw_shared_credential = (
@@ -577,8 +619,17 @@ def _start_interactive_codex(
                 cwd=cwd,
                 command=(codex_bin, *provider_args),
                 env=environment,
-                # Plugin MCP servers run in the app server, not the remote TUI.
-                config_args=plugin_plan.config_args,
+                # Plugin MCP servers run in the app server, not the remote TUI;
+                # so does harness-bridge, whose sessionRef is published below.
+                config_args=(
+                    *plugin_plan.config_args,
+                    *interactive_channel_config_args(
+                        actor=actor,
+                        session_ref_file=session_ref_file,
+                        hyprial_home=services._hyprial_home(),
+                        state_dir=services._state_dir(),
+                    ),
+                ),
                 model_provider=model_provider,
                 projection_root=(
                     None
@@ -608,7 +659,7 @@ def _start_interactive_codex(
                 [
                     "--no-alt-screen",
                     *model_args,
-                    *runtime_args,
+                    *launch_args,
                     "--remote",
                     f"unix://{socket_path}",
                 ]
@@ -617,7 +668,7 @@ def _start_interactive_codex(
             if resume is not None:
                 try:
                     server.resume_thread(
-                        resume, runtime_args=runtime_args, model=model
+                        resume, runtime_args=launch_args, model=model
                     )
                 except CodexInteractiveResumeError as error:
                     raise services.CliError(error.code, str(error)) from error
@@ -717,6 +768,9 @@ def _start_interactive_codex(
                     "CODEX_RESUME_GUARD_UNCONFIRMED",
                     "daemon did not confirm that the live-incumbent guard was applied",
                 )
+            pending_ref = session_ref_file.with_name("session-ref.tmp")
+            pending_ref.write_text(session_ref, encoding="utf-8")
+            pending_ref.replace(session_ref_file)
             if tmux_module is not None:
                 assert session_name is not None
                 # Re-verify the CLI's own predicate against the daemon's live

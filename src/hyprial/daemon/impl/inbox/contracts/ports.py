@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Protocol, TypeAlias
+from typing import Mapping, Protocol, TypeAlias, runtime_checkable
 
 from hyprial.kernel import CommandSink, EventSink, PortCommandRejected
 from hyprial.daemon import Alarm, AlarmResult
@@ -13,6 +13,9 @@ from hyprial.daemon.impl.inbox.contracts.api  import (
     HarnessFailureSettlement,
     InboxMessage,
     InboxPruneItem,
+    LinkLedgerCensor,
+    LinkLedgerOpen,
+    LinkLedgerResult,
     OutboxPruneItem,
     ReceiveResult,
     SubmissionResult,
@@ -33,6 +36,35 @@ class SubmitMessageCommand:
     message: InboxMessage
     now_ms: int | None = None
     defer_direct: bool = False
+    #: Send-link hold reason (WP2 §2.4, §3.6): non-None parks the row in the
+    #: outbox with ``next_attempt_ms = expires_at_ms`` and no I/O.
+    link_hold: str | None = None
+    #: Durable outbound ledger row written in this same transaction (§3.9).
+    link_open: LinkLedgerOpen | None = None
+    #: Reply accepted: close the original inbound ledger row in this
+    #: transaction (B5, §3.9).
+    link_reply_close: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class UpdateLinkLedgerCommand:
+    """One inbox transaction's worth of durable link bookkeeping (§3.6)."""
+
+    correlation_id: str
+    release: tuple[str, ...] = ()
+    reasons: Mapping[str, str] = field(default_factory=dict)
+    fail: Mapping[str, str] = field(default_factory=dict)
+    drain: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    cancel_outbound: Mapping[str, str] = field(default_factory=dict)
+    release_outbound: tuple[tuple[str, str], ...] = ()
+    censor: tuple[LinkLedgerCensor, ...] = ()
+    sampled: tuple[tuple[str, str], ...] = ()
+    open_outbound: tuple[LinkLedgerOpen, ...] = ()
+    close_inbound: tuple[tuple[str, str, int], ...] = ()
+    bind_tasks: tuple[tuple[str, str, str, int], ...] = ()
+    unbind_tasks: tuple[tuple[str, str, str], ...] = ()
+    purge_before_ms: int | None = None
+    now_ms: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,6 +196,38 @@ class FetchPendingCommand:
     correlation_id: str
     recipient: str
     now_ms: int | None = None
+    #: Candidate message ids the pull may take.  None means "all live rows".
+    #: Admission still happens inside the actor (review B3.3).
+    only: tuple[str, ...] | None = None
+    #: WP5-A §3.3 (B1): a successful headless turn stamps the first fetch and
+    #: clears the row's non-terminal failure retries in the same transaction,
+    #: so a body read before a failed turn does not suppress its retry.
+    completed_turn: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class AdmittedPendingCommand:
+    """The live pending rows this recipient may inject (review B3.1/B3.2).
+
+    The gate must run on the inbox actor thread; the runtime and the
+    interactive list/wait read the admitted set through this command instead
+    of re-implementing admission on their own threads.
+    """
+
+    correlation_id: str
+    recipient: str
+    now_ms: int | None = None
+    exclude: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class AdmittedDispatchableCommand:
+    """Dispatchable (failure backoff elapsed) rows this recipient may inject."""
+
+    correlation_id: str
+    recipient: str
+    now_ms: int | None = None
+    exclude: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,8 +268,11 @@ InboxCommand: TypeAlias = (
     | SubmitProgressCommand
     | ReceiveProgressCommand
     | FetchPendingCommand
+    | AdmittedPendingCommand
+    | AdmittedDispatchableCommand
     | PruneOutboxCommand
     | EmitAlarmCommand
+    | UpdateLinkLedgerCommand
     | CloseInboxCommand
 )
 
@@ -355,6 +422,14 @@ class AlarmCompleted:
     result: AlarmResult
 
 
+@dataclass(frozen=True, slots=True)
+class LinkLedgerUpdated:
+    correlation_id: str
+    generation: int
+    version: int
+    result: LinkLedgerResult
+
+
 InboxEvent: TypeAlias = (
     SubmissionCompleted
     | ReceiveCompleted
@@ -368,11 +443,45 @@ InboxEvent: TypeAlias = (
     | SubmissionBatchCompleted
     | OutboxPruneCompleted
     | AlarmCompleted
+    | LinkLedgerUpdated
     | InboxClosed
     | PortCommandRejected
 )
 InboxCommandSink: TypeAlias = CommandSink[InboxCommand]
 InboxEventSink: TypeAlias = EventSink[InboxEvent]
+
+
+@runtime_checkable
+class LinkLedgerSink(Protocol):
+    """What the inbox tells the link service after a commit (WP2 §3.1).
+
+    All three callbacks run synchronously on the inbox actor thread after the
+    transaction commits and change memory only.  The inbox never imports the
+    links implementation; it resolves the sink from the one bound gate slot.
+    """
+
+    def injected(
+        self,
+        *,
+        actor: str,
+        message_id: str,
+        sender: str,
+        intent: str,
+        reply_to: str | None,
+        received_at_ms: int,
+    ) -> None: ...
+
+    def reply_received(
+        self,
+        *,
+        actor: str,
+        reply_message_id: str,
+        reply_to: str,
+        sender: str,
+        received_at_ms: int,
+    ) -> None: ...
+
+    def discard(self, *, actor: str, message_ids: object) -> None: ...
 
 
 class InboxProjectionPort(Protocol):

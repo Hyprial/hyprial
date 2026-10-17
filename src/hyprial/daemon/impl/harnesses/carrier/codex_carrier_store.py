@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from hyprial.daemon.impl.api import HarnessDelivery
+from hyprial.daemon.impl.harnesses.carrier.contract import INJECTION_FORMAT
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +23,15 @@ class StoredCarrierDelivery:
     turn_id: str | None
     final_output: str | None
     settlement_attempts: int
+    injection_format: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StoredTurnReport:
+    report_id: str
+    phase: str
+    status: str | None
+    delivery_id: str
 
 
 class CodexCarrierStore:
@@ -71,6 +82,18 @@ class CodexCarrierStore:
                 ADD COLUMN message TEXT NOT NULL DEFAULT ''
                 """
             )
+        if "injection_format" not in columns:
+            # NULL marks a row written before summary-only injection: its
+            # ``message`` is an old body and must never reach a model.
+            self._db.execute(
+                "ALTER TABLE codex_interactive_delivery ADD COLUMN injection_format TEXT"
+            )
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS codex_turn_report (actor TEXT NOT NULL, "
+            "session_ref TEXT NOT NULL, report_id TEXT NOT NULL, phase TEXT NOT NULL, "
+            "status TEXT, delivery_id TEXT NOT NULL DEFAULT '', "
+            "created_ms INTEGER NOT NULL, PRIMARY KEY (actor, report_id, phase))"
+        )
         self._db.commit()
 
     def load(self, actor: str, session_ref: str) -> tuple[StoredCarrierDelivery, ...]:
@@ -87,13 +110,33 @@ class CodexCarrierStore:
                 """
                 SELECT * FROM codex_interactive_delivery
                 WHERE actor = ? AND (
-                    session_ref = ? OR state IN ('FINAL_OBSERVED', 'REMOTE_SETTLED')
+                    session_ref = ? OR state IN ('FINAL_OBSERVED', 'REMOTE_SETTLED', 'KEPT')
                 )
                 ORDER BY rowid
                 """,
                 (actor, session_ref),
             ).fetchall()
         return tuple(self._stored(row) for row in rows)
+
+    def persisted_turn_id(self, actor: str, message_id: str) -> str | None:
+        """The turn id written synchronously at the native turn/start boundary.
+
+        The carrier projection can lag the pump thread under load; this durable
+        mapping is what lets the removal path still journal the failed turn's
+        ended report before it drops the delivery.
+        """
+
+        with self._lock:
+            row = self._db.execute(
+                """
+                SELECT turn_id FROM codex_interactive_delivery
+                WHERE actor = ? AND message_id = ?
+                """,
+                (actor, message_id),
+            ).fetchone()
+        if row is None or row["turn_id"] is None:
+            return None
+        return str(row["turn_id"])
 
     def record_fetched(
         self,
@@ -107,8 +150,8 @@ class CodexCarrierStore:
                 """
                 INSERT INTO codex_interactive_delivery (
                     actor, message_id, session_ref, conversation_id, sender,
-                    message, intent, state
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'FETCHED')
+                    message, intent, state, injection_format
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'FETCHED', ?)
                 ON CONFLICT(actor, message_id) DO NOTHING
                 """,
                 (
@@ -119,12 +162,14 @@ class CodexCarrierStore:
                     delivery.sender,
                     delivery.message,
                     intent,
+                    INJECTION_FORMAT,
                 ),
             )
             self._db.execute(
                 """
                 UPDATE codex_interactive_delivery
-                SET conversation_id = ?, sender = ?, message = ?, intent = ?
+                SET conversation_id = ?, sender = ?, message = ?, intent = ?,
+                    injection_format = ?
                 WHERE actor = ? AND message_id = ? AND state = 'FETCHED'
                 """,
                 (
@@ -132,6 +177,7 @@ class CodexCarrierStore:
                     delivery.sender,
                     delivery.message,
                     intent,
+                    INJECTION_FORMAT,
                     actor,
                     delivery.delivery_id,
                 ),
@@ -232,11 +278,106 @@ class CodexCarrierStore:
             if row["final_output"] is None:
                 raise RuntimeError("remote settlement had no durable final")
             self._db.execute(
-                """
-                UPDATE codex_interactive_delivery SET state = 'REMOTE_SETTLED'
-                WHERE actor = ? AND message_id = ?
-                """,
+                "UPDATE codex_interactive_delivery SET state = 'REMOTE_SETTLED' "
+                "WHERE actor = ? AND message_id = ?",
                 (actor, message_id),
+            )
+
+    def record_kept(self, actor: str, message_id: str) -> None:
+        """A ``keep`` hint: remember the id, drop the final, never refetch it."""
+
+        with self._lock, self._db:
+            self._db.execute(
+                "UPDATE codex_interactive_delivery SET state = 'KEPT', "
+                "final_output = NULL, settlement_attempts = 0 "
+                "WHERE actor = ? AND message_id = ?",
+                (actor, message_id),
+            )
+
+    def kept_ids(self, actor: str) -> frozenset[str]:
+        """KEPT ids of this actor, across sessions (dedup key is the id)."""
+
+        return self._ids(actor, "state = 'KEPT'")
+
+    def legacy_fetched_ids(self, actor: str) -> frozenset[str]:
+        """FETCHED rows from before summary-only injection (body in ``message``)."""
+
+        return self._ids(actor, "state = 'FETCHED' AND injection_format IS NULL")
+
+    def _ids(self, actor: str, condition: str) -> frozenset[str]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT message_id FROM codex_interactive_delivery "
+                f"WHERE actor = ? AND {condition}",
+                (actor,),
+            ).fetchall()
+        return frozenset(str(r[0]) for r in rows)
+
+    def delete_in_state(self, actor: str, message_id: str, state: str) -> None:
+        """Delete a row only while it is still in ``state`` (FETCHED or KEPT)."""
+
+        with self._lock, self._db:
+            self._db.execute(
+                "DELETE FROM codex_interactive_delivery "
+                "WHERE actor = ? AND message_id = ? AND state = ?",
+                (actor, message_id, state),
+            )
+
+    def add_turn_report(
+        self,
+        actor: str,
+        session_ref: str,
+        report_id: str,
+        phase: str,
+        status: str | None,
+        delivery_id: str,
+        created_ms: int,
+    ) -> None:
+        """Journal one turn report; a repeat keeps the first ``created_ms``."""
+
+        with self._lock, self._db:
+            self._db.execute(
+                "INSERT OR IGNORE INTO codex_turn_report VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (actor, session_ref, report_id, phase, status, delivery_id, created_ms),
+            )
+
+    def pending_turn_reports(
+        self, actor: str, session_ref: str
+    ) -> tuple[StoredTurnReport, ...]:
+        """Unconfirmed reports of the current session: oldest first, started first."""
+
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT report_id, phase, status, delivery_id FROM codex_turn_report "
+                "WHERE actor = ? AND session_ref = ? ORDER BY created_ms, "
+                "CASE phase WHEN 'started' THEN 0 ELSE 1 END, rowid",
+                (actor, session_ref),
+            ).fetchall()
+        return tuple(
+            StoredTurnReport(
+                str(r["report_id"]),
+                str(r["phase"]),
+                (str(r["status"]) if r["status"] is not None else None),
+                str(r["delivery_id"]),
+            )
+            for r in rows
+        )
+
+    def delete_turn_report(self, actor: str, report_id: str, phase: str) -> None:
+        with self._lock, self._db:
+            self._db.execute(
+                "DELETE FROM codex_turn_report "
+                "WHERE actor = ? AND report_id = ? AND phase = ?",
+                (actor, report_id, phase),
+            )
+
+    def drop_other_session_reports(self, actor: str, session_ref: str) -> None:
+        """Reports of an older session are fenced out forever; drop them."""
+
+        with self._lock, self._db:
+            self._db.execute(
+                "DELETE FROM codex_turn_report WHERE actor = ? AND session_ref != ?",
+                (actor, session_ref),
             )
 
     def settle_and_delete(self, actor: str, message_id: str) -> None:
@@ -244,10 +385,8 @@ class CodexCarrierStore:
 
         with self._lock, self._db:
             self._db.execute(
-                """
-                UPDATE codex_interactive_delivery SET state = 'SETTLED'
-                WHERE actor = ? AND message_id = ?
-                """,
+                "UPDATE codex_interactive_delivery SET state = 'SETTLED' "
+                "WHERE actor = ? AND message_id = ?",
                 (actor, message_id),
             )
             self._db.execute(
@@ -293,4 +432,9 @@ class CodexCarrierStore:
                 else None
             ),
             settlement_attempts=int(row["settlement_attempts"]),
+            injection_format=(
+                str(row["injection_format"])
+                if row["injection_format"] is not None
+                else None
+            ),
         )

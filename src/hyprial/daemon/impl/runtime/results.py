@@ -3,16 +3,22 @@
 from __future__ import annotations
 from .settlement import (
     FORWARD_UNAVAILABLE, HARNESS_FAILURE_BACKOFF_MS, HARNESS_FAILURE_MAX_ATTEMPTS,
-    ForwardOutcome, _InflightAttempt, _reply_already_answered,
+    ForwardOutcome, _InflightAttempt,
 )
 import queue
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from hyprial.daemon.impl.inbox import (
     InboxAuthorityTimeout,
     InboxAuthorityUnavailable,
 )
 from hyprial.daemon.impl.inbox.contracts.api import InboxMessage
+from hyprial.daemon.impl.inbox.contracts.settlement import settle_hint_for
+from hyprial.daemon.impl.harnesses.turn_delivery.protocol import (
+    is_mechanism_hook_request,
+    mechanism_of,
+)
+from hyprial.kernel import parse_agent_uri
 from hyprial.daemon.impl.api  import (
     HarnessResult,
     HarnessResultStatus,
@@ -24,6 +30,8 @@ from hyprial.daemon.impl.harnesses.runtime.ports  import ClaimedHarnessResult, H
 from hyprial.kernel import AdmissionResult
 if TYPE_CHECKING:
     pass
+
+_STRANDED_SWEEP_LIMIT = 256
 
 
 def _worker_skip(result: HarnessResult) -> bool:
@@ -111,7 +119,7 @@ class _BridgeResultsMixin:
         terminal_attempt = self._finish_attempt(result.delivery_id)
         if terminal_attempt is None:
             terminal_attempt = self._pending_workflow_attempts.get(result.delivery_id)
-        self._pending_reply_results.pop(result.delivery_id, None)
+        self._pending_settle_results.pop(result.delivery_id, None)
         if self._workflow_outcome is not None and not _worker_skip(result):
             try:
                 if self._workflow_outcome(result):
@@ -253,23 +261,40 @@ class _BridgeResultsMixin:
             if forward_owner is not None:
                 self._pending_forward_outcomes[result.delivery_id] = outcome
             return True
+        mechanism = self._settle_mechanism_answer(original, result)
+        if mechanism is not None:
+            return mechanism
         try:
-            if original.intent == "reply":
-                acknowledged = self.inbox.ack(
-                    original.recipient, original.message_id
-                ).acknowledged
-            else:
-                acknowledged = self._reply_and_ack(original, result)
-        except (InboxAuthorityTimeout, InboxAuthorityUnavailable) as error:
-            acknowledged = (
-                self.inbox.ack(original.recipient, original.message_id).acknowledged
-                if self._reply_already_settled(original, result, error)
-                else False
+            self.inbox.fetch_pending(
+                original.recipient,
+                only=frozenset({original.message_id}),
+                completed_turn=True,
             )
-        if acknowledged:
-            self._pending_reply_results.pop(result.delivery_id, None)
-            self._settle_delivery_hooks(result)
-        return acknowledged
+            pending = next(
+                (
+                    message
+                    for message in self.inbox.pending_messages(original.recipient)
+                    if message.message_id == original.message_id
+                ),
+                None,
+            )
+            hint = settle_hint_for(
+                pending=pending,
+                gate=self._current_link_gate(),
+                actor=original.recipient,
+                message_id=original.message_id,
+                log=self._logger,
+            )
+            if hint == "ack":
+                # A refused or unavailable ack means the row is already
+                # settled; it is never a reason to turn a keep into an ack.
+                self.inbox.ack(original.recipient, original.message_id)
+        except (InboxAuthorityTimeout, InboxAuthorityUnavailable) as error:
+            self._defer_ordinary_settlement(original, result, error)
+            return False
+        self._pending_settle_results.pop(result.delivery_id, None)
+        self._settle_delivery_hooks(result)
+        return True
 
     def _complete_harness_results(self) -> int:
         settled = 0
@@ -297,7 +322,7 @@ class _BridgeResultsMixin:
                 settled += 1
         results = [
             *self._pending_workflow_results.values(),
-            *self._pending_reply_results.values(),
+            *self._pending_settle_results.values(),
             *self.harnesses.drain_results(),
         ]
         for result in results:
@@ -314,7 +339,7 @@ class _BridgeResultsMixin:
                     result.delivery_id
                 )
             # Re-added below only if its reply fails to confirm again.
-            self._pending_reply_results.pop(result.delivery_id, None)
+            self._pending_settle_results.pop(result.delivery_id, None)
             if self._workflow_outcome is not None and not _worker_skip(result):
                 try:
                     handled = self._workflow_outcome(result)
@@ -410,60 +435,181 @@ class _BridgeResultsMixin:
                 self._forward_jobs.put((original, result, terminal_attempt))
                 continue
             self._finish_attempt(result.delivery_id)
+            mechanism = self._settle_mechanism_answer(original, result)
+            if mechanism is not None:
+                if mechanism:
+                    settled += 1
+                continue
             try:
-                if original.intent == "reply":
-                    acknowledged = self.inbox.ack(
-                        original.recipient, original.message_id
-                    ).acknowledged
-                else:
-                    acknowledged = self._reply_and_ack(original, result)
+                self.inbox.fetch_pending(
+                    original.recipient,
+                    only=frozenset({original.message_id}),
+                    completed_turn=True,
+                )
+                pending = next(
+                    (
+                        message
+                        for message in self.inbox.pending_messages(original.recipient)
+                        if message.message_id == original.message_id
+                    ),
+                    None,
+                )
+                hint = settle_hint_for(
+                    pending=pending,
+                    gate=self._current_link_gate(),
+                    actor=original.recipient,
+                    message_id=original.message_id,
+                    log=self._logger,
+                )
+                if hint == "ack":
+                    self.inbox.ack(original.recipient, original.message_id)
             except (InboxAuthorityTimeout, InboxAuthorityUnavailable) as error:
                 # Settled per result: raising here used to abort the whole
                 # tick after drain_results() had already released every
                 # result in the batch, so the rest of the batch was lost.
-                acknowledged = (
-                    self.inbox.ack(original.recipient, original.message_id).acknowledged
-                    if self._reply_already_settled(original, result, error)
-                    else False
-                )
-            if acknowledged:
-                self._settle_delivery_hooks(result)
-                settled += 1
+                self._defer_ordinary_settlement(original, result, error)
+                continue
+            self._pending_settle_results.pop(result.delivery_id, None)
+            self._settle_delivery_hooks(result)
+            settled += 1
         return settled
 
-    def _reply_already_settled(
+    def _settle_mechanism_answer(
+        self, original: InboxMessage, result: HarnessResult
+    ) -> bool | None:
+        """Answer a mechanism exchange, or None when this is not one.
+
+        Only two exchanges reply without a model (rulings 58/59): a hook
+        request authenticated by the reserved sender, and a python_worker
+        (including user-proxy) ``result`` frame.  Everything else, including a
+        forged hook marker, goes through the ordinary settle-hint path.
+        """
+
+        if original.intent != "request":
+            return None
+        hook = is_mechanism_hook_request(original)
+        if not hook and not self._mechanism_is_python_worker(original):
+            return None
+        try:
+            acknowledged = (
+                self._answer_hook_request(original, result)
+                if hook
+                else self._answer_mechanism_result(original, result)
+            )
+        except (InboxAuthorityTimeout, InboxAuthorityUnavailable) as error:
+            self._mechanism_answer_settled(original, result, error)
+            return False
+        if acknowledged:
+            self._pending_settle_results.pop(result.delivery_id, None)
+            self._settle_delivery_hooks(result)
+        return acknowledged
+
+    def _mechanism_is_python_worker(self, original: InboxMessage) -> bool:
+        parsed = parse_agent_uri(original.recipient)
+        if parsed is None:
+            return False
+        harness = self._harness_kind(parsed[2])
+        return harness is not None and mechanism_of(harness) == "python_worker"
+
+    def _current_link_gate(self) -> object | None:
+        admission = getattr(self, "_link_admission", None)
+        if admission is None:
+            return None
+        getter = getattr(admission, "current_gate", None)
+        if callable(getter):
+            return getter()
+        return getattr(admission, "gate", None)
+
+    def _settle_stranded_rows(self, harnesses: tuple[Any, ...]) -> int:
+        """Startup sweep (ruling 74): settle rows stamped before a crash.
+
+        A turn that crashed between ``completed_turn`` (the ``fetched`` stamp)
+        and its ack leaves a stamped pending row nothing will dispatch again.
+        Ask the one ``settle_hint_for`` once per such row: ``ack`` is acked,
+        ``keep`` is left alone.  The model never re-runs; rows with a failure
+        record belong to the retry path.  Runs once, at most
+        ``_STRANDED_SWEEP_LIMIT`` rows.
+        """
+
+        has_fetched = getattr(self.inbox, "has_fetched", None)
+        failure_of = getattr(self.inbox, "harness_failure_settlement", None)
+        if not callable(has_fetched) or not callable(failure_of):
+            return 0  # a narrow inbox port has no stamp evidence to sweep
+        actors = {self.harness_actor_uri(n) for n in self.harnesses.streaming_actors()}
+        actors |= {
+            self.harness_actor_uri(spec.name) for spec in harnesses if spec.headless
+        }
+        budget = _STRANDED_SWEEP_LIMIT
+        settled = 0
+        for recipient in sorted(actors):
+            try:
+                for message in self.inbox.pending_messages(recipient):
+                    if budget <= 0:
+                        return settled
+                    if not has_fetched(message.message_id):
+                        continue
+                    if failure_of(message.message_id):
+                        continue
+                    budget -= 1
+                    hint = settle_hint_for(
+                        pending=message,
+                        gate=self._current_link_gate(),
+                        actor=recipient,
+                        message_id=message.message_id,
+                        log=self._logger,
+                    )
+                    if hint == "ack" and self.inbox.ack(
+                        recipient, message.message_id
+                    ).acknowledged:
+                        settled += 1
+            except (InboxAuthorityTimeout, InboxAuthorityUnavailable) as error:
+                if self._logger is not None:
+                    self._logger(
+                        "warn", "daemon", "harness.stranded_sweep_deferred",
+                        recipient=recipient, error=str(error),
+                    )
+        return settled
+
+    def _defer_ordinary_settlement(
+        self,
+        original: InboxMessage,
+        result: HarnessResult,
+        error: InboxAuthorityTimeout | InboxAuthorityUnavailable,
+    ) -> None:
+        first = result.delivery_id not in self._pending_settle_results
+        self._pending_settle_results[result.delivery_id] = result
+        if first and self._logger is not None:
+            self._logger(
+                "warn",
+                "daemon",
+                "harness.settle.deferred",
+                messageId=original.message_id,
+                recipient=original.recipient,
+                errorType=type(error).__name__,
+                detail=str(error)[:300],
+            )
+
+    def _mechanism_answer_settled(
         self,
         original: InboxMessage,
         result: HarnessResult,
         error: InboxAuthorityTimeout | InboxAuthorityUnavailable,
     ) -> bool:
-        """Classify an answer whose reply or ack did not confirm on this tick.
+        """Record a mechanism answer whose submit or ack did not confirm.
 
-        True: the delivery is already durably answered -- the reply id is
-        derived from the delivery, so a receipt conflict means a reply
-        committed (after its submit timed out) and a re-run turn produced
-        different text; the caller acks it, nothing is answered again.
-        False: any other authority error; the answer is kept and the SAME
-        reply is retried next tick.
+        The answer id is derived from the delivery, so the same result is kept
+        and the SAME answer is retried next tick; the handler is never re-run.
+        The answer functions already ack a committed receipt conflict, so this
+        path only defers.
         """
 
-        if _reply_already_answered(error):
-            if self._logger is not None:
-                self._logger(
-                    "warn",
-                    "daemon",
-                    "harness.reply.already_answered",
-                    messageId=original.message_id,
-                    recipient=original.recipient,
-                )
-            return True
-        first_deferral = result.delivery_id not in self._pending_reply_results
-        self._pending_reply_results[result.delivery_id] = result
+        first_deferral = result.delivery_id not in self._pending_settle_results
+        self._pending_settle_results[result.delivery_id] = result
         if first_deferral and self._logger is not None:
             self._logger(
                 "warn",
                 "daemon",
-                "harness.reply.deferred",
+                "harness.mechanism_answer.deferred",
                 messageId=original.message_id,
                 recipient=original.recipient,
                 errorType=type(error).__name__,

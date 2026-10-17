@@ -119,11 +119,13 @@ class InboxServiceNoticesMixin:
         message_id: str,
         target_node: str | None,
         delivered: bool,
+        *,
+        event: str | None = None,
     ) -> None:
         try:
             self._logger.log(
                 "info",
-                "inbox.expired_sender_notice",
+                event or "inbox.expired_sender_notice",
                 messageId=message_id,
                 targetNode=target_node,
                 delivered=delivered,
