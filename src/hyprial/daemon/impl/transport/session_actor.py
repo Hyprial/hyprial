@@ -19,6 +19,7 @@ from hyprial.kernel import ActorSpec, AdmissionResult
 from hyprial.kernel import GenerationScheduler
 from hyprial.kernel import EffectCompleted, EffectLane, EffectRequest
 from hyprial.daemon.impl.transport.api  import TransportSample
+from hyprial.daemon.impl.transport.session_recovery import SessionRecoveryMixin
 
 
 @dataclass(frozen=True, slots=True)
@@ -342,7 +343,7 @@ DEFAULT_CALLBACK_WORKERS = 4
 DEFAULT_CALLBACK_PER_TOKEN_CAPACITY = 512
 
 
-class TransportSessionAuthority:
+class TransportSessionAuthority(SessionRecoveryMixin):
     def __init__(
         self, session, *, capacity=256, timeout=65.0,
         callback_capacity=DEFAULT_CALLBACK_PER_TOKEN_CAPACITY,
@@ -582,6 +583,10 @@ class TransportSessionAuthority:
         self._pump()
 
     def _schedule_recovery(self):
+        if not self._recovery_allowed():
+            # A closed/degraded session needs a native reopen, not a
+            # once-a-second callback refresh that can never succeed.
+            return
         with self._guard:
             now = time.monotonic()
             if self._closing or self._recover_after > now:
@@ -808,13 +813,7 @@ class TransportSessionAuthority:
                 callback = self._current_callback(token, effect.generation)
                 if callback is not None:
                     callback()
-            for declaration in effect.declarations:
-                old = self._native_registrations.get(declaration.token)
-                if old is not None:
-                    old.close()
-                self._native_registrations[declaration.token] = self._declare_native(
-                    declaration, effect.generation
-                )
+            error = self._replay_declarations(effect, error)
             if error is not None:
                 raise error
         elif isinstance(payload, CloseSession):

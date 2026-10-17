@@ -35,6 +35,11 @@ from hyprial.daemon.impl.transport.zenoh.locks import (
     _OwnedLock,
     _thread_stack,
 )
+from hyprial.daemon.impl.transport.session_recovery import (
+    TransportRecoveryMixin,
+    reopen_native_once,
+    session_closed,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +121,7 @@ def _reply_error(reply: Any) -> str:
 
 _DIAGNOSTIC_QUEUE_CAPACITY = 1024
 
-class ZenohTransport:
+class ZenohTransport(TransportRecoveryMixin):
     def __init__(
         self,
         config: ZenohConfig | None = None,
@@ -160,6 +165,13 @@ class ZenohTransport:
         self._query_closing = False
         self._query_lifetime_lock = threading.Lock()
         self._native_closed = False
+        self._session_state = "open"
+        self._degraded = False
+        self._recovery_attempts = 0
+        self._recovery_thread: threading.Thread | None = None
+        self._recovery_last_error: str | None = None
+        self._session_generation = 0
+        self._reopen_lock = threading.RLock()
         # Bounded: a flapping link must not grow memory without limit.  A
         # full queue drops the event and counts it; the logger reports the
         # count with the next event it writes.
@@ -250,6 +262,10 @@ class ZenohTransport:
                 if remaining <= 0:
                     raise self._wait_failed(what, key, started)
                 self._rebuilt.wait(remaining)
+            if self._session is None:
+                raise RuntimeError(
+                    "transport session is degraded; a bounded recovery is running"
+                )
             yield
         finally:
             self._lock.release()
@@ -257,6 +273,24 @@ class ZenohTransport:
     def _current_session(self, what: str, key: str) -> Any:
         with self._settled(what, key):
             return self._session
+
+    def _with_session(self, what: str, key: str, action: Callable[[Any], Any]) -> Any:
+        """Run one native action; on session closed, reopen once and retry.
+
+        ``failed`` carries the session that raised so the reopen primitive can
+        compare-and-swap: if another thread already installed a new session,
+        this caller retries on it instead of closing it again.
+        """
+
+        session = self._current_session(what, key)
+        try:
+            return action(session)
+        except Exception as error:  # noqa: BLE001 - re-raised when not retryable
+            if not session_closed(error) or not reopen_native_once(
+                self, failed=session
+            ):
+                raise
+            return action(self._current_session(what, key))
 
     def callback_overflow_count(self) -> int:
         """Copy the #891 native hand-off lane's loss counter for its owner.
@@ -271,6 +305,14 @@ class ZenohTransport:
             return sum(dispatcher._dropped.values())
 
     def reconfigure_connect(self, endpoints: tuple[str, ...]) -> None:
+        # Serializes a redial with the degraded recovery loop: both may open
+        # a session, and only one of them may install it.  Lock order is
+        # _reopen_lock -> self._lock; the blocking close/open below runs with
+        # self._lock released.
+        with self._reopen_lock:
+            self._reconfigure_connect_locked(endpoints)
+
+    def _reconfigure_connect_locked(self, endpoints: tuple[str, ...]) -> None:
         """Drain accepted queries while the old session can still serve them."""
 
         with self._query_lifetime_lock:
@@ -298,6 +340,15 @@ class ZenohTransport:
         previous config is restored and replayed and the error is re-raised,
         so a caller never records a dial set it does not have.
 
+        zenoh 1.9 can close a session and *then* raise from ``close()`` (a
+        timeout does exactly that).  That exception must not skip the reopen:
+        once the old session is closed there is no authority left to declare
+        or publish on.  A close error is therefore carried, not raised, and
+        only decides the message if both opens fail.  When both fail the
+        closed session is dropped (``self._session = None``), the transport is
+        marked degraded, and a bounded background reopen runs; no path leaves
+        a closed session installed.
+
         The close and the reopen run with the transport lock RELEASED (they
         took 0.7-9.2 s on hq): holding it there serialised every publisher
         behind the rebuild.  ``_rebuilding`` keeps publishers and declarations
@@ -317,23 +368,34 @@ class ZenohTransport:
         opened: Any = None
         config = previous
         failure: BaseException | None = None
+        close_failure: BaseException | None = None
+        closed_meanwhile = False
         try:
-            old_zid = self._session_zid(old)
-            old.close()
-            self._emit_diagnostic(
-                "zenoh.session.closed",
-                "zenoh.session.closed zid=%s reason=%s",
-                old_zid,
-                "reconfigure",
-                zid=old_zid,
-                reason="reconfigure",
-            )
+            old_zid = self._session_zid(old) if old is not None else "unavailable"
+            if old is not None:
+                try:
+                    old.close()
+                except BaseException as error:  # noqa: BLE001 - closed, then raised
+                    close_failure = error
+                self._emit_diagnostic(
+                    "zenoh.session.closed",
+                    "zenoh.session.closed zid=%s reason=%s",
+                    old_zid,
+                    "reconfigure",
+                    zid=old_zid,
+                    reason="reconfigure",
+                )
             try:
                 opened = zenoh.open(built)
                 config = candidate
-            except Exception as error:  # noqa: BLE001 - restored, then re-raised
+            except BaseException as error:  # noqa: BLE001 - restored, then re-raised
                 failure = error
-                opened = zenoh.open(previous.build())
+                try:
+                    opened = zenoh.open(previous.build())
+                    config = previous
+                except BaseException as fallback:  # noqa: BLE001 - degraded below
+                    failure = fallback
+                    opened = None
         finally:
             # Listener declaration can touch Zenoh; install it before taking
             # the transport lock, under the same #891 rule as close/open.
@@ -343,10 +405,24 @@ class ZenohTransport:
                 if opened is not None:
                     self._session = opened
                     self._config = config
-                    self._replay()
-                self._rebuilding = None
-                self._rebuilt.notify_all()
-                closed_meanwhile = self._closed
+                    self._session_state = "open"
+                    self._degraded = False
+                    self._recovery_attempts = 0
+                    self._recovery_last_error = None
+                    self._session_generation += 1
+                else:
+                    # Never leave a closed session installed as the authority.
+                    self._session = None
+                    self._session_state = "degraded"
+                    self._degraded = True
+                try:
+                    if opened is not None:
+                        self._replay()
+                finally:
+                    # Replay failure must still release every waiter.
+                    self._rebuilding = None
+                    self._rebuilt.notify_all()
+                    closed_meanwhile = self._closed
             if closed_meanwhile and opened is not None:
                 opened_zid = self._session_zid(opened)
                 opened.close()
@@ -358,7 +434,15 @@ class ZenohTransport:
                     zid=opened_zid,
                     reason="transport-close-during-reconfigure",
                 )
-        if opened is not None and not closed_meanwhile:
+        if opened is None:
+            self._schedule_degraded_recovery(previous)
+            error = failure if failure is not None else RuntimeError(
+                "transport session rebuild failed"
+            )
+            if close_failure is not None and failure is not None:
+                raise RuntimeError(f"{failure} (old close: {close_failure})") from failure
+            raise error
+        if not closed_meanwhile:
             zid = self._session_zid(opened)
             self._emit_diagnostic(
                 "zenoh.session.opened",
@@ -548,12 +632,24 @@ class ZenohTransport:
                 logger.debug("zenoh diagnostic sink failed for %s", event, exc_info=True)
 
     def _register(self, declare: Callable[[Any], Any]) -> _Registration:
-        with self._settled("declare", ""):
-            registration = _Registration(
-                declare(self._session), declare, self._forget
-            )
-            self._registrations.append(registration)
-        return registration
+        failed: Any = None
+        for attempt in range(2):
+            try:
+                with self._settled("declare", ""):
+                    session = self._session
+                    registration = _Registration(
+                        declare(session), declare, self._forget
+                    )
+                    self._registrations.append(registration)
+                    return registration
+            except Exception as error:  # noqa: BLE001 - retried once below
+                if attempt or not session_closed(error):
+                    raise
+                failed = session
+            # Reopen outside the transport lock: reconfigure_connect takes it.
+            if failed is not None and not reopen_native_once(self, failed=failed):
+                raise RuntimeError("session closed and reopen failed")
+        raise AssertionError("unreachable: register retry loop did not return")
 
     def _forget(self, registration: _Registration) -> None:
         with self._lock:
@@ -563,9 +659,14 @@ class ZenohTransport:
     def put(self, key: str, payload: bytes) -> None:
         # Only the reference is read under the lock; the send runs outside it,
         # so one slow put can no longer queue every other publisher behind it.
-        session = self._current_session("put", key)
         started = time.monotonic()
-        session.put(key, payload, encoding="application/octet-stream")
+        self._with_session(
+            "put",
+            key,
+            lambda session: session.put(
+                key, payload, encoding="application/octet-stream"
+            ),
+        )
         elapsed = time.monotonic() - started
         if elapsed > self._put_slow:
             logger.warning(
@@ -606,16 +707,19 @@ class ZenohTransport:
         lost a holder's verdict indistinguishable from a complete one.
         """
 
-        session = self._current_session("get", key_expr)
-        replies = session.get(
+        replies = self._with_session(
+            "get",
             key_expr,
-            target=zenoh.QueryTarget.ALL,
-            consolidation=(
-                zenoh.ConsolidationMode.NONE
-                if all_replies
-                else zenoh.ConsolidationMode.AUTO
+            lambda session: session.get(
+                key_expr,
+                target=zenoh.QueryTarget.ALL,
+                consolidation=(
+                    zenoh.ConsolidationMode.NONE
+                    if all_replies
+                    else zenoh.ConsolidationMode.AUTO
+                ),
+                timeout=timeout,
             ),
-            timeout=timeout,
         )
         results: list[TransportSample] = []
         while True:
@@ -657,17 +761,20 @@ class ZenohTransport:
 
         if not isinstance(payload, bytes):
             raise TypeError("payload must be bytes")
-        session = self._current_session("query", key_expr)
-        replies = session.get(
+        replies = self._with_session(
+            "query",
             key_expr,
-            payload=payload,
-            target=zenoh.QueryTarget.ALL,
-            consolidation=(
-                zenoh.ConsolidationMode.NONE
-                if all_replies
-                else zenoh.ConsolidationMode.AUTO
+            lambda session: session.get(
+                key_expr,
+                payload=payload,
+                target=zenoh.QueryTarget.ALL,
+                consolidation=(
+                    zenoh.ConsolidationMode.NONE
+                    if all_replies
+                    else zenoh.ConsolidationMode.AUTO
+                ),
+                timeout=timeout,
             ),
-            timeout=timeout,
         )
         results: list[TransportSample] = []
         while True:
@@ -776,8 +883,11 @@ class ZenohTransport:
         """
         if timeout <= 0:
             raise TimeoutError("liveliness query budget expired")
-        session = self._current_session("get_liveliness", key_expr)
-        replies = session.liveliness().get(key_expr, timeout=timeout)
+        replies = self._with_session(
+            "get_liveliness",
+            key_expr,
+            lambda session: session.liveliness().get(key_expr, timeout=timeout),
+        )
         results: list[TransportSample] = []
         while True:
             try:
@@ -839,17 +949,19 @@ class ZenohTransport:
             if not self._query_dispatcher.stop(max(0.0, deadline - time.monotonic())):
                 raise TimeoutError("native query pool did not drain")
             if not self._native_closed:
-                zid = self._session_zid(self._session)
-                self._session.close()
+                if self._session is not None:
+                    zid = self._session_zid(self._session)
+                    self._session.close()
+                    self._emit_diagnostic(
+                        "zenoh.session.closed",
+                        "zenoh.session.closed zid=%s reason=%s",
+                        zid,
+                        "transport-close",
+                        zid=zid,
+                        reason="transport-close",
+                    )
+                self._session_state = "closed"
                 self._native_closed = True
-                self._emit_diagnostic(
-                    "zenoh.session.closed",
-                    "zenoh.session.closed zid=%s reason=%s",
-                    zid,
-                    "transport-close",
-                    zid=zid,
-                    reason="transport-close",
-                )
             self._dispatcher.stop()
         self._stop_diagnostic_logger()
 

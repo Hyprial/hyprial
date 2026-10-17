@@ -372,6 +372,7 @@ class _IpcDispatchMixin:
                 "zenoh": {
                     "listen": list(self.zenoh_listen),
                     "connect": list(self.zenoh_connect),
+                    "session": self._zenoh_session_status(),
                     "isolated": self._network_isolation_status()["effective"],
                     "isolation": self._network_isolation_status(),
                 },

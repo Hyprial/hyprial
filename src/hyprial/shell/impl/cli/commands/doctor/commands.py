@@ -330,6 +330,25 @@ def _zenoh_doctor_check(result: JsonObject) -> JsonObject:
             "status": "warn",
             "detail": "daemon did not report Zenoh endpoints; upgrade the daemon",
         }
+    session = zenoh.get("session")
+    if isinstance(session, dict) and session.get("state") in {"closed", "degraded"}:
+        return {
+            "name": "zenoh",
+            "status": "fail",
+            "detail": (
+                "the Zenoh session is "
+                f"{session.get('state')}; declarations and publishes cannot "
+                "reach the mesh until it reopens"
+            ),
+            "metrics": session,
+            "action": {
+                "command": "grep 'zenoh.session' ~/.hyprial/state/logs/daemon.jsonl",
+                "description": (
+                    "Inspect the session close/rebuild events; deploy the "
+                    "session-reacquire fix or restart the daemon."
+                ),
+            },
+        }
     listen = zenoh.get("listen")
     connect = zenoh.get("connect")
     if not isinstance(listen, list) or not isinstance(connect, list):

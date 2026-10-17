@@ -134,6 +134,16 @@ class _StatusViewsMixin:
             state_persistence=self._state_persistence.command_costs,
         )
 
+    def _zenoh_session_status(self) -> dict[str, object]:
+        authority = getattr(self, "_transport", None)
+        health = getattr(authority, "session_health", None) if authority is not None else None
+        if health is None:
+            return {"state": "unknown"}
+        try:
+            return dict(health())
+        except Exception:  # noqa: BLE001 - a status read must not fail ps
+            return {"state": "unknown"}
+
     def _ipc_ps(self, params) -> Any:
         self._trace_presence_snapshot(None)
         now = time.monotonic()
@@ -379,6 +389,7 @@ class _StatusViewsMixin:
                 "zenoh": {
                     "listen": list(self.zenoh_listen),
                     "connect": list(self.zenoh_connect),
+                    "session": self._zenoh_session_status(),
                     "isolated": self._network_isolation_status()["effective"],
                     "isolation": self._network_isolation_status(),
                 },
