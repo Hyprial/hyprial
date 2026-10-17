@@ -10,6 +10,9 @@ import typer
 
 from hyprial.shell.impl.cli.commands.common.root import app
 from hyprial.shell.impl.cli.commands.common.support import JsonObject
+from hyprial.shell.impl.cli.commands.doctor.route_session import (
+    _route_session_doctor_check,
+)
 def _tailcat_sidecar_doctor_check() -> JsonObject:
     """Tailcat cutover check: the sidecar is locatable and passes version.
 
@@ -134,6 +137,9 @@ def _doctor_result() -> JsonObject:
                 {"name": "daemon", "status": "ok", "detail": "daemon IPC is available"}
             )
             checks.append(_zenoh_doctor_check(result))
+            route_session_check = _route_session_doctor_check()
+            if route_session_check is not None:
+                checks.append(route_session_check)
             duplicate_check = _duplicate_instance_doctor_check(result)
             if duplicate_check is not None:
                 checks.append(duplicate_check)

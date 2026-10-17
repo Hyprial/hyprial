@@ -43,6 +43,34 @@ WORKER_HARNESS_TOOLS = (
 )
 
 
+#: Product CLI commands a managed worker may run without a permission prompt.
+#: Only the ``hyprial`` entry point is allowed, never arbitrary shell, so
+#: ``hyprial workflow ...`` works from a headless worker while ``cat``/``rm``
+#: still need an approval that the worker cannot obtain.  ``<cmd>:*`` is the
+#: glob-prefix form already validated against a live isolated CC (see
+#: ``contract/e2e/run-cc-tui-worker.py``).
+WORKER_CLI_ALLOW_TOOLS = ("Bash(hyprial:*)",)
+
+
+#: Product commands that change daemon, org, or home state.  Allen 2026-10-17:
+#: allow the CLI but deny these, because ``Bash(hyprial:*)`` also matches
+#: ``hyprial restart``.  Claude Code evaluates deny before allow, so the
+#: overlapping allow cannot carve an exception out of these rules.  The same
+#: ruling tightened the list: ``down``/``upgrade`` are deploy and operations
+#: work that belongs to the infra controlled window, and ``agent destroy`` is
+#: destructive.  ``daemon`` stays as-is -- its read-only ``status`` is denied
+#: with the rest, which Allen accepted.  Keep these sorted.
+WORKER_CLI_DENY_TOOLS = (
+    "Bash(hyprial agent destroy:*)",
+    "Bash(hyprial daemon:*)",
+    "Bash(hyprial down:*)",
+    "Bash(hyprial init:*)",
+    "Bash(hyprial org:*)",
+    "Bash(hyprial restart:*)",
+    "Bash(hyprial upgrade:*)",
+)
+
+
 @dataclass(frozen=True, slots=True)
 class WorkerChannel:
     """One managed worker's own Harness identity and daemon wiring."""
@@ -53,6 +81,11 @@ class WorkerChannel:
     state_dir: Path
     mcp_server: dict[str, object]
     allowed_tools: tuple[str, ...]
+    #: Deny rules forwarded together with ``allowed_tools``; empty means the
+    #: caller supplied no policy.  A managed channel always populates it:
+    #: allowing the CLI while omitting its state-changing commands is the
+    #: failure mode this list exists to prevent.
+    disallowed_tools: tuple[str, ...] = ()
     # Daemon-authority identity (P1b B1 / L3): the node id and owner THIS
     # daemon resolved at startup.  They are generated values in the child
     # env sense — never passed through from a parent process environment,
@@ -154,7 +187,9 @@ def build_worker_channel(
         hyprial_home=hyprial_home,
         state_dir=state_dir,
         mcp_server=server,
-        allowed_tools=tuple(
-            f"mcp__harness-bridge__{tool}" for tool in WORKER_HARNESS_TOOLS
+        allowed_tools=(
+            tuple(f"mcp__harness-bridge__{tool}" for tool in WORKER_HARNESS_TOOLS)
+            + WORKER_CLI_ALLOW_TOOLS
         ),
+        disallowed_tools=WORKER_CLI_DENY_TOOLS,
     )

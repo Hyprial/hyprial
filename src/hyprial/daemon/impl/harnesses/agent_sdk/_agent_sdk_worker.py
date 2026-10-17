@@ -37,8 +37,16 @@ except ModuleNotFoundError as error:
 # instead of a TypeError deep inside option construction.  ``resume`` and
 # ``session_id`` carry the daemon's session persistence: a restarted daemon
 # resumes the worker's previous conversation instead of cold-starting it.
+# ``disallowed_tools`` carries the deny half of the CLI policy: an SDK that
+# silently drops it would allow ``hyprial restart`` on a broad CLI allow.
 _REQUIRED_OPTION_PARAMS = frozenset(
-    {"setting_sources", "strict_mcp_config", "resume", "session_id"}
+    {
+        "setting_sources",
+        "strict_mcp_config",
+        "resume",
+        "session_id",
+        "disallowed_tools",
+    }
 )
 _RUNTIME_CONTEXT_MODE_ENV = "HYPRIAL_AGENT_SDK_RUNTIME_CONTEXT_MODE"
 _P2_RUNTIME_CONTEXT_MODE = "agent-home-p2"
@@ -133,6 +141,13 @@ def _options_kwargs() -> dict[str, Any]:
         ):
             raise TypeError("Agent SDK allowedTools must be an array of strings")
         kwargs["allowed_tools"] = allowed_tools
+    disallowed_tools = value.get("disallowedTools")
+    if disallowed_tools is not None:
+        if not isinstance(disallowed_tools, list) or any(
+            not isinstance(item, str) for item in disallowed_tools
+        ):
+            raise TypeError("Agent SDK disallowedTools must be an array of strings")
+        kwargs["disallowed_tools"] = disallowed_tools
     return kwargs
 
 

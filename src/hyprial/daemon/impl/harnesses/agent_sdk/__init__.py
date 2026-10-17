@@ -341,6 +341,13 @@ class IsolatedAgentSdkClient:
             self.options["strictMcpConfig"] = True
             self.options["mcpServers"] = {"harness-bridge": worker_channel.mcp_server}
             self.options["allowedTools"] = list(worker_channel.allowed_tools)
+            # The CLI allow rule overlaps the state-changing commands it must
+            # not reach; Claude Code evaluates deny before allow, so the deny
+            # list travels with the allow list in the same option bundle.
+            if worker_channel.disallowed_tools:
+                self.options["disallowedTools"] = list(
+                    worker_channel.disallowed_tools
+                )
         identity_environment = (
             worker_channel.identity_environment() if worker_channel is not None else {}
         )
