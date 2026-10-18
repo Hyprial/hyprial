@@ -6,6 +6,7 @@ Internal module of ``hyprial.daemon.impl.links.service`` (spec §9.5).
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from typing import Any
 
 import hyprial.daemon.impl.links.model as model
@@ -341,6 +342,17 @@ class GateMixin:
         committed_peers = set(committed.entries) if committed is not None else set()
         links: dict[str, model.Link] = {}
         for peer, link in raw.items():
+            entry = link.entry
+            if entry is not None:
+                # last_used is a local runtime fact that is not written back;
+                # overlay it here and treat the zero sentinel as minting time
+                # so legacy files do not display 1970 or compare as epoch.
+                effective = max(entry.last_used_ms, entry.minted_at_ms)
+                effective = max(effective, st.last_used.get(peer, 0))
+                link = replace(
+                    link,
+                    entry=replace(entry, last_used_ms=effective),
+                )
             if link.mine and peer not in committed_peers:
                 links[peer] = model.Link(
                     actor=actor,

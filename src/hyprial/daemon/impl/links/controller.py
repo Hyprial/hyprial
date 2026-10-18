@@ -450,12 +450,18 @@ def evaluate(
 ) -> tuple[ControllerState, ControllerOutput]:
     """Advance W and every cwnd once and report the displayed components."""
 
-    k = compute_k(inp.n_active, state.w.value)
+    # The topology floor is independent of the current W: W starts at k on a
+    # cold node, and k must be able to grow when N_active grows.  Feeding the
+    # old W back into compute_k made W=2 a permanent cap (card 713).
+    topology_floor = compute_k(inp.n_active, _UNBOUNDED_W)
     node = window_stats(inp.dwell, inp.replies, now_ms, c)
-    w_loop = vegas_step(state.w, node, floor=k, now_ms=now_ms, jitter=jitter, c=c)
-    w = max(w_loop.value, k)
+    w_loop = vegas_step(
+        state.w, node, floor=topology_floor, now_ms=now_ms, jitter=jitter, c=c
+    )
+    w = max(w_loop.value, topology_floor)
     if w != w_loop.value:
         w_loop = replace(w_loop, value=w)
+    k = compute_k(inp.n_active, w)
     cwnd: dict[str, int] = {}
     link_stats: dict[str, WindowStats] = {}
     cwnd_loops: dict[str, LoopState] = {}

@@ -236,9 +236,10 @@ def select_victim(view: NodeView, *, now_ms: int) -> str | None:
     """
 
     period = view.limits.period_ms
-    if period is None:
-        return None
-    lifetime = view.constants.min_link_lifetime_periods * period
+    # With no controller baseline (the production cold start), the minimum
+    # lifetime cannot be computed; an idle link is still evictable, and its
+    # effective last-use is at least its minting time.
+    lifetime = 0 if period is None else view.constants.min_link_lifetime_periods * period
     candidates: list[tuple[int, str]] = []
     for peer, link in view.links.items():
         if is_owner_pair(view.actor, peer) or not link.mine:
@@ -252,7 +253,7 @@ def select_victim(view: NodeView, *, now_ms: int) -> str | None:
             continue
         if _inflight(view, peer) or _has_pending_from(view, peer):
             continue
-        candidates.append((entry.last_used_ms, peer))
+        candidates.append((entry.last_used_ms or entry.minted_at_ms, peer))
     if not candidates:
         return None
     return min(candidates)[1]
