@@ -198,6 +198,69 @@
       "authMode": "all-p2",
       "status": "PASS",
       "evidence": "AT07 I4 two-daemon run, docs/notes/at07-i4-run.txt (hyprial 0.5.4, run tree 91ba5133). PASS holds exactly for this tuple: harness=pi, mode=agent-home-p2, single machine running two real daemons (own home, state, socket, node id), the pi process is the repository's protocol double (tests/fixtures/harnesses/fake_pi_rpc.py) and one crash window is really injected (the source daemon is killed while the hold is armed). Within that tuple the run read: source quiesce through the custody hold, bundle export and ship, target land+activate under a fresh entity token, source restart still held, completion on the target's own report, and the anti-dual-active read from both ps. NOT proved by this row: two real physical machines, a real target worker with strict resume, a real vendor pi 0.85.1 binary and its model credential (NOT_RUN; TC012 BLOCKED), the other five crash windows, and the override-plus-resume recovery landing on an activate-pending half (both NOT_TESTED)."
+    },
+    {
+      "harness": "pi",
+      "version": "1.3.0",
+      "operatingSystem": "Darwin 25.5.0 arm64",
+      "entrypoint": "bare-rpc",
+      "authMode": "api-key",
+      "status": "UNSUPPORTED",
+      "evidence": "P20 official loader traversed above the Git root; bare RPC remains ineligible and no rejected shortcut was used"
+    },
+    {
+      "harness": "pi",
+      "version": "1.3.0",
+      "operatingSystem": "Darwin 25.5.0 arm64",
+      "entrypoint": "bare-tui",
+      "authMode": "api-key",
+      "status": "UNSUPPORTED",
+      "evidence": "Bare TUI shares the unbounded project-context defect; P2 requires the controlled SDK loader"
+    },
+    {
+      "harness": "pi",
+      "version": "1.3.0",
+      "operatingSystem": "Darwin 25.5.0 arm64",
+      "entrypoint": "controlled-sdk-headless",
+      "authMode": "api-key",
+      "status": "PASS",
+      "evidence": "P23-pi capability arms re-run against the installed pi 1.3.0 (hyprial 0.5.4, branch feat/pi-supported-max-1.3.0, worktree <worktree>/pi130-at07-i4): tests/daemon/harnesses/pi/configuration/test_pi_controlled_loader.py => 13 passed, exit=0; run log hq/notes/evidence/pi-1.3.0-p23-loader-after-range-2026-10-18.log. Version guard widened to a range by Allen 2026-10-18 (PI_SUPPORTED_MAX_VERSION = 1.3.0); the arms themselves are unchanged."
+    },
+    {
+      "harness": "pi",
+      "version": "1.3.0",
+      "operatingSystem": "Darwin 25.5.0 arm64",
+      "entrypoint": "controlled-sdk-headless",
+      "authMode": "oauth",
+      "status": "NOT_RUN",
+      "evidence": "Real provider account subject and OAuth refresh were not authorized or observed"
+    },
+    {
+      "harness": "pi",
+      "version": "1.3.0",
+      "operatingSystem": "Darwin 25.5.0 arm64",
+      "entrypoint": "controlled-sdk-tui",
+      "authMode": "api-key",
+      "status": "NOT_RUN",
+      "evidence": "The 1.3.0 capability re-run covered the headless arm only; the TUI arm has not been re-run on 1.3.0"
+    },
+    {
+      "harness": "pi",
+      "version": "1.3.0",
+      "operatingSystem": "Darwin 25.5.0 arm64",
+      "entrypoint": "controlled-sdk-tui",
+      "authMode": "oauth",
+      "status": "NOT_RUN",
+      "evidence": "Interactive OAuth refresh and live provider identity remain NOT_RUN"
+    },
+    {
+      "harness": "pi",
+      "version": "1.3.0",
+      "operatingSystem": "Darwin 25.5.0 arm64",
+      "entrypoint": "cross-host-transfer",
+      "authMode": "all-p2",
+      "status": "NOT_RUN",
+      "evidence": "AT07 I4 two-daemon chain passes on 1.3.0 only with the pi protocol double (tests/fixtures/harnesses/fake_pi_rpc.py); a real-binary run is still outstanding, so this row is NOT_RUN by design"
     }
   ]
 }

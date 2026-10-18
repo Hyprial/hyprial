@@ -160,6 +160,33 @@ class PiSessionLoadProof:
         return cls(system_prompt_digest, tuple(digests))
 
 
+#: Highest pi package version this tree carries evidence for.
+#:
+#: Allen 2026-10-18 ruled the guard should admit a *range* instead of a
+#: single build: the P23-pi capability arms were re-run against the installed
+#: pi 1.3.0 and all thirteen pass (the only failure before the ruling was the
+#: equality pin itself, not a behaviour).  Raising this constant is the one
+#: place a future pi upgrade must be recorded -- the capability arms stay as
+#: they are, so a version beyond this value still fails loudly.
+PI_SUPPORTED_MAX_VERSION = "1.3.0"
+
+
+def _version_parts(value: str) -> tuple[int, ...]:
+    """Numeric parts of a dotted version, ignoring any non-numeric suffix."""
+
+    parts: list[int] = []
+    for chunk in value.split("."):
+        digits = "".join(char for char in chunk if char.isdigit())
+        parts.append(int(digits) if digits else 0)
+    return tuple(parts)
+
+
+def pi_version_supported(version: str) -> bool:
+    """Whether ``version`` is within the proven range (<= max supported)."""
+
+    return _version_parts(version) <= _version_parts(PI_SUPPORTED_MAX_VERSION)
+
+
 @dataclass(frozen=True, slots=True)
 class PiLoaderReceipt:
     pi_package_version: str
