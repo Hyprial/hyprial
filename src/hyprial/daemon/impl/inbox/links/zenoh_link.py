@@ -9,10 +9,15 @@ from dataclasses import replace
 from uuid import uuid4
 
 from hyprial.daemon.impl.transport import KeySpace, PresenceView, Registration, TransportSession
-from hyprial.kernel import PortAdmission
+from hyprial.kernel import PortAdmission, parse_agent_uri
 
 from hyprial.daemon.impl.inbox.contracts.api  import DeliveryLifecycle, InboxMessage
 from hyprial.daemon.impl.inbox.service  import InboxService
+from hyprial.daemon.impl.inbox.links.pull import (
+    HoldReason,
+    TerminalState,
+    query_delivery_status,
+)
 from hyprial.daemon.impl.inbox.authority.facade  import DeliveryCustodyFacade
 from hyprial.daemon.impl.inbox.actor.errors  import InboxAuthorityUnavailable
 from hyprial.daemon.impl.inbox.contracts.ports  import (
@@ -126,6 +131,33 @@ class ZenohDeliveryTransport:
 
     def online_mailboxes(self) -> tuple[str, ...]:
         return self._presence.online_mailboxes()
+
+    def ack_received(self, message: InboxMessage) -> bool:
+        """Return only a recipient-held durable ACK for this exact message."""
+
+        parsed = parse_agent_uri(message.recipient)
+        if parsed is None:
+            return False
+        try:
+            report = query_delivery_status(
+                self._session,
+                message.sender,
+                message_id=message.message_id,
+                keys=self._keys,
+                timeout=self._receipt_timeout,
+            )
+        except Exception:  # noqa: BLE001 - a missed hint must not replace retry
+            return False
+        recipient_holder = parsed[1].casefold()
+        return any(
+            record.message_id == message.message_id
+            and record.sender == message.sender
+            and record.recipient == message.recipient
+            and record.state is TerminalState.FETCHED
+            and record.reason == HoldReason.ACK_RECEIVED.value
+            and record.holder.casefold() == recipient_holder
+            for record in report.records
+        )
 
     def deliver(self, message: InboxMessage) -> bool:
         message = self._stamp_origin(message)

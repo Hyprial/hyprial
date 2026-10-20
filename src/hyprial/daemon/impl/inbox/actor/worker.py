@@ -251,6 +251,12 @@ class DeliveryIoWorker:
 
     def _dispatch_item(self, item: DispatchItem) -> DispatchOutcome:
         message = item.message
+        ack_received = getattr(self._transport, "ack_received", None)
+        if item.retry and callable(ack_received) and ack_received(message):
+            return DispatchOutcome(
+                message_id=message.message_id,
+                kind=DispatchOutcomeKind.DELIVERED,
+            )
         online = self._transport.is_online(message.recipient)
         direct_attempted = online
         if online and self._transport.deliver(message):

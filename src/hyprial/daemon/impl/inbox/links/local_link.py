@@ -129,6 +129,10 @@ class LocalFirstDeliveryTransport:
             return bool(predicate(recipient))
         return self._inner.is_online(recipient)
 
+    def ack_received(self, message: InboxMessage) -> bool:
+        confirm = getattr(self._inner, "ack_received", None)
+        return bool(confirm(message)) if callable(confirm) else False
+
     def deliver(self, message: InboxMessage) -> bool:
         receiver = self._local_receiver(message.recipient)
         if receiver is None:

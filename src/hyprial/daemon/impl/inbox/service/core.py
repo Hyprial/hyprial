@@ -560,6 +560,11 @@ class InboxServiceCoreMixin:
                 self._ledger_close_inbound_locked(message.sender, original, now_ms)
         self._db.commit()
         self._enforce_hold_capacity("outbox", now_ms)
+
+    def _ack_received(self, message: InboxMessage) -> bool:
+        confirm = getattr(self._transport, "ack_received", None)
+        return bool(confirm(message)) if callable(confirm) else False
+
     def _attempt_direct(self, message: InboxMessage, now_ms: int) -> bool:
         if self._transport.deliver(message):
             # A confirmed receipt means the recipient committed the message,
@@ -678,6 +683,14 @@ class InboxServiceCoreMixin:
         outcomes: list[SubmissionResult] = []
         for row in rows:
             message = self._row_message(row)
+            if self._ack_received(message):
+                self.retire_outbox_receipt(
+                    message.sender, message.message_id, now_ms=now
+                )
+                outcomes.append(
+                    SubmissionResult(message.message_id, True, queued=False)
+                )
+                continue
             expired = now >= int(row["expires_at_ms"])
             if expired:
                 self._outbox_to_dlq(row, "TTL_EXPIRED", now)

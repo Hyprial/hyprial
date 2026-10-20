@@ -134,6 +134,10 @@ class LarkReplyBridgeTransport:
             return self._inner.is_online(recipient)
         return self._adapter_client.reply_online(adapter)
 
+    def ack_received(self, message: InboxMessage) -> bool:
+        confirm = getattr(self._inner, "ack_received", None)
+        return bool(confirm(message)) if callable(confirm) else False
+
     def deliver(self, message: InboxMessage) -> bool:
         adapter = lark_reply_adapter(message.recipient)
         if adapter is None:
