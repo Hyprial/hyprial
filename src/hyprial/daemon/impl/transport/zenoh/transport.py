@@ -195,6 +195,7 @@ class ZenohTransport(ZenohLinkDiagnosticsMixin, TransportRecoveryMixin):
         self._peer_endpoint_history: dict[str, str] = {}
         self._map_peer_remap_count = 0
         self._zenoh_link_delete_count = 0
+        self._diagnostic_session_contexts: dict[int, dict[str, str | None]] = {}
         self._diagnostic_thread = threading.Thread(
             target=self._log_diagnostic_events,
             name="hyprial-zenoh-events",
@@ -395,6 +396,7 @@ class ZenohTransport(ZenohLinkDiagnosticsMixin, TransportRecoveryMixin):
         try:
             old_zid = self._session_zid(old) if old is not None else "unavailable"
             if old is not None:
+                self._mark_diagnostic_session_closing(old, "reconfigure")
                 try:
                     old.close()
                 except BaseException as error:  # noqa: BLE001 - closed, then raised
@@ -448,6 +450,9 @@ class ZenohTransport(ZenohLinkDiagnosticsMixin, TransportRecoveryMixin):
                     closed_meanwhile = self._closed
             if closed_meanwhile and opened is not None:
                 opened_zid = self._session_zid(opened)
+                self._mark_diagnostic_session_closing(
+                    opened, "transport-close-during-reconfigure"
+                )
                 opened.close()
                 self._emit_diagnostic(
                     "zenoh.session.closed",
@@ -537,16 +542,21 @@ class ZenohTransport(ZenohLinkDiagnosticsMixin, TransportRecoveryMixin):
             self._diagnostic_listeners = []
             return
         listeners: list[Any] = []
+        context: dict[str, str | None] = {"closeReason": None}
         try:
             listeners.append(
                 info.declare_transport_events_listener(
                     self._queue_transport_event, history=True
                 )
             )
+            self._diagnostic_session_contexts[id(session)] = context
             listeners.append(
-                info.declare_link_events_listener(self._queue_link_event, history=True)
+                info.declare_link_events_listener(
+                    lambda event: self._queue_link_event(event, context), history=True
+                )
             )
         except Exception as error:  # noqa: BLE001 - diagnostics must not disable transport
+            self._diagnostic_session_contexts.pop(id(session), None)
             for listener in listeners:
                 undeclare = getattr(listener, "undeclare", None)
                 if callable(undeclare):
@@ -962,6 +972,9 @@ class ZenohTransport(ZenohLinkDiagnosticsMixin, TransportRecoveryMixin):
             if not self._native_closed:
                 if self._session is not None:
                     zid = self._session_zid(self._session)
+                    self._mark_diagnostic_session_closing(
+                        self._session, "transport-close"
+                    )
                     self._session.close()
                     self._emit_diagnostic(
                         "zenoh.session.closed",

@@ -34,6 +34,7 @@ class RequestProjection:
     completed: int
     failed: int
     active: int
+    high_water: int
     closing: bool
 
 
@@ -54,6 +55,7 @@ class IpcRequestOwner:
         self._closing = self._closed = False
         self._active: dict[str, RequestStarted] = {}
         self._accepted = self._overloaded = self._completed = self._failed = 0
+        self._high_water = 0
         self._handle = self._runtime.start(
             ActorSpec(
                 name="ipc-requests",
@@ -98,7 +100,7 @@ class IpcRequestOwner:
         with self._guard:
             return RequestProjection(
                 self._accepted, self._overloaded, self._completed,
-                self._failed, len(self._active), self._closing,
+                self._failed, len(self._active), self._high_water, self._closing,
             )
 
     def close(self, timeout: float = 5.0) -> bool:
@@ -122,6 +124,7 @@ class IpcRequestOwner:
         if isinstance(command, RequestStarted):
             with self._guard:
                 self._active[command.operation_id] = command
+                self._high_water = max(self._high_water, len(self._active))
             return
         if isinstance(command, EffectCompleted):
             result = command.result

@@ -274,6 +274,9 @@ class _IpcServerMixin:
             else:
                 worker = self._new_ipc_client_worker(connection)
                 self._ipc_clients.add(connection)
+                self._ipc_clients_high_water = max(
+                    self._ipc_clients_high_water, len(self._ipc_clients)
+                )
                 self._ipc_client_states[connection] = rejected_state
                 self._ipc_client_threads.add(worker)
                 try:
@@ -556,8 +559,11 @@ class _IpcServerMixin:
     def _ipc_client_status(self) -> JsonObject:
         with self._ipc_clients_lock:
             active = len(self._ipc_clients)
+            self._ipc_clients_high_water = max(self._ipc_clients_high_water, active)
+            high_water = self._ipc_clients_high_water
         return {
             "active": active,
+            "highWater": high_water,
             "limit": _IPC_MAX_CLIENTS,
             "saturated": active >= _IPC_MAX_CLIENTS,
         }

@@ -357,6 +357,7 @@ class _StatusViewsMixin:
                             "completed": request_status.completed,
                             "failed": request_status.failed,
                             "active": request_status.active,
+                            "highWater": request_status.high_water,
                         }
                         if self._ipc_request_owner is not None
                         and (request_status := self._ipc_request_owner.projection())

@@ -729,6 +729,7 @@ class DaemonApplication(
         # client threads are short-lived and the totals must outlive them.
         self._ipc_stats = CallCostCounters(_IPC_STATS_METHODS, wall=True)
         self._ipc_clients: set[_IpcStream] = set()
+        self._ipc_clients_high_water = 0
         self._ipc_client_states: dict[_IpcStream, Any] = {}
         self._ipc_client_threads: set[threading.Thread] = set()
         self._ipc_clients_lock = threading.Lock()

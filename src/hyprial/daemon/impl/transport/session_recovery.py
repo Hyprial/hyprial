@@ -118,6 +118,15 @@ class SessionRecoveryMixin:
     def session_health(self) -> dict[str, object]:
         return session_health(self._native)
 
+    def set_endpoint_peers(self, peers) -> None:
+        update = getattr(self._native, "set_endpoint_peers", None)
+        if update is not None:
+            update(peers)
+
+    def link_diagnostic_counters(self) -> dict[str, int]:
+        snapshot = getattr(self._native, "link_diagnostic_counters", None)
+        return dict(snapshot()) if snapshot is not None else {}
+
     def _recovery_allowed(self) -> bool:
         health = getattr(self._native, "session_health", None)
         if health is None:
@@ -217,11 +226,15 @@ class TransportRecoveryMixin:
                         )[:300]
                     continue
                 if self._closed:
+                    self._mark_diagnostic_session_closing(opened, "transport-close")
                     opened.close()
                     return
                 self._install_diagnostic_listeners(opened)
                 with self._lock:
                     if self._closed or self._session is not None or self._rebuilding is not None:
+                        self._mark_diagnostic_session_closing(
+                            opened, "recovery-race-close"
+                        )
                         opened.close()
                         return
                     self._session = opened
@@ -285,6 +298,9 @@ class TransportRecoveryMixin:
                 "recoveryAttempts": self._recovery_attempts,
                 "recoveryLastError": self._recovery_last_error,
                 "generation": self._session_generation,
+                "counters": {
+                    "zenoh_link_delete": self._zenoh_link_delete_count,
+                },
             }
 
 

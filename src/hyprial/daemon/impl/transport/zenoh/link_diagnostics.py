@@ -24,6 +24,7 @@ class ZenohLinkDiagnosticsMixin:
     _peer_endpoint_history: dict[str, str]
     _map_peer_remap_count: int
     _zenoh_link_delete_count: int
+    _diagnostic_session_contexts: dict[int, dict[str, str | None]]
 
     def set_endpoint_peers(self, peers: Mapping[str, str]) -> None:
         """Associate current sidecar map endpoints with Hyprial peer nodes."""
@@ -54,7 +55,11 @@ class ZenohLinkDiagnosticsMixin:
                 mapPeerRemapCount=count,
             )
 
-    def _queue_link_event(self, event: Any) -> None:
+    def _queue_link_event(
+        self,
+        event: Any,
+        context: Mapping[str, str | None] | None = None,
+    ) -> None:
         """Copy one link event off Zenoh's callback thread."""
 
         link = event.link
@@ -92,10 +97,15 @@ class ZenohLinkDiagnosticsMixin:
                     opened_at = None
                 self._zenoh_link_delete_count += 1
                 native_reason = getattr(event, "reason", None)
+                local_reason = context.get("closeReason") if context is not None else None
                 delete_fields = {
-                    "reason": str(native_reason)
-                    if native_reason
-                    else "native-cause-unavailable",
+                    "reason": (
+                        str(native_reason)
+                        if native_reason
+                        else f"session_close:{local_reason}"
+                        if local_reason
+                        else "native-cause-unavailable"
+                    ),
                     "ageMs": (
                         max(0, int((time.monotonic() - opened_at) * 1000))
                         if opened_at is not None
@@ -119,3 +129,15 @@ class ZenohLinkDiagnosticsMixin:
                 },
             )
         )
+
+    def _mark_diagnostic_session_closing(self, session: Any, reason: str) -> None:
+        context = self._diagnostic_session_contexts.pop(id(session), None)
+        if context is not None:
+            context["closeReason"] = reason
+
+    def link_diagnostic_counters(self) -> dict[str, int]:
+        with self._diagnostic_guard:
+            return {
+                "map_peer_remap": self._map_peer_remap_count,
+                "zenoh_link_delete": self._zenoh_link_delete_count,
+            }

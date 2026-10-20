@@ -437,6 +437,9 @@ class _WiringTransportMixin:
             ),
             DaemonStartupPhase.ACTOR_RUNTIME_TRANSPORT,
         )
+        poll = getattr(self._forwarding_backend(), "last_poll", None)
+        if isinstance(poll, dict) and isinstance(poll.get("peers"), dict):
+            transport.set_endpoint_peers(poll["peers"])
         # Retain what the opened session actually uses.  Only a forwarding-port
         # re-pick or the derived-listener fallback can change the config, so
         # read it back only then; otherwise the requested listen set stands.

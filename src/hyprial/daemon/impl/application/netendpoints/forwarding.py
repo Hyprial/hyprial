@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 #: How often an owner/admin daemon fulfils org leave requests (§4.3).
 _ORG_LEAVE_INTERVAL_SECONDS = 30.0
 
+
 class _ForwardingOpsMixin:
     """Application cluster mixin; the state owner is DaemonApplication."""
 
@@ -80,6 +81,19 @@ class _ForwardingOpsMixin:
             return self._forwarding_supervisor.endpoints()
         return self._forwarding_discovery
 
+    def _forwarding_diagnostic_counters(self) -> dict[str, int]:
+        snapshot = getattr(
+            getattr(self, "_transport", None), "link_diagnostic_counters", None
+        )
+        if snapshot is None:
+            return {"map_peer_remap": 0}
+        try:
+            counters = snapshot()
+        except Exception:  # noqa: BLE001 - ps must stay answerable
+            return {"map_peer_remap": 0}
+        value = counters.get("map_peer_remap", 0)
+        return {"map_peer_remap": value if isinstance(value, int) else 0}
+
     def _forwarding_status_json(self) -> dict[str, object]:
         """The forwarding half's verdict for status/ps -- never silently absent.
 
@@ -118,6 +132,7 @@ class _ForwardingOpsMixin:
                 "failures": 0,
                 "pid": None,
                 "policy": policy,
+                "counters": self._forwarding_diagnostic_counters(),
             }
             if self._forwarding_unavailable is not None:
                 off["unavailable"] = self._forwarding_unavailable
@@ -128,6 +143,7 @@ class _ForwardingOpsMixin:
             }
             return off
         status["policy"] = policy
+        status["counters"] = self._forwarding_diagnostic_counters()
         effective = self._forwarding_effective
         # The session-open capture; before the first discovery pass it is
         # whatever the first pass returned -- including (), which is exactly
