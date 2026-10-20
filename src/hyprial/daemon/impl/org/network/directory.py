@@ -65,6 +65,35 @@ _INVALID_DEVICE_QUIET_SECONDS = 300.0
 _INVALID_DEVICE_QUIET_MAX = 512
 
 
+def network_directory_projection(
+    store: "OrgFsDirectoryStore",
+    orgs: list[str],
+    unavailable: set[str],
+    *,
+    device_view: Callable[[DirectoryDevice], dict[str, Any]],
+    logger: Callable[..., None],
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
+    """Read the local OrgFS directory pane without involving sidecar state."""
+
+    directory: dict[str, list[dict[str, Any]]] = {}
+    pending: dict[str, Any] = dict.fromkeys(orgs)
+    for org in orgs:
+        if org in unavailable:
+            directory[org] = []
+            continue
+        try:
+            devices, pending[org] = store.scan_devices(org)
+        except (OrgFsError, ValueError) as error:
+            logger(
+                "warn", "org", "org.network.directory-failed",
+                org=org, detail=str(error),
+            )
+            directory[org] = []
+            continue
+        directory[org] = [device_view(device) for device in devices]
+    return directory, pending
+
+
 class OrgFsDirectoryStore:
     """:class:`~hyprial.identity.impl.org_directory.DirectoryStore` over OrgFS.
 

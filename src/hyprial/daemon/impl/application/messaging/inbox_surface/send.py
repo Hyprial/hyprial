@@ -33,6 +33,7 @@ from hyprial.kernel import (
     CHANNEL_URI_PREFIX,
     TARGET_KIND_AGENT,
     TARGET_KIND_HOST,
+    parse_agent_uri,
 )
 from hyprial.daemon.impl.network.route_delivery  import (
     RouteDeliveryError,
@@ -544,7 +545,10 @@ class _MessageSendMixin(_LinkSendMixin, AgentBotSendSupport):
                     # custody mailbox accepted the message; surface why
                     # instead of letting ok:true mask a silent deferral.
                     **(
-                        {"reason": "target-not-visible"}
+                        {
+                            "reason": "target-not-visible",
+                            "resolutionReason": self._queued_resolution_reason(target),
+                        }
                         if result.queued
                         and result.code != ipc_errors.SUBMIT_OUTCOME_UNKNOWN
                         else {}
@@ -614,6 +618,17 @@ class _MessageSendMixin(_LinkSendMixin, AgentBotSendSupport):
             cwd=self._registered_session_cwd(caller.subject),
             state_dir=self.state_dir,
         )
+
+    def _queued_resolution_reason(self, target: str) -> str:
+        parsed = parse_agent_uri(target)
+        if parsed is None:
+            return "no-route"
+        node = parsed[1]
+        if node != self.node_id and not self._presence.actor_online(node):
+            return "node-offline"
+        if not self._presence.actor_online(target):
+            return "actor-unknown"
+        return "no-route"
 
     def _registered_session_cwd(self, actor: str) -> str | None:
         """The cwd the daemon registered for this actor's session or worker."""

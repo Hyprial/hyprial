@@ -1,4 +1,12 @@
-"""Zenoh session configuration and environment overrides."""
+"""Zenoh session configuration and environment overrides.
+
+Each peer advertises its own lease.  A 30-second default tolerates transient
+DERP stalls but can delay genuine silent-peer detection, and therefore native
+liveliness removal, to roughly 30 seconds after the last frame.  Presence has
+no additional expiry timer.  During a mixed-version rollout, each direction
+uses the remote peer's advertised lease; complete protection from the former
+6-second threshold requires both ends to run the new default.
+"""
 from __future__ import annotations
 
 import json
@@ -11,7 +19,7 @@ import zenoh
 
 
 
-DEFAULT_LEASE_MS = 6_000
+DEFAULT_LEASE_MS = 30_000
 
 DEFAULT_KEEP_ALIVE = 4
 

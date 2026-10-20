@@ -27,6 +27,7 @@ from hyprial.daemon.impl.org.network.binding import (
 from hyprial.daemon.impl.org.network.directory import (
     OrgFsDirectoryStore,
     leave_request_admitted,
+    network_directory_projection,
 )
 from hyprial.daemon.impl.org.network.policy import ACL_POLICY_DOC, OrgFsDerivedPolicy
 from hyprial.daemon.impl.org.network.state import (
@@ -37,6 +38,7 @@ from hyprial.daemon.impl.org.network.state import (
     read_left_orgs,
     remove_bootstrap_peers,
 )
+from hyprial.daemon.impl.org.network.status import start_bounded_projection
 from hyprial.kernel import canonical_user_uri, ipc_errors, parse_user_uri
 from hyprial.identity import DeviceRecord, read_device_record
 from hyprial.identity import (
@@ -68,6 +70,7 @@ JOIN_RETRY_SECONDS = 0.5
 DEFAULT_JOIN_TIMEOUT_SECONDS = 30.0
 #: Default invite validity window.
 DEFAULT_INVITE_TTL_SECONDS = 24 * 3600.0
+NETWORK_PANE_TIMEOUT_SECONDS = 1.0
 
 _UNBOUND_DELETE_FALLBACK_REASONS = frozenset(
     {"missing-acl-binding", "unknown-acl-space-id", "acl-owner-mismatch"}
@@ -551,27 +554,27 @@ class OrgNetworkService(CasdoorMembershipMixin):
                     }
                 )
         unavailable_names = {str(item["org"]) for item in unavailable}
-        directory: dict[str, list[dict[str, Any]]] = {}
-        directory_pending: dict[str, Any] = dict.fromkeys(orgs)  # None: unknown
-        for name in orgs:
-            if name in unavailable_names:
-                directory[name] = []
-                continue
-            try:
-                devices, directory_pending[name] = self._store.scan_devices(name)
-            except (OrgFsError, ValueError) as error:
-                self._log(
-                    "warn",
-                    "org",
-                    "org.network.directory-failed",
-                    org=name,
-                    detail=str(error),
-                )
-                directory[name] = []
-                continue
-            directory[name] = [self._device_view(device) for device in devices]
+        directory_read = start_bounded_projection(
+            lambda: network_directory_projection(
+                self._store, orgs, unavailable_names,
+                device_view=self._device_view, logger=self._log,
+            ),
+            lane="directory",
+            timeout_seconds=NETWORK_PANE_TIMEOUT_SECONDS,
+        )
+        forwarding_read = start_bounded_projection(
+            self._forwarding_status,
+            lane="sidecar",
+            timeout_seconds=NETWORK_PANE_TIMEOUT_SECONDS,
+        )
+        directory_result, directory_status = directory_read.result()
+        forwarding, forwarding_status = forwarding_read.result()
+        if directory_result is None:
+            directory = {name: [] for name in orgs}
+            directory_pending: dict[str, Any] = dict.fromkeys(orgs)
+        else:
+            directory, directory_pending = directory_result
         address = self._own_address()
-        forwarding = self._forwarding_status() if self._forwarding_status else None
         mapped_peers = forwarding.get("peers") if isinstance(forwarding, Mapping) else None
         sidecar = (
             {
@@ -593,6 +596,11 @@ class OrgNetworkService(CasdoorMembershipMixin):
             },
             "mappedPeers": mapped_peers,
             "sidecar": sidecar,
+            "paneStatus": {
+                "directory": directory_status,
+                "mappedPeers": dict(forwarding_status),
+                "sidecar": dict(forwarding_status),
+            },
             "sources": {
                 "directory": "orgfs",
                 "mappedPeers": "forwarding-sidecar",
@@ -963,6 +971,7 @@ class OrgNetworkService(CasdoorMembershipMixin):
         # whether one is recorded (the raw value never leaves the daemon).
         view = dict(device.as_record())
         view["addressPresent"] = bool(view.pop("address"))
+        view["presence"] = "unknown"
         return view
 
     @staticmethod

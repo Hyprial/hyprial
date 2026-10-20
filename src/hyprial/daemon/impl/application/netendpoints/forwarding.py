@@ -167,6 +167,11 @@ class _ForwardingOpsMixin:
         previous = self._forwarding_effective
         current = backend.list_reachable_endpoints()
         self._forwarding_effective = current
+        poll = getattr(backend, "last_poll", None)
+        peers = poll.get("peers") if isinstance(poll, dict) else None
+        set_endpoint_peers = getattr(self._transport, "set_endpoint_peers", None)
+        if isinstance(peers, dict) and callable(set_endpoint_peers):
+            set_endpoint_peers(peers)
         self._redial_forwarding(current)
         if current == previous:
             return

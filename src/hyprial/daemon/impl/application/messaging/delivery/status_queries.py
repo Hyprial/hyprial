@@ -70,6 +70,7 @@ def _outbox_entry_json(item: OutboxItem) -> JsonObject:
         "intent": item.message.intent,
         "createdAtMs": item.message.created_at_ms,
         "attempts": item.attempts,
+        "failedAttempts": item.attempts,
         "nextAttemptMs": item.next_attempt_ms,
         "expiresAtMs": item.expires_at_ms,
         "undeliverableScheme": _undeliverable_outbox_recipient(

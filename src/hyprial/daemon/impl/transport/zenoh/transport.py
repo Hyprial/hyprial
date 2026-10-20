@@ -30,6 +30,9 @@ from hyprial.daemon.impl.transport.zenoh.dispatchers import (
     _QueryDispatcher,
     _sample,
 )
+from hyprial.daemon.impl.transport.zenoh.link_diagnostics import (
+    ZenohLinkDiagnosticsMixin,
+)
 from hyprial.daemon.impl.transport.zenoh.locks import (
     TransportLockTimeout,
     _OwnedLock,
@@ -122,7 +125,8 @@ def _reply_error(reply: Any) -> str:
 
 _DIAGNOSTIC_QUEUE_CAPACITY = 1024
 
-class ZenohTransport(TransportRecoveryMixin):
+
+class ZenohTransport(ZenohLinkDiagnosticsMixin, TransportRecoveryMixin):
     def __init__(
         self,
         config: ZenohConfig | None = None,
@@ -183,6 +187,14 @@ class ZenohTransport(TransportRecoveryMixin):
             tuple[str, dict[str, object]] | None
         ] = queue.Queue(maxsize=_DIAGNOSTIC_QUEUE_CAPACITY)
         self._diagnostic_dropped = 0
+        self._diagnostic_guard = threading.Lock()
+        self._link_opened_at: dict[
+            tuple[str, str, str], tuple[float, str | None, int | None, int | None]
+        ] = {}
+        self._endpoint_peers: dict[str, str] = {}
+        self._peer_endpoint_history: dict[str, str] = {}
+        self._map_peer_remap_count = 0
+        self._zenoh_link_delete_count = 0
         self._diagnostic_thread = threading.Thread(
             target=self._log_diagnostic_events,
             name="hyprial-zenoh-events",
@@ -566,22 +578,6 @@ class ZenohTransport(TransportRecoveryMixin):
                     "kind": str(event.kind).rsplit(".", 1)[-1].lower(),
                     "zid": str(transport.zid),
                     "whatami": str(transport.whatami),
-                },
-            )
-        )
-
-    def _queue_link_event(self, event: Any) -> None:
-        """Copy one link event off Zenoh's callback thread."""
-
-        link = event.link
-        self._offer_diagnostic(
-            (
-                "link",
-                {
-                    "kind": str(event.kind).rsplit(".", 1)[-1].lower(),
-                    "zid": str(link.zid),
-                    "src": str(link.src),
-                    "dst": str(link.dst),
                 },
             )
         )
