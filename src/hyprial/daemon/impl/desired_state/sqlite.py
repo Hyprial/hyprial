@@ -23,15 +23,13 @@ closed immediately: the suite enforces strict per-test fd hygiene
 (tests/conftest.py ``_fd_hygiene``), and desired-state writes are
 low-frequency user operations.
 
-Every save performs a full replace (one transaction of DELETE + INSERT over
-the whole document).  Desired state is small -- dozens of rows -- so the
-cost is negligible and no incremental-diff logic can drift from the JSON
-semantics.  The full-replace strategy is also what keeps rowid order equal
-to document order, which ``read_document`` relies on; switching to an
-in-transaction upsert would silently break that and must not happen without
-deciding about an explicit ``ordinal`` column (the round-trip test is the
-tripwire).  The schema is field-level on purpose: dropping a single column
-value must be observable by the reconciliation tests.
+General ``save`` calls perform a full replace (one transaction of DELETE +
+INSERT over the whole document). Lifecycle admission and receipt retirement
+are bounded row mutations because those background writes are frequent and
+resource history can be large. Their in-memory committed state is published
+before acknowledgement; a later general save still canonicalizes row order.
+The schema is field-level on purpose: dropping a single column value must be
+observable by the reconciliation tests.
 """
 
 from __future__ import annotations
@@ -307,6 +305,68 @@ class DesiredStateSqliteShadow:
                 "DELETE FROM pending_session_agent_effects WHERE effect_id = ?",
                 (effect_id,),
             )
+
+    def upsert_lifecycle_rows(
+        self,
+        resource: Mapping[str, Any],
+        receipt: Mapping[str, Any],
+        removed_harness: tuple[str, str] | None,
+    ) -> bool:
+        """Commit one lifecycle admission without replacing unrelated rows."""
+
+        with self._state_db.transaction(schema=_SCHEMA) as db:
+            if db.execute("SELECT 1 FROM root_state WHERE id=1").fetchone() is None:
+                self._document_seen = False
+                return False
+            db.execute(
+                "INSERT INTO lifecycle_resources VALUES(?,?,?,?,?) "
+                "ON CONFLICT(domain,resource_key) DO UPDATE SET "
+                "resource_token=excluded.resource_token,active=excluded.active,"
+                "payload_json=excluded.payload_json",
+                (
+                    resource["domain"], resource["resourceKey"],
+                    resource["resourceToken"], int(bool(resource["active"])),
+                    _json_text(resource.get("payload", {})),
+                ),
+            )
+            db.execute(
+                "INSERT INTO lifecycle_receipts("
+                "domain,attempt_token,operation_id,resource_key,"
+                "expected_resource_token,created_by_operation,changed,"
+                "resource_token,retired,completed,attempts,correlation_id,"
+                "generation,version,expected_entity_token) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    receipt["domain"], receipt["attemptToken"],
+                    receipt["operationId"], receipt["resourceKey"],
+                    receipt.get("expectedResourceToken"),
+                    int(bool(receipt.get("createdByOperation", False))),
+                    int(bool(receipt.get("changed", False))),
+                    receipt["resourceToken"], int(bool(receipt.get("retired", False))),
+                    int(bool(receipt.get("completed", True))), receipt.get("attempts", 0),
+                    receipt.get("correlationId"), receipt.get("generation"),
+                    receipt.get("version"), receipt.get("expectedEntityToken"),
+                ),
+            )
+            if removed_harness is not None:
+                db.execute(
+                    "DELETE FROM harnesses WHERE harness=? AND name=?",
+                    removed_harness,
+                )
+        return True
+
+    def retire_lifecycle_receipt(
+        self, domain: str, attempt_token: str, resource_token: str
+    ) -> bool:
+        with self._state_db.transaction(schema=_SCHEMA) as db:
+            if db.execute("SELECT 1 FROM root_state WHERE id=1").fetchone() is None:
+                return False
+            row = db.execute(
+                "UPDATE lifecycle_receipts SET retired=1 WHERE domain=? "
+                "AND attempt_token=? AND resource_token=? AND completed=1",
+                (domain, attempt_token, resource_token),
+            )
+        return row.rowcount == 1
 
     def read_document(self) -> dict[str, Any] | None:
         """Reverse mapping: rebuild the ``to_json()`` document from raw rows.

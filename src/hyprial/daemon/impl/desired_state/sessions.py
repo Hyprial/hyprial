@@ -546,6 +546,8 @@ class _DesiredStateSessionsMixin:
                 rows.append(document)
             if not self._sqlite_shadow.insert_session_agent_effects(rows):
                 self.save(updated)  # the root vanished: rewrite the document
+            else:
+                self._publish_incremental(updated)
             return updated
 
     def complete_session_agent_effect(self, effect_id: str) -> bool:
@@ -561,6 +563,9 @@ class _DesiredStateSessionsMixin:
             if len(remaining) == len(state.pending_session_agent_effects):
                 return False
             self._sqlite_shadow.delete_session_agent_effect(effect_id)
+            self._publish_incremental(
+                replace(state, pending_session_agent_effects=remaining)
+            )
             return True
 
     def set_channel_pin(

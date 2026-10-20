@@ -255,12 +255,12 @@ class _Generation:
                 result = run_journal_query(self.journal, command)
             elif isinstance(command, RemoveMigratedChannelPins):
                 result = self.desired.remove_matching_channel_pins(command.matches)
-                self.projection.publish(self.desired.load())
+                self.projection.publish(self.desired.published_state())
             elif isinstance(command, NormalizeInteractiveSessions):
                 result = self.desired.normalize_interactive_sessions(
                     rewrites=command.rewrites
                 )
-                self.projection.publish(self.desired.load())
+                self.projection.publish(self.desired.published_state())
             elif isinstance(command, CompareAndSaveDesired):
                 if command.expected_version != self.projection.read().version:
                     raise StatePersistenceVersionConflict(
@@ -268,36 +268,36 @@ class _Generation:
                     )
                 self.desired.save(command.desired)
                 result = command.desired
-                self.projection.publish(self.desired.load())
+                self.projection.publish(self.desired.published_state())
             elif isinstance(command, ApplySessionLifecycle):
                 result = self.desired.apply_session_lifecycle(command.request)
-                self.projection.publish(self.desired.load())
+                self.projection.publish(self.desired.published_state())
             elif isinstance(command, ApplyHarnessLifecycle):
                 result = self.desired.apply_harness_lifecycle(
                     command.request, generation=command.generation,
                     version=command.version,
                 )
-                self.projection.publish(self.desired.load())
+                self.projection.publish(self.desired.published_state())
             elif isinstance(command, RetireDomainReceipt):
                 result = self.desired.retire_lifecycle_receipt(
                     command.domain, command.attempt_token, command.resource_token
                 )
-                self.projection.publish(self.desired.load())
+                self.projection.publish(self.desired.published_state())
             elif isinstance(command, ConfirmDomainReceipt):
                 result = self.desired.confirm_lifecycle_receipt_retired(
                     command.domain, command.attempt_token, command.resource_token
                 )
-                self.projection.publish(self.desired.load())
+                self.projection.publish(self.desired.published_state())
             elif isinstance(command, ClaimInteractiveSession):
                 result = self.desired.claim_interactive_with_effects(
                     command.session, command.effects
                 )
-                self.projection.publish(self.desired.load())
+                self.projection.publish(self.desired.published_state())
             elif isinstance(command, ClaimInteractiveWithAgentEffects):
                 result = self.desired.claim_interactive_with_agent_effects(
                     command.session, command.bind_effect
                 )
-                self.projection.publish(self.desired.load())
+                self.projection.publish(self.desired.published_state())
             elif isinstance(command, UnregisterInteractiveSession):
                 if command.session_ref is None:
                     result = self.desired.unregister_interactive(command.actor)
@@ -305,83 +305,81 @@ class _Generation:
                     result = self.desired.unregister_interactive_if_current(
                         command.actor, command.session_ref, command.effects
                     )
-                self.projection.publish(self.desired.load())
+                self.projection.publish(self.desired.published_state())
             elif isinstance(command, RecordSessionAgentEffects):
                 result = self.desired.record_session_agent_effects(command.effects)
-                # The store returns the state it just wrote; reading it back
-                # again was a second whole-document load per effect.
-                self.projection.publish(result)
+                self.projection.publish(self.desired.published_state())
             elif isinstance(command, CompleteSessionAgentEffect):
                 result = self.desired.complete_session_agent_effect(command.effect_id)
-                self.projection.publish(self.desired.load())
+                self.projection.publish(self.desired.published_state())
             elif isinstance(command, SetChannelPin):
                 result = self.desired.set_channel_pin(command.channel, command.agent)
-                self.projection.publish(self.desired.load())
+                self.projection.publish(self.desired.published_state())
             elif isinstance(command, RemoveChannelPin):
                 result = self.desired.remove_channel_pin(command.channel)
-                self.projection.publish(self.desired.load())
+                self.projection.publish(self.desired.published_state())
             elif isinstance(command, ConfirmHarnessLifecycle):
                 result = self.desired.confirm_harness_lifecycle(
                     command.attempt_token, command.resource_token, command.spec,
                     generation=command.generation, version=command.version,
                 )
-                self.projection.publish(self.desired.load())
+                self.projection.publish(self.desired.published_state())
             elif isinstance(command, CompleteHarnessLifecycle):
                 result = self.desired.complete_harness_lifecycle(
                     command.attempt_token, command.resource_token,
                     generation=command.generation, version=command.version,
                 )
-                self.projection.publish(self.desired.load())
+                self.projection.publish(self.desired.published_state())
             elif isinstance(command, RecordHarnessLifecycleFailure):
                 result = self.desired.record_harness_lifecycle_failure(
                     command.attempt_token, command.resource_token
                 )
-                self.projection.publish(self.desired.load())
+                self.projection.publish(self.desired.published_state())
             elif isinstance(command, RollbackHarnessLifecycle):
                 result = self.desired.rollback_harness_lifecycle(
                     command.attempt_token, command.resource_token
                 )
-                self.projection.publish(self.desired.load())
+                self.projection.publish(self.desired.published_state())
             elif isinstance(command, FailHarnessRemoval):
                 result = self.desired.fail_harness_removal(
                     command.attempt_token, command.resource_token
                 )
-                self.projection.publish(self.desired.load())
+                self.projection.publish(self.desired.published_state())
             elif isinstance(command, MarkHarnessFailed):
                 result = self.desired.mark_harness_failed(command.harness, command.name)
-                self.projection.publish(self.desired.load())
+                self.projection.publish(self.desired.published_state())
             elif isinstance(command, UpsertHarness):
                 result = self.desired.upsert_harness(command.spec)
-                self.projection.publish(self.desired.load())
+                self.projection.publish(self.desired.published_state())
             elif isinstance(command, RemoveHarness):
                 result = self.desired.remove_harness(command.harness, command.name)
-                self.projection.publish(self.desired.load())
+                self.projection.publish(self.desired.published_state())
             elif isinstance(command, ExpireInterruptedReceipts):
                 result = self.desired.expire_interrupted_lifecycle_receipts()
-                self.projection.publish(self.desired.load())
+                self.projection.publish(self.desired.published_state())
             elif isinstance(command, RemoveAdapterRegistration):
                 result = self.desired.remove_adapter_registration(
                     command.name, expected_spec=command.expected_spec,
                     expected_legacy_pin=command.expected_legacy_pin,
                 )
-                self.projection.publish(self.desired.load())
+                self.projection.publish(self.desired.published_state())
             elif isinstance(command, RestoreAdapterRegistration):
                 result = self.desired.restore_adapter_registration(
                     command.name, spec=command.spec,
                     legacy_pin=command.legacy_pin,
                 )
-                self.projection.publish(self.desired.load())
+                self.projection.publish(self.desired.published_state())
             elif isinstance(command, SyncHarnessSessionRefs):
                 result = self.desired.sync_harness_session_refs(dict(command.refs))
-                self.projection.publish(self.desired.load())
+                self.projection.publish(self.desired.published_state())
             elif isinstance(command, SetMailboxRole):
                 result = self.desired.set_mailbox_role(command.enabled)
-                self.projection.publish(self.desired.load())
+                self.projection.publish(self.desired.published_state())
             elif isinstance(command, UpdateZenohEndpoints):
                 result = self.desired.update_zenoh_endpoints(
                     listen=command.listen, connect=command.connect,
                 )
-                self.projection.publish(self.desired.load())
+                self.projection.publish(self.desired.published_state())
             elif isinstance(command, SetServiceConnection):
                 result = self.desired.set_service_connection(
                     command.name, command.local_port
@@ -448,7 +446,12 @@ class _Generation:
                         )
                         result = True
                 if result:
-                    self.projection.publish(self.desired.load())
+                    state = self.desired.publish_shared_receipt_retirement(
+                        command.domain,
+                        command.attempt_token,
+                        command.resource_token,
+                    )
+                    self.projection.publish(state)
             elif isinstance(command, NextLifecycleGeneration):
                 result = self.journal.next_generation()
             elif isinstance(command, InterruptRunningLifecycle):

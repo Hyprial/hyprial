@@ -48,6 +48,26 @@ _STORES_BY_DB_PATH: "weakref.WeakValueDictionary[Path, DesiredStateStore]" = (
 _STORE_REGISTRY_LOCK = threading.Lock()
 
 
+def _collect_retired_rows(
+    db: sqlite3.Connection, *, margin: int, batch: int
+) -> tuple[tuple[str, str], ...]:
+    rows = db.execute(
+        "SELECT r.domain,r.resource_key FROM lifecycle_resources r "
+        "WHERE r.domain='harness' AND r.active=0 "
+        "AND NOT EXISTS (SELECT 1 FROM lifecycle_receipts x "
+        "WHERE x.domain=r.domain AND x.resource_key=r.resource_key) "
+        "AND NOT EXISTS (SELECT 1 FROM harnesses h WHERE "
+        "r.resource_key='harness:'||h.harness||':'||h.name) "
+        "ORDER BY r.rowid DESC LIMIT ? OFFSET ?",
+        (batch, margin),
+    ).fetchall()
+    keys = tuple((str(row[0]), str(row[1])) for row in rows)
+    db.executemany(
+        "DELETE FROM lifecycle_resources WHERE domain=? AND resource_key=?", keys
+    )
+    return keys
+
+
 def _register_store(store: "DesiredStateStore") -> None:
     key = store.state_db.path.resolve()
     with _STORE_REGISTRY_LOCK:
@@ -89,6 +109,7 @@ class DesiredStateStore(_DesiredStateSessionsMixin, _DesiredStateStoreIoMixin):
         _register_store(self)
         # Absorb homes from earlier builds (or finish an interrupted
         # migration) before the first read.
+        self._published_state: DesiredState | None = None
         with self._lock:
             self._migrate_into_sqlite()
             # U0b: add the harnesses.status column (and resolve rows whose
@@ -127,9 +148,22 @@ class DesiredStateStore(_DesiredStateSessionsMixin, _DesiredStateStoreIoMixin):
 
         with self._lock:
             document = self._sqlite_shadow.read_document()
-            if document is None:
-                return DesiredState()
-            return DesiredState.from_json(document)
+            state = (
+                DesiredState()
+                if document is None
+                else DesiredState.from_json(document)
+            )
+            self._published_state = state
+            return state
+
+    def published_state(self) -> DesiredState:
+        """Return the state already read or committed by this store owner."""
+
+        with self._lock:
+            return self.load() if self._published_state is None else self._published_state
+
+    def _publish_incremental(self, state: DesiredState) -> None:
+        self._published_state = state
 
     def save(self, state: DesiredState) -> None:
         if type(state.schema_version) is not int or state.schema_version not in SUPPORTED_SCHEMA_VERSIONS:
@@ -147,6 +181,7 @@ class DesiredStateStore(_DesiredStateSessionsMixin, _DesiredStateStoreIoMixin):
             # immediately the authority.  No projection, no fallback, no
             # compensation -- one storage, no cross-storage window.
             self._sqlite_shadow.write_document(document)
+            self._published_state = validated
 
     def set_service_connection(self, name: str, local_port: int) -> DesiredState:
         from .services import ServiceConnection
@@ -226,7 +261,7 @@ class DesiredStateStore(_DesiredStateSessionsMixin, _DesiredStateStoreIoMixin):
         name = payload.spec.name if isinstance(payload, EnsureHarnessCommand) else payload.name
         key = f"harness:{harness}:{name}"
         with self._lock:
-            state = self.load()
+            state = self.published_state()
             replay = _stored_receipt(state, "harness", request, key)
             if replay is not None:
                 return replay.provenance, True
@@ -278,7 +313,17 @@ class DesiredStateStore(_DesiredStateSessionsMixin, _DesiredStateStoreIoMixin):
                 lifecycle_resources=tuple(resources[item] for item in sorted(resources)),
                 lifecycle_receipts=(*state.lifecycle_receipts, receipt),
             )
-            self.save(updated)
+            removed_harness = (
+                (harness, name)
+                if isinstance(payload, RemoveHarnessCommand) and changed
+                else None
+            )
+            if self._sqlite_shadow.upsert_lifecycle_rows(
+                resource.to_json(), receipt.to_json(), removed_harness
+            ):
+                self._publish_incremental(updated)
+            else:
+                self.save(updated)
             return provenance, False
 
     def confirm_harness_lifecycle(
@@ -625,7 +670,7 @@ class DesiredStateStore(_DesiredStateSessionsMixin, _DesiredStateStoreIoMixin):
         self, domain: str, attempt_token: str, resource_token: str
     ) -> bool:
         with self._lock:
-            state = self.load()
+            state = self.published_state()
             found = next(
                 (
                     item
@@ -646,14 +691,20 @@ class DesiredStateStore(_DesiredStateSessionsMixin, _DesiredStateStoreIoMixin):
                 replace(item, retired=True) if item is found else item
                 for item in state.lifecycle_receipts
             )
-            self.save(replace(state, lifecycle_receipts=receipts))
+            updated = replace(state, lifecycle_receipts=receipts)
+            if self._sqlite_shadow.retire_lifecycle_receipt(
+                domain, attempt_token, resource_token
+            ):
+                self._publish_incremental(updated)
+            else:
+                self.save(updated)
             return True
 
     def confirm_lifecycle_receipt_retired(
         self, domain: str, attempt_token: str, resource_token: str
     ) -> bool:
         with self._lock:
-            state = self.load()
+            state = self.published_state()
             found = next(
                 (
                     item
@@ -666,15 +717,91 @@ class DesiredStateStore(_DesiredStateSessionsMixin, _DesiredStateStoreIoMixin):
                 return False
             if not found.retired or found.provenance.resource_token != resource_token:
                 raise ValueError("lifecycle receipt retirement mismatch")
-            self.save(
-                replace(
-                    state,
-                    lifecycle_receipts=tuple(
-                        item for item in state.lifecycle_receipts if item is not found
+            updated = replace(
+                state,
+                lifecycle_receipts=tuple(
+                    item for item in state.lifecycle_receipts if item is not found
+                ),
+            )
+            keys: tuple[tuple[str, str], ...] = ()
+            if self._sqlite_shadow.has_document():
+                with self.state_db.transaction() as db:
+                    root = db.execute(
+                        "SELECT 1 FROM root_state WHERE id=1"
+                    ).fetchone()
+                    deleted = (
+                        db.execute(
+                            "DELETE FROM lifecycle_receipts WHERE domain=? "
+                            "AND attempt_token=? AND resource_token=? AND retired=1",
+                            (domain, attempt_token, resource_token),
+                        )
+                        if root is not None
+                        else None
+                    )
+                    keys = (
+                        _collect_retired_rows(db, margin=128, batch=4)
+                        if deleted is not None and deleted.rowcount == 1
+                        else ()
+                    )
+                persisted = deleted is not None and deleted.rowcount == 1
+            else:
+                persisted = False
+            if persisted:
+                removed = set(keys)
+                self._publish_incremental(replace(
+                    updated,
+                    lifecycle_resources=tuple(
+                        item for item in updated.lifecycle_resources
+                        if (item.domain, item.resource_key) not in removed
                     ),
+                ))
+            else:
+                self.save(updated)
+            return True
+
+    def publish_shared_receipt_retirement(
+        self, domain: str, attempt_token: str, resource_token: str
+    ) -> DesiredState:
+        """Publish a receipt deletion committed by the shared journal transaction."""
+
+        with self._lock:
+            state = self.published_state()
+            receipts = tuple(
+                item
+                for item in state.lifecycle_receipts
+                if not (
+                    item.domain == domain
+                    and item.attempt_token == attempt_token
+                    and item.provenance.resource_token == resource_token
                 )
             )
-            return True
+            self._publish_incremental(replace(state, lifecycle_receipts=receipts))
+            self.collect_retired_lifecycle_resources()
+            return self.published_state()
+
+    def collect_retired_lifecycle_resources(
+        self, *, margin: int = 128, batch: int = 4
+    ) -> int:
+        """Boundedly collect old inactive harness fences with no live owner."""
+
+        if margin < 0 or batch < 1:
+            raise ValueError("lifecycle resource cleanup bounds are invalid")
+        with self._lock:
+            state = self.published_state()
+            if not self._sqlite_shadow.has_document():
+                return 0
+            with self.state_db.transaction() as db:
+                keys = _collect_retired_rows(db, margin=margin, batch=batch)
+            if keys:
+                removed = set(keys)
+                self._publish_incremental(replace(
+                    state,
+                    lifecycle_resources=tuple(
+                        item for item in state.lifecycle_resources
+                        if (item.domain, item.resource_key) not in removed
+                    ),
+                ))
+            return len(keys)
 
     def upsert_harness(self, spec: HarnessLaunchSpec) -> DesiredState:
         with self._lock:
