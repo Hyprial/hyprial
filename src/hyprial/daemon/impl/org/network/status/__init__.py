@@ -1,5 +1,7 @@
 """Independent bounded readers for the panes in ``org.network``."""
 
+# hyprial-unbounded-wait-allow: get - fixed daemon workers consume until process exit
+
 from __future__ import annotations
 
 import queue

@@ -7,6 +7,8 @@ so this module never imports forwarding internals and stays testable
 against recording fakes.
 """
 
+# hyprial-unbounded-wait-allow: result - BoundedProjection enforces an absolute deadline
+
 from __future__ import annotations
 
 import hashlib

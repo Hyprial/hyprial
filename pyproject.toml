@@ -58,6 +58,11 @@ packages = ["src/hyprial"]
 [tool.hatch.build.hooks.custom]
 path = "src/hyprial/gui_build_hook.py"
 
+[tool.pytest.ini_options]
+markers = [
+    "perf_bound: deterministic daemon degradation guard with a short CI runtime budget",
+]
+
 [tool.ruff]
 target-version = "py312"
 # Repro artifacts under docs/notes/repro are kept VERBATIM on purpose: their
