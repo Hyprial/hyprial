@@ -140,6 +140,8 @@ class ForwardingEndpoints:
             "connectionTelemetry": getattr(
                 self._controller, "connection_telemetry", None
             ),
+            "derpMapURL": getattr(self._controller, "derp_map_url", None),
+            "derpMapSource": getattr(self._controller, "derp_map_source", None),
             "peers": {
                 peer: f"tcp/127.0.0.1:{mappings[peer]}" for peer in sorted(wanted)
             },

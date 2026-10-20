@@ -110,7 +110,9 @@ func handle(ctx context.Context, eng *engine.Engine, command proto.Command, writ
 		if err != nil {
 			return writeError(writer, err, proto.CodeStartFailed, command.RequestID)
 		}
-		return writer.Write(proto.RunningState(serverPublic, clientPublic, nil))
+		event := proto.RunningState(serverPublic, clientPublic, nil)
+		event.DERPMapURL, event.DERPMapSource = eng.DERPMap()
+		return writer.Write(event)
 	case "status":
 		state, serverPublic, clientPublic, peers, telemetry := eng.Status()
 		if state != "Running" {
@@ -119,6 +121,7 @@ func handle(ctx context.Context, eng *engine.Engine, command proto.Command, writ
 		event := proto.RunningState(serverPublic, clientPublic, toPeerMappings(peers))
 		projected := toConnectionTelemetry(telemetry)
 		event.ConnectionTelemetry = &projected
+		event.DERPMapURL, event.DERPMapSource = eng.DERPMap()
 		return writeResponse(writer, event, command.RequestID)
 	case "map-peer":
 		mapping, err := eng.MapPeer(command.Peer, command.Address, command.Port)
@@ -165,12 +168,14 @@ func handle(ctx context.Context, eng *engine.Engine, command proto.Command, writ
 
 func upConfig(up *proto.UpRequest) engine.UpConfig {
 	cfg := engine.UpConfig{
-		KeyFile:       up.KeyFile,
-		Allow:         up.Allow,
-		AllowAny:      up.AllowAny,
-		InboundTarget: up.InboundTarget,
-		PeerPort:      up.PeerPort,
-		AddressFile:   up.AddressFile,
+		KeyFile:         up.KeyFile,
+		Allow:           up.Allow,
+		AllowAny:        up.AllowAny,
+		InboundTarget:   up.InboundTarget,
+		PeerPort:        up.PeerPort,
+		AddressFile:     up.AddressFile,
+		DERPMapURL:      up.DERPMapURL,
+		DERPMapCacheDir: up.DERPMapCacheDir,
 	}
 	if up.DERP != nil {
 		cfg.DERP = &engine.DERPOverride{

@@ -50,13 +50,15 @@ type DERPConfig struct {
 
 // UpRequest is the parsed payload of an up command.
 type UpRequest struct {
-	KeyFile       string
-	Allow         []string
-	AllowAny      bool
-	InboundTarget string
-	PeerPort      int
-	AddressFile   string
-	DERP          *DERPConfig
+	KeyFile         string
+	Allow           []string
+	AllowAny        bool
+	InboundTarget   string
+	PeerPort        int
+	AddressFile     string
+	DERP            *DERPConfig
+	DERPMapURL      string
+	DERPMapCacheDir string
 }
 
 // Command is a parsed protocol-v3 command. Which fields are populated
@@ -146,6 +148,8 @@ type Event struct {
 	Found               *bool                `json:"found,omitempty"`
 	Key                 *string              `json:"key,omitempty"`
 	RequestID           string               `json:"requestId,omitempty"`
+	DERPMapURL          string               `json:"derpMapURL,omitempty"`
+	DERPMapSource       string               `json:"derpMapSource,omitempty"`
 	Service             *ServiceMapping      `json:"service,omitempty"`
 	Services            *[]ServiceMapping    `json:"services,omitempty"`
 	Name                any                  `json:"name,omitempty"`
@@ -157,6 +161,7 @@ type Event struct {
 var Capabilities = []string{
 	"map-peer", "unmap-peer", "allow", "expose", "unexpose", "peer-key",
 	"service-connect-v1", "forwarding-request-id-v1", "connection-telemetry-v1",
+	"derp-map-v1",
 }
 
 func Hello(sidecar, tailcat string) Event {
@@ -337,21 +342,24 @@ func ParseCommand(line []byte) (Command, error) {
 }
 
 type upWire struct {
-	V             int             `json:"v"`
-	Op            string          `json:"op"`
-	KeyFile       string          `json:"keyFile"`
-	Allow         []string        `json:"allow"`
-	AllowAny      bool            `json:"allowAny"`
-	InboundTarget string          `json:"inboundTarget,omitempty"`
-	PeerPort      int             `json:"peerPort,omitempty"`
-	AddressFile   string          `json:"addressFile"`
-	DERP          json.RawMessage `json:"derp,omitempty"`
+	V               int             `json:"v"`
+	Op              string          `json:"op"`
+	KeyFile         string          `json:"keyFile"`
+	Allow           []string        `json:"allow"`
+	AllowAny        bool            `json:"allowAny"`
+	InboundTarget   string          `json:"inboundTarget,omitempty"`
+	PeerPort        int             `json:"peerPort,omitempty"`
+	AddressFile     string          `json:"addressFile"`
+	DERP            json.RawMessage `json:"derp,omitempty"`
+	DERPMapURL      string          `json:"derpMapURL,omitempty"`
+	DERPMapCacheDir string          `json:"derpMapCacheDir,omitempty"`
 }
 
 func parseUp(line []byte, raw map[string]json.RawMessage) (Command, error) {
 	if err := onlyKeys(
 		raw, "v", "op", "keyFile", "allow", "allowAny",
 		"inboundTarget", "peerPort", "addressFile", "derp",
+		"derpMapURL", "derpMapCacheDir",
 	); err != nil {
 		return Command{}, err
 	}
@@ -381,6 +389,15 @@ func parseUp(line []byte, raw map[string]json.RawMessage) (Command, error) {
 	if wire.PeerPort == 0 {
 		wire.PeerPort = DefaultPeerPort
 	}
+	if wire.DERPMapURL != "" && !strings.HasPrefix(wire.DERPMapURL, "https://") {
+		return Command{}, ProtocolError("derpMapURL must be https")
+	}
+	if wire.DERPMapCacheDir != "" && !filepath.IsAbs(wire.DERPMapCacheDir) {
+		return Command{}, ProtocolError("derpMapCacheDir must be an absolute path")
+	}
+	if wire.DERP != nil && wire.DERPMapURL != "" {
+		return Command{}, ProtocolError("derp and derpMapURL are mutually exclusive")
+	}
 	if wire.InboundTarget != "" {
 		if err := validateTCPTarget(wire.InboundTarget); err != nil {
 			return Command{}, err
@@ -402,6 +419,7 @@ func parseUp(line []byte, raw map[string]json.RawMessage) (Command, error) {
 		KeyFile: wire.KeyFile, Allow: wire.Allow, AllowAny: wire.AllowAny,
 		InboundTarget: wire.InboundTarget, PeerPort: wire.PeerPort,
 		AddressFile: wire.AddressFile, DERP: derp,
+		DERPMapURL: wire.DERPMapURL, DERPMapCacheDir: wire.DERPMapCacheDir,
 	}}, nil
 }
 
@@ -537,8 +555,8 @@ func validateTCPTarget(target string) error {
 
 // eventFields is the closed per-event key set used by ParseEvent.
 var eventFields = map[string][]string{
-	"hello":            {"sidecar", "tailcat", "capabilities"},
-	"state":            {"state", "serverPublic", "clientPublic", "peers", "connectionTelemetry", "requestId"},
+	"hello": {"sidecar", "tailcat", "capabilities"},
+
 	"peer-mapped":      {"peer", "localPort", "requestId"},
 	"peer-unmapped":    {"peer", "requestId"},
 	"allowed":          {"count", "allowAny", "requestId"},
@@ -548,6 +566,7 @@ var eventFields = map[string][]string{
 	"service-mapped":   {"requestId", "service"},
 	"service-unmapped": {"requestId", "name", "removed"},
 	"service-status":   {"requestId", "services"},
+	"state":            {"state", "serverPublic", "clientPublic", "peers", "connectionTelemetry", "derpMapURL", "derpMapSource", "requestId"},
 	"service-failed":   {"requestId", "op", "name", "code", "message"},
 	"error":            {"code", "message", "requestId"},
 	"exited":           {},

@@ -71,6 +71,30 @@ def _loopback_target(raw: str) -> str:
     return raw
 
 
+
+def _stored_derp_map_url(hyprial_home: Path) -> str | None:
+    """Return the configured HTTPS DERP map URL, or None for the default map."""
+
+    path = Path(hyprial_home) / "settings.json"
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as error:
+        raise ForwardingConfigurationError(
+            "FORWARDING_DERP_INVALID", f"cannot parse {path}: {error}"
+        ) from error
+    section = record.get(FORWARDING_SETTINGS_KEY) if isinstance(record, dict) else None
+    raw = section.get("derpMapURL") if isinstance(section, dict) else None
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not raw.startswith("https://"):
+        raise ForwardingConfigurationError(
+            "FORWARDING_DERP_INVALID",
+            f"{path}: {FORWARDING_SETTINGS_KEY}.derpMapURL must be an https URL",
+        )
+    return raw
+
 def daemon_forwarding_environment(
     hyprial_home: Path,
     environ: Mapping[str, str],
@@ -128,6 +152,12 @@ def daemon_forwarding_environment(
         "inboundTarget": f"tcp:{target}",
         "peerPort": DEFAULT_PEER_PORT,
     }
+    derp_map_url = _stored_derp_map_url(home)
+    if derp_map_url is not None:
+        up["derpMapURL"] = derp_map_url
+        up["derpMapCacheDir"] = str(
+            Path(up["addressFile"]).parent / "derpmap-cache"
+        )
     raw_derp = environ.get(TAILCAT_DERP_ENV, "").strip()
     if raw_derp:
         try:

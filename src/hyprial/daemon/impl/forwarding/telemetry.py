@@ -115,3 +115,14 @@ def _parse_close(value: object, *, peer: str, port: int) -> dict[str, Any]:
         "closeSide": value["closeSide"],
         "errors": {"in": errors["in"], "out": errors["out"]},
     }
+
+
+def parse_derp_map(event: dict[str, object]) -> tuple[str | None, str | None]:
+    """Return the sidecar-reported DERP map URL and source, if any."""
+
+    raw_url = event.get("derpMapURL")
+    raw_source = event.get("derpMapSource")
+    return (
+        raw_url if isinstance(raw_url, str) else None,
+        raw_source if isinstance(raw_source, str) else None,
+    )

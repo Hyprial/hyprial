@@ -146,6 +146,8 @@ def network_view(
                 "restartRequired",
                 "lastPoll",
                 "connectionTelemetry",
+                "derpMapURL",
+                "derpMapSource",
             )
         }
         if isinstance(forwarding, Mapping)

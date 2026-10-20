@@ -171,6 +171,8 @@ class _ForwardingOpsMixin:
                 "error": poll.get("error"),
                 "peersReported": poll.get("peersReported"),
                 "peerCount": len(peer_endpoints),
+                "derpMapURL": poll.get("derpMapURL"),
+                "derpMapSource": poll.get("derpMapSource"),
             }
             telemetry = poll.get("connectionTelemetry")
             status["connectionTelemetry"] = (
@@ -178,6 +180,9 @@ class _ForwardingOpsMixin:
                 if isinstance(telemetry, dict)
                 else {"state": "unavailable", "reason": "capability-absent"}
             )
+            for key in ("derpMapURL", "derpMapSource"):
+                if isinstance(poll.get(key), str):
+                    status[key] = poll[key]
             status["peers"] = [
                 {"peer": peer, "endpoint": endpoint, "dialed": endpoint in dialed}
                 for peer, endpoint in sorted(peer_endpoints.items())

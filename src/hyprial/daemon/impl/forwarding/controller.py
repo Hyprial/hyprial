@@ -29,7 +29,7 @@ from .policy import (
     _PROXY_KEYS,
     _normalize_exposure,
 )
-from .telemetry import parse_connection_telemetry
+from .telemetry import parse_connection_telemetry, parse_derp_map
 from .services import (
     ServiceControlError,
     _MapServiceSidecar,
@@ -43,7 +43,6 @@ from .services import (
     unmap_service_request,
     validate_service_mapping,
 )
-
 
 _DEFAULT_TIMEOUT = 10.0
 
@@ -728,6 +727,7 @@ class ForwardingSidecarController:
         self.connection_telemetry = parse_connection_telemetry(
             event.get("connectionTelemetry")
         )
+        self.derp_map_url, self.derp_map_source = parse_derp_map(event)
         if "peers" not in event:
             raw_peers = []
         if not isinstance(raw_peers, list):

@@ -16,7 +16,9 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -50,13 +52,15 @@ type DERPOverride struct {
 
 // UpConfig carries the validated fields of an up command.
 type UpConfig struct {
-	KeyFile       string
-	Allow         []string
-	AllowAny      bool
-	InboundTarget string // "tcp:127.0.0.1:N" or empty
-	PeerPort      int
-	AddressFile   string
-	DERP          *DERPOverride
+	KeyFile         string
+	Allow           []string
+	AllowAny        bool
+	InboundTarget   string // "tcp:127.0.0.1:N" or empty
+	PeerPort        int
+	AddressFile     string
+	DERP            *DERPOverride
+	DERPMapURL      string
+	DERPMapCacheDir string
 }
 
 // Mapping describes one mapped peer.
@@ -74,11 +78,12 @@ type Exposure struct {
 
 // Sentinel errors mapped to protocol error codes by the serve layer.
 var (
-	ErrNotUp       = errors.New("engine is not up")
-	ErrAlreadyUp   = errors.New("engine is already up")
-	ErrPeerUnknown = errors.New("unknown peer")
-	ErrPortInUse   = errors.New("port already in use")
-	ErrBadInput    = errors.New("bad input")
+	ErrNotUp        = errors.New("engine is not up")
+	ErrAlreadyUp    = errors.New("engine is already up")
+	ErrPeerUnknown  = errors.New("unknown peer")
+	ErrPortInUse    = errors.New("port already in use")
+	ErrBadInput     = errors.New("bad input")
+	ErrInsecureDERP = errors.New("DERP map must not set InsecureForTests")
 )
 
 type connPair struct {
@@ -114,12 +119,14 @@ type exposedPort struct {
 // Engine is the sidecar's single Tailcat server plus its mapped peers
 // and exposures. The zero value is down; call Up.
 type Engine struct {
-	mu        sync.Mutex
-	up        bool
-	server    *tailcat.Server
-	material  keys.Material
-	allowKeys *tailcat.KeySet
-	allowAny  atomic.Bool
+	mu            sync.Mutex
+	up            bool
+	server        *tailcat.Server
+	derpMapURL    string
+	derpMapSource string
+	material      keys.Material
+	allowKeys     *tailcat.KeySet
+	allowAny      atomic.Bool
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -184,7 +191,27 @@ func (e *Engine) Up(ctx context.Context, cfg UpConfig) (serverPublic, clientPubl
 		PresharedKey: material.PresharedKey,
 		Logf:         logger.Logf(quiet),
 	}
-	if cfg.DERP != nil {
+	if cfg.DERPMapURL != "" {
+		var cache tailcat.DERPMapCache
+		if cfg.DERPMapCacheDir != "" {
+			cache = diskDERPMapCache{dir: cfg.DERPMapCacheDir}
+		}
+		fetched, fetchErr := tailcat.FetchDERPMap(
+			context.Background(),
+			tailcat.DERPMapURL(cfg.DERPMapURL),
+			tailcat.ExpandForServer,
+			cache,
+		)
+		if fetchErr != nil {
+			return "", "", fmt.Errorf("fetch DERP map: %w", fetchErr)
+		}
+		if err := validateDERPMap(fetched); err != nil {
+			return "", "", err
+		}
+		server.RegionID = 0
+		server.DERPMapURL = cfg.DERPMapURL
+		server.DERPMapCache = cache
+	} else if cfg.DERP != nil {
 		server.Region = regionFromOverride(cfg.DERP)
 	}
 	engineCtx, cancel := context.WithCancel(context.Background())
@@ -219,6 +246,14 @@ func (e *Engine) Up(ctx context.Context, cfg UpConfig) (serverPublic, clientPubl
 	e.mu.Lock()
 	e.up = true
 	e.server = server
+	e.derpMapURL = cfg.DERPMapURL
+	if cfg.DERPMapURL != "" {
+		e.derpMapSource = "configured"
+	} else if cfg.DERP != nil {
+		e.derpMapSource = "override"
+	} else {
+		e.derpMapSource = "default"
+	}
 	e.material = material
 	e.ctx = engineCtx
 	e.cancel = cancel
@@ -495,6 +530,38 @@ func (e *Engine) Status() (
 		telemetry
 }
 
+func validateDERPMap(dm *tailcfg.DERPMap) error {
+	if dm == nil || len(dm.Regions) == 0 {
+		return ErrBadInput
+	}
+	for _, region := range dm.Regions {
+		if region == nil {
+			return ErrBadInput
+		}
+		if len(region.Nodes) == 0 {
+			return ErrBadInput
+		}
+		for _, node := range region.Nodes {
+			if node == nil || node.HostName == "" {
+				return ErrBadInput
+			}
+			if node.InsecureForTests {
+				return ErrInsecureDERP
+			}
+		}
+	}
+	return nil
+}
+
+func (e *Engine) DERPMap() (url, source string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !e.up {
+		return "", ""
+	}
+	return e.derpMapURL, e.derpMapSource
+}
+
 func (e *Engine) mappingsLocked() []Mapping {
 	result := make([]Mapping, 0, len(e.mapped))
 	for _, mapped := range e.mapped {
@@ -766,4 +833,47 @@ func addrToAddrPort(addr net.Addr) (netip.AddrPort, error) {
 	default:
 		return netip.AddrPort{}, fmt.Errorf("unexpected address type %T", addr)
 	}
+}
+
+// diskDERPMapCache persists Tailcat DERP map responses owner-only so a
+// temporary map fetch failure falls back to the last good bytes.
+type diskDERPMapCache struct{ dir string }
+
+func (c diskDERPMapCache) paths(rawURL string) (string, string) {
+	base := filepath.Join(c.dir, "derpmap-"+url.QueryEscape(rawURL))
+	return base + ".json", base + ".etag"
+}
+
+func (c diskDERPMapCache) Get(rawURL string) ([]byte, string, time.Time, bool) {
+	dataPath, etagPath := c.paths(rawURL)
+	info, err := os.Stat(dataPath)
+	if err != nil {
+		return nil, "", time.Time{}, false
+	}
+	data, err := os.ReadFile(dataPath)
+	if err != nil {
+		return nil, "", time.Time{}, false
+	}
+	etag, _ := os.ReadFile(etagPath)
+	return data, strings.TrimSpace(string(etag)), info.ModTime(), true
+}
+
+func (c diskDERPMapCache) Put(rawURL string, data []byte, etag string) error {
+	if err := os.MkdirAll(c.dir, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chmod(c.dir, 0o700); err != nil {
+		return err
+	}
+	dataPath, etagPath := c.paths(rawURL)
+	if err := os.WriteFile(dataPath, data, 0o600); err != nil {
+		return err
+	}
+	if err := os.Chmod(dataPath, 0o600); err != nil {
+		return err
+	}
+	if err := os.WriteFile(etagPath, []byte(etag), 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(etagPath, 0o600)
 }

@@ -33,6 +33,9 @@ def _metrics(result: JsonObject, base: dict[str, object]) -> dict[str, object]:
             if isinstance(telemetry, dict)
             else {"state": "unavailable", "reason": "capability-absent"}
         )
+        for key in ("derpMapURL", "derpMapSource"):
+            if isinstance(forwarding.get(key), str):
+                metrics[key] = forwarding[key]
     return metrics
 
 
