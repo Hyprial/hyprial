@@ -581,7 +581,10 @@ class OrgNetworkService(CasdoorMembershipMixin):
         sidecar = (
             {
                 key: forwarding.get(key)
-                for key in ("policy", "endpoints", "dialed", "restartRequired", "lastPoll")
+                for key in (
+                    "policy", "endpoints", "dialed", "restartRequired", "lastPoll",
+                    "connectionTelemetry",
+                )
             }
             if isinstance(forwarding, Mapping)
             else None

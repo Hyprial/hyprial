@@ -122,6 +122,10 @@ class _ForwardingOpsMixin:
             if self._forwarding_unavailable is not None:
                 off["unavailable"] = self._forwarding_unavailable
             off["exposures"] = exposures
+            off["connectionTelemetry"] = {
+                "state": "unavailable",
+                "reason": "capability-absent",
+            }
             return off
         status["policy"] = policy
         effective = self._forwarding_effective
@@ -152,6 +156,12 @@ class _ForwardingOpsMixin:
                 "peersReported": poll.get("peersReported"),
                 "peerCount": len(peer_endpoints),
             }
+            telemetry = poll.get("connectionTelemetry")
+            status["connectionTelemetry"] = (
+                telemetry
+                if isinstance(telemetry, dict)
+                else {"state": "unavailable", "reason": "capability-absent"}
+            )
             status["peers"] = [
                 {"peer": peer, "endpoint": endpoint, "dialed": endpoint in dialed}
                 for peer, endpoint in sorted(peer_endpoints.items())

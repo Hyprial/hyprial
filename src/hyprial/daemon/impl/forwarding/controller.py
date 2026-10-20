@@ -29,6 +29,7 @@ from .policy import (
     _PROXY_KEYS,
     _normalize_exposure,
 )
+from .telemetry import parse_connection_telemetry
 from .services import (
     ServiceControlError,
     _MapServiceSidecar,
@@ -122,6 +123,7 @@ class ForwardingControllerAuthority:
         self._closed = False
         self._timeout = timeout
         self._peers_reported: bool | None = None
+        self._connection_telemetry: dict[str, Any] | None = None
         self._runtime = ActorRuntime()
         self._handle = self._runtime.start(
             ActorSpec(
@@ -141,6 +143,11 @@ class ForwardingControllerAuthority:
     def peers_reported(self) -> bool | None:
         with self._guard:
             return self._peers_reported
+
+    @property
+    def connection_telemetry(self) -> dict[str, Any] | None:
+        with self._guard:
+            return self._connection_telemetry
 
     @property
     def supports_service_connect(self) -> bool:
@@ -190,8 +197,10 @@ class ForwardingControllerAuthority:
             if isinstance(command, _StatusSidecar):
                 value = self._controller.status()
                 reported = getattr(self._controller, "peers_reported", None)
+                telemetry = getattr(self._controller, "connection_telemetry", None)
                 with self._guard:
                     self._peers_reported = reported
+                    self._connection_telemetry = telemetry
             elif isinstance(command, _MapSidecarPeer):
                 value = self._controller.map_peer(command.peer, command.address)
             elif isinstance(command, _UnmapSidecarPeer):
@@ -396,12 +405,9 @@ class ForwardingSidecarController:
         self._active_service_request_id: str | None = None
         self._dropped_service_responses = 0
         self._service_timeout = SERVICE_CONTROL_TIMEOUT_SECONDS
-        # Whether the last ``status`` answer carried a ``peers`` key at all.
-        # Current sidecars send an explicit ``[]`` for an empty mesh, so an
-        # absent key means a build that does not report peers -- which must
-        # not look the same as "nobody is online" (forwarding defaults plan
-        # §C).  None until the first status.
+        # None until the first status; absence differs from an explicit [].
         self.peers_reported: bool | None = None
+        self.connection_telemetry: dict[str, Any] | None = None
         self._lock = threading.Lock()
         self._closing = False
         self._startup_complete = False
@@ -505,12 +511,7 @@ class ForwardingSidecarController:
     def _status_failure(self, message: str) -> ForwardingSidecarError:
         """A status failure that carries whatever the sidecar said about it."""
 
-        # Reads the tail defensively: this is a diagnostic on a failure path,
-        # and a reader that raises AttributeError here would replace the
-        # forwarding fault with a reporting fault -- the same trade
-        # _mirror_startup_event_to_stderr and _log_lifecycle_operation make.
-        # It is reachable uninitialized because tests construct the controller
-        # through object.__new__ to stub _request (no process is spawned).
+        # Tests can reach this uninitialized through object.__new__.
         tail = " | ".join(getattr(self, "_stderr_tail", ()))
         return ForwardingSidecarError(
             message if not tail else f"{message} (sidecar stderr: {tail})"
@@ -721,13 +722,12 @@ class ForwardingSidecarController:
 
     def status(self) -> tuple[tuple[str, ...], dict[str, int]]:
         event = self._request({"v": FORWARD_PROTOCOL_VERSION, "op": "status"}, "state")
-        # Protocol v3 answers ``status`` with a ``state`` event whose
-        # ``peers`` is the mapped-peer list ``[{peer, localPort}]``.  An
-        # absent ``peers`` key is forgiven (treated as "no mapped peer
-        # yet") for the same reason it always was; an explicit non-list is
-        # still a protocol violation.
+        # Old v3 children can omit peers; an explicit non-list is invalid.
         raw_peers = event.get("peers")
         self.peers_reported = "peers" in event
+        self.connection_telemetry = parse_connection_telemetry(
+            event.get("connectionTelemetry")
+        )
         if "peers" not in event:
             raw_peers = []
         if not isinstance(raw_peers, list):

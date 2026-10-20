@@ -88,42 +88,75 @@ type PeerMapping struct {
 	LocalPort int    `json:"localPort"`
 }
 
+// CopyErrors records the normalized outcomes of both io.Copy directions.
+type CopyErrors struct {
+	In  string `json:"in"`
+	Out string `json:"out"`
+}
+
+// ConnectionClose is one completed connection through a mapped peer port.
+type ConnectionClose struct {
+	Peer       string     `json:"peer"`
+	MapPort    int        `json:"mapPort"`
+	BytesIn    int64      `json:"bytesIn"`
+	BytesOut   int64      `json:"bytesOut"`
+	DurationMs int64      `json:"durationMs"`
+	CloseSide  string     `json:"closeSide"`
+	Errors     CopyErrors `json:"errors"`
+}
+
+// SlotConnectionTelemetry is one mapped port's bounded close history.
+type SlotConnectionTelemetry struct {
+	Peer        string            `json:"peer"`
+	MapPort     int               `json:"mapPort"`
+	ClosedCount int64             `json:"closedCount"`
+	ErrorCounts map[string]int64  `json:"errorCounts"`
+	Recent      []ConnectionClose `json:"recent"`
+}
+
+// ConnectionTelemetry is additive status data, never a per-packet event stream.
+type ConnectionTelemetry struct {
+	RingCapacity int                       `json:"ringCapacity"`
+	Slots        []SlotConnectionTelemetry `json:"slots"`
+}
+
 // Event is the common response envelope. Peers is a pointer so the key
 // is always serialized on state events, even when empty.
 type Event struct {
-	V             int               `json:"v"`
-	Event         string            `json:"event"`
-	Sidecar       string            `json:"sidecar,omitempty"`
-	Tailcat       string            `json:"tailcat,omitempty"`
-	Capabilities  []string          `json:"capabilities,omitempty"`
-	State         string            `json:"state,omitempty"`
-	ServerPublic  string            `json:"serverPublic,omitempty"`
-	ClientPublic  string            `json:"clientPublic,omitempty"`
-	Peers         *[]PeerMapping    `json:"peers,omitempty"`
-	Code          string            `json:"code,omitempty"`
-	Message       string            `json:"message,omitempty"`
-	Peer          string            `json:"peer,omitempty"`
-	LocalPort     int               `json:"localPort,omitempty"`
-	Count         *int              `json:"count,omitempty"`
-	AllowAny      *bool             `json:"allowAny,omitempty"`
-	Port          int               `json:"port,omitempty"`
-	Target        string            `json:"target,omitempty"`
-	ProxyProtocol *string           `json:"proxyProtocol,omitempty"`
-	Addr          string            `json:"addr,omitempty"`
-	Found         *bool             `json:"found,omitempty"`
-	Key           *string           `json:"key,omitempty"`
-	RequestID     string            `json:"requestId,omitempty"`
-	Service       *ServiceMapping   `json:"service,omitempty"`
-	Services      *[]ServiceMapping `json:"services,omitempty"`
-	Name          any               `json:"name,omitempty"`
-	Removed       *bool             `json:"removed,omitempty"`
-	Op            string            `json:"op,omitempty"`
+	V                   int                  `json:"v"`
+	Event               string               `json:"event"`
+	Sidecar             string               `json:"sidecar,omitempty"`
+	Tailcat             string               `json:"tailcat,omitempty"`
+	Capabilities        []string             `json:"capabilities,omitempty"`
+	State               string               `json:"state,omitempty"`
+	ServerPublic        string               `json:"serverPublic,omitempty"`
+	ClientPublic        string               `json:"clientPublic,omitempty"`
+	Peers               *[]PeerMapping       `json:"peers,omitempty"`
+	ConnectionTelemetry *ConnectionTelemetry `json:"connectionTelemetry,omitempty"`
+	Code                string               `json:"code,omitempty"`
+	Message             string               `json:"message,omitempty"`
+	Peer                string               `json:"peer,omitempty"`
+	LocalPort           int                  `json:"localPort,omitempty"`
+	Count               *int                 `json:"count,omitempty"`
+	AllowAny            *bool                `json:"allowAny,omitempty"`
+	Port                int                  `json:"port,omitempty"`
+	Target              string               `json:"target,omitempty"`
+	ProxyProtocol       *string              `json:"proxyProtocol,omitempty"`
+	Addr                string               `json:"addr,omitempty"`
+	Found               *bool                `json:"found,omitempty"`
+	Key                 *string              `json:"key,omitempty"`
+	RequestID           string               `json:"requestId,omitempty"`
+	Service             *ServiceMapping      `json:"service,omitempty"`
+	Services            *[]ServiceMapping    `json:"services,omitempty"`
+	Name                any                  `json:"name,omitempty"`
+	Removed             *bool                `json:"removed,omitempty"`
+	Op                  string               `json:"op,omitempty"`
 }
 
 // Capabilities is the fixed capability list announced on hello.
 var Capabilities = []string{
 	"map-peer", "unmap-peer", "allow", "expose", "unexpose", "peer-key",
-	"service-connect-v1", "forwarding-request-id-v1",
+	"service-connect-v1", "forwarding-request-id-v1", "connection-telemetry-v1",
 }
 
 func Hello(sidecar, tailcat string) Event {
@@ -505,7 +538,7 @@ func validateTCPTarget(target string) error {
 // eventFields is the closed per-event key set used by ParseEvent.
 var eventFields = map[string][]string{
 	"hello":            {"sidecar", "tailcat", "capabilities"},
-	"state":            {"state", "serverPublic", "clientPublic", "peers", "requestId"},
+	"state":            {"state", "serverPublic", "clientPublic", "peers", "connectionTelemetry", "requestId"},
 	"peer-mapped":      {"peer", "localPort", "requestId"},
 	"peer-unmapped":    {"peer", "requestId"},
 	"allowed":          {"count", "allowAny", "requestId"},

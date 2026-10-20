@@ -112,11 +112,14 @@ func handle(ctx context.Context, eng *engine.Engine, command proto.Command, writ
 		}
 		return writer.Write(proto.RunningState(serverPublic, clientPublic, nil))
 	case "status":
-		state, serverPublic, clientPublic, peers := eng.Status()
+		state, serverPublic, clientPublic, peers, telemetry := eng.Status()
 		if state != "Running" {
 			return writeResponse(writer, proto.State("Down"), command.RequestID)
 		}
-		return writeResponse(writer, proto.RunningState(serverPublic, clientPublic, toPeerMappings(peers)), command.RequestID)
+		event := proto.RunningState(serverPublic, clientPublic, toPeerMappings(peers))
+		projected := toConnectionTelemetry(telemetry)
+		event.ConnectionTelemetry = &projected
+		return writeResponse(writer, event, command.RequestID)
 	case "map-peer":
 		mapping, err := eng.MapPeer(command.Peer, command.Address, command.Port)
 		if err != nil {
@@ -178,6 +181,26 @@ func upConfig(up *proto.UpRequest) engine.UpConfig {
 		}
 	}
 	return cfg
+}
+
+func toConnectionTelemetry(source engine.ConnectionTelemetry) proto.ConnectionTelemetry {
+	slots := make([]proto.SlotConnectionTelemetry, 0, len(source.Slots))
+	for _, slot := range source.Slots {
+		recent := make([]proto.ConnectionClose, 0, len(slot.Recent))
+		for _, close := range slot.Recent {
+			recent = append(recent, proto.ConnectionClose{
+				Peer: close.Peer, MapPort: close.MapPort,
+				BytesIn: close.BytesIn, BytesOut: close.BytesOut,
+				DurationMs: close.DurationMs, CloseSide: close.CloseSide,
+				Errors: proto.CopyErrors{In: close.ErrorIn, Out: close.ErrorOut},
+			})
+		}
+		slots = append(slots, proto.SlotConnectionTelemetry{
+			Peer: slot.Peer, MapPort: slot.MapPort, ClosedCount: slot.ClosedCount,
+			ErrorCounts: slot.ErrorCounts, Recent: recent,
+		})
+	}
+	return proto.ConnectionTelemetry{RingCapacity: source.RingCapacity, Slots: slots}
 }
 
 func toPeerMappings(mappings []engine.Mapping) []proto.PeerMapping {

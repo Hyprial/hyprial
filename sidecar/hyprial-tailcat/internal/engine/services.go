@@ -301,7 +301,7 @@ func (e *Engine) handleServiceConnection(ctx context.Context, service *mappedSer
 	pair := &connPair{left: local, right: remote}
 	service.pairs[pair] = struct{}{}
 	e.mu.Unlock()
-	e.splice(pair, func() {
+	e.splice(pair, func(_ spliceResult) {
 		e.mu.Lock()
 		delete(service.pairs, pair)
 		if service.mapping.ActiveConnections > 0 {

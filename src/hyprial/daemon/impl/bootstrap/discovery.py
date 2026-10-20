@@ -137,6 +137,9 @@ class ForwardingEndpoints:
             "ok": True,
             "error": None,
             "peersReported": getattr(self._controller, "peers_reported", None),
+            "connectionTelemetry": getattr(
+                self._controller, "connection_telemetry", None
+            ),
             "peers": {
                 peer: f"tcp/127.0.0.1:{mappings[peer]}" for peer in sorted(wanted)
             },

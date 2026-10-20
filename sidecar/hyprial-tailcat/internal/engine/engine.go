@@ -14,7 +14,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/netip"
 	"os"
@@ -102,6 +101,7 @@ type mappedPeer struct {
 	lease    *clientLease
 	cancel   context.CancelFunc
 	pairs    map[*connPair]struct{}
+	history  *connectionHistory
 }
 
 type exposedPort struct {
@@ -347,6 +347,7 @@ func (e *Engine) MapPeer(peer, address string, port int) (Mapping, error) {
 		lease:    lease,
 		cancel:   cancel,
 		pairs:    make(map[*connPair]struct{}),
+		history:  newConnectionHistory(peer, local),
 	}
 	e.mapped[peer] = mapped
 	e.wg.Add(1)
@@ -471,16 +472,27 @@ func (e *Engine) PeerKey(addr string) (found bool, public string, err error) {
 }
 
 // Status reports the engine state for the status command.
-func (e *Engine) Status() (state string, serverPublic, clientPublic string, peers []Mapping) {
+func (e *Engine) Status() (
+	state string,
+	serverPublic, clientPublic string,
+	peers []Mapping,
+	telemetry ConnectionTelemetry,
+) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	telemetry = ConnectionTelemetry{RingCapacity: connectionHistoryCapacity, Slots: []SlotConnectionTelemetry{}}
 	if !e.up {
-		return "Down", "", "", []Mapping{}
+		return "Down", "", "", []Mapping{}, telemetry
+	}
+	peers = e.mappingsLocked()
+	for _, mapping := range peers {
+		telemetry.Slots = append(telemetry.Slots, e.mapped[mapping.Peer].history.snapshot())
 	}
 	return "Running",
 		e.material.ServerPublic().String(),
 		e.material.ClientPublic().String(),
-		e.mappingsLocked()
+		peers,
+		telemetry
 }
 
 func (e *Engine) mappingsLocked() []Mapping {
@@ -582,7 +594,7 @@ func (e *Engine) acceptInbound(listener net.Listener, inboundTarget string) {
 		}
 		e.inboundPairs[pair] = struct{}{}
 		e.mu.Unlock()
-		e.splice(pair, func() {
+		e.splice(pair, func(_ spliceResult) {
 			e.mu.Lock()
 			delete(e.inboundPairs, pair)
 			e.mu.Unlock()
@@ -613,8 +625,9 @@ func (e *Engine) acceptOutbound(ctx context.Context, mapped *mappedPeer, port ui
 		}
 		mapped.pairs[pair] = struct{}{}
 		e.mu.Unlock()
-		e.splice(pair, func() {
+		e.splice(pair, func(result spliceResult) {
 			e.mu.Lock()
+			mapped.history.record(result)
 			delete(mapped.pairs, pair)
 			e.mu.Unlock()
 		})
@@ -692,7 +705,7 @@ func (e *Engine) handleExposure(ctx context.Context, exposed *exposedPort, remot
 	}
 	exposed.pairs[pair] = struct{}{}
 	e.mu.Unlock()
-	e.splice(pair, func() {
+	e.splice(pair, func(_ spliceResult) {
 		e.mu.Lock()
 		delete(exposed.pairs, pair)
 		e.mu.Unlock()
@@ -753,22 +766,4 @@ func addrToAddrPort(addr net.Addr) (netip.AddrPort, error) {
 	default:
 		return netip.AddrPort{}, fmt.Errorf("unexpected address type %T", addr)
 	}
-}
-
-func (e *Engine) splice(pair *connPair, cleanup func()) {
-	e.wg.Add(1)
-	go func() {
-		defer e.wg.Done()
-		done := make(chan struct{}, 2)
-		copyOne := func(destination, source net.Conn) {
-			_, _ = io.Copy(destination, source)
-			done <- struct{}{}
-		}
-		go copyOne(pair.left, pair.right)
-		go copyOne(pair.right, pair.left)
-		<-done
-		pair.close()
-		<-done
-		cleanup()
-	}()
 }

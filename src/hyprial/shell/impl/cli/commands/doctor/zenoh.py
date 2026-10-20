@@ -18,6 +18,24 @@ from hyprial.shell.impl.cli.commands.common.support import JsonObject
 _ZENOH_REBUILD_WARN_AFTER_MS = 60_000
 
 
+def _metrics(result: JsonObject, base: dict[str, object]) -> dict[str, object]:
+    metrics = dict(base)
+    forwarding = result.get("forwarding")
+    if not isinstance(forwarding, dict):
+        metrics["connectionTelemetry"] = {
+            "state": "unavailable",
+            "reason": "forwarding-absent",
+        }
+    else:
+        telemetry = forwarding.get("connectionTelemetry")
+        metrics["connectionTelemetry"] = (
+            telemetry
+            if isinstance(telemetry, dict)
+            else {"state": "unavailable", "reason": "capability-absent"}
+        )
+    return metrics
+
+
 def _zenoh_doctor_check(result: JsonObject) -> JsonObject:
     """Check the running daemon's explicit Zenoh transport endpoints.
 
@@ -52,7 +70,7 @@ def _zenoh_doctor_check(result: JsonObject) -> JsonObject:
                 "name": "zenoh",
                 "status": "fail",
                 "detail": detail,
-                "metrics": session,
+                "metrics": _metrics(result, session),
                 "action": {
                     "command": (
                         "grep 'zenoh.session' "
@@ -74,7 +92,7 @@ def _zenoh_doctor_check(result: JsonObject) -> JsonObject:
                         "the Zenoh session reports a rebuild without a start "
                         "time; re-run doctor, or inspect the rebuild log"
                     ),
-                    "metrics": session,
+                    "metrics": _metrics(result, session),
                 }
             age_ms = max(0, int(time.time() * 1000) - since)
             seconds = age_ms / 1000
@@ -86,7 +104,7 @@ def _zenoh_doctor_check(result: JsonObject) -> JsonObject:
                         f"rebuild in flight for {seconds:.1f}s; declarations "
                         "and publishes resume on the new session"
                     ),
-                    "metrics": session,
+                    "metrics": _metrics(result, session),
                 }
             return {
                 "name": "zenoh",
@@ -96,7 +114,7 @@ def _zenoh_doctor_check(result: JsonObject) -> JsonObject:
                     f"(threshold {_ZENOH_REBUILD_WARN_AFTER_MS / 1000:.0f}s); "
                     "the rebuild may be stuck"
                 ),
-                "metrics": session,
+                "metrics": _metrics(result, session),
                 "action": {
                     "command": (
                         "grep 'zenoh.session' "
@@ -138,5 +156,7 @@ def _zenoh_doctor_check(result: JsonObject) -> JsonObject:
             "reachable -- actual peer connectivity must be proven by a real "
             "send/ack"
         ),
-        "metrics": {"listen": list(listen), "connect": list(connect)},
+        "metrics": _metrics(
+            result, {"listen": list(listen), "connect": list(connect)}
+        ),
     }
