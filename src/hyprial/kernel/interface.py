@@ -238,6 +238,10 @@ from hyprial.kernel.impl.primitives.duration import (
     parse_duration,
 )
 from hyprial.kernel.impl.primitives.node_identity import resolve_node_id
+from hyprial.kernel.impl.primitives.outbound import (
+    user_agent,
+    with_user_agent,
+)
 from hyprial.kernel.impl.primitives.uri import (
     ADAPTER_URI_PREFIX,
     agent_uri_actor,
@@ -484,6 +488,8 @@ __all__ = [
     "usage_refreshed_payload",
     "unlock",
     "uri",
+    "user_agent",
+    "with_user_agent",
     "uri_scheme",
     "windows_process_identity",
     "WORK_NODE",

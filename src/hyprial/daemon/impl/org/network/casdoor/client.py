@@ -24,9 +24,14 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from hyprial.kernel import user_agent, with_user_agent
+
 CASDOOR_ORGANIZATION = "hyprial"
 REQUEST_TIMEOUT_SECONDS = 15.0
 _TOKEN_MARGIN_SECONDS = 120.0
+USER_AGENT = user_agent("daemon")
+"""Sent on every call: the Cloudflare edge in front of the issuer rejects
+urllib's default ``Python-urllib`` agent with 403 / error code 1010."""
 _NOT_A_MEMBER_MSG = "the user is not a member of the group"
 _CREDENTIAL_KEYS = (
     "CASDOOR_GROUP_SYNC_ENDPOINT",
@@ -140,8 +145,9 @@ def _urllib_transport(
 ) -> tuple[int, Any]:
     """One request, no proxy (the endpoint is a tailnet host), 15 s ceiling."""
 
+    request_headers = with_user_agent(headers, USER_AGENT)
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    request = urllib.request.Request(url, data=body, headers=dict(headers), method=method)
+    request = urllib.request.Request(url, data=body, headers=request_headers, method=method)
     try:
         with opener.open(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
             status, payload = response.status, response.read()

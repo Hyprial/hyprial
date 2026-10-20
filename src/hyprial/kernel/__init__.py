@@ -196,6 +196,8 @@ from hyprial.kernel.interface import (
     unlock as unlock,
     uri as uri,
     uri_scheme as uri_scheme,
+    user_agent as user_agent,
+    with_user_agent as with_user_agent,
     usage_refreshed_payload as usage_refreshed_payload,
     windows_process_identity as windows_process_identity,
     WORK_NODE as WORK_NODE,

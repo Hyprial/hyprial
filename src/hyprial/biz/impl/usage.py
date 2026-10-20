@@ -40,11 +40,14 @@ from pathlib import Path
 from typing import Any, Callable
 
 from hyprial.kernel import capped_exponential
+from hyprial.kernel import user_agent, with_user_agent
 
 JsonObject = dict[str, Any]
 
 # Allen, 2026-09-17: 「额度缓存每1800秒（30分钟）刷新一次即可」.  The quota
 # watchdog (hyprial.quota_watchdog) evaluates after each refresh.
+_USER_AGENT = user_agent("daemon")
+
 REFRESH_INTERVAL_SECONDS = 1800.0
 HTTP_TIMEOUT_SECONDS = 10.0
 # Two refresh intervals: a reading is stale only once a refresh was missed.
@@ -98,7 +101,7 @@ Fetcher = Callable[[str, str, float], JsonObject]
 
 def _http_get_json(url: str, token: str, timeout: float) -> JsonObject:
     request = urllib.request.Request(
-        url, headers={"Authorization": f"Bearer {token}"}
+        url, headers=with_user_agent({"Authorization": f"Bearer {token}"}, _USER_AGENT)
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:
         body = json.load(response)

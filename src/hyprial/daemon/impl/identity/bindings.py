@@ -40,6 +40,8 @@ from hyprial.kernel import (
     IDENTITY_BINDING_UNKNOWN_KID_REFRESH_INTERVAL_SECONDS,
     atomic_json_write,
     capped_exponential,
+    user_agent,
+    with_user_agent,
 )
 
 
@@ -67,6 +69,7 @@ _ROW_KEYS = frozenset({"user", "larkUnionId", "proof", "publishedAt"})
 _CACHE_ROW_KEYS = frozenset({"user", "userKey", "unionId", "issuedAtMs"})
 ORG_BINDING_CACHE_FILENAME = "verified-org-bindings.json"
 _HTTP_TIMEOUT_S = DISCOVERY_TIMEOUT_SECONDS
+_USER_AGENT = user_agent("daemon")
 
 
 def _decode_segment(value: str) -> bytes:
@@ -145,7 +148,10 @@ class OrgBindingSource:
         return self._next_recheck_at
 
     def _request_json(self, url: str) -> Any:
-        request = urllib.request.Request(url, headers={"Accept": "application/json"})
+        request = urllib.request.Request(
+            url,
+            headers=with_user_agent({"Accept": "application/json"}, _USER_AGENT),
+        )
         open_url, _route = url_opener(follow_redirects=False)
         try:
             with open_url(request, timeout=_HTTP_TIMEOUT_S) as response:

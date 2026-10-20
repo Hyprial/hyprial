@@ -25,6 +25,7 @@ from typing import Any
 from uuid import uuid4
 
 from hyprial.kernel import lock_exclusive, unlock
+from hyprial.kernel import user_agent, with_user_agent
 from hyprial.daemon.impl.adapters.lark.contracts.endpoint import lark_base_url
 
 JsonObject = dict[str, Any]
@@ -52,6 +53,8 @@ class LarkCapability:
     def scope_groups(self) -> tuple[tuple[str, ...], ...]:
         return (self.any_of, *self.all_of_any)
 
+
+_USER_AGENT = user_agent("daemon")
 
 LARK_GATEWAY_CAPABILITIES = (
     LarkCapability(
@@ -442,7 +445,10 @@ class LarkScopeClient:
             headers["authorization"] = f"Bearer {token}"
         encoded = json.dumps(body).encode() if body is not None else None
         request = urllib.request.Request(
-            self._origin + path, data=encoded, headers=headers, method=method
+            self._origin + path,
+            data=encoded,
+            headers=with_user_agent(headers, _USER_AGENT),
+            method=method,
         )
         try:
             with urllib.request.urlopen(request, timeout=15) as response:
