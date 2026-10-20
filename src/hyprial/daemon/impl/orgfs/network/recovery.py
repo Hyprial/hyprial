@@ -11,7 +11,6 @@ import json
 
 from threading import Event
 
-import time
 
 from typing import TYPE_CHECKING
 
@@ -33,7 +32,7 @@ if TYPE_CHECKING:
     pass
 
 
-from hyprial.daemon.impl.orgfs.network.protocol import ORGFS_BLOB_FETCH_QUEUE_LIMIT, ORGFS_LOG_RANGE_LIMIT, ORGFS_PROJECTION_FAILURE_ATTEMPT_BUDGET, ORGFS_SCHEDULED_SYNC_ATTEMPT_SECONDS, ORGFS_SCHEDULED_SYNC_BUDGET_SECONDS, ORGFS_SYNC_QUEUE_LIMIT, ORGFS_SYNC_RETRY_BACKOFF_SECONDS, _decode_update_header
+from hyprial.daemon.impl.orgfs.network.protocol import ORGFS_BLOB_FETCH_QUEUE_LIMIT, ORGFS_LOG_RANGE_LIMIT, ORGFS_PROJECTION_FAILURE_ATTEMPT_BUDGET, ORGFS_SYNC_RETRY_BACKOFF_SECONDS, _decode_update_header
 
 class MeshRecovery:
     """Responsibility methods on the sole OrgFsMesh state host.
@@ -753,40 +752,6 @@ class MeshRecovery:
             waiter.set()
 
 
-    def schedule_sync_from(self, supplier: str) -> bool:
-        """F6: coalesce one bounded anti-entropy job per live peer."""
-
-        dropped_count: int | None = None
-        with self._worker_lock:
-            if self._closed:
-                return False
-            if supplier in self._sync_pending or supplier in self._sync_active:
-                rerun_added = supplier not in self._sync_rerun
-                self._sync_rerun.add(supplier)
-                return rerun_added
-            if len(self._sync_pending) >= ORGFS_SYNC_QUEUE_LIMIT:
-                self._sync_dropped += 1
-                dropped_count = self._sync_dropped
-            else:
-                self._sync_pending.add(supplier)
-        if dropped_count is not None:
-            self._log(
-                "warn",
-                "orgfs.sync.dropped",
-                reason="queue-full",
-                supplier=supplier,
-                droppedCount=dropped_count,
-                queueDepth=ORGFS_SYNC_QUEUE_LIMIT,
-                queueLimit=ORGFS_SYNC_QUEUE_LIMIT,
-            )
-            return False
-        if not self._submit_worker(self._run_scheduled_sync, supplier):
-            with self._worker_lock:
-                self._sync_pending.discard(supplier)
-            return False
-        return True
-
-
     def _submit_worker(self, operation: Callable[[str], object], key: str) -> bool:
         with self._worker_lock:
             if self._closed:
@@ -803,69 +768,6 @@ class MeshRecovery:
     def _worker_finished(self, future: Future[object]) -> None:
         with self._worker_lock:
             self._worker_futures.discard(future)
-
-
-    def _run_scheduled_sync(self, supplier: str) -> None:
-        def run_once() -> None:
-            deadline = time.monotonic() + ORGFS_SCHEDULED_SYNC_BUDGET_SECONDS
-            delays = (0.0, *ORGFS_SYNC_RETRY_BACKOFF_SECONDS)
-            for attempt, delay in enumerate(delays, start=1):
-                if delay:
-                    time.sleep(delay)
-                with self._worker_lock:
-                    if self._closed:
-                        return
-                if not self._supplier_allowed(supplier):
-                    return
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    return
-                try:
-                    self.sync_from(
-                        supplier,
-                        timeout=min(ORGFS_SCHEDULED_SYNC_ATTEMPT_SECONDS, remaining),
-                        deadline_monotonic=deadline,
-                    )
-                    return
-                except Exception as exc:  # noqa: BLE001 - best-effort lane
-                    # A non-member supplier never becomes one inside this
-                    # budget; retrying only burns the sync window.
-                    member_refusal = (
-                        getattr(exc, "details", None) or {}
-                    ).get("reason") == "supplier-not-member"
-                    retry_scheduled = (
-                        attempt < len(delays)
-                        and not member_refusal
-                        and self._supplier_allowed(supplier)
-                        and time.monotonic() + delays[attempt] < deadline
-                    )
-                    self._log(
-                        "warn",
-                        "orgfs.sync.failed",
-                        reason=getattr(exc, "code", "sync-failed"),
-                        supplier=supplier,
-                        attempt=attempt,
-                        retryScheduled=retry_scheduled,
-                    )
-                    if not retry_scheduled:
-                        return
-
-        resubmit = False
-        try:
-            for run in range(2):
-                run_once()
-                with self._worker_lock:
-                    if run == 0 and supplier in self._sync_rerun:
-                        self._sync_rerun.discard(supplier)
-                        continue
-                break
-        finally:
-            with self._worker_lock:
-                self._sync_pending.discard(supplier)
-                resubmit = supplier in self._sync_rerun and not self._closed
-                self._sync_rerun.discard(supplier)
-        if resubmit:
-            self.schedule_sync_from(supplier)
 
 
     def _defer_replica_blob(self, digest: str, *, supplier: str) -> None:

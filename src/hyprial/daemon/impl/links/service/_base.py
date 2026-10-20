@@ -36,6 +36,8 @@ TTL_EXPIRED = "TTL_EXPIRED"
 _DRAINED_ID_LIMIT = 32
 #: Bound on one peer's task-binding set.
 _MAX_TASK_IDS = 4096
+#: ``link.bypass_admitted`` rate limit per (actor, peer, reason).
+BYPASS_LOG_INTERVAL_MS = 60_000
 
 
 

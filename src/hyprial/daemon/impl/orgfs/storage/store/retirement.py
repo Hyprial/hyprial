@@ -47,8 +47,17 @@ class StoreRetirement:
                 raise StoreError(
                     "invalid-argument", "replacement bytes do not match snapshotId"
                 )
+            if self._db.execute(
+                "SELECT 1 FROM commits WHERE doc_id = ? LIMIT 1", (new_doc_id,)
+            ).fetchone() is not None:
+                raise StoreError(
+                    "invalid-argument",
+                    "replacement target already has history",
+                    doc_id=new_doc_id,
+                )
             replacement = self._new_doc(new_doc_id)
             replacement.apply_update(snapshot_bytes)
+            self._invalidate_doc_caches(new_doc_id)
             self._docs[new_doc_id] = replacement
             if author is not None:
                 writer = self._writer_for(author, actor)
@@ -100,6 +109,7 @@ class StoreRetirement:
                         ),
                     )
             self._docs.pop(old_doc_id, None)
+            self._invalidate_doc_caches(old_doc_id)
             self._persist_all_documents()
             if old_doc_id.startswith("doc-"):
                 self._doc_path(old_doc_id).unlink(missing_ok=True)
@@ -179,6 +189,7 @@ class StoreRetirement:
             # Drop the live copy too, so no later checkpoint can rewrite the
             # retired document's state file from memory.
             self._docs.pop(old_doc_id, None)
+            self._invalidate_doc_caches(old_doc_id)
             self._dirty_docs.discard(old_doc_id)
             if old_doc_id.startswith("doc-"):
                 self._doc_path(old_doc_id).unlink(missing_ok=True)
@@ -193,6 +204,7 @@ class StoreRetirement:
             # VACUUM may renumber rowids of a table without an INTEGER PRIMARY
             # KEY, so the incremental meta-journal cursor is no longer valid.
             self._meta_journal_scan = None
+            self._reset_history_indexes()
             self._db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             return tuple(inventory["updateBlobs"])
 

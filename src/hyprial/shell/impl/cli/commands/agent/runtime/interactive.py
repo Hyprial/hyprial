@@ -17,7 +17,9 @@ import re
 import signal
 import subprocess
 
+
 from hyprial.shell.impl.cli.commands.common.support import JsonObject, _append_warning
+
 def _plugin_skip_warnings(skipped: Sequence[Any]) -> list[JsonObject]:
     return [
         {

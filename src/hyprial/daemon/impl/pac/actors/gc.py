@@ -16,6 +16,7 @@ from hyprial.kernel import (
     PAC_GC_JITTER_RATIO,
     PAC_GC_MAX_REMOVALS_PER_PASS,
 )
+from hyprial.daemon.impl.pac.actors.coordinator import worker_in_use
 from hyprial.daemon.impl.pac.storage.store import PacGraphStore, default_database_path
 from hyprial.kernel import parse_agent_uri
 
@@ -236,7 +237,11 @@ class PacGc:
                             if agent.pinned_adapters:
                                 self._skip(skipped, "pinned")
                                 continue
-                            if self.runtime.observe(actor_name).present:
+                            observation = self.runtime.observe(actor_name)
+                            if worker_in_use(observation):
+                                self._skip(skipped, "worker-in-use")
+                                continue
+                            if observation.present:
                                 self._skip(skipped, "online")
                                 continue
                             candidates.append(
@@ -312,7 +317,7 @@ class PacGc:
                     if result.get("destroyed") is True:
                         removed += 1
                     else:
-                        skipped["destroy-noop"] += 1
+                        skipped[str(result.get("reason") or "destroy-noop")] += 1
                 except Exception as error:  # noqa: BLE001 - isolate one removal
                     errors.append(
                         {

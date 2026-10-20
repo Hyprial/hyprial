@@ -125,6 +125,7 @@ class AgentLiveness:
         node_id: str,
         worker_running: Callable[..., bool | None] | None = None,
         interactive_actors: Callable[[], frozenset[str]] | None = None,
+        interactive_process_alive: Callable[[str], bool | None] | None = None,
         clock: Callable[[], float] = time.monotonic,
         ttl_seconds: float = AGENT_HEARTBEAT_TTL_SECONDS,
     ) -> None:
@@ -139,6 +140,9 @@ class AgentLiveness:
             lambda _actor, _desired_state=None: None
         )
         self._interactive_actors = interactive_actors or (lambda: frozenset())
+        self._interactive_process_alive = interactive_process_alive or (
+            lambda _actor: None
+        )
         self._bindings: dict[str, AgentBinding] = {}
         self._heartbeats: dict[str, float] = {}
 
@@ -252,6 +256,9 @@ class AgentLiveness:
         if actor in self._interactive_actors() or (
             binding is not None and binding.runtime == RUNTIME_INTERACTIVE
         ):
+            alive = self._interactive_process_alive(actor)
+            if alive is False:
+                return False
             return self.heartbeat_fresh(actor)
         return None
 

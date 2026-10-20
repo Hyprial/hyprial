@@ -10,7 +10,7 @@ from uuid import NAMESPACE_URL, uuid5
 # flag only at its explicit user/model-facing fetch boundary.
 SESSION_FETCH_PARAM = "fetched"
 SESSION_CARRIER_SOURCES = frozenset(
-    {"claude-channel", "pi-extension", "codex-app-server"}
+    {"claude-channel", "dsh-channel", "pi-extension", "codex-app-server"}
 )
 
 

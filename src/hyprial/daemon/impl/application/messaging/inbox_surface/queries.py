@@ -119,6 +119,9 @@ class _MessageQueriesMixin:
         Production delivery uses BlockingFailureAuthority and its captured
         incarnation; this direct entry resolves the current incarnation at call.
         """
+        # Same closed map as BlockingFailureAuthority._reason: a time-bounded
+        # rate limit (``PROVIDER_RATE_LIMITED``) is terminal for its own
+        # delivery but never an agent block.
         reason = {
             "PROVIDER_USAGE_LIMIT": "provider-quota",
             "PROVIDER_AUTHENTICATION_FAILED": "credential-invalid",

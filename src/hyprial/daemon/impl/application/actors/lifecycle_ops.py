@@ -8,6 +8,7 @@ from dataclasses import replace
 from typing import Any, TYPE_CHECKING
 from uuid import uuid4
 from hyprial.identity import (
+    RUNTIME_INTERACTIVE,
     AgentError,
     HandoverNotice,
 )
@@ -430,6 +431,25 @@ class _LifecycleOpsMixin:
             "lastError": manager.last_error,
         }
 
+    def _compensate_replace(
+        self, actor_uri: str, spec: HarnessLaunchSpec
+    ) -> None:
+        """Best effort: remove a failed switch's headless intent/binding."""
+
+        try:
+            self.desired_state.remove_harness(spec.harness, spec.name)
+        except Exception as error:  # noqa: BLE001 - preserve the start failure
+            self._log(
+                "warn",
+                "agents",
+                "agent.switch.compensation_failed",
+                actor=actor_uri,
+                harness=spec.harness,
+                name=spec.name,
+                detail=str(error)[:300],
+            )
+        self._agent_liveness.release(actor_uri)
+
     def _ipc_lifecycle_start(self, method, params) -> Any:
         resume_preflight = method == "lifecycle.resume.preflight"
         is_smolvm = method == "lifecycle.start-smolvm"
@@ -472,6 +492,21 @@ class _LifecycleOpsMixin:
                 "sessionRef": resume_ref,
                 "agentSnapshot": existing_agent.to_json(),
             }
+        if "sessionRef" not in params:
+            # A managed restart reuses the desired spec but lifecycle.start
+            # rebuilds it from the IPC payload.  Keep a session ref learned
+            # from the running connector; only the caller can explicitly
+            # replace it (card 708).
+            prior = next(
+                (
+                    item
+                    for item in self.desired_state.load().harnesses
+                    if item.harness == spec.harness and item.name == spec.name
+                ),
+                None,
+            )
+            if prior is not None and prior.session_ref is not None:
+                spec = replace(spec, session_ref=prior.session_ref)
         if is_smolvm:
             from hyprial.daemon.impl.harnesses.smolvm_runtime import validate_materials
             assert spec.execution_runtime is not None
@@ -501,6 +536,12 @@ class _LifecycleOpsMixin:
         # daemon-restart path; a person who asked for a conversation must
         # get that conversation or a refusal, never a fresh session.
         resume_ref = spec.session_ref if "sessionRef" in params else None
+        if params.get("replaceInteractive") is True and resume_ref is None:
+            raise DaemonRequestError(
+                ipc_errors.INVALID_ARGUMENT,
+                "replaceInteractive requires sessionRef; a switch must preserve "
+                "the conversation",
+            )
         if resume_ref is not None:
             self._require_resumable_session(spec, resume_ref)
         actor_uri = self._canonical_harness_uri(spec.name, spec)
@@ -533,6 +574,29 @@ class _LifecycleOpsMixin:
                 entity_token=agent_for_restore.entity_token,
                 suppressed=False,
             )
+        replaced_interactive = False
+        if params.get("replaceInteractive") is True:
+            incumbent = self._agent_liveness.live_binding(actor_uri)
+            if incumbent is not None and incumbent.runtime == RUNTIME_INTERACTIVE:
+                # The caller explicitly asked for this actor's interactive
+                # connector to step aside.  The daemon proves the carrier's
+                # PID/birth fence, signals it, and waits for exit before the
+                # route is unregistered; the same sessionRef then follows into
+                # the headless start below.
+                self._stop_agent_runtime(
+                    actor_uri, keep=None, terminate_interactive=True
+                )
+                self._agent_liveness.release(actor_uri)
+                replaced_interactive = True
+                self._log(
+                    "info",
+                    "agents",
+                    "agent.binding.replaced",
+                    actor=actor_uri,
+                    previousRuntime=incumbent.runtime,
+                    previousSessionId=incumbent.session_id,
+                    harness=harness,
+                )
         try:
             result = self._run_lifecycle_operation(
                 LifecycleOperation.create(
@@ -541,7 +605,10 @@ class _LifecycleOpsMixin:
                 )
             )
         except DaemonRequestError as start_error:
+            if replaced_interactive:
+                self._compensate_replace(actor_uri, spec)
             raise self._start_failure_with_harness_error(spec, start_error) from start_error
+        established_ref = resume_ref
         if resume_ref is not None:
             # The create operation has settled; readiness is expected to
             # be there already, so the check waits one margin, not a
@@ -550,10 +617,12 @@ class _LifecycleOpsMixin:
             # which removes the row the refusal lives on.
             last_error = self._harness_last_error(spec)
             try:
-                self._verify_started_resume(
+                established_ref = self._verify_started_resume(
                     spec, resume_ref, timeout=LIFECYCLE_WAIT_MARGIN_SECONDS
                 )
             except DaemonRequestError as resume_error:
+                if replaced_interactive:
+                    self._compensate_replace(actor_uri, spec)
                 raise self._start_failure_with_harness_error(
                     spec, resume_error, last_error=last_error
                 ) from resume_error
@@ -575,7 +644,11 @@ class _LifecycleOpsMixin:
             "operationId": operation_id,
             "changed": bool(result.completed_effects),
             "actor": actor_uri,
-            **({"sessionRef": resume_ref} if resume_ref is not None else {}),
+            **(
+                {"sessionRef": established_ref}
+                if resume_ref is not None
+                else {}
+            ),
             **(
                 {"harnessHandover": handover.to_json()}
                 if handover is not None

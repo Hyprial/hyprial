@@ -1,6 +1,12 @@
 """Hold re-evaluation, task bindings and the apply merge.
 
 Internal module of ``hyprial.daemon.impl.links.service`` (spec §9.5).
+
+Under the emergency switch ``HYPRIAL_LINKS_BYPASS`` every live held row is
+released on the next pass (no queue-head ordering, a would-be ``Mint`` still
+stages its reference), and single-sided references are not retracted: a
+bypassed send is delivered rather than held, so "no held mail" no longer
+means "nobody is waiting on this reference".
 """
 
 from __future__ import annotations
@@ -165,7 +171,7 @@ class HoldsMixin:
                     state = self._state(actor)
                     if message_id not in state.held:
                         continue
-                    if not row.reply_to:
+                    if not row.reply_to and not self._bypass:
                         head = self._queue_head_excluding(state, row, released_here)
                         if head is not None:
                             continue
@@ -183,6 +189,12 @@ class HoldsMixin:
                         fail[message_id] = error.code
                         continue
                 if isinstance(decision, Allow):
+                    if decision.mint:
+                        self._mint(actor, row.target, now_ms, lifecycle="regular")
+                    if decision.bypassed:
+                        self._bypass_note(
+                            actor, row.target, decision.bypassed, direction="release"
+                        )
                     release.append(message_id)
                     released_here.add(message_id)
                     tentative.append(
@@ -336,6 +348,8 @@ class HoldsMixin:
                 )
 
     def _retract_single_sided(self, local: Sequence[str], now_ms: int) -> None:
+        if self._bypass:
+            return
         for actor in local:
             st = self._states.get(actor)
             if st is None:

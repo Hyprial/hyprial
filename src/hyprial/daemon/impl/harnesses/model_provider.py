@@ -192,6 +192,23 @@ def validate_model_selection(
         )
 
 
+def _pi_auth_key(root: Path, provider: str = DEEPSEEK_PROVIDER) -> str | None:
+    """The API key for ``provider`` in one Pi native root, or None.
+
+    One reader for every Pi credential source (the legacy HOME fallback and
+    the agent's own native root), so the two cannot drift into disagreeing
+    about what "a configured pasted credential" is.
+    """
+
+    try:
+        value = json.loads((Path(root) / "auth.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    entry = value.get(provider) if isinstance(value, dict) else None
+    stored = entry.get("key") if isinstance(entry, dict) else None
+    return stored.strip() if isinstance(stored, str) and stored.strip() else None
+
+
 def require_deepseek_key(
     environment: Mapping[str, str], *, allow_legacy_home_fallback: bool = True
 ) -> str:
@@ -206,22 +223,143 @@ def require_deepseek_key(
             "agent-home P2 never falls back to Pi auth under HOME"
         )
     home = Path(environment.get("HOME") or Path.home())
-    for path in (
-        home / ".pi" / "agent" / "auth.json",
-        home / "my-pi-setup" / "agent" / "auth.json",
-    ):
-        try:
-            value = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        entry = value.get(DEEPSEEK_PROVIDER) if isinstance(value, dict) else None
-        stored = entry.get("key") if isinstance(entry, dict) else None
-        if isinstance(stored, str) and stored.strip():
-            return stored.strip()
+    for root in (home / ".pi" / "agent", home / "my-pi-setup" / "agent"):
+        stored = _pi_auth_key(root)
+        if stored:
+            return stored
     raise ModelProviderError(
         "provider 'deepseek' requires DEEPSEEK_API_KEY or a deepseek API-key "
         "entry in Pi's auth.json"
     )
+
+
+#: The settings file pi projects beside a launch, plus the trusted project's
+#: own settings directory.  Both are part of pi's effective provider default.
+PI_SETTINGS_NAME = "settings.json"
+PI_PROJECT_SETTINGS_DIR = ".pi"
+
+
+def _pi_settings_defaults(root: Path) -> dict[str, str]:
+    """The ``defaultProvider``/``defaultModel`` in one pi settings file."""
+
+    try:
+        body = json.loads(
+            (Path(root) / PI_SETTINGS_NAME).read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(body, dict):
+        return {}
+    defaults: dict[str, str] = {}
+    for key in ("defaultProvider", "defaultModel"):
+        value = body.get(key)
+        if isinstance(value, str) and value.strip():
+            defaults[key] = value.strip()
+    return defaults
+
+
+def pi_effective_model_selection(
+    spec: HarnessLaunchSpec, *, settings_root: Path | None = None
+) -> tuple[str | None, str | None]:
+    """The provider/model the controlled loader will actually use.
+
+    Precedence mirrors the loader exactly: the launch's explicit selection
+    first, otherwise pi's effective settings -- the projected global settings
+    merged with the trusted project's (project wins).  One resolution here
+    keeps the credential boundary from disagreeing with the loader about
+    which vendor a launch is about to bill.
+    """
+
+    provider = spec.model_provider
+    model = spec.model
+    if provider is not None and model is not None:
+        return provider, model
+    defaults: dict[str, str] = {}
+    if settings_root is not None:
+        defaults.update(_pi_settings_defaults(Path(settings_root)))
+    if spec.cwd:
+        defaults.update(
+            _pi_settings_defaults(Path(spec.cwd) / PI_PROJECT_SETTINGS_DIR)
+        )
+    if provider is None:
+        provider = defaults.get("defaultProvider")
+    if model is None:
+        model = defaults.get("defaultModel")
+    return provider, model
+
+
+def pi_provider_environment(
+    spec: HarnessLaunchSpec,
+    environment: Mapping[str, str],
+    *,
+    native_root: Path | None = None,
+    settings_root: Path | None = None,
+    allow_legacy_home_fallback: bool = True,
+) -> dict[str, str]:
+    """The per-process credential delta for one Pi launch.
+
+    Pi is the only managed harness whose provider credential is not consumed
+    from an environment variable exclusively, so its launch boundary had no
+    provider step while claude/codex had one.  This is that step, and it is
+    the one implementation -- it reuses :func:`require_deepseek_key` rather
+    than restating the env-then-auth.json preference.
+
+    The credential source stays the per-agent authorization: an agent secret
+    granted as ``DEEPSEEK_API_KEY``.  Resolution order:
+
+    * the launch environment -- the granted agent secret (the only source a
+      P2 agent may use), or, on a legacy launch, an operator-exported key;
+    * the agent's own Pi native root: pi's controlled loader already reads
+      ``nativeRoot/auth.json``, so an environment copy would only shadow the
+      link; this returns ``{}``;
+    * ``allow_legacy_home_fallback`` (legacy launches only): the operator's
+      ``HOME/.pi/agent/auth.json``, exactly what pi itself would read before
+      agent-home P2 existed.
+
+    A P2 launch with none of these refuses here: a secretless pi start is a
+    permanent failure, and letting it run means pi spends its first turns
+    failing ``PROVIDER_AUTHENTICATION_FAILED`` until the daemon blocks the
+    agent as credential-invalid.  Permission to use the operator's credential
+    is never invented here -- a P2 agent must be granted one explicitly.
+
+    The check runs against the EFFECTIVE provider: a launch that names no
+    provider still selects one from the agent's own pi settings, and the
+    controlled loader would use that vendor.  Resolving it through
+    :func:`pi_effective_model_selection` keeps this boundary and the loader
+    from disagreeing about which vendor is about to be billed.
+    """
+
+    validate_model_selection(spec.harness, spec.model_provider, spec.model)
+    effective_provider, _effective_model = pi_effective_model_selection(
+        spec, settings_root=settings_root
+    )
+    if effective_provider in {None, "openai"}:
+        # Pi's built-in vendors authenticate from its own login state.
+        return {}
+    if effective_provider not in {DEEPSEEK_PROVIDER, None, "openai"}:
+        # Any other vendor is one of pi's own built-in catalog providers
+        # (kimi-coding, zai, ...): pi authenticates it from its own login
+        # state, exactly as it did before this seam existed.  Only the vendors
+        # hyprial names itself need a translated credential delta.
+        return {}
+    key = environment.get(DEEPSEEK_API_KEY_ENV, "").strip()
+    if not key and native_root is not None and _pi_auth_key(Path(native_root)):
+        return {}
+    if not key and allow_legacy_home_fallback:
+        try:
+            key = require_deepseek_key(
+                environment, allow_legacy_home_fallback=True
+            )
+        except ModelProviderError:
+            key = ""
+    if not key:
+        raise AgentProviderCredentialMissing(
+            "provider 'deepseek' requires an agent-owned DEEPSEEK_API_KEY; "
+            "grant one with 'hyprial agent secret grant <agent> ... "
+            "--environment-name DEEPSEEK_API_KEY' before starting pi, then "
+            "restart and unblock the agent"
+        )
+    return {DEEPSEEK_API_KEY_ENV: key}
 
 
 def require_hyprial_key(environment: Mapping[str, str]) -> str:

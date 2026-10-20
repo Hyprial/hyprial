@@ -10,11 +10,15 @@ from hyprial.identity import PacError, WORKFLOW_WORKER_RECEIPT_MISMATCH
 from hyprial.daemon.impl.pac.storage.journal  import append_event
 from hyprial.daemon.impl.pac.graphs.reactor  import PlannedNotification, planned_to_json
 from hyprial.daemon.impl.pac.storage.store  import NodeRow
+from hyprial.daemon.impl.pac.actors.coordinator.core import OPEN_CLEANUP
 from hyprial.daemon.impl.pac.actors.coordinator.types import (
     CLEANUP_ATTEMPT_LIMIT,
     LaunchSpec,
     RuntimeObservation,
     WorkerCleanupComplete,
+    WORKER_IN_USE,
+    cleanup_stop_operation,
+    worker_in_use,
 )
 
 
@@ -26,7 +30,9 @@ class _CoordinatorUp:
             return
         cleanup = self.store.workflow_worker_cleanup_intent(graph_id, node_id)
         receipt = self.store.workflow_worker_receipt(graph_id, node_id)
-        if cleanup is not None and cleanup["state"] in {"complete", "attention"}:
+        if cleanup is None and receipt is not None and graph["closed_at"] is not None:
+            cleanup = self._backfill_cleanup_intent(graph_id, receipt)
+        if cleanup is not None and cleanup["state"] not in OPEN_CLEANUP:
             return
         activation = self._activation(graph_id, node_id)
         if activation is None:
@@ -86,7 +92,23 @@ class _CoordinatorUp:
                 },
             )
             return
+        in_use = worker_in_use(observation)
+        if (
+            cleanup is not None
+            and in_use
+            and (observation.present or observation.retirement_pending)
+        ):
+            self._cleanup_attention(
+                graph_id,
+                node,
+                cleanup,
+                WORKER_IN_USE,
+                {**self._observation_document(observation), "inUse": list(in_use)},
+                count_attempt=False,
+            )
+            return
         marker = activation["identity_marker"]
+        stop_marker: str | None = None
         if (
             cleanup is not None
             and (observation.present or observation.retirement_pending)
@@ -106,9 +128,19 @@ class _CoordinatorUp:
                 self._observation_document(observation),
             )
             return
+        unproven = observation.identity_marker != marker or (
+            cleanup is not None and marker is None
+        )
         if (
-            observation.present or observation.retirement_pending
-        ) and observation.identity_marker != marker:
+            (observation.present or observation.retirement_pending)
+            and unproven
+            and cleanup is not None
+            and self._own_incarnation(graph_id, node_id, receipt, observation)
+        ):
+            if observation.identity_marker is not None:
+                self._adopt_receipt_token(graph_id, node_id, observation)
+            stop_marker = observation.identity_marker or ""
+        elif (observation.present or observation.retirement_pending) and unproven:
             if cleanup is not None:
                 self._cleanup_attention(
                     graph_id,
@@ -140,7 +172,12 @@ class _CoordinatorUp:
             return
         if activation["desired"] == "down":
             self._reconcile_down(
-                graph_id, node, activation, observation, cleanup=cleanup
+                graph_id,
+                node,
+                activation,
+                observation,
+                cleanup=cleanup,
+                identity_marker=stop_marker,
             )
         else:
             self._reconcile_up(graph_id, node, activation, observation)
@@ -339,6 +376,7 @@ class _CoordinatorUp:
         observation: RuntimeObservation,
         *,
         cleanup: dict[str, Any] | None = None,
+        identity_marker: str | None = None,
     ) -> None:
         if activation["op"] == "done":
             if cleanup is not None:
@@ -371,8 +409,18 @@ class _CoordinatorUp:
                 observation = self.runtime.stop(
                     node.actor_name or "",
                     launch,
-                    operation_id=activation["operation_id"],
-                    identity_marker=activation["identity_marker"],
+                    operation_id=(
+                        activation["operation_id"]
+                        if cleanup is None
+                        else cleanup_stop_operation(
+                            activation["operation_id"], int(cleanup["attempts"])
+                        )
+                    ),
+                    identity_marker=(
+                        activation["identity_marker"]
+                        if identity_marker is None
+                        else identity_marker
+                    ),
                 )
             except Exception as error:  # noqa: BLE001 - durable cleanup outcome
                 if cleanup is None:
@@ -413,7 +461,7 @@ class _CoordinatorUp:
                 if (
                     current is None
                     or current["operation_id"] != cleanup["operation_id"]
-                    or current["state"] != "pending"
+                    or current["state"] not in OPEN_CLEANUP
                 ):
                     db.rollback()
                     return
@@ -447,6 +495,7 @@ class _CoordinatorUp:
                     refreshed,
                     "stop_timeout",
                     self._observation_document(observation),
+                    count_attempt=False,
                 )
                 return
         self._skip(
@@ -506,7 +555,7 @@ class _CoordinatorUp:
                 ).fetchone()
                 if (
                     cleanup_row is not None
-                    and cleanup_row["state"] == "pending"
+                    and cleanup_row["state"] in OPEN_CLEANUP
                     and cleanup_row["operation_id"] == cleanup["operation_id"]
                 ):
                     cleanup_record = self._complete_cleanup_row(

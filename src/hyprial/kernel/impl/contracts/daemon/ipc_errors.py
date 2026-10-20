@@ -286,6 +286,7 @@ TRANSFER_CUSTODY_UNAVAILABLE = "TRANSFER_CUSTODY_UNAVAILABLE"
 TRANSFER_PIN_CONFLICT = "TRANSFER_PIN_CONFLICT"
 TRANSFER_START_FAILED = "TRANSFER_START_FAILED"
 STRICT_RESUME_FAILED = "STRICT_RESUME_FAILED"
+INTERACTIVE_CARRIER_STOP_FAILED = "INTERACTIVE_CARRIER_STOP_FAILED"
 # Minted by lifecycle.start when a start asks to resume a session
 # (``sessionRef``) whose transcript the harness cannot find.  Refused BEFORE
 # anything starts: pi given an unknown --session-id silently begins a fresh
@@ -419,6 +420,17 @@ def transient_error_from_code(
     if registered is None:
         return None
     return registered(message, data)
+
+
+# Provider credential seeding (`agent provider login`).  These cross the IPC
+# boundary as ``error.code`` and are what the operator branches on when a
+# harness credential cannot be installed.  The first line is matched by a
+# term-lint rule, so rewording it makes that lint fire.
+PROVIDER_UNSUPPORTED = "PROVIDER_UNSUPPORTED"
+PROVIDER_SOURCE_MISSING = "PROVIDER_SOURCE_MISSING"
+PROVIDER_SOURCE_AMBIGUOUS = "PROVIDER_SOURCE_AMBIGUOUS"
+PROVIDER_UNSAFE_PATH = "PROVIDER_UNSAFE_PATH"
+PROVIDER_CREDENTIAL_EXISTS = "PROVIDER_CREDENTIAL_EXISTS"
 
 
 #: Every registered proto-facing code.  Membership is frozen by test; a

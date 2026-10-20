@@ -151,10 +151,18 @@ class PiPlan:
     skipped: tuple[SkippedPlugin, ...]
 
 
-def builtin_skill_dir() -> Path:
-    """The packaged hyprial usage skill, shipped with every install."""
+def builtin_skill_dirs() -> tuple[Path, ...]:
+    """Packaged skills shipped with every install, in stable order.
 
-    return Path(__file__).resolve().parents[2] / "skills" / "hyprial-ops"
+    Each directory under ``skills/`` that carries a ``SKILL.md`` is a skill the
+    product owns and injects. Adding a directory here is the whole of the
+    distribution step: it rides the wheel and every harness plan picks it up.
+    """
+
+    root = Path(__file__).resolve().parents[2] / "skills"
+    return tuple(
+        sorted(path for path in root.iterdir() if (path / "SKILL.md").is_file())
+    )
 
 
 def manifest_path(home: Path) -> Path:
@@ -272,7 +280,7 @@ def _parse_payload(raw: object, *, where: str, base: Path, kind: str) -> Path:
 def claude_plan(manifest: PluginManifest) -> ClaudePlan:
     servers: dict[str, dict[str, object]] = {}
     plugin_dirs: list[Path] = []
-    skill_dirs: list[Path] = [builtin_skill_dir()]
+    skill_dirs: list[Path] = list(builtin_skill_dirs())
     plugins, skipped = _plugins_for_harness(manifest, "claude")
     for plugin in plugins:
         if plugin.kind == "mcp":
@@ -303,7 +311,7 @@ def codex_plan(manifest: PluginManifest) -> CodexPlan:
 
 
 def pi_plan(manifest: PluginManifest) -> PiPlan:
-    skill_dirs: list[Path] = [builtin_skill_dir()]
+    skill_dirs: list[Path] = list(builtin_skill_dirs())
     extensions: list[Path] = []
     plugins, skipped = _plugins_for_harness(manifest, "pi")
     for plugin in plugins:
@@ -407,7 +415,7 @@ __all__ = [
     "PluginManifestError",
     "PluginSpec",
     "SkippedPlugin",
-    "builtin_skill_dir",
+    "builtin_skill_dirs",
     "claude_plan",
     "codex_plan",
     "load_manifest",

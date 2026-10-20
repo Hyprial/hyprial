@@ -11,6 +11,7 @@ from hyprial.shell.impl.cli.commands.common.services import get_services
 from hyprial.shell.impl.cli.commands.common.support import JsonObject
 
 from hyprial.shell.impl.cli.commands.agent.admin import agent_app
+from hyprial.shell.impl.cli.commands.agent.provider.commands import seed_new_agent
 
 
 @agent_app.command("create")
@@ -60,6 +61,12 @@ def agent_create(
     agent called 'pi-ds4', and it can run on claude. To move an existing agent
     to another harness, start it there; that rebinds the same agent rather
     than creating a new one, so it is not a name conflict.
+
+    Credentials: when a machine default is recorded ('hyprial agent provider
+    login <p> --default'), the new agent is seeded from this host's login of
+    that vendor CLI (owned by the daemon's logged-in user; revoke with 'hyprial
+    agent provider logout'). Otherwise the result and stderr say how to give it
+    one: that OAuth seed, or an API key via 'hyprial agent secret grant'.
     """
     services = get_services()
 
@@ -82,7 +89,17 @@ def agent_create(
             params["model"] = model
         if preferred_harness is not None:
             params["preferredHarness"] = preferred_harness
-        return services._daemon_request("agent.create", params)
+        created = services._daemon_request("agent.create", params)
+        if not isinstance(created, dict):
+            return created
+        seed = seed_new_agent(
+            services,
+            name,
+            created.get("providerDefault"),
+            json_output=json_output,
+            preferred_harness=preferred_harness,
+        )
+        return {**created, "providerSeed": seed}
 
     services._execute(operation, json_output=json_output)
 

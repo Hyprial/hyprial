@@ -27,6 +27,15 @@ def start(
     nickname: str | None = typer.Option(None, "--nickname"),
     cwd: Path | None = typer.Option(None, "--cwd"),
     headless: bool = typer.Option(False, "--headless"),
+    replace_interactive: bool = typer.Option(
+        False,
+        "--replace-interactive",
+        help=(
+            "With --headless, explicitly stop the same actor's interactive "
+            "connector before starting, then keep its --resume session id. "
+            "No process is killed by the caller."
+        ),
+    ),
     smolvm_spec: Path | None = typer.Option(None, "--smolvm-spec", help="Explicit local smolvm v1 spec for a P2 headless Codex worker; experimental support boundary."),
     tmux: bool = typer.Option(
         False,
@@ -34,6 +43,15 @@ def start(
         help=(
             "Run the interactive TUI inside a detached tmux session and "
             "return attach commands (interactive claude, pi, and codex)."
+        ),
+    ),
+    agent_preset: str | None = typer.Option(
+        None,
+        "--agent-preset",
+        help=(
+            "Interactive dsh only: the dsh-tui agent preset id this launch "
+            "boots (passed as the DSH_TUI_PRESET launch instruction); "
+            "defaults to standard."
         ),
     ),
     resume: str | None = typer.Option(
@@ -212,7 +230,7 @@ def start(
         resume_agent_before: JsonObject | None = None
         if resume is not None:
             if not (
-                (harness_kind in {"claude", "pi", "codex"} and not headless)
+                (harness_kind in {"claude", "pi", "codex", "dsh"} and not headless)
                 or (headless and harness_kind in {"claude", "pi", "codex"})
             ):
                 reason = (
@@ -231,6 +249,17 @@ def start(
                 )
             if harness_kind in {"pi", "codex"} and not headless:
                 resolved_cwd = _resolved_interactive_resume_cwd(name, cwd)
+        if replace_interactive and not headless:
+            raise services.CliError(
+                ipc_errors.INVALID_ARGUMENT,
+                "--replace-interactive is only valid with --headless",
+            )
+        if replace_interactive and resume is None:
+            raise services.CliError(
+                ipc_errors.INVALID_ARGUMENT,
+                "--replace-interactive requires --resume <session-id>; a switch "
+                "must preserve the conversation",
+            )
         if tmux and headless:
             raise services.CliError(
                 ipc_errors.INVALID_ARGUMENT, "--tmux cannot be combined with --headless"
@@ -240,6 +269,11 @@ def start(
                 "UNSUPPORTED_CAPABILITY",
                 "--tmux is currently only supported for interactive claude, "
                 "pi, and codex sessions",
+            )
+        if agent_preset is not None and (headless or harness_kind != "dsh"):
+            raise services.CliError(
+                ipc_errors.INVALID_ARGUMENT,
+                "--agent-preset is only supported for interactive dsh",
             )
         if not headless:
             from hyprial.daemon import (
@@ -251,6 +285,23 @@ def start(
             attach = declare(harness_kind, headless=False).get(
                 Capability.INTERACTIVE_ATTACH
             )
+            if (
+                attach is not None
+                and attach.level is SupportLevel.NATIVE
+                and attach.mechanism == "dsh_tui"
+            ):
+                return services._start_interactive_dsh(
+                    name=name,
+                    nickname=nickname,
+                    cwd=resolved_cwd,
+                    resume=resume,
+                    runtime_args=runtime_args,
+                    model_provider=model_provider,
+                    model=model,
+                    json_output=json_output,
+                    tmux=tmux,
+                    agent_preset=agent_preset,
+                )
             if (
                 attach is not None
                 and attach.level is SupportLevel.NATIVE
@@ -353,6 +404,8 @@ def start(
             params["modelProvider"] = model_provider
         if model is not None and harness_kind not in {"jev", "user-proxy"}:
             params["model"] = model
+        if replace_interactive:
+            params["replaceInteractive"] = True
         if resume is not None:
             # Headless resume: the daemon refuses a session it cannot find
             # (RESUME_SESSION_NOT_FOUND, before anything starts) and one that
@@ -405,7 +458,7 @@ def start(
         # (2026-09-14 production).  Same derivation as `down`; the three
         # waits are composed from one deadline, never chosen independently.
         try:
-            return services._daemon_request(
+            started = services._daemon_request(
                 (
                     "lifecycle.start-smolvm"
                     if execution_runtime is not None
@@ -465,5 +518,18 @@ def start(
                         start_error.code, str(start_error), data
                     ) from start_error
             raise
+        if resume is not None:
+            expected = resume.strip()
+            started_session = (
+                started.get("sessionRef") if isinstance(started, dict) else None
+            )
+            if started_session != expected:
+                raise services.CliError(
+                    ipc_errors.STRICT_RESUME_FAILED,
+                    f"resume of {harness_kind} session {expected!r} did not hold: "
+                    f"the worker established {started_session!r}",
+                    {"harness": harness_kind, "name": name, "sessionRef": expected},
+                )
+        return started
 
     services._execute(operation, json_output=json_output)

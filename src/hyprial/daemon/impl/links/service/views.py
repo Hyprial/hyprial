@@ -75,6 +75,8 @@ class ViewsMixin:
             return {
                 "actor": actor,
                 "orgAvailable": index.org_available,
+                "bypass": self._bypass,
+                "bookkeeping": self._store.bookkeeping,
                 "k": view.limits.k,
                 "W": view.limits.w,
                 "inFlight": len(st.outbound),
@@ -111,6 +113,7 @@ class ViewsMixin:
                 "k": limits.k,
                 "W": limits.w,
                 "windowObserved": state.window_observed,
+                "bypass": self._bypass,
                 "wTarget": node.w_target,
                 "tMinMs": node.t_min_ms,
                 "tMaxMs": node.t_max_ms,
@@ -136,6 +139,15 @@ class ViewsMixin:
                 f"cannot add a link to {peer!r}",
                 data={"actor": actor, "peer": peer},
             )
+        if not self._store.bookkeeping:
+            return {
+                "actor": actor,
+                "peer": peer,
+                "state": "not-recorded",
+                "reason": "bookkeeping-disabled-by-bypass",
+                "written": False,
+                "queued": False,
+            }
         with self._mem:
             st = self._state(actor)
             view = self._view(actor, now_ms)

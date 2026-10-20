@@ -318,6 +318,10 @@ class BlockingFailureAuthority:
 
     @staticmethod
     def _reason(code: str) -> str | None:
+        # Only a persistent condition blocks the agent.  ``PROVIDER_RATE_LIMITED``
+        # is deliberately absent: its window resets on its own and a registry
+        # block has no expiry, so it would disable the agent until a human
+        # intervened (2026-10-16 acceptance, resident pi provider, item 1).
         return {
             "PROVIDER_USAGE_LIMIT": "provider-quota",
             "PROVIDER_AUTHENTICATION_FAILED": "credential-invalid",

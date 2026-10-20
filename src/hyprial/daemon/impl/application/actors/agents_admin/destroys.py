@@ -5,6 +5,8 @@ from __future__ import annotations
 from __future__ import annotations
 import hashlib
 import os
+import signal
+import time
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 from uuid import uuid4
@@ -106,7 +108,11 @@ class _AgentDestroyMixin:
         )
 
     def _stop_agent_runtime(
-        self, actor: str, *, keep: tuple[str, str] | None
+        self,
+        actor: str,
+        *,
+        keep: tuple[str, str] | None,
+        terminate_interactive: bool = False,
     ) -> list[str]:
         """Stop every connector speaking for ``actor`` except ``keep``.
 
@@ -114,13 +120,27 @@ class _AgentDestroyMixin:
         restart of the same connector is left alone. ``None`` keeps nothing,
         which is what destroy wants.
 
-        An interactive session cannot be killed from here -- the TUI belongs to
-        somebody's terminal, not to this daemon -- so it is unregistered and
-        its route closed instead. Destroy retires that session ref before this
-        method runs, so the losing side gets SESSION_SUPERSEDED on its next
-        fenced call or registration attempt and goes quiet permanently.
+        An explicit switch can terminate the fenced interactive carrier through
+        ``terminate_interactive``: the daemon signals the verified PID and waits
+        for it to exit.  Destroy keeps the non-signalling path: it unregisters
+        the route and retires the session ref instead.
         """
 
+        interactive = next(
+            (
+                item
+                for item in self._agent_session_domains.session.read_sessions()
+                if item.actor == actor
+            ),
+            None,
+        )
+        interactive_applies = interactive is not None and (
+            keep is None or keep != (_session_harness(interactive), RUNTIME_INTERACTIVE)
+        )
+        # Prove the fenced carrier is stopped BEFORE touching any desired-state
+        # row: a refusal must leave the actor exactly as the caller found it.
+        if interactive_applies and terminate_interactive:
+            self._terminate_interactive_carrier(interactive)
         state = self.desired_state.load()
         stopped: list[str] = []
         for spec in state.harnesses:
@@ -137,17 +157,7 @@ class _AgentDestroyMixin:
                 )
             )
             stopped.append(f"{spec.harness}:{spec.name}")
-        interactive = next(
-            (
-                item
-                for item in self._agent_session_domains.session.read_sessions()
-                if item.actor == actor
-            ),
-            None,
-        )
-        if interactive is not None and (
-            keep is None or keep != (_session_harness(interactive), RUNTIME_INTERACTIVE)
-        ):
+        if interactive_applies:
             if interactive.session_ref is not None:
                 self._call_session_route(
                     SessionRouteKind.UNREGISTER,
@@ -164,6 +174,51 @@ class _AgentDestroyMixin:
                 self._close_interactive_route(actor, None)
             stopped.append(f"interactive:{actor}")
         return stopped
+
+    def _terminate_interactive_carrier(self, interactive: Any) -> None:
+        """Signal the fenced TUI process and wait for it to exit.
+
+        The PID/identity pair is the same birth fence used for liveness; a
+        reused PID is never signalled.  A carrier without a fence, or whose
+        process state is unknown, is refused; only proven exit is accepted.
+        """
+
+        pid = getattr(interactive, "process_pid", None)
+        identity = getattr(interactive, "process_identity", None)
+        if pid is None or identity is None:
+            raise DaemonRequestError(
+                ipc_errors.INTERACTIVE_CARRIER_STOP_FAILED,
+                "interactive carrier has no PID/birth fence; cannot prove it exited",
+                {"actor": interactive.actor},
+            )
+        from hyprial.daemon.impl.mcp.channel.ownership import _owner_process_status
+
+        status = _owner_process_status(pid, identity)
+        if status.value in {"pid-missing", "identity-mismatch"}:
+            return
+        if status.value != "alive":
+            raise DaemonRequestError(
+                ipc_errors.INTERACTIVE_CARRIER_STOP_FAILED,
+                "interactive carrier state is unknown; cannot prove it exited",
+                {"actor": interactive.actor, "pid": pid, "state": status.value},
+            )
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if _owner_process_status(pid, identity).value in {
+                "pid-missing",
+                "identity-mismatch",
+            }:
+                return
+            time.sleep(0.05)
+        raise DaemonRequestError(
+            ipc_errors.INTERACTIVE_CARRIER_STOP_FAILED,
+            "interactive carrier did not exit within 5s; refusing the switch",
+            {"actor": interactive.actor, "pid": pid},
+        )
 
     def _destroy_agent(
         self,
@@ -205,8 +260,12 @@ class _AgentDestroyMixin:
             elif require_unpinned and current.pinned_adapters:
                 reason = "pinned"
             elif require_offline:
+                from hyprial.daemon.impl.pac.actors.coordinator import worker_in_use
                 from hyprial.daemon.impl.pac.actors.daemon  import DaemonActorRuntime
-                if DaemonActorRuntime(self).observe(current.actor).present:
+                observation = DaemonActorRuntime(self).observe(current.actor)
+                if worker_in_use(observation):
+                    reason = "worker-in-use"
+                elif observation.present:
                     reason = "online"
             if reason is not None:
                 self.agents.rollback_retired_session_refs(

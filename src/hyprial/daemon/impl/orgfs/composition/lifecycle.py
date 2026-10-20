@@ -432,10 +432,15 @@ class RuntimeLifecycle:
             on_replacement=replacement,
             logger=self.logger,
             announce_instrumentation_enabled=self._announce_instrumentation_enabled,
+            supplier_sync_health=self._supplier_sync_health,
             space_authority=self.facade.space_authority(
                 space_id, self.stores.get(space_id)
             ),
         )
+        if mesh._supplier_sync_health is not self._supplier_sync_health:
+            raise RuntimeError(
+                "orgfs mesh was built without the daemon-wide supplier health"
+            )
         with self._resource_lock:
             if self._closing or self._session is not session:
                 current = None

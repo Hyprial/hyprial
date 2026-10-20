@@ -208,6 +208,12 @@ if TYPE_CHECKING:
     from hyprial.identity.impl.agents.home.environment import apply_runtime_environment_profile as apply_runtime_environment_profile
     from hyprial.identity.impl.agents.runtime.context import resolve_agent_runtime_context as resolve_agent_runtime_context
     from hyprial.identity.impl.agents.home.environment import resolve_agent_secrets as resolve_agent_secrets
+    from hyprial.identity.impl.agents.home.native_credential import NativeCredentialError as NativeCredentialError
+    from hyprial.identity.impl.agents.home.native_credential import NATIVE_CREDENTIAL_FILES as NATIVE_CREDENTIAL_FILES
+    from hyprial.identity.impl.agents.home.native_credential import install_native_credential as install_native_credential
+    from hyprial.identity.impl.agents.home.native_credential import install_native_credential_set as install_native_credential_set
+    from hyprial.identity.impl.agents.home.native_credential import remove_native_credentials as remove_native_credentials
+    from hyprial.identity.impl.agents.home.native_credential import native_secrets_root as native_secrets_root
     from hyprial.identity.impl.org_directory import bootstrap_yaml as bootstrap_yaml
     from hyprial.identity.impl.agents.runtime.enforcement import check_channel as check_channel
     from hyprial.identity.impl.agents.runtime.enforcement import check_org_context as check_org_context
@@ -460,6 +466,12 @@ _FACADE_EXPORTS = {
     'apply_runtime_environment_profile': ('hyprial.identity.impl.agents.home.environment', 'apply_runtime_environment_profile'),
     'resolve_agent_runtime_context': ('hyprial.identity.impl.agents.runtime.context', 'resolve_agent_runtime_context'),
     'resolve_agent_secrets': ('hyprial.identity.impl.agents.home.environment', 'resolve_agent_secrets'),
+    'NativeCredentialError': ('hyprial.identity.impl.agents.home.native_credential', 'NativeCredentialError'),
+    'NATIVE_CREDENTIAL_FILES': ('hyprial.identity.impl.agents.home.native_credential', 'NATIVE_CREDENTIAL_FILES'),
+    'install_native_credential': ('hyprial.identity.impl.agents.home.native_credential', 'install_native_credential'),
+    'install_native_credential_set': ('hyprial.identity.impl.agents.home.native_credential', 'install_native_credential_set'),
+    'remove_native_credentials': ('hyprial.identity.impl.agents.home.native_credential', 'remove_native_credentials'),
+    'native_secrets_root': ('hyprial.identity.impl.agents.home.native_credential', 'native_secrets_root'),
     'bootstrap_yaml': ('hyprial.identity.impl.org_directory', 'bootstrap_yaml'),
     'check_channel': ('hyprial.identity.impl.agents.runtime.enforcement', 'check_channel'),
     'check_org_context': ('hyprial.identity.impl.agents.runtime.enforcement', 'check_org_context'),
@@ -731,6 +743,12 @@ __all__ = [
     'apply_runtime_environment_profile',
     'resolve_agent_runtime_context',
     'resolve_agent_secrets',
+    'NativeCredentialError',
+    'NATIVE_CREDENTIAL_FILES',
+    'install_native_credential',
+    'install_native_credential_set',
+    'remove_native_credentials',
+    'native_secrets_root',
     'bootstrap_yaml',
     'check_channel',
     'check_org_context',

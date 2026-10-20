@@ -101,10 +101,18 @@ class Allow:
 
     ``window_observed`` names the W/cwnd bound the decision would have held on
     under ``enforce`` (H1).  It is empty under ``enforce`` and for every
-    ungoverned or in-window send: observe mode delivers and only counts."""
+    ungoverned or in-window send: observe mode delivers and only counts.
+
+    ``bypassed`` names the hold reason the decision would have returned had
+    the emergency switch ``HYPRIAL_LINKS_BYPASS`` been off; ``mint`` asks the
+    gate to keep writing the sender's one-sided reference (the bookkeeping a
+    ``Mint`` would have done) while the message is delivered.  Both stay at
+    their defaults whenever the switch is off."""
 
     peer: str | None = None
     window_observed: str = ""
+    bypassed: str = ""
+    mint: bool = False
 
 
 @dataclass(frozen=True, slots=True)

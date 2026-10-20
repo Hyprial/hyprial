@@ -18,14 +18,16 @@ activation marker always carries the incarnation field -- the four-field
 
 from __future__ import annotations
 
-__all__ = ["pac_worker_marker"]
+__all__ = ["pac_worker_fields", "pac_worker_marker"]
 
 _PAC_MARKER_HEAD = "pac"
 _PAC_MARKER_FIELDS = 5
 
 
-def pac_worker_marker(nickname: str | None) -> str | None:
-    """Return ``nickname`` when it is a strict PAC activation marker, else None.
+def pac_worker_fields(
+    nickname: str | None,
+) -> tuple[str, str, int, str] | None:
+    """Parse a strict PAC activation marker into its four ownership fields.
 
     Grammar: ``pac:<graph_id>:<node_id>:<incarnation>:<effect>`` with four
     non-empty fields and a positive decimal incarnation (``1`` on the first
@@ -45,4 +47,10 @@ def pac_worker_marker(nickname: str | None) -> str | None:
         return None
     if int(incarnation) < 1:
         return None
-    return nickname
+    return graph_id, node_id, int(incarnation), effect
+
+
+def pac_worker_marker(nickname: str | None) -> str | None:
+    """Return ``nickname`` when it is a strict PAC activation marker, else None."""
+
+    return nickname if pac_worker_fields(nickname) is not None else None

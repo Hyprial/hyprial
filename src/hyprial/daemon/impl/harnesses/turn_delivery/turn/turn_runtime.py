@@ -83,6 +83,11 @@ _LOGGER = logging.getLogger("hyprial.turn_runtime")
 #: Retrying a wrong/expired credential can never succeed; that is the
 #: one class where "terminal on first attempt" is safe from the text
 #: alone.
+#:
+#: §8.2 adds the usage/rate-limit class for the same reason from the other
+#: direction: a 429 cannot heal inside one turn, pi's own retries are capped
+#: at zero for managed launches, and a transient classification here makes
+#: the daemon redeliver the very turn this stopped.
 _TERMINAL_PROVIDER_ERROR_MARKERS: frozenset[str] = frozenset(
     {
         # authentication / authorization
@@ -95,12 +100,23 @@ _TERMINAL_PROVIDER_ERROR_MARKERS: frozenset[str] = frozenset(
         "token refresh",
         "expired token",
         "permission denied",
+        # usage / rate limits (429 and quota account-side wording)
+        "429",
+        "too many requests",
+        "rate limit",
+        "rate_limit",
+        "usage limit",
+        "usage_limit",
+        "quota exceeded",
+        "quota exhausted",
+        "insufficient_quota",
+        "resource_exhausted",
     }
 )
 
 
 def provider_failure_is_terminal(error: str) -> bool:
-    """True when a failure text names a model-vendor auth cause.
+    """True when a failure text names a model-vendor auth or usage cause.
 
     Matched against the closed auth marker list above by case-insensitive
     substring containment; network-class wording is deliberately absent

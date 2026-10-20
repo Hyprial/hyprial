@@ -149,11 +149,18 @@ class _StatusViewsMixin:
         now = time.monotonic()
         restore_now_ms = self._restore_now_ms()
         # Read the session projections once for the whole request and hand
-        # them to route expiry: closing a route never edits the session
-        # store, so the pre-expiry read is exactly what expiry would read
-        # itself — the old second read was one redundant desired-state
-        # load per ps.
+        # them to both recovery cleanup and route expiry: closing a route
+        # never edits the session store, so the pre-expiry read is exactly
+        # what expiry would read itself — the old second read was one
+        # redundant desired-state load per ps. A status read is also the
+        # recovery point for a carrier whose PID and birth identity prove it
+        # is gone; otherwise a dead interactive row would keep appearing
+        # beside a newer headless worker (card 706).
         interactive_sessions = self._agent_session_domains.session.read_sessions()
+        if hasattr(self, "_clean_dead_interactive_sessions"):
+            interactive_sessions = self._clean_dead_interactive_sessions(
+                interactive_sessions
+            )
         self._expire_stale_channel_routes(now, sessions=interactive_sessions)
         # Node-wide pending: rows wait under agent URIs, not the node
         # id, so scoping this to the node inbox would report an empty
@@ -355,6 +362,7 @@ class _StatusViewsMixin:
                         and (request_status := self._ipc_request_owner.projection())
                         else None
                     ),
+                    "ipcClients": self._ipc_client_status(),
                     "routineCoordinator": (
                         self._routine_coordinator.stats()
                         if self._routine_coordinator is not None else None

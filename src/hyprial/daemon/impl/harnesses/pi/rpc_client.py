@@ -19,6 +19,7 @@ from hyprial.kernel import Logger
 
 from hyprial.daemon.impl.harnesses.protocol.common  import summarize_stderr
 from hyprial.daemon.impl.harnesses.pi.session  import pi_session_id as _pi_session_id
+from hyprial.daemon.impl.harnesses.pi.stderr_warnings import PiStderrTail
 from hyprial.daemon.impl.harnesses.streaming.protocol  import (
     ProgressObservation,
 )
@@ -67,6 +68,7 @@ class PiRpcClient:
             runtime_launch_custody: (
                 Callable[[AgentRuntimeContext], AbstractContextManager[None]] | None
             ) = None,
+            provider_environment: Mapping[str, str] | None = None,
         ) -> None:
             self.spec = spec
             self.session_ref = session_ref
@@ -84,6 +86,10 @@ class PiRpcClient:
                 if self._complete_launch is None
                 else self._complete_launch.environment.for_exec()
             )
+            # The credential the child is spawned with, resolved by the
+            # process driver (PiRpcProcess) from the launch environment first,
+            # then the agent's own Pi native root, then the operator Pi root.
+            self._provider_environment = dict(provider_environment or {})
             if runtime_context is not None:
                 if self._complete_launch is None or complete_environment is None:
                     raise ValueError("Pi P2 SDK bridge requires a complete environment")
@@ -184,7 +190,7 @@ class PiRpcClient:
             self._stdout_task: asyncio.Task[None] | None = None
             self._stderr_task: asyncio.Task[None] | None = None
             self._exit_task: asyncio.Task[None] | None = None
-            self._stderr_tail = bytearray()
+            self._stderr_tail = PiStderrTail(self._logger, limit=STDERR_TAIL_BYTES)
             self._turn_id: str | None = None
             self._turn_prompt: str | None = None
             # Multiplexed command responses: the ONE stdout reader inside
@@ -235,8 +241,12 @@ class PiRpcClient:
             """
     
             if self._complete_launch is not None:
-                return self._complete_launch.environment.for_exec()
-            return None if self._env is None else {**os.environ, **self._env}
+                return {
+                    **self._complete_launch.environment.for_exec(),
+                    **self._provider_environment,
+                }
+            combined = {**os.environ, **(self._env or {}), **self._provider_environment}
+            return combined if combined else None
 
         async def __aenter__(self) -> Self:
             environment = self._spawn_environment()
@@ -859,8 +869,6 @@ class PiRpcClient:
             try:
                 while chunk := await process.stderr.read(4096):
                     self._stderr_tail.extend(chunk)
-                    if len(self._stderr_tail) > STDERR_TAIL_BYTES:
-                        del self._stderr_tail[: len(self._stderr_tail) - STDERR_TAIL_BYTES]
             finally:
                 protocol = self._process_protocol
                 if protocol is not None:

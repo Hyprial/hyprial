@@ -42,6 +42,9 @@ from hyprial.kernel import DaemonRequestError, ipc_errors, uri_scheme
 #: H1 window switch: ``observe`` (the daemon default) counts a full W/cwnd and
 #: lets the message through, ``enforce`` restores the holding table.
 WindowMode = Literal["observe", "enforce"]
+#: ``wouldHoldReason`` of a recipient-side dispatch the bypass admitted: the
+#: sender's link is not effective yet (pending, minting or absent).
+DISPATCH_UNLINKED = ipc_errors.LINK_MINTING
 
 __all__ = [
     "NodeView",
@@ -53,6 +56,8 @@ __all__ = [
     "accept_reference",
     "admit",
     "admit_dispatch",
+    "bypass_send",
+    "dispatch_bypassed",
     "censored_inbound",
     "churning",
     "degree",
@@ -120,6 +125,9 @@ class NodeView:
     #: H1: ``observe`` (the daemon default) counts the W/cwnd bounds and lets
     #: the message through; ``enforce`` restores the holding decision table.
     window_mode: WindowMode = "observe"
+    #: Emergency switch ``HYPRIAL_LINKS_BYPASS``: every link-state hold or
+    #: dispatch refusal admits instead (see :func:`bypass_send`).
+    bypass: bool = False
 
     def __post_init__(self) -> None:
         if not is_link_endpoint(self.actor):
@@ -447,6 +455,35 @@ def admit(
     del intent
     if sender != view.actor:
         raise ValueError(f"sender {sender!r} is not the view actor {view.actor!r}")
+    decision = _admit_table(view, target=target, reply_to=reply_to, now_ms=now_ms)
+    return bypass_send(view, decision, target) if view.bypass else decision
+
+
+def bypass_send(view: NodeView, decision: SendDecision, target: str) -> SendDecision:
+    """Turn a link-state hold into a delivery (emergency switch).
+
+    A ``Hold`` (minting, peer full, self full, org unavailable, churn, k,
+    window) becomes ``Allow(peer=target, bypassed=<reason>)``.  A ``Mint``
+    delivers without bookkeeping (``mint=False``): with the bypass on the
+    store freezes link-file writes, so no reference is staged or committed.
+    Refusals that are not link holds (reply validation, reclaimed residue)
+    are raised before this point and stay refusals.
+    """
+
+    del view
+    if isinstance(decision, Hold):
+        return Allow(peer=target, bypassed=decision.reason)
+    if isinstance(decision, Mint):
+        if decision.evict is not None:
+            return Allow(peer=target, bypassed=ipc_errors.LINK_SELF_FULL)
+        return Allow(peer=target, bypassed=ipc_errors.LINK_MINTING)
+    return decision
+
+
+def _admit_table(
+    view: NodeView, *, target: str, reply_to: str | None, now_ms: int
+) -> SendDecision:
+    sender = view.actor
     if reply_to:
         return _admit_reply(view, target, reply_to)
     if not governed(sender, target):
@@ -499,13 +536,40 @@ def admit_dispatch(
     if not _inbound_governed(sender, view.actor):
         return True
     if not effective(view.links.get(sender)):
-        return False
+        return view.bypass
     if _reply_exempt(view, sender=sender, intent=intent, reply_to=reply_to):
         return True
     if unclosed(view) >= view.limits.w:
         # H1: observe admits and only counts the W bound; enforce holds.
-        return view.window_mode != "enforce"
+        return view.window_mode != "enforce" or view.bypass
     return True
+
+
+def dispatch_bypassed(
+    view: NodeView,
+    *,
+    sender: str,
+    message_id: str,
+    intent: str = "request",
+    reply_to: str | None = None,
+) -> str:
+    """The hold reason the bypass saved this dispatch from, or ``""``.
+
+    Classifies only, like :func:`dispatch_window_observed`;
+    ``admit_dispatch`` decides.
+    """
+
+    if not view.bypass or message_id in view.admitted_ids:
+        return ""
+    if not _inbound_governed(sender, view.actor):
+        return ""
+    if not effective(view.links.get(sender)):
+        return DISPATCH_UNLINKED
+    if _reply_exempt(view, sender=sender, intent=intent, reply_to=reply_to):
+        return ""
+    if view.window_mode == "enforce" and unclosed(view) >= view.limits.w:
+        return ipc_errors.LINK_WINDOW_FULL
+    return ""
 
 
 def dispatch_window_observed(

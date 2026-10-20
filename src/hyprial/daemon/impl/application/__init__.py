@@ -156,6 +156,7 @@ from hyprial.daemon.impl.application.actors.agents_admin.registry_ops import _Ag
 from hyprial.daemon.impl.application.actors.agents_admin.adapters import _AdapterAdminMixin
 from hyprial.daemon.impl.application.actors.agents_admin.migration import _AgentMigrationMixin
 from hyprial.daemon.impl.application.actors.agents_admin.destroys import _AgentDestroyMixin
+from hyprial.daemon.impl.application.actors.agents_admin.provider_credential import _AgentProviderMixin
 from hyprial.daemon.impl.application.actors.agents_registry import _AgentsRegistryMixin
 from hyprial.daemon.impl.application.actors.sessions.routes import _SessionRoutesMixin
 from hyprial.daemon.impl.application.actors.sessions.registry import _SessionRegistryMixin
@@ -242,6 +243,7 @@ class DaemonApplication(
     _AdapterAdminMixin,
     _AgentMigrationMixin,
     _AgentDestroyMixin,
+    _AgentProviderMixin,
     _AgentsRegistryMixin,
     _SessionRoutesMixin,
     _SessionRegistryMixin,
@@ -619,6 +621,7 @@ class DaemonApplication(
             daemon_epoch=self.epoch,
             hyprial_home=self.hyprial_home,
             worker_running=actor_worker_running,
+            interactive_process_alive=self._interactive_process_alive,
             clock=actor_clock,
             persistence_late_result=self._state_persistence.result,
             session_desired_state=getattr(
@@ -726,6 +729,7 @@ class DaemonApplication(
         # client threads are short-lived and the totals must outlive them.
         self._ipc_stats = CallCostCounters(_IPC_STATS_METHODS, wall=True)
         self._ipc_clients: set[_IpcStream] = set()
+        self._ipc_client_states: dict[_IpcStream, Any] = {}
         self._ipc_client_threads: set[threading.Thread] = set()
         self._ipc_clients_lock = threading.Lock()
         self._ipc_closing = False

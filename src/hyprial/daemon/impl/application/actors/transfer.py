@@ -780,7 +780,7 @@ class _TransferOpsMixin:
 
     def _verify_started_resume(
         self, spec: HarnessLaunchSpec, session_ref: str, *, timeout: float
-    ) -> None:
+    ) -> str:
         """The started worker must be ON the requested session, or not run.
 
         Same check as transfer.receive's strict resume.  On failure the worker
@@ -796,7 +796,7 @@ class _TransferOpsMixin:
             else None
         )
         if ready and resumed == session_ref:
-            return
+            return resumed
         self._run_lifecycle_operation(
             LifecycleOperation.deactivate(
                 f"lifecycle-start-resume-undo:{uuid4().hex}",

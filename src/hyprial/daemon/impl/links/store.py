@@ -15,7 +15,7 @@ the service never import inbox, dispatch, application or PAC.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Literal, Protocol
@@ -60,6 +60,10 @@ class LinkIndex:
     revisions: Mapping[str, int] = field(default_factory=dict)
     absent: frozenset[str] = frozenset()
     conflicted: frozenset[str] = frozenset()
+    #: Canonical ``user:`` principals that own or are members of a live link
+    #: space.  Filled only when the store was given ``members_of`` (the
+    #: ``HYPRIAL_LINKS_BYPASS`` ingress check); empty otherwise.
+    members: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "files", MappingProxyType(dict(self.files)))
@@ -225,8 +229,13 @@ class LinkStore:
         is_local_agent: Callable[[str], bool],
         on_change: Callable[[], None],
         logger: Callable[..., None] | None = None,
+        members_of: Callable[[str], Iterable[str]] | None = None,
+        bookkeeping: bool = True,
     ) -> None:
         self._fs = fs
+        self._bookkeeping = bookkeeping
+        self._members_of = members_of
+        self._members: frozenset[str] = frozenset()
         self._spaces = spaces
         self._author_of = author_of
         self._is_local_agent = is_local_agent
@@ -237,6 +246,12 @@ class LinkStore:
         self._live_spaces: set[str] = set()
         self._watches: dict[str, Any] = {}
         self._writable: set[str] = set()
+        self._probed: set[str] = set()
+        self._ambiguous_logged: set[str] = set()
+        self._flush_skipped = False
+        self._directories: dict[str, tuple[str, ...]] = {}
+        self._canonical_directories: dict[str, str] = {}
+        self._canonical_files: dict[tuple[str, str], str] = {}
         self._versions: dict[tuple[str, str], str] = {}
         self._files: dict[str, LinkFile] = {}
         self._revisions: dict[str, int] = {}
@@ -253,6 +268,10 @@ class LinkStore:
 
         return self._index
 
+    @property
+    def bookkeeping(self) -> bool:
+        return self._bookkeeping
+
     def intents(self) -> Mapping[str, LinkFile]:
         """Any thread; pending local writes."""
 
@@ -264,18 +283,34 @@ class LinkStore:
         """Service thread only: rescan the local copies and publish."""
 
         live = set(self._spaces())
-        for space in sorted(live - self._live_spaces):
+        added = live - self._live_spaces
+        removed = self._live_spaces - live
+        for space in sorted(added):
             self._attach(space)
-        for space in sorted(self._live_spaces - live):
+        for space in sorted(removed):
             self._detach(space)
         self._live_spaces = live
+        if added or removed:
+            self._log(
+                "link.attach.summary",
+                attached=sorted(s for s in added if self._watches.get(s) is not None),
+                skipped=sorted(removed),
+                failed=sorted(s for s in added if self._watches.get(s) is None),
+                bookkeeping=self._bookkeeping,
+            )
+        for space in sorted(live):
+            self._probe(space)
         self._scan(live)
+        self._members = self._scan_members(live)
         self._publish()
         return self._index
 
     def write(self, file: LinkFile) -> None:
         """Service thread only: record a pending local write (B13)."""
 
+        if not self._bookkeeping:
+            self._intents.pop(file.actor, None)
+            return
         if not self._is_local_agent(file.actor):
             raise ValueError(f"not a local agent of this node: {file.actor!r}")
         if self._author_of(file.actor) is None:
@@ -286,6 +321,19 @@ class LinkStore:
         """Service thread only: try to commit pending intents; return actors."""
 
         committed: list[str] = []
+        if not self._bookkeeping:
+            self._intents.clear()
+            return ()
+        if self._intents and not self._writable:
+            if not self._flush_skipped:
+                self._flush_skipped = True
+                self._log(
+                    "link.flush_skipped",
+                    reason="no-writable-space",
+                    intents=len(self._intents),
+                )
+            return ()
+        self._flush_skipped = False
         for actor, file in list(self._intents.items()):
             spaces = sorted(self._writable)
             if not spaces:
@@ -310,31 +358,80 @@ class LinkStore:
 
     def _attach(self, space: str) -> None:
         try:
-            self._fs.mkdir(space, "link")
-        except OrgFsError as error:
-            if error.code == "invalid-argument":
-                self._writable.add(space)
-            else:
-                self._writable.discard(space)
-                self._log(
-                    "link.space_unwritable", space=space, code=error.code
-                )
-        except Exception:  # noqa: BLE001 - an unavailable space is not writable
-            self._writable.discard(space)
-        else:
-            self._writable.add(space)
-        try:
             self._watches[space] = self._fs.watch(
                 space, "link/*.json", self._on_watch
             )
         except Exception:  # noqa: BLE001 - a watch is an optimisation only
             self._watches[space] = None
 
+    def _probe(self, space: str) -> None:
+        """Recheck write access and select one stable directory for writes."""
+
+        if self._bookkeeping:
+            try:
+                self._fs.mkdir(space, "link")
+            except OrgFsError as error:
+                if error.code not in {"invalid-argument", "ambiguous-path"}:
+                    self._set_writable(space, False, error.code)
+                    return
+            except Exception:  # noqa: BLE001 - an unavailable space is not writable
+                self._set_writable(space, False, "unavailable")
+                return
+        try:
+            roots = self._fs.listdir(space, "")
+        except OrgFsError as error:
+            self._set_writable(space, False, error.code)
+            return
+        except Exception:  # noqa: BLE001 - an unavailable space is not writable
+            self._set_writable(space, False, "unavailable")
+            return
+        directories = tuple(
+            sorted(
+                entry.node_id
+                for entry in roots
+                if entry.kind == "dir" and entry.name == "link"
+            )
+        )
+        if not directories:
+            self._set_writable(space, False, "unknown-doc")
+            return
+        self._directories[space] = directories
+        self._canonical_directories[space] = directories[0]
+        if len(directories) > 1 and space not in self._ambiguous_logged:
+            self._ambiguous_logged.add(space)
+            self._log(
+                "link.space_ambiguous",
+                space=space,
+                candidates=list(directories),
+                canonical=directories[0],
+            )
+        self._set_writable(space, True)
+
+    def _set_writable(
+        self, space: str, writable: bool, code: str | None = None
+    ) -> None:
+        was_writable = space in self._writable
+        first_probe = space not in self._probed
+        self._probed.add(space)
+        if writable:
+            self._writable.add(space)
+            return
+        self._writable.discard(space)
+        self._directories.pop(space, None)
+        self._canonical_directories.pop(space, None)
+        if was_writable or first_probe:
+            self._log("link.space_unwritable", space=space, code=code)
+
     def _detach(self, space: str) -> None:
         self._close_registration(self._watches.pop(space, None))
         self._writable.discard(space)
+        self._probed.discard(space)
+        self._directories.pop(space, None)
+        self._canonical_directories.pop(space, None)
         for key in [key for key in self._versions if key[0] == space]:
             del self._versions[key]
+        for key in [key for key in self._canonical_files if key[0] == space]:
+            del self._canonical_files[key]
 
     def _close_registration(self, registration: Any) -> None:
         if registration is None:
@@ -351,25 +448,59 @@ class LinkStore:
 
     def _scan(self, live: set[str]) -> None:
         candidates: dict[str, list[LinkFile]] = {}
+        self._canonical_files = {
+            key: value
+            for key, value in self._canonical_files.items()
+            if key[0] not in live
+        }
+        self._versions = {
+            key: value
+            for key, value in self._versions.items()
+            if key[0] not in live
+        }
         for space in sorted(live):
-            try:
-                entries = self._fs.listdir(space, "link")
-            except OrgFsError as error:
-                if error.code in _MEMBERSHIP_CODES:
-                    self._writable.discard(space)
-                continue
-            except Exception:  # noqa: BLE001 - a broken space yields no copies
-                continue
-            for entry in entries:
-                name = getattr(entry, "name", "")
-                if getattr(entry, "kind", "doc") != "doc" or not name.endswith(
-                    ".json"
-                ):
+            canonical = self._canonical_directories.get(space)
+            for directory in self._directories.get(space, ()):
+                try:
+                    entries = self._fs.listdir(space, f"id:{directory}")
+                except OrgFsError as error:
+                    if error.code in _MEMBERSHIP_CODES:
+                        self._set_writable(space, False, error.code)
                     continue
-                actor = name[:-5]
-                document = self._read(space, actor, f"link/{name}")
-                if document is not None:
-                    candidates.setdefault(actor, []).append(document)
+                except Exception:  # noqa: BLE001 - a broken space yields no copies
+                    continue
+                write_nodes = {
+                    name: min(
+                        entry.node_id
+                        for entry in entries
+                        if entry.kind == "doc" and entry.name == name
+                    )
+                    for name in {
+                        entry.name for entry in entries if entry.kind == "doc"
+                    }
+                    if name.endswith(".json")
+                }
+                for entry in entries:
+                    name = getattr(entry, "name", "")
+                    if getattr(entry, "kind", "doc") != "doc" or not name.endswith(
+                        ".json"
+                    ):
+                        continue
+                    actor = name[:-5]
+                    is_canonical = (
+                        directory == canonical
+                        and entry.node_id == write_nodes.get(name)
+                    )
+                    if is_canonical:
+                        self._canonical_files[(space, actor)] = entry.node_id
+                    document = self._read(
+                        space,
+                        actor,
+                        f"id:{entry.node_id}",
+                        track_version=is_canonical,
+                    )
+                    if document is not None:
+                        candidates.setdefault(actor, []).append(document)
         files: dict[str, LinkFile] = {}
         conflicted: set[str] = set()
         for actor, items in candidates.items():
@@ -406,14 +537,23 @@ class LinkStore:
         committed = self._files.get(actor)
         return committed.revision if committed is not None else 0
 
-    def _read(self, space: str, actor: str, path: str) -> LinkFile | None:
+    def _read(
+        self,
+        space: str,
+        actor: str,
+        path: str,
+        *,
+        track_version: bool,
+    ) -> LinkFile | None:
         try:
             snapshot = self._fs.read_text_snapshot(space, path)
         except Exception:  # noqa: BLE001 - no readable copy means absent (B11)
-            self._versions.pop((space, actor), None)
+            if track_version:
+                self._versions.pop((space, actor), None)
             return None
         version = str(snapshot.version)
-        self._versions[(space, actor)] = version
+        if track_version:
+            self._versions[(space, actor)] = version
         key = (space, path, version)
 
         def reject(detail: str) -> None:
@@ -453,9 +593,17 @@ class LinkStore:
     def _write_everywhere(
         self, actor: str, file: LinkFile, spaces: list[str]
     ) -> bool | str:
+        if not self._bookkeeping:
+            return False
         ok = True
-        path = link_file_path(actor)
+        filename = link_file_path(actor).removeprefix("link/")
         for space in spaces:
+            directory = self._canonical_directories.get(space)
+            if directory is None:
+                ok = False
+                continue
+            existing = self._canonical_files.get((space, actor))
+            path = f"id:{existing}" if existing else f"id:{directory}/{filename}"
             try:
                 node = self._fs.write_text(
                     space,
@@ -470,13 +618,14 @@ class LinkStore:
                         return "dropped"
                     ok = ok and outcome is True
                 elif error.code in _MEMBERSHIP_CODES:
-                    self._writable.discard(space)
+                    self._set_writable(space, False, error.code)
                     ok = False
                 else:
                     ok = False
             except Exception:  # noqa: BLE001 - retry this mirror next pass
                 ok = False
             else:
+                self._canonical_files[(space, actor)] = node.node_id
                 self._versions[(space, actor)] = str(node.version)
         return True if ok else False
 
@@ -554,7 +703,23 @@ class LinkStore:
             revisions=dict(self._revisions),
             absent=frozenset(absent),
             conflicted=frozenset(self._conflicted),
+            members=self._members,
         )
+
+    def _scan_members(self, live: set[str]) -> frozenset[str]:
+        """Members of every live space; an unreadable space adds nobody."""
+
+        if self._members_of is None:
+            return frozenset()
+        members: set[str] = set()
+        for space in sorted(live):
+            try:
+                members.update(
+                    user for user in self._members_of(space) if isinstance(user, str)
+                )
+            except Exception:  # noqa: BLE001 - fail closed: no member proof
+                continue
+        return frozenset(members)
 
     def _log(self, event: str, **fields: object) -> None:
         if self._logger is None:

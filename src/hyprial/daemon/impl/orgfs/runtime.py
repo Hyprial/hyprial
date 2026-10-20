@@ -35,6 +35,7 @@ from hyprial.daemon.impl.orgfs.docs  import LocalOrgFs
 
 from hyprial.daemon.impl.orgfs.mesh  import (
     OrgFsMesh)
+from hyprial.daemon.impl.orgfs.network.supplier_health import SupplierSyncHealth
 
 
 from hyprial.daemon.impl.orgfs.storage.replica_authority  import ReplicaAuthority
@@ -138,6 +139,7 @@ class OrgFsRuntime(
         self._supplier_device_watches: dict[str, object] = {}
         self._supplier_device_lock = Lock()
         self._meshes: dict[str, OrgFsMesh] = {}
+        self._supplier_sync_health = SupplierSyncHealth()
         self._announce_registration: Registration | None = None
         self._liveliness_registration: Registration | None = None
         self._stop_supplier_online: Callable[[], None] | None = None

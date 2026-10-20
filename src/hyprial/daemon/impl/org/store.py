@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from hyprial.daemon.impl.org.document  import OrgDocument, parse_document, serialize_document
+from hyprial.daemon.impl.org.document  import OrgDocument, parse_document, serialize_document, validate_document
 
 
 class OrgStoreError(RuntimeError):
@@ -105,6 +105,23 @@ def _document_bytes(document: OrgDocument) -> bytes:
     return serialize_document(document).encode("utf-8")
 
 
+def _refuse_invalid(document: OrgDocument) -> None:
+    """Refuse to persist bytes that do not re-validate.
+
+    ``adopt`` and ``stage`` take an ``OrgDocument``, but a caller can still
+    build one around corrupt source bytes.  Re-validate the exact bytes about
+    to be written and name the file line on failure.
+    """
+
+    result = validate_document(serialize_document(document))
+    if result.ok:
+        return
+    issue = result.issue
+    location = "unknown" if issue is None else f"line {issue.line}, column {issue.column}"
+    reason = "org-context is invalid" if issue is None else issue.reason
+    raise OrgStoreError(f"refusing to write invalid org-context: {location}: {reason}")
+
+
 class OrgContextStore:
     """Manage one accepted document and an unaccepted pending area."""
 
@@ -157,6 +174,7 @@ class OrgContextStore:
     ) -> AdoptionRecord:
         """Enforce local monotonicity, then atomically replace the slot."""
 
+        _refuse_invalid(document)
         current = self.load_accepted()
         if current is not None and document.meta.version <= current.meta.version:
             raise OrgVersionError(
@@ -178,13 +196,29 @@ class OrgContextStore:
         return record
 
     def acceptance_record(self) -> AdoptionRecord | None:
+        """Read the audit record for the accepted bytes.
+
+        Returns ``None`` when the slot or its record is absent.  Raises
+        :class:`OrgStoreError` when the record exists but is unreadable or
+        does not describe the accepted bytes.  The digest is over the raw
+        file bytes, never newline-normalized text.
+        """
+
         document = self.load_accepted()
         if document is None:
             return None
-        payload_hash = hashlib.sha256(_document_bytes(document)).hexdigest()
+        try:
+            payload = self.accepted_path.read_bytes()
+        except OSError as error:
+            raise OrgStoreError(
+                f"cannot read accepted org-context {self.accepted_path}: {error}"
+            ) from error
+        payload_hash = hashlib.sha256(payload).hexdigest()
         metadata_path = self._adoption_path(payload_hash)
         try:
             raw = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
         except (OSError, json.JSONDecodeError) as error:
             raise OrgStoreError(f"cannot read acceptance metadata: {error}") from error
         if not isinstance(raw, dict):
@@ -201,6 +235,59 @@ class OrgContextStore:
             adopted_at=_parse_timestamp(raw.get("adoptedAt"), "adoptedAt"),
             document_sha256=payload_hash,
         )
+
+    def accepted_slot_issue(self, document: OrgDocument, payload: bytes) -> str | None:
+        """Why the accepted slot's audit state is inconsistent.
+
+        ``payload`` must be the accepted slot's raw bytes as stored (never
+        newline-normalized text).  ``None`` means the format-valid document is
+        backed by a matching adoption record and, when present, an orgfs
+        publish marker that names the same bytes.
+        """
+
+        digest = hashlib.sha256(payload).hexdigest()
+        metadata_path = self._adoption_path(digest)
+        try:
+            text = metadata_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return f"no adoption record for the accepted org-context ({digest})"
+        except OSError as error:
+            return f"cannot read adoption record {metadata_path}: {error}"
+        try:
+            raw = json.loads(text)
+        except json.JSONDecodeError as error:
+            return f"adoption record {metadata_path} is not valid JSON: {error}"
+        if not isinstance(raw, dict):
+            return f"adoption record {metadata_path} must be an object"
+        if raw.get("documentSha256") != digest:
+            return (
+                f"adoption record {metadata_path} names documentSha256 "
+                f"{raw.get('documentSha256')!r}, not the accepted bytes {digest}"
+            )
+        if raw.get("version") != document.meta.version:
+            return (
+                f"adoption record {metadata_path} names version "
+                f"{raw.get('version')!r}, not {document.meta.version}"
+            )
+        if raw.get("publisher") != document.meta.publisher:
+            return (
+                f"adoption record {metadata_path} names publisher "
+                f"{raw.get('publisher')!r}, not {document.meta.publisher!r}"
+            )
+        try:
+            _parse_timestamp(raw.get("adoptedAt"), "adoptedAt")
+        except OrgStoreError as error:
+            return f"adoption record {metadata_path}: {error}"
+        try:
+            pending = self.orgfs_publish_pending()
+        except OrgStoreError as error:
+            return f"orgfs publish pending state is invalid: {error}"
+        if pending is not None and pending != digest:
+            return (
+                f"orgfs publish pending points at {pending}, not the accepted "
+                f"bytes {digest}"
+            )
+        return None
 
     def queue_orgfs_publish(self, document_sha256: str) -> None:
         """Durably request publication of the accepted bytes through orgfs."""
@@ -256,6 +343,7 @@ class OrgContextStore:
     ) -> PendingRecord:
         """Persist a candidate without changing the accepted slot."""
 
+        _refuse_invalid(document)
         if not source or any(character in source for character in "\r\n"):
             raise ValueError("pending source must be a non-empty single line")
         received = _aware(received_at or _utc_now(), "received_at")
@@ -310,11 +398,44 @@ class OrgContextStore:
         return tuple(result)
 
     def status(self) -> dict[str, Any]:
-        accepted = self.acceptance_record()
+        document = self.load_accepted()
+        warnings: list[dict[str, str]] = []
+        accepted: AdoptionRecord | None = None
+        if document is not None:
+            try:
+                accepted = self.acceptance_record()
+            except OrgStoreError as error:
+                warnings.append(
+                    {
+                        "code": "ORG_ACCEPTANCE_METADATA_UNAVAILABLE",
+                        "message": str(error),
+                    }
+                )
+            else:
+                if accepted is None:
+                    # The body parses but no adoption record backs it: show the
+                    # parsed view and say so instead of inventing an adoption.
+                    warnings.append(
+                        {
+                            "code": "ORG_ACCEPTANCE_METADATA_UNAVAILABLE",
+                            "message": (
+                                "accepted org-context has no readable adoption "
+                                "record; showing the parsed body only"
+                            ),
+                        }
+                    )
         pending = self.list_pending()
-        return {
-            "slot": "accepted" if accepted is not None else "absent",
+        result: dict[str, Any] = {
+            "slot": "accepted" if document is not None else "absent",
+            # A parseable body backs these displayable fields on its own, so
+            # status recovers them even when the adoption record is missing
+            # (the same view org show derives from the parsed body).  The
+            # adoption time stays absent: it is not a body fact.
+            **({"meta": document.meta.to_json()} if document is not None else {}),
             **({"accepted": accepted.to_json()} if accepted is not None else {}),
             "pendingCount": len(pending),
             "pending": [item.to_json() for item in pending],
         }
+        if warnings:
+            result["warnings"] = warnings
+        return result

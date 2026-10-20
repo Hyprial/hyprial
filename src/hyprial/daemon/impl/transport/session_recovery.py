@@ -23,6 +23,41 @@ def session_closed(error: BaseException) -> bool:
     return "session closed" in text or "session is closed" in text
 
 
+def rebuild_failure(
+    requested: BaseException | None,
+    fallback: BaseException | None,
+    close: BaseException | None,
+) -> RuntimeError:
+    """Compose every cause of a failed rebuild into one redial diagnostic.
+
+    ``zenoh.forwarding.redial_failed`` logs only ``str(error)``, so the
+    requested-config failure -- the reason the redial did not take effect --
+    must be in the message, not only in a ``__cause__`` nobody prints.  The
+    close failure comes last: it explains the interruption but never why the
+    new dial set could not open.
+    """
+
+    causes = (
+        ("requested open", requested),
+        ("fallback open", fallback),
+        ("old close", close),
+    )
+    described = [
+        f"{label}: {type(error).__name__}: {error}"
+        for label, error in causes
+        if error is not None
+    ]
+    if not described:
+        described = ["no session could be opened"]
+    error = RuntimeError(
+        "session rebuild failed (" + "; ".join(described) + ")"
+    )
+    for label, cause in causes:
+        if cause is not None:
+            error.add_note(f"{label} failed: {type(cause).__name__}: {cause}")
+    return error
+
+
 def reopen_native_once(native, *, failed=None) -> bool:
     """Reopen the native session at its current connect set, once.
 
@@ -56,6 +91,25 @@ def session_health(native) -> dict[str, object]:
         return dict(health())
     except Exception:  # noqa: BLE001 - status must stay answerable
         return {"state": "unknown"}
+
+
+def installed_session_closed(session) -> bool:
+    """Whether the installed native session is closed, without raising.
+
+    zenoh 1.9 closes a session before it raises from ``close()``, so holding a
+    session object proves nothing.  ``is_closed`` is the native's own verdict;
+    a session object without the probe (test doubles) is assumed usable.
+    """
+
+    if session is None:
+        return True
+    probe = getattr(session, "is_closed", None)
+    if probe is None:
+        return False
+    try:
+        return bool(probe())
+    except Exception:  # noqa: BLE001 - a status read must stay answerable
+        return False
 
 
 class SessionRecoveryMixin:
@@ -199,11 +253,34 @@ class TransportRecoveryMixin:
             return
 
     def session_health(self) -> dict[str, object]:
-        """Read the session state for status and doctor without touching I/O."""
+        """Read the session state for status and doctor without touching I/O.
+
+        ``closed`` is the native's own verdict on the installed session, so a
+        session zenoh closed underneath the transport cannot be reported as
+        open just because the object still exists.  ``rebuilding`` names the
+        approved interruption window, which is neither healthy nor a fault.
+        """
 
         with self._lock:
+            closed = installed_session_closed(self._session)
+            rebuilding = self._rebuilding is not None
+            if self._closed:
+                state = "closed"
+            elif self._session is None or self._degraded:
+                state = "degraded"
+            elif rebuilding:
+                state = "rebuilding"
+            elif closed:
+                state = "closed"
+            else:
+                state = "open"
             return {
-                "state": self._session_state,
+                "state": state,
+                "closed": closed,
+                "rebuilding": rebuilding,
+                "rebuildingSinceMs": (
+                    self._rebuilding_since_ms if rebuilding else None
+                ),
                 "degraded": self._degraded,
                 "recoveryAttempts": self._recovery_attempts,
                 "recoveryLastError": self._recovery_last_error,

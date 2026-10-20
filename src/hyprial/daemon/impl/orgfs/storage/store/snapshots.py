@@ -19,7 +19,7 @@ from typing import Any, Iterable, Mapping
 
 
 
-from hyprial.daemon.impl.orgfs.storage.store.vocabulary import CommitRecord, SnapshotManifest, StoreError, _b64, _decode_state_vector, _encode_state_vector, _now, _state_covers, _unb64, _wire_doc_id, _writer_is_safe
+from hyprial.daemon.impl.orgfs.storage.store.vocabulary import CommitRecord, ExportPage, SnapshotManifest, StoreError, _LOG, _b64, _decode_state_vector, _doc_roots, _encode_state_vector, _now, _state_covers, _unb64, _wire_doc_id, _writer_is_safe
 
 class StoreSnapshots:
     """Responsibility methods on the sole LocalSpaceStore state host.
@@ -61,6 +61,212 @@ class StoreSnapshots:
             return tuple(self._record_from_row(row) for row in rows)
 
 
+    def _reset_history_indexes(self) -> None:
+        self._history_rowids: dict[str, list[int]] = {}
+        self._history_last_versions: dict[str, bytes] = {}
+        self._history_nonmonotone: set[str] = set()
+        if not hasattr(self, "_history_nonmonotone_logged"):
+            self._history_nonmonotone_logged: set[str] = set()
+        self._history_authors: dict[
+            str, tuple[int, dict[str, int], dict[str, Any] | None]
+        ] = {}
+        self._history_member_add: dict[tuple[str, str], tuple[int, bytes, bool]] = {}
+
+
+    def _remember_history(self, index: dict[Any, Any], key: Any, value: Any) -> None:
+        if not self._db.in_transaction:
+            index[key] = value
+
+
+    def _doc_rowids(self, doc_id: str) -> tuple[list[int], bool]:
+        cached = (
+            None if self._db.in_transaction else self._history_rowids.get(doc_id)
+        )
+        rowids = list(cached) if cached is not None else []
+        previous = (
+            self._history_last_versions.get(doc_id) if cached is not None else None
+        )
+        monotone = cached is None or doc_id not in self._history_nonmonotone
+        for rowid, raw_version in self._db.execute(
+            "SELECT rowid, version FROM commits WHERE doc_id = ? AND rowid > ? "
+            "ORDER BY rowid",
+            (doc_id, rowids[-1] if rowids else 0),
+        ):
+            version = bytes(raw_version)
+            if previous is not None and not _state_covers(version, previous):
+                monotone = False
+            rowids.append(int(rowid))
+            previous = version
+        if not self._db.in_transaction:
+            self._history_rowids[doc_id] = rowids
+            if previous is not None:
+                self._history_last_versions[doc_id] = previous
+            if not monotone:
+                self._history_nonmonotone.add(doc_id)
+                if doc_id not in self._history_nonmonotone_logged:
+                    _LOG.warning(
+                        "orgfs document history is non-monotone; export uses full scan: "
+                        "space=%s doc=%s",
+                        self.space_id,
+                        doc_id,
+                    )
+                    self._history_nonmonotone_logged.add(doc_id)
+        return rowids, monotone
+
+
+    def _history_attribution(
+        self, doc_id: str
+    ) -> tuple[dict[str, int], dict[str, Any] | None]:
+        after, counts, latest = self._history_authors.get(doc_id, (0, {}, None))
+        if self._db.in_transaction:
+            after, counts, latest = 0, {}, None
+        counts = dict(counts)
+        for rowid, raw in self._db.execute(
+            "SELECT rowid, envelope_bytes FROM commits "
+            "WHERE doc_id = ? AND rowid > ? ORDER BY rowid",
+            (doc_id, after),
+        ):
+            origin = self._decode_envelope(bytes(raw))["origin"]
+            author = str(origin["author"])
+            counts[author] = counts.get(author, 0) + 1
+            latest = origin
+            after = int(rowid)
+        self._remember_history(self._history_authors, doc_id, (after, counts, latest))
+        return counts, latest
+
+
+    def _first_uncovered(self, rowids: list[int], vv: bytes) -> int:
+        if not vv or not rowids:
+            return 0
+        have = _decode_state_vector(vv)
+
+        def covered(position: int) -> bool:
+            row = self._db.execute(
+                "SELECT version FROM commits WHERE rowid = ?", (rowids[position],)
+            ).fetchone()
+            return all(
+                have.get(client, 0) >= clock
+                for client, clock in _decode_state_vector(bytes(row[0])).items()
+            )
+
+        if covered(len(rowids) - 1):
+            return len(rowids)
+        low, high = 0, len(rowids) - 1
+        while low < high:
+            middle = (low + high) // 2
+            if covered(middle):
+                low = middle + 1
+            else:
+                high = middle
+        return low
+
+
+    def _export_since_full_scan(
+        self, doc_id: str, vv: bytes, *, offset: int, max_bytes: int
+    ) -> ExportPage:
+        rows = self._db.execute(
+            "SELECT version, envelope_bytes FROM commits "
+            "WHERE doc_id = ? ORDER BY rowid",
+            (doc_id,),
+        ).fetchall()
+        candidates = [
+            bytes(row["envelope_bytes"])
+            for row in rows
+            if not (vv and _state_covers(vv, bytes(row["version"])))
+        ]
+        index = offset
+        selected: list[bytes] = []
+        size = len(b'{"envelopes":[]}')
+        while index < len(candidates):
+            envelope = candidates[index]
+            grown = size + 4 * ((len(envelope) + 2) // 3) + 2 + bool(selected)
+            if grown > max_bytes:
+                if not selected:
+                    selected.append(envelope)
+                    index += 1
+                break
+            selected.append(envelope)
+            size = grown
+            index += 1
+        next_cursor = (
+            self._cursor(doc_id, index, vv) if index < len(candidates) else None
+        )
+        return ExportPage(tuple(selected), next_cursor, ())
+
+
+    def export_since(
+        self, doc_id: str, vv: bytes, *, cursor: str | None, max_bytes: int
+    ) -> ExportPage:
+        _wire_doc_id(doc_id)
+        if max_bytes <= 0:
+            raise StoreError("invalid-argument", "max_bytes must be positive")
+        with self._lock:
+            self._raise_if_retired(doc_id)
+            roots = _doc_roots(self._docs["meta"])
+            snapshot_points = roots.get("snapshotPoints")
+            point = (
+                snapshot_points.get(doc_id)
+                if isinstance(snapshot_points, dict)
+                else None
+            )
+            snapshot_id = point.get("snapshotId") if isinstance(point, dict) else None
+            if isinstance(snapshot_id, str):
+                snapshot_row = self._db.execute(
+                    "SELECT frontier, manifest_json FROM snapshots "
+                    "WHERE doc_id = ? AND snapshot_id = ?",
+                    (doc_id, snapshot_id),
+                ).fetchone()
+                if snapshot_row is not None and not self._covered(
+                    bytes(snapshot_row["frontier"]), vv
+                ):
+                    try:
+                        manifest = json.loads(str(snapshot_row["manifest_json"]))
+                    except json.JSONDecodeError as exc:
+                        raise StoreError(
+                            "invalid-argument", "stored snapshot manifest is invalid"
+                        ) from exc
+                    if not isinstance(manifest, dict):
+                        raise StoreError(
+                            "invalid-argument", "stored snapshot manifest is invalid"
+                        )
+                    return ExportPage((), None, (manifest,))
+            offset = self._decode_cursor(cursor, doc_id, vv) if cursor else 0
+            rowids, monotone = self._doc_rowids(doc_id)
+            if not monotone:
+                return self._export_since_full_scan(
+                    doc_id, vv, offset=offset, max_bytes=max_bytes
+                )
+            start = self._first_uncovered(rowids, vv)
+            index = start + offset
+            selected: list[bytes] = []
+            size = len(b'{"envelopes":[]}')
+            while index < len(rowids):
+                rows = self._db.execute(
+                    "SELECT envelope_bytes FROM commits WHERE doc_id = ? "
+                    "AND rowid >= ? ORDER BY rowid LIMIT ?",
+                    (doc_id, rowids[index], 64),
+                ).fetchall()
+                full = False
+                for row in rows:
+                    envelope = bytes(row[0])
+                    grown = size + 4 * ((len(envelope) + 2) // 3) + 2 + bool(selected)
+                    if grown > max_bytes:
+                        if not selected:
+                            selected.append(envelope)
+                            index += 1
+                        full = True
+                        break
+                    selected.append(envelope)
+                    size = grown
+                    index += 1
+                if full or not rows:
+                    break
+            next_cursor = (
+                self._cursor(doc_id, index - start, vv) if index < len(rowids) else None
+            )
+            return ExportPage(tuple(selected), next_cursor, ())
+
+
     def has_unbroadcast_local_doc(self, doc_id: str) -> bool:
         """Return whether this node has unpublished work on one physical doc."""
 
@@ -95,17 +301,8 @@ class StoreSnapshots:
             doc = self._doc(doc_id)
             body = doc.get_update()
             digest = hashlib.sha256(body).hexdigest()
-            authors: dict[str, int] = {}
-            latest: dict[str, Any] | None = None
-            for row in self._db.execute(
-                "SELECT envelope_bytes FROM commits WHERE doc_id = ? ORDER BY rowid",
-                (doc_id,),
-            ):
-                envelope = self._decode_envelope(bytes(row[0]))
-                origin = envelope["origin"]
-                author = str(origin["author"])
-                authors[author] = authors.get(author, 0) + 1
-                latest = origin
+            counts, latest = self._history_attribution(doc_id)
+            authors = dict(counts)
             manifest = SnapshotManifest(
                 space_id=self.space_id,
                 doc_id=doc_id,
@@ -146,14 +343,8 @@ class StoreSnapshots:
 
         _wire_doc_id(doc_id)
         with self._lock:
-            authors = {
-                str(self._decode_envelope(bytes(row[0]))["origin"]["author"])
-                for row in self._db.execute(
-                    "SELECT envelope_bytes FROM commits WHERE doc_id = ? ORDER BY rowid",
-                    (doc_id,),
-                )
-            }
-        return tuple(sorted(authors))
+            counts, _latest = self._history_attribution(doc_id)
+        return tuple(sorted(counts))
 
 
     def document_covers_member_add(self, doc_id: str, user: str) -> bool:
@@ -164,17 +355,30 @@ class StoreSnapshots:
         if required is None:
             return False
         with self._lock:
-            for row in self._db.execute(
-                "SELECT envelope_bytes FROM commits WHERE doc_id = ? ORDER BY rowid",
-                (doc_id,),
+            key = (doc_id, user)
+            cached = self._history_member_add.get(key)
+            after = 0
+            if cached is not None and cached[1] == required:
+                if cached[2]:
+                    return True
+                after = cached[0]
+            wanted = _decode_state_vector(required)
+            for rowid, raw in self._db.execute(
+                "SELECT rowid, envelope_bytes FROM commits "
+                "WHERE doc_id = ? AND rowid > ? ORDER BY rowid",
+                (doc_id, after),
             ):
                 try:
-                    envelope = self._decode_envelope(bytes(row[0]))
+                    envelope = self._decode_envelope(bytes(raw))
                     frontier = _unb64(str(envelope["origin"]["metaFrontier"]))
                 except (KeyError, StoreError, TypeError):
                     return False
-                if _state_covers(frontier, required):
+                actual = _decode_state_vector(frontier)
+                after = int(rowid)
+                if all(actual.get(client, 0) >= clock for client, clock in wanted.items()):
+                    self._remember_history(self._history_member_add, key, (after, required, True))
                     return True
+            self._remember_history(self._history_member_add, key, (after, required, False))
         return False
 
 

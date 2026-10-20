@@ -1,4 +1,31 @@
-"""Coordinator core: construction, reconciliation and cleanup rows."""
+"""Coordinator core: construction, reconciliation and cleanup rows.
+
+Terminal worker cleanup converges instead of parking (2026-10-18, Allen:
+"PAC should reclaim workers automatically; no agent may be left behind"):
+
+* ``attention`` is a visible projection, not a terminal state.  Every failed
+  evaluation counts one attempt, and the fallback sweep keeps re-evaluating
+  the intent until it reaches ``complete``.
+* A closed managed graph whose receipt has no cleanup intent (closed before
+  schema 16 introduced intents) gets the same intent ``close_workflow``
+  would have written, then follows the ordinary cleanup path.
+* An observed process is this actor's own stale incarnation when its strict
+  PAC marker names exactly this graph and actor node, or when it carries no
+  marker and its agent entity token equals the receipt's token.  Cleanup
+  stops such a process with its observed fence; a marker naming another
+  graph or node, or a foreign entity token, still fails closed.
+* An activation without a marker (a launch that reported failure) proves
+  nothing during cleanup: an unmarked process no longer "matches" it, and a
+  NULL receipt token never matches an observed token.
+* A marker-proven incarnation whose receipt never recorded a token (launch
+  reported failure while the process came up) adopts the observed token, so
+  the PAC GC can later prove the agent incarnation and remove it.  Adoption
+  widens trust from "may stop" to "GC may delete", so it additionally needs
+  the node's journal to show that marker was issued here: an event carrying
+  it as ``identityMarker``, or a ``launch_failed`` whose incarnation + 1 and
+  effect id rebuild it (the ``_prepare_up`` marker shape).  A marker that
+  only names this node is still stopped but lends no token.
+"""
 
 from __future__ import annotations
 
@@ -18,8 +45,15 @@ from hyprial.daemon.impl.pac.actors.coordinator.types import (
     LaunchResolver,
     RuntimeObservation,
     WorkerCleanupComplete,
+    cleanup_operation_base,
     now_ms,
 )
+from hyprial.daemon.impl.pac.actors.marker import (
+    pac_worker_fields,
+    pac_worker_marker,
+)
+
+OPEN_CLEANUP = frozenset({"pending", "attention"})
 
 
 class _CoordinatorCore:
@@ -155,6 +189,115 @@ class _CoordinatorCore:
         return markers
 
     @staticmethod
+    def _own_incarnation(
+        graph_id: str,
+        node_id: str,
+        receipt: Any,
+        observation: RuntimeObservation,
+    ) -> bool:
+        marker = pac_worker_marker(observation.identity_marker)
+        if observation.identity_marker is not None:
+            if marker is None:
+                return False
+            marker_graph, marker_node, _incarnation, _effect = pac_worker_fields(marker)
+            return marker_graph == graph_id and marker_node == node_id
+        return (
+            receipt is not None
+            and receipt["agent_entity_token"] is not None
+            and observation.agent_entity_token == receipt["agent_entity_token"]
+        )
+
+    def _issued_marker(self, graph_id: str, node_id: str, marker: str) -> bool:
+        for row in self.store._db.execute(
+            "SELECT type,data_json FROM journal WHERE graph_id=? "
+            "AND type IN ('actor_up','launch_failed','actor_lost','actor_down',"
+            "'actor_restored','actor_unowned')",
+            (graph_id,),
+        ):
+            data = json.loads(row["data_json"])
+            if data.get("nodeId") != node_id:
+                continue
+            if data.get("identityMarker") == marker:
+                return True
+            if (
+                row["type"] == "launch_failed"
+                and isinstance(data.get("incarnation"), int)
+                and data.get("effectId")
+                and marker
+                == f"pac:{graph_id}:{node_id}:{data['incarnation'] + 1}:{data['effectId']}"
+            ):
+                return True
+        return False
+
+    def _adopt_receipt_token(
+        self, graph_id: str, node_id: str, observation: RuntimeObservation
+    ) -> None:
+        if observation.agent_entity_token is None:
+            return
+        if not self._issued_marker(
+            graph_id, node_id, str(observation.identity_marker)
+        ):
+            return
+        db = self.store.write()
+        try:
+            db.execute(
+                "UPDATE workflow_worker_receipts SET agent_entity_token=? "
+                "WHERE graph_id=? AND actor_node=? AND agent_entity_token IS NULL",
+                (observation.agent_entity_token, graph_id, node_id),
+            )
+            db.commit()
+        except BaseException:
+            db.rollback()
+            raise
+
+    def _backfill_cleanup_intent(
+        self, graph_id: str, receipt: Any
+    ) -> dict[str, Any] | None:
+        db = self.store.write()
+        try:
+            graph = self.store.graph(graph_id)
+            if graph is None or graph["closed_at"] is None:
+                db.rollback()
+                return None
+            at = int(self.clock())
+            operation_id = f"pac-cleanup:{uuid4().hex}"
+            inserted = db.execute(
+                "INSERT OR IGNORE INTO workflow_worker_cleanup_intents "
+                "(graph_id,actor_node,actor_name,actor_uri,operation_id,state,"
+                "attempts,created_at,updated_at) VALUES (?,?,?,?,?,'pending',0,?,?)",
+                (
+                    graph_id,
+                    receipt["actor_node"],
+                    receipt["actor_name"],
+                    receipt["actor_uri"],
+                    operation_id,
+                    at,
+                    at,
+                ),
+            )
+            if inserted.rowcount:
+                append_event(
+                    db,
+                    graph_id=graph_id,
+                    version=graph["version"],
+                    type="workflow_changed",
+                    at=at,
+                    data={
+                        "workerCleanup": "pending",
+                        "actorNode": receipt["actor_node"],
+                        "actorName": receipt["actor_name"],
+                        "operationId": operation_id,
+                    },
+                )
+            db.commit()
+        except BaseException:
+            db.rollback()
+            raise
+        return self.store.workflow_worker_cleanup_intent(
+            graph_id, str(receipt["actor_node"])
+        )
+
+    @staticmethod
     def _observation_document(observation: RuntimeObservation) -> dict[str, Any]:
         return {
             "present": observation.present,
@@ -171,6 +314,8 @@ class _CoordinatorCore:
         intent: dict[str, Any],
         reason: str,
         observation: dict[str, Any],
+        *,
+        count_attempt: bool = True,
     ) -> None:
         db = self.store.write()
         try:
@@ -197,9 +342,17 @@ class _CoordinatorCore:
             ] != reason
             db.execute(
                 "UPDATE workflow_worker_cleanup_intents SET state='attention',"
-                "attention_reason=?,last_observation_json=?,updated_at=? "
+                "attention_reason=?,last_observation_json=?,updated_at=?,"
+                "attempts=attempts+? "
                 "WHERE graph_id=? AND actor_node=?",
-                (reason, observation_json, at, graph_id, node.node_id),
+                (
+                    reason,
+                    observation_json,
+                    at,
+                    1 if count_attempt else 0,
+                    graph_id,
+                    node.node_id,
+                ),
             )
             if changed:
                 append_event(
@@ -247,9 +400,12 @@ class _CoordinatorCore:
 
         node = self.store.node(graph_id, node_id)
         intent = self.store.workflow_worker_cleanup_intent(graph_id, node_id)
-        if node is None or intent is None or intent["state"] != "pending":
+        if node is None or intent is None or intent["state"] not in OPEN_CLEANUP:
             return False
-        if operation_id is not None and intent["operation_id"] != operation_id:
+        if (
+            operation_id is not None
+            and intent["operation_id"] != cleanup_operation_base(operation_id)
+        ):
             return False
         self._cleanup_attention(
             graph_id,
@@ -283,7 +439,7 @@ class _CoordinatorCore:
                 graph is None
                 or current is None
                 or current["operation_id"] != intent["operation_id"]
-                or current["state"] != "pending"
+                or current["state"] not in OPEN_CLEANUP
             ):
                 db.rollback()
                 return

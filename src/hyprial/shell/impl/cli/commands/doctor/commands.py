@@ -10,9 +10,15 @@ import typer
 
 from hyprial.shell.impl.cli.commands.common.root import app
 from hyprial.shell.impl.cli.commands.common.support import JsonObject
+from hyprial.shell.impl.cli.commands.doctor.dsh_tui import (
+    _dsh_tui_doctor_check,
+)
 from hyprial.shell.impl.cli.commands.doctor.route_session import (
     _route_session_doctor_check,
 )
+from hyprial.shell.impl.cli.commands.doctor.zenoh import _zenoh_doctor_check
+
+
 def _tailcat_sidecar_doctor_check() -> JsonObject:
     """Tailcat cutover check: the sidecar is locatable and passes version.
 
@@ -149,6 +155,9 @@ def _doctor_result() -> JsonObject:
             dsh_check = _dsh_doctor_check(result)
             if dsh_check is not None:
                 checks.append(dsh_check)
+            dsh_tui_check = _dsh_tui_doctor_check(result)
+            if dsh_tui_check is not None:
+                checks.append(dsh_tui_check)
             lark_check = _lark_inbound_doctor_check(result)
             if lark_check is not None:
                 checks.append(lark_check)
@@ -318,75 +327,6 @@ def _routine_health_doctor_check() -> JsonObject | None:
             ),
         }
     return check
-
-
-def _zenoh_doctor_check(result: JsonObject) -> JsonObject:
-    """Check the running daemon's explicit Zenoh transport endpoints.
-
-    Discovery is disabled by design, so a daemon with neither a listen nor a
-    connect endpoint is deterministically isolated from every other node.
-    That is a hard failure (not a warning): the node cannot send or receive
-    across the mesh no matter what.
-    """
-
-    zenoh = result.get("zenoh")
-    if not isinstance(zenoh, dict):
-        return {
-            "name": "zenoh",
-            "status": "warn",
-            "detail": "daemon did not report Zenoh endpoints; upgrade the daemon",
-        }
-    session = zenoh.get("session")
-    if isinstance(session, dict) and session.get("state") in {"closed", "degraded"}:
-        return {
-            "name": "zenoh",
-            "status": "fail",
-            "detail": (
-                "the Zenoh session is "
-                f"{session.get('state')}; declarations and publishes cannot "
-                "reach the mesh until it reopens"
-            ),
-            "metrics": session,
-            "action": {
-                "command": "grep 'zenoh.session' ~/.hyprial/state/logs/daemon.jsonl",
-                "description": (
-                    "Inspect the session close/rebuild events; deploy the "
-                    "session-reacquire fix or restart the daemon."
-                ),
-            },
-        }
-    listen = zenoh.get("listen")
-    connect = zenoh.get("connect")
-    if not isinstance(listen, list) or not isinstance(connect, list):
-        listen = connect = ()
-    if not listen and not connect:
-        return {
-            "name": "zenoh",
-            "status": "fail",
-            "detail": (
-                "no explicit Zenoh listen/connect endpoints are configured and "
-                "auto-discovery is disabled; this node cannot reach any other "
-                "node (configuration check: no endpoints means no peers by "
-                "construction)"
-            ),
-            "action": {
-                "command": (
-                    "hyprial init --listen tcp/<this-host>:<port> "
-                    "--connect tcp/<peer-host>:<port>"
-                ),
-                "description": "Configure explicit Zenoh endpoints, then restart the daemon.",
-            },
-        }
-    return {
-        "name": "zenoh",
-        "status": "ok",
-        "detail": (
-            "explicit Zenoh endpoints are configured; configured is not "
-            "reachable -- actual peer connectivity must be proven by a real "
-            "send/ack"
-        ),
-        "metrics": {"listen": list(listen), "connect": list(connect)},
-    }
 
 
 def _maintenance_doctor_check(result: JsonObject) -> JsonObject | None:

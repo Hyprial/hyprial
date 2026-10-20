@@ -19,7 +19,7 @@ from hyprial.kernel import canonical_user_uri, ipc_errors
 from hyprial.daemon.impl.orgfs.api import OrgFsError, SpaceInfo
 from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
 
-from hyprial.daemon.impl.org.document  import OrgDocumentError, parse_document
+from hyprial.daemon.impl.org.document  import OrgDocumentError, parse_document, validate_document
 from hyprial.daemon.impl.org.store  import OrgContextStore, OrgStoreError, OrgVersionError, PendingRecord
 
 
@@ -183,10 +183,39 @@ class OrgContextOrgFsBridge:
                 detail=str(error),
             )
             return False
+        try:
+            content = accepted.decode("utf-8")
+        except UnicodeError as error:
+            self._log(
+                "warn",
+                "org.context.orgfs_publish_failed",
+                detail=f"accepted org-context is not valid UTF-8: {error}",
+            )
+            return False
+        # This method is a writer of context/candidates/<user>.md.  Validate
+        # the exact bytes about to be published through the one entry point
+        # before the publish marker exists, so a corrupt accepted slot is
+        # refused and never leaves a publish-pending behind.
+        validation = validate_document(content)
+        if not validation.ok:
+            issue = validation.issue
+            location = (
+                "unknown location"
+                if issue is None
+                else f"line {issue.line}, column {issue.column}"
+            )
+            reason = "org-context is invalid" if issue is None else issue.reason
+            self._log(
+                "warn",
+                "org.context.orgfs_publish_failed",
+                detail=(
+                    f"refusing to publish invalid org-context: {location}: {reason}"
+                ),
+            )
+            return False
         digest = hashlib.sha256(accepted).hexdigest()
         try:
             self.store.queue_orgfs_publish(digest)
-            content = accepted.decode("utf-8")
             space = self._space(required=False)
             if space is None:
                 return False

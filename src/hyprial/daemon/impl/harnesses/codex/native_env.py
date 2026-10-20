@@ -28,6 +28,7 @@ from hyprial.identity import (
 from hyprial.daemon.impl.harnesses.worker_channel  import WorkerChannel
 from hyprial.daemon.impl.harnesses.codex.process import (
     CodexExecutableResolutionError,
+    codex_launch_executables,
     resolve_codex_executable,
 )
 from hyprial.daemon.impl.harnesses.codex.projection import (
@@ -125,6 +126,9 @@ def _verify_codex_native_inventory(
     launched = functools.cache(
         (lambda: codex_executable) if isinstance(codex_executable, Path) else codex_executable
     )
+    # The set of executables the launch chain may legitimately run: the
+    # resolved launch target plus, for an npm shim, its vendored binary.
+    acceptable = functools.cache(lambda: codex_launch_executables(launched()))
     stack = [native_root]
     while stack:
         directory = stack.pop()
@@ -160,7 +164,7 @@ def _verify_codex_native_inventory(
                         raise CodexAgentHomeError(
                             f"Codex arg0 alias {relative} -> {link} is refused: {error}"
                         ) from error
-                    if target == expected_target:
+                    if target is not None and target in acceptable():
                         continue
                     raise CodexAgentHomeError(
                         f"Codex arg0 alias {relative} -> {link} is an unauthorized "

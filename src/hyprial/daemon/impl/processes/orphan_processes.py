@@ -11,6 +11,10 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from uuid import uuid4
 
+from hyprial.daemon.impl.mcp.channel.ownership import (
+    _process_identities_comparable,
+    _process_identities_match,
+)
 from hyprial.kernel import ActorRuntime, ActorSpec, AdmissionResult
 from hyprial.kernel import EffectCompleted, EffectLane, EffectRequest
 from hyprial.kernel import atomic_json_write
@@ -25,6 +29,11 @@ from hyprial.kernel import ProcessLiveness, ProcessLivenessState
 from .process_owner import ProcessOwner
 from .storage.journal import CustodyJournal
 _DEFAULT_UNKNOWN_THRESHOLD_SECONDS = 60.0
+
+#: Detail stamped on a custody record retired because the pid it names now
+#: belongs to a different process. Kept as one literal so the retirement log
+#: and the probe share the same wording instead of drifting apart.
+_IDENTITY_REPLACED_DETAIL = "process identity replaced (pid reused)"
 
 
 @dataclass(slots=True)
@@ -43,6 +52,24 @@ class _OrphanEntry:
     detail: str | None = None
     unknown_since_ms: int | None = None
     last_probe_error: str | None = None
+
+
+def _process_error(process: ManagedHarnessProcess | None) -> str | None:
+    """Best-effort child-process failure text for a retirement record.
+
+    A retirement says only that the probe observed ``dead``; without the
+    managed process's own last error the log cannot distinguish "the
+    harness crashed" from "the harness never launched".  Reading it here
+    keeps the custody registry free of any harness-specific knowledge.
+    """
+
+    if process is None:
+        return None
+    error = getattr(process, "last_error", None)
+    if error is None:
+        return None
+    text = str(error)
+    return text[:400] if text else None
 
 
 class OrphanProcessRegistry:
@@ -308,7 +335,38 @@ class OrphanProcessRegistry:
                     self._retire_locked(orphan_id)
                     dirty.add(orphan_id)
                     retired += 1
-                    self._log("info", "harness.orphan.retired", entry, None)
+                    fields = {
+                        "state": str(observation.state.value),
+                        "pidKnown": entry.pid is not None,
+                        "markerKnown": entry.marker is not None,
+                        "lifetimeMs": (
+                            now_ms - entry.first_seen_ms
+                            if entry.first_seen_ms is not None
+                            else None
+                        ),
+                        "processError": _process_error(process),
+                    }
+                    detail = observation.detail or entry.detail
+                    if observation.detail == _IDENTITY_REPLACED_DETAIL:
+                        # A terminal replacement, not a confirmed exit: say so
+                        # at warn level so the reason survives in the journal.
+                        # The same structured fields ride along, because the
+                        # reader needs the child's own error in this case too.
+                        self._log(
+                            "warn",
+                            "harness.orphan.identity_replaced",
+                            entry,
+                            detail,
+                            **fields,
+                        )
+                    else:
+                        self._log(
+                            "info",
+                            "harness.orphan.retired",
+                            entry,
+                            detail,
+                            **fields,
+                        )
                     continue
                 dirty.add(orphan_id)
             if (
@@ -419,15 +477,29 @@ class OrphanProcessRegistry:
     def _probe_identity(self, pid: int, expected_marker: str) -> ProcessLiveness:
         marker = self._read_identity(pid)
         if marker is not None:
-            if marker != expected_marker:
-                raise ProcessLivenessProbeError(
-                    f"process identity changed for pid {pid}"
+            if _process_identities_match(expected_marker, marker):
+                return ProcessLiveness(
+                    ProcessLivenessState.ALIVE,
+                    observed=True,
+                    pid=pid,
+                    marker=expected_marker,
                 )
-            return ProcessLiveness(
-                ProcessLivenessState.ALIVE,
-                observed=True,
-                pid=pid,
-                marker=expected_marker,
+            if _process_identities_comparable(expected_marker, marker):
+                # A shared birth component exists and differs: the pid now
+                # belongs to a different process, so the one this record holds
+                # custody for is gone. That is a terminal observation, not an
+                # error to retry once a second: comparing the raw strings here
+                # is what produced the 2026-10-09 24h ``probe_failed`` storm
+                # (83,865 events) for a process that had never died.
+                return ProcessLiveness(
+                    ProcessLivenessState.DEAD,
+                    observed=True,
+                    pid=pid,
+                    marker=expected_marker,
+                    detail=_IDENTITY_REPLACED_DETAIL,
+                )
+            raise ProcessLivenessProbeError(
+                f"process identity changed for pid {pid}"
             )
         try:
             os.killpg(pid, 0)
@@ -450,6 +522,21 @@ class OrphanProcessRegistry:
             detail="process exists but its identity cannot be read",
         )
 
+    def _retire_replaced(
+        self, orphan_id: str, entry: _OrphanEntry, detail: str
+    ) -> None:
+        """Retire custody whose pid now belongs to a different process."""
+
+        with self._lock:
+            if self._entries.pop(orphan_id, None) is None:
+                return
+            owned = self._processes.pop(orphan_id, None)
+            if owned is not None:
+                self._process_keys.pop(id(owned), None)
+            self._cleanup_in_flight.discard(orphan_id)
+            self._save_locked()
+        self._log("warn", "harness.orphan.identity_replaced", entry, detail)
+
     def _request_cleanup(
         self,
         orphan_id: str,
@@ -467,11 +554,23 @@ class OrphanProcessRegistry:
                     process.stop()
                 elif entry.pid is not None and entry.marker is not None:
                     marker = self._identity_reader(entry.pid)
-                    if marker != entry.marker:
+                    if marker is not None and _process_identities_match(
+                        entry.marker, marker
+                    ):
+                        os.killpg(entry.pid, signal.SIGTERM)
+                    elif marker is not None and _process_identities_comparable(
+                        entry.marker, marker
+                    ):
+                        # The pid is a different process now: there is nothing
+                        # of ours left to stop and signalling it would hit an
+                        # innocent one. Retire the custody instead of failing.
+                        self._retire_replaced(
+                            orphan_id, entry, _IDENTITY_REPLACED_DETAIL
+                        )
+                    else:
                         raise ProcessLivenessProbeError(
                             f"process identity changed before cleanup for pid {entry.pid}"
                         )
-                    os.killpg(entry.pid, signal.SIGTERM)
             except Exception as error:
                 now_ms = self._clock_ms()
                 with self._lock:
@@ -518,6 +617,7 @@ class OrphanProcessRegistry:
         event: str,
         entry: _OrphanEntry,
         detail: str | None,
+        **fields: object,
     ) -> None:
         if self._logger is not None:
             self._logger(
@@ -528,6 +628,7 @@ class OrphanProcessRegistry:
                 harness_id=entry.harness_id,
                 pid=entry.pid,
                 detail=detail,
+                **fields,
             )
 
 

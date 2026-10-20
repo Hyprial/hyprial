@@ -211,8 +211,10 @@ if TYPE_CHECKING:
     import hyprial.daemon.impl.pac.views.missions as pac_missions
     import hyprial.daemon.impl.pac.views.overview as pac_overview
     from hyprial.daemon.impl.org.document import parse_document as parse_document
+    from hyprial.daemon.impl.org.document import validate_document as validate_document
     from hyprial.daemon.impl.adapters.lark.media.media import parse_media_ref as parse_media_ref
     from hyprial.daemon.impl.harnesses.model_provider import pi_model_args as pi_model_args
+    from hyprial.daemon.impl.harnesses.model_provider import pi_provider_environment as pi_provider_environment
     from hyprial.daemon.impl.harnesses.pi.loader import pi_sdk_launch_from_public_projection as pi_sdk_launch_from_public_projection
     from hyprial.daemon.impl.harnesses.pi.session import pi_session_id as pi_session_id
     from hyprial.daemon.impl.transfer.archive.session_files import pi_session_target as pi_session_target
@@ -253,6 +255,16 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.org.document import serialize_document as serialize_document
     from hyprial.daemon.impl.orgfs.webserver.server import serve as serve
     from hyprial.daemon.impl.mcp.channel.session import serve_channel_stdio as serve_channel_stdio
+    from hyprial.daemon.impl.harnesses.dsh_tui import DSH_TUI_EXIT_CODE_FILENAME as DSH_TUI_EXIT_CODE_FILENAME
+    from hyprial.daemon.impl.harnesses.dsh_tui import DSH_TUI_IDENTITY_FILENAME as DSH_TUI_IDENTITY_FILENAME
+    from hyprial.daemon.impl.harnesses.dsh_tui import DSH_TUI_PID_FILENAME as DSH_TUI_PID_FILENAME
+    from hyprial.daemon.impl.harnesses.dsh_tui import DSH_TUI_SPAWN_ERROR_FILENAME as DSH_TUI_SPAWN_ERROR_FILENAME
+    from hyprial.daemon.impl.harnesses.dsh_tui import process_identity_for_tui as process_identity_for_tui
+    from hyprial.daemon.impl.harnesses.dsh_tui import dsh_tui_process_gone as dsh_tui_process_gone
+    from hyprial.daemon.impl.harnesses.dsh_tui import dsh_mcp_client_row as dsh_mcp_client_row
+    from hyprial.daemon.impl.harnesses.dsh_tui import write_launch_state as write_launch_state
+    from hyprial.daemon.impl.harnesses.dsh_tui import run_dsh_carrier as run_dsh_carrier
+    from hyprial.daemon.impl.harnesses.dsh_tui import write_dsh_tui_plugin as write_dsh_tui_plugin
     from hyprial.daemon.impl.links.ports import SUMMARY_MAX_BYTES as SUMMARY_MAX_BYTES
     from hyprial.daemon.impl.links.ports import SUMMARY_REQUIRED_DATA_KEYS as SUMMARY_REQUIRED_DATA_KEYS
     from hyprial.daemon.impl.inbox.contracts.summary import summary_from_text as summary_from_text
@@ -504,6 +516,7 @@ _FACADE_EXPORTS = {
     'parse_document': ('hyprial.daemon.impl.org.document', 'parse_document'),
     'parse_media_ref': ('hyprial.daemon.impl.adapters.lark.media.media', 'parse_media_ref'),
     'pi_model_args': ('hyprial.daemon.impl.harnesses.model_provider', 'pi_model_args'),
+    'pi_provider_environment': ('hyprial.daemon.impl.harnesses.model_provider', 'pi_provider_environment'),
     'pi_sdk_launch_from_public_projection': ('hyprial.daemon.impl.harnesses.pi.loader', 'pi_sdk_launch_from_public_projection'),
     'pi_session_id': ('hyprial.daemon.impl.harnesses.pi.session', 'pi_session_id'),
     'pi_session_target': ('hyprial.daemon.impl.transfer.archive.session_files', 'pi_session_target'),
@@ -539,9 +552,19 @@ _FACADE_EXPORTS = {
     'SettleHint': ('hyprial.daemon.impl.links.ports', 'SettleHint'),
     'run_self_check': ('hyprial.daemon.impl.autoupdate.alert', 'run_self_check'),
     'run_transfer': ('hyprial.daemon.impl.transfer.orchestrator', 'run_transfer'),
+    'run_dsh_carrier': ('hyprial.daemon.impl.harnesses.dsh_tui', 'run_dsh_carrier'),
+    'write_dsh_tui_plugin': ('hyprial.daemon.impl.harnesses.dsh_tui', 'write_dsh_tui_plugin'),
     'scope_apply_url': ('hyprial.daemon.impl.adapters.lark.credentials.scopes', 'scope_apply_url'),
     'seal_envelope': ('hyprial.daemon.impl.transfer.archive.envelope', 'seal_envelope'),
     'serialize_document': ('hyprial.daemon.impl.org.document', 'serialize_document'),
+    'DSH_TUI_EXIT_CODE_FILENAME': ('hyprial.daemon.impl.harnesses.dsh_tui', 'DSH_TUI_EXIT_CODE_FILENAME'),
+    'DSH_TUI_IDENTITY_FILENAME': ('hyprial.daemon.impl.harnesses.dsh_tui', 'DSH_TUI_IDENTITY_FILENAME'),
+    'DSH_TUI_PID_FILENAME': ('hyprial.daemon.impl.harnesses.dsh_tui', 'DSH_TUI_PID_FILENAME'),
+    'DSH_TUI_SPAWN_ERROR_FILENAME': ('hyprial.daemon.impl.harnesses.dsh_tui', 'DSH_TUI_SPAWN_ERROR_FILENAME'),
+    'process_identity_for_tui': ('hyprial.daemon.impl.harnesses.dsh_tui', 'process_identity_for_tui'),
+    'dsh_tui_process_gone': ('hyprial.daemon.impl.harnesses.dsh_tui', 'dsh_tui_process_gone'),
+    'dsh_mcp_client_row': ('hyprial.daemon.impl.harnesses.dsh_tui', 'dsh_mcp_client_row'),
+    'write_launch_state': ('hyprial.daemon.impl.harnesses.dsh_tui', 'write_launch_state'),
     'SUMMARY_MAX_BYTES': ('hyprial.daemon.impl.links.ports', 'SUMMARY_MAX_BYTES'),
     'SUMMARY_REQUIRED_DATA_KEYS': ('hyprial.daemon.impl.links.ports', 'SUMMARY_REQUIRED_DATA_KEYS'),
     'summary_from_text': ('hyprial.daemon.impl.inbox.contracts.summary', 'summary_from_text'),
@@ -572,6 +595,7 @@ _FACADE_EXPORTS = {
     'valid_scope_name': ('hyprial.daemon.impl.adapters.lark.credentials.scopes', 'valid_scope_name'),
     'validate_bundle': ('hyprial.daemon.impl.transfer.archive.bundle', 'validate_bundle'),
     'validate_claude_auth_environment': ('hyprial.daemon.impl.harnesses.claude.runtime', 'validate_claude_auth_environment'),
+    'validate_document': ('hyprial.daemon.impl.org.document', 'validate_document'),
     'validate_model_selection': ('hyprial.daemon.impl.harnesses.model_provider', 'validate_model_selection'),
     'validate_profile': ('hyprial.daemon.impl.configuration.network_profile', 'validate_profile'),
     'verify_tailcat_sidecar': ('hyprial.daemon.impl.network.tailcat', 'verify_tailcat_sidecar'),
@@ -817,6 +841,7 @@ __all__ = [
     'parse_document',
     'parse_media_ref',
     'pi_model_args',
+    'pi_provider_environment',
     'pi_sdk_launch_from_public_projection',
     'pi_session_id',
     'pi_session_target',
@@ -849,6 +874,16 @@ __all__ = [
     'resolve_profile',
     'restart_failure_detail',
     'restore_followup_budget_seconds',
+    'DSH_TUI_EXIT_CODE_FILENAME',
+    'DSH_TUI_IDENTITY_FILENAME',
+    'DSH_TUI_PID_FILENAME',
+    'DSH_TUI_SPAWN_ERROR_FILENAME',
+    'process_identity_for_tui',
+    'dsh_tui_process_gone',
+    'dsh_mcp_client_row',
+    'write_launch_state',
+    'run_dsh_carrier',
+    'write_dsh_tui_plugin',
     'run_self_check',
     'run_transfer',
     'scope_apply_url',
@@ -885,6 +920,7 @@ __all__ = [
     'valid_scope_name',
     'validate_bundle',
     'validate_claude_auth_environment',
+    'validate_document',
     'validate_model_selection',
     'validate_profile',
     'verify_tailcat_sidecar',

@@ -80,6 +80,9 @@ _IPC_STATS_METHODS = frozenset(
         "agent.resume.restore",
         "agent.restore-policy",
         "agent.restore-threshold",
+        "agent.provider.login",
+        "agent.provider.logout",
+        "agent.provider.default",
         "agent.revoke",
         "agent.runtime-context",
         "agent.runtime-launch.acquire",
@@ -578,6 +581,8 @@ class _IpcDispatchMixin:
             "pac.actor.stop",
         ):
             return self._ipc_pac_write(method, params)
+        if method == "pac.gc.preview":
+            return self._ipc_pac_gc_preview()
         if method in ("workflow.status", "workflow.list", "workflow.node.inspect", "workflow.cancel", "workflow.history.list", "workflow.history.status"):
             return self._ipc_workflow_status_group(method, params)
         if method == "progress.list":
@@ -646,6 +651,17 @@ class _IpcDispatchMixin:
             # it should surface as. Translating here keeps handle()'s contract
             # (DaemonRequestError, always) without restating those codes.
             try:
+                if method in (
+                    "agent.provider.login",
+                    "agent.provider.logout",
+                    "agent.provider.default",
+                ):
+                    operator, _peer_pid = self._identity_binding_operator(
+                        params, trusted_message_origin=_trusted_message_origin
+                    )
+                    return self._handle_agent_provider(method, params, operator=operator)
+                if method == "agent.create":
+                    return self._handle_agent_create_with_default(params)
                 return self._handle_agent(method, params)
             except (AgentError, DomainCommandError) as error:
                 raise DaemonRequestError(error.code, str(error)) from error
@@ -902,6 +918,23 @@ class _IpcDispatchMixin:
                 else "FORWARDING_UNAVAILABLE"
             )
             raise DaemonRequestError(code, str(error)) from error
+
+    def _ipc_pac_gc_preview(self) -> Any:
+        """Serve the read-only PAC GC preview behind ``workflow gc --dry-run``.
+
+        The only handler sat inside the ``agent.*`` family, which a ``pac.*``
+        method never reaches, so the declared method answered
+        METHOD_NOT_FOUND.  That unreachable branch stays in registry_ops.py
+        until #1502 splits that file; removing it here would repair a debt
+        the structural baseline pins to #1502.
+        """
+
+        collector = getattr(self, "_pac_gc", None)
+        if collector is None:
+            raise DaemonRequestError(
+                "PAC_GC_UNAVAILABLE", "PAC GC service is unavailable"
+            )
+        return collector.preview()
 
     def _ipc_autoupdate_status(self) -> Any:
         return {

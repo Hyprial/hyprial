@@ -95,6 +95,31 @@ _UniqueKeyLoader.add_constructor(
 )
 
 
+def _construct_timestamp(loader: _UniqueKeyLoader, node: yaml.Node) -> object:
+    """Construct a timestamp, turning an impossible date into a located error.
+
+    PyYAML resolves ``2026-99-99`` to the timestamp tag and then builds a
+    ``date``; the construction raises a bare ``ValueError`` with no mark, so
+    a caller cannot name the line.  Re-raise it as a ``ConstructorError`` at
+    the node, which the one validation entry point already locates.
+    """
+
+    try:
+        return yaml.SafeLoader.construct_yaml_timestamp(loader, node)
+    except (ValueError, OverflowError) as error:
+        raise ConstructorError(
+            "while constructing a timestamp",
+            node.start_mark,
+            str(error),
+            node.start_mark,
+        ) from error
+
+
+_UniqueKeyLoader.add_constructor(
+    "tag:yaml.org,2002:timestamp", _construct_timestamp
+)
+
+
 class OrgDocumentError(ValueError):
     """The document cannot safely participate in the org-context protocol."""
 
@@ -232,40 +257,127 @@ def _validate_schema(data: dict[str, Any]) -> None:
         _optional_string(resident, "serves", label)
 
 
-def parse_document(source: str) -> OrgDocument:
-    """Parse and validate exactly one fenced YAML segment from Markdown."""
+@dataclass(frozen=True, slots=True)
+class DocumentIssue:
+    """Where and why one document failed validation (1-based file position)."""
+
+    line: int
+    column: int
+    reason: str
+
+    def to_json(self) -> dict[str, object]:
+        return {"line": self.line, "column": self.column, "reason": self.reason}
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentValidation:
+    """The single result of validating one org-context document.
+
+    ``ok`` is true only together with a fully validated ``document``.  On
+    failure ``issue`` names the file line, column and reason.  Validation never
+    raises for malformed input: it is the one entry point a hand-edit
+    pre-flight and every in-code writer share.
+    """
+
+    ok: bool
+    document: OrgDocument | None = None
+    issue: DocumentIssue | None = None
+
+
+def _fenced_block_line(source: str, match: re.Match[str]) -> int:
+    return source.count("\n", 0, match.start("yaml")) + 1
+
+
+def _yaml_failure_issue(
+    source: str, match: re.Match[str], error: yaml.YAMLError
+) -> DocumentIssue:
+    block_line = _fenced_block_line(source, match)
+    mark = getattr(error, "problem_mark", None)
+    if mark is None:
+        line, column = block_line, 1
+    else:
+        line = block_line + int(mark.line)
+        column = int(mark.column) + 1
+    context = getattr(error, "context", None)
+    problem = getattr(error, "problem", None)
+    if problem and context and str(context) != str(problem):
+        reason = f"{context}: {problem}"
+    else:
+        reason = problem or context or "invalid YAML"
+    return DocumentIssue(line, column, str(reason))
+
+
+def validate_document(source: object) -> DocumentValidation:
+    """Validate the structured part of one org-context document.
+
+    This is the single validation function for the org-context format.  It
+    returns a :class:`DocumentValidation` with a 1-based file line, column and
+    reason on failure; it never raises for malformed input, and an invalid
+    document is never returned as ``document``.  ``parse_document`` delegates
+    here, and every in-code writer calls this before it writes.
+    """
 
     if not isinstance(source, str):
-        raise TypeError("org-context source must be text")
+        return DocumentValidation(
+            ok=False,
+            issue=DocumentIssue(1, 1, "org-context source must be text"),
+        )
     matches = list(_YAML_FENCE.finditer(source))
     if len(matches) != 1:
-        raise OrgDocumentError(
-            "org-context must contain exactly one fenced YAML block"
+        if matches:
+            line = source.count("\n", 0, matches[1].start()) + 1
+        else:
+            line = 1
+        return DocumentValidation(
+            ok=False,
+            issue=DocumentIssue(
+                line, 1, "org-context must contain exactly one fenced YAML block"
+            ),
         )
     match = matches[0]
     yaml_text = match.group("yaml")
     try:
         raw = yaml.load(yaml_text, Loader=_UniqueKeyLoader)
     except yaml.YAMLError as error:
-        raise OrgDocumentError(f"org-context YAML is invalid: {error}") from error
-    data = _validate_record(raw, "org-context YAML")
-    for key, expected_type in _REQUIRED_TOP_LEVEL.items():
-        value = data.get(key)
-        if not isinstance(value, expected_type):
-            label = "an object" if expected_type is dict else "an array"
-            raise OrgDocumentError(f"{key} must be {label}")
-    _validate_schema(data)
-
-    markdown = source[: match.start()] + source[match.end() :]
-    if not markdown.strip():
-        raise OrgDocumentError("org-context Markdown body must not be empty")
-    meta = _validate_meta(data["meta"])
-    return OrgDocument(
-        source=source,
-        data=data,
-        meta=meta,
-        markdown=markdown,
+        return DocumentValidation(ok=False, issue=_yaml_failure_issue(source, match, error))
+    except (ValueError, TypeError, OverflowError) as error:
+        # Belt and braces: a constructor that raises outside the YAML error
+        # hierarchy must still be a located result, never an exception.
+        return DocumentValidation(
+            ok=False,
+            issue=DocumentIssue(
+                _fenced_block_line(source, match), 1, f"invalid YAML value: {error}"
+            ),
+        )
+    block_line = _fenced_block_line(source, match)
+    try:
+        data = _validate_record(raw, "org-context YAML")
+        for key, expected_type in _REQUIRED_TOP_LEVEL.items():
+            value = data.get(key)
+            if not isinstance(value, expected_type):
+                label = "an object" if expected_type is dict else "an array"
+                raise OrgDocumentError(f"{key} must be {label}")
+        _validate_schema(data)
+        markdown = source[: match.start()] + source[match.end() :]
+        if not markdown.strip():
+            raise OrgDocumentError("org-context Markdown body must not be empty")
+        meta = _validate_meta(data["meta"])
+    except OrgDocumentError as error:
+        return DocumentValidation(ok=False, issue=DocumentIssue(block_line, 1, str(error)))
+    return DocumentValidation(
+        ok=True,
+        document=OrgDocument(source=source, data=data, meta=meta, markdown=markdown),
     )
+
+
+def parse_document(source: str) -> OrgDocument:
+    """Parse and validate exactly one fenced YAML segment from Markdown."""
+
+    result = validate_document(source)
+    if not result.ok or result.document is None:
+        issue = result.issue or DocumentIssue(1, 1, "org-context is invalid")
+        raise OrgDocumentError(f"{issue.reason} (line {issue.line}, column {issue.column})")
+    return result.document
 
 
 def serialize_document(document: OrgDocument) -> str:

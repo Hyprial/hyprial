@@ -11,6 +11,7 @@ from hyprial.shell.impl.cli.output import (
     notice,
     progress,
     render_generic,
+    warn,
 )
 
 from collections.abc import Mapping
@@ -28,6 +29,7 @@ import json
 import sys
 import typer
 
+from hyprial.identity import ORG_SPACE_PREFIX
 from hyprial.shell.impl.cli.commands.common.support import JsonObject
 from hyprial.shell.impl.cli.commands.org.acl import acl_app
 
@@ -37,26 +39,210 @@ org_app = typer.Typer(
         "membership over the Tailcat directory. Adoption is a local owner "
         "decision: the mesh can only stage candidates, and only "
         "`org import <file>` fills the single accepted slot."
+        " `org context validate` checks the accepted bytes against their "
+        "adoption record and orgfs publish marker before or after a hand edit."
     )
 )
 org_app.add_typer(acl_app, name="acl")
+
+context_app = typer.Typer(
+    help=(
+        "Validate the structured part of the organization context document: "
+        "the format of the fenced YAML block, and for the accepted slot its "
+        "adoption and orgfs publish state."
+    )
+)
+org_app.add_typer(context_app, name="context")
+
+
+def _context_validate_render(data: Mapping[str, Any]) -> str:
+    if data.get("ok") and data.get("valid"):
+        meta = data.get("meta") or {}
+        return (
+            f"org-context OK: version {meta.get('version')} "
+            f"published by {meta.get('publisher')}\n{data.get('path')}"
+        )
+    if data.get("valid"):
+        return (
+            "org-context ADOPTION STATE INVALID\n"
+            f"  {data.get('path')}\n"
+            f"  {data.get('reason')}"
+        )
+    return (
+        "org-context INVALID\n"
+        f"  {data.get('path')}: line {data.get('line')}, column {data.get('column')}\n"
+        f"  {data.get('reason')}"
+    )
+
+
+@context_app.command("validate")
+def org_context_validate(
+    path: Path | None = typer.Option(
+        None,
+        "--path",
+        help=(
+            "Validate this file instead of the accepted org-context.md slot. "
+            "This is a format check only: the accepted slot's adoption record "
+            "and any orgfs publish marker are not checked for this file."
+        ),
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Validate org-context.md before or after a hand edit.
+
+    Parses only the fenced YAML block.  On failure it names the file line,
+    column and reason and exits 1; an invalid document is never reported as
+    valid.  This is the manual pre-flight for the accepted slot, which is
+    written by adoption from a file the owner may have edited by hand.
+    """
+    services = get_services()
+
+    def operation() -> CliResult:
+        services = get_services()
+        from hyprial.daemon import OrgContextStore, validate_document
+
+        target = (
+            path if path is not None else services._hyprial_home() / "org-context.md"
+        )
+        try:
+            payload = target.read_bytes()
+        except FileNotFoundError:
+            raise services.CliError(
+                "ORG_CONTEXT_ABSENT", f"org-context absent: {target}"
+            ) from None
+        except OSError as error:
+            raise services.CliError(
+                "ORG_CONTEXT_READ_FAILED",
+                f"cannot read org-context {target}: {error}",
+            ) from error
+        try:
+            text = payload.decode("utf-8")
+        except UnicodeDecodeError as error:
+            return CliResult(
+                {
+                    "ok": False,
+                    "valid": False,
+                    "path": str(target),
+                    "line": None,
+                    "column": None,
+                    "reason": f"org-context is not valid UTF-8: {error}",
+                },
+                render=_context_validate_render,
+            )
+        # Two separate facts: the audit digest is over the raw bytes above
+        # (accepted_slot_issue receives ``payload``), while the format check
+        # runs on the newline-normalized text ``read_text`` used to produce.
+        # A legal file whose newlines are all CRLF is Markdown, not a fence
+        # violation, so normalizing here keeps the pre-flight non-regressive.
+        source = text.replace("\r\n", "\n").replace("\r", "\n")
+        result = validate_document(source)
+        if not result.ok:
+            issue = result.issue
+            return CliResult(
+                {
+                    "ok": False,
+                    "valid": False,
+                    "path": str(target),
+                    "line": None if issue is None else issue.line,
+                    "column": None if issue is None else issue.column,
+                    "reason": (
+                        "org-context is invalid" if issue is None else issue.reason
+                    ),
+                },
+                render=_context_validate_render,
+            )
+        document = result.document
+        assert document is not None
+        if path is None:
+            # The default slot claims to be the adopted view: the format being
+            # valid is not enough, the audit record must describe these exact
+            # raw bytes.  --path stays a format pre-flight.
+            slot_issue = OrgContextStore(
+                services._hyprial_home()
+            ).accepted_slot_issue(document, payload)
+            if slot_issue is not None:
+                return CliResult(
+                    {
+                        "ok": False,
+                        "valid": True,
+                        "slot": "accepted",
+                        "path": str(target),
+                        "line": None,
+                        "column": None,
+                        "reason": slot_issue,
+                    },
+                    render=_context_validate_render,
+                )
+        return CliResult(
+            {
+                "ok": True,
+                "valid": True,
+                "slot": "accepted" if path is None else "file",
+                "path": str(target),
+                "meta": _org_meta(document),
+            },
+            render=_context_validate_render,
+        )
+
+    services._execute(operation, json_output=json_output, allow_missing_home=True)
+# `org group invite` is the spelling callers have used; keep it as an alias of
+# `org invite` rather than a second implementation.  Registering the SAME
+# callable means the two entry points cannot drift apart.
+group_app = typer.Typer(help="Alias group for organization subcommands.")
 
 
 # -- org network lifecycle (tailnet cutover §4.4; IPC org.*, W-D §4.3) -------
 
 
+_ORG_NAME_HELP = (
+    "letters, digits and hyphens only (lowercase, at most "
+    f"{63 - len(ORG_SPACE_PREFIX)} characters), and the name must not end "
+    "with '-acl'"
+)
+
+
 def _validated_org(value: str) -> str:
+    """Return the directory space id for a user-supplied organization name.
+
+    The user names the organization; the ``group-`` prefix is an internal
+    space-id detail.  ``foo`` and ``group-foo`` therefore name the same
+    organization, and the prefix is added here rather than asked for.  The
+    grammar itself is still ``org_space_name``'s: there is one rule set.
+    """
     services = get_services()
+    # Strip a leading prefix ONCE, then re-add it.  This makes the mapping
+    # idempotent (group-foo -> group-foo, foo -> group-foo) and defines the two
+    # edges instead of leaving them to chance:
+    #   "group-"        -> empty remainder -> rejected with a message about the NAME,
+    #                      not about a missing prefix the user never typed;
+    #   "group-group-x" -> remainder "group-x" -> "group-group-x" (stripped once only,
+    #                      so a real name that starts with "group-" keeps working).
+    # The prefix comparison is case sensitive: "GROUP-foo" is not the prefix, so it
+    # becomes "group-GROUP-foo" and the grammar rejects it.  We never silently
+    # lower-case what the user typed.
+    remainder = value
+    if remainder.startswith(ORG_SPACE_PREFIX):
+        remainder = remainder[len(ORG_SPACE_PREFIX) :]
+    candidate = ORG_SPACE_PREFIX + remainder
     try:
-        org_space_name(value)
+        org_space_name(candidate)
     except ValueError as error:
-        raise services.CliError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
-    return value
+        raise services.CliError(
+            ipc_errors.INVALID_ARGUMENT,
+            f"invalid organization name {value!r}: {_ORG_NAME_HELP}",
+        ) from error
+    return candidate
 
 
 @org_app.command("create")
 def org_create(
-    org: str = typer.Argument(..., help="Casdoor group name (group-NAME)."),
+    org: str = typer.Argument(
+        ...,
+        help=(
+            "Organization name. `foo` and `group-foo` name the same "
+            "organization."
+        ),
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
     """Create the org directory and ACL spaces, then publish this device."""
@@ -280,6 +466,10 @@ def _org_join_via_ipc(method: str, link: str, *, json_output: bool) -> None:
         return {"ok": True, **result}
 
     services._execute(operation, json_output=json_output)
+
+
+group_app.command("invite")(org_invite)
+org_app.add_typer(group_app, name="group")
 
 
 @org_app.command("join")
@@ -518,11 +708,26 @@ def org_network(
 
 
 def _org_meta(document: Any) -> JsonObject:
-    return {
-        "version": document.meta.version,
-        "issuedAt": document.meta.issued_at.isoformat(),
-        "publisher": document.meta.publisher,
-    }
+    """The displayable fields the parsed body backs (never an adoption time).
+
+    ``OrgMeta.to_json`` is the single recovery function; ``org status`` reads
+    the same view from the parsed body, so show and status never disagree.
+    """
+
+    return dict(document.meta.to_json())
+
+
+def _org_human_view(data: Mapping[str, Any]) -> str:
+    """The human view of an org result without the machine-only warnings.
+
+    ``warnings`` is the ``--json`` home of the warning the ``warn`` channel
+    already wrote to stderr; rendering it again on stdout would report the
+    same fact twice in the human mode.
+    """
+
+    return render_generic(
+        {key: value for key, value in data.items() if key != "warnings"}
+    )
 
 
 @org_app.command("show")
@@ -544,33 +749,60 @@ def org_show(
     """
     services = get_services()
 
-    def operation() -> JsonObject:
+    def operation() -> CliResult:
         services = get_services()
         from hyprial.daemon import document_summary
-        from hyprial.daemon import OrgContextStore
+        from hyprial.daemon import OrgContextStore, OrgStoreError
 
         store = OrgContextStore(services._hyprial_home())
         document = store.load_accepted()
         if document is None:
-            return {
-                "ok": True,
-                "status": "absent",
-                "message": "org-context absent",
+            return CliResult(
+                {
+                    "ok": True,
+                    "status": "absent",
+                    "message": "org-context absent",
+                },
+                render=_org_human_view,
+            )
+        try:
+            record = store.acceptance_record()
+        except OrgStoreError as error:
+            record = None
+            warning: JsonObject | None = {
+                "code": "ORG_ACCEPTANCE_METADATA_UNAVAILABLE",
+                "message": str(error),
             }
-        record = store.acceptance_record()
-        if record is None:  # load_accepted above proved the slot exists
-            raise services.CliError("ORG_CONTEXT_CORRUPT", "acceptance metadata is absent")
-        return {
+        else:
+            warning = (
+                None
+                if record is not None
+                else {
+                    "code": "ORG_ACCEPTANCE_METADATA_UNAVAILABLE",
+                    "message": (
+                        "accepted org-context has no readable adoption record; "
+                        "showing the parsed body only"
+                    ),
+                }
+            )
+        if warning is not None:
+            # A person reads this on stderr; --json carries it in the result.
+            warn(f"hyprial: {warning['message']}", json_output=json_output)
+        result: JsonObject = {
             "ok": True,
             "status": "accepted",
             "meta": _org_meta(document),
             "source": {
                 "publisher": document.meta.publisher,
             },
-            "adoptedAt": record.adopted_at.isoformat().replace("+00:00", "Z"),
             "summary": document_summary(document),
             **(_org_full_document(store, document) if full else {}),
         }
+        if record is not None:
+            result["adoptedAt"] = record.adopted_at.isoformat().replace("+00:00", "Z")
+        if warning is not None:
+            result["warnings"] = [warning]
+        return CliResult(result, render=_org_human_view)
 
     services._execute(operation, json_output=json_output)
 
@@ -594,11 +826,14 @@ def org_status(
     """Show accepted-slot and pending-candidate counts."""
     services = get_services()
 
-    def operation() -> JsonObject:
+    def operation() -> CliResult:
         services = get_services()
         from hyprial.daemon import OrgContextStore
 
-        return {"ok": True, **OrgContextStore(services._hyprial_home()).status()}
+        status = OrgContextStore(services._hyprial_home()).status()
+        for warning in status.get("warnings", []):
+            warn(f"hyprial: {warning['message']}", json_output=json_output)
+        return CliResult({"ok": True, **status}, render=_org_human_view)
 
     services._execute(operation, json_output=json_output)
 

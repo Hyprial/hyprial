@@ -368,6 +368,45 @@ function registerModelDefinitions(modelRuntime, modelDefinitions) {
   }
 }
 
+// §8.1: the provider/model a resumed session last recorded, read from the
+// session branch's own entry shapes (``model_change`` / an assistant message
+// names the physical model that answered).  Reading it here keeps the one
+// authority at the session-open boundary instead of re-deriving it in Python.
+function recordedModelSelection(branch) {
+  for (let index = branch.length - 1; index >= 0; index -= 1) {
+    const entry = branch[index];
+    if (entry.type === "model_change") {
+      return { provider: entry.provider, modelId: entry.modelId };
+    }
+    if (entry.type === "message" && entry.message && entry.message.role === "assistant") {
+      const message = entry.message;
+      if (typeof message.provider === "string" && typeof message.model === "string") {
+        return { provider: message.provider, modelId: message.model };
+      }
+    }
+  }
+  return undefined;
+}
+
+function optionalSettingsString(value) {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+// One warning, no credentials: session id plus the old and new binding, so the
+// rebind is auditable without a secret ever leaving the credential store.
+function warnSessionProviderRebound(sessionId, recorded, configuredProvider, configuredModel) {
+  process.stderr.write(
+    `PI_CONTROLLED_LOADER_WARNING ${JSON.stringify({
+      event: "session.provider.rebound",
+      sessionId,
+      recordedProvider: recorded.provider,
+      recordedModel: recorded.modelId,
+      configuredProvider,
+      configuredModel,
+    })}\n`,
+  );
+}
+
 async function createControlledRuntime(rawOptions) {
   const sessionRoot = canonicalDirectory(rawOptions.sessionRoot, "sessionRoot");
   const sessionId = requireString(rawOptions.sessionId, "sessionId");
@@ -391,10 +430,44 @@ async function createControlledRuntime(rawOptions) {
       modelsPath: join(controlled.options.nativeRoot, "models.json"),
       modelsStorePath: join(controlled.options.nativeRoot, "models-store.json"),
     });
+    // §8.2: hyprial owns retry (the durable inbox redelivers with backoff), so
+    // this launch caps BOTH of pi's own retry layers at zero.  Left at pi's
+    // defaults a single 429 becomes four real provider calls before hyprial
+    // even sees the failure, and quota never heals inside one turn.  Applied
+    // here, after the resource loader reloaded the native settings, so the
+    // override is the effective configuration and no settings file is written.
+    controlled.settingsManager.applyOverrides({
+      retry: { maxRetries: 0, provider: { maxRetries: 0 } },
+    });
     registerModelDefinitions(modelRuntime, rawOptions.modelDefinitions);
-    const model = modelProvider === undefined ? undefined : modelRuntime.getModel(modelProvider, modelId);
-    if (modelProvider !== undefined && model === undefined) {
-      fail(`configured Pi model is unavailable: ${modelProvider}/${modelId}`);
+    // The agent's current configuration is the launch's explicit selection,
+    // else the native root's settings default.  A resumed session may record
+    // a different vendor (the production case: settings deepseek, session
+    // zai-coding-cn); silently restoring it walks another vendor's quota.
+    const configuredProvider =
+      modelProvider ?? optionalSettingsString(controlled.settingsManager.getDefaultProvider());
+    const configuredModel =
+      modelId ?? optionalSettingsString(controlled.settingsManager.getDefaultModel());
+    const recorded = recordedModelSelection(sessionManager.getBranch());
+    const rebound =
+      recorded !== undefined &&
+      configuredProvider !== undefined &&
+      configuredModel !== undefined &&
+      (recorded.provider !== configuredProvider || recorded.modelId !== configuredModel);
+    if (rebound) {
+      warnSessionProviderRebound(sessionId, recorded, configuredProvider, configuredModel);
+    }
+    let model;
+    if (rebound) {
+      model = modelRuntime.getModel(configuredProvider, configuredModel);
+      if (model === undefined) {
+        fail(`configured Pi model is unavailable: ${configuredProvider}/${configuredModel}`);
+      }
+    } else if (modelProvider !== undefined) {
+      model = modelRuntime.getModel(modelProvider, modelId);
+      if (model === undefined) {
+        fail(`configured Pi model is unavailable: ${modelProvider}/${modelId}`);
+      }
     }
     const services = {
       cwd: controlled.options.cwd,
@@ -415,6 +488,10 @@ async function createControlledRuntime(rawOptions) {
       sessionRoot,
       controlled.receiptForSystemPrompt(created.session.systemPrompt),
     );
+    if (rebound) {
+      // Make the rebind durable: the next resume must not see the stale vendor.
+      sessionManager.appendModelChange(configuredProvider, configuredModel);
+    }
     if (initial) {
       const sessionName = optionalString(rawOptions.sessionName, "sessionName");
       if (sessionName !== undefined) sessionManager.appendSessionInfo(sessionName);

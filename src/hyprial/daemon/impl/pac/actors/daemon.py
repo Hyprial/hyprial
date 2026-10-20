@@ -17,6 +17,7 @@ from hyprial.daemon.impl.pac.actors.coordinator import (
     FileLaunchResolver,
     LaunchSpec,
     RuntimeObservation,
+    throttle_cleanup_retries,
 )
 from hyprial.daemon.impl.pac.actors.marker import pac_worker_marker
 from hyprial.daemon.impl.pac.graphs.reactor import NotificationSender, PacReactor
@@ -60,6 +61,19 @@ PAC_RECONCILE_FALLBACK_SECONDS = 300.0
 PAC_RECONCILE_RUNNING_REFRESH_SECONDS = 30.0
 
 
+def _stop_fence_matches(nickname: str | None, identity_marker: str) -> bool:
+    """Whether a stop fence names exactly the observed desired-state record.
+
+    A PAC marker fence must equal the record's nickname.  The empty fence is
+    the coordinator's stop for a receipt-proven agent whose record carries no
+    PAC marker; it never matches a record that does carry one.
+    """
+
+    if nickname == identity_marker:
+        return True
+    return identity_marker == "" and pac_worker_marker(nickname) is None
+
+
 class DaemonActorRuntime:
     def __init__(self, application: Any) -> None:
         self.application = application
@@ -73,12 +87,19 @@ class DaemonActorRuntime:
 
     def observe(self, actor_name: str) -> RuntimeObservation:
         spec = self._spec(actor_name)
+        agent = self.application.agents.get(actor_name)
+        pinned = bool(getattr(agent, "pinned_adapters", ()))
         if spec is None:
-            return RuntimeObservation(False)
+            return RuntimeObservation(
+                False,
+                pinned=pinned,
+                interactive_online=self._interactive_online(agent, None),
+            )
         actor = self.application._canonical_harness_uri(actor_name, spec)
         running = self.application._managed_worker_running(actor)
-        agent = self.application.agents.get(actor_name)
         return RuntimeObservation(
+            pinned=pinned,
+            interactive_online=self._interactive_online(agent, actor),
             present=running is True,
             identity_marker=pac_worker_marker(spec.nickname),
             harness=spec.harness,
@@ -88,6 +109,36 @@ class DaemonActorRuntime:
             # absent, or the harness reconciler can start it again indefinitely.
             retirement_pending=running is not True,
         )
+
+    def _interactive_online(self, agent: Any, actor: str | None) -> bool:
+        """Whether a person may hold a live interactive session on this agent.
+
+        Read from the agent record, not the worker spec: cleanup completes
+        only after the spec is deactivated, so GC and the destroy recheck
+        always observe a spec-less worker.  Fails closed: a session registry
+        or presence that cannot answer counts as in use.
+        """
+
+        names = {
+            name
+            for name in (actor, getattr(agent, "uri", None), getattr(agent, "actor", None))
+            if isinstance(name, str) and name
+        }
+        if not names:
+            return False
+        try:
+            matched = names & set(self.application._registered_interactive_actors())
+        except Exception:  # noqa: BLE001 - unknown session state is in use
+            return True
+        if not matched:
+            return False
+        presence = getattr(self.application, "_presence", None)
+        if presence is None:
+            return True
+        try:
+            return any(bool(presence.actor_online(name)) for name in matched)
+        except Exception:  # noqa: BLE001 - unknown presence is in use
+            return True
 
     @staticmethod
     def _launch_spec(
@@ -172,7 +223,7 @@ class DaemonActorRuntime:
     ) -> RuntimeObservation:
         spec = self._spec(actor_name)
         # Never stop a same-name connector whose durable marker is not ours.
-        if spec is None or spec.nickname != identity_marker:
+        if spec is None or not _stop_fence_matches(spec.nickname, identity_marker):
             return self.observe(actor_name)
         lifecycle_spec = replace(
             self.application._lifecycle_spec(spec),
@@ -302,6 +353,7 @@ class PacActorService:
         # a skip that repeats every tick is one line, not one per second.
         self._skip_reasons: dict[tuple[str, str], str] = {}
         self._lock = threading.Lock()
+        self._clock_ms: Callable[[], int] = lambda: time.time_ns() // 1_000_000
         self._closed = False
         # Last, and before the worker threads: the failure branch reports
         # through `self.logger`, and a future provisioning step that consults
@@ -459,8 +511,9 @@ class PacActorService:
         both, which is how the deterministic test probe and the first cadence
         after startup recover durable state):
 
-        * the dirty set -- a committed in-transition activation or a pending
-          cleanup -- once per :data:`PAC_RECONCILE_FALLBACK_SECONDS`; and
+        * the dirty set -- a committed in-transition activation, a pending or
+          attention cleanup, or a closed receipt that still lacks its cleanup
+          intent -- once per :data:`PAC_RECONCILE_FALLBACK_SECONDS`; and
         * the running subset (``desired='up', op='done'``), which no event can
           announce a death for, once per
           :data:`PAC_RECONCILE_RUNNING_REFRESH_SECONDS`.
@@ -500,9 +553,11 @@ class PacActorService:
                 is not None
             )
             cleanup_column = (
-                "c.state AS cleanup_state,"
+                "c.state AS cleanup_state,c.attempts AS cleanup_attempts,"
+                "c.updated_at AS cleanup_updated_at,"
                 if has_cleanup_intents
-                else "NULL AS cleanup_state,"
+                else "NULL AS cleanup_state,NULL AS cleanup_attempts,"
+                "NULL AS cleanup_updated_at,"
             )
             cleanup_join = (
                 "LEFT JOIN workflow_worker_cleanup_intents c "
@@ -510,7 +565,9 @@ class PacActorService:
                 if has_cleanup_intents
                 else ""
             )
-            cleanup_pending = "c.state='pending'" if has_cleanup_intents else "0"
+            cleanup_pending = (
+                "c.state IN ('pending','attention')" if has_cleanup_intents else "0"
+            )
             cleanup_absent = "c.state IS NULL" if has_cleanup_intents else "1"
             # Added to the open-graph gate only on the running tier: a running
             # actor is re-observed on the cheap cadence so a silent harness
@@ -548,6 +605,8 @@ class PacActorService:
                         + cleanup_pending
                         + " OR ("
                         + cleanup_absent
+                        + " AND r.graph_id IS NOT NULL) OR ("
+                        + cleanup_absent
                         + " AND r.graph_id IS NULL AND a.desired IS NOT NULL "
                         "AND (a.desired!='down' OR a.op!='done'))))) "
                         "ORDER BY n.graph_id,n.node_id"
@@ -582,7 +641,11 @@ class PacActorService:
                 for row in actor_rows
                 if row["closed_at"] is not None
                 and (
-                    row["cleanup_state"] == "pending"
+                    row["cleanup_state"] in ("pending", "attention")
+                    or (
+                        row["cleanup_state"] is None
+                        and row["receipt_graph_id"] is not None
+                    )
                     or (
                         row["cleanup_state"] is None
                         and row["receipt_graph_id"] is None
@@ -591,6 +654,14 @@ class PacActorService:
                     )
                 )
             ]
+            effects = getattr(self._graph_authority, "actor_effect_keys", None)
+            with self._lock:
+                active = frozenset(self._active_actors)
+            if callable(effects):
+                active |= effects()
+            closed_actor_jobs = throttle_cleanup_retries(
+                actor_rows, closed_actor_jobs, self._clock_ms(), active
+            )
         finally:
             store.close()
         warnings: list[tuple[str, dict[str, object]]] = []

@@ -23,6 +23,12 @@ from pycrdt import Doc, Map
 
 from hyprial.daemon.impl.orgfs.storage.store.vocabulary import CommitRecord, DocMutator, ORGFS_ENVELOPE_BYTES, ORGFS_INLINE_UPDATE_BYTES, StoreError, _EMPTY_UPDATE, _b64, _decode_state_vector, _doc_roots, _empty_meta, _encode_state_vector, _json_bytes, _now, _state_covers, _unb64, _wire_doc_id, _writer_is_safe
 
+
+class _UnregisteredMutationClients(Exception):
+    def __init__(self, client_ids: set[int]) -> None:
+        self.client_ids = client_ids
+
+
 class StoreJournal:
     """Responsibility methods on the sole LocalSpaceStore state host.
 
@@ -160,6 +166,10 @@ class StoreJournal:
             return self._commit_one_inner(
                 doc_id, mutate, author=author, actor=actor, writer=writer
             )
+        except BaseException:
+            if doc_id != "meta":
+                self._invalidate_doc_caches(doc_id, writer)
+            raise
         finally:
             if doc_id == "meta":
                 self._local_registration_ids.pop(writer, None)
@@ -198,9 +208,12 @@ class StoreJournal:
                 is None
             )
             doc = self._doc(doc_id)
-            before_update = doc.get_update()
-            working = self._new_doc(doc_id, client_id=self._client_id(writer))
-            working.apply_update(before_update)
+            before_update = doc.get_update() if doc_id == "meta" else b""
+            if doc_id == "meta":
+                working = self._new_doc(doc_id, client_id=self._client_id(writer))
+                working.apply_update(before_update)
+            else:
+                working = self._writer_doc(doc_id, writer)
             before_state = working.get_state()
             seq_row = self._db.execute(
                 "SELECT COALESCE(MAX(seq), -1) + 1 AS next_seq FROM commits WHERE writer = ? AND doc_id = ?",
@@ -233,6 +246,13 @@ class StoreJournal:
                 not user_update or user_update == _EMPTY_UPDATE
             ) and not creates_document:
                 raise StoreError("invalid-argument", "mutation produced no update")
+            if doc_id != "meta":
+                changed_ids = self._changed_client_ids(
+                    before_state, working.get_state()
+                )
+                missing_ids = changed_ids - self._registered_client_ids(writer)
+                if missing_ids:
+                    raise _UnregisteredMutationClients(missing_ids)
             self._advance_commit_clock(working, writer=writer, seq=seq)
             update = working.get_update(before_state)
             if doc_id == "meta":
@@ -307,6 +327,7 @@ class StoreJournal:
                 self._db.commit()
             self._fault("after_journal")
             doc.apply_update(update)
+            self._sync_doc_caches(doc_id, update, writer=writer)
             self._fault("before_state")
             self._mark_persist((doc_id,))
             if doc_id == "meta":
@@ -338,7 +359,7 @@ class StoreJournal:
                     )
             mutation_ids = (
                 set()
-                if doc_id == "meta"
+                if doc_id == "meta" or self._writer_registered(writer)
                 else self._mutation_client_ids(doc_id, mutate, writer=writer)
             )
             missing_ids = mutation_ids - self._registered_client_ids(writer)
@@ -375,9 +396,28 @@ class StoreJournal:
                     actor=actor,
                     writer=writer,
                 )
-            return self._commit_one(
-                doc_id, mutate, author=author, actor=actor, writer=writer
-            )
+            try:
+                return self._commit_one(
+                    doc_id, mutate, author=author, actor=actor, writer=writer
+                )
+            except _UnregisteredMutationClients as error:
+                client_ids = error.client_ids
+                self._commit_one(
+                    "meta",
+                    lambda doc: self._register_writer(
+                        doc,
+                        writer=writer,
+                        author=author,
+                        actor=actor,
+                        peer_ids=client_ids,
+                    ),
+                    author=author,
+                    actor=actor,
+                    writer=writer,
+                )
+                return self._commit_one(
+                    doc_id, mutate, author=author, actor=actor, writer=writer
+                )
 
 
     def commit_with_outbox(
@@ -409,15 +449,14 @@ class StoreJournal:
             return ()
         with self._lock:
             writer = self._writer_for(author, actor)
-            mutation_ids = {
-                client_id
-                for doc_id, mutate in items
-                for client_id in self._mutation_client_ids(
-                    doc_id, mutate, writer=writer
-                )
-            }
-            missing_ids = mutation_ids - self._registered_client_ids(writer)
-            if missing_ids or not self._writer_registered(writer):
+            if not self._writer_registered(writer):
+                mutation_ids = {
+                    client_id
+                    for doc_id, mutate in items
+                    for client_id in self._mutation_client_ids(
+                        doc_id, mutate, writer=writer
+                    )
+                }
                 self._commit_one(
                     "meta",
                     lambda doc: self._register_writer(
@@ -431,85 +470,123 @@ class StoreJournal:
                     actor=actor,
                     writer=writer,
                 )
-
-            prepared: list[tuple[str, Doc, bytes, bytes, int, bytes]] = []
-            records: list[CommitRecord] = []
-            self._fault("before_journal")
-            self._db.execute("BEGIN IMMEDIATE")
-            try:
-                for doc_id, mutate in items:
-                    _wire_doc_id(doc_id)
-                    self._raise_if_retired(doc_id)
-                    self._raise_if_replacement_pending(doc_id)
-                    if doc_id == "meta":
-                        raise StoreError(
-                            "invalid-argument", "commit_many does not accept metadata"
-                        )
-                    owner = self._owner()
-                    member = self._membership().get(author, {})
-                    if owner is None:
-                        raise StoreError(
-                            "pending-meta", "space metadata has no owner yet"
-                        )
-                    if author != owner and (
-                        member.get("mode") != "rw" or member.get("removedAt")
-                    ):
-                        raise StoreError(
-                            "not-a-member", "local writer is not an rw member"
-                        )
-                    live = self._doc(doc_id)
-                    working = self._new_doc(doc_id, client_id=self._client_id(writer))
-                    working.apply_update(live.get_update())
-                    before_state = working.get_state()
-                    mutate(working)
-                    user_update = working.get_update(before_state)
-                    if not user_update or user_update == _EMPTY_UPDATE:
-                        continue
-                    row = self._db.execute(
-                        "SELECT COALESCE(MAX(seq), -1) + 1 AS next_seq FROM commits WHERE writer = ? AND doc_id = ?",
-                        (writer, doc_id),
-                    ).fetchone()
-                    seq = int(row["next_seq"])
-                    self._advance_commit_clock(working, writer=writer, seq=seq)
-                    update = working.get_update(before_state)
-                    if not self._org_device_update_allowed(
-                        doc_id,
-                        update,
-                        author=author,
-                        space_owner=owner,
-                        meta_baseline=self._docs["meta"],
-                        enforce_binding_publish_time=True,
-                    ):
-                        raise StoreError(
-                            "not-a-member", "device row belongs to another member"
-                        )
-                    version = working.get_state()
-                    envelope = self._make_envelope(
-                        doc_id,
-                        writer,
-                        seq,
-                        update,
+            for _attempt in range(len(items) + 2):
+                try:
+                    return self._commit_many_inner(
+                        items, author=author, actor=actor, writer=writer
+                    )
+                except _UnregisteredMutationClients as error:
+                    client_ids = error.client_ids
+                    self._commit_one(
+                        "meta",
+                        lambda doc: self._register_writer(
+                            doc,
+                            writer=writer,
+                            author=author,
+                            actor=actor,
+                            peer_ids=client_ids,
+                        ),
                         author=author,
                         actor=actor,
-                        meta_frontier=self._meta_frontier_for_commit(),
+                        writer=writer,
                     )
-                    self._db.execute(
-                        "INSERT INTO commits(writer, seq, doc_id, envelope_bytes, version, committed_at) VALUES (?, ?, ?, ?, ?, ?)",
-                        (writer, seq, doc_id, envelope, version, _now()),
+            raise StoreError(
+                "invalid-argument", "mutation client ids did not stabilize"
+            )
+
+
+    def _commit_many_inner(
+        self,
+        items: tuple[tuple[str, DocMutator], ...],
+        *,
+        author: str,
+        actor: str | None,
+        writer: str,
+    ) -> tuple[CommitRecord, ...]:
+        prepared: list[tuple[str, Doc, bytes, bytes, int, bytes]] = []
+        records: list[CommitRecord] = []
+        self._fault("before_journal")
+        self._db.execute("BEGIN IMMEDIATE")
+        try:
+            for doc_id, mutate in items:
+                _wire_doc_id(doc_id)
+                self._raise_if_retired(doc_id)
+                self._raise_if_replacement_pending(doc_id)
+                if doc_id == "meta":
+                    raise StoreError(
+                        "invalid-argument", "commit_many does not accept metadata"
                     )
-                    prepared.append((doc_id, live, update, version, seq, envelope))
-                self._db.commit()
-            except BaseException:
-                self._db.rollback()
-                raise
-            self._fault("after_journal")
-            for doc_id, live, update, version, seq, envelope in prepared:
-                live.apply_update(update)
-                records.append(CommitRecord(writer, seq, envelope, _b64(version)))
-            self._fault("before_state")
-            self._mark_persist(doc_id for doc_id, *_rest in prepared)
-            self._fault("after_state")
-            return tuple(records)
+                owner = self._owner()
+                member = self._membership().get(author, {})
+                if owner is None:
+                    raise StoreError("pending-meta", "space metadata has no owner yet")
+                if author != owner and (
+                    member.get("mode") != "rw" or member.get("removedAt")
+                ):
+                    raise StoreError(
+                        "not-a-member", "local writer is not an rw member"
+                    )
+                live = self._doc(doc_id)
+                working = self._writer_doc(doc_id, writer)
+                before_state = working.get_state()
+                mutate(working)
+                user_update = working.get_update(before_state)
+                if not user_update or user_update == _EMPTY_UPDATE:
+                    continue
+                changed_ids = self._changed_client_ids(
+                    before_state, working.get_state()
+                )
+                missing_ids = changed_ids - self._registered_client_ids(writer)
+                if missing_ids:
+                    raise _UnregisteredMutationClients(missing_ids)
+                row = self._db.execute(
+                    "SELECT COALESCE(MAX(seq), -1) + 1 AS next_seq FROM commits WHERE writer = ? AND doc_id = ?",
+                    (writer, doc_id),
+                ).fetchone()
+                seq = int(row["next_seq"])
+                self._advance_commit_clock(working, writer=writer, seq=seq)
+                update = working.get_update(before_state)
+                if not self._org_device_update_allowed(
+                    doc_id,
+                    update,
+                    author=author,
+                    space_owner=owner,
+                    meta_baseline=self._docs["meta"],
+                    enforce_binding_publish_time=True,
+                ):
+                    raise StoreError(
+                        "not-a-member", "device row belongs to another member"
+                    )
+                version = working.get_state()
+                envelope = self._make_envelope(
+                    doc_id,
+                    writer,
+                    seq,
+                    update,
+                    author=author,
+                    actor=actor,
+                    meta_frontier=self._meta_frontier_for_commit(),
+                )
+                self._db.execute(
+                    "INSERT INTO commits(writer, seq, doc_id, envelope_bytes, version, committed_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (writer, seq, doc_id, envelope, version, _now()),
+                )
+                prepared.append((doc_id, live, update, version, seq, envelope))
+            self._db.commit()
+        except BaseException:
+            self._db.rollback()
+            for doc_id, _mutate in items:
+                self._invalidate_doc_caches(doc_id, writer)
+            raise
+        self._fault("after_journal")
+        for doc_id, live, update, version, seq, envelope in prepared:
+            live.apply_update(update)
+            self._sync_doc_caches(doc_id, update, writer=writer)
+            records.append(CommitRecord(writer, seq, envelope, _b64(version)))
+        self._fault("before_state")
+        self._mark_persist(doc_id for doc_id, *_rest in prepared)
+        self._fault("after_state")
+        return tuple(records)
 
 
     def commit_many_with_outbox(

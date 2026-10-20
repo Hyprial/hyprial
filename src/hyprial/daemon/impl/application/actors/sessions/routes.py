@@ -511,14 +511,53 @@ class _SessionRoutesMixin:
             if session.source != "claude-channel":
                 self._ensure_interactive_route(session.actor, session.session_ref)
 
-    def _clean_dead_interactive_sessions(self) -> None:
+    def _interactive_process_alive(self, actor: str) -> bool | None:
+        """Whether a fenced interactive session's process still exists.
+
+        ``None`` means this daemon has no PID/birth fence for the actor and
+        the heartbeat remains the only signal.  Any proven-dead registration
+        makes the actor offline even while its heartbeat is still fresh.
+        """
+
+        from hyprial.daemon.impl.mcp.channel.ownership import _owner_process_status
+
+        sessions = [
+            session
+            for session in self._agent_session_domains.session.read_sessions()
+            if session.actor == actor
+            and session.process_pid is not None
+            and session.process_identity is not None
+        ]
+        if not sessions:
+            return None
+        verdicts = {
+            _owner_process_status(
+                session.process_pid, session.process_identity
+            ).value
+            for session in sessions
+        }
+        if verdicts <= {"pid-missing", "identity-mismatch"}:
+            return False
+        return None
+
+    def _clean_dead_interactive_sessions(
+        self, sessions: tuple[SessionProjection, ...] | None = None
+    ) -> tuple[SessionProjection, ...]:
         """Retire only sessions whose PID/birth fence proves the carrier dead."""
 
         from hyprial.daemon.impl.mcp.channel.ownership import _owner_process_status
 
-        self._agent_recovery_cleanups.clear()
-        sessions = self._agent_session_domains.session.read_sessions()
-        for session in sessions:
+        observed = (
+            self._agent_session_domains.session.read_sessions()
+            if sessions is None
+            else sessions
+        )
+        live_actors = {session.actor for session in observed}
+        for actor in tuple(self._agent_recovery_cleanups):
+            if actor in live_actors:
+                self._agent_recovery_cleanups.pop(actor, None)
+        retired: set[str] = set()
+        for session in observed:
             if (
                 session.process_pid is None
                 or session.process_identity is None
@@ -550,6 +589,7 @@ class _SessionRoutesMixin:
                 "liveness": verdict,
             }
             self._agent_recovery_cleanups[session.actor] = cleanup
+            retired.add(session.actor)
             self._log(
                 "info",
                 "agents",
@@ -567,6 +607,9 @@ class _SessionRoutesMixin:
                     "the exact carrier process is dead"
                 ),
             )
+        return tuple(
+            session for session in observed if session.actor not in retired
+        )
 
     def _expire_stale_channel_routes(
         self, now: float, sessions: tuple[SessionProjection, ...] | None = None

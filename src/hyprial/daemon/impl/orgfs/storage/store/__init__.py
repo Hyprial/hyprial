@@ -112,6 +112,9 @@ class LocalSpaceStore(StoreMembership, StoreJournal, StoreAdmission, StoreSnapsh
         self._incarnation = secrets.token_hex(16)
         self._lanes: dict[tuple[str, str | None], str] = {}
         self._docs: dict[str, Doc] = {}
+        self._writer_docs: dict[tuple[str, str], Doc] = {}
+        self._import_docs: dict[str, Doc] = {}
+        self._reset_history_indexes()
         self._holders: dict[str, tuple[bool, dict[str, bytes]]] = {}
         self._last_drained: tuple[bytes, ...] = ()
         self._pending_import_limit = _MAX_PENDING_IMPORTS
@@ -513,6 +516,53 @@ class LocalSpaceStore(StoreMembership, StoreJournal, StoreAdmission, StoreSnapsh
         if doc_id not in self._docs:
             self._docs[doc_id] = self._new_doc(doc_id)
         return self._docs[doc_id]
+
+
+    def _writer_doc(self, doc_id: str, writer: str) -> Doc:
+        key = (doc_id, writer)
+        working = self._writer_docs.get(key)
+        if working is None:
+            working = self._new_doc(doc_id, client_id=self._client_id(writer))
+            working.apply_update(self._doc(doc_id).get_update())
+            self._writer_docs[key] = working
+        return working
+
+
+    def _import_doc(self, doc_id: str) -> Doc:
+        working = self._import_docs.get(doc_id)
+        if working is None:
+            working = self._new_doc(doc_id)
+            working.apply_update(self._doc(doc_id).get_update())
+            self._import_docs[doc_id] = working
+        return working
+
+
+    def _invalidate_doc_caches(self, doc_id: str, writer: str | None = None) -> None:
+        if writer is None:
+            self._writer_docs = {
+                key: value
+                for key, value in self._writer_docs.items()
+                if key[0] != doc_id
+            }
+            self._import_docs.pop(doc_id, None)
+            return
+        self._writer_docs.pop((doc_id, writer), None)
+
+
+    def _sync_doc_caches(
+        self,
+        doc_id: str,
+        update: bytes,
+        *,
+        writer: str | None = None,
+        import_doc: Doc | None = None,
+    ) -> None:
+        for key, working in self._writer_docs.items():
+            if key[0] == doc_id and key[1] != writer:
+                working.apply_update(update)
+        cached_import = self._import_docs.get(doc_id)
+        if cached_import is not None and cached_import is not import_doc:
+            cached_import.apply_update(update)
 
 
 def assert_client_ids_registered(store: LocalSpaceStore) -> None:

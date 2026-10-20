@@ -62,6 +62,7 @@ _logger = logging.getLogger(__name__)
 class RuntimeKind(StrEnum):
     CLAUDE_INTERACTIVE = "claude_interactive"
     CLAUDE_MANAGED_HEADLESS = "claude_managed_headless"
+    DSH_INTERACTIVE = "dsh_interactive"
     LEGACY = "legacy"
 
 def _install_legacy_discover_handler(lowlevel: Server[Any]) -> None:

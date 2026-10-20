@@ -122,6 +122,15 @@ hyprial <域> <子命令> --help   # 参数面
   worker agent；不带 `--dry-run` 会拒绝。选择规则与 daemon 内独立 PAC GC 服务相同，
   借用 actor（即使名字以 `wf-` 开头）、未关闭图、清理未完成、在线或有 adapter pin
   的 worker 都不会删除；`hyprial doctor` 的 `pac-gc` 项显示上次 pass 与当前 backlog。
+- `workflow-worker-cleanup` 的 `attention` 不是终态：daemon 在兜底扫描中自动重试（新 lifecycle
+  operation id），本 actor 自己的旧实例（PAC 标记指向本图本节点，或无标记但 entity token 与回执一致）
+  会被停掉并收敛到 `complete`；只有外来标记/外来 entity token 持续 attention，需人工核对。
+  失败重试按 attempts 指数退避（5 分钟起翻倍，上限 6 小时）；扫描每 30 秒一轮，在途（含 graph authority effect 池）+新放行的重试最多 2 个；只限重试，首次评估（部署时约 186 个回填）、
+  worktree-cleanup、expansion-preflight 不计入，开放图不保证有空闲 effect 线程。
+  `worker_in_use`：agent 被 adapter pin，或有已注册交互会话且在线（presence 缺失/报错按在用处理；
+  已接线但未就绪的重启窗口读作离线，可能被 stop、不会被删），GC pass 报告如实记录 destroy 复核拒绝原因，
+  cleanup 不停、GC 跳过、destroy 复核拒绝（`worker-in-use`），`lastObservation.inUse` 说明原因；
+  释放（unpin/退出会话）后下一轮自动继续，否则由人决定。
 - 工作流 YAML format 2 使用 name/nodes/edges/workers/defaults/on_failure。旧 targets/await/retry/report_to 执行格式已退役。
 - 节点默认独立临时 worker，显式 worker 键共享上下文，owner 全 URI 显式借用已有 actor。
 - 图结束回收所属 worker；借用对象不被接管或停止。完成是显式 flag，不解释回复文本。
@@ -205,7 +214,29 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
   scope 闭集：agent-home=`self`（不可撤）、isolation=`directory|container`、org-context=`accepted`；
   see-actors/send-to 为 principal URI JSON 数组；tool-surface/channel 为名称 JSON 数组；shared-path 为 `{"path":"/absolute/path","mode":"ro|rw"}`。
   本片只记账与格式校验，不限制运行权限，不代替 secret grant，也不证明调用方身份；执行者记为本机 host owner。
-- `hyprial start claude|codex|pi|jev --name ... [--headless] --cwd ... -- <harness args>`
+- **给 agent 下发 provider 凭据**(凭据一律归 daemon 登录用户;不回显;每条都可撤)。设计:
+  `docs/design/provider-login-2026-10-14.md`。
+  - API key(默认):`printf %s "$KEY" | hyprial agent secret provider-write <entry> --field apiKey`
+    (stdin 非 TTY、一行),再 `hyprial agent secret grant <actor> --source user-provider --entry-id <entry>
+    --field-name apiKey --environment-name <ENV> --grant-id <id> --revision 1`。
+    多个 agent 同一条目:`hyprial agent provider grant-key --entry-id <entry> --field-name apiKey
+    --environment-name <ENV> --grant-id <id> --revision 1 --actor a --actor b ...` —— 逐个 grant,
+    遇拒即停,结果列 granted/replaced/alreadyGranted/failed/notAttempted(`ok:false` 退 1);⛔ 没有 `--all`。
+    续跑:原命令原样重跑即可,已持有同一授予的 actor 记 alreadyGranted 跳过;同 grant-id 已指向别的
+    条目 ⇒ 拒 `PROVIDER_CREDENTIAL_EXISTS`,确要替换加 `--replace` 并调高 `--revision`。
+    撤:`hyprial agent secret revoke <actor> <grant-id>`(条目保留)。
+  - OAuth 种子(显式选择;参数是 harness 名,不是模型厂商):`hyprial agent provider login claude|codex|pi --actor <name> [--force]
+    [--source <file>]` 把本机该厂商 CLI 的登录文件复制进 agent 的 `secrets/native/<harness>/`(0600)。
+    pi 两个文件一次种入、全有或全无,`--source` 对 pi 拒 `PROVIDER_SOURCE_AMBIGUOUS`。
+    一次性:过期/坏了 ⇒ 厂商 CLI 重新登录后 `--force` 重跑;不做刷新。只报 "seeded",⛔ 不声称有效。
+    撤:`hyprial agent provider logout <p> --actor <name>`(运行中的 agent 重启后生效;作废 token 本身
+    还需厂商 CLI 登出)。
+  - 新建默认:`hyprial agent provider login <p> --default` 记机器默认(回执带 previous);之后
+    `hyprial agent create` 自动从本机登录种入新 agent,结果 `providerSeed.state` = seeded/refused/
+    not-configured,后两者在 stderr 给出两条修法。`hyprial agent provider default [--clear]` 查/清。
+    ⛔ 不回溯已有 agent;`--preferred-harness` 与默认不同 ⇒ skipped;只有 operator shell 能改默认;
+    不给 host-invite 访客种入。`--provider hyprial`(#1407)走 `HYPRIAL_API_KEY` 的 secret grant,不经此路。
+- `hyprial start claude|codex|pi|dsh|jev --name ... [--headless] --cwd ... -- <harness args>`
   `jev` is a packaged, headless TypeSafe worker: it accepts no script or model-vendor selector,
   model, or positional runtime arguments. It finds `TYPESAFE_API_KEY` the same
   way the user-side `jev` command does: if you can already run `jev` because the
@@ -217,6 +248,14 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
   call fails `PROVIDER_AUTHENTICATION_FAILED` with a message starting
   `TYPESAFE_CREDENTIAL_FILE_ABSENT` / `_KEY_ABSENT` / `_ENV_ABSENT`.
   (headless claude 必带 --dangerously-skip-permissions)
+- `hyprial start dsh --name <name> [--resume <dsh-session-id>] --cwd <dir>` —— 启动/恢复真实
+  dsh-tui 交互会话。launcher 用 launch-scoped `--patch` 注入两层：tool-only
+  `@deepseek-ai/dsh-mcp-client`（`hyprial mcp agent-channel`）和 launch-scoped Cordis
+  注入插件；另起 `hyprial mcp dsh-carrier` 负责 register/refresh/heartbeat、InboxWatch 和
+  wake。入站消息通过插件 `agent.followup()` 进入模型，**不会碰 TUI 输入框、不会用
+  prompt.append/prompt.submit**。carrier 或插件失败会终止 TUI 并清理 launch dir。
+  交互 dsh 的 `--provider/--model` 尚未支持，模型在 TUI 内用 `/model` 选择；
+  用 `--resume <id>` 恢复既有 DSH 会话。
 - **起测试用的隔离 daemon 必须设 `HYPRIAL_NETWORK_ISOLATED=1`**(见 `docs/guides/network-isolation.md`):只允许 loopback
   endpoint,不做监听推导、对端发现、转发、gossip、用量抓取;设了但为空或拼错 ⇒ 拒启。起来后看
   `hyprial ps --json` 的 `zenoh.isolated` 必须为 true(它由 daemon 实际生效的状态算出,⛔ 不是回显环境变量)。
@@ -241,10 +280,12 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
   (daemon 解析并审计)。⛔ 不要再同时写 harness 名或厂商/模型参数:`start pi --tier super` 以前会
   **静默丢掉 --tier**,起一个没有模型的 pi(落到全局默认);现在直接 `INVALID_ARGUMENT`,什么都不创建。
   要指定模型就用显式写法:`hyprial start pi` 加厂商与模型两个选项(见 `hyprial start --help`)。
-- `hyprial start claude|pi|codex --headless --resume <session-id> --name ... --cwd ...` —— 恢复一个既有会话
-  (不加 `--resume` 仍是新会话)。id 取自 start/transfer 返回的 `sessionRef`,或 transcript 文件名
+- `hyprial start claude|pi|codex --headless --resume <session-id> --name ... --cwd ...` —— 恢复一个既有会话。
+  不加 `--resume` 时，若同一 harness/name 已有 desired-state 行，会接续其已学 sessionRef（708）；
+  要显式新会话请先 down 掉旧规格再 start。id 取自 start/transfer 返回的 `sessionRef`,或 transcript 文件名
   (claude `~/.claude/projects/<编码cwd>/<id>.jsonl`)。要么续上那个会话,要么拒绝,⛔ 不会悄悄换新会话:
   找不到 transcript ⇒ `RESUME_SESSION_NOT_FOUND`(什么都不起);起了却没续上 ⇒ `STRICT_RESUME_FAILED`(worker 已停)。
+  交互转 headless 必须显式 `--replace-interactive` 并带 `--resume <sid>`;daemon 会先向带 PID/birth fence 的交互承载发 SIGTERM 并等待退出,超时或无 PID/birth fence/unknown 状态则拒绝切换（`INTERACTIVE_CARRIER_STOP_FAILED`，不是 `STRICT_RESUME_FAILED`）。不带 `--resume` 的 switch 在 CLI 和 daemon 都拒绝。
   `--cwd` 要与原会话一致(pi 只在当前 cwd 的会话目录里找)。
 - `hyprial start claude --tmux ...`(交互式 TUI 放进 detached tmux)可能返回 `CLAUDE_CONFIRMATION_REQUIRED`:
   Claude Code 自己的启动确认在等人按(`data.prompt` = `folder-trust` 信任工作目录,或 `development-channels`
@@ -318,6 +359,23 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
      | `LINK_WINDOW_FULL` / `W` | 本节点未闭合事项已达 W | 先 reply 或 ack 入站的 pending,再发 |
 
      hold 永远是 `ok: true`;被 hold 的消息到 TTL 未放行时写 `expired`。
+
+     **紧急旁路 `HYPRIAL_LINKS_BYPASS`(运维,需 owner 授权)**:link 准入限制默认关闭,即旁路默认开。
+     - 配置:daemon 环境里设 `HYPRIAL_LINKS_BYPASS=1` 明确开、设 `0` 明确关(也可在
+       `settings.json` 写 `{"links": {"bypass": true|false}}`),**重启 daemon 一次**。环境变量未设置
+       或为空时继续读 settings;settings 缺失/`null` 仍默认开,所以去掉变量不是关。非法值会让 link
+       服务起不来(发送全部 hold),改完先看日志 `link.service_composed` 的 `bypass` 字段。
+     - 生效后:只因 link 状态的 hold/拒绝全部放行,已 hold 的积压在启动那一轮放出;
+       **link 记账冻结**:不写 link 文件、不排队 intent、不做驱逐;启动日志 `link.bookkeeping_disabled`
+       出现一次。此时 `hyprial link add` 返回 `state:not-recorded`(reason
+       `bookkeeping-disabled-by-bypass`),`hyprial link list --json` 的 `bookkeeping` 为 `false`;
+       不要把它当 `established`。关掉旁路后 link 状态从头重建。
+       `hyprial link list --json`、`hyprial link stats --json` 的 `bypass` 为 `true`;每次放行记
+       `link.bypass_admitted`
+       (同一 actor/peer/原因 60 s 一条)。
+     - 仍然拦:身份(`CALLER_NOT_AUTHORIZED`)、回复校验、`LINK_RECLAIMED`;远端 agent 入站改为
+       「发送方 owner 是 org 目录空间成员」才收,非成员仍 `LINK_UNKNOWN`。
+     - 放弃的:W/cwnd/k 限流与 link 拓扑治理。若要恢复这些限制,显式设 `0`/`false`;关闭无需迁移。
   6. 拒绝码(`ok: false`,退出 1):`SUMMARY_REQUIRED`;`LINK_WINDOW_FULL`(向非 owner 的人发新
      请求而 W 已满,同步拒绝);`LINK_UNKNOWN`(对方节点找不到你的 link 文件:本节点没有加入 org
      空间);`LINK_RECLAIMED`(link 已回收,那条请求已被排干,不能再回复);`MESSAGE_BODY_UNAVAILABLE`

@@ -39,7 +39,13 @@ from hyprial.kernel import (
     uri_scheme,
 )
 
-from ._base import ACTIVE_WINDOW_MS, SAMPLE_CAP, TICK_INTERVAL_MS, _ActorState
+from ._base import (
+    ACTIVE_WINDOW_MS,
+    BYPASS_LOG_INTERVAL_MS,
+    SAMPLE_CAP,
+    TICK_INTERVAL_MS,
+    _ActorState,
+)
 from .gate import GateMixin
 from .holds import HoldsMixin
 from .reclaim import ReclaimMixin
@@ -71,6 +77,7 @@ class LinkService(GateMixin, HoldsMixin, ReclaimMixin, ViewsMixin):
         tick_interval_ms: int = TICK_INTERVAL_MS,
         window_mode: policy.WindowMode = "observe",
         logger: Callable[..., None] | None = None,
+        bypass: bool = False,
     ) -> None:
         if window_mode not in ("observe", "enforce"):
             raise ValueError(f"unknown window mode: {window_mode!r}")
@@ -88,6 +95,10 @@ class LinkService(GateMixin, HoldsMixin, ReclaimMixin, ViewsMixin):
         self._seed = seed
         self._tick_interval_ms = tick_interval_ms
         self._window_mode: policy.WindowMode = window_mode
+        self._bypass = bool(bypass)
+        self._bypass_logged: dict[tuple[str, str, str], int] = {}
+        self._bypass_queued: list[dict[str, object]] = []
+        self._bookkeeping_logged = False
         self._logger = logger
         self._mem = threading.Lock()
         self._states: dict[str, _ActorState] = {}
@@ -135,6 +146,10 @@ class LinkService(GateMixin, HoldsMixin, ReclaimMixin, ViewsMixin):
         """One pass; the thread calls it; tests call it directly (§3.2)."""
 
         now = self._clock_ms() if now_ms is None else int(now_ms)
+        if self._bypass and not self._bookkeeping_logged:
+            self._bookkeeping_logged = True
+            self._log("link.bookkeeping_disabled", reason="bypass")
+        self._flush_bypass_notes(now)
         self._store.refresh()
         local = tuple(self._local_agents())
         self._ensure_local_files(local)
@@ -491,6 +506,59 @@ class LinkService(GateMixin, HoldsMixin, ReclaimMixin, ViewsMixin):
         """The H1 switch this service was composed with (never changes)."""
 
         return self._window_mode
+
+    @property
+    def bypass(self) -> bool:
+        """The emergency ``HYPRIAL_LINKS_BYPASS`` switch (never changes)."""
+
+        return self._bypass
+
+    def _bypass_note(
+        self,
+        actor: str,
+        peer: str,
+        reason: str,
+        *,
+        direction: str,
+        refusal: bool = False,
+        log: bool = True,
+    ) -> None:
+        """Record one bypassed link decision as ``link.bypass_admitted``.
+
+        At most one line per ``(actor, peer, reason)`` per
+        ``BYPASS_LOG_INTERVAL_MS``.  ``log=False`` (inbox actor thread, no
+        I/O there) queues the line for the next service pass instead.
+        """
+
+        now = self._clock_ms()
+        key = (actor, peer, reason)
+        fields: dict[str, object] = {
+            "actor": actor,
+            "peer": peer,
+            ("wouldRefuseCode" if refusal else "wouldHoldReason"): reason,
+            "direction": direction,
+        }
+        with self._mem:
+            last = self._bypass_logged.get(key)
+            if last is not None and now - last < BYPASS_LOG_INTERVAL_MS:
+                return
+            self._bypass_logged[key] = now
+            if not log:
+                self._bypass_queued.append(fields)
+                return
+        self._log("link.bypass_admitted", **fields)
+
+    def _flush_bypass_notes(self, now_ms: int) -> None:
+        with self._mem:
+            queued, self._bypass_queued = self._bypass_queued, []
+            for key in [
+                key
+                for key, at in self._bypass_logged.items()
+                if now_ms - at >= BYPASS_LOG_INTERVAL_MS
+            ]:
+                del self._bypass_logged[key]
+        for fields in queued:
+            self._log("link.bypass_admitted", **fields)
 
     def _window_observed(
         self, actor: str, peer: str, bound: str, site: str, *, log: bool = True

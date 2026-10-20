@@ -37,6 +37,7 @@ from hyprial.daemon.impl.transport.zenoh.locks import (
 )
 from hyprial.daemon.impl.transport.session_recovery import (
     TransportRecoveryMixin,
+    rebuild_failure,
     reopen_native_once,
     session_closed,
 )
@@ -157,6 +158,9 @@ class ZenohTransport(TransportRecoveryMixin):
         self._lock = _OwnedLock()
         self._rebuilt = threading.Condition(self._lock)  # type: ignore[arg-type]
         self._rebuilding: tuple[int | None, str, float] | None = None
+        # Wall-clock start of the current rebuild (for doctor's age gate);
+        # monotonic would not be comparable across the IPC boundary.
+        self._rebuilding_since_ms: int | None = None
         self._registrations: list[_Registration] = []
         self._rebuild_hooks: list[Callable[[], None]] = []
         self._query_guard = threading.Condition()
@@ -344,10 +348,12 @@ class ZenohTransport(TransportRecoveryMixin):
         timeout does exactly that).  That exception must not skip the reopen:
         once the old session is closed there is no authority left to declare
         or publish on.  A close error is therefore carried, not raised, and
-        only decides the message if both opens fail.  When both fail the
-        closed session is dropped (``self._session = None``), the transport is
-        marked degraded, and a bounded background reopen runs; no path leaves
-        a closed session installed.
+        every failed open is named in the rebuild error, requested config
+        first, so ``zenoh.forwarding.redial_failed`` shows the real cause.
+        When both opens fail the closed session is dropped
+        (``self._session = None``), the transport is marked degraded, and a
+        bounded background reopen runs; no path leaves a closed session
+        installed.
 
         The close and the reopen run with the transport lock RELEASED (they
         took 0.7-9.2 s on hq): holding it there serialised every publisher
@@ -365,9 +371,13 @@ class ZenohTransport(TransportRecoveryMixin):
             old = self._session
             current = threading.current_thread()
             self._rebuilding = (current.ident, current.name, time.monotonic())
+            # Every entry restarts the clock: a carried-over start from an
+            # earlier rebuild would make doctor warn on a healthy redial.
+            self._rebuilding_since_ms = time.time_ns() // 1_000_000
         opened: Any = None
         config = previous
         failure: BaseException | None = None
+        fallback_failure: BaseException | None = None
         close_failure: BaseException | None = None
         closed_meanwhile = False
         try:
@@ -394,7 +404,7 @@ class ZenohTransport(TransportRecoveryMixin):
                     opened = zenoh.open(previous.build())
                     config = previous
                 except BaseException as fallback:  # noqa: BLE001 - degraded below
-                    failure = fallback
+                    fallback_failure = fallback
                     opened = None
         finally:
             # Listener declaration can touch Zenoh; install it before taking
@@ -421,6 +431,7 @@ class ZenohTransport(TransportRecoveryMixin):
                 finally:
                     # Replay failure must still release every waiter.
                     self._rebuilding = None
+                    self._rebuilding_since_ms = None
                     self._rebuilt.notify_all()
                     closed_meanwhile = self._closed
             if closed_meanwhile and opened is not None:
@@ -436,11 +447,10 @@ class ZenohTransport(TransportRecoveryMixin):
                 )
         if opened is None:
             self._schedule_degraded_recovery(previous)
-            error = failure if failure is not None else RuntimeError(
-                "transport session rebuild failed"
-            )
-            if close_failure is not None and failure is not None:
-                raise RuntimeError(f"{failure} (old close: {close_failure})") from failure
+            error = rebuild_failure(failure, fallback_failure, close_failure)
+            cause = failure or fallback_failure or close_failure
+            if cause is not None:
+                raise error from cause
             raise error
         if not closed_meanwhile:
             zid = self._session_zid(opened)
@@ -466,6 +476,11 @@ class ZenohTransport(TransportRecoveryMixin):
                 connect=list(config.connect),
             )
         if failure is not None:
+            if close_failure is not None:
+                failure.add_note(
+                    f"old close also failed: {type(close_failure).__name__}: "
+                    f"{close_failure}"
+                )
             raise failure
 
     def on_rebuild(self, hook: Callable[[], None]) -> Callable[[], None]:

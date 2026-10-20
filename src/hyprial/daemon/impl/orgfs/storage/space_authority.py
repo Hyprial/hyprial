@@ -51,6 +51,7 @@ class _CommittedDelta:
 class _Edit:
     doc_id: str
     update: bytes
+    full_update: bytes
     author: str
     actor: str | None
     absorb_since: bytes | None = None
@@ -219,6 +220,8 @@ class OrgSpaceAuthority:
         self._commands: dict[str, _SpaceCommand] = {}
         self._submitted: set[str] = set()
         self._deferred: list[_SpaceCommand] = []
+        self.max_section_seconds = 0.0
+        self.max_section_kind: str | None = None
         owner_ref = weakref.ref(self)
 
         def actor_event(event: ActorEvent) -> None:
@@ -267,9 +270,12 @@ class OrgSpaceAuthority:
         )
 
     @staticmethod
-    def _apply_update(update: bytes):
+    def _apply_update(update: bytes, full_update: bytes):
         def mutate(document: Doc) -> None:
+            before = document.get_state()
             document.apply_update(update)
+            if document.get_state() == before and full_update != update:
+                document.apply_update(full_update)
 
         return mutate
 
@@ -292,10 +298,27 @@ class OrgSpaceAuthority:
         return (_CommittedDelta(doc_id, delta),)
 
     def _execute(self, command: _SpaceCommand) -> _SpaceOutcome:
+        started = time.monotonic()
+        try:
+            return self._execute_operation(command)
+        finally:
+            elapsed = time.monotonic() - started
+            if elapsed > self.max_section_seconds:
+                operation = command.operation
+                self.max_section_seconds = elapsed
+                self.max_section_kind = (
+                    operation.kind
+                    if isinstance(operation, _ReadStore)
+                    else type(operation).__name__.lstrip("_")
+                )
+
+    def _execute_operation(self, command: _SpaceCommand) -> _SpaceOutcome:
         try:
             operation = command.operation
             if isinstance(operation, _Edit):
-                mutate = self._apply_update(operation.update)
+                mutate = self._apply_update(
+                    operation.update, operation.full_update
+                )
                 if hasattr(self._store, "commit_with_outbox"):
                     record, outbox_records = self._store.commit_with_outbox(
                         operation.doc_id,
@@ -315,7 +338,10 @@ class OrgSpaceAuthority:
                 return _SpaceOutcome(value=(record, outbox_records, absorbs))
             if isinstance(operation, _EditBatch):
                 mutations = tuple(
-                    (edit.doc_id, self._apply_update(edit.update))
+                    (
+                        edit.doc_id,
+                        self._apply_update(edit.update, edit.full_update),
+                    )
                     for edit in operation.edits
                 )
                 if hasattr(self._store, "commit_many_with_outbox"):
@@ -650,15 +676,25 @@ class OrgSpaceAuthority:
         doc_id: str,
         update: bytes,
         *,
+        full_update: bytes | None = None,
         author: str,
         actor: str | None,
         absorb_since: bytes | None = None,
     ) -> Any:
-        return self._ask(_Edit(doc_id, bytes(update), author, actor, absorb_since))
+        return self._ask(
+            _Edit(
+                doc_id,
+                bytes(update),
+                bytes(update if full_update is None else full_update),
+                author,
+                actor,
+                absorb_since,
+            )
+        )
 
     def commit_many(
         self,
-        edits: tuple[tuple[str, bytes], ...],
+        edits: tuple[tuple[str, bytes, bytes], ...],
         *,
         author: str,
         actor: str | None,
@@ -671,11 +707,12 @@ class OrgSpaceAuthority:
                     _Edit(
                         doc_id,
                         bytes(update),
+                        bytes(full_update),
                         author,
                         actor,
                         bytes(since[doc_id]) if doc_id in since else None,
                     )
-                    for doc_id, update in edits
+                    for doc_id, update, full_update in edits
                 ),
                 author,
                 actor,

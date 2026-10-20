@@ -91,6 +91,8 @@ class RuntimeObservation:
     operation_id: str | None = None
     agent_entity_token: str | None = None
     retirement_pending: bool = False
+    pinned: bool = False
+    interactive_online: bool = False
 
 
 class ActorRuntime(Protocol):
@@ -200,8 +202,144 @@ def now_ms() -> int:
 
 # A connector that remains present after three ordinary lifecycle down effects
 # is no longer treated as eventually consistent.  The durable intent moves to
-# attention and requires an operator to resolve the identity/process ambiguity.
+# attention; attention stays retryable on the fallback sweep until reclaimed.
 CLEANUP_ATTEMPT_LIMIT = 3
+
+CLEANUP_RETRY_SEPARATOR = ":retry:"
+
+CLEANUP_RETRY_BASE_MS = 300_000
+CLEANUP_RETRY_CAP_MS = 6 * 3600 * 1000
+CLEANUP_RETRIES_PER_SWEEP = 2
+
+
+def cleanup_retry_delay_ms(attempts: int) -> int:
+    """Backoff before the fallback sweep re-admits a failed cleanup intent.
+
+    Each retry of a present worker submits a fresh lifecycle deactivate that
+    can hold an actor worker for the whole lifecycle budget, so a degraded
+    lifecycle plane must not be retried at sweep cadence.  The delay doubles
+    per counted attempt from five minutes and is capped at six hours; a
+    first evaluation (no attempts) is not delayed.  At most
+    ``CLEANUP_RETRIES_PER_SWEEP`` (2) retries may be in flight on the graph
+    authority's four effect threads, so retries alone can never hold more
+    than two.  First evaluations, worktree cleanup and expansion preflight
+    are not counted and can still fill the pool.
+    """
+
+    if attempts <= 0:
+        return 0
+    return min(CLEANUP_RETRY_BASE_MS * 2 ** min(attempts - 1, 32), CLEANUP_RETRY_CAP_MS)
+
+
+def throttle_cleanup_retries(
+    rows: Any, jobs: list[tuple[str, str]], now_ms: int, active: Any = frozenset()
+) -> list[tuple[str, str]]:
+    """Admit only due cleanup retries, bounded across in-flight work.
+
+    A row whose open cleanup intent already counted failed attempts waits
+    ``cleanup_retry_delay_ms(attempts)`` after its last update.  Retry jobs
+    still queued or running (``active``: the actor-service queue plus the
+    graph authority's effect pool, where production work actually runs) use
+    up ``CLEANUP_RETRIES_PER_SWEEP`` first; the remaining slots go to the
+    oldest due retries.  The actor sweep runs on the 30 s running tier as
+    well as the 300 s fallback tier, so without the in-flight count a
+    degraded lifecycle plane could keep all four graph-authority effect
+    threads busy with retry stops.  First evaluations and every other job
+    pass through unchanged, so the cap bounds retries only; it does not
+    reserve effect threads for open graphs.
+    """
+
+    retries: set[tuple[str, str]] = set()
+    due: list[tuple[int, tuple[str, str]]] = []
+    for row in rows:
+        if row["cleanup_state"] not in ("pending", "attention"):
+            continue
+        attempts = int(row["cleanup_attempts"] or 0)
+        if attempts <= 0:
+            continue
+        job = (str(row["graph_id"]), str(row["node_id"]))
+        retries.add(job)
+        updated_at = int(row["cleanup_updated_at"] or 0)
+        if job not in active and updated_at + cleanup_retry_delay_ms(attempts) <= now_ms:
+            due.append((updated_at, job))
+    slots = max(0, CLEANUP_RETRIES_PER_SWEEP - len(retries & set(active)))
+    admitted = {job for _at, job in sorted(due)[:slots]}
+    return [job for job in jobs if job not in retries or job in admitted]
+
+
+def record_cleanup_reconcile_failure(
+    store: PacGraphStore, graph_id: str, node_id: str, *, at_ms: int
+) -> bool:
+    """Count one failed reconcile against an open cleanup intent.
+
+    A reconcile that raises before any cleanup outcome is written used to
+    leave the intent untouched, so it stayed the oldest due retry and held a
+    sweep slot every 30 s.  Counting the attempt and moving ``updated_at``
+    gives it the same ``cleanup_retry_delay_ms`` backoff as any other
+    failure.  State and reason are left alone, so a ``worker_in_use`` hold
+    keeps its meaning; only a failure, never the in-use guard itself, counts.
+    """
+
+    db = store.write()
+    try:
+        changed = db.execute(
+            "UPDATE workflow_worker_cleanup_intents SET attempts=attempts+1,"
+            "updated_at=? WHERE graph_id=? AND actor_node=? "
+            "AND state IN ('pending','attention')",
+            (at_ms, graph_id, node_id),
+        ).rowcount
+        db.commit()
+    except BaseException:
+        db.rollback()
+        raise
+    return bool(changed)
+
+
+WORKER_IN_USE = "worker_in_use"
+
+HOLD_PINNED_WORKERS = True
+HOLD_INTERACTIVE_WORKERS = True
+
+
+def worker_in_use(observation: RuntimeObservation) -> tuple[str, ...]:
+    """The one policy point for "a person is using this workflow worker".
+
+    R&D default pending Allen's ruling (2026-10-18): an agent pinned to an
+    adapter, or online with a registered interactive session, is never
+    stopped by terminal cleanup nor removed by PAC GC; cleanup parks it as
+    ``worker_in_use`` attention and GC skips it as ``worker-in-use``.  The
+    two switches above change that ruling in one place.  Returns the active
+    signals; empty means the worker may be reclaimed.
+    """
+
+    signals: list[str] = []
+    if HOLD_PINNED_WORKERS and observation.pinned:
+        signals.append("pinned")
+    if HOLD_INTERACTIVE_WORKERS and observation.interactive_online:
+        signals.append("interactive_online")
+    return tuple(signals)
+
+
+def cleanup_stop_operation(operation_id: str, attempts: int) -> str:
+    """Lifecycle operation id for one stop attempt of a cleanup intent.
+
+    The lifecycle manager replays the terminal result of a reused operation
+    id, so every retry after a failed or unsettled attempt needs a fresh id.
+    The intent keeps its immutable base id; attempt ``n>0`` appends
+    ``:retry:<n>``.
+    """
+
+    if attempts <= 0:
+        return operation_id
+    return f"{operation_id}{CLEANUP_RETRY_SEPARATOR}{attempts}"
+
+
+def cleanup_operation_base(operation_id: str | None) -> str | None:
+    """Return the cleanup intent id that one stop attempt id belongs to."""
+
+    if operation_id is None:
+        return None
+    return operation_id.split(CLEANUP_RETRY_SEPARATOR, 1)[0]
 
 
 def request_actor_stop(store: PacGraphStore, graph_id: str, actor_name: str, *, actor: str) -> None:

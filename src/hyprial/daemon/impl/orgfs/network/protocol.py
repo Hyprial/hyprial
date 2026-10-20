@@ -30,6 +30,16 @@ ORGFS_ANNOUNCE_BUFFER_LIMIT: Final[int] = 256
 ORGFS_ANNOUNCE_SPACES_PER_ENTRY_LIMIT: Final[int] = 256
 ORGFS_SYNC_QUEUE_LIMIT: Final[int] = 32
 ORGFS_SYNC_RETRY_BACKOFF_SECONDS: Final[tuple[float, ...]] = (0.25,)
+# Consecutive scheduled-sync failures before a supplier is held off.  Below the
+# threshold a failure is ordinary jitter and the retry ladder handles it; at or
+# past it the supplier is known-unreachable, and every further attempt only
+# spends the reconcile budget that delivery and harness launch also need.
+ORGFS_SUPPLIER_SYNC_FAILURE_THRESHOLD: Final[int] = 3
+# Hold schedule: base * 2**(failures - threshold), capped.  A recovered sync
+# clears the hold, so a flapping holder converges to the cap instead of resetting
+# to a per-tick retry.
+ORGFS_SUPPLIER_SYNC_HOLD_BASE_SECONDS: Final[float] = 5.0
+ORGFS_SUPPLIER_SYNC_HOLD_MAX_SECONDS: Final[float] = 120.0
 # Registered cadence for member-side directory and ACL anti-entropy. The daemon's
 # existing maintenance scheduler supplies ticks; OrgFS never owns a polling loop.
 ORGFS_DIRECTORY_SYNC_INTERVAL_SECONDS: Final[float] = 60.0

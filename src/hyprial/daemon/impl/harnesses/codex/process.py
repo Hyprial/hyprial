@@ -3,7 +3,9 @@ from __future__ import annotations
 
 
 import asyncio
+import json
 import os
+import platform
 import shutil
 import signal
 import sys as sys
@@ -79,6 +81,178 @@ def resolve_codex_executable(
         raise CodexExecutableResolutionError(
             f"Codex executable {selected!r} cannot be resolved; arg0 aliases are refused"
         ) from error
+
+
+# The published ``@openai/codex`` npm package ships a ``bin/codex.js`` shim
+# that spawns a vendored native binary. Its own ``process.platform`` / ``arch``
+# switch selects the installed platform package and the vendor target triple;
+# mirror that table so the daemon accepts the binary the shim actually runs.
+_CODEX_NPM_TARGETS: dict[tuple[str, str], tuple[str, str]] = {
+    ("darwin", "arm64"): ("@openai/codex-darwin-arm64", "aarch64-apple-darwin"),
+    ("darwin", "x64"): ("@openai/codex-darwin-x64", "x86_64-apple-darwin"),
+    ("linux", "arm64"): ("@openai/codex-linux-arm64", "aarch64-unknown-linux-musl"),
+    ("linux", "x64"): ("@openai/codex-linux-x64", "x86_64-unknown-linux-musl"),
+    ("win32", "arm64"): ("@openai/codex-win32-arm64", "aarch64-pc-windows-msvc"),
+    ("win32", "x64"): ("@openai/codex-win32-x64", "x86_64-pc-windows-msvc"),
+}
+
+
+def _npm_platform() -> str:
+    if sys.platform == "darwin":
+        return "darwin"
+    if sys.platform.startswith("linux"):
+        return "linux"
+    if sys.platform == "win32":
+        return "win32"
+    return sys.platform
+
+
+def _npm_arch() -> str:
+    return "arm64" if platform.machine().lower() in ("arm64", "aarch64") else "x64"
+
+
+def _node_module_lookup_paths(start: Path) -> list[Path]:
+    """Mirror Node's ``node_modules`` lookup order for a module at ``start``."""
+
+    paths: list[Path] = []
+    for directory in (start, *start.parents):
+        paths.append(directory if directory.name == "node_modules" else directory / "node_modules")
+    return paths
+
+
+def _resolve_node_package(start: Path, package_name: str) -> Path | None:
+    """Locate the package directory Node's ``node_modules`` lookup reads first.
+
+    Mirrors the lookup order only; whether Node can actually resolve a
+    subpath inside the directory is decided by the caller, because the
+    package ``exports`` gate can still refuse it.
+    """
+
+    for lookup in _node_module_lookup_paths(start):
+        candidate = lookup.joinpath(*package_name.split("/"))
+        if (candidate / "package.json").is_file():
+            return candidate
+    return None
+
+
+def _node_package_json_export_state(manifest_path: Path) -> bool | None:
+    """Mirror whether Node resolves ``<platform package>/package.json``.
+
+    The npm shim picks its vendor root once, through
+    ``require.resolve(`${platformPackage}/package.json`)``: a resolvable
+    platform package uses that package's vendor directory, otherwise the main
+    package's. ``require.resolve`` obeys the ``exports`` gate, so a
+    ``package.json`` file on disk is not proof of resolution.
+
+    Returns ``True`` when Node would resolve the subpath, ``False`` when it
+    definitively cannot, and ``None`` when this mirror cannot decide. Callers
+    must treat ``None`` as "no vendor target at all".
+    """
+
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        # Node rejects the unreadable package config and the shim falls back.
+        return False
+    if not isinstance(manifest, dict):
+        return None
+    if "exports" not in manifest:
+        # Legacy resolution exposes every package subpath.
+        return True
+    exports = manifest["exports"]
+    if not isinstance(exports, dict) or not exports:
+        # String, list, empty and condition-only forms export the root only.
+        return False
+    keys = [key for key in exports if isinstance(key, str)]
+    if len(keys) != len(exports) or not all(key.startswith(".") for key in keys):
+        # Condition keys and mixed keys cannot export ``./package.json``;
+        # Node reports the subpath as not exported.
+        return False
+    if "./package.json" in exports:
+        value = exports["./package.json"]
+        if value is None:
+            return False
+        return True if value == "./package.json" else None
+    if any("*" in key for key in keys):
+        # A pattern may remap the subpath; do not mirror it by guesswork.
+        return None
+    return False
+
+
+def _npm_shim_vendor_executable(shim: Path) -> Path | None:
+    """Resolve the native binary an ``@openai/codex`` npm shim spawns.
+
+    Returns ``None`` for anything that is not the published shim laid out as
+    Node resolves it, or when the vendored binary cannot be found. Callers
+    must treat ``None`` as "no extra target": the alias stays refused.
+    """
+
+    package_root = shim.parent.parent
+    try:
+        manifest = json.loads(
+            (package_root / "package.json").read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(manifest, dict) or manifest.get("name") != "@openai/codex":
+        return None
+    declared = manifest.get("bin")
+    if not isinstance(declared, dict):
+        return None
+    declared_entry = declared.get("codex")
+    if not isinstance(declared_entry, str):
+        return None
+    try:
+        shim_relative = shim.relative_to(package_root).as_posix()
+    except ValueError:
+        return None
+    if declared_entry.removeprefix("./") != shim_relative:
+        return None
+    target = _CODEX_NPM_TARGETS.get((_npm_platform(), _npm_arch()))
+    if target is None:
+        return None
+    package_name, triple = target
+    optional = manifest.get("optionalDependencies")
+    if not isinstance(optional, dict) or package_name not in optional:
+        return None
+    executable_name = "codex.exe" if sys.platform == "win32" else "codex"
+    # The shim resolves the platform package's ``package.json`` once and uses
+    # that vendor root; only when the resolution fails does it use the main
+    # package's vendor. A resolved platform package with a missing binary is
+    # an error, not a fallback, so a single vendor root is inspected.
+    vendor_root = package_root / "vendor"
+    platform_package = _resolve_node_package(shim.parent, package_name)
+    if platform_package is not None:
+        resolution = _node_package_json_export_state(
+            platform_package / "package.json"
+        )
+        if resolution is None:
+            # Node's resolution cannot be mirrored: accept only ``launched()``.
+            return None
+        if resolution:
+            vendor_root = platform_package / "vendor"
+    candidate = vendor_root / triple / "bin" / executable_name
+    try:
+        resolved = candidate.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    return resolved if resolved.is_file() else None
+
+
+def codex_launch_executables(launched: Path) -> frozenset[Path]:
+    """Return every executable a Codex launch may legitimately execute.
+
+    A native ``launched`` binary stands alone. When ``launched`` is the
+    ``bin/codex.js`` shim of an npm ``@openai/codex`` install, add the vendored
+    native binary the shim spawns. An unresolvable shim adds nothing, so an
+    arg0 alias must still point at ``launched`` exactly.
+    """
+
+    targets = {launched}
+    vendor = _npm_shim_vendor_executable(launched)
+    if vendor is not None:
+        targets.add(vendor)
+    return frozenset(targets)
 
 class CodexAppServerRpcError(RuntimeError):
     """An error response returned by Codex app-server."""

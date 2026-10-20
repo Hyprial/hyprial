@@ -56,6 +56,7 @@ class CliServices:
     _socket_path: Callable[..., Any]
     _start_interactive_claude: Callable[..., Any]
     _start_interactive_codex: Callable[..., Any]
+    _start_interactive_dsh: Callable[..., Any]
     _start_interactive_pi: Callable[..., Any]
     _state_dir: Callable[..., Any]
     _stdin_isatty: Callable[..., Any]

@@ -1,6 +1,7 @@
 """PiRpcProcess: the streaming process driver over PiRpcClient."""
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager
 from uuid import uuid4
@@ -22,6 +23,8 @@ from hyprial.identity import AgentRuntimeContext
 from hyprial.daemon.impl.harnesses.pi.rpc_client import (
     PiRpcClient,
 )
+from hyprial.daemon.impl.harnesses.model_provider import pi_provider_environment
+
 
 class PiRpcProcess(StreamingTurnProcess):
     """Serialize daemon deliveries through one persistent pi RPC session."""
@@ -63,6 +66,32 @@ class PiRpcProcess(StreamingTurnProcess):
         self._last_client: PiRpcClient | None = None
         self._command = command
         self._env = env
+        # Resolve the provider credential ONCE per process, exactly where the
+        # daemon worker is composed.  The only source is the per-agent
+        # authorization (a granted DEEPSEEK_API_KEY), or -- on a legacy launch
+        # -- the operator's Pi root, which is what legacy pi always used.  A P2
+        # launch with no grant refuses here instead of running secretless and
+        # being blocked credential-invalid after its first failed turns.
+        runtime_context = (
+            None if worker_channel is None else worker_channel.runtime_context
+        )
+        self._provider_environment = pi_provider_environment(
+            spec,
+            (
+                complete_launch.environment.for_exec()
+                if complete_launch is not None
+                else {**os.environ, **(env or {})}
+            ),
+            native_root=(
+                None if runtime_context is None else runtime_context.roots.native_root
+            ),
+            settings_root=(
+                None
+                if runtime_context is None
+                else runtime_context.roots.projection_root
+            ),
+            allow_legacy_home_fallback=runtime_context is None,
+        )
         # The complete environment is resolved ONCE per process (at factory
         # time) and re-bound verbatim into every reconnected RPC client: a
         # reconnect must not re-resolve grants behind a rotating credential
@@ -159,6 +188,7 @@ class PiRpcProcess(StreamingTurnProcess):
             worker_channel=self.worker_channel,
             complete_launch=self._complete_launch,
             runtime_launch_custody=self._runtime_launch_custody,
+            provider_environment=self._provider_environment,
         )
         self._last_client = client
         return client

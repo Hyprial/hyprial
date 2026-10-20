@@ -108,6 +108,7 @@ def _start_interactive_pi(
         name,
         False,
         args=runtime_args,
+        cwd=str(cwd),
         model_provider=model_provider,
         model=model,
     )
@@ -247,6 +248,31 @@ def _start_interactive_pi(
                 **child_state_environment(services._hyprial_home(), state_dir),
             },
         )
+        from hyprial.daemon import pi_provider_environment
+
+        # Pi reads DEEPSEEK_API_KEY from its own environment; unlike claude and
+        # codex it had no model-vendor step here, so a P2 launch without a
+        # granted secret started secretless and failed every turn (2026-10-16).
+        # The source stays the per-agent authorization; a P2 launch with no
+        # grant now refuses here instead of running without a credential.
+        environment = {
+            **environment,
+            **pi_provider_environment(
+                provider_spec,
+                environment,
+                native_root=(
+                    None
+                    if runtime_projection is None
+                    else Path(str(runtime_projection["nativeRoot"]))
+                ),
+                settings_root=(
+                    None
+                    if runtime_projection is None
+                    else Path(str(runtime_projection["projectionRoot"]))
+                ),
+                allow_legacy_home_fallback=runtime_projection is None,
+            ),
+        }
         if runtime_projection is not None:
             from hyprial.daemon import (
                 find_pi_package_root,

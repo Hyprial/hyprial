@@ -46,6 +46,10 @@ from hyprial.daemon.impl.orgfs.network.recovery import MeshRecovery
 from hyprial.daemon.impl.orgfs.network.ingress import MeshIngress
 from hyprial.daemon.impl.orgfs.network.queries import MeshQueries
 from hyprial.daemon.impl.orgfs.network.sync import MeshSync
+from hyprial.daemon.impl.orgfs.network.supplier_health import (
+    SupplierSyncHealth,
+    SupplierSyncMixin,
+)
 from hyprial.daemon.impl.orgfs.network.protocol import AnnouncementSource as AnnouncementSource
 from hyprial.daemon.impl.orgfs.network.protocol import AppliedHook as AppliedHook
 from hyprial.daemon.impl.orgfs.network.protocol import MeshLogger as MeshLogger
@@ -79,7 +83,7 @@ from hyprial.daemon.impl.orgfs.network.protocol import _reply_origin as _reply_o
 from hyprial.daemon.impl.orgfs.network.protocol import _unb64 as _unb64
 
 
-class OrgFsMesh(MeshRecovery, MeshIngress, MeshQueries, MeshSync):
+class OrgFsMesh(SupplierSyncMixin, MeshRecovery, MeshIngress, MeshQueries, MeshSync):
     """Broadcast, query, import, and probe one local orgfs space."""
 
 
@@ -105,6 +109,7 @@ class OrgFsMesh(MeshRecovery, MeshIngress, MeshQueries, MeshSync):
         space_authority: Any | None = None,
         projection_clock: Callable[[], float] = time.monotonic,
         announce_instrumentation_enabled: bool = False,
+        supplier_sync_health: SupplierSyncHealth | None = None,
     ) -> None:
         if not node_id:
             raise ValueError("node_id must not be empty")
@@ -142,6 +147,15 @@ class OrgFsMesh(MeshRecovery, MeshIngress, MeshQueries, MeshSync):
         self._sync_active: set[str] = set()
         self._sync_rerun: set[str] = set()
         self._sync_dropped = 0
+        # Per-supplier failure memory.  An unreachable supplier fails in
+        # milliseconds, so without this a single offline holder is re-tried on
+        # every reconcile tick (measured at ~3.3 attempts/second), and each
+        # attempt is charged to the shared reconcile budget that also carries
+        # delivery and harness launch.  The hold is what turns "retry forever
+        # at tick rate" into "retry on an exponential schedule".
+        self._supplier_sync_health = supplier_sync_health or SupplierSyncHealth()
+        self._supplier_sync_local_health = SupplierSyncHealth()
+        self._supplier_sync_held_until_total = 0
         self._projection_lock = Lock()
         self._projection_clock = projection_clock
         self._projected_frontiers: dict[tuple[str, str], int] = {}

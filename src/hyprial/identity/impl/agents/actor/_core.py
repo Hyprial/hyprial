@@ -127,6 +127,7 @@ class AgentActor:
         liveness: AgentLiveness | None = None,
         desired_state: _DesiredStatePort | None = None,
         worker_running: Callable[..., bool | None] | None = None,
+        interactive_process_alive: Callable[[str], bool | None] | None = None,
         clock: Callable[[], float] | None = None,
         mailbox_capacity: int = 128,
         runtime: ActorRuntime | None = None,
@@ -142,6 +143,7 @@ class AgentActor:
         self._liveness = liveness or AgentLiveness(
             node_id=registry.machine,
             worker_running=worker_running,
+            interactive_process_alive=interactive_process_alive,
             clock=clock if clock is not None else time.monotonic,
         )
         self._desired_state = desired_state

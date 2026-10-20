@@ -148,6 +148,12 @@ class HarnessResultStatus(StrEnum):
 
 _PERMANENT_FAILURE_CODES = frozenset(
     {
+        # Permanent for THIS delivery: one attempt, one notice, no
+        # redelivery.  Unlike PROVIDER_USAGE_LIMIT it is deliberately NOT a
+        # blocking reason -- a rate-limit window resets, so the agent must
+        # keep receiving its next message (see the code's comment in
+        # classify_harness_failure).
+        "PROVIDER_RATE_LIMITED",
         "PROVIDER_USAGE_LIMIT",
         "PROVIDER_AUTHENTICATION_FAILED",
         "PROVIDER_BILLING_ERROR",
@@ -179,6 +185,24 @@ def classify_harness_failure(error: str | None) -> str:
         )
     ):
         return "PROVIDER_USAGE_LIMIT"
+    if any(
+        token in detail
+        for token in (
+            # §8.2: a 429/rate-limit stops the current turn for good, so the
+            # daemon must not redeliver it either -- the runtime refused to
+            # repeat the model-vendor call, and the daemon must agree.  It stays
+            # distinct from PROVIDER_USAGE_LIMIT because the condition is
+            # time-bounded: the window resets on its own, so the code is
+            # permanent for this message but never a reason to block the
+            # agent (no block reason maps it; the quota watchdog ignores it).
+            "429",
+            "too many requests",
+            "rate limit",
+            "rate_limit",
+            "resource_exhausted",
+        )
+    ):
+        return "PROVIDER_RATE_LIMITED"
     if any(
         token in detail
         for token in (
@@ -214,8 +238,6 @@ def classify_harness_failure(error: str | None) -> str:
     if any(
         token in detail
         for token in (
-            "rate limit",
-            "rate_limit",
             "overloaded",
             "timeout",
             "connection",

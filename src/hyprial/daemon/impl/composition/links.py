@@ -42,6 +42,7 @@ from hyprial.daemon.impl.org.network.binding import resolve_org_directory_space
 from hyprial.daemon.impl.org.network.directory import OrgFsDirectoryStore
 from hyprial.daemon.impl.org.network.state import read_left_orgs
 from hyprial.daemon.impl.pac.actors.marker import pac_worker_marker
+from hyprial.identity import directory_owner_principal
 from hyprial.daemon.impl.pac.storage.store import (
     PacGraphStore,
     default_database_path,
@@ -56,7 +57,9 @@ from hyprial.kernel import (
 
 __all__ = [
     "FacadeLinkInboxPort",
+    "BYPASS_ENV",
     "LINKS_SETTINGS_KEY",
+    "LinkBypassError",
     "LINK_SERVICE_CLOSE_TIMEOUT_S",
     "LINK_WAKE_EVENTS",
     "LinkWindowModeError",
@@ -70,6 +73,7 @@ __all__ = [
     "WINDOW_MODES",
     "close_link_service",
     "compose_link_service",
+    "link_bypass",
     "link_top_fields",
     "link_window_mode",
     "pac_task_binder",
@@ -84,7 +88,8 @@ LINK_SERVICE_CLOSE_TIMEOUT_S = 5.0
 #: ``link.space_ambiguous`` / ``link.local_agents_failed`` rate limit.
 _ONE_PER_MINUTE_MS = 60_000
 #: Operator switch for the W/cwnd bounds (H1).  ``$HYPRIAL_HOME/settings.json``
-#: carries ``{"links": {"windowMode": "observe"|"enforce"}}``;
+#: carries a ``links`` section whose ``windowMode`` is ``observe|enforce``
+#: (each key optional: a section without ``windowMode`` means the default);
 #: ``HYPRIAL_LINKS_WINDOW_MODE`` wins over it, and ``observe`` is the default.
 LINKS_SETTINGS_KEY = "links"
 WINDOW_MODE_ENV = "HYPRIAL_LINKS_WINDOW_MODE"
@@ -92,36 +97,107 @@ WINDOW_MODES = ("observe", "enforce")
 WINDOW_DEFAULT_MODE = "observe"
 
 
+#: Emergency switch: ``HYPRIAL_LINKS_BYPASS`` (env) or ``links.bypass``
+#: (settings.json), env first, default on.  On, every link-state hold or
+#: ingress refusal admits; identity and org-membership checks stay
+#: (docs/design/design-send-links-2026-10-14.md "Emergency bypass").
+BYPASS_ENV = "HYPRIAL_LINKS_BYPASS"
+_BYPASS_ON = frozenset({"1", "true", "yes"})
+_BYPASS_OFF = frozenset({"", "0", "false", "no"})
+
+
 class LinkWindowModeError(ValueError):
     """A malformed ``links.windowMode`` switch; composition fails closed."""
+
+
+class LinkBypassError(ValueError):
+    """A malformed ``links.bypass`` switch; composition fails closed."""
+
+
+def _links_settings_section(
+    hyprial_home: str | Path, error_type: type[ValueError]
+) -> tuple[Path, dict[str, Any] | None]:
+    """Read and type-check the shared ``links`` object, or fail closed."""
+    path = Path(hyprial_home) / "settings.json"
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return path, None
+    except (OSError, ValueError) as error:
+        raise error_type(f"cannot parse {path}: {error}") from error
+    section = (record if isinstance(record, dict) else {}).get(LINKS_SETTINGS_KEY)
+    if section is None:
+        return path, None
+    if not isinstance(section, dict):
+        raise error_type(f"{path}: {LINKS_SETTINGS_KEY} must be an object")
+    return path, section
+
+
+def link_bypass(
+    hyprial_home: str | Path, environ: Mapping[str, str] | None = None
+) -> bool:
+    """The effective switch: env > settings > on; empty env falls through.
+
+    A missing/null setting means on; a malformed value fails composition closed.
+    """
+
+    env = os.environ if environ is None else environ
+    raw = env.get(BYPASS_ENV, "")
+    if raw.strip():
+        return _checked_bypass(raw, BYPASS_ENV)
+    path, section = _links_settings_section(hyprial_home, LinkBypassError)
+    if section is None:
+        return True
+    value = section.get("bypass")
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return value
+    if not isinstance(value, str):
+        raise LinkBypassError(f"{path}: {LINKS_SETTINGS_KEY}.bypass must be a boolean")
+    return _checked_bypass(value, f"{path}: {LINKS_SETTINGS_KEY}.bypass")
+
+
+def _checked_bypass(raw: str, where: str) -> bool:
+    value = raw.strip().lower()
+    if value in _BYPASS_ON:
+        return True
+    if value in _BYPASS_OFF:
+        return False
+    raise LinkBypassError(f"{where} must be one of 1/true/yes/0/false/no; got {raw!r}")
+
+
+def _space_members(fs: Any) -> Callable[[str], frozenset[str]]:
+    """Owner and members of one org space as canonical ``user:`` principals."""
+
+    def members(space_id: str) -> frozenset[str]:
+        owners = [space.owner for space in fs.spaces() if space.space_id == space_id]
+        users = [member.user for member in fs.members(space_id)]
+        return frozenset(directory_owner_principal(user) for user in (*owners, *users))
+
+    return members
 
 
 def link_window_mode(
     hyprial_home: str | Path, environ: Mapping[str, str] | None = None
 ) -> str:
-    """The effective H1 window switch: env > ``settings.json`` > ``observe``.
+    """The effective H1 switch: env > settings > observe.
 
-    ``observe`` counts a full W/cwnd and delivers; ``enforce`` restores the
-    holding decision table.  An unreadable or invalid switch raises rather
-    than silently choosing, so a damaged file never quietly overrides an
-    operator's ``enforce`` (the ``forwarding.mode`` precedent).
+    A missing/null section or key means the default.  An unreadable or
+    invalid switch raises rather than silently choosing (the forwarding.mode
+    precedent).
     """
 
     env = os.environ if environ is None else environ
     raw = env.get(WINDOW_MODE_ENV, "").strip().lower()
     if raw:
         return _checked_window_mode(raw, WINDOW_MODE_ENV)
-    path = Path(hyprial_home) / "settings.json"
-    try:
-        record = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return WINDOW_DEFAULT_MODE
-    except (OSError, ValueError) as error:
-        raise LinkWindowModeError(f"cannot parse {path}: {error}") from error
-    section = record.get(LINKS_SETTINGS_KEY) if isinstance(record, dict) else None
+    path, section = _links_settings_section(hyprial_home, LinkWindowModeError)
     if section is None:
         return WINDOW_DEFAULT_MODE
-    mode = section.get("windowMode") if isinstance(section, dict) else None
+    mode = section.get("windowMode")
+    if mode is None:
+        return WINDOW_DEFAULT_MODE
     if not isinstance(mode, str):
         raise LinkWindowModeError(
             f"{path}: {LINKS_SETTINGS_KEY}.windowMode must be one of "
@@ -721,6 +797,7 @@ def compose_link_service(
             logger=getattr(app, "_log", None),
             clock_ms=clock,
         )
+        bypass = link_bypass(app.hyprial_home)
         spaces = OrgLinkSpaces(
             fs,
             home=Path(app.hyprial_home),
@@ -735,6 +812,7 @@ def compose_link_service(
             is_local_agent=identity.is_local,
             on_change=lambda: cell[0] is not None and cell[0].kick(),
             logger=getattr(app, "_log", None),
+            members_of=_space_members(fs) if bypass else None, bookkeeping=not bypass,
         )
         stage = "construct"
         hook_bus = getattr(app, "_hook_bus", None)
@@ -762,6 +840,7 @@ def compose_link_service(
             seed=seed,
             window_mode=window_mode,
             logger=getattr(app, "_log", None),
+            bypass=bypass,
         )
         cell[0] = service
         stage = "start"
@@ -775,6 +854,7 @@ def compose_link_service(
             "spaces": len(spaces()),
             "localAgents": len(identity.local_agents()),
             "orgAvailable": store.index().org_available,
+            "bypass": service.bypass,
         }
         stage = "bind"
         admission.bind(service)

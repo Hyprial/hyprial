@@ -1,6 +1,17 @@
 """``LinkGate``, ``LinkSendObserver`` and ``LinkLedgerSink`` entry points.
 
 Internal module of ``hyprial.daemon.impl.links.service`` (spec §9.5).
+
+Emergency switch ``HYPRIAL_LINKS_BYPASS`` (``self._bypass``): every decision
+here that would hold or refuse only on link state admits instead -- the send
+table through ``policy.bypass_send``, the queued-head hold, the ``user:`` W
+refusal, dispatch (``policy.admit_dispatch``) and ingress
+(:meth:`GateMixin.sender_known`).  Ingress then authorizes a remote agent
+sender by org membership instead of its link file: the URI's owner must be a
+member or owner of a link space this node reads (``LinkIndex.members``).
+Sender identity (``CALLER_NOT_AUTHORIZED``), reply validation and reclaimed
+residue are not link holds and are never bypassed.  Each bypass is reported
+through ``_bypass_note`` (rate-limited ``link.bypass_admitted``).
 """
 
 from __future__ import annotations
@@ -24,7 +35,13 @@ from hyprial.daemon.impl.links.ports import (
     SendDecision,
     SettleHint,
 )
-from hyprial.kernel import DaemonRequestError, ipc_errors, uri_scheme
+from hyprial.kernel import (
+    DaemonRequestError,
+    canonical_user_uri,
+    ipc_errors,
+    parse_agent_uri,
+    uri_scheme,
+)
 
 from ._base import RESERVATION_TTL_MS, _ActorState
 
@@ -88,7 +105,7 @@ class GateMixin:
                     and not model.is_owner_pair(sender, target)
                     and policy.unclosed(view) >= view.limits.w
                 ):
-                    if self._window_mode == "enforce":
+                    if self._window_mode == "enforce" and not self._bypass:
                         raise DaemonRequestError(
                             ipc_errors.LINK_WINDOW_FULL,
                             f"window W is full for {sender!r}",
@@ -100,7 +117,7 @@ class GateMixin:
                 reserved = True
                 decision = Allow(peer=None)
             else:
-                if not reply_to:
+                if not reply_to and not self._bypass:
                     head = self._queue_head(st, sender, target)
                     if head is not None:
                         if (
@@ -124,6 +141,10 @@ class GateMixin:
                     observed.append((decision.window_observed, "send"))
         for bound, site in observed:
             self._window_observed(sender, target, bound, site)
+        if isinstance(decision, Allow) and decision.bypassed:
+            self._bypass_note(
+                sender, target, decision.bypassed, direction="send"
+            )
         if reserved:
             return decision
         return self._after_decision(st, sender, target, decision, reply_to, now_ms)
@@ -135,8 +156,23 @@ class GateMixin:
         if index.known(sender):
             return True
         if self._is_local_agent(sender) and index.org_available:
-            return sender in index.files
-        return False
+            if sender in index.files:
+                return True
+        if not self._bypass:
+            return False
+        if not self._is_local_agent(sender) and not _owner_is_member(
+            sender, index.members
+        ):
+            return False
+        self._bypass_note(
+            recipient,
+            sender,
+            ipc_errors.LINK_UNKNOWN,
+            direction="ingress",
+            refusal=True,
+            log=False,
+        )
+        return True
 
     def admit_dispatch(
         self,
@@ -151,6 +187,7 @@ class GateMixin:
         if self._is_internal(sender) or self._is_internal(recipient):
             return True
         observed = False
+        bypassed = ""
         with self._mem:
             st = self._state(recipient)
             credit = st.reply_credits.get(message_id)
@@ -196,6 +233,17 @@ class GateMixin:
                     intent=intent,
                     reply_to=reply_to,
                 )
+                bypassed = policy.dispatch_bypassed(
+                    view,
+                    sender=sender,
+                    message_id=message_id,
+                    intent=intent,
+                    reply_to=reply_to,
+                )
+        if bypassed:
+            self._bypass_note(
+                recipient, sender, bypassed, direction="dispatch", log=False
+            )
         if observed:
             # The inbox actor thread must not do log I/O (LinkGate contract).
             self._window_observed(recipient, sender, "W", "dispatch", log=False)
@@ -338,6 +386,7 @@ class GateMixin:
         index = self._store.index()
         committed = index.files.get(actor)
         mine = st.pending_file or self._store.intents().get(actor) or committed
+        self._supersede_reclaims(actor, st, mine, index.files)
         raw = model.links_of(actor, mine, index.files, reclaimed=set(st.reclaimed))
         committed_peers = set(committed.entries) if committed is not None else set()
         links: dict[str, model.Link] = {}
@@ -406,6 +455,7 @@ class GateMixin:
             admitted_ids=st.admitted,
             peer_full=self._peer_full(links, limits),
             window_mode=self._window_mode,
+            bypass=self._bypass,
         )
 
     def _peer_full(
@@ -472,10 +522,14 @@ class GateMixin:
         now_ms: int,
     ) -> SendDecision:
         if isinstance(decision, Allow):
+            if decision.mint:
+                self._mint(sender, target, now_ms, lifecycle="regular")
             with self._mem:
                 if reply_to is None:
                     st.reservations.append((target, now_ms))
                 st.last_used[target] = now_ms
+                if decision.mint:
+                    st.minted_side[target] = "minter"
             return decision
         if isinstance(decision, Hold):
             return decision
@@ -571,6 +625,11 @@ def _reclaimed(message_id: str, peer: str) -> DaemonRequestError:
         "the link for this reply has been reclaimed; the residue is drained",
         data={"message_id": message_id, "peer": peer},
     )
+
+def _owner_is_member(sender: str, members: frozenset[str]) -> bool:
+    parsed = parse_agent_uri(sender)
+    return parsed is not None and canonical_user_uri(parsed[0]) in members
+
 
 def _consume_reservation(state: _ActorState, target: str) -> None:
     for position, (peer, _at) in enumerate(state.reservations):

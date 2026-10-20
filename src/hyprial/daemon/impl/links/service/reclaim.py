@@ -1,11 +1,58 @@
 """Reclaim, barrier, rebuild and reference synchronisation.
 
 Internal module of ``hyprial.daemon.impl.links.service`` (spec §9.5).
+
+A reclaim marker (``_ActorState.reclaimed`` plus its ``barrier``) exists to
+mask *stale copies* of the withdrawn references until both withdrawals are
+visible; it is not a ban on the peer.  It therefore ends in exactly three ways:
+
+* ``_clear_barriers``: both sides have withdrawn, the edge is gone.
+* ``_supersede_reclaims``: this actor's own file again holds a reference to
+  the peer whose revision is newer than the withdrawn entry recorded in the
+  barrier.  Only a fresh local mint (a send's ``Mint``, a held row's
+  re-admission, ``link add``, a PAC binding) can produce such an entry, so
+  the marker is no longer masking anything stale; the edge is judged from
+  the files again (``pending`` until the peer references back,
+  ``established`` at once when the peer never withdrew).  An entry whose
+  revision is not newer is the stale copy itself and keeps the marker.
+* ``_supersede_reclaims``, mirror side: the peer's file holds an entry for
+  this actor whose revision is strictly newer than the peer file revision
+  recorded in the barrier.  An entry is stamped with its file's revision
+  when it is minted (``model.with_reference``) and keeps it afterwards, so
+  any reference the peer held when the barrier was taken carries a revision
+  at most the recorded one; a strictly newer entry is a re-mint by the peer,
+  or a mint of the peer's that raced this reclaim unobserved (the edge then
+  converges to ``established`` through ``accept_reference``, still bounded by
+  k and the churn budget).  An equal revision is a stale copy and keeps the
+  marker.  The recorded peer revision is the highest one the store has
+  observed (``index.revisions``), not only that of a committed copy: a peer
+  file that is conflicted or absent at the reclaim is missing from
+  ``index.files``, and recording 0 let its stale entry revive the edge once
+  the file was readable again.
+
+Without the own-side exit a peer that stayed established kept the sender's
+view at ``reclaimed`` forever: every send minted a no-op and held
+``LINK_MINTING`` and ``link add`` answered committed yet reclaimed
+(2026-10-18, docs/evidence/links-reclaimed-remint-2026-10-18).  Held rows
+need no extra path: every pass re-admits them through ``_evaluate_holds``.
+
+Without the mirror-side exit the actor that dropped a peer cleared its own
+marker once both withdrawals were visible, while the peer kept its marker:
+the peer's barrier waited for the actor's file to advance *without* the
+peer, and the actor's next advance was the re-mint itself.  The actor's
+sends then stayed ``pending`` / ``LINK_MINTING`` until the peer sent first
+or restarted (2026-10-19, docs/evidence/links-reclaimed-mirror-2026-10-19).
+
+A repeated reclaim of a peer that is still reclaimed keeps, per side, the
+larger of the recorded and the new revision.  The second reclaim's base
+file no longer holds the peer and would otherwise record 0, so the committed
+pre-withdrawal entry would pass as newer if the store then rejected the
+withdrawal write.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 import hyprial.daemon.impl.links.model as model
 import hyprial.daemon.impl.links.policy as policy
@@ -265,6 +312,26 @@ class ReclaimMixin:
                 del state.barrier[peer]
                 state.reclaimed.pop(peer, None)
 
+    def _supersede_reclaims(
+        self,
+        actor: str,
+        state: _ActorState,
+        mine: LinkFile | None,
+        files: Mapping[str, LinkFile],
+    ) -> None:
+        """Drop reclaim markers a newer reference on either side superseded (``_mem``)."""
+
+        for peer in list(state.reclaimed):
+            ours, theirs = state.barrier.get(peer, (0, 0))
+            own = mine.entries.get(peer) if mine is not None else None
+            peer_file = files.get(peer)
+            back = peer_file.entries.get(actor) if peer_file is not None else None
+            if (own is not None and own.revision > ours) or (
+                back is not None and back.revision > theirs
+            ):
+                state.reclaimed.pop(peer, None)
+                state.barrier.pop(peer, None)
+
     def _emit_established(self, actor: str, now_ms: int) -> None:
         with self._mem:
             st = self._state(actor)
@@ -364,7 +431,20 @@ class ReclaimMixin:
                 else 0
             )
             theirs = index.files.get(peer)
-            st.barrier[peer] = (ours, theirs.revision if theirs is not None else 0)
+            recorded = (
+                ours,
+                max(
+                    index.revisions.get(peer, 0),
+                    theirs.revision if theirs is not None else 0,
+                ),
+            )
+            previous = st.barrier.get(peer) if peer in st.reclaimed else None
+            if previous is not None:
+                recorded = (
+                    max(previous[0], recorded[0]),
+                    max(previous[1], recorded[1]),
+                )
+            st.barrier[peer] = recorded
             st.reclaimed[peer] = now_ms
             st.established.pop(peer, None)
             st.minted_side.pop(peer, None)

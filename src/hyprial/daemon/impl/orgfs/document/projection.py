@@ -109,6 +109,12 @@ class FacadeProjection:
             if doc_id == "meta":
                 self._notify_meta_watchers(space)
         else:
+            if doc_id == "meta":
+                before_state = space.meta.get_state()
+            elif doc_id == space.tree_doc_id:
+                before_state = space.tree.doc.get_state()
+            else:
+                before_state = space.contents[doc_id].doc.get_state()
             rollback = (
                 space.tree.get_update(),
                 space.meta.get_update(),
@@ -122,17 +128,23 @@ class FacadeProjection:
             )
             operation()
             if doc_id == "meta":
-                update = space.meta.get_update()
+                update = space.meta.get_update(before_state)
+                full_update = space.meta.get_update()
             elif doc_id == space.tree_doc_id:
-                update = space.tree.get_update()
+                update = space.tree.get_update(before_state)
+                full_update = space.tree.get_update()
             else:
-                update = space.contents[doc_id].export()
+                update = space.contents[doc_id].doc.get_update(before_state)
+                full_update = space.contents[doc_id].export()
 
             def mutate(doc: Any) -> None:
                 # Lightweight facade tests use a commit recorder with no CRDT
                 # object; the production SpaceStore always supplies one.
                 if doc is not None:
+                    before = doc.get_state()
                     doc.apply_update(update)
+                    if doc.get_state() == before and full_update != update:
+                        doc.apply_update(full_update)
 
             outbox_records: tuple[CommitRecord, ...] = ()
             absorbs: tuple[_CommittedDelta, ...] = ()
@@ -142,6 +154,7 @@ class FacadeProjection:
                     record, outbox_records, absorbs = authority.commit(
                         doc_id,
                         update,
+                        full_update=full_update,
                         author=self.author,
                         actor=self.actor,
                         absorb_since=(
@@ -220,6 +233,18 @@ class FacadeProjection:
             for _doc_id, operation in items:
                 operation()
             return
+        before_states = {
+            doc_id: (
+                space.tree.doc.get_state()
+                if doc_id == space.tree_doc_id
+                else (
+                    space.meta.get_state()
+                    if doc_id == "meta"
+                    else space.contents[doc_id].doc.get_state()
+                )
+            )
+            for doc_id, _operation in items
+        }
         rollback = (
             space.tree.get_update(),
             space.meta.get_update(),
@@ -233,20 +258,32 @@ class FacadeProjection:
             for _doc_id, operation in items:
                 operation()
             mutations: list[tuple[str, Callable[[Any], None]]] = []
-            authority_edits: list[tuple[str, bytes]] = []
+            authority_edits: list[tuple[str, bytes, bytes]] = []
             for doc_id, _operation in items:
                 if doc_id == space.tree_doc_id:
-                    update = space.tree.get_update()
+                    update = space.tree.get_update(before_states[doc_id])
+                    full_update = space.tree.get_update()
                 elif doc_id == "meta":
-                    update = space.meta.get_update()
+                    update = space.meta.get_update(before_states[doc_id])
+                    full_update = space.meta.get_update()
                 else:
-                    update = space.contents[doc_id].export()
+                    update = space.contents[doc_id].doc.get_update(
+                        before_states[doc_id]
+                    )
+                    full_update = space.contents[doc_id].export()
 
-                def mutate(doc: Any, update: bytes = update) -> None:
+                def mutate(
+                    doc: Any,
+                    update: bytes = update,
+                    full_update: bytes = full_update,
+                ) -> None:
+                    before = doc.get_state()
                     doc.apply_update(update)
+                    if doc.get_state() == before and full_update != update:
+                        doc.apply_update(full_update)
 
                 mutations.append((doc_id, mutate))
-                authority_edits.append((doc_id, update))
+                authority_edits.append((doc_id, update, full_update))
             if not hasattr(store, "commit_many"):
                 raise RuntimeError(
                     "durable store does not support atomic document batches"
@@ -431,13 +468,37 @@ class FacadeProjection:
             return [node_id]
         if path.startswith("id:"):
             node_id = path[3:]
+            if node_id in space.nodes:
+                if not self._member_row_visible(space, space.nodes[node_id]) or (
+                    space.nodes[node_id].deleted and not include_deleted
+                ):
+                    raise OrgFsError("unknown-doc", {"node": path})
+                return [node_id]
+            anchor, separator, descendant = node_id.partition("/")
+            if not separator or anchor not in space.nodes:
+                raise OrgFsError("unknown-doc", {"node": path})
+            root = space.nodes[anchor]
             if (
-                node_id not in space.nodes
-                or not self._member_row_visible(space, space.nodes[node_id])
-                or (space.nodes[node_id].deleted and not include_deleted)
+                root.kind != "dir"
+                or not self._member_row_visible(space, root)
+                or (root.deleted and not include_deleted)
             ):
                 raise OrgFsError("unknown-doc", {"node": path})
-            return [node_id]
+            candidates = [anchor]
+            for part in self._validate_path(descendant):
+                candidates = sorted(
+                    {
+                        child.node_id
+                        for child in space.nodes.values()
+                        if child.parent in candidates
+                        and child.name == part
+                        and self._member_row_visible(space, child)
+                        and (include_deleted or not child.deleted)
+                    }
+                )
+                if not candidates:
+                    raise OrgFsError("unknown-doc", {"node": path})
+            return candidates
         parts = self._validate_path(path)
         candidates = ["root"]
         for part in parts:
@@ -762,7 +823,21 @@ class FacadeProjection:
 
 
     def _parent_for_new(self, space: _Space, path: str) -> tuple[_Node, str]:
-        if path.startswith("id:") or path.startswith(ORGFS_URI_PREFIX):
+        if path.startswith("id:"):
+            anchor, separator, descendant = path[3:].partition("/")
+            if not separator:
+                raise OrgFsError("unknown-doc", {"node": path})
+            parts = self._validate_path(descendant)
+            parent_ref = f"id:{anchor}"
+            if len(parts) > 1:
+                parent_ref += "/" + "/".join(parts[:-1])
+            parent = self._one(space, parent_ref)
+            if parent.kind != "dir" or parent.deleted:
+                raise OrgFsError(
+                    "invalid-argument", {"message": "parent is not a directory"}
+                )
+            return parent, parts[-1]
+        if path.startswith(ORGFS_URI_PREFIX):
             # A URI names an existing node; you cannot create by URI.  This
             # guard is essential for mutations: without it a write to the
             # URI of a nonexistent node would CREATE a doc literally named

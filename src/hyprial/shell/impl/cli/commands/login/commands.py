@@ -176,6 +176,9 @@ def login(
                 # the nested JSON.
                 if not json_output:
                     _announce_setup_guidance(response["daemon"])
+            steps = _organization_next_steps(services)
+            if steps is not None:
+                response["nextSteps"] = steps
             return response
         finally:
             for transaction in held_identity_transaction:
@@ -183,6 +186,53 @@ def login(
 
     services._execute(operation, json_output=json_output, allow_missing_home=True)
 
+
+
+_ORG_LIST_HINT_SECONDS = 2.0
+
+
+def _organization_next_steps(services) -> list[str] | None:
+    """Next steps to show when this home provably belongs to no organization.
+
+    ``None`` means UNKNOWN, and unknown must stay silent: if the directory
+    cannot be read (no daemon yet, IPC timeout), the caller must not be told
+    to create an organization -- that would be a claim about a state we did
+    not observe, and an existing member would be told to make a second one.
+
+    Only a successful read whose result is empty is evidence of "no
+    organization".  ``empty != unknown`` is the whole point of this function.
+    """
+    try:
+        # A hint must never be why login feels slow: one bounded attempt, no
+        # restore budget (that budget can be minutes), and no retry loop.  The
+        # caller has already logged in successfully; the only thing at stake
+        # here is whether one extra line is printed.
+        result = services._daemon_request(
+            "org.list", {}, timeout=_ORG_LIST_HINT_SECONDS, restore_wait=0.0
+        )
+    except Exception:  # noqa: BLE001 - D12: a hint is never worth failing login
+        return None
+    orgs = None
+    if isinstance(result, dict):
+        for key in ("orgs", "organizations", "items"):
+            candidate = result.get(key)
+            if isinstance(candidate, list):
+                orgs = candidate
+                break
+    elif isinstance(result, list):
+        orgs = result
+    if orgs != []:
+        return None
+    return [
+        "hyprial org create <name>",
+        # The second step is run by someone else, so the text names who runs it and
+        # marks which parts are placeholders the reader fills in.  A bare command
+        # string would read as "run this", and the reader is not the one who can.
+        (
+            "ask an organization owner to run: "
+            "hyprial org invite <org> --user <your-username>"
+        ),
+    ]
 
 def _login_route_is_first_time_setup() -> bool:
     """Whether ``hyprial login`` takes the first-time setup route.

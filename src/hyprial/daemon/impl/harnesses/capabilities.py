@@ -60,6 +60,7 @@ _KNOWN_MECHANISMS = frozenset(
         "rpc",
         "app_server",
         "dsh_api",
+        "dsh_tui",
         "pty",
         "extension",
         "python_worker",
@@ -202,18 +203,34 @@ _DECLARATIONS: dict[tuple[str, bool], dict[Capability, CapabilitySupport]] = {
         Capability.MODEL_SELECT: _native("dsh_api"),
     },
     ("dsh", False): {
-        Capability.INTERACTIVE_ATTACH: _unsupported("no interactive DSH TUI connector"),
-        Capability.WAKE_PUSH: _unsupported(),
-        Capability.PROACTIVE_SEND: _unsupported(),
-        Capability.SESSION_LIFECYCLE: _unsupported(
-            "no interactive DSH TUI connector; headless workers cannot resume "
-            "because each launch mints a fresh worker MCP identity"
+        Capability.INTERACTIVE_ATTACH: _native("dsh_tui"),
+        # A launcher-owned carrier writes formal wakes to a launch-scoped
+        # Cordis plugin socket; the plugin queues a synthetic user message via
+        # the DSH agent API and never touches the TUI input box.
+        Capability.WAKE_PUSH: _native("dsh_tui"),
+        Capability.PROACTIVE_SEND: _native("dsh_tui"),
+        Capability.SESSION_LIFECYCLE: _degraded(
+            "dsh_tui",
+            "exact resume is by DSH session id; daemon-restart recovery of a "
+            "CLI-hosted dsh-tui is not yet proven",
         ),
-        Capability.TOOL_INJECTION: _unsupported(),
-        Capability.PLUGIN_INJECTION: _unsupported(),
-        Capability.TURN_CONTROL: _unsupported(),
-        Capability.EVENT_STREAM: _unsupported(),
-        Capability.MODEL_SELECT: _unsupported(),
+        Capability.TOOL_INJECTION: _native("dsh_tui"),
+        Capability.PLUGIN_INJECTION: _degraded(
+            "dsh_tui",
+            "MCP servers only; skills and other plugin kinds are not injected "
+            "by this carrier",
+            plugin_kinds=frozenset({"mcp"}),
+        ),
+        Capability.TURN_CONTROL: _unsupported(
+            "the dsh-tui carrier does not expose native turn control yet"
+        ),
+        Capability.EVENT_STREAM: _unsupported(
+            "the dsh-tui carrier does not expose a turn event stream yet"
+        ),
+        Capability.MODEL_SELECT: _unsupported(
+            "choose the model inside dsh-tui; hyprial start dsh does not own "
+            "provider/model selection yet"
+        ),
     },
     ("jev", True): {
         Capability.HEADLESS_EXEC: _native("python_worker"),

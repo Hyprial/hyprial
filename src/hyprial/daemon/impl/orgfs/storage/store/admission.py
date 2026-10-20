@@ -28,75 +28,13 @@ from hyprial.identity import (
     protected_directory_doc_id,
 )
 
-from hyprial.daemon.impl.orgfs.storage.store.vocabulary import AdmissionDecision, CommitRecord, ExportPage, ImportResult, StoreError, _LOG, _b64, _binding_proof_update_is_publishable, _changed_meta_entries, _decode_state_vector, _doc_roots, _json_bytes, _now, _tree_node_operation_allowed, _unb64, _wire_doc_id
+from hyprial.daemon.impl.orgfs.storage.store.vocabulary import AdmissionDecision, CommitRecord, ImportResult, StoreError, _LOG, _b64, _binding_proof_update_is_publishable, _changed_meta_entries, _decode_state_vector, _doc_roots, _now, _tree_node_operation_allowed, _unb64
 
 class StoreAdmission:
     """Responsibility methods on the sole LocalSpaceStore state host.
 
     This class never constructs, copies, or persists an independent host.
     """
-
-    def export_since(
-        self, doc_id: str, vv: bytes, *, cursor: str | None, max_bytes: int
-    ) -> ExportPage:
-        _wire_doc_id(doc_id)
-        if max_bytes <= 0:
-            raise StoreError("invalid-argument", "max_bytes must be positive")
-        with self._lock:
-            self._raise_if_retired(doc_id)
-            roots = _doc_roots(self._docs["meta"])
-            snapshot_points = roots.get("snapshotPoints")
-            point = (
-                snapshot_points.get(doc_id)
-                if isinstance(snapshot_points, dict)
-                else None
-            )
-            snapshot_id = point.get("snapshotId") if isinstance(point, dict) else None
-            if isinstance(snapshot_id, str):
-                snapshot_row = self._db.execute(
-                    "SELECT frontier, manifest_json FROM snapshots "
-                    "WHERE doc_id = ? AND snapshot_id = ?",
-                    (doc_id, snapshot_id),
-                ).fetchone()
-                if snapshot_row is not None and not self._covered(
-                    bytes(snapshot_row["frontier"]), vv
-                ):
-                    try:
-                        manifest = json.loads(str(snapshot_row["manifest_json"]))
-                    except json.JSONDecodeError as exc:
-                        raise StoreError(
-                            "invalid-argument", "stored snapshot manifest is invalid"
-                        ) from exc
-                    if not isinstance(manifest, dict):
-                        raise StoreError(
-                            "invalid-argument", "stored snapshot manifest is invalid"
-                        )
-                    return ExportPage((), None, (manifest,))
-            offset = self._decode_cursor(cursor, doc_id, vv) if cursor else 0
-            rows = self._db.execute(
-                "SELECT * FROM commits WHERE doc_id = ? ORDER BY rowid", (doc_id,)
-            ).fetchall()
-            candidates: list[bytes] = []
-            for row in rows:
-                if not self._covered(bytes(row["version"]), vv):
-                    candidates.append(bytes(row["envelope_bytes"]))
-            selected: list[bytes] = []
-            index = offset
-            while index < len(candidates):
-                trial = selected + [candidates[index]]
-                encoded = _json_bytes({"envelopes": [_b64(item) for item in trial]})
-                if len(encoded) > max_bytes:
-                    if not selected:
-                        selected = trial
-                        index += 1
-                    break
-                selected = trial
-                index += 1
-            next_cursor = (
-                self._cursor(doc_id, index, vv) if index < len(candidates) else None
-            )
-            return ExportPage(tuple(selected), next_cursor, ())
-
 
     def _meta_exception_allowed(
         self,
@@ -779,12 +717,12 @@ class StoreAdmission:
         doc_id = str(value["docId"])
         update = self._update_bytes(value)
         doc = self._doc(doc_id)
-        working = self._new_doc(doc_id)
-        working.apply_update(doc.get_update())
+        working = self._import_doc(doc_id)
         before_state = working.get_state()
         try:
             working.apply_update(update)
         except (TypeError, ValueError):
+            self._import_docs.pop(doc_id, None)
             return ImportResult("rejected", "invalid-argument")
         version = working.get_state()
         next_seq = int(
@@ -795,6 +733,7 @@ class StoreAdmission:
             ).fetchone()[0]
         )
         if seq > next_seq:
+            self._import_docs.pop(doc_id, None)
             return ImportResult("pending", "pending-dependency")
         if version == before_state:
             # Yjs accepts an update whose structural predecessor is missing,
@@ -803,6 +742,7 @@ class StoreAdmission:
             # next import would discard the pending structs while the durable
             # duplicate key prevents a retry. Park the original bytes until a
             # predecessor advances this document instead.
+            self._import_docs.pop(doc_id, None)
             return ImportResult("pending", "pending-dependency")
         member_add_candidates = self._member_add_candidates(value)
         try:
@@ -814,8 +754,13 @@ class StoreAdmission:
                 self._write_member_add_candidates(member_add_candidates)
         except sqlite3.IntegrityError:
             # A concurrent importer won the key.  Re-enter the idempotency path.
+            self._import_docs.pop(doc_id, None)
             return self._apply_import(value, envelope, supplier)
+        except BaseException:
+            self._import_docs.pop(doc_id, None)
+            raise
         doc.apply_update(update)
+        self._sync_doc_caches(doc_id, update, import_doc=working)
         self._mark_persist((doc_id,))
         if doc_id == "meta":
             self._publish_blob_purge_projection()

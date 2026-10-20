@@ -34,6 +34,19 @@ if TYPE_CHECKING:
 _STRANDED_SWEEP_LIMIT = 256
 
 
+#: Failure codes that block the agent's whole mailbox, not just the failed
+#: delivery.  Deliberately EXCLUDES ``PROVIDER_RATE_LIMITED``: a 429 window
+#: resets, and a registry block has no expiry, so mapping it here would
+#: disable the agent until a human ran ``agent unblock``.  The rate-limited
+#: code is permanent for its own delivery only.
+_BLOCKING_FAILURE_CODES = frozenset(
+    {
+        "PROVIDER_USAGE_LIMIT",
+        "PROVIDER_AUTHENTICATION_FAILED",
+    }
+)
+
+
 def _worker_skip(result: HarnessResult) -> bool:
     from hyprial.daemon.impl.pac.contracts.delivery import (
         ALREADY_CONSUMED,
@@ -627,10 +640,7 @@ class _BridgeResultsMixin:
         """Settle one FAILED turn against its still-pending inbox row."""
 
         failure_code = result.failure_code or classify_harness_failure(result.error)
-        if failure_code in {
-            "PROVIDER_USAGE_LIMIT",
-            "PROVIDER_AUTHENTICATION_FAILED",
-        }:
+        if failure_code in _BLOCKING_FAILURE_CODES:
             admission = self._observe_blocking_failure(
                 original.recipient,
                 failure_code,
@@ -677,8 +687,7 @@ class _BridgeResultsMixin:
                 ),
             )
         if (
-            failure.failure_code
-            in {"PROVIDER_USAGE_LIMIT", "PROVIDER_AUTHENTICATION_FAILED"}
+            failure.failure_code in _BLOCKING_FAILURE_CODES
             and self._blocking_failure_observer is not None
             and self._blocking_failure_identity is None
         ):

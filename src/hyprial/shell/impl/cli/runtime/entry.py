@@ -96,8 +96,10 @@ from hyprial.shell.impl.cli.commands.agent.grant import agent_grant, agent_grant
 from hyprial.shell.impl.cli.commands.agent.home import _MIGRATION_ROUTINE_BINDING_FIELDS, _guard_agent_migration_routines, _migration_manifest, _routine_binding_matches_agent, agent_home_census, agent_migrate_execute, agent_migrate_preflight, agent_migrate_rollback
 from hyprial.shell.impl.cli.commands.agent.restore import agent_restore_policy, agent_restore_threshold
 from hyprial.shell.impl.cli.commands.agent.secret import agent_secret_entry_write, agent_secret_grant, agent_secret_list, agent_secret_revoke
+from hyprial.shell.impl.cli.commands.agent.provider import agent_provider_login, provider_app
 from hyprial.shell.impl.cli.commands.agent.runtime.interactive import _announce_plugin_skips, _channel_registration_confirmed, _handover_prompt, _interactive_actor, _interactive_actor_name, _launch_detached_tui, _pi_attach_registration, _plugin_skip_warnings, _runtime_context_environment, _runtime_context_projection, _runtime_launch_custody, _terminate_process, _wait_foreground, _with_plugin_warnings, _write_launch_config
 from hyprial.shell.impl.cli.commands.agent.runtime.claude import _CLAUDE_HARNESS_TOOLS, _CLAUDE_SESSION_IDENTITY_FLAGS, _reject_claude_session_identity_args, _start_interactive_claude
+from hyprial.shell.impl.cli.commands.agent.runtime.dsh import _start_interactive_dsh
 from hyprial.shell.impl.cli.commands.agent.runtime.sessions import _CODEX_SESSION_FLAGS, _PI_SESSION_IDENTITY_FLAGS, _reject_codex_session_args, _reject_pi_session_identity_args, _start_interactive_codex, _start_interactive_pi
 from hyprial.shell.impl.cli.commands.agent.runtime.tiers import _delivery_agent_live, _parse_combo, agent_tiers, tiers_app, tiers_probe
 from hyprial.shell.impl.cli.commands.user.commands import user_add, user_app, user_bind, user_bindings_audit, user_list, user_show, user_unbind, user_whois
@@ -247,6 +249,7 @@ def _cli_services() -> CliServices:
         _socket_path=_socket_path,
         _start_interactive_claude=_start_interactive_claude,
         _start_interactive_codex=_start_interactive_codex,
+        _start_interactive_dsh=_start_interactive_dsh,
         _start_interactive_pi=_start_interactive_pi,
         _state_dir=_state_dir,
         _stdin_isatty=_stdin_isatty,
@@ -278,6 +281,7 @@ set_service_resolver(_cli_services)
 agent_app.add_typer(secret_app, name="secret")
 agent_app.add_typer(migration_app, name="migrate")
 agent_app.add_typer(tiers_app, name="tiers")
+agent_app.add_typer(provider_app, name="provider")
 app.add_typer(adapter_app, name="adapter")
 app.add_typer(daemon_app, name="daemon")
 app.add_typer(service_app, name="service")
@@ -431,7 +435,7 @@ __all__ = [
     "_routine_identity", "_run_login_cli_flow", "_run_worktree_git",
     "_running_daemon_before_upgrade", "_runtime_context_environment", "_runtime_context_projection", "_runtime_launch_custody",
     "_sample_process_table", "_scan_worktree", "_scan_worktree_repository", "_semantic_version", "_socket_path",
-    "_setup_hint_enabled", "_squire_setup_operation", "_squire_setup_warning", "_start_interactive_claude", "_start_interactive_codex", "_start_interactive_pi",
+    "_setup_hint_enabled", "_squire_setup_operation", "_squire_setup_warning", "_start_interactive_claude", "_start_interactive_codex", "_start_interactive_dsh", "_start_interactive_pi",
     "_state_dir", "_status_timestamp", "_stdin_isatty", "_stop_daemon_for_identity_switch", "_stop_daemon_for_operator",
     "_stop_daemon_gracefully", "_stop_daemon_with_proof", "_stopped_process", "_stored_user_proxy_route", "_subtree_totals",
     "_tailcat_sidecar_doctor_check",
@@ -448,6 +452,7 @@ __all__ = [
     "adapter_route_remove", "adapter_start", "adapter_status", "adapter_stop", "adapter_unpin",
     "agent_app", "agent_create", "agent_destroy", "agent_grant", "agent_grants", "agent_tiers",
     "agent_home_census", "agent_host_invite", "agent_list", "agent_migrate_execute", "agent_migrate_preflight", "agent_migrate_rollback",
+    "agent_provider_login", "provider_app",
     "agent_restore_policy", "agent_restore_threshold", "agent_revoke", "agent_secret_entry_write", "agent_secret_grant",
     "agent_secret_list", "agent_secret_revoke", "agent_unblock", "app", "autoupdate_app",
     "autoupdate_install", "autoupdate_restart", "autoupdate_run", "autoupdate_status", "autoupdate_uninstall",

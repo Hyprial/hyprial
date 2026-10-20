@@ -20,6 +20,8 @@ from hyprial.identity import (
 )
 from hyprial.daemon.impl.pac.graphs.edits  import activate_graph, add_node, close_graph, create_graph, show_graph
 from hyprial.daemon.impl.pac.actors.coordinator  import ActorCoordinator, request_actor_stop
+from hyprial.daemon.impl.pac.actors.coordinator  import cleanup_operation_base
+from hyprial.daemon.impl.pac.actors.coordinator  import record_cleanup_reconcile_failure
 from hyprial.daemon.impl.pac.storage.migrations  import unrewritten_owners_note
 from hyprial.daemon.impl.pac.graphs.reactor  import PacReactor, planned_to_json
 from hyprial.daemon.impl.pac.storage.store  import PacGraphStore
@@ -96,12 +98,16 @@ class _Generation:
                     self.generation, command.graph_id, command.node_id,
                     "reconcile", "",
                 ), f"{type(error).__name__}: {error}")
+                self._count_cleanup_failure(command.graph_id, command.node_id)
             return
         if isinstance(command, _ActorEffectCompleted):
             try:
                 self._actor_effect_completed(command)
             except Exception as error:
                 self.owner._log_actor_failure(command.effect, f"{type(error).__name__}: {error}")
+                self._count_cleanup_failure(
+                    command.effect.graph_id, command.effect.node_id
+                )
             return
         if isinstance(command, NotificationDelivered):
             if command.generation != self.generation:
@@ -123,6 +129,22 @@ class _Generation:
                 self.owner._refresh_restore_facts()
             self._wake_affected(command, result)
             self.complete(GraphCommandCompleted(command.correlation_id, self.generation, result=result))
+
+    def _count_cleanup_failure(self, graph_id: str, node_id: str) -> None:
+        """Advance an open cleanup intent's backoff after a raised reconcile."""
+
+        try:
+            store = PacGraphStore(self.database)
+            try:
+                record_cleanup_reconcile_failure(
+                    store, graph_id, node_id, at_ms=time.time_ns() // 1_000_000
+                )
+            finally:
+                store.close()
+        except Exception as error:  # noqa: BLE001 - the log line above stands
+            self.owner._log_actor_failure(_ActorEffect(
+                self.generation, graph_id, node_id, "reconcile", "",
+            ), f"cleanup failure not counted: {type(error).__name__}: {error}")
 
     def _wake_affected(self, command: GraphCommand, result: Any) -> None:
         """Wake the actor(s) a committed graph write can make actionable.
@@ -453,7 +475,8 @@ class _Generation:
                     activation is None
                     or effect.expected_activation_id is None
                     or activation["operation_id"] != effect.expected_activation_id
-                    or effect.operation_id != effect.expected_activation_id
+                    or cleanup_operation_base(effect.operation_id)
+                    != effect.expected_activation_id
                 ):
                     return
             coordinator = ActorCoordinator(

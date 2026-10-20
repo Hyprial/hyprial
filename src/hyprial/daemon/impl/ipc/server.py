@@ -6,10 +6,12 @@ from __future__ import annotations
 import errno
 import json
 import os
+import select
 import socket
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any, Protocol, TYPE_CHECKING, runtime_checkable
 from hyprial.kernel import AdmissionResult
 from hyprial.daemon.impl.ipc.ipc_request_owner  import IpcRequestOwner
@@ -34,6 +36,8 @@ _IPC_ACCEPT_RETRY_INITIAL = 0.05
 _IPC_ACCEPT_RETRY_MAX = 1.0
 
 _IPC_CLIENT_IDLE_TIMEOUT = 15.0
+
+_IPC_REQUEST_TIMEOUT = 90.0
 
 _IPC_RESPONSE_WRITE_TIMEOUT = 15.0
 
@@ -96,6 +100,29 @@ class _IpcResponseWriter(Protocol):
 class _IpcListener(Protocol):
     def accept(self) -> tuple[_IpcStream, object]: ...
     def close(self) -> None: ...
+
+
+@dataclass(slots=True)
+class _IpcClientState:
+    peer_pid: int | None
+    connected_since_ms: int
+    last_request_ms: int | None = None
+    current_method: str | None = None
+
+    def to_json(self) -> JsonObject:
+        return {
+            "peerPid": self.peer_pid,
+            "connectedSinceMs": self.connected_since_ms,
+            "lastRequestMs": self.last_request_ms,
+            "currentMethod": self.current_method,
+        }
+
+
+@dataclass(slots=True)
+class _IpcRequestResult:
+    ready: threading.Event = field(default_factory=threading.Event)
+    response: JsonObject | None = None
+    error: BaseException | None = None
 
 
 class _IpcServerMixin:
@@ -224,6 +251,14 @@ class _IpcServerMixin:
         """
 
         capacity_exhausted = False
+        connected_since_ms = time.time_ns() // 1_000_000
+        peer_pid = (
+            _peer_process_id(connection)
+            if isinstance(connection, socket.socket)
+            else None
+        )
+        rejected_state = _IpcClientState(peer_pid, connected_since_ms)
+        active_clients: list[JsonObject] = []
         with self._ipc_clients_lock:
             if self.stop_event.is_set():
                 self._ipc_closing = True
@@ -232,9 +267,14 @@ class _IpcServerMixin:
                 return
             if not self._ipc_client_slots.acquire(blocking=False):
                 capacity_exhausted = True
+                active_clients = [
+                    state.to_json()
+                    for state in self._ipc_client_states.values()
+                ]
             else:
                 worker = self._new_ipc_client_worker(connection)
                 self._ipc_clients.add(connection)
+                self._ipc_client_states[connection] = rejected_state
                 self._ipc_client_threads.add(worker)
                 try:
                     # Registration and start share the shutdown lock. Closing
@@ -243,6 +283,7 @@ class _IpcServerMixin:
                     worker.start()
                 except BaseException:
                     self._ipc_clients.discard(connection)
+                    self._ipc_client_states.pop(connection, None)
                     self._ipc_client_threads.discard(worker)
                     self._ipc_client_slots.release()
                     connection.close()
@@ -257,6 +298,11 @@ class _IpcServerMixin:
                     "daemon.ipc.client_capacity_exhausted",
                     errorType="ClientCapacityError",
                     errorCode="IPC_CLIENT_CAPACITY",
+                    **rejected_state.to_json(),
+                    clientCount=len(active_clients),
+                    clientLimit=_IPC_MAX_CLIENTS,
+                    saturated=len(active_clients) >= _IPC_MAX_CLIENTS,
+                    activeClients=active_clients,
                 )
             except OSError as log_error:
                 if log_error.errno not in {errno.EMFILE, errno.ENFILE}:
@@ -274,6 +320,7 @@ class _IpcServerMixin:
                 current = threading.current_thread()
                 with self._ipc_clients_lock:
                     self._ipc_clients.discard(connection)
+                    self._ipc_client_states.pop(connection, None)
                     self._ipc_client_threads.discard(current)
                 self._ipc_client_slots.release()
 
@@ -386,11 +433,24 @@ class _IpcServerMixin:
             with self._ipc_clients_lock:
                 if self._ipc_closing or self.stop_event.is_set():
                     return
-            self._ipc_peer.pid = _peer_process_id(connection)
-            try:
-                response = self._response(line)
-            finally:
-                self._ipc_peer.pid = None
+            request_id, method = self._ipc_request_metadata(line)
+            with self._ipc_clients_lock:
+                state = self._ipc_client_states.get(connection)
+                if state is not None:
+                    state.last_request_ms = time.time_ns() // 1_000_000
+                    state.current_method = method
+                    peer_pid = state.peer_pid
+                else:
+                    peer_pid = None
+            response = self._dispatch_ipc_response(
+                connection,
+                line,
+                request_id=request_id,
+                method=method,
+                peer_pid=peer_pid,
+            )
+            if response is None:
+                return
             frame = (
                 json.dumps(response, separators=(",", ":"), ensure_ascii=False).encode()
                 + b"\n"
@@ -412,6 +472,95 @@ class _IpcServerMixin:
         raise DaemonRequestError(
             ipc_errors.IPC_REQUEST_TOO_LARGE, "daemon IPC request exceeded 8 MiB"
         )
+
+    @staticmethod
+    def _ipc_request_metadata(line: bytes) -> tuple[object, str | None]:
+        try:
+            request = json.loads(line)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return None, None
+        if not isinstance(request, dict):
+            return None, None
+        method = request.get("method")
+        return request.get("id"), method if isinstance(method, str) else None
+
+    @staticmethod
+    def _ipc_peer_disconnected(connection: _IpcStream) -> bool:
+        if not isinstance(connection, socket.socket):
+            return False
+        try:
+            readable, _, _ = select.select((connection,), (), (), 0)
+            if not readable:
+                return False
+            return connection.recv(1, socket.MSG_PEEK) == b""
+        except (OSError, ValueError):
+            return True
+        except TimeoutError:
+            return False
+
+    @staticmethod
+    def _ipc_timeout_response(
+        request_id: object, method: str | None
+    ) -> JsonObject:
+        label = repr(method) if method is not None else "<unknown>"
+        error = ipc_errors.IpcTimeoutError(
+            f"daemon IPC request deadline expired for method {label}"
+        )
+        return {
+            "version": 1,
+            "id": request_id,
+            "error": {"code": error.code, "message": str(error)},
+        }
+
+    def _dispatch_ipc_response(
+        self,
+        connection: _IpcStream,
+        line: bytes,
+        *,
+        request_id: object,
+        method: str | None,
+        peer_pid: int | None,
+    ) -> JsonObject | None:
+        """Keep transport slots bounded independently of domain settlement."""
+
+        result = _IpcRequestResult()
+
+        def invoke() -> None:
+            self._ipc_peer.pid = peer_pid
+            try:
+                result.response = self._response(line)
+            except BaseException as error:
+                result.error = error
+            finally:
+                self._ipc_peer.pid = None
+                result.ready.set()
+
+        threading.Thread(
+            target=invoke,
+            name="hyprial-daemon-ipc-request",
+            daemon=True,
+        ).start()
+        deadline = time.monotonic() + _IPC_REQUEST_TIMEOUT
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return self._ipc_timeout_response(request_id, method)
+            if result.ready.wait(min(_IPC_CLIENT_POLL_INTERVAL, remaining)):
+                if result.error is not None:
+                    raise result.error
+                assert result.response is not None
+                return result.response
+            if self._ipc_peer_disconnected(connection):
+                return None
+
+    def _ipc_client_status(self) -> JsonObject:
+        with self._ipc_clients_lock:
+            active = len(self._ipc_clients)
+        return {
+            "active": active,
+            "limit": _IPC_MAX_CLIENTS,
+            "saturated": active >= _IPC_MAX_CLIENTS,
+        }
 
     def _response(self, line: bytes) -> JsonObject:
         request_id: object = None

@@ -422,6 +422,12 @@ class PacGraphAuthority:
         except Exception:
             pass
 
+    def actor_effect_keys(self) -> frozenset[tuple[str, str]]:
+        """Actor keys whose effect is queued or running on the effect pool."""
+
+        with self._actor_lock:
+            return frozenset(self._actor_active)
+
     def actor_effect_stats(self) -> dict[str, int]:
         with self._actor_lock:
             return {

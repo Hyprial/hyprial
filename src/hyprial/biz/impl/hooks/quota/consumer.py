@@ -23,6 +23,10 @@ from typing import Any, Protocol
 from hyprial.kernel import HookEvent
 
 #: The failure code that feeds the turn-failure alert (design §3).
+#: ``PROVIDER_RATE_LIMITED`` is deliberately not aliased to it: a 429 window
+#: resets on its own, so it is not evidence that the account's quota is gone
+#: and must not raise the ``额度耗尽`` owner alert (2026-10-16 acceptance,
+#: resident pi credential acceptance, item 1).
 USAGE_LIMIT_FAILURE_CODE = "PROVIDER_USAGE_LIMIT"
 #: What the quota lane subscribes to on the daemon bus.
 QUOTA_HOOK_EVENTS: tuple[str, ...] = ("turn.failed", "usage.refreshed")

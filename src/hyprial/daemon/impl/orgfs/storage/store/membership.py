@@ -788,7 +788,7 @@ class StoreMembership:
         return {
             client
             for client, clock in _decode_state_vector(after).items()
-            if clock > before_state.get(client, 0)
+            if client not in before_state or clock > before_state[client]
         }
 
     def _mutation_client_ids(

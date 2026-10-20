@@ -17,9 +17,11 @@ adopted and arrival order cannot change authorization.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import time
+from threading import Lock
 from typing import Any, Callable
 
 from hyprial.daemon.impl.orgfs.api import OrgFs, OrgFsError
@@ -50,6 +52,19 @@ _OWNER_CREATED_DIRS = (
 )
 
 
+#: How long one unreadable device record stays quiet after it was reported.
+#: A record that fails to parse fails on every reconcile tick, and each tick
+#: charged a warn line per bad record: one offline holder's corrupt row was
+#: measured at 41 reports per minute, which turned a single bad byte into a
+#: standing load source.  Re-reporting the same bytes at the same path inside
+#: this window carries no new information; a changed record re-reports at once.
+_INVALID_DEVICE_QUIET_SECONDS = 300.0
+
+#: Hard bound on the quiet map.  Its keys come from a remote directory, so it
+#: must not be able to grow with whatever that directory happens to contain.
+_INVALID_DEVICE_QUIET_MAX = 512
+
+
 class OrgFsDirectoryStore:
     """:class:`~hyprial.identity.impl.org_directory.DirectoryStore` over OrgFS.
 
@@ -64,6 +79,12 @@ class OrgFsDirectoryStore:
     ) -> None:
         self._fs = fs
         self._logger = logger
+        # (space_id, path) -> (fingerprint, quiet-until monotonic, suppressed).
+        # Keyed by space as well as path: two orgs can hold the same path with
+        # the same bytes, and a path-only key would report the first and then
+        # swallow the second.  Guarded by a lock because scans can overlap.
+        self._invalid_device_quiet: dict[tuple[str, str], tuple[str, float, int]] = {}
+        self._invalid_device_lock = Lock()
 
     # -- DirectoryStore ---------------------------------------------------
 
@@ -134,6 +155,7 @@ class OrgFsDirectoryStore:
                             actual=entry.doc_id,
                         )
                         continue
+                    text: str | None = None
                     text, _version = self._fs.read_text(
                         space_id, f"id:{entry.node_id}"
                     )
@@ -146,7 +168,7 @@ class OrgFsDirectoryStore:
                         )
                     }
                 except (OrgFsError, TypeError, ValueError) as error:
-                    self._warn_invalid_device(path, error)
+                    self._note_invalid_device(space_id, path, text, error)
                     if (
                         isinstance(error, OrgFsError)
                         and error.code == ORGFS_CONTENT_PENDING
@@ -170,6 +192,8 @@ class OrgFsDirectoryStore:
                         authors=authors,
                     )
                     continue
+                with self._invalid_device_lock:
+                    self._invalid_device_quiet.pop((space_id, path), None)
                 candidates.append(device)
         conflicts = self._device_key_conflicts(candidates)
         for key, (fields, owners) in sorted(conflicts.items()):
@@ -546,12 +570,72 @@ class OrgFsDirectoryStore:
             actual,
         )
 
-    def _warn_invalid_device(self, path: str, error: Exception) -> None:
-        fields = {"path": path, "detail": str(error)}
+    def _device_fingerprint(self, text: str | None, error: Exception) -> str:
+        """Identify the bytes that failed, not just the path that held them.
+
+        Content-addressed on purpose: a repaired record (or a different revision
+        of the same CRDT text) must be read again immediately, while the
+        identical bytes must not be re-reported on every tick.
+        """
+
+        if text is not None:
+            return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
+        code = getattr(error, "code", None)
+        return f"{type(error).__name__}:{code or ''}"
+
+    def _note_invalid_device(
+        self, space_id: str, path: str, text: str | None, error: Exception
+    ) -> bool:
+        """Report an unreadable device row unless the same bytes were just reported.
+
+        Returns whether this is a NEW report.  The row is skipped either way:
+        this bounds the reporting, never the correctness of the scan.
+        """
+
+        fingerprint = self._device_fingerprint(text, error)
+        key = (space_id, path)
+        now = time.monotonic()
+        with self._invalid_device_lock:
+            previous = self._invalid_device_quiet.get(key)
+            if previous is not None:
+                seen, quiet_until, suppressed = previous
+                if seen == fingerprint and now < quiet_until:
+                    self._invalid_device_quiet[key] = (
+                        seen,
+                        quiet_until,
+                        suppressed + 1,
+                    )
+                    return False
+            self._invalid_device_quiet[key] = (
+                fingerprint,
+                now + _INVALID_DEVICE_QUIET_SECONDS,
+                0,
+            )
+            overflow = len(self._invalid_device_quiet) - _INVALID_DEVICE_QUIET_MAX
+            if overflow > 0:
+                # Oldest insertion first: dicts keep insertion order, and this
+                # map is a reporting aid, so dropping the oldest is safe.
+                for stale in list(self._invalid_device_quiet)[:overflow]:
+                    self._invalid_device_quiet.pop(stale, None)
+        fields = {
+            "space": space_id,
+            "path": path,
+            "detail": str(error),
+            "fingerprint": fingerprint[:16],
+        }
+        if previous is not None:
+            fields["suppressedSinceLastReport"] = previous[2]
         if self._logger is not None:
             self._logger("warn", "org", "directory.device_invalid", **fields)
-            return
-        _LOG.warning("org.directory.device_invalid path=%s detail=%s", path, error)
+        else:
+            _LOG.warning(
+                "org.directory.device_invalid space=%s path=%s detail=%s suppressed=%s",
+                space_id,
+                path,
+                error,
+                fields.get("suppressedSinceLastReport", 0),
+            )
+        return True
 
     def _warn_invalid_binding(self, path: str, error: Exception) -> None:
         fields = {"path": path, "detail": str(error)}

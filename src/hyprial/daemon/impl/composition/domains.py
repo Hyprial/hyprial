@@ -95,6 +95,7 @@ class AgentSessionDomains:
         daemon_epoch: str,
         hyprial_home: Path,
         worker_running: Callable[..., bool | None],
+        interactive_process_alive: Callable[[str], bool | None] | None = None,
         clock: Callable[[], float],
         persistence_late_result: Callable[[str], object | None] | None = None,
         session_desired_state: object | None = None,
@@ -131,6 +132,7 @@ class AgentSessionDomains:
             event_sink=agent_event,
             desired_state=desired_state,
             worker_running=worker_running,
+            interactive_process_alive=interactive_process_alive,
             clock=clock,
             session_originated=session_originated,
             home_runtime_preparers={
