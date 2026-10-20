@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from threading import Lock
 from typing import Any
 
 from hyprial.kernel import DaemonRequestError, ipc_errors
@@ -53,16 +52,11 @@ from hyprial.identity import InviteError
 
 
 def _invalid_device_quarantine(app: Any) -> InvalidDeviceQuarantine:
-    guard = getattr(app, "_org_directory_quarantine_lock", None)
-    if guard is None:
-        guard = Lock()
-        app._org_directory_quarantine_lock = guard
-    with guard:
-        quarantine = getattr(app, "_org_directory_quarantine", None)
-        if quarantine is None:
-            quarantine = InvalidDeviceQuarantine()
-            app._org_directory_quarantine = quarantine
-        return quarantine
+    quarantine = getattr(app, "_org_directory_quarantine", None)
+    if quarantine is None:
+        quarantine = InvalidDeviceQuarantine()
+        app._org_directory_quarantine = quarantine
+    return quarantine
 
 
 def _build_service(app: Any) -> OrgNetworkService:

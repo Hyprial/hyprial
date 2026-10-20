@@ -24,6 +24,7 @@ from hyprial.daemon.impl.org.network.create import (
     write_default_acl_policy,
 )
 from hyprial.daemon.impl.org.network.directory import (
+    InvalidDeviceQuarantine,
     OrgFsDirectoryStore,
     leave_request_admitted,
 )
@@ -102,6 +103,7 @@ class OrgNetworkService(CasdoorMembershipMixin):
         node_id: str,
         owner: str,
         store: OrgFsDirectoryStore | None = None,
+        invalid_devices: InvalidDeviceQuarantine | None = None,
         policy: OrgPolicy | None = None,
         map_peer: Callable[[str, str], int] | None = None,
         unmap_peer: Callable[[str], None] | None = None,
@@ -120,9 +122,15 @@ class OrgNetworkService(CasdoorMembershipMixin):
         self._node_id = node_id
         self._owner = owner.removeprefix("user:")
         self._log = logger or (lambda *_args, **_fields: None)
-        self._store = (
-            store if store is not None else OrgFsDirectoryStore(fs, logger=self._log)
-        )
+        if store is None:
+            if invalid_devices is None:
+                raise TypeError("invalid_devices is required when store is not supplied")
+            store = OrgFsDirectoryStore(
+                fs,
+                logger=self._log,
+                invalid_devices=invalid_devices,
+            )
+        self._store = store
         self._policy: OrgPolicy = (
             policy
             if policy is not None

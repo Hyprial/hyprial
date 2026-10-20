@@ -14,9 +14,10 @@ derived from ``(spaceId, section, path user, leaf)``.  Readers require that id
 at the protected path, so an unlinked or arbitrarily linked document is never
 adopted and arrival order cannot change authorization.
 
-Invalid device rows are quarantined by content version.  Unchanged failures use
-bounded exponential retries; a changed version is eligible immediately.  The
-quarantine map is bounded because its keys come from replicated remote data.
+Invalid device rows are quarantined by a stable fingerprint: content version
+when present, otherwise bytes or read-error type.  Unchanged failures use
+bounded exponential retries; changed content is eligible immediately.  The
+map is bounded because its keys come from replicated remote data.
 """
 
 from __future__ import annotations
@@ -203,7 +204,7 @@ class OrgFsDirectoryStore:
                         )
                         continue
                     quarantined = self._quarantined_device(
-                        space_id, path, version
+                        space_id, path, version=version
                     )
                     if quarantined is not None:
                         problem = {"org": org, **quarantined}
@@ -219,6 +220,19 @@ class OrgFsDirectoryStore:
                         space_id, f"id:{entry.node_id}"
                     )
                     version = version or str(read_version)
+                    quarantined = self._quarantined_device(
+                        space_id, path, version=version, text=text
+                    )
+                    if quarantined is not None:
+                        problem = {"org": org, **quarantined}
+                        problems.append(problem)
+                        if problem["reason"] == ORGFS_CONTENT_PENDING:
+                            pending.append({
+                                "owner": path_principal,
+                                "deviceId": device_id,
+                                "reason": ORGFS_CONTENT_PENDING,
+                            })
+                        continue
                     device = DirectoryDevice.from_record(json.loads(text))
                     record_principal = directory_owner_principal(device.owner)
                     authors = {
@@ -228,15 +242,23 @@ class OrgFsDirectoryStore:
                         )
                     }
                 except (OrgFsError, TypeError, ValueError) as error:
-                    problem = self._note_invalid_device(
+                    problem = self._quarantined_device(
                         space_id,
                         path,
-                        text,
-                        error,
                         version=version,
-                        owner=path_principal,
-                        device_id=device_id,
+                        text=text,
+                        error=error,
                     )
+                    if problem is None:
+                        problem = self._note_invalid_device(
+                            space_id,
+                            path,
+                            text,
+                            error,
+                            version=version,
+                            owner=path_principal,
+                            device_id=device_id,
+                        )
                     problems.append({"org": org, **problem})
                     if problem["reason"] == ORGFS_CONTENT_PENDING:
                         pending.append({
@@ -675,15 +697,24 @@ class OrgFsDirectoryStore:
         )
 
     def _quarantined_device(
-        self, space_id: str, path: str, version: str
+        self,
+        space_id: str,
+        path: str,
+        *,
+        version: str = "",
+        text: str | None = None,
+        error: Exception | None = None,
     ) -> dict[str, object] | None:
-        if not version:
+        fingerprint = self._device_fingerprint(
+            version=version, text=text, error=error
+        )
+        if fingerprint is None:
             return None
         key = (space_id, path)
         now = time.monotonic()
         with self._invalid_device_lock:
             state = self._invalid_device_quiet.get(key)
-            if state is None or state[0] != version or now >= state[1]:
+            if state is None or state[0] != fingerprint or now >= state[1]:
                 return None
             self._invalid_device_quiet[key] = (
                 state[0], state[1], state[2], state[3] + 1, state[4]
@@ -691,9 +722,15 @@ class OrgFsDirectoryStore:
             return dict(state[4])
 
     @staticmethod
-    def _device_fingerprint(text: str | None, error: Exception) -> str:
+    def _device_fingerprint(
+        *, version: str = "", text: str | None = None, error: Exception | None = None
+    ) -> str | None:
+        if version:
+            return version
         if text is not None:
             return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
+        if error is None:
+            return None
         code = getattr(error, "code", None)
         return f"{type(error).__name__}:{code or ''}"
 
@@ -710,7 +747,10 @@ class OrgFsDirectoryStore:
     ) -> dict[str, object]:
         """Quarantine one invalid version and return its captured problem."""
 
-        fingerprint = version or self._device_fingerprint(text, error)
+        fingerprint = self._device_fingerprint(
+            version=version, text=text, error=error
+        )
+        assert fingerprint is not None
         key = (space_id, path)
         now = time.monotonic()
         with self._invalid_device_lock:

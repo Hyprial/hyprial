@@ -1,12 +1,7 @@
 """Compose the send-link service and adapt the app's ports to the engine.
 
-Spec: docs/design/send-links-impl/wp2-composition.md.  Every adapter lives
-here so ``links/`` (the engine) never imports orgfs, presence, inbox or PAC.
-
-``compose_link_service`` is called once by ``wiring/services.py`` before
-``PacGraphAuthority`` is constructed (W10); it never raises.  Failures log
-``link.service_failed`` and leave the admission slot unbound so the send
-boundary holds (fail closed, ruling 54).
+Spec: docs/design/send-links-impl/wp2-composition.md. Adapters keep the engine free
+of orgfs, presence, inbox and PAC. Composition runs before PAC and fails closed.
 """
 
 from __future__ import annotations
@@ -344,11 +339,13 @@ class OrgLinkSpaces:
         *,
         home: Path,
         clock_ms: Callable[[], int],
+        invalid_devices: Any,
         logger: Callable[..., None] | None = None,
     ) -> None:
         self._fs = fs
         self._home = Path(home)
         self._clock = clock_ms
+        self._invalid_devices = invalid_devices
         self._logger = logger
         self._at_ms = -(10**18)
         self._ready = False
@@ -372,7 +369,9 @@ class OrgLinkSpaces:
         return result
 
     def _resolve(self) -> tuple[str, ...]:
-        store = OrgFsDirectoryStore(self._fs, logger=self._logger)
+        store = OrgFsDirectoryStore(
+            self._fs, logger=self._logger, invalid_devices=self._invalid_devices
+        )
         left = set(read_left_orgs(self._home))
         spaces: list[str] = []
         ambiguous: set[str] = set()
@@ -802,6 +801,7 @@ def compose_link_service(
             fs,
             home=Path(app.hyprial_home),
             clock_ms=clock,
+            invalid_devices=app._org_directory_quarantine,
             logger=getattr(app, "_log", None),
         )
         cell: list[LinkService | None] = [None]

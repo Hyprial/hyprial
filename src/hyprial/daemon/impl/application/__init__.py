@@ -54,6 +54,7 @@ from hyprial.kernel import configured_hyprial_home
 from hyprial.kernel import Logger
 from hyprial.daemon.impl.operations.management_actor import RegistryManagementAuthority as RegistryManagementHandler
 from hyprial.daemon.impl.org import OrgContextMesh
+from hyprial.daemon.impl.org.network.directory import InvalidDeviceQuarantine
 from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
 from hyprial.kernel import PersistentConfigStore
 from hyprial.daemon.impl.squire import (
@@ -791,8 +792,7 @@ class DaemonApplication(
         self._legacy_agent_home_log_lock = threading.Lock()
         self._legacy_agent_home_logged: set[str] = set()
         self._orgfs_runtime: OrgFsRuntime | None = None
-        self._org_directory_quarantine_lock = threading.Lock()
-        self._org_directory_quarantine: Any | None = None
+        self._org_directory_quarantine = InvalidDeviceQuarantine()
         self._org_identity_binding_projector: Any | None = None
         self._org_identity_binding_suppression: Any | None = None
         self._casdoor_membership_sync: Any | None = None

@@ -47,6 +47,7 @@ class _IdentityBindingMixin:
             logger=lambda level, domain, event, **fields: self._log(
                 level, domain, event, **fields
             ),
+            invalid_devices=self._org_directory_quarantine,
         )
 
     def _load_org_identity_bindings(self) -> tuple[Any, ...]:
