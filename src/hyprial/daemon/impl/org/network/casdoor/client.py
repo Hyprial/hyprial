@@ -33,6 +33,11 @@ USER_AGENT = user_agent("daemon")
 """Sent on every call: the Cloudflare edge in front of the issuer rejects
 urllib's default ``Python-urllib`` agent with 403 / error code 1010."""
 _NOT_A_MEMBER_MSG = "the user is not a member of the group"
+_UNAUTHORIZED_MSG = "Unauthorized operation"
+"""What the patched endpoint answers when **no permission binds** for this
+``group``.  Permissions are granted per group id, so a group that does not
+exist yet matches nothing and every member call on it answers this.  See
+``member_state`` for why that is read as "absent" rather than as a refusal."""
 _CREDENTIAL_KEYS = (
     "CASDOOR_GROUP_SYNC_ENDPOINT",
     "CASDOOR_GROUP_SYNC_CLIENT_ID",
@@ -214,9 +219,9 @@ class HttpCasdoorGroups:
         """One group-member request; failures carry a stable code.
 
         Casdoor answers HTTP 200 for errors too, so only the JSON ``status``
-        and ``msg`` decide.  Two messages are recognised verbatim (controllers/
-        group_member.go of the group-scope patch); every other failure,
-        including "Unauthorized operation", is CASDOOR_GROUP_REFUSED.
+        and ``msg`` decide.  Three messages are recognised verbatim (controllers/
+        group_member.go of the group-scope patch); every other failure is
+        CASDOOR_GROUP_REFUSED.
         """
 
         query = urllib.parse.urlencode({"user": user, "group": group})
@@ -234,6 +239,20 @@ class HttpCasdoorGroups:
             raise CasdoorGroupError("CASDOOR_NOT_A_MEMBER", f"{user} is not in Casdoor group {group}")
         if detail == f"the user: {user} is not found":
             raise CasdoorGroupError("CASDOOR_USER_NOT_FOUND", f"Casdoor has no user {user}")
+        if detail == _UNAUTHORIZED_MSG:
+            # Not a refusal: nothing was decided about this call.  Group-scoped
+            # permissions are matched by group id, so an id that does not exist
+            # matches none of them.  Measured 2026-10-20 with the configured
+            # service user: an existing group (``hyprial/group-internal``)
+            # answers ``member``, a missing one (``hyprial/group-probe-fixed``)
+            # answers exactly this.  Callers that must be able to create the
+            # group get their own code so they can tell it apart from a real
+            # refusal -- and from a revoked ``group-member`` API permission,
+            # which would make **every** group answer this, existing ones too.
+            raise CasdoorGroupError(
+                "CASDOOR_GROUP_ABSENT",
+                f"{group} does not exist (or grants no permission to this service user): {detail}",
+            )
         if status == 401 or (isinstance(detail, str) and detail.startswith("Access token")):
             self._token = None
         raise CasdoorGroupError(
@@ -248,6 +267,11 @@ class HttpCasdoorGroups:
         ``no-user`` is answered before Casdoor's permission check and also by
         a wrong name mapping, so callers must not act on it as on
         ``not-member`` (infra-ops, 2026-10-08).
+
+        ``CASDOOR_GROUP_ABSENT`` is **not** translated here: ``member_state``
+        answers about one group's members, and a group that does not exist has
+        no members to report.  ``ensure_group`` is the caller that can do
+        something about it, so it decides.
         """
 
         try:

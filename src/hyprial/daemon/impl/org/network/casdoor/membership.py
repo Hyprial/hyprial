@@ -59,6 +59,15 @@ class CasdoorMembershipMixin:
         create path from calling a writer on every ``org create`` when nothing
         needs writing, and it means a Casdoor that is merely *slow* to answer
         ``member_state`` never gets a create request as a side effect.
+
+        ``CASDOOR_GROUP_ABSENT`` is why this order can work at all.  Group
+        permissions are matched by group id, so a group that does not exist yet
+        matches none of them and the probe answers ``Unauthorized operation`` --
+        the very state ``ensure_group`` exists to fix.  Before 2026-10-20 that
+        answer was the catch-all ``CASDOOR_GROUP_REFUSED``, so the probe raised
+        and the create step below was unreachable: ``org create`` could not
+        create its first group.  The catch-all still covers transport,
+        credential and genuine refusal, and those still raise here.
         """
 
         if self._casdoor is None:
@@ -72,7 +81,11 @@ class CasdoorMembershipMixin:
             # A group that does not exist yet, or a user Casdoor does not know,
             # is exactly the state ``ensure_group`` exists to fix; any other
             # failure (transport, credential, refusal) is not ours to paper over.
-            if error.code not in ("CASDOOR_NOT_A_MEMBER", "CASDOOR_USER_NOT_FOUND"):
+            if error.code not in (
+                "CASDOOR_NOT_A_MEMBER",
+                "CASDOOR_USER_NOT_FOUND",
+                "CASDOOR_GROUP_ABSENT",
+            ):
                 raise _org_error(
                     "CASDOOR_GROUP_UNAVAILABLE", f"{group}: {error}; {_GROUP_SETUP_HINT}"
                 ) from error
