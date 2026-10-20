@@ -12,7 +12,6 @@ against recording fakes.
 from __future__ import annotations
 
 import hashlib
-import json
 import secrets
 import time
 from collections.abc import Callable, Mapping
@@ -26,19 +25,32 @@ from hyprial.daemon.impl.org.network.binding import (
     resolve_org_acl_space,
     resolve_org_directory_space,
 )
+from hyprial.daemon.impl.org.network.create import (
+    OrgCreateResumeDenied,
+    prepare_create,
+    repair_candidates,
+    resume_acl_space,
+    serialized_create,
+    space_json,
+    unfinished_create_reason,
+    write_default_acl_policy,
+)
 from hyprial.daemon.impl.org.network.directory import (
     OrgFsDirectoryStore,
     leave_request_admitted,
     network_directory_projection,
 )
-from hyprial.daemon.impl.org.network.policy import ACL_POLICY_DOC, OrgFsDerivedPolicy
+from hyprial.daemon.impl.org.network.policy import OrgFsDerivedPolicy
 from hyprial.daemon.impl.org.network.state import (
     add_bootstrap_peer,
     add_left_org,
     clear_left_org,
+    finish_org_create,
+    org_create_intent,
     read_bootstrap_peers,
     read_left_orgs,
     remove_bootstrap_peers,
+    update_org_create,
 )
 from hyprial.daemon.impl.org.network.status import start_bounded_projection
 from hyprial.kernel import canonical_user_uri, ipc_errors, parse_user_uri
@@ -56,7 +68,6 @@ from hyprial.identity import (
     RESOURCE_ORG_MEMBERS,
     RESOURCE_ORG_SELF,
     bootstrap_yaml,
-    default_role_grants_document,
     decode_invite,
     default_bootstrap,
     encode_invite,
@@ -66,11 +77,8 @@ from hyprial.identity import (
     parse_bootstrap_yaml,
 )
 
-#: One join attempt every 0.5s while waiting for a holder to come online.
 JOIN_RETRY_SECONDS = 0.5
-#: Default ceiling for the join-org retry loop (§4.3: “带重试，直到 holder 可见”).
 DEFAULT_JOIN_TIMEOUT_SECONDS = 30.0
-#: Default invite validity window.
 DEFAULT_INVITE_TTL_SECONDS = 24 * 3600.0
 NETWORK_PANE_TIMEOUT_SECONDS = 1.0
 
@@ -131,9 +139,6 @@ class OrgNetworkService(CasdoorMembershipMixin):
         self._store = (
             store if store is not None else OrgFsDirectoryStore(fs, logger=self._log)
         )
-        # Roles are derived live only from OrgFS membership (space owner →
-        # owner, rw members → member) while concrete grants come from the
-        # ACL-space document; callers may inject their own policy.
         self._policy: OrgPolicy = (
             policy
             if policy is not None
@@ -148,9 +153,6 @@ class OrgNetworkService(CasdoorMembershipMixin):
         self._unmap_peer = unmap_peer
         self._request_redial = request_redial
         self._read_own_address = read_own_address
-        # LAX(tailnet-cutover): Casdoor group creation is best effort — a
-        # failure only warns; the proper shape is a reconciled group
-        # resource with retry and an operator surface.
         self._casdoor = casdoor
         self._forwarding_status = forwarding_status
         self._invite_ttl_seconds = invite_ttl_seconds
@@ -158,39 +160,75 @@ class OrgNetworkService(CasdoorMembershipMixin):
         self._sleep = sleep
         self._now = now
 
-    # -- org lifecycle ------------------------------------------------------
-
+    @serialized_create
     def create(self, org: str) -> dict[str, Any]:
-        """Create the org directory plus its daemon-owned ACL space."""
+        """Create or resume the creator's org directory and ACL spaces."""
 
         name = org_space_name(org)
         existing = self._find_space(name)
+        pending = org_create_intent(self._home, org)
+        binding_reason: str | None = None
+        incomplete_reason: str | None = None
         if existing is not None:
-            # Re-running create on a live org is owner business; the very
-            # first creation is permissionless by construction — there is
-            # no membership table yet, and create_space makes the creator
-            # the space owner, hence the org owner.
-            self._require_allows(org=org, action="create", resource="org")
+            acl_info, binding_reason = resolve_org_acl_space(self._fs, org)
+            if acl_info is not None:
+                incomplete_reason = unfinished_create_reason(self._fs, existing, acl_info)
+                if pending is None and incomplete_reason is None:
+                    self._require_allows(org=org, action="create", resource="org")
+            acl_existed = acl_info is not None
+        else:
+            acl_info = None
+            acl_existed = False
+        binding_reason = binding_reason or incomplete_reason
+        needs_policy = acl_info is None or incomplete_reason == "missing-acl-policy"
+        needs_finalize = acl_info is None or pending is not None or incomplete_reason is not None
+        if needs_finalize:
+            try:
+                intent = prepare_create(
+                    fs=self._fs,
+                    home=self._home,
+                    node_id=self._node_id,
+                    owner=self._owner,
+                    org=org,
+                    existing=existing,
+                    acl_space=acl_info,
+                    binding_reason=binding_reason,
+                    now=self._now,
+                    log=self._log,
+                )
+            except OrgCreateResumeDenied as error:
+                raise OrgNetworkError("ORG_ACTION_NOT_AUTHORIZED", str(error)) from error
+        else:
+            intent = None
         casdoor = self._casdoor_require_group(org)  # before any OrgFS write
-        acl_name = f"{name}-acl"
         if existing is None:
             info = self._fs.create_space(name)
-            # A same-name space has no authority: names are non-unique. Always
-            # create a fresh ACL space and bind its ID into owner-only OrgFS meta.
-            acl_info = self._fs.create_space(acl_name)
-            self._write_default_acl_policy(acl_info.space_id)
+            intent = update_org_create(
+                self._home, org, directory_space_id=info.space_id
+            )
+        else:
+            info = existing
+        if acl_info is None:
+            assert intent is not None
+            try:
+                acl_info = resume_acl_space(
+                    fs=self._fs,
+                    home=self._home,
+                    org=org,
+                    directory=info,
+                    intent=intent,
+                )
+            except OrgCreateResumeDenied as error:
+                raise OrgNetworkError("ORG_ACTION_NOT_AUTHORIZED", str(error)) from error
+        if needs_finalize:
+            if needs_policy:
+                write_default_acl_policy(self._fs, acl_info.space_id)
             self._fs.update_space_meta(
                 info.space_id, {"aclSpaceId": acl_info.space_id}
             )
             self._store.put_org_meta(org, {"state": "active"})
-            acl_existed = False
-        else:
-            info = existing
-            acl_info = self._require_acl_space(org)
-            acl_existed = True
-        # Shared roots are owner-created.  A joining member only creates the
-        # leaf directory for its own principal during enrollment.
         self._store.ensure_org_directory_roots(org)
+        finish_org_create(self._home, org)
         try:
             published = self._publish_into(org)
         except OrgNetworkError as error:
@@ -203,13 +241,24 @@ class OrgNetworkService(CasdoorMembershipMixin):
             "org": org,
             "spaceId": info.space_id,
             "aclSpaceId": acl_info.space_id,
-            "space": self._space_json(info),
-            "aclSpace": self._space_json(acl_info),
+            "space": space_json(info),
+            "aclSpace": space_json(acl_info),
             "existed": existing is not None,
             "aclExisted": acl_existed,
             "casdoorGroup": casdoor,
             "devicePublished": published,
         }
+
+    def repair(self, org: str | None = None, *, apply: bool = False) -> dict[str, Any]:
+        """Preview or resume incomplete creator-owned org creations."""
+
+        candidates = repair_candidates(self._fs, home=self._home, node_id=self._node_id, owner=self._owner, org=org)
+        repaired: list[dict[str, Any]] = []
+        if apply:
+            for candidate in candidates:
+                if candidate["repairable"]:
+                    repaired.append(self.create(str(candidate["org"])))
+        return {"apply": apply, "candidates": candidates, "repaired": repaired}
 
     def invite(self, org: str, user: str) -> dict[str, Any]:
         """Invite one user and return the encoded one-time link (§2.4)."""
@@ -676,8 +725,6 @@ class OrgNetworkService(CasdoorMembershipMixin):
             peers[peer] = entry["address"]
         return peers
 
-    # -- workflow steps -----------------------------------------------------
-
     def _execute_step(self, link: InviteLink, kind: str) -> str:
         if kind == "connect-inviter":
             peer = self._peer_label(link.inviter, link.inviter_device)
@@ -735,8 +782,6 @@ class OrgNetworkService(CasdoorMembershipMixin):
                 if time.monotonic() >= deadline:
                     raise
                 self._sleep(JOIN_RETRY_SECONDS)
-
-    # -- helpers -------------------------------------------------------------
 
     def _publish_into(self, org: str) -> True:
         """Write this device's row into one org's directory.
@@ -879,22 +924,6 @@ class OrgNetworkService(CasdoorMembershipMixin):
         self._remove_orgfs_member(org, space_id, user)
         return []
 
-    def _write_default_acl_policy(self, space_id: str) -> None:
-        try:
-            self._fs.mkdir(space_id, "policy")
-        except OrgFsError as error:
-            if error.code != "invalid-argument" or "already exists" not in str(error):
-                raise
-        self._fs.write_text(
-            space_id,
-            ACL_POLICY_DOC,
-            json.dumps(
-                default_role_grants_document(),
-                sort_keys=True,
-                separators=(",", ":"),
-            ),
-        )
-
     def _require_map_peer(self) -> Callable[[str, str], int]:
         if self._map_peer is None:
             raise OrgNetworkError(
@@ -978,15 +1007,5 @@ class OrgNetworkService(CasdoorMembershipMixin):
         view["addressPresent"] = bool(view.pop("address"))
         view["presence"] = "unknown"
         return view
-
-    @staticmethod
-    def _space_json(info: Any) -> dict[str, Any]:
-        return {
-            "spaceId": info.space_id,
-            "name": info.name,
-            "owner": info.owner,
-            "createdAt": info.created_at,
-        }
-
 
 __all__ = ["OrgNetworkError", "OrgNetworkService", "OrgFsDirectoryStore"]

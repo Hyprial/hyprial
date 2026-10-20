@@ -16,7 +16,7 @@ from typing import Any
 from hyprial.kernel import DaemonRequestError, ipc_errors
 from hyprial.kernel import canonical_user_uri, parse_agent_uri
 from hyprial.daemon.impl.configuration.identity import normalize_agent_recipient
-from hyprial.daemon.impl.ipc.params import JsonObject, _required_string
+from hyprial.daemon.impl.ipc.params import JsonObject, _optional_boolean, _required_string
 from hyprial.daemon.impl.orgfs.api import OrgFsError
 from hyprial.daemon.impl.org.network.casdoor import casdoor_groups_for_home
 from hyprial.daemon.impl.org.network.casdoor.client import CasdoorGroupError
@@ -117,6 +117,18 @@ def ipc_org_create(app: Any, params: JsonObject) -> dict:
     org = _required_string(params.get("org"), "org")
     try:
         return _build_service(app).create(org)
+    except OrgFsError as error:
+        raise _translate(error) from error
+    except (InviteError, OrgNetworkError, ValueError) as error:
+        raise _translate(error) from error
+
+
+def ipc_org_repair(app: Any, params: JsonObject) -> dict:
+    org_value = params.get("org")
+    org = None if org_value is None else _required_string(org_value, "org")
+    apply = _optional_boolean(params.get("apply"), "apply") or False
+    try:
+        return _build_service(app).repair(org, apply=apply)
     except OrgFsError as error:
         raise _translate(error) from error
     except (InviteError, OrgNetworkError, ValueError) as error:
@@ -559,6 +571,7 @@ __all__ = [
     "ipc_org_list",
     "ipc_org_network",
     "ipc_org_remove",
+    "ipc_org_repair",
     "publish_self_for_app",
     "start_casdoor_membership_sync",
     "stop_casdoor_membership_sync",

@@ -58,7 +58,7 @@ hyprial <域> <子命令> --help   # 参数面
   `network unexpose <port>` 删除；`network exposures [--json]` 查看 daemon 持久 desired set；
   `network peer-key <ip:port> [--json]` 只查对端 nodekey。unix target 的父目录必须属于当前用户且
   权限恰为 0700。不要绕过 daemon 直接写 sidecar stdin。
-- 组织网络：`hyprial org create <org>` 建组织；`hyprial org invite <org> --user <u>` 生成邀请链接
+- 组织网络：`hyprial org create <org>` 建组织；客户端超时后用同名命令重试，daemon 会由创建者专属 intent 恢复，不会重复建 space。`hyprial org repair [org]` 默认只读列出不完整创建，显式 `--apply` 才恢复当前 owner 的候选（不要拿生产运行做测试）；`hyprial org invite <org> --user <u>` 生成邀请链接
   （https 主形式，另附可复制的 `hyprial org join '<链接>'`；链接含连接凭据，只发给被邀请人）；
   对方用 `hyprial org join <链接|->` 加入，或在网页上接受后由设备执行 `hyprial org pending`
   拾取（`hyprial login` 成功后会自动拾取一次）。`org list`、`org network [<org>]` 查看；

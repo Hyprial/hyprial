@@ -258,6 +258,34 @@ def org_create(
     services._execute(operation, json_output=json_output)
 
 
+@org_app.command("repair")
+def org_repair(
+    org: str | None = typer.Argument(
+        None,
+        help="Optional organization name; omitted scans all incomplete creations.",
+    ),
+    apply: bool = typer.Option(
+        False,
+        "--apply",
+        help="Resume repairable creator-owned creations. Default is dry-run.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Preview incomplete org creations, or resume them with --apply."""
+    services = get_services()
+
+    def operation() -> JsonObject:
+        params: JsonObject = {"apply": apply}
+        if org is not None:
+            params["org"] = _validated_org(org)
+        result = services._daemon_request("org.repair", params)
+        if not isinstance(result, dict):
+            raise services.CliError("INVALID_RESPONSE", "org.repair must return an object")
+        return {"ok": True, **result}
+
+    services._execute(operation, json_output=json_output)
+
+
 @org_app.command("invite")
 def org_invite(
     org: str = typer.Argument(..., help="Organization name."),

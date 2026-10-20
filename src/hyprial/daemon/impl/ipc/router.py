@@ -146,6 +146,7 @@ _IPC_STATS_METHODS = frozenset(
         "org.network",
         "org.publish",
         "org.remove",
+        "org.repair",
         "orgfs.create",
         "orgfs.checkout",
         "orgfs.export",
@@ -259,6 +260,7 @@ _ORG_NETWORK_METHODS = {
     "org.list": "ipc_org_list",
     "org.network": "ipc_org_network",
     "org.remove": "ipc_org_remove",
+    "org.repair": "ipc_org_repair",
 }
 
 # Owner-node ACL entry authorizations.  Separate from _ORG_NETWORK_METHODS

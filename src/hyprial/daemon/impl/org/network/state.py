@@ -16,15 +16,20 @@ from pathlib import Path
 from collections.abc import Iterable
 
 from hyprial.identity import org_space_name
+from hyprial.kernel import atomic_json_write
 
 __all__ = [
     "BOOTSTRAP_PEERS_RELPATH",
     "LEFT_ORGS_RELPATH",
     "ORG_ACL_GRANTS_RELPATH",
+    "ORG_CREATE_INTENTS_RELPATH",
     "add_bootstrap_peer",
     "add_left_org",
     "add_org_acl_grant",
+    "begin_org_create",
     "clear_left_org",
+    "finish_org_create",
+    "org_create_intent",
     "left_orgs_path",
     "org_acl_grants_path",
     "read_bootstrap_peers",
@@ -32,6 +37,7 @@ __all__ = [
     "read_org_acl_grants",
     "remove_bootstrap_peers",
     "remove_org_acl_grant",
+    "update_org_create",
 ]
 
 #: JSON array of org names, relative to the daemon's home.
@@ -43,6 +49,9 @@ LEFT_ORGS_RELPATH = "state/tailcat/left-orgs.json"
 #: grants never enter orgfs and never synchronize.  They are org state,
 #: not tailcat state, so they live under ``state/org/``.
 ORG_ACL_GRANTS_RELPATH = "state/org/org-acl-grants.json"
+
+#: Durable creator-owned recovery records for multi-step ``org.create``.
+ORG_CREATE_INTENTS_RELPATH = "state/org/create-intents.json"
 
 #: JSON object ``owner/deviceId -> {"inviter", "deviceId", ...}``: peers the
 #: directory does not name yet but an executed invite link authorizes this
@@ -210,6 +219,91 @@ def remove_bootstrap_peers(home: Path, peers_to_remove: Iterable[str]) -> list[s
         del peers[peer]
     _write_bootstrap_peers(home, peers)
     return sorted(removed)
+
+
+def _org_create_intents_path(home: Path) -> Path:
+    return Path(home) / ORG_CREATE_INTENTS_RELPATH
+
+
+def _read_org_create_intents(home: Path) -> dict[str, dict[str, str | None]]:
+    try:
+        value = json.loads(_org_create_intents_path(home).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(value, dict):
+        return {}
+    intents: dict[str, dict[str, str | None]] = {}
+    required = {"nodeId", "owner", "startedAt", "directorySpaceId", "aclSpaceId"}
+    for org, record in value.items():
+        if not isinstance(org, str) or not isinstance(record, dict):
+            continue
+        if set(record) != required:
+            continue
+        if not all(
+            isinstance(record[key], str) and record[key]
+            for key in ("nodeId", "owner", "startedAt")
+        ):
+            continue
+        if any(
+            record[key] is not None and not isinstance(record[key], str)
+            for key in ("directorySpaceId", "aclSpaceId")
+        ):
+            continue
+        intents[org] = dict(record)
+    return intents
+
+
+def _write_org_create_intents(
+    home: Path, intents: dict[str, dict[str, str | None]]
+) -> None:
+    atomic_json_write(_org_create_intents_path(home), intents)
+
+
+def org_create_intent(home: Path, org: str) -> dict[str, str | None] | None:
+    record = _read_org_create_intents(home).get(org)
+    return None if record is None else dict(record)
+
+
+def begin_org_create(
+    home: Path, *, org: str, node_id: str, owner: str, started_at: str
+) -> dict[str, str | None]:
+    org_space_name(org)
+    intents = _read_org_create_intents(home)
+    existing = intents.get(org)
+    if existing is not None:
+        return dict(existing)
+    record: dict[str, str | None] = {
+        "nodeId": node_id,
+        "owner": owner,
+        "startedAt": started_at,
+        "directorySpaceId": None,
+        "aclSpaceId": None,
+    }
+    intents[org] = record
+    _write_org_create_intents(home, intents)
+    return dict(record)
+
+
+def update_org_create(
+    home: Path, org: str, *, directory_space_id: str | None = None,
+    acl_space_id: str | None = None,
+) -> dict[str, str | None]:
+    intents = _read_org_create_intents(home)
+    record = intents.get(org)
+    if record is None:
+        raise ValueError(f"org create intent is absent for {org}")
+    if directory_space_id is not None:
+        record["directorySpaceId"] = directory_space_id
+    if acl_space_id is not None:
+        record["aclSpaceId"] = acl_space_id
+    _write_org_create_intents(home, intents)
+    return dict(record)
+
+
+def finish_org_create(home: Path, org: str) -> None:
+    intents = _read_org_create_intents(home)
+    if intents.pop(org, None) is not None:
+        _write_org_create_intents(home, intents)
 
 
 def org_acl_grants_path(home: Path) -> Path:
