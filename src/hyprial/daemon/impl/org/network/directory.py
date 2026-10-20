@@ -13,6 +13,10 @@ assumes that field is genuine.  Protected documents use deterministic ids
 derived from ``(spaceId, section, path user, leaf)``.  Readers require that id
 at the protected path, so an unlinked or arbitrarily linked document is never
 adopted and arrival order cannot change authorization.
+
+Invalid device rows are quarantined by content version.  Unchanged failures use
+bounded exponential retries; a changed version is eligible immediately.  The
+quarantine map is bounded because its keys come from replicated remote data.
 """
 
 from __future__ import annotations
@@ -52,17 +56,18 @@ _OWNER_CREATED_DIRS = (
 )
 
 
-#: How long one unreadable device record stays quiet after it was reported.
-#: A record that fails to parse fails on every reconcile tick, and each tick
-#: charged a warn line per bad record: one offline holder's corrupt row was
-#: measured at 41 reports per minute, which turned a single bad byte into a
-#: standing load source.  Re-reporting the same bytes at the same path inside
-#: this window carries no new information; a changed record re-reports at once.
 _INVALID_DEVICE_QUIET_SECONDS = 300.0
-
-#: Hard bound on the quiet map.  Its keys come from a remote directory, so it
-#: must not be able to grow with whatever that directory happens to contain.
+_INVALID_DEVICE_RETRY_MAX_SECONDS = 3600.0
 _INVALID_DEVICE_QUIET_MAX = 512
+_InvalidDeviceState = tuple[str, float, int, int, dict[str, object]]
+
+
+class InvalidDeviceQuarantine:
+    """Bounded retry state shared by short-lived directory store adapters."""
+
+    def __init__(self) -> None:
+        self.entries: dict[tuple[str, str], _InvalidDeviceState] = {}
+        self.lock = Lock()
 
 
 def network_directory_projection(
@@ -104,16 +109,17 @@ class OrgFsDirectoryStore:
     """
 
     def __init__(
-        self, fs: OrgFs, *, logger: Callable[..., None] | None = None
+        self,
+        fs: OrgFs,
+        *,
+        logger: Callable[..., None] | None = None,
+        invalid_devices: InvalidDeviceQuarantine | None = None,
     ) -> None:
         self._fs = fs
         self._logger = logger
-        # (space_id, path) -> (fingerprint, quiet-until monotonic, suppressed).
-        # Keyed by space as well as path: two orgs can hold the same path with
-        # the same bytes, and a path-only key would report the first and then
-        # swallow the second.  Guarded by a lock because scans can overlap.
-        self._invalid_device_quiet: dict[tuple[str, str], tuple[str, float, int]] = {}
-        self._invalid_device_lock = Lock()
+        quarantine = invalid_devices or InvalidDeviceQuarantine()
+        self._invalid_device_quiet = quarantine.entries
+        self._invalid_device_lock = quarantine.lock
 
     # -- DirectoryStore ---------------------------------------------------
 
@@ -131,7 +137,7 @@ class OrgFsDirectoryStore:
         A reader must be able to tell either apart from a device that does
         not exist.
         """
-        devices, content_pending = self._scan(org)
+        devices, content_pending, data_problems = self._scan(org)
         try:
             parked: list[dict[str, Any]] | None = self.parked_commits(org)
         except Exception as error:  # noqa: BLE001 - must not hide the device listing
@@ -141,11 +147,19 @@ class OrgFsDirectoryStore:
                 self._logger("warn", "org", "directory.parked_unavailable", **fields)
             else:
                 _LOG.warning("org.directory.parked_unavailable org=%s detail=%s", org, error)
-        return devices, {"contentPending": content_pending, "parkedCommits": parked}
+        status: dict[str, Any] = {
+            "contentPending": content_pending,
+            "parkedCommits": parked,
+        }
+        if data_problems:
+            status["dataProblems"] = data_problems
+        return devices, status
 
     def _scan(
         self, org: str
-    ) -> tuple[list[DirectoryDevice], list[dict[str, str]]]:
+    ) -> tuple[
+        list[DirectoryDevice], list[dict[str, str]], list[dict[str, object]]
+    ]:
         space_id = self._space_id(org)
         try:
             entries = self._fs.listdir(space_id, DIRECTORY_DIR)
@@ -153,10 +167,11 @@ class OrgFsDirectoryStore:
             if error.code == "unknown-doc":
                 # An org whose directory has no device documents yet (only
                 # just created, or nobody published): empty, not an error.
-                return [], []
+                return [], [], []
             raise
         candidates: list[DirectoryDevice] = []
         pending: list[dict[str, str]] = []
+        problems: list[dict[str, object]] = []
         for owner_entry in entries:
             if owner_entry.kind != "dir":
                 # Pre-release rule: the former flat layout is not read.
@@ -171,6 +186,9 @@ class OrgFsDirectoryStore:
                 if entry.kind != "doc" or not entry.name.endswith(".json"):
                     continue
                 path = f"{owner_path}/{entry.name}"
+                device_id = entry.name.removesuffix(".json")
+                version = str(getattr(entry, "version", "") or "")
+                text: str | None = None
                 try:
                     expected_doc_id = protected_directory_doc_id(
                         space_id,
@@ -184,10 +202,23 @@ class OrgFsDirectoryStore:
                             actual=entry.doc_id,
                         )
                         continue
-                    text: str | None = None
-                    text, _version = self._fs.read_text(
+                    quarantined = self._quarantined_device(
+                        space_id, path, version
+                    )
+                    if quarantined is not None:
+                        problem = {"org": org, **quarantined}
+                        problems.append(problem)
+                        if problem["reason"] == ORGFS_CONTENT_PENDING:
+                            pending.append({
+                                "owner": path_principal,
+                                "deviceId": device_id,
+                                "reason": ORGFS_CONTENT_PENDING,
+                            })
+                        continue
+                    text, read_version = self._fs.read_text(
                         space_id, f"id:{entry.node_id}"
                     )
+                    version = version or str(read_version)
                     device = DirectoryDevice.from_record(json.loads(text))
                     record_principal = directory_owner_principal(device.owner)
                     authors = {
@@ -197,14 +228,20 @@ class OrgFsDirectoryStore:
                         )
                     }
                 except (OrgFsError, TypeError, ValueError) as error:
-                    self._note_invalid_device(space_id, path, text, error)
-                    if (
-                        isinstance(error, OrgFsError)
-                        and error.code == ORGFS_CONTENT_PENDING
-                    ):
+                    problem = self._note_invalid_device(
+                        space_id,
+                        path,
+                        text,
+                        error,
+                        version=version,
+                        owner=path_principal,
+                        device_id=device_id,
+                    )
+                    problems.append({"org": org, **problem})
+                    if problem["reason"] == ORGFS_CONTENT_PENDING:
                         pending.append({
                             "owner": path_principal,
-                            "deviceId": entry.name.removesuffix(".json"),
+                            "deviceId": device_id,
                             "reason": ORGFS_CONTENT_PENDING,
                         })
                     continue
@@ -235,7 +272,8 @@ class OrgFsDirectoryStore:
         ]
         devices.sort(key=lambda device: (device.device_id, device.owner))
         pending.sort(key=lambda row: (row["deviceId"], row["owner"]))
-        return devices, pending
+        problems.sort(key=lambda row: str(row["path"]))
+        return devices, pending, problems
 
     def parked_commits(self, org: str) -> list[dict[str, Any]]:
         """Commits received for ``org``'s directory but parked behind a gap."""
@@ -636,53 +674,80 @@ class OrgFsDirectoryStore:
             actual,
         )
 
-    def _device_fingerprint(self, text: str | None, error: Exception) -> str:
-        """Identify the bytes that failed, not just the path that held them.
+    def _quarantined_device(
+        self, space_id: str, path: str, version: str
+    ) -> dict[str, object] | None:
+        if not version:
+            return None
+        key = (space_id, path)
+        now = time.monotonic()
+        with self._invalid_device_lock:
+            state = self._invalid_device_quiet.get(key)
+            if state is None or state[0] != version or now >= state[1]:
+                return None
+            self._invalid_device_quiet[key] = (
+                state[0], state[1], state[2], state[3] + 1, state[4]
+            )
+            return dict(state[4])
 
-        Content-addressed on purpose: a repaired record (or a different revision
-        of the same CRDT text) must be read again immediately, while the
-        identical bytes must not be re-reported on every tick.
-        """
-
+    @staticmethod
+    def _device_fingerprint(text: str | None, error: Exception) -> str:
         if text is not None:
             return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
         code = getattr(error, "code", None)
         return f"{type(error).__name__}:{code or ''}"
 
     def _note_invalid_device(
-        self, space_id: str, path: str, text: str | None, error: Exception
-    ) -> bool:
-        """Report an unreadable device row unless the same bytes were just reported.
+        self,
+        space_id: str,
+        path: str,
+        text: str | None,
+        error: Exception,
+        *,
+        version: str = "",
+        owner: str = "",
+        device_id: str = "",
+    ) -> dict[str, object]:
+        """Quarantine one invalid version and return its captured problem."""
 
-        Returns whether this is a NEW report.  The row is skipped either way:
-        this bounds the reporting, never the correctness of the scan.
-        """
-
-        fingerprint = self._device_fingerprint(text, error)
+        fingerprint = version or self._device_fingerprint(text, error)
         key = (space_id, path)
         now = time.monotonic()
         with self._invalid_device_lock:
             previous = self._invalid_device_quiet.get(key)
-            if previous is not None:
-                seen, quiet_until, suppressed = previous
-                if seen == fingerprint and now < quiet_until:
+            if previous is not None and previous[0] == fingerprint:
+                if now < previous[1]:
                     self._invalid_device_quiet[key] = (
-                        seen,
-                        quiet_until,
-                        suppressed + 1,
+                        previous[0], previous[1], previous[2], previous[3] + 1,
+                        previous[4],
                     )
-                    return False
+                    return dict(previous[4])
+                attempts = previous[2] + 1
+            else:
+                attempts = 0
+            reason = (
+                ORGFS_CONTENT_PENDING
+                if isinstance(error, OrgFsError)
+                and error.code == ORGFS_CONTENT_PENDING
+                else "invalid-device-record"
+            )
+            problem: dict[str, object] = {"path": path, "reason": reason}
+            if owner:
+                problem["owner"] = owner
+            if device_id:
+                problem["deviceId"] = device_id
+            if version:
+                problem["version"] = version
+            delay = min(
+                _INVALID_DEVICE_QUIET_SECONDS * (2 ** min(attempts, 16)),
+                _INVALID_DEVICE_RETRY_MAX_SECONDS,
+            )
             self._invalid_device_quiet[key] = (
-                fingerprint,
-                now + _INVALID_DEVICE_QUIET_SECONDS,
-                0,
+                fingerprint, now + delay, attempts, 0, problem
             )
             overflow = len(self._invalid_device_quiet) - _INVALID_DEVICE_QUIET_MAX
-            if overflow > 0:
-                # Oldest insertion first: dicts keep insertion order, and this
-                # map is a reporting aid, so dropping the oldest is safe.
-                for stale in list(self._invalid_device_quiet)[:overflow]:
-                    self._invalid_device_quiet.pop(stale, None)
+            for stale in list(self._invalid_device_quiet)[:max(0, overflow)]:
+                self._invalid_device_quiet.pop(stale, None)
         fields = {
             "space": space_id,
             "path": path,
@@ -690,7 +755,7 @@ class OrgFsDirectoryStore:
             "fingerprint": fingerprint[:16],
         }
         if previous is not None:
-            fields["suppressedSinceLastReport"] = previous[2]
+            fields["suppressedSinceLastReport"] = previous[3]
         if self._logger is not None:
             self._logger("warn", "org", "directory.device_invalid", **fields)
         else:
@@ -701,7 +766,7 @@ class OrgFsDirectoryStore:
                 error,
                 fields.get("suppressedSinceLastReport", 0),
             )
-        return True
+        return dict(problem)
 
     def _warn_invalid_binding(self, path: str, error: Exception) -> None:
         fields = {"path": path, "detail": str(error)}
@@ -749,7 +814,7 @@ class OrgFsDirectoryStore:
         )
 
 
-__all__ = ["OrgFsDirectoryStore"]
+__all__ = ["InvalidDeviceQuarantine", "OrgFsDirectoryStore"]
 
 
 def leave_request_admitted(

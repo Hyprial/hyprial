@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from hyprial.kernel import DaemonRequestError, ipc_errors
@@ -34,7 +35,10 @@ from hyprial.daemon.impl.org.network.casdoor.webhook import (
     webhook_settings,
 )
 from hyprial.daemon.impl.org.network.dialing import DialState, dial_peers
-from hyprial.daemon.impl.org.network.directory import OrgFsDirectoryStore
+from hyprial.daemon.impl.org.network.directory import (
+    InvalidDeviceQuarantine,
+    OrgFsDirectoryStore,
+)
 from hyprial.daemon.impl.org.network.service import (
     OrgNetworkError,
     OrgNetworkService,
@@ -46,6 +50,19 @@ from hyprial.daemon.impl.org.network.state import (
 )
 from hyprial.identity import address_path
 from hyprial.identity import InviteError
+
+
+def _invalid_device_quarantine(app: Any) -> InvalidDeviceQuarantine:
+    guard = getattr(app, "_org_directory_quarantine_lock", None)
+    if guard is None:
+        guard = Lock()
+        app._org_directory_quarantine_lock = guard
+    with guard:
+        quarantine = getattr(app, "_org_directory_quarantine", None)
+        if quarantine is None:
+            quarantine = InvalidDeviceQuarantine()
+            app._org_directory_quarantine = quarantine
+        return quarantine
 
 
 def _build_service(app: Any) -> OrgNetworkService:
@@ -83,6 +100,7 @@ def _build_service(app: Any) -> OrgNetworkService:
         owner=str(app.owner),
         store=OrgFsDirectoryStore(
             fs,
+            invalid_devices=_invalid_device_quarantine(app),
             logger=lambda level, domain, event, **fields: app._log(
                 level, domain, event, **fields
             ),

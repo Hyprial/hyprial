@@ -574,6 +574,17 @@ class StoreMembership:
             owner
         )
 
+    def _known_non_owner_client_ids(self, owner: str) -> set[int]:
+        ids: set[int] = set()
+        writers = _doc_roots(self._docs["meta"]).get("writers")
+        if not isinstance(writers, dict):
+            return ids
+        for writer, details in writers.items():
+            if isinstance(details, dict) and str(details.get("author")) != owner:
+                ids.update(self._row_client_ids(details))
+                ids.add(self._client_id(str(writer)))
+        return ids
+
     def _meta_writer_client_ids(self, owner: str) -> frozenset[int]:
         meta = self._docs["meta"]
         state = meta.get_state()
@@ -677,8 +688,14 @@ class StoreMembership:
         owner = self._genesis_owner()
         if owner is None:
             return None
-        owner_ids = self._owner_client_ids(owner)
-        target = _decode_state_vector(token)
+        ignored_ids = (
+            self._known_non_owner_client_ids(owner) - self._owner_client_ids(owner)
+        )
+        target = {
+            client: clock
+            for client, clock in _decode_state_vector(token).items()
+            if client not in ignored_ids
+        }
         selected: list[bytes] = []
         remaining: list[tuple[dict[int, int], bytes]] = []
         for commit in self._db.execute(
@@ -690,9 +707,13 @@ class StoreMembership:
                 if str(envelope["origin"].get("author")) == owner:
                     remaining.append(
                         (
-                            _decode_state_vector(
-                                _unb64(str(envelope["origin"]["metaFrontier"]))
-                            ),
+                            {
+                                client: clock
+                                for client, clock in _decode_state_vector(
+                                    _unb64(str(envelope["origin"]["metaFrontier"]))
+                                ).items()
+                                if client not in ignored_ids
+                            },
                             update,
                         )
                     )
@@ -720,7 +741,7 @@ class StoreMembership:
                     for client, clock in _decode_state_vector(
                         trial.get_state()
                     ).items()
-                    if client in owner_ids
+                    if client not in ignored_ids
                 }
                 remaining.remove((before, update))
                 if self._state_map_covers(target, trial_frontier):
@@ -733,7 +754,7 @@ class StoreMembership:
         projected = {
             client: clock
             for client, clock in _decode_state_vector(probe.get_state()).items()
-            if client in owner_ids
+            if client not in ignored_ids
         }
         if projected != target:
             return None

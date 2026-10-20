@@ -442,7 +442,6 @@ class RuntimeDirectory:
             return 0
 
     def _anti_entropy_tick(self, now: float) -> int:
-
         with self._pending_announces_lock:
             due = self._directory_sync_due
             if due is None:
@@ -451,6 +450,11 @@ class RuntimeDirectory:
             if now < due:
                 return 0
             self._directory_sync_due = _next_directory_sync_due(now)
+
+        for store in self.stores.snapshot():
+            store.expire_pending()
+            for envelope in store.take_drained():
+                self.facade.apply_envelope(store.space_id, envelope)
 
         excluded_orgs = self._excluded_orgs()
         targets: dict[str, str] = {}

@@ -791,6 +791,8 @@ class DaemonApplication(
         self._legacy_agent_home_log_lock = threading.Lock()
         self._legacy_agent_home_logged: set[str] = set()
         self._orgfs_runtime: OrgFsRuntime | None = None
+        self._org_directory_quarantine_lock = threading.Lock()
+        self._org_directory_quarantine: Any | None = None
         self._org_identity_binding_projector: Any | None = None
         self._org_identity_binding_suppression: Any | None = None
         self._casdoor_membership_sync: Any | None = None

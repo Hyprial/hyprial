@@ -5,6 +5,10 @@ This boundary assumes ``origin.author`` is genuine; author signatures are a
 separate prerequisite and are not provided by this module.  Protected content
 uses a deterministic id encoding its path principal, so admission depends only
 on ``(doc_id, author)`` and cannot vary with content/link arrival order.
+
+Aged pending rows are re-evaluated under the current admission policy before
+removal.  Every expiry batch emits its space, organization, oldest hold time,
+and admitted/discarded counts so expiry is never a silent loss boundary.
 """
 
 from __future__ import annotations
@@ -522,22 +526,87 @@ class StoreAdmission:
             return "not-a-member"
         return "ok"
 
+    def _pending_org(self) -> str:
+        meta = self._docs.get("meta")
+        if meta is None:
+            meta = self._doc("meta")
+        space = _doc_roots(meta).get("space")
+        name = space.get("name") if isinstance(space, dict) else None
+        if not isinstance(name, str):
+            return "-"
+        return org_from_space_name(name) or "-"
 
-    def _drop_expired_pending(self) -> None:
-        cutoff = (
-            datetime.now(UTC)
-            - timedelta(seconds=self._pending_import_max_age_seconds)
-        ).isoformat()
-        rows = self._db.execute(
-            "SELECT writer, seq, doc_id FROM pending "
-            "WHERE held_at IS NULL OR held_at < ? ORDER BY rowid",
-            (cutoff,),
+    def _expired_pending_page(
+        self, cutoff: str, *, after_rowid: int
+    ) -> list[sqlite3.Row]:
+        return self._db.execute(
+            "SELECT rowid AS pending_rowid, * FROM pending "
+            "WHERE (held_at IS NULL OR held_at < ?) AND rowid > ? "
+            "ORDER BY rowid LIMIT ?",
+            (cutoff, after_rowid, self._pending_drain_page_size),
         ).fetchall()
-        if rows:
-            self._warn_pending_drop("age", count=len(rows))
-            self._db.execute(
-                "DELETE FROM pending WHERE held_at IS NULL OR held_at < ?", (cutoff,)
-            )
+
+    def _expire_pending_locked(self, applied: list[bytes]) -> int:
+        age = timedelta(seconds=self._pending_import_max_age_seconds)
+        cutoff = (datetime.now(UTC) - age).isoformat()
+        summary = self._db.execute(
+            "SELECT COUNT(*), MIN(held_at), "
+            "SUM(CASE WHEN held_at IS NULL THEN 1 ELSE 0 END) FROM pending "
+            "WHERE held_at IS NULL OR held_at < ?",
+            (cutoff,),
+        ).fetchone()
+        count = int(summary[0])
+        if not count:
+            return 0
+        oldest = "missing" if int(summary[2]) else str(summary[1])
+        applied_before = len(applied)
+        while True:
+            progressed = False
+            after_rowid = 0
+            while True:
+                rows = self._expired_pending_page(cutoff, after_rowid=after_rowid)
+                if not rows:
+                    break
+                for row in rows:
+                    after_rowid = int(row["pending_rowid"])
+                    progressed = self._drain_pending_row(row, applied) or progressed
+            if not progressed:
+                break
+        unresolved = 0
+        while True:
+            rows = self._expired_pending_page(cutoff, after_rowid=0)
+            if not rows:
+                break
+            for row in rows:
+                self._db.execute(
+                    "DELETE FROM pending WHERE writer = ? AND seq = ? AND doc_id = ?",
+                    (str(row["writer"]), int(row["seq"]), str(row["doc_id"])),
+                )
+                unresolved += 1
+        self._db.commit()
+        admitted = len(applied) - applied_before
+        _LOG.warning(
+            "orgfs.pending_expired org=%s space=%s count=%s oldestHeldAt=%s "
+            "reason=age-after-revalidation admittedCount=%s discardedCount=%s "
+            "unresolvedCount=%s",
+            self._pending_org(),
+            self.space_id,
+            count,
+            oldest,
+            admitted,
+            count - admitted,
+            unresolved,
+        )
+        return count
+
+    def expire_pending(self) -> int:
+        """Re-evaluate and resolve aged parked envelopes during idle maintenance."""
+        with self._lock:
+            before = int(self._db.execute("SELECT COUNT(*) FROM pending").fetchone()[0])
+            drained = self._drain_pending()
+            self._last_drained += drained
+            after = int(self._db.execute("SELECT COUNT(*) FROM pending").fetchone()[0])
+            return before - after
 
     def _warn_pending_drop(self, reason: str, *, count: int = 1) -> None:
         """Rate-limit capacity diagnostics while retaining a cumulative count."""
@@ -565,7 +634,6 @@ class StoreAdmission:
         seq = int(value["seq"])
         doc_id = str(value["docId"])
         with self._db:
-            self._drop_expired_pending()
             existing = self._db.execute(
                 "SELECT 1 FROM pending WHERE writer = ? AND seq = ? AND doc_id = ?",
                 (writer, seq, doc_id),
@@ -602,7 +670,6 @@ class StoreAdmission:
             )
         return True
 
-
     def _is_active_member_at_envelope_frontier(
         self, value: Mapping[str, Any]
     ) -> bool:
@@ -626,7 +693,6 @@ class StoreAdmission:
             and member.get("mode") == "rw"
             and not member.get("removedAt")
         )
-
 
     def _meta_update_waits_for_causal_prefix(
         self, value: Mapping[str, Any], update: bytes
@@ -668,7 +734,6 @@ class StoreAdmission:
         # semantic violations and must be rejected immediately by shape policy.
         return not isinstance(after, dict) or "c" not in after
 
-
     def _drain_keeps_not_a_member(
         self, value: Mapping[str, Any], update: bytes
     ) -> bool:
@@ -689,7 +754,6 @@ class StoreAdmission:
             str(value.get("docId")) == "meta"
             and self._is_active_member_at_envelope_frontier(value)
         )
-
 
     def _apply_import(
         self, value: Mapping[str, Any], envelope: bytes, supplier: str
@@ -775,8 +839,7 @@ class StoreAdmission:
     def _drain_pending(self) -> tuple[bytes, ...]:
         applied: list[bytes] = []
         while True:
-            with self._db:
-                self._drop_expired_pending()
+            self._expire_pending_locked(applied)
             progressed = False
             after_rowid = 0
             while True:

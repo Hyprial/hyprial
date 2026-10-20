@@ -136,6 +136,13 @@ def network_view(
         directory, directory_pending = directory_result
     address = own_address()
     mapped_peers = forwarding.get("peers") if isinstance(forwarding, Mapping) else None
+    directory_problems = [
+        problem
+        for status in directory_pending.values()
+        if isinstance(status, Mapping)
+        for problem in status.get("dataProblems", [])
+        if isinstance(problem, Mapping)
+    ]
     sidecar = (
         {
             key: forwarding.get(key)
@@ -158,7 +165,7 @@ def network_view(
         "unavailableOrgs": unavailable,
         "dataProblems": [
             problem for _state, problem in states.values() if problem is not None
-        ],
+        ] + directory_problems,
         "directory": directory,
         "directoryPending": directory_pending,
         "self": {

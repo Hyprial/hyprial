@@ -219,7 +219,7 @@ def _doctor_result() -> JsonObject:
 
 
 def _org_metadata_doctor_check() -> JsonObject | None:
-    """Report lifecycle marker corruption without making legacy orgs unusable."""
+    """Report organization metadata and directory-row data problems."""
 
     services = get_services()
     try:
@@ -236,15 +236,15 @@ def _org_metadata_doctor_check() -> JsonObject | None:
         return {
             "name": "org-metadata",
             "status": "ok",
-            "detail": "organization lifecycle metadata is readable",
+            "detail": "organization metadata and directory rows are readable",
         }
     return {
         "name": "org-metadata",
         "status": "warn",
-        "detail": f"{len(problems)} organization lifecycle metadata problem(s)",
+        "detail": f"{len(problems)} organization data problem(s)",
         "action": {
             "command": "hyprial org network --json",
-            "description": "Inspect dataProblems and repair the reported lifecycle metadata.",
+            "description": "Inspect dataProblems and repair the reported organization data.",
         },
         "metrics": {"dataProblems": problems},
     }
