@@ -47,13 +47,52 @@ class CasdoorMembershipMixin:
     _log: Any
 
     def _casdoor_require_group(self, org: str) -> str:
-        """``org create``: the group exists and holds the owner, or fail."""
+        """``org create``: the group exists and holds the owner, or fail.
+
+        Until 2026-10-20 this only *checked*; creating the group was an
+        operator's job ("ask infra-ops to create the group and grant it").  It
+        now *ensures* first: a caller who is within their Casdoor quota gets
+        the group created by the relay, and the check afterwards is the same
+        check as before.
+
+        Ordering matters.  The probe is not an optimisation only: it keeps the
+        create path from calling a writer on every ``org create`` when nothing
+        needs writing, and it means a Casdoor that is merely *slow* to answer
+        ``member_state`` never gets a create request as a side effect.
+        """
 
         if self._casdoor is None:
             return "not-configured"
         group = casdoor_group(org)
+        user = casdoor_user(self._owner)
         try:
-            self._casdoor.require_member(group, casdoor_user(self._owner))
+            if self._casdoor.member_state(group, user) == "member":
+                return "verified"
+        except CasdoorGroupError as error:
+            # A group that does not exist yet, or a user Casdoor does not know,
+            # is exactly the state ``ensure_group`` exists to fix; any other
+            # failure (transport, credential, refusal) is not ours to paper over.
+            if error.code not in ("CASDOOR_NOT_A_MEMBER", "CASDOOR_USER_NOT_FOUND"):
+                raise _org_error(
+                    "CASDOOR_GROUP_UNAVAILABLE", f"{group}: {error}; {_GROUP_SETUP_HINT}"
+                ) from error
+
+        try:
+            self._casdoor.ensure_group(group, user)
+        except CasdoorGroupError as error:
+            if error.code == "CASDOOR_ORG_QUOTA_EXCEEDED":
+                # Its own code: "out of quota" and "the group is broken" need
+                # different answers from the person reading the error.
+                raise _org_error(
+                    "CASDOOR_ORG_QUOTA_EXCEEDED",
+                    f"{user} cannot create another organisation: {error}",
+                ) from error
+            raise _org_error(
+                "CASDOOR_GROUP_UNAVAILABLE", f"{group}: {error}; {_GROUP_SETUP_HINT}"
+            ) from error
+
+        try:
+            self._casdoor.require_member(group, user)
         except CasdoorGroupError as error:
             raise _org_error(
                 "CASDOOR_GROUP_UNAVAILABLE", f"{group}: {error}; {_GROUP_SETUP_HINT}"

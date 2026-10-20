@@ -58,6 +58,8 @@ class CasdoorGroups(Protocol):
 
     def remove_member(self, group: str, user: str) -> bool: ...
 
+    def ensure_group(self, group: str, user: str) -> dict[str, Any]: ...
+
 
 def casdoor_user(member: str) -> str:
     """``user:<owner>`` (or a bare owner) -> ``hyprial/<owner>`` unchanged.
@@ -269,3 +271,54 @@ class HttpCasdoorGroups:
 
     def remove_member(self, group: str, user: str) -> bool:
         return bool(self._call("DELETE", group, user).get("changed"))
+
+    def ensure_group(self, group: str, user: str) -> dict[str, Any]:
+        """Ask Casdoor to create the group for ``user`` if it does not exist.
+
+        This is the only call in this client that **creates** something.  It
+        goes to ``/api/hyprial/ensure-org-group`` (casdoor-config PR #12),
+        which relays into the server-local org-group sidecar; the sidecar is
+        the only holder of an admin credential, so this client never needs one.
+
+        The endpoint enforces the quota: a user who already owns their allowed
+        number of groups answers ``ORG_QUOTA_EXCEEDED``.  That is translated to
+        its own error code here on purpose -- an operator must be able to tell
+        "this user is out of quota" apart from "the group is misconfigured",
+        because the two have nothing in common operationally.
+
+        ``group`` is the ``org/name`` id this client already uses; the endpoint
+        wants the bare name plus the owner id.
+        """
+        prefix = CASDOOR_ORGANIZATION + "/"
+        bare = group[len(prefix):] if group.startswith(prefix) else group
+        body = json.dumps({"org": bare, "owner": user}).encode("utf-8")
+        status, parsed = self._transport(
+            "POST",
+            f"{self._credentials.endpoint}/api/hyprial/ensure-org-group",
+            {
+                "Authorization": f"Bearer {self._bearer()}",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+            body,
+        )
+        if status == 401 or (isinstance(parsed, dict) and parsed.get("status") != "ok"):
+            detail = parsed.get("msg") if isinstance(parsed, dict) else None
+            if status == 401 or (
+                isinstance(detail, str) and detail.startswith("Access token")
+            ):
+                self._token = None
+            text = str(detail or "")
+            # The relay renders its own codes as "<CODE>: <detail>".
+            if "ORG_QUOTA_EXCEEDED" in text:
+                raise CasdoorGroupError(
+                    "CASDOOR_ORG_QUOTA_EXCEEDED",
+                    f"{user} is out of org quota in Casdoor: {text}",
+                )
+            raise CasdoorGroupError(
+                "CASDOOR_ENSURE_GROUP_REFUSED",
+                f"ensure-org-group for {group}/{user} failed "
+                f"(HTTP {status}{': ' + text if text else ''})",
+            )
+        data = parsed.get("data") if isinstance(parsed, dict) else None
+        return data if isinstance(data, dict) else {}
