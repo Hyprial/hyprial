@@ -179,6 +179,9 @@ def _doctor_result() -> JsonObject:
             routine_check = _routine_health_doctor_check()
             if routine_check is not None:
                 checks.append(routine_check)
+            org_metadata_check = _org_metadata_doctor_check()
+            if org_metadata_check is not None:
+                checks.append(org_metadata_check)
         else:
             checks.append(
                 {
@@ -212,6 +215,38 @@ def _doctor_result() -> JsonObject:
         "schemaVersion": 1,
         "checks": checks,
         "summary": summary,
+    }
+
+
+def _org_metadata_doctor_check() -> JsonObject | None:
+    """Report lifecycle marker corruption without making legacy orgs unusable."""
+
+    services = get_services()
+    try:
+        network = services._daemon_request("org.network", {}, timeout=2.0)
+    except (services.CliError, ipc_errors.TransientDaemonError):
+        return None
+    if not isinstance(network, dict):
+        return None
+    raw_problems = network.get("dataProblems")
+    if not isinstance(raw_problems, list):
+        return None
+    problems = [problem for problem in raw_problems if isinstance(problem, dict)]
+    if not problems:
+        return {
+            "name": "org-metadata",
+            "status": "ok",
+            "detail": "organization lifecycle metadata is readable",
+        }
+    return {
+        "name": "org-metadata",
+        "status": "warn",
+        "detail": f"{len(problems)} organization lifecycle metadata problem(s)",
+        "action": {
+            "command": "hyprial org network --json",
+            "description": "Inspect dataProblems and repair the reported lifecycle metadata.",
+        },
+        "metrics": {"dataProblems": problems},
     }
 
 

@@ -253,7 +253,8 @@ def org_create(
         result = services._daemon_request("org.create", {"org": _validated_org(org)})
         if not isinstance(result, dict):
             raise services.CliError("INVALID_RESPONSE", "org.create must return an object")
-        return {"ok": True, **result}
+        published = result.get("published", result.get("devicePublished"))
+        return {"ok": published is not False, **result}
 
     services._execute(operation, json_output=json_output)
 

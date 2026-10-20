@@ -512,21 +512,58 @@ class OrgFsDirectoryStore:
         )
 
     def org_state(self, org: str) -> str:
-        """The org's lifecycle state; ``"active"`` when no marker exists."""
+        """Return the explicit state or the legacy binding classification."""
+
+        state, _problem = self.org_state_details(org)
+        return state
+
+    def org_state_details(
+        self, org: str
+    ) -> tuple[str, dict[str, object] | None]:
+        """Classify lifecycle metadata and expose malformed marker data."""
 
         space_id = self._space_id(org)
+        legacy_state = self._unmarked_org_state(space_id)
         try:
             text, _version = self._fs.read_text(space_id, ORG_META_DOC)
         except OrgFsError as error:
             if error.code == "unknown-doc":
-                return "active"
+                return legacy_state, None
             raise
         try:
             record = json.loads(text)
         except ValueError:
-            return "active"
+            return legacy_state, self._org_state_problem(org, "invalid-json")
         state = record.get("state") if isinstance(record, dict) else None
-        return state if isinstance(state, str) and state else "active"
+        if not isinstance(state, str) or not state:
+            return legacy_state, None
+        if state in {"active", "creating", "partial", "deleted"}:
+            return state, None
+        return "partial", self._org_state_problem(
+            org, "unknown-state", value=state
+        )
+
+    def _org_state_problem(
+        self, org: str, reason: str, *, value: str | None = None
+    ) -> dict[str, object]:
+        problem: dict[str, object] = {
+            "org": org,
+            "path": ORG_META_DOC,
+            "reason": reason,
+        }
+        if value is not None:
+            problem["value"] = value
+        if self._logger is not None:
+            self._logger("warn", "org", "state.data-problem", **problem)
+        return problem
+
+    def _unmarked_org_state(self, space_id: str) -> str:
+        acl_space_id = self._fs.space_meta(space_id).get("aclSpaceId")
+        return (
+            "legacy-active"
+            if isinstance(acl_space_id, str) and bool(acl_space_id)
+            else "partial"
+        )
 
     # -- internals ----------------------------------------------------------
 

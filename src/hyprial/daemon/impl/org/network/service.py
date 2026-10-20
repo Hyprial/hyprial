@@ -1,11 +1,4 @@
-"""The org network service: create/invite/execute/network over OrgFS.
-
-Implements tailnet-cutover §4.3.  The service owns no transport of its
-own: peer mapping, redial and the sidecar's address file all arrive as
-injected callbacks (``map_peer``/``request_redial``/``read_own_address``),
-so this module never imports forwarding internals and stays testable
-against recording fakes.
-"""
+"""Org lifecycle and network views over OrgFS with injected transport hooks."""
 
 from __future__ import annotations
 
@@ -194,30 +187,23 @@ class OrgNetworkService(CasdoorMembershipMixin):
         casdoor = self._casdoor_require_group(org)  # before any OrgFS write
         if existing is None:
             info = self._fs.create_space(name)
-            intent = update_org_create(
-                self._home, org, directory_space_id=info.space_id
-            )
+            intent = update_org_create(self._home, org, directory_space_id=info.space_id)
         else:
             info = existing
+        if needs_finalize:
+            self._store.put_org_meta(org, {"state": "creating"})
         if acl_info is None:
             assert intent is not None
             try:
                 acl_info = resume_acl_space(
-                    fs=self._fs,
-                    home=self._home,
-                    org=org,
-                    directory=info,
-                    intent=intent,
+                    fs=self._fs, home=self._home, org=org, directory=info, intent=intent
                 )
             except OrgCreateResumeDenied as error:
                 raise OrgNetworkError("ORG_ACTION_NOT_AUTHORIZED", str(error)) from error
         if needs_finalize:
             if needs_policy:
                 write_default_acl_policy(self._fs, acl_info.space_id)
-            self._fs.update_space_meta(
-                info.space_id, {"aclSpaceId": acl_info.space_id}
-            )
-            self._store.put_org_meta(org, {"state": "active"})
+            self._fs.update_space_meta(info.space_id, {"aclSpaceId": acl_info.space_id})
         self._store.ensure_org_directory_roots(org)
         finish_org_create(self._home, org)
         try:
@@ -227,6 +213,7 @@ class OrgNetworkService(CasdoorMembershipMixin):
             self._log(
                 "warn", "org", "org.create.publish-skipped", org=org, reason=error.code
             )
+        self._store.put_org_meta(org, {"state": "active"})
         self._log("info", "org", "org.create", org=org, spaceId=info.space_id)
         return {
             "org": org,
@@ -237,6 +224,7 @@ class OrgNetworkService(CasdoorMembershipMixin):
             "existed": existing is not None,
             "aclExisted": acl_existed,
             "casdoorGroup": casdoor,
+            "published": published,
             "devicePublished": published,
         }
 
@@ -811,16 +799,22 @@ class OrgNetworkService(CasdoorMembershipMixin):
         ]
 
     def _org_state(self, org: str) -> str:
-        org_state = getattr(self._store, "org_state", None)
-        if org_state is None:  # a store that implements only the §4.1 port
-            return "active"
+        return self._org_state_details(org)[0]
+
+    def _org_state_details(
+        self, org: str
+    ) -> tuple[str, dict[str, object] | None]:
+        details = getattr(self._store, "org_state_details", None)
+        state_reader = details or getattr(self._store, "org_state", None)
+        if state_reader is None:
+            acl_space, _reason = resolve_org_acl_space(self._fs, org)
+            return ("legacy-active" if acl_space is not None else "partial"), None
         try:
-            return org_state(org)
+            result = state_reader(org)
+            return result if details is not None else (result, None)
         except (OrgFsError, ValueError) as error:
-            self._log(
-                "warn", "org", "org.state.unreadable", org=org, detail=str(error)
-            )
-            return "active"
+            self._log("warn", "org", "org.state.unreadable", org=org, detail=str(error))
+            return "partial", None
 
     def _role_of(self, org: str) -> str | None:
         role_of = getattr(self._policy, "role_of", None)
