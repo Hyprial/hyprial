@@ -7,8 +7,6 @@ so this module never imports forwarding internals and stays testable
 against recording fakes.
 """
 
-# hyprial-unbounded-wait-allow: result - BoundedProjection enforces an absolute deadline
-
 from __future__ import annotations
 
 import hashlib
@@ -21,10 +19,7 @@ from typing import Any
 
 from hyprial.daemon.impl.orgfs.api import OrgFs, OrgFsError, require_space_owner
 from hyprial.daemon.impl.org.network.casdoor import CasdoorGroups, CasdoorMembershipMixin
-from hyprial.daemon.impl.org.network.binding import (
-    resolve_org_acl_space,
-    resolve_org_directory_space,
-)
+from hyprial.daemon.impl.org.network.binding import resolve_org_acl_space
 from hyprial.daemon.impl.org.network.create import (
     OrgCreateResumeDenied,
     prepare_create,
@@ -38,7 +33,6 @@ from hyprial.daemon.impl.org.network.create import (
 from hyprial.daemon.impl.org.network.directory import (
     OrgFsDirectoryStore,
     leave_request_admitted,
-    network_directory_projection,
 )
 from hyprial.daemon.impl.org.network.policy import OrgFsDerivedPolicy
 from hyprial.daemon.impl.org.network.state import (
@@ -52,13 +46,12 @@ from hyprial.daemon.impl.org.network.state import (
     remove_bootstrap_peers,
     update_org_create,
 )
-from hyprial.daemon.impl.org.network.status import start_bounded_projection
+from hyprial.daemon.impl.org.network.status.view import network_view
 from hyprial.kernel import canonical_user_uri, ipc_errors, parse_user_uri
 from hyprial.identity import DeviceRecord, read_device_record
 from hyprial.identity import (
     ACTION_INVITE,
     ACTION_LEAVE,
-    ACTION_READ,
     ACTION_REMOVE,
     ACTION_WRITE,
     DirectoryDevice,
@@ -80,8 +73,6 @@ from hyprial.identity import (
 JOIN_RETRY_SECONDS = 0.5
 DEFAULT_JOIN_TIMEOUT_SECONDS = 30.0
 DEFAULT_INVITE_TTL_SECONDS = 24 * 3600.0
-NETWORK_PANE_TIMEOUT_SECONDS = 1.0
-
 _UNBOUND_DELETE_FALLBACK_REASONS = frozenset(
     {"missing-acl-binding", "unknown-acl-space-id", "acl-owner-mismatch"}
 )
@@ -576,91 +567,19 @@ class OrgNetworkService(CasdoorMembershipMixin):
     def network(self, org: str | None = None) -> dict[str, Any]:
         """The three-pane network view (§2.6), each pane with its source."""
 
-        orgs = [org] if org is not None else self._orgs()
-        if org is not None:
-            directory_space, reason = resolve_org_directory_space(self._fs, org)
-            if reason == "missing-directory-space":
-                raise OrgFsError(
-                    "unknown-space", {"org": org, "space": org_space_name(org)}
-                )
-            self._require_allows(
-                org=org, action=ACTION_READ, resource=RESOURCE_DIRECTORY_ALL
-            )
-            if directory_space is None:  # policy denial above is the public result
-                raise OrgFsError("ambiguous-space", {"org": org})
-        unavailable: list[dict[str, object]] = []
-        for name in orgs:
-            if name == org:
-                continue
-            try:
-                self._require_allows(
-                    org=name, action=ACTION_READ, resource=RESOURCE_DIRECTORY_ALL
-                )
-            except OrgNetworkError:
-                unavailable.append(
-                    {
-                        "org": name,
-                        "available": False,
-                        "reason": "policy.grants-unavailable",
-                    }
-                )
-        unavailable_names = {str(item["org"]) for item in unavailable}
-        directory_read = start_bounded_projection(
-            lambda: network_directory_projection(
-                self._store, orgs, unavailable_names,
-                device_view=self._device_view, logger=self._log,
-            ),
-            lane="directory",
-            timeout_seconds=NETWORK_PANE_TIMEOUT_SECONDS,
+        return network_view(
+            fs=self._fs,
+            store=self._store,
+            node_id=self._node_id,
+            owner=self._owner,
+            orgs=[org] if org is not None else self._orgs(),
+            org=org,
+            require_allows=self._require_allows,
+            authorization_error=OrgNetworkError,
+            forwarding_status=self._forwarding_status,
+            own_address=self._own_address,
+            logger=self._log,
         )
-        forwarding_read = start_bounded_projection(
-            self._forwarding_status,
-            lane="sidecar",
-            timeout_seconds=NETWORK_PANE_TIMEOUT_SECONDS,
-        )
-        directory_result, directory_status = directory_read.result()
-        forwarding, forwarding_status = forwarding_read.result()
-        if directory_result is None:
-            directory = {name: [] for name in orgs}
-            directory_pending: dict[str, Any] = dict.fromkeys(orgs)
-        else:
-            directory, directory_pending = directory_result
-        address = self._own_address()
-        mapped_peers = forwarding.get("peers") if isinstance(forwarding, Mapping) else None
-        sidecar = (
-            {
-                key: forwarding.get(key)
-                for key in (
-                    "policy", "endpoints", "dialed", "restartRequired", "lastPoll",
-                    "connectionTelemetry",
-                )
-            }
-            if isinstance(forwarding, Mapping)
-            else None
-        )
-        return {
-            "orgs": orgs,
-            "unavailableOrgs": unavailable,
-            "directory": directory,
-            "directoryPending": directory_pending,
-            "self": {
-                "deviceId": self._node_id,
-                "owner": self._owner,
-                "addressPresent": address is not None,
-            },
-            "mappedPeers": mapped_peers,
-            "sidecar": sidecar,
-            "paneStatus": {
-                "directory": directory_status,
-                "mappedPeers": dict(forwarding_status),
-                "sidecar": dict(forwarding_status),
-            },
-            "sources": {
-                "directory": "orgfs",
-                "mappedPeers": "forwarding-sidecar",
-                "sidecar": "forwarding-sidecar",
-            },
-        }
 
     def publish_self(self) -> dict[str, Any]:
         """Write this device into every org it belongs to (§4.3)."""
@@ -998,14 +917,5 @@ class OrgNetworkService(CasdoorMembershipMixin):
             self._log("warn", "org", "org.invite.registration-unsupported", org=org)
             return
         put(org, token_id, record)
-
-    @staticmethod
-    def _device_view(device: DirectoryDevice) -> dict[str, Any]:
-        # The address embeds the PSK; IPC answers keep it out and say only
-        # whether one is recorded (the raw value never leaves the daemon).
-        view = dict(device.as_record())
-        view["addressPresent"] = bool(view.pop("address"))
-        view["presence"] = "unknown"
-        return view
 
 __all__ = ["OrgNetworkError", "OrgNetworkService", "OrgFsDirectoryStore"]
