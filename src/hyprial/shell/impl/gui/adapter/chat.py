@@ -1,36 +1,42 @@
 """App-facing chat adapter v0: the node side of the browser Core chat port.
 
 The browser Core (``src/gui/core``) projects sessions, replies and terminal
-state from ONE injected connection port with five named operations.  This
-module is the node-side facade for that port on this machine: it binds
-``sessions.send`` onto the daemon's existing ``message.send`` surface
-(``conversationId`` + ``idempotencyKey`` pass through unchanged) and
-``sessions.events`` onto the daemon's ``progress.list`` progress stream
-(per-conversation, numeric ``seq`` cursor, the daemon's own terminal
-marker projected as Core's terminal object).  It holds no
-business authority of its own and stores nothing: every answer is a
-projection of what the daemon returned, and success is only claimed where
-the daemon claimed it.
+state from ONE injected connection port.  This module is the node-side
+facade for that port on this machine: it binds ``sessions.send`` onto the
+daemon's existing ``message.send`` surface (``conversationId`` +
+``idempotencyKey`` pass through unchanged), ``sessions.events`` onto the
+daemon's ``progress.list`` progress stream, and the read-only directory plus
+session creation onto the daemon's authoritative ``hosts`` / ``targets``
+methods.  It holds no business authority of its own beyond the deterministic
+session binding it derives: every directory answer is a projection of what
+the daemon returned, and success is only claimed where the daemon claimed it.
 
 v0 boundaries (deliberate, fail-closed):
 
-- ``sessions.list`` is exactly the composition root's configured bindings:
-  no daemon call, no discovered sessions, nothing invented.  It exists so
-  Core's connect() can complete against the sessions this node really has.
-- ``sessions.history`` projects the conversation's messages that the
-  session's fixed sender can still read on the daemon's person-read surface:
-  the sender's pending inbox rows (messages received, real replies included)
-  plus the sender's undelivered outbox rows, filtered to the session's
-  ``binding.conversation_id``, oldest first, deduplicated by message id.
-  It is a projection, never a transcript: the daemon takes a received row
-  out of the pending set when the harness answers it (``message.reply``
-  acks the original) or acknowledges it, and consumed rows are not readable
-  through any daemon IPC method at this head.  A durable conversation read
-  that keeps consumed rows is a daemon-authority slice and is deliberately
-  not synthesized here; missing rows are reported by absence, never
-  invented.  (The store already retains consumed rows -- see
-  ``hyprial.daemon.impl.inbox.authority.read.InboxReadProjection.workflow_replies``
-  -- but no IPC surface exposes that shape yet.)
+- ``targets.list`` is one bounded, read-only directory read: the daemon's
+  ``hosts`` result becomes ``nodes`` and its ``targets`` result filtered to
+  ``kind=agent`` becomes ``targets``.  Rows are shape-checked and capped;
+  nothing is synthesized, and no online/role claim is made beyond the
+  daemon's own ``status`` string.
+- ``sessions.create`` takes only a ``targetUri``.  It first checks the target
+  against the same live daemon directory, derives a stable session id and
+  conversation id from the fixed sender + target, and returns the existing
+  binding when one is already configured or ensured.  The renderer cannot
+  name a sender, targets list, conversation or session id.
+- ``sessions.list`` is the composition root's configured bindings plus the
+  deterministic bindings ensured through ``sessions.create``: no daemon call,
+  no invented session.  It exists so Core's connect() can complete against
+  the sessions this node really has.
+- ``sessions.history`` projects one page of the session's durable daemon
+  conversation read (``message.history``): retained inbox rows -- consumed
+  and pending, real replies included -- plus still-undelivered outbox rows
+  for the fixed sender, filtered to the session's
+  ``binding.conversation_id``.  The daemon owns identity scoping, ordering,
+  deduplication and the opaque page cursor; the adapter checks the answer's
+  shape and fails closed on anything it cannot prove.  It is a projection,
+  never a local transcript: rows the daemon does not return are reported by
+  absence, never invented, and there is no fallback to a partial
+  ``message.query`` read.
 - The sender identity is fixed at construction by the trusted composition
   root; request fields that try to carry identity (``from``, ``sender``,
   ``actor``, ``onBehalfOf``, ``sessionRef``, ...) are rejected with
@@ -58,10 +64,14 @@ transport kind (``local-ipc`` / ``tailnet``) is the bridge's business.
 
 from __future__ import annotations
 
+from hyprial.daemon import SUMMARY_MAX_BYTES
+
+import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
 
 from hyprial.kernel import DaemonRequestError, ipc_errors
 from hyprial.shell.impl.gui.adapter.errors import (
@@ -70,6 +80,7 @@ from hyprial.shell.impl.gui.adapter.errors import (
     INVALID_ARGUMENT,
     SEND_REJECTED,
     UNKNOWN_SESSION,
+    UNKNOWN_TARGET,
     AppAdapterError,
     AppAdapterUnavailable,
 )
@@ -98,6 +109,8 @@ V0_OPERATIONS = {
     "sessions.events": {"supported": True},
     "sessions.list": {"supported": True},
     "sessions.history": {"supported": True},
+    "sessions.create": {"supported": True},
+    "targets.list": {"supported": True},
 }
 
 #: History page bounds.  Core clamps its own page size to 1..200 and sends it
@@ -106,12 +119,17 @@ V0_OPERATIONS = {
 HISTORY_PAGE_DEFAULT = 50
 HISTORY_PAGE_MAX = 200
 
-#: ``message.query`` inbox rows this projection consumes as conversation
-#: messages.  The inbox view interleaves system notices (``kind: "notice"``);
-#: a notice is not a message of the conversation and is never projected.
-HISTORY_INBOX_KIND = "message"
-#: ``message.query`` outbox rows (undelivered sends of the fixed sender).
-HISTORY_OUTBOX_KIND = "outbox"
+#: Directory bounds.  One request can only return so many rows, and one row
+#: only so many characters; the daemon remains the authority for the full set,
+#: and the bounded projection says so via ``truncated``/``counts``.
+DIRECTORY_ROW_LIMIT = 200
+DIRECTORY_URI_MAX = 512
+DIRECTORY_ID_MAX = 256
+DIRECTORY_STATUS_MAX = 64
+
+#: The only row kind ``message.history`` returns.  A notice or any other kind
+#: is not a conversation message and makes the whole answer unknown.
+HISTORY_ROW_KIND = "message"
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,6 +155,127 @@ def _require_text(value: object, field: str) -> str:
     return value
 
 
+def _directory_string(value: object, field: str, limit: int) -> str:
+    """One bounded, non-empty directory field; anything else is unknown."""
+
+    if not isinstance(value, str) or not value or len(value) > limit:
+        raise AppAdapterUnavailable(
+            "invalid-response",
+            {"detail": f"directory {field} is not a bounded non-empty string"},
+        )
+    return value
+
+
+def _directory_nodes(result: object) -> list[dict[str, Any]]:
+    """Validate the daemon's ``hosts`` answer into bounded node rows."""
+
+    if not isinstance(result, Mapping) or not isinstance(result.get("hosts"), list):
+        raise AppAdapterUnavailable(
+            "invalid-response", {"detail": "hosts answer has no hosts list"}
+        )
+    nodes: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for entry in result["hosts"]:
+        if not isinstance(entry, Mapping):
+            raise AppAdapterUnavailable(
+                "invalid-response", {"detail": "hosts row is not an object"}
+            )
+        node_id = _directory_string(
+            entry.get("nodeId"), "nodeId", DIRECTORY_ID_MAX
+        )
+        status = _directory_string(
+            entry.get("status"), "node status", DIRECTORY_STATUS_MAX
+        )
+        if node_id in seen:
+            raise AppAdapterUnavailable(
+                "invalid-response", {"detail": "hosts answer repeats a node id"}
+            )
+        seen.add(node_id)
+        nodes.append({"nodeId": node_id, "status": status})
+    return nodes
+
+
+def _directory_agents(result: object) -> list[dict[str, Any]]:
+    """Validate the daemon's ``targets`` answer into bounded agent rows.
+
+    Only rows the daemon itself marks ``targetKind=agent`` and deliverable are
+    accepted; a row of another kind in a ``kind=agent`` answer, or an agent
+    row the daemon says is not deliverable, makes the whole answer unknown.
+    """
+
+    if not isinstance(result, Mapping) or not isinstance(result.get("targets"), list):
+        raise AppAdapterUnavailable(
+            "invalid-response", {"detail": "targets answer has no targets list"}
+        )
+    agents: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for entry in result["targets"]:
+        if not isinstance(entry, Mapping):
+            raise AppAdapterUnavailable(
+                "invalid-response", {"detail": "targets row is not an object"}
+            )
+        if entry.get("targetKind") != "agent":
+            raise AppAdapterUnavailable(
+                "invalid-response",
+                {"detail": "targets answer contains a non-agent row"},
+            )
+        uri = _directory_string(
+            entry.get("targetUri"), "targetUri", DIRECTORY_URI_MAX
+        )
+        if entry.get("deliverable") is not True:
+            raise AppAdapterUnavailable(
+                "invalid-response",
+                {"detail": "agent target is not marked deliverable"},
+            )
+        status = _directory_string(
+            entry.get("status"), "target status", DIRECTORY_STATUS_MAX
+        )
+        if uri in seen:
+            raise AppAdapterUnavailable(
+                "invalid-response", {"detail": "targets answer repeats a target"}
+            )
+        row: dict[str, Any] = {
+            "targetUri": uri,
+            "targetKind": "agent",
+            "status": status,
+        }
+        if "hosted" in entry:
+            if not isinstance(entry["hosted"], bool):
+                raise AppAdapterUnavailable(
+                    "invalid-response",
+                    {"detail": "agent target hosted is not a boolean"},
+                )
+            row["hosted"] = entry["hosted"]
+        if "hostedBy" in entry:
+            hosted_by = entry["hostedBy"]
+            if hosted_by is not None and (
+                not isinstance(hosted_by, str)
+                or not hosted_by
+                or len(hosted_by) > DIRECTORY_URI_MAX
+            ):
+                raise AppAdapterUnavailable(
+                    "invalid-response",
+                    {"detail": "agent target hostedBy is not a bounded string"},
+                )
+            row["hostedBy"] = hosted_by
+        seen.add(uri)
+        agents.append(row)
+    return agents
+
+
+def _target_uri(value: object) -> str:
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or len(value) > DIRECTORY_URI_MAX
+    ):
+        raise AppAdapterError(
+            INVALID_ARGUMENT,
+            f"targetUri must be a non-empty string of at most {DIRECTORY_URI_MAX} characters",
+        )
+    return value
+
+
 def _history_limit(limit: object) -> int:
     value = HISTORY_PAGE_DEFAULT if limit is None else limit
     if (
@@ -151,28 +290,21 @@ def _history_limit(limit: object) -> int:
     return value
 
 
-def _encode_history_cursor(row: Mapping[str, Any]) -> str:
-    """The opaque page key: the row's ordering stamp plus its message id.
+def _history_cursor(cursor: object) -> str | None:
+    """The daemon's opaque cursor passes through untouched.
 
-    The separator is deliberately not a colon: this key is a page cursor the
-    adapter itself mints and consumes, never an identity/address grammar --
-    colon decomposition of identity strings belongs to ``hyprial.uri`` alone
-    (see the addressing guard in tests/kernel/addressing).
+    The adapter neither parses nor re-mints it: only the daemon that issued a
+    page key knows what it binds to, and a cursor it rejects is a definitive
+    refusal, not a reason to restart or guess.
     """
 
-    return f"{row['createdAtMs']}/{row['messageId']}"
-
-
-def _decode_history_cursor(cursor: object) -> tuple[int, str]:
-    """Parse a page key this adapter issued; anything else is refused."""
-
-    if isinstance(cursor, str) and "/" in cursor:
-        stamp, _, message_id = cursor.partition("/")
-        if stamp.isdigit() and message_id:
-            return (int(stamp), message_id)
-    raise AppAdapterError(
-        INVALID_ARGUMENT, "cursor must be a page key this adapter issued"
-    )
+    if cursor is None:
+        return None
+    if not isinstance(cursor, str) or not cursor:
+        raise AppAdapterError(
+            INVALID_ARGUMENT, "cursor must be a non-empty string when provided"
+        )
+    return cursor
 
 
 def _history_at(created_at_ms: int) -> str:
@@ -185,15 +317,18 @@ def _history_at(created_at_ms: int) -> str:
     )
 
 
-def _history_row(entry: Mapping[str, Any], *, kind: str) -> dict[str, Any]:
-    """One ``message.query`` entry, checked and normalized to the row shape.
+def _history_row(entry: object) -> dict[str, Any]:
+    """One ``message.history`` entry, checked and normalized to the row shape.
 
-    Both views of that method name the two ends with ``from``/``to``
-    (``_query_entry``); the projection speaks one shape.  A row that does
-    not carry the fields a conversation row must carry is an unknown
-    answer, not a row to repair.
+    A row that is not a conversation message, or that does not carry the
+    fields a conversation row must carry, is an unknown answer -- not a row
+    to skip or repair.
     """
 
+    if not isinstance(entry, Mapping) or entry.get("kind") != HISTORY_ROW_KIND:
+        raise AppAdapterUnavailable(
+            "invalid-response", {"detail": "message.history row is not a message"}
+        )
     message_id = entry.get("messageId")
     conversation_id = entry.get("conversationId")
     created_at_ms = entry.get("createdAtMs")
@@ -210,7 +345,7 @@ def _history_row(entry: Mapping[str, Any], *, kind: str) -> dict[str, Any]:
         or not isinstance(created_at_ms, int)
         or created_at_ms <= 0
         or not isinstance(intent, str)
-        or not intent
+        or intent not in {"request", "reply"}
         or not isinstance(message, str)
         or not isinstance(sender, str)
         or not sender
@@ -218,7 +353,7 @@ def _history_row(entry: Mapping[str, Any], *, kind: str) -> dict[str, Any]:
         or not recipient
     ):
         raise AppAdapterUnavailable(
-            "invalid-response", {"detail": f"message.query {kind} row is malformed"}
+            "invalid-response", {"detail": "message.history row is malformed"}
         )
     return {
         "messageId": message_id,
@@ -269,12 +404,131 @@ class AppChatAdapter:
         self._sender = sender
         self._session_ref = session_ref
         self._sessions = bindings
+        # ``sessions.create`` runs on a request thread: a second device or a
+        # retry can ensure the same target concurrently, so the binding table
+        # is read and mutated under one lock.
+        self._sessions_lock = threading.Lock()
+        self._ensured: dict[str, str] = {}
 
     # -- port operations ---------------------------------------------------
 
     def capabilities(self) -> dict[str, Any]:
         """``capabilities.get`` -- the supported/unsupported v0 operation map."""
         return {"operations": {name: dict(flags) for name, flags in V0_OPERATIONS.items()}}
+
+    def directory_operation(
+        self, operation: str, params: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Dispatch the hosted directory operations with their own argument
+        rules, so the host's generic dispatch stays one narrow branch."""
+
+        if operation == "targets.list":
+            return self.targets_list(params)
+        return self.create_session_from(params)
+
+    def targets_list(
+        self, params: Mapping[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """``targets.list`` -- the daemon's bounded node + agent directory.
+
+        ``hosts`` answers which nodes the daemon can see; ``targets`` answers
+        what it can deliver to.  This adapter asks the daemon for agents only
+        and projects both answers verbatim apart from shape checks, stable
+        row selection and the size bound.  A row the daemon did not return is
+        absent -- never synthesized, deduplicated by invention or repaired.
+        The frame carries no selectors.
+        """
+
+        if params:
+            raise AppAdapterError(
+                INVALID_ARGUMENT, "targets.list takes no parameters"
+            )
+        nodes = _directory_nodes(self._call("hosts", {}))
+        agents = _directory_agents(self._call("targets", {"kind": "agent"}))
+        return {
+            "nodes": nodes[:DIRECTORY_ROW_LIMIT],
+            "targets": agents[:DIRECTORY_ROW_LIMIT],
+            "counts": {"nodes": len(nodes), "targets": len(agents)},
+            "truncated": {
+                "nodes": len(nodes) > DIRECTORY_ROW_LIMIT,
+                "targets": len(agents) > DIRECTORY_ROW_LIMIT,
+            },
+        }
+
+    def create_session(self, target_uri: object) -> dict[str, Any]:
+        """``sessions.create`` -- create or reuse one stable agent binding.
+
+        The caller names only a target URI.  The sender is the composition
+        root's fixed sender, and the target must be a live agent row in the
+        same daemon ``targets`` directory the UI lists.  The binding is
+        deterministic in ``(sender, target)``: a restart re-derives the same
+        session id and daemon conversation id, so history is restored without
+        storing a second authority.  An existing configured or ensured
+        single-target binding is reused rather than duplicated.
+        """
+
+        target = _target_uri(target_uri)
+        agents = _directory_agents(self._call("targets", {"kind": "agent"}))
+        match = next(
+            (row for row in agents if row["targetUri"] == target),
+            None,
+        )
+        if match is None:
+            raise AppAdapterError(
+                UNKNOWN_TARGET,
+                "the daemon's current agent directory does not contain this target",
+                {"targetUri": target},
+            )
+        with self._sessions_lock:
+            for session_id, binding in self._sessions.items():
+                if binding.targets == (target,):
+                    return {
+                        "sessionId": session_id,
+                        "targetUri": target,
+                        "status": match["status"],
+                        "created": False,
+                    }
+            session_id = str(
+                uuid5(
+                    NAMESPACE_URL,
+                    f"hyprial:gui:session:{self._sender}:{target}",
+                )
+            )
+            conversation_id = str(
+                uuid5(
+                    NAMESPACE_URL,
+                    f"hyprial:gui:conversation:{self._sender}:{target}",
+                )
+            )
+            self._sessions[session_id] = SessionBinding(
+                targets=(target,), conversation_id=conversation_id
+            )
+            self._ensured[session_id] = target
+        return {
+            "sessionId": session_id,
+            "targetUri": target,
+            "status": match["status"],
+            "created": True,
+        }
+
+    def create_session_from(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        """``sessions.create`` frame rules: one target, never caller identity."""
+
+        unexpected = set(params) - {"targetUri"}
+        identity = unexpected & IDENTITY_FIELDS
+        if identity:
+            raise AppAdapterError(
+                IDENTITY_REJECTED,
+                "sessions.create may not carry identity fields",
+                {"identityFields": sorted(identity)},
+            )
+        if unexpected:
+            raise AppAdapterError(
+                INVALID_ARGUMENT,
+                "unexpected sessions.create fields",
+                {"unexpectedFields": sorted(unexpected)},
+            )
+        return self.create_session(params.get("targetUri"))
 
     def send(self, session_id: str, request: Mapping[str, Any]) -> dict[str, Any]:
         """``sessions.send`` -- pass the text through the daemon's send surface.
@@ -290,6 +544,7 @@ class AppChatAdapter:
             "from": self._sender,
             "to": list(binding.targets),
             "message": body["text"],
+            "summary": body["text"].encode("utf-8")[:SUMMARY_MAX_BYTES].decode("utf-8", errors="ignore"),
             "conversationId": binding.conversation_id,
             "idempotencyKey": body["idempotencyKey"],
         }
@@ -353,24 +608,32 @@ class AppChatAdapter:
         return {"entries": entries, "terminal": terminal}
 
     def sessions_list(self) -> list[dict[str, Any]]:
-        """``sessions.list`` -- the sessions this composition root configured.
+        """``sessions.list`` -- configured and ensured bindings, in order.
 
-        v0 semantics: the browser cannot invent a session identity and the
-        adapter holds no session authority of its own, so the list is exactly
-        the configured bindings, in configuration order.  No daemon call is
-        made; richer discovery belongs to the daemon-authority slice.
+        The browser cannot invent a session identity.  Configured bindings
+        keep their frozen ``{"sessionId"}`` shape; bindings ensured through
+        ``sessions.create`` also carry the target they were created for so
+        the directory UI can label them.  No daemon call is made.
         """
-        return [{"sessionId": session_id} for session_id in self._sessions]
+        with self._sessions_lock:
+            rows = [{"sessionId": session_id} for session_id in self._sessions]
+            for row in rows:
+                target = self._ensured.get(row["sessionId"])
+                if target is not None:
+                    row["title"] = target
+                    row["targetUri"] = target
+            return rows
 
     def session_binding(self, session_id: str) -> SessionBinding | None:
-        """The configured binding for ``session_id``, or ``None``.
+        """The configured or ensured binding for ``session_id``, or ``None``.
 
-        The authorization matrix reads this through the host; the mapping
-        itself stays exactly what the composition root configured -- the
-        adapter still invents no session and widens no binding.
+        The authorization matrix reads this through the host; the adapter
+        never invents a session beyond the deterministic binding it just
+        ensured for a live daemon target.
         """
 
-        return self._sessions.get(session_id)
+        with self._sessions_lock:
+            return self._sessions.get(session_id)
 
     def history(
         self,
@@ -379,35 +642,126 @@ class AppChatAdapter:
         cursor: str | None = None,
         limit: int | None = None,
     ) -> dict[str, Any]:
-        """``sessions.history`` -- project this conversation's visible messages.
+        """``sessions.history`` -- one page of the durable conversation.
 
-        Rows come from the daemon's person-read surface (``message.query``)
-        for this adapter's fixed sender: its pending inbox -- messages this
-        session received, a real reply included while the daemon still holds
-        it -- and its undelivered outbox, both filtered to the session's
-        ``binding.conversation_id``.  Events are ordered oldest first; the
-        ordering key plus the message id form the opaque ``nextCursor``.
+        Rows come from the daemon's ``message.history`` read for this
+        adapter's fixed sender and the session's
+        ``binding.conversation_id``.  Unlike the old pending-only projection,
+        consumed and acknowledged rows stay visible, so a request that was
+        answered and a real reply that was consumed survive a refresh or a
+        reconnect.  Ordering, participant scoping, deduplication and the
+        opaque ``nextCursor`` belong to the daemon; the adapter only checks
+        that the answer is internally consistent.
 
         Direction is read off the row, not guessed: a row whose intent is
         ``reply``, or whose sender is not this adapter's fixed sender, is the
         conversation's assistant side (Core's ``assistant`` kind); every
-        other row is the user side.  Messages the daemon has already consumed
-        (a replied-to request, an acknowledged row) are outside every IPC
-        read at this head and are reported by absence -- never invented; a
-        malformed daemon answer is an unknown outcome, not a partial history.
+        other row is the user side.  A malformed or non-success answer is an
+        unknown outcome, never a partial history.
         """
         binding = self._binding(session_id)
         page_size = _history_limit(limit)
-        after = _decode_history_cursor(cursor) if cursor is not None else None
-        rows = self._history_rows(binding)
-        if after is not None:
-            rows = [
-                row
-                for row in rows
-                if (row["createdAtMs"], row["messageId"]) > after
-            ]
-        page = rows[:page_size]
-        next_cursor = _encode_history_cursor(page[-1]) if len(rows) > len(page) else None
+        page_cursor = _history_cursor(cursor)
+        params: dict[str, Any] = {
+            "from": self._sender,
+            "conversationId": binding.conversation_id,
+            "limit": page_size,
+        }
+        if self._session_ref is not None:
+            params["sessionRef"] = self._session_ref
+        if page_cursor is not None:
+            params["cursor"] = page_cursor
+        return self._project_history(
+            self._call("message.history", params),
+            binding=binding,
+        )
+
+    # -- internals ---------------------------------------------------------
+
+    def _binding(self, session_id: object) -> SessionBinding:
+        if not isinstance(session_id, str):
+            raise AppAdapterError(INVALID_ARGUMENT, "session id must be a string")
+        with self._sessions_lock:
+            binding = self._sessions.get(session_id)
+        if binding is None:
+            raise AppAdapterError(
+                UNKNOWN_SESSION,
+                f"unknown session {session_id!r}",
+                {"sessionId": session_id},
+            )
+        return binding
+
+    def _project_history(
+        self,
+        result: Any,
+        *,
+        binding: SessionBinding,
+    ) -> dict[str, Any]:
+        """Validate one ``message.history`` answer and project it to Core rows.
+
+        The daemon promises conversation scoping, ascending
+        ``(createdAtMs, messageId)`` order and unique message ids.  An answer
+        that breaks any of those promises is not repaired or partially
+        returned: it is an unknown outcome for the whole page.
+        """
+
+        if not isinstance(result, Mapping) or result.get("ok") is not True:
+            raise AppAdapterUnavailable(
+                "invalid-response",
+                {"detail": "message.history answer is not a success object"},
+            )
+        if result.get("conversationId") != binding.conversation_id:
+            raise AppAdapterUnavailable(
+                "invalid-response",
+                {"detail": "message.history answer is for another conversation"},
+            )
+        entries = result.get("entries")
+        if not isinstance(entries, list):
+            raise AppAdapterUnavailable(
+                "invalid-response",
+                {"detail": "message.history answer has no entries list"},
+            )
+        if "nextCursor" not in result:
+            raise AppAdapterUnavailable(
+                "invalid-response",
+                {"detail": "message.history answer has no nextCursor"},
+            )
+        rows = [_history_row(entry) for entry in entries]
+        seen: set[str] = set()
+        previous: tuple[int, str] | None = None
+        for row in rows:
+            if row["conversationId"] != binding.conversation_id:
+                raise AppAdapterUnavailable(
+                    "invalid-response",
+                    {"detail": "message.history row is from another conversation"},
+                )
+            if row["messageId"] in seen:
+                raise AppAdapterUnavailable(
+                    "invalid-response",
+                    {"detail": "message.history answer repeats a message id"},
+                )
+            key = (row["createdAtMs"], row["messageId"])
+            if previous is not None and key <= previous:
+                raise AppAdapterUnavailable(
+                    "invalid-response",
+                    {"detail": "message.history answer is not strictly ordered"},
+                )
+            seen.add(row["messageId"])
+            previous = key
+        next_cursor = result.get("nextCursor")
+        if next_cursor is not None:
+            if not isinstance(next_cursor, str) or not next_cursor:
+                raise AppAdapterUnavailable(
+                    "invalid-response",
+                    {"detail": "message.history nextCursor is not a cursor"},
+                )
+            if not rows:
+                # A cursor with no page cannot advance: accepting it would
+                # either loop forever or silently truncate the conversation.
+                raise AppAdapterUnavailable(
+                    "invalid-response",
+                    {"detail": "message.history cursor accompanies an empty page"},
+                )
         events = [
             {
                 "eventId": row["messageId"],
@@ -419,72 +773,9 @@ class AppChatAdapter:
                 "text": row["message"],
                 "at": _history_at(row["createdAtMs"]),
             }
-            for row in page
+            for row in rows
         ]
         return {"events": events, "nextCursor": next_cursor}
-
-    # -- internals ---------------------------------------------------------
-
-    def _binding(self, session_id: object) -> SessionBinding:
-        if not isinstance(session_id, str):
-            raise AppAdapterError(INVALID_ARGUMENT, "session id must be a string")
-        binding = self._sessions.get(session_id)
-        if binding is None:
-            raise AppAdapterError(
-                UNKNOWN_SESSION,
-                f"unknown session {session_id!r}",
-                {"sessionId": session_id},
-            )
-        return binding
-
-    def _history_query(self, *, view: str, actor: str) -> list[Mapping[str, Any]]:
-        """One ``message.query`` view for the fixed sender, shape-checked."""
-
-        result = self._call("message.query", {"view": view, "actor": actor})
-        if not isinstance(result, Mapping) or result.get("ok") is not True:
-            raise AppAdapterUnavailable(
-                "invalid-response",
-                {"detail": f"message.query {view} answer is not a success object"},
-            )
-        entries = result.get("entries")
-        if not isinstance(entries, list) or not all(
-            isinstance(entry, Mapping) for entry in entries
-        ):
-            raise AppAdapterUnavailable(
-                "invalid-response",
-                {"detail": f"message.query {view} answer has no entries list"},
-            )
-        return entries
-
-    def _history_rows(self, binding: SessionBinding) -> list[dict[str, Any]]:
-        """This session's conversation rows, oldest first, deduplicated.
-
-        The inbox view interleaves system notices; unknown kinds are not
-        conversation messages and are skipped, while a row of a known kind
-        that is missing its fields is malformed and fails the whole read.
-        A message the daemon holds on both surfaces (outbox awaiting
-        delivery, inbox as the recipient's copy) is projected once -- the
-        inbox copy, which names both ends.
-        """
-
-        merged: dict[str, dict[str, Any]] = {}
-        for entry in self._history_query(view="inbox", actor=self._sender):
-            if entry.get("kind") != HISTORY_INBOX_KIND:
-                continue
-            row = _history_row(entry, kind=HISTORY_INBOX_KIND)
-            if row["conversationId"] != binding.conversation_id:
-                continue
-            merged.setdefault(row["messageId"], row)
-        for entry in self._history_query(view="outbox", actor=self._sender):
-            if entry.get("kind") != HISTORY_OUTBOX_KIND:
-                continue
-            row = _history_row(entry, kind=HISTORY_OUTBOX_KIND)
-            if row["conversationId"] != binding.conversation_id:
-                continue
-            merged.setdefault(row["messageId"], row)
-        return sorted(
-            merged.values(), key=lambda row: (row["createdAtMs"], row["messageId"])
-        )
 
     @staticmethod
     def _validate_send_request(request: Mapping[str, Any]) -> dict[str, str]:

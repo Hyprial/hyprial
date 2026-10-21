@@ -17,7 +17,12 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit, urlunsplit
 
-from hyprial.kernel import DEFAULT_GIT_URL
+from hyprial.kernel import (
+    DEFAULT_GIT_URL,
+    PrivateAccessUnsupported,
+    harden_private_path,
+    private_metadata_violation,
+)
 
 from hyprial.identity.impl.agents.home.config  import (
     NATIVE_CONFIG_MAPPING_VERSION,
@@ -45,6 +50,9 @@ __all__ = [
     "SharedCredentialBinding",
     "SshToolAuthorization",
     "agent_home_mode",
+    "derive_runtime_roots",
+    "runtime_environment_for_roots",
+    "tool_profile_environment",
     "resolve_agent_runtime_context",
     "build_agent_runtime_preparation",
     "materialize_agent_runtime_context",
@@ -85,10 +93,6 @@ def agent_home_mode(agent: Any, harness: str | None) -> tuple[str, str | None]:
     if harness not in _P2_HARNESSES:
         return "legacy", "harness_not_p2"
     return "p2", None
-
-
-def _current_uid() -> int:
-    return os.getuid()
 
 
 class AgentRuntimeError(ValueError):
@@ -287,14 +291,16 @@ def validate_shared_credential_binding(binding: SharedCredentialBinding) -> None
             f"{identity} designated target {target} must be a regular file",
             code=SHARED_CREDENTIAL_INVALID,
         )
-    if stat.S_IMODE(target_metadata.st_mode) != 0o600:
+    try:
+        violation = private_metadata_violation(target, target_metadata, mode=0o600)
+    except OSError as error:
         raise AgentRuntimeError(
-            f"{identity} designated target {target} mode must be 0600",
+            f"{identity} designated target {target} privacy cannot be inspected: {error}",
             code=SHARED_CREDENTIAL_INVALID,
-        )
-    if target_metadata.st_uid != _current_uid():
+        ) from error
+    if violation is not None:
         raise AgentRuntimeError(
-            f"{identity} designated target {target} must be owned by the current user",
+            f"{identity} designated target {target} must be account-private ({violation})",
             code=SHARED_CREDENTIAL_INVALID,
         )
     if binding.agent_cwd is not None:
@@ -560,6 +566,98 @@ def resolve_agent_runtime_context(
     return materialize_agent_runtime_context(preparation)
 
 
+def derive_runtime_roots(
+    *,
+    agent_home: Path,
+    entity_token: str,
+    harness: str,
+    config_revision: str,
+    tool_profile_id: str,
+    config_source: Path = Path(""),
+) -> AgentRuntimeRoots:
+    """Compute the P2 roots without creating, reading, or verifying any of them.
+
+    This is the single mapping also used by the materializer.  Read-only
+    consumers (readiness preflight, status) must not call the materializer:
+    it publishes the native projection and writes the tool profile.
+    """
+
+    revision_root = agent_home / "state" / "config" / entity_token / config_revision
+    xdg_root = agent_home / "state" / "xdg"
+    return AgentRuntimeRoots(
+        agent_home=agent_home,
+        config_source=config_source,
+        projection_root=revision_root / "native" / harness,
+        native_root=agent_home / "secrets" / "native" / harness,
+        session_root=(
+            agent_home / "state" / "pi"
+            if harness == "pi"
+            else agent_home / "state" / "sessions" / harness
+        ),
+        tool_home=agent_home / "state" / "home",
+        xdg_config_home=agent_home / "secrets" / "tools" / "xdg",
+        xdg_cache_home=xdg_root / "cache",
+        xdg_data_home=xdg_root / "data",
+        xdg_state_home=xdg_root / "state",
+        tool_profile_root=revision_root / "tools" / tool_profile_id,
+    )
+
+
+def tool_profile_environment(
+    root: Path, profile: AgentToolProfile
+) -> dict[str, str]:
+    """The non-secret environment a materialized tool profile contributes.
+
+    Pure: the caller materializes ``gitconfig``/``ssh_config`` first.  Readiness
+    uses this with a root that may not exist yet, so the environment it checks
+    is the one the next start would compose, not an operator-shell guess.
+    """
+
+    environment = {
+        "GIT_CONFIG_GLOBAL": str(root / "gitconfig"),
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_AUTHOR_NAME": profile.git_author_name,
+        "GIT_AUTHOR_EMAIL": profile.git_author_email,
+        "GIT_COMMITTER_NAME": profile.git_author_name,
+        "GIT_COMMITTER_EMAIL": profile.git_author_email,
+        "HYPRIAL_TOOL_PROFILE_ID": profile.profile_id,
+        "HYPRIAL_TEA_LOGIN": profile.tea_login,
+    }
+    if profile.ssh is None:
+        return environment
+    ssh = profile.ssh
+    environment.update(
+        {
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": (
+                f"url.{profile.git_rewrite_target}.insteadOf"
+            ),
+            "GIT_CONFIG_VALUE_0": profile.git_rewrite_source,
+            "SSH_AUTH_SOCK": ssh.auth_sock,
+            "GIT_SSH_COMMAND": f"ssh -F {shlex.quote(str(root / 'ssh_config'))}",
+        }
+    )
+    return environment
+
+
+def runtime_environment_for_roots(
+    roots: AgentRuntimeRoots,
+    harness: str,
+    profile: AgentToolProfile,
+) -> dict[str, str]:
+    """The profile selectors that overlay the daemon environment for one launch."""
+
+    return {
+        "HOME": str(roots.tool_home),
+        "XDG_CONFIG_HOME": str(roots.xdg_config_home),
+        "XDG_CACHE_HOME": str(roots.xdg_cache_home),
+        "XDG_DATA_HOME": str(roots.xdg_data_home),
+        "XDG_STATE_HOME": str(roots.xdg_state_home),
+        _NATIVE_ROOT_ENV[harness]: str(roots.native_root),
+        **tool_profile_environment(roots.tool_profile_root, profile),
+    }
+
+
 def materialize_agent_runtime_context(
     preparation: AgentRuntimePreparation,
 ) -> AgentRuntimeContext:
@@ -578,21 +676,24 @@ def materialize_agent_runtime_context(
     manifest = config.freeze_manifest()
     projection = build_native_projection(manifest, preparation.harness)
 
+    roots = derive_runtime_roots(
+        agent_home=agent_home,
+        entity_token=preparation.entity_token,
+        harness=preparation.harness,
+        config_revision=manifest.revision,
+        tool_profile_id=preparation.tool_profile.profile_id,
+        config_source=Path(config.source),
+    )
     revision_root = (
         agent_home / "state" / "config" / preparation.entity_token / manifest.revision
     )
     projection_parent = revision_root / "native"
-    projection_root = projection_parent / preparation.harness
-    native_root = agent_home / "secrets" / "native" / preparation.harness
-    session_root = (
-        agent_home / "state" / "pi"
-        if preparation.harness == "pi"
-        else agent_home / "state" / "sessions" / preparation.harness
-    )
-    tool_home = agent_home / "state" / "home"
-    xdg_config_home = agent_home / "secrets" / "tools" / "xdg"
-    xdg_root = agent_home / "state" / "xdg"
-    tool_profile_root = revision_root / "tools" / preparation.tool_profile.profile_id
+    projection_root = roots.projection_root
+    native_root = roots.native_root
+    session_root = roots.session_root
+    tool_home = roots.tool_home
+    xdg_config_home = roots.xdg_config_home
+    tool_profile_root = roots.tool_profile_root
 
     for directory in (
         revision_root,
@@ -601,9 +702,9 @@ def materialize_agent_runtime_context(
         session_root,
         tool_home,
         xdg_config_home,
-        xdg_root / "cache",
-        xdg_root / "data",
-        xdg_root / "state",
+        roots.xdg_cache_home,
+        roots.xdg_data_home,
+        roots.xdg_state_home,
         tool_profile_root,
     ):
         _ensure_private_directory(agent_home, directory)
@@ -629,31 +730,10 @@ def materialize_agent_runtime_context(
         projection_root=projection_root,
         incumbent=incumbent,
     )
-    tool_environment = _materialize_tool_profile(
-        tool_profile_root, preparation.tool_profile
+    _materialize_tool_profile(tool_profile_root, preparation.tool_profile)
+    environment = runtime_environment_for_roots(
+        roots, preparation.harness, preparation.tool_profile
     )
-    roots = AgentRuntimeRoots(
-        agent_home=agent_home,
-        config_source=Path(config.source),
-        projection_root=projection_root,
-        native_root=native_root,
-        session_root=session_root,
-        tool_home=tool_home,
-        xdg_config_home=xdg_config_home,
-        xdg_cache_home=xdg_root / "cache",
-        xdg_data_home=xdg_root / "data",
-        xdg_state_home=xdg_root / "state",
-        tool_profile_root=tool_profile_root,
-    )
-    environment = {
-        "HOME": str(tool_home),
-        "XDG_CONFIG_HOME": str(xdg_config_home),
-        "XDG_CACHE_HOME": str(xdg_root / "cache"),
-        "XDG_DATA_HOME": str(xdg_root / "data"),
-        "XDG_STATE_HOME": str(xdg_root / "state"),
-        _NATIVE_ROOT_ENV[preparation.harness]: str(native_root),
-        **tool_environment,
-    }
     shared_target = config.shared_credential_path(preparation.harness)
     shared_credential = (
         None
@@ -701,18 +781,8 @@ def _materialize_tool_profile(
             f"\tinsteadOf = {profile.git_rewrite_source}\n"
         ).encode()
     _write_or_verify_private_file(gitconfig, git_body)
-    environment = {
-        "GIT_CONFIG_GLOBAL": str(gitconfig),
-        "GIT_CONFIG_NOSYSTEM": "1",
-        "GIT_AUTHOR_NAME": profile.git_author_name,
-        "GIT_AUTHOR_EMAIL": profile.git_author_email,
-        "GIT_COMMITTER_NAME": profile.git_author_name,
-        "GIT_COMMITTER_EMAIL": profile.git_author_email,
-        "HYPRIAL_TOOL_PROFILE_ID": profile.profile_id,
-        "HYPRIAL_TEA_LOGIN": profile.tea_login,
-    }
     if profile.ssh is None:
-        return environment
+        return tool_profile_environment(root, profile)
     ssh = profile.ssh
     ssh_config = root / "ssh_config"
     ssh_body = (
@@ -728,18 +798,7 @@ def _materialize_tool_profile(
         "    KbdInteractiveAuthentication no\n"
     ).encode()
     _write_or_verify_private_file(ssh_config, ssh_body)
-    environment.update(
-        {
-            "GIT_CONFIG_COUNT": "1",
-            "GIT_CONFIG_KEY_0": (
-                f"url.{profile.git_rewrite_target}.insteadOf"
-            ),
-            "GIT_CONFIG_VALUE_0": profile.git_rewrite_source,
-            "SSH_AUTH_SOCK": ssh.auth_sock,
-            "GIT_SSH_COMMAND": f"ssh -F {shlex.quote(str(ssh_config))}",
-        }
-    )
-    return environment
+    return tool_profile_environment(root, profile)
 
 
 def _ensure_private_directory(root: Path, target: Path) -> None:
@@ -750,21 +809,37 @@ def _ensure_private_directory(root: Path, target: Path) -> None:
     current = root
     for part in relative.parts:
         current = current / part
+        created = False
         try:
             current.mkdir(mode=0o700)
+            created = True
         except FileExistsError:
             pass
+        except OSError as error:
+            raise AgentRuntimeError(
+                f"cannot create runtime directory {part}"
+            ) from error
         try:
+            if created:
+                harden_private_path(current, mode=0o700)
             metadata = current.lstat()
+        except PrivateAccessUnsupported as error:
+            raise AgentRuntimeError(
+                f"runtime directory {part} cannot be made private on this "
+                f"platform: {error}"
+            ) from error
         except OSError as error:
             raise AgentRuntimeError(f"cannot inspect runtime directory {part}") from error
-        if (
-            stat.S_ISLNK(metadata.st_mode)
-            or not stat.S_ISDIR(metadata.st_mode)
-            or metadata.st_uid != os.getuid()
-            or stat.S_IMODE(metadata.st_mode) != 0o700
-        ):
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
             raise AgentRuntimeError(f"runtime directory {part} is not private")
+        try:
+            violation = private_metadata_violation(current, metadata, mode=0o700)
+        except OSError as error:
+            raise AgentRuntimeError(f"cannot inspect runtime directory {part}") from error
+        if violation is not None:
+            raise AgentRuntimeError(
+                f"runtime directory {part} is not private ({violation})"
+            )
 
 
 def _write_or_verify_private_file(path: Path, body: bytes) -> None:
@@ -777,15 +852,33 @@ def _write_or_verify_private_file(path: Path, body: bytes) -> None:
             actual = path.read_bytes()
         except OSError as error:
             raise AgentRuntimeError(f"cannot verify tool profile file {path.name}") from error
+        try:
+            violation = private_metadata_violation(path, metadata, mode=0o600)
+        except OSError as error:
+            raise AgentRuntimeError(
+                f"cannot inspect tool profile file {path.name}"
+            ) from error
         if (
             stat.S_ISLNK(metadata.st_mode)
             or not stat.S_ISREG(metadata.st_mode)
-            or metadata.st_uid != os.getuid()
-            or stat.S_IMODE(metadata.st_mode) != 0o600
+            or violation is not None
             or hashlib.sha256(actual).digest() != expected
         ):
             raise AgentRuntimeError(f"tool profile file {path.name} drifted")
         return
+    try:
+        harden_private_path(path, mode=0o600)
+    except PrivateAccessUnsupported as error:
+        os.close(descriptor)
+        raise AgentRuntimeError(
+            f"tool profile file {path.name} cannot be made private on this "
+            f"platform: {error}"
+        ) from error
+    except OSError as error:
+        os.close(descriptor)
+        raise AgentRuntimeError(
+            f"cannot make tool profile file {path.name} private"
+        ) from error
     try:
         with os.fdopen(descriptor, "wb", closefd=False) as stream:
             stream.write(body)

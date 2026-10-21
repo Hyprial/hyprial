@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from collections.abc import Callable
 from pathlib import Path
 
+from hyprial.kernel import private_metadata_violation
+
 from hyprial.identity import (
     whitelist_replacement_environment,
 )
@@ -70,6 +72,8 @@ _CODEX_ARG0_ALIASES = frozenset(
 _CODEX_MUTABLE_FILES = frozenset(
     {
         ".sandbox_migration",
+        # Codex SQLite housekeeping lock, not a personality/config input.
+        ".sqlite-maintenance.lock",
         "auth.json",
         "history.jsonl",
         "installation_id",
@@ -305,6 +309,18 @@ def _require_mapping(value: object, label: str) -> dict[str, object]:
         raise CodexAgentHomeError(f"Codex app-server {label} must be an object")
     return value
 
+def _require_private(
+    path: Path, metadata: os.stat_result, *, mode: int, label: str
+) -> None:
+    try:
+        violation = private_metadata_violation(path, metadata, mode=mode)
+    except OSError as error:
+        raise CodexAgentHomeError(f"{label} privacy cannot be inspected") from error
+    if violation == "unsafe-mode":
+        raise CodexAgentHomeError(f"{label} mode must be {mode:04o}")
+    if violation is not None:
+        raise CodexAgentHomeError(f"{label} must be account-private ({violation})")
+
 def _validate_codex_native_load(
     *,
     initialize: object,
@@ -328,8 +344,9 @@ def _validate_codex_native_load(
         raise CodexAgentHomeError("resolved CODEX_HOME is unreadable") from error
     if stat.S_ISLNK(root_metadata.st_mode) or not stat.S_ISDIR(root_metadata.st_mode):
         raise CodexAgentHomeError("resolved CODEX_HOME must be a real directory")
-    if stat.S_IMODE(root_metadata.st_mode) != 0o700:
-        raise CodexAgentHomeError("resolved CODEX_HOME mode must be 0700")
+    _require_private(
+        expected_root, root_metadata, mode=0o700, label="resolved CODEX_HOME"
+    )
     initialized = _require_mapping(initialize, "initialize result")
     observed_home = initialized.get("codexHome")
     if not isinstance(observed_home, str) or not observed_home:
@@ -488,8 +505,12 @@ def _validate_codex_native_load(
         raise CodexAgentHomeError("Codex user config.toml is unreadable") from error
     if stat.S_ISLNK(config_metadata.st_mode) or not stat.S_ISREG(config_metadata.st_mode):
         raise CodexAgentHomeError("Codex user config.toml must be a regular file")
-    if stat.S_IMODE(config_metadata.st_mode) != 0o600:
-        raise CodexAgentHomeError("Codex user config.toml mode must be 0600")
+    _require_private(
+        expected_user_config,
+        config_metadata,
+        mode=0o600,
+        label="Codex user config.toml",
+    )
 
     auth_store = config.get("cli_auth_credentials_store")
     if auth_store not in _CODEX_SUPPORTED_AUTH_STORES:
@@ -514,8 +535,9 @@ def _validate_codex_native_load(
                 ) from error
             if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
                 raise CodexAgentHomeError("Codex auth.json must be a regular file")
-            if stat.S_IMODE(metadata.st_mode) != 0o600:
-                raise CodexAgentHomeError("Codex auth.json mode must be 0600")
+            _require_private(
+                auth_path, metadata, mode=0o600, label="Codex auth.json"
+            )
     elif auth_present:
         raise CodexAgentHomeError(
             "Codex ephemeral credential store must not fall back to auth.json"

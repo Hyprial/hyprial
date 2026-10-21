@@ -7,6 +7,8 @@ import stat
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 
+from hyprial.kernel import private_metadata_violation
+
 from hyprial.identity import AgentConfigError, verify_native_projection
 from hyprial.identity import (
     AgentRuntimeContext,
@@ -180,8 +182,18 @@ def validate_claude_auth_environment(
         raise ClaudeRuntimeError(
             "Claude native credentials path must be a regular file"
         )
-    if stat.S_IMODE(metadata.st_mode) != 0o600:
+    try:
+        violation = private_metadata_violation(credentials, metadata, mode=0o600)
+    except OSError as error:
+        raise ClaudeRuntimeError(
+            f"cannot inspect Claude native credentials privacy: {error}"
+        ) from error
+    if violation == "unsafe-mode":
         raise ClaudeRuntimeError("Claude native credentials file mode must be 0600")
+    if violation is not None:
+        raise ClaudeRuntimeError(
+            f"Claude native credentials file must be account-private ({violation})"
+        )
     if selected:
         raise ClaudeRuntimeError(
             "Claude native credentials and explicit authentication may not coexist"
@@ -207,8 +219,18 @@ def _require_private_directory(path: Path, label: str) -> None:
         raise ClaudeRuntimeError(f"cannot inspect Claude {label} root: {error}") from error
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
         raise ClaudeRuntimeError(f"Claude {label} root must be a real directory")
-    if stat.S_IMODE(metadata.st_mode) != 0o700:
+    try:
+        violation = private_metadata_violation(path, metadata, mode=0o700)
+    except OSError as error:
+        raise ClaudeRuntimeError(
+            f"cannot inspect Claude {label} root privacy: {error}"
+        ) from error
+    if violation == "unsafe-mode":
         raise ClaudeRuntimeError(f"Claude {label} root mode must be 0700")
+    if violation is not None:
+        raise ClaudeRuntimeError(
+            f"Claude {label} root must be account-private ({violation})"
+        )
 
 
 def _plan_projection_link(

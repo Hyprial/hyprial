@@ -171,7 +171,28 @@ def classify_harness_failure(error: str | None) -> str:
     """Map model-vendor prose to a stable code without persisting secret text."""
 
     detail = (error or "").casefold()
-    if "context exhausted" in detail:
+    if any(
+        token in detail
+        for token in (
+            "context exhausted",
+            # The model vendor refusing the request because the conversation
+            # is over the model's window.  2026-10-17 runtime incident: a
+            # session on a model id Claude Code cannot size ran to the
+            # vendor's 1,048,576 limit, and the rejection -- which arrives as
+            # the vendor's own prose, often wrapped in ``invalid_request_error``
+            # -- was caught by the generic invalid-request rule below and
+            # reported as PROVIDER_INVALID_REQUEST.  That code reads as "your
+            # request was malformed", so an operator sees a configuration
+            # mistake where the real cause is a conversation that outgrew the
+            # window.  Only wordings that name the limit itself are matched;
+            # a bare "context length" keeps its historical invalid-request
+            # mapping.  Both codes are permanent, so settlement is unchanged:
+            # this renames the cause, it does not change what delivery does.
+            "prompt is too long",
+            "maximum context length",
+            "context_length_exceeded",
+        )
+    ):
         return ipc_errors.CONTEXT_EXHAUSTED
     if any(
         token in detail

@@ -406,9 +406,9 @@ class OrgNetworkService(CasdoorMembershipMixin):
                 if entry.get("org") == org
             ],
         )
-        # LAX(tailnet-cutover): the owner's sidecar allow set is not
-        # tightened on leave (allowAny stays on); the proper leave revokes
-        # the leaver's nodekey from every member's allow set.
+        # The production sidecar launches deny-by-default (empty allow,
+        # allowAny=false) until org-directory allow synchronization lands,
+        # so the leaver is already refused rather than being revoked later.
         self._log("info", "org", "org.leave", org=org, spaceId=space.space_id)
         return {
             "org": org,
@@ -428,9 +428,9 @@ class OrgNetworkService(CasdoorMembershipMixin):
         )
         space = self._require_space(org)
         removed_devices = self._remove_member_and_devices(org, space.space_id, user)
-        # LAX(tailnet-cutover): established Tailcat connections of the
-        # removed user are not revoked here (allowAny stays on); the
-        # proper removal rewrites every member's allow set.
+        # The production sidecar launches deny-by-default (empty allow,
+        # allowAny=false), so established Tailcat connections are not
+        # admitted until an authenticated allow set is derived.
         self._log("info", "org", "org.remove", org=org, user=user)
         return {
             "org": org,

@@ -1,9 +1,10 @@
 // The App Core talks to exactly one injected connection port. This module is
 // static browser ESM: it opens no socket, reads no token, stores nothing, and
 // never supplies a trusted identity. A native/server composition root binds
-// identity outside Core and projects its session adapter onto the five named
-// operations below; the browser cannot name a principal, a session scope or a
-// credential, and Core has no generic request/command channel to reach for.
+// identity outside Core and projects its session adapter onto the named
+// operations below; the browser cannot name a principal, a session scope, a
+// conversation or a credential, and Core has no generic request/command
+// channel to reach for.
 
 export const CORE_TRANSPORT_KINDS = Object.freeze(['local-ipc', 'tailnet', 'mock']);
 
@@ -11,8 +12,9 @@ export const CORE_TRANSPORT_KINDS = Object.freeze(['local-ipc', 'tailnet', 'mock
 // Core contains no networking for either: there is no address, port, URL,
 // certificate or credential field, because none of that is Core's authority.
 const TRANSPORT_FIELDS = Object.freeze(['kind', 'label']);
-const PORT_GROUPS = Object.freeze(['sessions', 'capabilities']);
-const SESSION_OPERATIONS = Object.freeze(['list', 'history', 'events', 'send']);
+const PORT_GROUPS = Object.freeze(['sessions', 'targets', 'capabilities']);
+const SESSION_OPERATIONS = Object.freeze(['list', 'history', 'events', 'send', 'create']);
+const TARGET_OPERATIONS = Object.freeze(['list']);
 const CAPABILITY_OPERATIONS = Object.freeze(['get']);
 const REQUEST_ARGUMENTS = Object.freeze({ history: ['cursor', 'limit'], send: ['text', 'idempotencyKey'] });
 
@@ -97,10 +99,11 @@ export function bindConnection({ port, transport, demo = false } = {}) {
   const boundTransport = bindTransport(transport, demo);
   for (const key of Object.keys(port)) {
     if (!PORT_GROUPS.includes(key)) {
-      fail('CORE_CONNECTION_INVALID', `The connection port exposes '${key}'; Core uses sessions.list/history/events/send and capabilities.get only`);
+      fail('CORE_CONNECTION_INVALID', `The connection port exposes '${key}'; Core uses sessions.list/history/events/send/create, targets.list and capabilities.get only`);
     }
   }
   requireOperations(port.sessions, 'sessions', SESSION_OPERATIONS);
+  requireOperations(port.targets, 'targets', TARGET_OPERATIONS);
   requireOperations(port.capabilities, 'capabilities', CAPABILITY_OPERATIONS);
   return Object.freeze({
     transport: boundTransport,
@@ -109,7 +112,16 @@ export function bindConnection({ port, transport, demo = false } = {}) {
       history: async (sessionId, args) => port.sessions.history(sessionId, requestArguments(args, REQUEST_ARGUMENTS.history)),
       events: async (sessionId, since) => port.sessions.events(sessionId, since),
       send: async (sessionId, args) => port.sessions.send(sessionId, requestArguments(args, REQUEST_ARGUMENTS.send)),
+      create: async targetUri => {
+        // The caller names one target; sender, targets list, conversation and
+        // session id remain the node's. A non-string never reaches the port.
+        if (typeof targetUri !== 'string' || !targetUri.trim()) {
+          fail('CORE_ARGUMENT_INVALID', 'sessions.create requires one target URI');
+        }
+        return port.sessions.create(targetUri);
+      },
     }),
+    targets: Object.freeze({ list: async () => port.targets.list() }),
     capabilities: Object.freeze({ get: async () => port.capabilities.get() }),
   });
 }

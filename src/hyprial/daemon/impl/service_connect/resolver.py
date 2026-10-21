@@ -9,7 +9,7 @@ import threading
 from pathlib import Path
 from typing import Mapping
 
-from hyprial.kernel import ipc_errors
+from hyprial.kernel import current_uid, ipc_errors, posix_metadata_enforced
 
 from .models import (
     AccessSnapshot,
@@ -37,7 +37,7 @@ class ProtectedResolver:
 
     def __init__(self, path: str | Path, *, expected_uid: int | None = None) -> None:
         self.path = Path(path)
-        self._expected_uid = os.getuid() if expected_uid is None else expected_uid
+        self._expected_uid = current_uid() if expected_uid is None else expected_uid
         self._lock = threading.Lock()
         self._seen: dict[str, tuple[int, tuple[object, ...]]] = {}
 
@@ -91,8 +91,13 @@ class ProtectedResolver:
             directory = os.fstat(directory_fd)
             if (
                 not stat.S_ISDIR(directory.st_mode)
-                or stat.S_IMODE(directory.st_mode) != 0o700
-                or directory.st_uid != self._expected_uid
+                or (
+                    posix_metadata_enforced()
+                    and (
+                        stat.S_IMODE(directory.st_mode) != 0o700
+                        or directory.st_uid != self._expected_uid
+                    )
+                )
             ):
                 raise OSError("unsafe protected service directory")
             file_fd = os.open(
@@ -103,8 +108,13 @@ class ProtectedResolver:
             info = os.fstat(file_fd)
             if (
                 not stat.S_ISREG(info.st_mode)
-                or stat.S_IMODE(info.st_mode) != 0o600
-                or info.st_uid != self._expected_uid
+                or (
+                    posix_metadata_enforced()
+                    and (
+                        stat.S_IMODE(info.st_mode) != 0o600
+                        or info.st_uid != self._expected_uid
+                    )
+                )
                 or info.st_size > _MAX_RECORD_BYTES
             ):
                 raise OSError("unsafe protected service file")

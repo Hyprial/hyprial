@@ -7,6 +7,9 @@ from hyprial.daemon.impl.inbox.contracts.api  import (
     InboxPruneItem,
     OutboxPruneItem,
 )
+from hyprial.daemon.impl.inbox.history import (
+    conversation_messages as _conversation_messages,
+)
 from hyprial.daemon.impl.inbox.links.pull  import (
     DeliveryStatus,
     DeliveryStatusStore,
@@ -303,6 +306,28 @@ class InboxServiceProjectionMixin:
             (recipient, now),
         ).fetchall()
         return tuple(self._row_message(row) for row in rows)
+    @_synchronized
+    def conversation_messages(
+        self,
+        participant: str,
+        conversation_id: str,
+        *,
+        after: tuple[int, str] | None = None,
+        before: tuple[int, str] | None = None,
+        limit: int = 50,
+        newest_first: bool = False,
+    ) -> tuple[InboxMessage, ...]:
+        """Read-only page over retained inbox rows plus pending outbox rows."""
+
+        return _conversation_messages(
+            self._db,
+            participant=participant,
+            conversation_id=conversation_id,
+            after=after,
+            before=before,
+            limit=limit,
+            newest_first=newest_first,
+        )
     @_synchronized
     def dispatchable_messages(
         self, recipient: str, *, now_ms: int | None = None

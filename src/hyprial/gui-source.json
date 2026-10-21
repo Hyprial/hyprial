@@ -1,7 +1,7 @@
 {
   "schema": "hyprial.gui-source/v1",
-  "commit": "40514f9687ce16053732face266f18de939d6758",
-  "timestamp": "1792511985",
+  "commit": "37822be0af90da79ecd36f762291fbaa0418fe78",
+  "timestamp": "1792586818",
   "files": [
     {
       "path": ".gitignore",
@@ -40,37 +40,62 @@
     },
     {
       "path": "core/README.md",
-      "sha256": "85098852bc9c7fcf1d52d6eaf046f32aab6d58a4b8d1f0d3375d538834831e7e",
+      "sha256": "eebbcfe2f88ed5a49b121926d1a5bd0563243c5b9e7efd78f7d47d0b363f7485",
       "executable": false
     },
     {
       "path": "core/browser.mjs",
-      "sha256": "7b595172eef792cee117333410959dc97f050e685bc45de5a955d1ec068496c9",
+      "sha256": "2649c348f3b208ae043a9cf93109ee68524abf178a72c2356c08afb63885fd32",
       "executable": false
     },
     {
       "path": "core/chat.mjs",
-      "sha256": "5c3a6c2decda1376ce47b2b5b3a99945e76734864207e3efbdcbcf19277a3df7",
+      "sha256": "892490c7fc017b363e60d5dbe2870132c5c909cb7f5f5b831c9fa5ca25bdd615",
       "executable": false
     },
     {
       "path": "core/connection.mjs",
-      "sha256": "55d23c5c0e83261dba1fee38fd053c581c8803de16690d6aa5d3c6f77eb43c58",
+      "sha256": "dfc439e704415ff17174a2858558e19679dfe8e2252896e2f37fa21d37aa5be5",
       "executable": false
     },
     {
       "path": "core/demo.mjs",
-      "sha256": "2436b6f2b3978dad5b57b5b550881c1cc5a4d7c9edcab3ccf198efe3d0091f5e",
+      "sha256": "e0b3df629db13a79c29f4d5d3faef8ed7db29eecb529d588890e3ad25a1eb531",
       "executable": false
     },
     {
       "path": "core/discovery.mjs",
-      "sha256": "e32acd1b8f193b97e7b1be9c66955e889ee0b5d297c728edad4e104b57a59619",
+      "sha256": "d5e1dbfe651118a17e9c2426d38dc2dbd6d6041a733f91df73fc83afba373f97",
       "executable": false
     },
     {
       "path": "core/index.mjs",
       "sha256": "4d37377443f445c841821d88f13f32dad047b956fdc6c5ca67132dd6af6aa4e0",
+      "executable": false
+    },
+    {
+      "path": "core/views/chat.mjs",
+      "sha256": "af33a58080746c58c2455d2b847ef9510da5c2365d07020b955119199d885412",
+      "executable": false
+    },
+    {
+      "path": "core/views/contacts.mjs",
+      "sha256": "d1ac8136b341912c552731b16233ce424e511d208688d5526d836347a32fa49a",
+      "executable": false
+    },
+    {
+      "path": "core/views/dom.mjs",
+      "sha256": "1d3f2129b2e6a00aa6dafb382216c59a8d7efd87ba9948294b859034d901ebee",
+      "executable": false
+    },
+    {
+      "path": "core/views/rail.mjs",
+      "sha256": "413acf1de1121e461561054321496c6ea973bbc274ec2b2137f5b362e3bc917b",
+      "executable": false
+    },
+    {
+      "path": "core/views/viewport.mjs",
+      "sha256": "6b88b79c033a9fec53c7776e16769a723211ed55f0e834d11f93c15d1f22698b",
       "executable": false
     },
     {
@@ -160,7 +185,7 @@
     },
     {
       "path": "scripts/build-core.mjs",
-      "sha256": "7ee16496dbe47ebe1060295b95a6cca1ba293e912c817647ed6db0099ef15a4f",
+      "sha256": "e799e63a1d6f371bedc868651973dee22bd8dd5e2ff8280f68d99f999f5bb88b",
       "executable": false
     },
     {

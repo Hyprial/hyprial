@@ -158,6 +158,7 @@ from hyprial.daemon.impl.application.actors.agents_admin.adapters import _Adapte
 from hyprial.daemon.impl.application.actors.agents_admin.migration import _AgentMigrationMixin
 from hyprial.daemon.impl.application.actors.agents_admin.destroys import _AgentDestroyMixin
 from hyprial.daemon.impl.application.actors.agents_admin.provider_credential import _AgentProviderMixin
+from hyprial.daemon.impl.application.actors.agents_admin.readiness import _AgentReadinessMixin
 from hyprial.daemon.impl.application.actors.agents_registry import _AgentsRegistryMixin
 from hyprial.daemon.impl.application.actors.sessions.routes import _SessionRoutesMixin
 from hyprial.daemon.impl.application.actors.sessions.registry import _SessionRegistryMixin
@@ -180,6 +181,9 @@ from hyprial.daemon.impl.state_persistence.alarm import (
     StateWriterAlarm,
 )
 from hyprial.daemon.impl.application.messaging.operator_alarm import OperatorAlarmDelivery
+from hyprial.daemon.impl.application.messaging.inbox_surface.history import (
+    _MessageHistoryMixin,
+)
 from hyprial.daemon.impl.application.messaging.inbox_surface.queries import (
     _MessageQueriesMixin,
     new_message_wait_slots,
@@ -245,6 +249,7 @@ class DaemonApplication(
     _AgentMigrationMixin,
     _AgentDestroyMixin,
     _AgentProviderMixin,
+    _AgentReadinessMixin,
     _AgentsRegistryMixin,
     _SessionRoutesMixin,
     _SessionRegistryMixin,
@@ -258,6 +263,7 @@ class DaemonApplication(
     _DeliveryStatusMixin,
     _MessageSendMixin,
     _MessageQueriesMixin,
+    _MessageHistoryMixin,
     _StatusViewsMixin,
     _WorkerSnapshotMixin,
     _OrgFsBridgeMixin,

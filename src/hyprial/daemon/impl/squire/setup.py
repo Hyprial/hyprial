@@ -16,7 +16,7 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from hyprial.kernel import HarnessLaunchSpec, resolve_node_id
+from hyprial.kernel import HarnessLaunchSpec, current_uid, resolve_node_id
 from hyprial.daemon.impl.operations.management import (
     EnsureSquireRegistryCommand,
     RegistryManagementHandler,
@@ -69,7 +69,7 @@ def platform_login_name() -> str:
         )
     import pwd
 
-    return pwd.getpwuid(os.getuid()).pw_name
+    return pwd.getpwuid(current_uid()).pw_name
 
 
 def derive_setup_identity(

@@ -381,6 +381,72 @@ def require_hyprial_key(environment: Mapping[str, str]) -> str:
     )
 
 
+CLAUDE_CONTEXT_WINDOW_ENV = "CLAUDE_CODE_MAX_CONTEXT_TOKENS"
+CLAUDE_AUTO_COMPACT_WINDOW_ENV = "CLAUDE_CODE_AUTO_COMPACT_WINDOW"
+
+# Model ids Claude Code cannot resolve to a window, and the two numbers it
+# needs instead: (context window, auto-compaction boundary).
+#
+# Why this table exists (2026-10-17 runtime incident, six Mini workers): CC
+# sizes proactive auto-compaction from the context window it derives from the
+# model id.  ``deepseek-flash`` is not in its catalog, so the launch stated
+# nothing, the session had no boundary to compact at, and a conversation ran
+# to ~1,017,000 input tokens plus a 32,000-token output reservation -- where
+# the vendor rejected it at the model's 1,048,576 limit with no compact
+# boundary anywhere in the transcript.  The session was then unusable: the
+# provider limit is not something a retry or a resume can move.
+#
+# The remedy is to state the window at the seam that already translates a
+# vendor selection into the harness environment, so it holds for a fresh
+# session, for a resume, and for every launch shape (daemon SDK worker, PTY
+# connector, interactive CLI) without a hand-written settings file per role.
+# An isolated re-run of the pinned SDK with exactly these two values produced
+# the missing boundary (167,987 -> 30,742 tokens) and a successful resume;
+# that pair is what the numbers are.
+#
+# The two move together on purpose.  Stating the window alone would make a
+# session grow further before failing, and stating a boundary without the
+# window is not the combination that was proven.  Auto-compact itself is NOT
+# forced: CC enables it by default (``autoCompactEnabled: true``) and only
+# ``DISABLE_COMPACT``/``DISABLE_AUTO_COMPACT`` turn it off, so injecting the
+# key would override a user who deliberately disabled it.
+#
+# Only ids whose real window is known are listed.  ``hyprial`` gateway models
+# are Anthropic ids the vendor sizes, and guessing one here would compact a
+# 1M model at 200k (or the reverse).
+CLAUDE_CONTEXT_WINDOWS: Mapping[str, tuple[int, int]] = {
+    DEEPSEEK_MODEL: (1_048_576, 200_000),
+}
+
+
+def claude_context_defaults(
+    provider: str | None,
+    model: str | None,
+    environment: Mapping[str, str],
+) -> dict[str, str]:
+    """Return the context sizing ``spec``'s model needs, or nothing.
+
+    A value already present in ``environment`` wins: the names arrive through
+    the child environment vocabulary, so an operator who sized a window has
+    stated it there, and a deployment's own number must not be replaced by
+    this table's.  Blank is an unset variable, exactly as for the endpoint
+    overrides above.
+    """
+
+    if provider != DEEPSEEK_PROVIDER:
+        return {}
+    sizing = CLAUDE_CONTEXT_WINDOWS.get(model or DEEPSEEK_MODEL)
+    if sizing is None:
+        return {}
+    window, compact = sizing
+    defaults: dict[str, str] = {}
+    if not environment.get(CLAUDE_CONTEXT_WINDOW_ENV, "").strip():
+        defaults[CLAUDE_CONTEXT_WINDOW_ENV] = str(window)
+    if not environment.get(CLAUDE_AUTO_COMPACT_WINDOW_ENV, "").strip():
+        defaults[CLAUDE_AUTO_COMPACT_WINDOW_ENV] = str(compact)
+    return defaults
+
+
 def claude_provider_environment(
     spec: HarnessLaunchSpec,
     environment: Mapping[str, str],
@@ -420,6 +486,7 @@ def claude_provider_environment(
         "ANTHROPIC_DEFAULT_HAIKU_MODEL": model,
         "CLAUDE_CODE_SUBAGENT_MODEL": model,
         "CLAUDE_CODE_EFFORT_LEVEL": "max",
+        **claude_context_defaults(spec.model_provider, spec.model, environment),
     }
 
 

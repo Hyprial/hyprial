@@ -14,6 +14,7 @@ from hyprial.shell.impl.gui.adapter.errors import (
     INVALID_ARGUMENT,  # noqa: F401 - exported via __all__ as the registry constant
     SEND_REJECTED,
     UNKNOWN_SESSION,
+    UNKNOWN_TARGET,
     UNSUPPORTED_OPERATION,
     AppAdapterError,
     AppAdapterUnavailable,
@@ -34,6 +35,7 @@ __all__ = [
     "SEND_REJECTED",
     "SEND_REQUEST_KEYS",
     "UNKNOWN_SESSION",
+    "UNKNOWN_TARGET",
     "UNSUPPORTED_OPERATION",
     "V0_OPERATIONS",
 ]

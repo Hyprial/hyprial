@@ -9,7 +9,6 @@ preflight plans between daemon IPC calls.
 from __future__ import annotations
 
 import json
-import os
 import re
 import stat
 from dataclasses import dataclass
@@ -17,7 +16,13 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Self
 
-from hyprial.kernel import atomic_json_write
+from hyprial.kernel import (
+    PrivateAccessUnsupported,
+    atomic_json_write,
+    harden_private_path,
+    path_is_reparse,
+    private_tree_violation,
+)
 
 from hyprial.identity.impl.agents.migration._base  import (
     AgentMigrationAuthorization,
@@ -147,6 +152,14 @@ class AgentMigrationPlanStore:
                 raise ValueError("migration plan id is already occupied")
             return path
         atomic_json_write(path, plan.to_json())
+        try:
+            harden_private_path(path, mode=0o600)
+        except PrivateAccessUnsupported as error:
+            raise ValueError(
+                "migration plan files cannot be made account-private on this platform"
+            ) from error
+        except OSError as error:
+            raise ValueError("cannot secure the stored migration plan") from error
         return path
 
     def load(self, actor: str, migration_id: str) -> AgentMigrationPlan:
@@ -159,11 +172,22 @@ class AgentMigrationPlanStore:
             raise ValueError(
                 f"migration plan {migration_id!r} was not found for actor {actor!r}"
             ) from error
+        try:
+            violation = private_tree_violation(path, metadata)
+        except OSError as error:
+            raise ValueError(
+                "migration plan file privacy cannot be inspected"
+            ) from error
+        if violation == "unsupported-private-acl":
+            raise ValueError(
+                "migration plan files cannot be verified for private access "
+                "on this platform"
+            )
         if (
             stat.S_ISLNK(metadata.st_mode)
+            or path_is_reparse(metadata)
             or not stat.S_ISREG(metadata.st_mode)
-            or metadata.st_uid != os.getuid()
-            or stat.S_IMODE(metadata.st_mode) & 0o077
+            or violation is not None
         ):
             raise ValueError("migration plan file is not a private regular file")
         try:
@@ -195,13 +219,35 @@ def load_packaged_support_matrix() -> SupportMatrix:
 
 
 def _ensure_private_directory(path: Path) -> None:
+    existed = path.exists() or path.is_symlink()
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if not existed:
+        try:
+            harden_private_path(path, mode=0o700)
+        except PrivateAccessUnsupported as error:
+            raise ValueError(
+                f"migration plan directory cannot be made account-private: {path}"
+            ) from error
+        except OSError as error:
+            raise ValueError(
+                f"cannot secure migration plan directory: {path}"
+            ) from error
     metadata = path.lstat()
+    try:
+        violation = private_tree_violation(path, metadata)
+    except OSError as error:
+        raise ValueError(
+            f"migration plan directory privacy cannot be inspected: {path}"
+        ) from error
+    if violation == "unsupported-private-acl":
+        raise ValueError(
+            f"migration plan directory privacy is unsupported on this platform: {path}"
+        )
     if (
         stat.S_ISLNK(metadata.st_mode)
+        or path_is_reparse(metadata)
         or not stat.S_ISDIR(metadata.st_mode)
-        or metadata.st_uid != os.getuid()
-        or stat.S_IMODE(metadata.st_mode) & 0o077
+        or violation is not None
     ):
         raise ValueError(f"migration plan directory is not private: {path}")
 

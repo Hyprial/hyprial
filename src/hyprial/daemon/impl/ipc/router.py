@@ -76,6 +76,7 @@ _IPC_STATS_METHODS = frozenset(
         "agent.migrate.execute",
         "agent.migrate.preflight",
         "agent.migrate.rollback",
+        "agent.readiness",
         "agent.resolve",
         "agent.resume.restore",
         "agent.restore-policy",
@@ -120,6 +121,7 @@ _IPC_STATS_METHODS = frozenset(
         "management.adapter.remove",
         "management.squire.ensure",
         "message.ack",
+        "message.history",
         "message.pending.list",
         "message.pending.wait",
         "message.query",
@@ -529,6 +531,10 @@ class _IpcDispatchMixin:
             return self._ipc_session_unregister(params)
         if method == "message.query":
             return self._ipc_message_query(params)
+        if method == "message.history":
+            return self._ipc_message_history(
+                method, params, _trusted_message_origin=_trusted_message_origin
+            )
         if method == "message.pending.list":
             return self._ipc_message_pending_list(method, params, _trusted_message_origin=_trusted_message_origin)
         if method == "message.pending.wait":

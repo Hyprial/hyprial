@@ -146,6 +146,26 @@ class InboxServiceCoreMixin:
             );
             CREATE INDEX IF NOT EXISTS outbox_due ON outbox(next_attempt_ms, created_at_ms);
 
+            -- Sender-owned durable copy of a durable outbound message.  The
+            -- outbox row is released on delivery, custody transfer or a
+            -- receipt, so without this a remotely delivered send has no
+            -- local row left to read.  It carries no delivery state and is
+            -- never read by the delivery or retry paths.
+            CREATE TABLE IF NOT EXISTS sender_copies (
+                message_id TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                sender TEXT NOT NULL,
+                recipient TEXT NOT NULL,
+                payload BLOB NOT NULL,
+                intent TEXT NOT NULL,
+                lifecycle TEXT NOT NULL,
+                idempotency_key TEXT,
+                created_at_ms INTEGER NOT NULL,
+                message_expires_at_ms INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS sender_copies_history
+                ON sender_copies(conversation_id, sender, created_at_ms, message_id);
+
             CREATE TABLE IF NOT EXISTS inbox (
                 arrival_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 message_id TEXT NOT NULL UNIQUE,
@@ -558,6 +578,30 @@ class InboxServiceCoreMixin:
                 original = message.idempotency_key.removeprefix("reply:") or None
             if original is not None:
                 self._ledger_close_inbound_locked(message.sender, original, now_ms)
+        if message.lifecycle == DeliveryLifecycle.DURABLE_SERVICE:
+            # One sender-owned copy, committed atomically with the outbox
+            # row.  A replay reuses the message id, so OR IGNORE keeps one
+            # row; the history read deduplicates this copy against the
+            # retained inbox copy of a same-daemon delivery.
+            self._db.execute(
+                """INSERT OR IGNORE INTO sender_copies (
+                       message_id, conversation_id, sender, recipient, payload,
+                       intent, lifecycle, idempotency_key, created_at_ms,
+                       message_expires_at_ms
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    message.message_id,
+                    message.conversation_id,
+                    message.sender,
+                    message.recipient,
+                    message.payload,
+                    message.intent,
+                    message.lifecycle.value,
+                    message.idempotency_key,
+                    message.created_at_ms,
+                    message.expires_at_ms,
+                ),
+            )
         self._db.commit()
         self._enforce_hold_capacity("outbox", now_ms)
 

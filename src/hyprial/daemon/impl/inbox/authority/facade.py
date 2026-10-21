@@ -619,6 +619,25 @@ class DeliveryCustodyFacade:
     def workflow_replies(self, recipient: str, conversation_id: str) -> tuple[InboxMessage, ...]:
         return self._reads.workflow_replies(recipient, conversation_id)
 
+    def conversation_messages(
+        self,
+        participant: str,
+        conversation_id: str,
+        *,
+        after: tuple[int, str] | None = None,
+        before: tuple[int, str] | None = None,
+        limit: int = 50,
+        newest_first: bool = False,
+    ) -> tuple[InboxMessage, ...]:
+        return self._reads.conversation_messages(
+            participant,
+            conversation_id,
+            after=after,
+            before=before,
+            limit=limit,
+            newest_first=newest_first,
+        )
+
     def outbox_item(self, message_id: str) -> OutboxItem:
         return self._reads.outbox_item(message_id)
 

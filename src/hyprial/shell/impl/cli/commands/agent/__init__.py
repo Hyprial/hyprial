@@ -7,7 +7,7 @@ _ORDER = {
     for index, name in enumerate(
         (
             "create", "host-invite", "grant", "revoke", "grants", "list",
-            "home-census", "ensure-home", "restore-policy", "restore-threshold", "unblock", "destroy",
+            "home-census", "ensure-home", "readiness", "restore-policy", "restore-threshold", "unblock", "destroy",
         )
     )
 }

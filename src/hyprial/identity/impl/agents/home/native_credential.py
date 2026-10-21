@@ -41,6 +41,11 @@ provisioner creates it so; the runtime's own check starts below it).  A target w
 document is reported ``unchanged`` and not rewritten, which makes a repeat seed
 idempotent.  :func:`remove_native_credentials` is the revoke side.  No message
 raised here ever contains document content.
+
+Platform support.  Descriptor-relative no-follow I/O is a POSIX capability.  The
+module still imports where it is absent -- the daemon imports this surface while
+starting -- but the writers refuse with ``UNSUPPORTED`` rather than falling back
+to a weaker path-based write.
 """
 
 from __future__ import annotations
@@ -51,7 +56,7 @@ import stat
 from collections.abc import Sequence
 from pathlib import Path
 
-from hyprial.kernel import ipc_errors
+from hyprial.kernel import current_uid, ipc_errors, posix_metadata_enforced
 
 #: Credential file names the runtime reads per harness.  A caller may install
 #: only these names, and only under their own harness directory.  ``pi`` keeps
@@ -65,7 +70,32 @@ NATIVE_CREDENTIAL_FILES: dict[str, frozenset[str]] = {
 
 _STAGING_SUFFIX = ".incoming"
 _PREVIOUS_SUFFIX = ".previous"
-_DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+
+def _directory_flags() -> int:
+    # O_DIRECTORY/O_NOFOLLOW are POSIX-only; computing them unguarded makes this
+    # module unimportable on Windows, where the daemon imports it at start-up.
+    return os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+
+
+def _private_descriptor_io() -> bool:
+    """Whether every descriptor-relative primitive this writer relies on exists."""
+
+    return (
+        hasattr(os, "O_DIRECTORY")
+        and hasattr(os, "O_NOFOLLOW")
+        and hasattr(os, "O_NONBLOCK")
+        and hasattr(os, "fchmod")
+        and hasattr(os, "getuid")
+        and all(
+            function in getattr(os, "supports_dir_fd", frozenset())
+            for function in (os.open, os.stat, os.unlink, os.rename, os.mkdir)
+        )
+    )
+
+
+_DIRECTORY_FLAGS = _directory_flags()
+_PRIVATE_DESCRIPTOR_IO = _private_descriptor_io()
 
 
 class NativeCredentialError(Exception):
@@ -75,6 +105,16 @@ class NativeCredentialError(Exception):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+def _require_private_descriptor_io() -> None:
+    if _PRIVATE_DESCRIPTOR_IO:
+        return
+    raise NativeCredentialError(
+        ipc_errors.UNSUPPORTED,
+        "native credential writes need descriptor-relative no-follow I/O "
+        "that this platform does not provide",
+    )
 
 
 def native_secrets_root(agent_home: Path, harness: str) -> Path:
@@ -119,6 +159,7 @@ def remove_native_credentials(agent_home: Path, harness: str) -> dict[str, objec
     """Delete the credential files ``harness`` reads; report which existed."""
 
     allowed = _allowed(harness)
+    _require_private_descriptor_io()
     root = native_secrets_root(agent_home, harness)
     directory = _open_private_chain(Path(agent_home), harness, create=False)
     removed: list[str] = []
@@ -165,6 +206,7 @@ def _install(
     whole_set: bool,
 ) -> dict[str, object]:
     allowed = _allowed(harness)
+    _require_private_descriptor_io()
     names = [name for name, _content in documents]
     if whole_set:
         if len(set(names)) != len(names) or set(names) != allowed:
@@ -364,8 +406,13 @@ def _require_private_directory(descriptor: int, shown: Path) -> None:
     metadata = os.fstat(descriptor)
     if (
         not stat.S_ISDIR(metadata.st_mode)
-        or metadata.st_uid != os.getuid()
-        or stat.S_IMODE(metadata.st_mode) != 0o700
+        or (
+            posix_metadata_enforced()
+            and (
+                metadata.st_uid != current_uid()
+                or stat.S_IMODE(metadata.st_mode) != 0o700
+            )
+        )
     ):
         raise NativeCredentialError(
             ipc_errors.PROVIDER_UNSAFE_PATH,

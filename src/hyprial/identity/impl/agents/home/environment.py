@@ -86,6 +86,18 @@ BASE_CHILD_ENVIRONMENT_NAMES = frozenset(
         "CLAUDE_CONFIG_DIR",
         "CODEX_HOME",
         "PI_CODING_AGENT_DIR",
+        # Claude Code context sizing (2026-10-17 runtime incident: a session
+        # on a model id CC cannot resolve ran to the provider's 1,048,576
+        # limit with no compact boundary).  The daemon-side provider seam
+        # supplies the default numbers for the ids it knows, but an operator
+        # override can only arrive through this vocabulary -- before these
+        # names were listed, an exported value was dropped during base
+        # composition and every managed worker ran on the default.  Neither
+        # is a root or a capability, so they are ordinary base names: a P2
+        # profile keeps them (they are not P2_CONTROLLED), and the seam
+        # leaves a stated value alone.
+        "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
+        "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
         "TERM",
         "COLORTERM",
         "TERM_PROGRAM",

@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from __future__ import annotations
 import contextlib
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import Any
 from uuid import uuid4
 from hyprial.identity import (
     Agent,
@@ -20,9 +19,7 @@ from hyprial.identity import (
     normalize_capabilities,
     normalize_harness_args,
 )
-from hyprial.kernel import ipc_errors
-from hyprial.kernel import DaemonRequestError
-from hyprial.kernel import DurationParseError, parse_duration
+from hyprial.kernel import DaemonRequestError, DurationParseError, ipc_errors, parse_duration
 from hyprial.daemon.impl.composition  import (
     DomainCommandError,
 )
@@ -33,16 +30,12 @@ from hyprial.kernel import (
     canonical_agent_uri,
     canonical_user_uri,
 )
-if TYPE_CHECKING:
-    pass
-
 from hyprial.daemon.impl.ipc.params import (
     JsonObject,
     _optional_positive_integer,
     _optional_string_param,
     _required_string,
 )
-
 
 _AGENT_OPERATION_NAMESPACE = "agent"
 _RESUME_COMMIT_GUARD_VERSION = 1
@@ -622,6 +615,8 @@ class _AgentRegistryOpsMixin:
                     "homeUnprovisioned": unprovisioned,
                 },
             }
+        if method == "agent.readiness":
+            return self._agent_readiness(params)
         if method == "agent.restore-policy":
             name = self.agents.normalize_actor(
                 _required_string(params.get("name"), "name")

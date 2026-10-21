@@ -213,9 +213,20 @@ from hyprial.kernel.impl.log import (
     redact,
     route_path,
 )
+from hyprial.kernel.impl.platform.privacy.account import (
+    current_uid,
+    posix_metadata_enforced,
+)
 from hyprial.kernel.impl.platform.file_lock import (
     lock_exclusive,
     unlock,
+)
+from hyprial.kernel.impl.platform.privacy.private_access import (
+    PrivateAccessUnsupported,
+    harden_private_path,
+    path_is_reparse,
+    private_metadata_violation,
+    private_tree_violation,
 )
 from hyprial.kernel.impl.platform.ports import (
     connect_named_pipe,
@@ -327,6 +338,7 @@ __all__ = [
     "configured_harness_state_dir",
     "connect_named_pipe",
     "create_owned_process_group",
+    "current_uid",
     "DAEMON_CLOSE_BUDGET_SECONDS",
     "DAEMON_CLOSE_STEP_BUDGETS",
     "DAEMON_EXIT_BACKSTOP_SECONDS",
@@ -378,6 +390,7 @@ __all__ = [
     "InterceptRequest",
     "GUEST_WORKER_STATE",
     "HarnessLaunchSpec",
+    "harden_private_path",
     "has_execution_runtime",
     "IDENTITY_BINDING_JWKS_TTL_SECONDS",
     "IDENTITY_BINDING_PUBLISH_RETRY_MAX_SECONDS",
@@ -440,6 +453,11 @@ __all__ = [
     "RuntimeCpuCounters",
     "runtime_cpu_counters",
     "PRE_TRAJECTORY_ARCHIVE",
+    "path_is_reparse",
+    "posix_metadata_enforced",
+    "PrivateAccessUnsupported",
+    "private_metadata_violation",
+    "private_tree_violation",
     "probe_process",
     "process_birth_identity",
     "PROCESS_CPU_PROBE_TIMEOUT_SECONDS",

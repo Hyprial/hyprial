@@ -206,6 +206,10 @@ if TYPE_CHECKING:
     from hyprial.identity.impl.agents.runtime.context import agent_home_mode as agent_home_mode
     from hyprial.identity.impl.agents.state.worker_proxy import ambient_proxy_absent as ambient_proxy_absent
     from hyprial.identity.impl.agents.home.environment import apply_runtime_environment_profile as apply_runtime_environment_profile
+    from hyprial.identity.impl.agents.home.readiness import ReadinessError as ReadinessError
+    from hyprial.identity.impl.agents.home.readiness import ToolDeclaration as ToolDeclaration
+    from hyprial.identity.impl.agents.home.readiness import assess_agent_readiness as assess_agent_readiness
+    from hyprial.identity.impl.agents.home.readiness import parse_tool_declaration as parse_tool_declaration
     from hyprial.identity.impl.agents.runtime.context import resolve_agent_runtime_context as resolve_agent_runtime_context
     from hyprial.identity.impl.agents.home.environment import resolve_agent_secrets as resolve_agent_secrets
     from hyprial.identity.impl.agents.home.native_credential import NativeCredentialError as NativeCredentialError
@@ -464,6 +468,10 @@ _FACADE_EXPORTS = {
     'agent_home_mode': ('hyprial.identity.impl.agents.runtime.context', 'agent_home_mode'),
     'ambient_proxy_absent': ('hyprial.identity.impl.agents.state.worker_proxy', 'ambient_proxy_absent'),
     'apply_runtime_environment_profile': ('hyprial.identity.impl.agents.home.environment', 'apply_runtime_environment_profile'),
+    'ReadinessError': ('hyprial.identity.impl.agents.home.readiness', 'ReadinessError'),
+    'ToolDeclaration': ('hyprial.identity.impl.agents.home.readiness', 'ToolDeclaration'),
+    'assess_agent_readiness': ('hyprial.identity.impl.agents.home.readiness', 'assess_agent_readiness'),
+    'parse_tool_declaration': ('hyprial.identity.impl.agents.home.readiness', 'parse_tool_declaration'),
     'resolve_agent_runtime_context': ('hyprial.identity.impl.agents.runtime.context', 'resolve_agent_runtime_context'),
     'resolve_agent_secrets': ('hyprial.identity.impl.agents.home.environment', 'resolve_agent_secrets'),
     'NativeCredentialError': ('hyprial.identity.impl.agents.home.native_credential', 'NativeCredentialError'),
@@ -732,6 +740,8 @@ __all__ = [
     'UserStore',
     'UserStoreError',
     'VisibilityError',
+    'ReadinessError',
+    'ToolDeclaration',
     'WORKER_PROXY_FIELDS',
     'WORKER_PROXY_SETTINGS_KEY',
     'WORKFLOW_REMOTE_OWNER_UNSUPPORTED',
@@ -741,6 +751,8 @@ __all__ = [
     'agent_home_mode',
     'ambient_proxy_absent',
     'apply_runtime_environment_profile',
+    'assess_agent_readiness',
+    'parse_tool_declaration',
     'resolve_agent_runtime_context',
     'resolve_agent_secrets',
     'NativeCredentialError',

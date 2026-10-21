@@ -1,14 +1,14 @@
-// Static browser entry for the App Core chat shell.
+// Static browser entry for the App Core shell.
 //
 // What this file is allowed to trust: nothing about the user. A connection
-// arrives from exactly two explicit places — a bridge object a native shell
-// installed under one fixed global name, or the `?demo=1` simulation — and an
-// injected bridge always wins, so a query parameter can never downgrade a real
-// connection to simulated data. There is no implicit mock, no query-supplied
-// principal, no credential in a URL, no arbitrary global lookup and no
-// persistence: chat state stays in memory (see chat.mjs for the restart
-// limitation on unresolved sends), and every value is written with
-// textContent, so untrusted text can never become markup.
+// arrives from exactly one explicit place — a bridge object a native shell
+// installed under one fixed global name. There is no query-selected
+// simulation in production (createDemoConnection remains an explicit test
+// fixture only), no implicit mock, no query-supplied principal, no credential
+// in a URL, no arbitrary global lookup and no persistence: chat state stays in
+// memory (see chat.mjs for the restart limitation on unresolved sends), and
+// every value is written with textContent, so untrusted text can never become
+// markup.
 //
 // Product text stays short and states the user-visible condition only; the
 // machine-readable state lives in data attributes, and the internals are
@@ -16,7 +16,11 @@
 import { mountDiscovery } from './discovery.mjs';
 import { createChatCore } from './chat.mjs';
 import { assertKnownFields, assertNoIdentityFields, fail } from './connection.mjs';
-import { createDemoConnection } from './demo.mjs';
+import { createChatView } from './views/chat.mjs';
+import { createContactsView } from './views/contacts.mjs';
+import { button as makeButton, element as makeElement, focusNode, setHidden } from './views/dom.mjs';
+import { createRail } from './views/rail.mjs';
+import { bindViewport } from './views/viewport.mjs';
 
 /** The single global name a native shell may use to inject a connection. */
 export const CORE_BRIDGE_GLOBAL = '__hyprialAppCore';
@@ -38,61 +42,167 @@ const PHASE_TEXT = Object.freeze({
 });
 
 const KIND_TEXT = Object.freeze({ 'local-ipc': '本机', tailnet: '私有网络', mock: '演示' });
-const KIND_LABELS = Object.freeze({ user: '我', assistant: 'Agent', system: '系统', tool: '工具' });
+const PAGE_TEXT = Object.freeze({ chat: '聊天', contacts: '通讯录' });
+const MOBILE_PHASES = Object.freeze(['disconnected', 'connecting', 'connected', 'error']);
+const MOBILE_TRANSPORTS = Object.freeze(['direct-test', 'tailnet']);
+const DIRECT_TEST_TEXT = '直连测试（未认证，非生产）';
+
+/**
+ * Event the mobile configuration panel publishes after every connection-state
+ * change. The panel owns the native transport, so its status is authoritative
+ * for the header: the injected bridge's static `tailnet` metadata must never
+ * label a direct test as a private network, and a failed tailnet attempt must
+ * clear a stale "connected" left in the Core state.
+ */
+export const MOBILE_NETWORK_STATUS_EVENT = 'hyprial:mobile-network-status';
+
+function normalizeMobileStatus(detail) {
+  if (!detail || typeof detail !== 'object') return null;
+  const state = detail.connectionError === true ? 'error' : detail.state;
+  if (!MOBILE_PHASES.includes(state)) return null;
+  const transport = MOBILE_TRANSPORTS.includes(detail.transport) ? detail.transport : null;
+  const unauthenticated = detail.unauthenticated === true || transport === 'direct-test';
+  // Absent means "the producer did not say": only an explicit false may turn
+  // on the first-run guide, and the guide is never inferred from an error.
+  const configured = detail.configured === true ? true : detail.configured === false ? false : null;
+  return { state, transport, unauthenticated, configured };
+}
+
+function mobilePhase(state, mobileStatus) {
+  const corePhase = state?.phase ?? 'disconnected';
+  if (!mobileStatus) return corePhase;
+  if (mobileStatus.state === 'connected') {
+    // The native transport is up, but only Core's own successful connection
+    // proves the page can read history and send. Never show "已连接" while the
+    // Core request path is still failing or has not completed.
+    if (corePhase === 'connected') return 'connected';
+    if (corePhase === 'error') return 'error';
+    if (corePhase === 'connecting') return 'connecting';
+    return 'disconnected';
+  }
+  return mobileStatus.state;
+}
+
+function mobileTransportText(mobileStatus) {
+  if (!mobileStatus) return null;
+  if (mobileStatus.unauthenticated) return DIRECT_TEST_TEXT;
+  if (mobileStatus.transport === 'tailnet') return 'Tailnet';
+  return null;
+}
 
 export function mountChat({ document, root, core = null, reason = null, notice = null, localDiscovery } = {}) {
   if (!document || typeof document.createElement !== 'function') throw new TypeError('mountChat requires a document');
   const host = root ?? document.body;
   if (!host || typeof host.replaceChildren !== 'function') throw new TypeError('mountChat requires a root element');
 
-  const element = (tagName, className, text = '') => {
-    const node = document.createElement(tagName);
-    if (className) node.className = className;
-    if (text) node.textContent = text;
-    return node;
-  };
+  const element = (tagName, className = '', text = '') => makeElement(document, tagName, className, text);
+  const button = (className, text) => makeButton(document, className, text);
 
-  const title = element('h1', 'core-title', 'Hyprial 聊天');
-  const status = element('p', 'core-status');
-  const badge = element('p', 'core-demo-badge', '演示模式（Demo）· 仅模拟聊天');
+  const container = element('main', 'core-app');
+  const brand = element('div', 'core-brand');
+  brand.replaceChildren(
+    element('strong', 'core-brand-name', 'Hyprial'),
+    element('span', 'core-brand-sub', 'App Core'),
+  );
+  // Rail navigation keeps focus in the rail (a menu, not a link out): the page
+  // switch must not steal focus or the next arrow key would leave the menu.
+  const rail = createRail({ document, onNavigate: page => showPage(page, { focus: false }) });
   const routeLine = element('p', 'core-route');
   const powerPackLine = element('p', 'core-powerpack', '本地 Agent 管理：可用');
-  const header = element('header', 'core-header');
-  const noticeLine = element('p', 'core-notice');
-  const error = element('p', 'core-error');
-  const refreshButton = element('button', 'core-refresh', '刷新');
-  const sessionHeading = element('h2', 'core-sessions-title', '会话');
-  const sessions = element('div', 'core-sessions');
-  const moreButton = element('button', 'core-more', '加载更多');
-  const messageHeading = element('h2', 'core-messages-title', '消息');
-  const messages = element('div', 'core-messages');
-  const terminal = element('p', 'core-terminal');
-  const input = element('textarea', 'core-input');
-  const sendButton = element('button', 'core-send', '发送');
-  const retryButton = element('button', 'core-retry', '重试同一条消息');
-  const dismissButton = element('button', 'core-dismiss', '不再重试');
-  const sendNotice = element('p', 'core-send-notice');
-  const composer = element('div', 'core-composer');
-  const conversation = element('section', 'core-conversation');
-  const container = element('main', 'core-app');
+  setHidden(powerPackLine, true);
+  const railFoot = element('div', 'core-rail-foot');
+  railFoot.replaceChildren(routeLine, powerPackLine);
+  const railAside = element('aside', 'core-rail');
+  railAside.replaceChildren(brand, rail.element, railFoot);
 
+  const pageTitle = element('h1', 'core-title', '聊天');
+  const status = element('p', 'core-status');
   status.setAttribute('role', 'status');
-  noticeLine.setAttribute('role', 'status');
-  error.setAttribute('role', 'alert');
-  sendNotice.setAttribute('role', 'status');
-  input.setAttribute('aria-label', '消息内容');
-  input.setAttribute('placeholder', '输入消息…');
-  input.setAttribute('maxlength', '8000');
-  input.setAttribute('rows', '3');
-  for (const button of [refreshButton, sendButton, retryButton, dismissButton, moreButton]) button.setAttribute('type', 'button');
+  const badge = element('p', 'core-demo-badge', '演示模式（Demo）· 仅模拟聊天');
+  const refreshButton = button('core-refresh', '刷新');
+  const topbar = element('header', 'core-topbar');
 
-  composer.replaceChildren(input, sendButton, retryButton, dismissButton, sendNotice);
-  conversation.replaceChildren(messageHeading, messages, terminal, composer);
-  container.replaceChildren(header, noticeLine, error, refreshButton, sessionHeading, sessions, moreButton, conversation);
-  host.replaceChildren(container);
-  const discovery = mountDiscovery({ document, root: container, port: localDiscovery });
+  const noticeLine = element('p', 'core-notice');
+  noticeLine.setAttribute('role', 'status');
+  // Unconfigured first run: one actionable setup guide replaces the raw error
+  // wall. The raw failures stay reachable, collapsed, under diagnostics.
+  const setupGuide = element('section', 'core-setup-guide');
+  setupGuide.replaceChildren(
+    element('h2', 'core-setup-title', '先配置移动网络连接'),
+    element('p', 'core-setup-body', '打开本机的移动网络配置，填写 Core 地址与端口，并选择「保存并连接」。模拟器请使用本平台提示的地址；真机不能照搬模拟器地址。'),
+  );
+  setHidden(setupGuide, true);
+  const diagnosticsText = element('p', 'core-diagnostics-text');
+  const diagnostics = element('details', 'core-diagnostics');
+  diagnostics.replaceChildren(
+    element('summary', 'core-diagnostics-summary', '诊断信息（配置前 Core 的错误）'),
+    diagnosticsText,
+  );
+  setHidden(diagnostics, true);
+  const error = element('p', 'core-error');
+  error.setAttribute('role', 'alert');
 
   let actionError = null;
+  let activePage = 'chat';
+  let mobileStatus = null;
+  // On the mobile shell the injected bridge always declares `tailnet`, even
+  // when the panel is configured for a direct test. Until the panel publishes
+  // its real status, withhold Core's transport label rather than showing a
+  // private-network claim that has not been verified.
+  const mobileShell = /Android|iPhone|iPad|iPod/i.test(document.defaultView?.navigator?.userAgent ?? '');
+
+  const onMobileStatus = event => {
+    const next = normalizeMobileStatus(event?.detail);
+    if (!next) return;
+    mobileStatus = next;
+    render();
+  };
+  document.addEventListener?.(MOBILE_NETWORK_STATUS_EVENT, onMobileStatus);
+
+  const guard = run => () => {
+    let result;
+    try {
+      result = run();
+    } catch (error) {
+      return Promise.resolve(noteFailure(error));
+    }
+    return Promise.resolve(result).catch(noteFailure);
+  };
+
+  const chatView = createChatView({
+    document,
+    onSelect: sessionId => guard(() => actions.select(sessionId))(),
+    onMore: () => guard(actions.more)(),
+    onHistoryRetry: () => guard(actions.historyRetry)(),
+    onSend: () => guard(actions.send)(),
+    onRetry: () => guard(actions.retry)(),
+    onDismiss: () => guard(actions.dismiss)(),
+  });
+  const contactsView = createContactsView({
+    document,
+    onOpen: sessionId => guard(async () => {
+      await actions.select(sessionId);
+      showPage('chat');
+      chatView.setPane('thread');
+    })(),
+    onConnectAgent: targetUri => guard(async () => {
+      // The node creates or reuses the binding; the browser only named the
+      // target it was shown. A successful ensure selects the session.
+      await actions.ensureSession(targetUri);
+      showPage('chat');
+      chatView.setPane('thread');
+    })(),
+    onRefreshTargets: () => guard(actions.refreshTargets)(),
+  });
+  const pageHost = element('div', 'core-pages');
+  pageHost.replaceChildren(chatView.element, contactsView.element);
+
+  const main = element('div', 'core-main');
+  main.replaceChildren(topbar, setupGuide, diagnostics, noticeLine, error, pageHost);
+  container.replaceChildren(railAside, main);
+  host.replaceChildren(container);
+  const discovery = mountDiscovery({ document, root: contactsView.discovery, port: localDiscovery });
+  const releaseViewport = bindViewport({ document });
 
   const actions = {
     connect: () => (core ? core.connect() : Promise.resolve(null)),
@@ -109,10 +219,26 @@ export function mountChat({ document, root, core = null, reason = null, notice =
       });
     },
     select: sessionId => (core ? core.selectSession(sessionId) : Promise.resolve(null)),
+    ensureSession: targetUri => (core && typeof core.ensureSession === 'function'
+      ? core.ensureSession(targetUri)
+      : Promise.resolve(null)),
+    refreshTargets: () => (core && typeof core.refreshTargets === 'function'
+      ? core.refreshTargets()
+      : Promise.resolve(null)),
     more: () => (core ? core.loadMoreHistory() : Promise.resolve(null)),
+    historyRetry: () => (core && typeof core.retryHistory === 'function'
+      ? core.retryHistory()
+      : Promise.resolve(null)),
     send: () => {
       if (!core) return Promise.resolve(null);
+      const input = chatView.elements.input;
       const sentText = input.value;
+      // The view disables the button, but the action is part of the public
+      // API and must enforce the same contract: no whitespace-only send and
+      // no send while the visible connection state is not connected.
+      if (!sentText.trim() || mobilePhase(core.state(), mobileStatus) !== 'connected') {
+        return Promise.resolve(null);
+      }
       return core.send(sentText).then(() => {
         if (core.state().lastSend?.state === 'accepted' && input.value === sentText) input.value = '';
         actionError = null;
@@ -128,111 +254,78 @@ export function mountChat({ document, root, core = null, reason = null, notice =
 
   // Every control is guarded: a synchronous or asynchronous rejection is shown
   // in the error line instead of escaping as an unhandled rejection.
-  function noteFailure(error) {
-    actionError = { code: error?.code ?? 'CORE_ERROR', message: error?.message ?? String(error) };
+  function noteFailure(failure) {
+    actionError = { code: failure?.code ?? 'CORE_ERROR', message: failure?.message ?? String(failure) };
     render();
     return null;
   }
 
-  const guard = run => () => {
-    let result;
-    try {
-      result = run();
-    } catch (error) {
-      return Promise.resolve(noteFailure(error));
-    }
-    return Promise.resolve(result).catch(noteFailure);
-  };
-
-  function sessionRows(state) {
-    const selected = state?.selectedSessionId ?? null;
-    return (state?.sessions ?? []).map(row => {
-      const button = element('button', 'core-session', row.title);
-      button.setAttribute('type', 'button');
-      button.setAttribute('data-session-id', row.sessionId);
-      if (row.sessionId === selected) button.setAttribute('aria-current', 'page');
-      if (row.simulation === true) button.setAttribute('data-simulation', 'true');
-      button.addEventListener('click', guard(() => actions.select(row.sessionId)));
-      return button;
-    });
-  }
-
-  function messageRows(state) {
-    return (state?.messages ?? []).map(message => {
-      const article = element('article', `core-message core-message-${message.kind}`);
-      article.setAttribute('data-event-id', message.eventId ?? '');
-      if (message.simulation === true) article.setAttribute('data-simulation', 'true');
-      const kind = element('strong', 'core-message-kind', KIND_LABELS[message.kind] ?? message.kind);
-      const body = element('p', 'core-message-text', message.text);
-      article.replaceChildren(kind, body);
-      return article;
-    });
-  }
-
-  function terminalText(state) {
-    const value = state?.progress?.terminal ?? null;
-    if (!value) return '';
-    if (value.simulation === true) return '本轮为模拟结果，不代表真实完成';
-    if (value.terminal === 'completed') return '本轮已完成';
-    return `本轮未完成：${value.terminal}`;
-  }
-
-  function sendStateText(state) {
-    const send = state?.lastSend ?? null;
-    if (!send) return '';
-    if (send.state === 'sending') return '发送中…';
-    if (send.state === 'accepted') {
-      return `已受理，等待回复${send.deduplicated ? '（重复请求）' : ''}${send.simulation ? '（模拟）' : ''}`;
-    }
-    if (send.state === 'uncertain') {
-      return `发送结果未知，请重试同一条消息${send.error ? `（${send.error.code}）` : ''}`;
-    }
-    return `发送失败：${send.error?.message ?? '未知原因'}${send.error ? `（${send.error.code}）` : ''}`;
+  function showPage(page, { focus = true } = {}) {
+    if (!Object.hasOwn(PAGE_TEXT, page)) return;
+    activePage = page;
+    rail.setActive(page);
+    pageTitle.textContent = PAGE_TEXT[page];
+    container.setAttribute('data-page', page);
+    setHidden(chatView.element, page !== 'chat');
+    setHidden(contactsView.element, page !== 'contacts');
+    if (focus) focusNode(page === 'chat' ? chatView.elements.threadTitle : contactsView.elements.heading);
   }
 
   function render() {
     const state = core ? core.state() : null;
-    const phase = state?.phase ?? 'disconnected';
+    const phase = mobilePhase(state, mobileStatus);
     const kind = state?.transport?.kind ?? null;
     const disconnected = !state || phase !== 'connected';
+    // The mobile panel's transport is stated in every phase so a direct test
+    // stays explicitly unauthenticated even while it is connecting or failed;
+    // Core's own transport suffix is still only claimed when connected.
+    const surfaceText = mobileStatus
+      ? mobileTransportText(mobileStatus)
+      : phase === 'connected' && kind && !mobileShell ? KIND_TEXT[kind] ?? kind : null;
     status.textContent = state
-      ? `${PHASE_TEXT[phase] ?? phase}${state.phase === 'connected' && kind ? ` · ${KIND_TEXT[kind] ?? kind}` : ''}`
+      ? `${PHASE_TEXT[phase] ?? phase}${surfaceText ? ` · ${surfaceText}` : ''}`
       : `未连接${reason ? ` · ${reason}` : ''}`;
     container.setAttribute('data-connection', phase);
     container.setAttribute('data-demo', state?.demo === true ? 'true' : 'false');
-    header.replaceChildren(title, status, ...(state?.demo ? [badge] : []), ...(state?.powerPack?.available ? [powerPackLine] : []), routeLine);
-    routeLine.textContent = `连接方式：${kind ? KIND_TEXT[kind] ?? kind : '无'}`;
+    container.setAttribute('data-page', activePage);
+    topbar.replaceChildren(pageTitle, status, ...(state?.demo === true ? [badge] : []), refreshButton);
+    const routeText = mobileStatus
+      ? mobileStatus.unauthenticated ? DIRECT_TEST_TEXT : mobileStatus.transport === 'tailnet' ? 'Tailnet' : '无'
+      : mobileShell ? '未确认' : kind ? KIND_TEXT[kind] ?? kind : '无';
+    routeLine.textContent = `连接方式：${routeText}`;
+    setHidden(powerPackLine, state?.powerPack?.available !== true);
     noticeLine.textContent = notice ?? '';
     // Set(): the same failure can be reported by both the core state and the
     // last guarded action, and it is stated once.
-    error.textContent = [...new Set([
+    const rawErrorText = [...new Set([
       reason,
       state?.lastError ? `错误（${state.lastError.code}）：${state.lastError.message}` : null,
       actionError ? `错误（${actionError.code}）：${actionError.message}` : null,
     ].filter(Boolean))].join('\n');
-    sessions.replaceChildren(...sessionRows(state));
-    messages.replaceChildren(...messageRows(state));
-    terminal.textContent = terminalText(state);
-    sendNotice.textContent = sendStateText(state);
-    sendNotice.setAttribute('data-send-state', state?.lastSend?.state ?? 'idle');
-
-    const send = state?.lastSend ?? null;
-    sendButton.disabled = disconnected || !state.selectedSessionId || send?.state === 'sending' || send?.state === 'uncertain';
-    input.disabled = disconnected;
+    // The panel owns "has this device been configured?". Only its explicit
+    // false shows the guide; a configured failure is a real error, not
+    // onboarding, and an older panel that says nothing changes no behavior.
+    const firstRunSetup = mobileStatus?.configured === false;
+    setHidden(setupGuide, !firstRunSetup);
+    setHidden(diagnostics, !firstRunSetup);
+    diagnosticsText.textContent = rawErrorText;
+    error.textContent = firstRunSetup ? '' : rawErrorText;
+    setHidden(error, firstRunSetup || rawErrorText.length === 0);
+    // The panel's transport state can be stricter than Core's last snapshot
+    // (for example a tailnet fail-closed attempt). Project the effective phase
+    // into the views too, so the composer and empty states cannot look
+    // connected when the header says the connection failed.
+    const viewState = state && phase !== state.phase ? { ...state, phase } : state;
+    chatView.render(viewState);
+    contactsView.render(viewState);
     refreshButton.disabled = !state || phase === 'connecting';
     refreshButton.textContent = disconnected ? '重新连接' : '刷新';
-    moreButton.disabled = !state?.history?.hasMore || state.history.loading === true;
-    retryButton.disabled = disconnected || send?.state !== 'uncertain';
-    dismissButton.disabled = send?.state !== 'uncertain';
   }
 
-  sendButton.addEventListener('click', guard(actions.send));
-  retryButton.addEventListener('click', guard(actions.retry));
-  dismissButton.addEventListener('click', guard(actions.dismiss));
   refreshButton.addEventListener('click', guard(actions.refresh));
-  moreButton.addEventListener('click', guard(actions.more));
 
   const unsubscribe = core ? core.subscribe(() => render()) : () => {};
+  showPage('chat', { focus: false });
   render();
   // Guarded too: even a synchronous throw from connect() is shown, never left
   // as an unhandled rejection.
@@ -242,9 +335,25 @@ export function mountChat({ document, root, core = null, reason = null, notice =
     core,
     elements: {
       container, status, badge, routeLine, powerPackLine, noticeLine, error, refreshButton,
-      sessions, moreButton, messages, terminal, input, sendButton, retryButton, dismissButton, sendNotice,
+      setupGuide, diagnostics, diagnosticsText,
+      rail: rail.element,
+      pages: { chat: chatView.element, contacts: contactsView.element },
+      chat: chatView.elements,
+      contacts: contactsView.elements,
+      sessions: chatView.elements.sessions,
+      moreButton: chatView.elements.moreButton,
+      historyErrorLine: chatView.elements.historyErrorLine,
+      historyRetryButton: chatView.elements.historyRetryButton,
+      messages: chatView.elements.messages,
+      terminal: chatView.elements.terminal,
+      input: chatView.elements.input,
+      sendButton: chatView.elements.sendButton,
+      retryButton: chatView.elements.retryButton,
+      dismissButton: chatView.elements.dismissButton,
+      sendNotice: chatView.elements.sendNotice,
     },
     actions,
+    showPage,
     render,
     setNotice(text) {
       notice = text || null;
@@ -252,7 +361,9 @@ export function mountChat({ document, root, core = null, reason = null, notice =
     },
     destroy() {
       unsubscribe();
+      document.removeEventListener?.(MOBILE_NETWORK_STATUS_EVENT, onMobileStatus);
       discovery.destroy();
+      releaseViewport();
       host.replaceChildren();
     },
   };
@@ -261,10 +372,10 @@ export function mountChat({ document, root, core = null, reason = null, notice =
 /**
  * Boot the static chat page.
  *
- * Only `?demo=1` selects the simulation, and only when no bridge is injected: a
- * global property is an injection point, not a trust boundary, but it is also
- * never silently replaced by fake data. Anything else without a bridge stays
- * visibly disconnected with a disabled composer.
+ * Only an injected `__hyprialAppCore` bridge can produce a connected page.
+ * `?demo=1` is no longer a production data source: it is stated as disabled
+ * and the page stays visibly disconnected with a disabled composer. A bridge
+ * (or a broken bridge) is never silently replaced by simulated data.
  */
 export function startBrowserChat({ document, location, globalObject = globalThis, root } = {}) {
   const mount = options => mountChat({ ...options, localDiscovery: globalObject?.__hyprialPowerPack });
@@ -290,19 +401,22 @@ export function startBrowserChat({ document, location, globalObject = globalThis
     } catch (error) {
       return mount({
         document, root, core: null,
-        reason: `已拒绝注入的连接（${error?.code ?? 'CORE_ERROR'}）：${error?.message ?? String(error)}；不会改用演示数据`,
+        reason: `已拒绝注入的连接（${error?.code ?? 'CORE_ERROR'}）：${error?.message ?? String(error)}；不会显示演示数据`,
       });
     }
     return mount({
       document, root, core,
-      notice: demoRequested ? '已忽略链接中的演示参数：注入的连接优先。' : null,
+      notice: demoRequested ? '链接中的演示参数已停用：只使用注入的真实连接。' : null,
     });
   }
-  if (!demoRequested) {
+  if (demoRequested) {
     return mount({
       document, root, core: null,
-      reason: '本页没有可用的连接',
+      reason: '演示模式已停用：本页只显示真实连接',
     });
   }
-  return mount({ document, root, core: createChatCore({ demo: createDemoConnection() }) });
+  return mount({
+    document, root, core: null,
+    reason: '本页没有可用的连接',
+  });
 }

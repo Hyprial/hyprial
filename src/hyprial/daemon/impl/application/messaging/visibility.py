@@ -63,6 +63,7 @@ from hyprial.daemon.impl.links.ports import (
 _CONSUMER_METHODS = frozenset(
     {
         "message.ack",
+        "message.history",
         "message.pending.list",
         "message.pending.wait",
         "message.status",

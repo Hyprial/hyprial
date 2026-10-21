@@ -13,6 +13,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Self
 import uuid
+from hyprial.daemon.impl.network.tailcat.binary import no_console_window_kwargs
 from hyprial.kernel import (
     FORWARDING_COMMAND_ENV,
     FORWARDING_UP_ENV,
@@ -45,8 +46,6 @@ from .services import (
 )
 
 _DEFAULT_TIMEOUT = 10.0
-
-
 _STDERR_TAIL_LINES = 12
 _STALE_SERVICE_REQUEST_CAPACITY = 64
 _STALE_SERVICE_REQUEST_MAX_AGE_SECONDS = 60.0
@@ -422,6 +421,7 @@ class ForwardingSidecarController:
             stderr=subprocess.PIPE,
             close_fds=True,
             env=self.child_environment,
+            **no_console_window_kwargs(),
         )
         self._stdout_thread = threading.Thread(
             target=self._read_stdout, daemon=True, name="forward-sidecar-stdout"

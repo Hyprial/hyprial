@@ -145,9 +145,12 @@ def daemon_forwarding_environment(
         "v": 3,
         "op": "up",
         "keyFile": str(key_file),
-        # LAX(tailnet-cutover): 引导期全放行；正式实现由组织目录生成 allow 集。
+        # Deny by default: the production builder has no org-directory allow
+        # synchronization yet, so it must not open the sidecar to every
+        # tailnet peer.  An empty allow set with allowAny=false refuses all
+        # peers until a derived, authenticated allow set exists.
         "allow": [],
-        "allowAny": True,
+        "allowAny": False,
         "addressFile": str(address_path(home)),
         "inboundTarget": f"tcp:{target}",
         "peerPort": DEFAULT_PEER_PORT,

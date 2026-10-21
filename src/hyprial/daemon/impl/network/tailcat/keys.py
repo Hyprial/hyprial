@@ -23,7 +23,11 @@ from hyprial.identity import (
 )
 from hyprial.kernel import is_identity_id_segment
 
-from .binary import TailcatSidecarError, locate_tailcat_sidecar
+from .binary import (
+    TailcatSidecarError,
+    locate_tailcat_sidecar,
+    no_console_window_kwargs,
+)
 
 _GENKEY_TIMEOUT_SECONDS = 15.0
 _DEVICE_NAME_ENV = "HYPRIAL_DEVICE_NAME"
@@ -56,6 +60,7 @@ def ensure_device_key(
             capture_output=True,
             timeout=_GENKEY_TIMEOUT_SECONDS,
             check=False,
+            **no_console_window_kwargs(),
         )
     except (OSError, subprocess.SubprocessError) as error:
         raise TailcatSidecarError(

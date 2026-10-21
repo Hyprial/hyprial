@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 import ipaddress
-import os
 import stat
 from collections.abc import Mapping
 from pathlib import Path
+
+from hyprial.kernel import private_metadata_violation
 
 
 FORWARD_PROTOCOL_VERSION = 3
@@ -67,14 +68,28 @@ def validate_unix_exposure_target(target: str) -> str:
         raise ForwardingSidecarError(
             f"unix exposure target directory is unavailable: {path.parent}"
         ) from error
-    expected_owner = getattr(os, "geteuid", lambda: info.st_uid)()
-    if not stat.S_ISDIR(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o700:
+    if not stat.S_ISDIR(info.st_mode):
         raise ForwardingSidecarError(
             f"unix exposure target directory must have mode 0700: {path.parent}"
         )
-    if info.st_uid != expected_owner:
+    try:
+        violation = private_metadata_violation(path.parent, info, mode=0o700)
+    except OSError as error:
+        raise ForwardingSidecarError(
+            f"unix exposure target directory privacy cannot be inspected: {path.parent}"
+        ) from error
+    if violation == "unsafe-mode":
+        raise ForwardingSidecarError(
+            f"unix exposure target directory must have mode 0700: {path.parent}"
+        )
+    if violation == "wrong-owner":
         raise ForwardingSidecarError(
             f"unix exposure target directory must be owned by the current user: {path.parent}"
+        )
+    if violation is not None:
+        raise ForwardingSidecarError(
+            f"unix exposure target directory must be account-private "
+            f"({violation}): {path.parent}"
         )
     return target
 

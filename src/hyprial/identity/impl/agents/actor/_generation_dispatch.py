@@ -759,9 +759,17 @@ class _GenerationDispatchMixin:
             command = pending.command
             reservation = pending.reservation
             if not event.settled:
-                # Preserve the existing process-death contract: an unexpected
-                # filesystem worker failure leaves the durable revoke/claim
-                # for replay and does not mint a false terminal response.
+                # An unexpected filesystem worker failure must not leave the
+                # caller waiting for the domain deadline. Publish a diagnostic
+                # rejection, but keep the durable revoke/claim for replay: do
+                # not take the expected-error path below, which aborts a
+                # fresh create claim.
+                self._reject(
+                    command,
+                    event.error_code or ipc_errors.DAEMON_ERROR,
+                    event.error_detail
+                    or "Agent home effect failed before settling",
+                )
                 return
             if event.error_code is not None:
                 if reservation.operation == "create" and reservation.lifecycle_attempt is None:

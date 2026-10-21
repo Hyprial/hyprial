@@ -47,6 +47,20 @@ def sidecar_binary_name() -> str:
     return f"{SIDECAR_BINARY_NAME}{suffix}"
 
 
+def no_console_window_kwargs() -> dict[str, int]:
+    """Keep a console-subsystem child from opening its own console window.
+
+    The desktop runtime starts the daemon with ``CREATE_NO_WINDOW``.  Windows
+    gives a console child of a console-less parent a fresh console window
+    unless the child is created with the same flag, so every sidecar spawn
+    that must stay invisible passes these kwargs.
+    """
+
+    if sys.platform != "win32":
+        return {}
+    return {"creationflags": subprocess.CREATE_NO_WINDOW}
+
+
 def sidecar_binary_path(home: Path) -> Path:
     """Return the platform-specific conventional install location."""
 
@@ -132,6 +146,7 @@ def verify_tailcat_sidecar(
             capture_output=True,
             timeout=_VERSION_TIMEOUT_SECONDS,
             check=False,
+            **no_console_window_kwargs(),
         )
     except (OSError, subprocess.SubprocessError) as error:
         raise TailcatSidecarError(

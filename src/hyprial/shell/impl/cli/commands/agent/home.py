@@ -27,6 +27,102 @@ def agent_home_census(
         json_output=json_output,
     )
 
+@agent_app.command("readiness")
+def agent_readiness(
+    name: str = typer.Argument(..., help="Registered agent name."),
+    role: str = typer.Option(
+        ...,
+        "--role",
+        help="Explicit capability template: developer or pac.",
+    ),
+    harness: str = typer.Option(
+        None,
+        "--harness",
+        help="Harness to check; defaults to the agent's preferred/last harness.",
+    ),
+    cwd: str = typer.Option(
+        None,
+        "--cwd",
+        help="Workspace to check; defaults to the agent's registered cwd.",
+    ),
+    tools: list[str] = typer.Option(
+        None,
+        "--tool",
+        help=(
+            "Additional required tool as NAME or NAME=/absolute/path. Repeatable; "
+            "only declared capabilities are checked."
+        ),
+    ),
+    work_paths: list[str] = typer.Option(
+        None,
+        "--work-path",
+        help="Additional required absolute work path. Repeatable.",
+    ),
+    forgejo_identity: bool = typer.Option(
+        False,
+        "--forgejo-identity",
+        help=(
+            "Opt in to a bounded fj whoami identity probe using the agent's own "
+            "HOME/XDG. Credentials are never read, copied, or printed."
+        ),
+    ),
+    expect_login: str = typer.Option(
+        None,
+        "--expect-login",
+        help="Expected Forgejo login (or login@host) for the opt-in identity probe.",
+    ),
+    forgejo_host: str = typer.Option(
+        None,
+        "--forgejo-host",
+        help="Declared Forgejo hostname; defaults to HYPRIAL_TEA_LOGIN.",
+    ),
+    timeout_seconds: float = typer.Option(
+        8.0,
+        "--timeout",
+        min=0.1,
+        max=60.0,
+        help="Bound for each external probe.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Read-only start preflight in the actual agent HOME/XDG/PATH.
+
+    Exits 1 when the agent is not ready.  UNKNOWN is not ready: unavailable
+    permission or config introspection is never inferred as permission.  This
+    command does not write config/settings, create a home, restart a service,
+    or interrupt an active turn.
+    """
+    services = get_services()
+    params: JsonObject = {
+        "name": name,
+        "role": role,
+        "tools": list(tools or []),
+        "workPaths": list(work_paths or []),
+        "forgejoIdentity": forgejo_identity,
+        "timeoutSeconds": timeout_seconds,
+    }
+    if harness is not None:
+        params["harness"] = harness
+    if cwd is not None:
+        params["cwd"] = cwd
+    if expect_login is not None:
+        params["expectLogin"] = expect_login
+    if forgejo_host is not None:
+        params["forgejoHost"] = forgejo_host
+
+    def operation() -> JsonObject:
+        result = services._daemon_request("agent.readiness", params)
+        if not isinstance(result, dict):
+            raise services.CliError(
+                "INVALID_RESPONSE", "agent.readiness must return an object"
+            )
+        # The command is a gate: not-ready is an honest failing exit status,
+        # while the report keeps its own ready/ok distinction in JSON.
+        return {**result, "ok": bool(result.get("ready"))}
+
+    services._execute(operation, json_output=json_output)
+
+
 @agent_app.command("ensure-home")
 def agent_ensure_home(
     names: list[str] = typer.Argument(

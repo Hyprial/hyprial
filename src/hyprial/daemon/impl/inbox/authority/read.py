@@ -15,34 +15,17 @@ from hyprial.daemon.impl.inbox.contracts.api  import (
     OutboxItem,
     SubmissionResult,
 )
+from hyprial.daemon.impl.inbox.history import (
+    conversation_messages as _conversation_messages,
+)
 from hyprial.daemon.impl.inbox.links.pull  import DEFAULT_HOLD_TTL_MS, DeliveryStatus, TerminalState
 from hyprial.daemon.impl.inbox.service.state  import ConsumptionState
+
+from hyprial.daemon.impl.inbox.authority.rows import ledger_row as _ledger_row
 
 _REPLY_COMPLETION_HANDOFF_GRACE_SECONDS = 0.5
 
 
-def _ledger_row(row: sqlite3.Row) -> LinkLedgerRow:
-    return LinkLedgerRow(
-        actor=str(row["actor"]),
-        message_id=str(row["message_id"]),
-        direction=str(row["direction"]),
-        peer=str(row["peer"]),
-        intent=str(row["intent"]),
-        reply_to=(str(row["reply_to"]) if row["reply_to"] is not None else None),
-        state=str(row["state"]),
-        opened_at_ms=int(row["opened_at_ms"]),
-        sent_at_ms=(
-            int(row["sent_at_ms"]) if row["sent_at_ms"] is not None else None
-        ),
-        event_at_ms=(
-            int(row["event_at_ms"]) if row["event_at_ms"] is not None else None
-        ),
-        threshold_ms=(
-            int(row["threshold_ms"]) if row["threshold_ms"] is not None else None
-        ),
-        sample_pending=bool(row["sample_pending"]),
-        expires_at_ms=int(row["expires_at_ms"]),
-    )
 
 
 def _inbound_row(row: sqlite3.Row) -> LinkInboundRow:
@@ -433,6 +416,27 @@ class InboxReadProjection:
             "SELECT * FROM inbox WHERE recipient = ? AND conversation_id = ? AND intent = 'reply' "
             "ORDER BY created_at_ms DESC, arrival_id DESC LIMIT 101", (recipient, conversation_id),
         )
+
+    def conversation_messages(
+        self,
+        participant: str,
+        conversation_id: str,
+        *,
+        after: tuple[int, str] | None = None,
+        before: tuple[int, str] | None = None,
+        limit: int = 50,
+        newest_first: bool = False,
+    ) -> tuple[InboxMessage, ...]:
+        with self._connect() as connection:
+            return _conversation_messages(
+                connection,
+                participant=participant,
+                conversation_id=conversation_id,
+                after=after,
+                before=before,
+                limit=limit,
+                newest_first=newest_first,
+            )
 
     def outbox_items(self) -> tuple[OutboxItem, ...]:
         with self._connect() as connection:

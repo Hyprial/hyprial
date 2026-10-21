@@ -12,7 +12,14 @@ from enum import StrEnum
 from dataclasses import dataclass
 import hashlib
 import logging
-from hyprial.kernel import ipc_errors
+from hyprial.kernel import (
+    PrivateAccessUnsupported,
+    harden_private_path,
+    ipc_errors,
+    path_is_reparse,
+    private_metadata_violation,
+    private_tree_violation,
+)
 import json
 import os
 import shutil
@@ -503,6 +510,43 @@ def _config_content_digest(manifest: ConfigManifest) -> str:
         separators=(",", ":"),
     ).encode()
     return hashlib.sha256(encoded).hexdigest()
+def _tree_privacy_violation(path: Path, metadata: os.stat_result) -> str | None:
+    try:
+        return private_tree_violation(path, metadata)
+    except OSError:
+        return "unreadable"
+
+
+def _require_tree_privacy(
+    path: Path,
+    metadata: os.stat_result,
+    *,
+    actor: str,
+    phase: str,
+    category: str,
+    unreadable: str,
+) -> None:
+    violation = _tree_privacy_violation(path, metadata)
+    if violation is None:
+        return
+    if violation == "unreadable":
+        raise AgentHomeMigrationError(unreadable, phase, actor=actor)
+    if violation == "unsupported-private-acl":
+        raise AgentHomeMigrationError(violation, phase, actor=actor)
+    raise AgentHomeMigrationError(category, phase, actor=actor)
+
+
+def _harden_tree(path: Path, *, mode: int, actor: str, phase: str) -> None:
+    try:
+        harden_private_path(path, mode=mode)
+    except PrivateAccessUnsupported:
+        raise AgentHomeMigrationError(
+            "unsupported-private-acl", phase, actor=actor
+        ) from None
+    except OSError:
+        raise AgentHomeMigrationError("io", phase, actor=actor) from None
+
+
 def _snapshot_tree(
     source: Path, actor: str, *, private: bool
 ) -> tuple[_TreeMetadata, ...]:
@@ -510,13 +554,21 @@ def _snapshot_tree(
         root_stat = source.lstat()
     except OSError as error:
         raise AgentHomeMigrationError("source-unreadable", "preflight-source", actor=actor) from error
-    if stat.S_ISLNK(root_stat.st_mode) or not stat.S_ISDIR(root_stat.st_mode):
-        raise AgentHomeMigrationError("unsafe-source", "preflight-source", actor=actor)
-    if private and (
-        root_stat.st_uid != os.getuid()
-        or stat.S_IMODE(root_stat.st_mode) & 0o077
+    if (
+        stat.S_ISLNK(root_stat.st_mode)
+        or path_is_reparse(root_stat)
+        or not stat.S_ISDIR(root_stat.st_mode)
     ):
-        raise AgentHomeMigrationError("unsafe-source-mode", "preflight-source", actor=actor)
+        raise AgentHomeMigrationError("unsafe-source", "preflight-source", actor=actor)
+    if private:
+        _require_tree_privacy(
+            source,
+            root_stat,
+            actor=actor,
+            phase="preflight-source",
+            category="unsafe-source-mode",
+            unreadable="source-unreadable",
+        )
     items: list[_TreeMetadata] = []
     try:
         for root, directories, files in os.walk(source, topdown=True, followlinks=False):
@@ -524,18 +576,20 @@ def _snapshot_tree(
             for name, kind in ((*[(name, "directory") for name in directories], *[(name, "file") for name in files])):
                 path = root_path / name
                 metadata = path.lstat()
-                if stat.S_ISLNK(metadata.st_mode):
+                if stat.S_ISLNK(metadata.st_mode) or path_is_reparse(metadata):
                     raise AgentHomeMigrationError("unsafe-source", "preflight-source", actor=actor)
                 if kind == "directory" and not stat.S_ISDIR(metadata.st_mode):
                     raise AgentHomeMigrationError("unsafe-source", "preflight-source", actor=actor)
                 if kind == "file" and not stat.S_ISREG(metadata.st_mode):
                     raise AgentHomeMigrationError("unsafe-source", "preflight-source", actor=actor)
-                if private and (
-                    metadata.st_uid != os.getuid()
-                    or stat.S_IMODE(metadata.st_mode) & 0o077
-                ):
-                    raise AgentHomeMigrationError(
-                        "unsafe-source-mode", "preflight-source", actor=actor
+                if private:
+                    _require_tree_privacy(
+                        path,
+                        metadata,
+                        actor=actor,
+                        phase="preflight-source",
+                        category="unsafe-source-mode",
+                        unreadable="source-unreadable",
                     )
                 items.append(
                     _TreeMetadata(
@@ -560,19 +614,26 @@ def _copy_tree(
     if destination.exists():
         raise AgentHomeMigrationError("stage-exists", "stage", actor=actor)
     destination.mkdir(mode=0o700)
+    _harden_tree(destination, mode=0o700, actor=actor, phase="stage")
     for root, directories, files in os.walk(source, topdown=True, followlinks=False):
         relative = Path(root).relative_to(source)
         target_root = destination / relative
         for name in directories:
             path = Path(root) / name
-            if path.is_symlink():
+            metadata = path.lstat()
+            if stat.S_ISLNK(metadata.st_mode) or path_is_reparse(metadata):
                 raise AgentHomeMigrationError("unsafe-source", "stage", actor=actor)
-            (target_root / name).mkdir(mode=0o700)
+            target_directory = target_root / name
+            target_directory.mkdir(mode=0o700)
+            _harden_tree(target_directory, mode=0o700, actor=actor, phase="stage")
         for name in files:
             path = Path(root) / name
-            if path.is_symlink():
+            metadata = path.lstat()
+            if stat.S_ISLNK(metadata.st_mode) or path_is_reparse(metadata):
                 raise AgentHomeMigrationError("unsafe-source", "stage", actor=actor)
-            copy_file(path, target_root / name)
+            target_file = target_root / name
+            copy_file(path, target_file)
+            _harden_tree(target_file, mode=0o600, actor=actor, phase="stage")
     _fsync_tree(destination)
 def _copy_regular_file(source: Path, destination: Path) -> None:
     before = source.lstat()
@@ -608,18 +669,35 @@ def _validate_target_slot(target: Path, agent_root: Path, actor: str) -> None:
             metadata = current.lstat()
             if (
                 stat.S_ISLNK(metadata.st_mode)
+                or path_is_reparse(metadata)
                 or not stat.S_ISDIR(metadata.st_mode)
-                or metadata.st_uid != os.getuid()
-                or stat.S_IMODE(metadata.st_mode) != 0o700
             ):
                 raise AgentHomeMigrationError("unsafe-target", "preflight-target", actor=actor)
+            _require_tree_privacy(
+                current,
+                metadata,
+                actor=actor,
+                phase="preflight-target",
+                category="unsafe-target",
+                unreadable="target-unreadable",
+            )
     if not target.exists():
         return
     metadata = target.lstat()
-    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or path_is_reparse(metadata)
+        or not stat.S_ISDIR(metadata.st_mode)
+    ):
         raise AgentHomeMigrationError("target-occupied", "preflight-target", actor=actor)
-    if metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) != 0o700:
-        raise AgentHomeMigrationError("unsafe-target", "preflight-target", actor=actor)
+    _require_tree_privacy(
+        target,
+        metadata,
+        actor=actor,
+        phase="preflight-target",
+        category="unsafe-target",
+        unreadable="target-unreadable",
+    )
     try:
         if any(target.iterdir()):
             raise AgentHomeMigrationError("target-occupied", "preflight-target", actor=actor)
@@ -629,33 +707,54 @@ def _safe_private_directory(path: Path, actor: str, phase: str) -> None:
     metadata = path.lstat()
     if (
         stat.S_ISLNK(metadata.st_mode)
+        or path_is_reparse(metadata)
         or not stat.S_ISDIR(metadata.st_mode)
-        or metadata.st_uid != os.getuid()
-        or stat.S_IMODE(metadata.st_mode) != 0o700
     ):
         raise AgentHomeMigrationError("unsafe-state", phase, actor=actor)
+    _require_tree_privacy(
+        path,
+        metadata,
+        actor=actor,
+        phase=phase,
+        category="unsafe-state",
+        unreadable="unsafe-state",
+    )
 def _ensure_private_directory(path: Path, actor: str, phase: str) -> None:
     if not os.path.lexists(path):
         path.mkdir(mode=0o700)
+        _harden_tree(path, mode=0o700, actor=actor, phase=phase)
     _safe_private_directory(path, actor, phase)
 def _safe_target_parents(path: Path, root: Path, actor: str) -> None:
     relative = path.relative_to(root)
     current = root
     for part in relative.parts:
         current /= part
+        if not os.path.lexists(current):
+            try:
+                current.mkdir(mode=0o700)
+            except OSError:
+                raise AgentHomeMigrationError("io", "publish", actor=actor) from None
+            _harden_tree(current, mode=0o700, actor=actor, phase="publish")
         metadata = current.lstat()
         if (
             stat.S_ISLNK(metadata.st_mode)
+            or path_is_reparse(metadata)
             or not stat.S_ISDIR(metadata.st_mode)
-            or metadata.st_uid != os.getuid()
-            or stat.S_IMODE(metadata.st_mode) != 0o700
         ):
             raise AgentHomeMigrationError(
                 "unsafe-target", "publish", actor=actor
             )
+        _require_tree_privacy(
+            current,
+            metadata,
+            actor=actor,
+            phase="publish",
+            category="unsafe-target",
+            unreadable="target-unreadable",
+        )
 def _write_record(path: Path, record: MigrationRecord) -> None:
-    _write_json(path, record.to_json())
-def _write_json(path: Path, value: object) -> None:
+    _write_json(path, record.to_json(), actor=record.actor)
+def _write_json(path: Path, value: object, *, actor: str, phase: str = "write") -> None:
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     temporary = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -666,20 +765,34 @@ def _write_json(path: Path, value: object) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
+        _harden_tree(path, mode=0o600, actor=actor, phase=phase)
         _fsync_directory(path.parent)
     finally:
         os.close(descriptor)
         temporary.unlink(missing_ok=True)
+def _file_privacy_violation(path: Path, metadata: os.stat_result) -> str | None:
+    try:
+        return private_metadata_violation(path, metadata, mode=0o600)
+    except OSError:
+        return "unreadable"
+
+
 def _read_plan(path: Path, actor: str) -> AgentMigrationPlan | None:
     try:
         metadata = path.lstat()
+        violation = _file_privacy_violation(path, metadata)
         if (
             stat.S_ISLNK(metadata.st_mode)
+            or path_is_reparse(metadata)
             or not stat.S_ISREG(metadata.st_mode)
-            or metadata.st_uid != os.getuid()
-            or stat.S_IMODE(metadata.st_mode) != 0o600
+            or violation is not None
         ):
-            raise AgentHomeMigrationError("unsafe-plan", "resume", actor=actor)
+            category = (
+                "unsupported-private-acl"
+                if violation == "unsupported-private-acl"
+                else "unsafe-plan"
+            )
+            raise AgentHomeMigrationError(category, "resume", actor=actor)
         return AgentMigrationPlan.from_json(json.loads(path.read_text(encoding="utf-8")))
     except FileNotFoundError:
         return None
@@ -690,11 +803,16 @@ def _read_plan(path: Path, actor: str) -> AgentMigrationPlan | None:
 def _read_record(path: Path, actor: str) -> MigrationRecord | None:
     try:
         metadata = path.lstat()
+        violation = _file_privacy_violation(path, metadata)
+        if violation == "unsupported-private-acl":
+            raise AgentHomeMigrationError(
+                "unsupported-private-acl", "resume", actor=actor
+            )
         if (
             stat.S_ISLNK(metadata.st_mode)
+            or path_is_reparse(metadata)
             or not stat.S_ISREG(metadata.st_mode)
-            or metadata.st_uid != os.getuid()
-            or stat.S_IMODE(metadata.st_mode) != 0o600
+            or violation is not None
         ):
             raise ValueError("unsafe migration record")
         raw = json.loads(path.read_text(encoding="utf-8"))

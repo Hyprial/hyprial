@@ -19,6 +19,14 @@ from pathlib import Path
 from typing import Self
 from uuid import uuid4
 
+from hyprial.kernel import (
+    PrivateAccessUnsupported,
+    current_uid,
+    harden_private_path,
+    posix_metadata_enforced,
+    private_metadata_violation,
+)
+
 __all__ = [
     "AgentHomeError",
     "AgentHomeProvisioner",
@@ -185,7 +193,7 @@ class AgentHomeProvisioner:
             entity_token=entity_token,
             resource_token=uuid4().hex,
             path=str(self.agents_root / actor),
-            owner_uid=os.getuid(),
+            owner_uid=current_uid(),
         )
 
     def provision(
@@ -237,13 +245,13 @@ class AgentHomeProvisioner:
             entity_token=entity_token,
             resource_token=uuid4().hex,
             path=str(path),
-            owner_uid=os.getuid(),
+            owner_uid=current_uid(),
         )
         if (
             receipt.actor != actor
             or receipt.entity_token != entity_token
             or Path(receipt.path) != path
-            or receipt.owner_uid != os.getuid()
+            or (posix_metadata_enforced() and receipt.owner_uid != current_uid())
             or receipt.status != "ready"
         ):
             raise AgentHomeError("receipt-mismatch", actor, "provision-claim")
@@ -252,9 +260,14 @@ class AgentHomeProvisioner:
             self._create_home_directory(actor, path)
             created = True
             (path / "state").mkdir(mode=0o700)
+            self._harden(path / "state", actor, "create-state")
             _write_exclusive_json(path / _RECEIPT_RELATIVE, receipt.to_json())
+            self._harden(
+                path / _RECEIPT_RELATIVE, actor, "create-receipt", mode=0o600
+            )
             for relative in _AGENT_SUBDIRECTORIES[1:]:
                 (path / relative).mkdir(mode=0o700)
+                self._harden(path / relative, actor, f"create-{relative.name}")
             self.validate(receipt)
             return HomeProvisioningAttempt(receipt, True)
         except BaseException:
@@ -473,6 +486,8 @@ class AgentHomeProvisioner:
             pass
         except OSError as error:
             raise AgentHomeError("io", receipt.actor, "workspace-create") from error
+        else:
+            self._harden(workspace, receipt.actor, "workspace-create")
         self.safe_directory(
             workspace,
             receipt.actor,
@@ -725,6 +740,8 @@ class AgentHomeProvisioner:
             if collision is not None and collision.name != actor:
                 raise AgentHomeError("name-collision", actor, "reserve") from error
             raise AgentHomeError("unowned-residue", actor, "reserve") from error
+        else:
+            self._harden(path, actor, "reserve")
 
     def _prepare_root(self, actor: str) -> None:
         # The symlink/traversal fence covers the subtree this module manages --
@@ -743,6 +760,8 @@ class AgentHomeProvisioner:
                 # an existing H is exactly what the branch above accepts, so
                 # the same fence decides whether it may be used.
                 self.safe_directory(self.hyprial_home, actor, "prepare-home-root")
+            else:
+                self._harden(self.hyprial_home, actor, "prepare-home-root")
         if self.agents_root.exists() or self.agents_root.is_symlink():
             self.safe_directory(self.agents_root, actor, "prepare-agents-root", mode=0o700)
         else:
@@ -750,6 +769,10 @@ class AgentHomeProvisioner:
                 self.agents_root.mkdir(mode=0o700)
             except FileExistsError:
                 self.safe_directory(
+                    self.agents_root, actor, "prepare-agents-root", mode=0o700
+                )
+            else:
+                self._harden(
                     self.agents_root, actor, "prepare-agents-root", mode=0o700
                 )
 
@@ -767,6 +790,17 @@ class AgentHomeProvisioner:
         return None
 
     @staticmethod
+    def _harden(path: Path, actor: str, phase: str, *, mode: int = 0o700) -> None:
+        """Apply this account's private access to a newly created entry."""
+
+        try:
+            harden_private_path(path, mode=mode)
+        except PrivateAccessUnsupported as error:
+            raise AgentHomeError("unsupported-private-acl", actor, phase) from error
+        except OSError as error:
+            raise AgentHomeError("io", actor, phase) from error
+
+    @staticmethod
     def safe_directory(
         path: Path,
         actor: str,
@@ -774,12 +808,17 @@ class AgentHomeProvisioner:
         *,
         mode: int | None = None,
     ) -> None:
-        """Refuse ``path`` unless it is a real directory this process owns.
+        """Refuse ``path`` unless it is a real directory private to this account.
 
         Public because the user home (``hyprial.users.home``) holds its
-        directories to the same contract: no symlink or non-directory, owned
-        by the current uid, and exactly ``mode`` when one is given.  Raises
-        :class:`AgentHomeError` naming ``phase``; nothing here is agent-specific.
+        directories to the same contract: no symlink, junction or other
+        reparse point, no non-directory, and private access.  On POSIX that is
+        the current uid and exactly ``mode`` when one is given.  On Windows it
+        is the owner/DACL boundary implemented by
+        :mod:`hyprial.kernel.impl.platform.privacy.private_access`; a platform that
+        cannot inspect that boundary refuses rather than skipping it.  Raises
+        :class:`AgentHomeError` naming ``phase``; nothing here is
+        agent-specific.
         """
 
         try:
@@ -788,10 +827,12 @@ class AgentHomeProvisioner:
             raise AgentHomeError("io", actor, phase) from error
         if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
             raise AgentHomeError("unsafe-path", actor, phase)
-        if metadata.st_uid != os.getuid():
-            raise AgentHomeError("wrong-owner", actor, phase)
-        if mode is not None and stat.S_IMODE(metadata.st_mode) != mode:
-            raise AgentHomeError("unsafe-mode", actor, phase)
+        try:
+            violation = private_metadata_violation(path, metadata, mode=mode)
+        except OSError as error:
+            raise AgentHomeError("io", actor, phase) from error
+        if violation is not None:
+            raise AgentHomeError(violation, actor, phase)
 
     @staticmethod
     def _read_receipt(path: Path, actor: str) -> HomeReceipt:
@@ -799,10 +840,9 @@ class AgentHomeProvisioner:
             metadata = path.lstat()
             if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
                 raise AgentHomeError("unsafe-path", actor, "read-receipt")
-            if metadata.st_uid != os.getuid():
-                raise AgentHomeError("wrong-owner", actor, "read-receipt")
-            if stat.S_IMODE(metadata.st_mode) != 0o600:
-                raise AgentHomeError("unsafe-mode", actor, "read-receipt")
+            violation = private_metadata_violation(path, metadata, mode=0o600)
+            if violation is not None:
+                raise AgentHomeError(violation, actor, "read-receipt")
             return HomeReceipt.from_json(
                 json.loads(path.read_text(encoding="utf-8"))
             )

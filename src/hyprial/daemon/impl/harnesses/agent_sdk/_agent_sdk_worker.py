@@ -11,6 +11,7 @@ import inspect
 import json
 import os
 import sys
+import threading
 from typing import Any
 from uuid import uuid4
 
@@ -46,10 +47,18 @@ _REQUIRED_OPTION_PARAMS = frozenset(
         "resume",
         "session_id",
         "disallowed_tools",
+        "max_buffer_size",
     }
 )
 _RUNTIME_CONTEXT_MODE_ENV = "HYPRIAL_AGENT_SDK_RUNTIME_CONTEXT_MODE"
 _P2_RUNTIME_CONTEXT_MODE = "agent-home-p2"
+_MAX_BUFFER_ENV = "HYPRIAL_AGENT_SDK_MAX_BUFFER_BYTES"
+# The SDK default (1 MiB) is smaller than ordinary long-context frames and
+# kills the message reader mid-turn. 16 MiB covers those frames with a hard
+# bound; the operator may tune it only inside the checked range below.
+_DEFAULT_MAX_BUFFER_BYTES = 16 * 1024 * 1024
+_MIN_MAX_BUFFER_BYTES = 1024 * 1024
+_MAX_MAX_BUFFER_BYTES = 64 * 1024 * 1024
 
 
 def _require_supported_sdk() -> None:
@@ -64,13 +73,32 @@ def _require_supported_sdk() -> None:
         return
     print(
         "Agent SDK worker requires a claude-agent-sdk release supporting "
-        f"{', '.join(sorted(missing))} for per-worker Harness identity; the "
-        "imported SDK is too old. Pin a supported release through "
+        f"{', '.join(sorted(missing))} for per-worker Harness identity and "
+        "bounded message reads; the imported SDK is too old. Pin a supported "
+        "release through "
         "hyprial.daemon.impl.harnesses.agent_sdk.sdk_worker_command().",
         file=sys.stderr,
         flush=True,
     )
     raise SystemExit(1)
+
+
+def _max_buffer_size() -> int:
+    """One frame may be large; the reader buffer stays explicitly bounded."""
+
+    raw = os.environ.get(_MAX_BUFFER_ENV)
+    if raw is None:
+        return _DEFAULT_MAX_BUFFER_BYTES
+    try:
+        value = int(raw)
+    except ValueError as error:
+        raise ValueError(f"{_MAX_BUFFER_ENV} must be an integer") from error
+    if not _MIN_MAX_BUFFER_BYTES <= value <= _MAX_MAX_BUFFER_BYTES:
+        raise ValueError(
+            f"{_MAX_BUFFER_ENV} must be between {_MIN_MAX_BUFFER_BYTES} and "
+            f"{_MAX_MAX_BUFFER_BYTES} bytes"
+        )
+    return value
 
 
 def _options_kwargs() -> dict[str, Any]:
@@ -112,6 +140,7 @@ def _options_kwargs() -> dict[str, Any]:
         "system_prompt": {"type": "preset", "preset": "claude_code"},
         "setting_sources": setting_sources,
         "extra_args": extra_args,
+        "max_buffer_size": _max_buffer_size(),
     }
     cli_path = os.environ.get("HYPRIAL_CLAUDE_EXECUTABLE")
     if os.environ.get("HYPRIAL_DESKTOP_COMPONENTS") == "1" and not cli_path:
@@ -155,13 +184,61 @@ def _options() -> ClaudeAgentOptions:
     return ClaudeAgentOptions(**_options_kwargs())
 
 
-async def _read_commands(commands: asyncio.Queue[dict[str, Any]]) -> None:
-    while line := await asyncio.to_thread(sys.stdin.buffer.readline):
-        value = json.loads(line)
-        if not isinstance(value, dict):
-            raise TypeError("worker command must be an object")
-        await commands.put(value)
-    await commands.put({"op": "stop"})
+def _command_reader_failure(error: BaseException) -> str:
+    """A stable reason; never echo a command line into logs or the wire."""
+
+    if isinstance(error, json.JSONDecodeError):
+        return "Agent SDK worker command reader failed: invalid JSON command"
+    if isinstance(error, TypeError):
+        return "Agent SDK worker command reader failed: command must be an object"
+    return f"Agent SDK worker command reader failed ({type(error).__name__})"
+
+
+def _deliver_command(
+    loop: asyncio.AbstractEventLoop, commands: asyncio.Queue[dict[str, Any]], line: bytes
+) -> None:
+    value = json.loads(line)
+    if not isinstance(value, dict):
+        raise TypeError("worker command must be an object")
+    loop.call_soon_threadsafe(commands.put_nowait, value)
+
+
+def _read_commands(
+    loop: asyncio.AbstractEventLoop, commands: asyncio.Queue[dict[str, Any]]
+) -> None:
+    """Read stdin on a daemon thread and deliver a fatal-exit sentinel.
+
+    A non-daemon executor thread blocked in ``readline`` would keep the
+    process alive after the reader died (``asyncio.run`` waits for its default
+    executor). The sentinel also stops the serve loop from waiting for a
+    command that can never arrive.
+
+    Raw fd reads are deliberate: a daemon thread blocked in
+    ``sys.stdin.buffer.readline`` holds the buffered-reader lock, so CPython
+    aborts at interpreter shutdown (``_enter_buffered_busy``) when the fatal
+    SDK reader forces an early exit. ``os.read`` holds no such lock and is
+    safe to abandon while blocked.
+    """
+
+    pending = b""
+    try:
+        descriptor = sys.stdin.fileno()
+        while chunk := os.read(descriptor, 65536):
+            pending += chunk
+            while b"\n" in pending:
+                line, pending = pending.split(b"\n", 1)
+                _deliver_command(loop, commands, line)
+        if pending.strip():
+            _deliver_command(loop, commands, pending)
+        loop.call_soon_threadsafe(commands.put_nowait, {"op": "stop"})
+    except Exception as error:  # noqa: BLE001 - reported through the queue
+        message = _command_reader_failure(error)
+        try:
+            loop.call_soon_threadsafe(
+                commands.put_nowait, {"op": "reader-failed", "error": message}
+            )
+        except RuntimeError:
+            pass  # event loop already closed; process is exiting
 
 
 def _emit(message: dict[str, object]) -> None:
@@ -320,27 +397,87 @@ def _connect_timeout_seconds() -> float:
     return value if value > 0 else 90.0
 
 
-async def _receive_result(client: ClaudeSDKClient) -> dict[str, object]:
+class _ReaderFailure(RuntimeError):
+    """The SDK message reader died or ended without a result."""
+
+
+class _CommandReaderFailure(RuntimeError):
+    """The worker's stdin command reader died."""
+
+
+def _reader_failure_message(error: BaseException, limit: int) -> str:
+    """One bounded, content-free reason for a failed SDK message read.
+
+    Only the exception type (plus the known buffer bound) is reported: a
+    decode failure's raw message can quote frame content, and private
+    transcript material must never reach logs or the wire.
+    """
+
+    detail = type(error).__name__
+    text = str(error)
+    if "maximum buffer size" in text or "buffer limit" in text:
+        detail = f"{detail}; buffer limit {limit} bytes"
+    return (
+        f"Agent SDK message reader failed ({detail}). The pending turn "
+        "cannot complete; the worker is exiting so it is not left open."
+    )
+
+
+def _command_reader_error(command: dict[str, Any]) -> _CommandReaderFailure:
+    message = command.get("error")
+    if not isinstance(message, str) or not message:
+        message = "Agent SDK worker command reader failed"
+    return _CommandReaderFailure(message)
+
+
+async def _receive_result(
+    client: ClaudeSDKClient, limit: int
+) -> dict[str, object]:
     output = ""
     is_error = False
-    async for message in client.receive_response():
-        if isinstance(message, ResultMessage):
-            output = message.result or ""
-            is_error = message.is_error
-            _emit(
-                {
-                    "type": "progress",
-                    "phase": "turn-end",
-                    "summary": (
-                        "Claude turn failed" if is_error else "Claude turn completed"
-                    ),
-                    "terminal": True,
-                }
-            )
-            continue
-        for progress in _progress_frames(message):
-            _emit({"type": "progress", **progress})
+    saw_result = False
+    try:
+        async for message in client.receive_response():
+            if isinstance(message, ResultMessage):
+                saw_result = True
+                output = message.result or ""
+                is_error = message.is_error
+                _emit(
+                    {
+                        "type": "progress",
+                        "phase": "turn-end",
+                        "summary": (
+                            "Claude turn failed"
+                            if is_error
+                            else "Claude turn completed"
+                        ),
+                        "terminal": True,
+                    }
+                )
+                continue
+            for progress in _progress_frames(message):
+                _emit({"type": "progress", **progress})
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:  # the reader is fatal: report, never hang
+        raise _ReaderFailure(_reader_failure_message(error, limit)) from error
+    if not saw_result:
+        raise _ReaderFailure(
+            "Agent SDK message reader ended before a result; the pending "
+            "turn cannot complete."
+        )
     return {"type": "result", "result": output, "isError": is_error}
+
+
+async def _emit_terminal(task: asyncio.Task[dict[str, object]]) -> None:
+    """Emit the turn's terminal frame, converting a reader failure to an error."""
+
+    try:
+        terminal = await task
+    except _ReaderFailure as error:
+        _emit({"type": "result", "result": str(error), "isError": True})
+        raise
+    _emit(terminal)
 
 
 async def _connect(options: ClaudeAgentOptions) -> ClaudeSDKClient:
@@ -367,86 +504,106 @@ async def _connect(options: ClaudeAgentOptions) -> ClaudeSDKClient:
 
 async def _serve() -> None:
     commands: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-    reader = asyncio.create_task(_read_commands(commands))
+    threading.Thread(
+        target=_read_commands,
+        args=(asyncio.get_running_loop(), commands),
+        name="agent-sdk-command-reader",
+        daemon=True,
+    ).start()
+    kwargs = _options_kwargs()
+    limit = kwargs["max_buffer_size"]
+    runtime_context_mode = os.environ.get(_RUNTIME_CONTEXT_MODE_ENV)
+    if runtime_context_mode not in {None, _P2_RUNTIME_CONTEXT_MODE}:
+        raise ValueError(
+            "Agent SDK worker received an unsupported runtime context mode"
+        )
     try:
-        kwargs = _options_kwargs()
-        runtime_context_mode = os.environ.get(_RUNTIME_CONTEXT_MODE_ENV)
-        if runtime_context_mode not in {None, _P2_RUNTIME_CONTEXT_MODE}:
-            raise ValueError(
-                "Agent SDK worker received an unsupported runtime context mode"
-            )
-        try:
-            client = await _connect(ClaudeAgentOptions(**kwargs))
-        except Exception as error:
-            resume = kwargs.get("resume")
-            if runtime_context_mode == _P2_RUNTIME_CONTEXT_MODE or not (
-                isinstance(resume, str) and resume
-            ):
-                # P2 has an explicit authorized session root.  A missing or
-                # unreadable target there is terminal: replacing it would
-                # report success while silently discarding the conversation.
-                raise
-            # Legacy workers retain their historical recovery contract: a
-            # stale daemon-owned session id is retried exactly once as a fresh,
-            # pinned session.  The replacement id is reported in ready so the
-            # daemon can persist it.
-            print(
-                f"Agent SDK worker: stored session {resume} could not be "
-                f"resumed ({type(error).__name__}: {error}); starting a "
-                "fresh session",
-                file=sys.stderr,
-                flush=True,
-            )
-            kwargs.pop("resume", None)
-            kwargs["session_id"] = str(uuid4())
-            client = await _connect(ClaudeAgentOptions(**kwargs))
-        try:
-            ready: dict[str, object] = {"type": "ready"}
-            effective_session = kwargs.get("resume") or kwargs.get("session_id")
-            if isinstance(effective_session, str):
-                ready["sessionId"] = effective_session
-            _emit(ready)
+        client = await _connect(ClaudeAgentOptions(**kwargs))
+    except Exception as error:
+        resume = kwargs.get("resume")
+        if runtime_context_mode == _P2_RUNTIME_CONTEXT_MODE or not (
+            isinstance(resume, str) and resume
+        ):
+            # P2 has an explicit authorized session root.  A missing or
+            # unreadable target there is terminal: replacing it would
+            # report success while silently discarding the conversation.
+            raise
+        # Legacy workers retain their historical recovery contract: a
+        # stale daemon-owned session id is retried exactly once as a fresh,
+        # pinned session.  The replacement id is reported in ready so the
+        # daemon can persist it.
+        print(
+            f"Agent SDK worker: stored session {resume} could not be "
+            f"resumed ({type(error).__name__}: {error}); starting a "
+            "fresh session",
+            file=sys.stderr,
+            flush=True,
+        )
+        kwargs.pop("resume", None)
+        kwargs["session_id"] = str(uuid4())
+        client = await _connect(ClaudeAgentOptions(**kwargs))
+    try:
+        ready: dict[str, object] = {"type": "ready"}
+        effective_session = kwargs.get("resume") or kwargs.get("session_id")
+        if isinstance(effective_session, str):
+            ready["sessionId"] = effective_session
+        _emit(ready)
+        while True:
+            command = await commands.get()
+            operation = command.get("op")
+            if operation == "reader-failed":
+                raise _command_reader_error(command)
+            if operation == "stop":
+                return
+            if operation != "query":
+                continue
+            prompt = command.get("prompt")
+            if not isinstance(prompt, str) or not prompt:
+                _emit(
+                    {
+                        "type": "result",
+                        "result": "Agent SDK query prompt is required",
+                        "isError": True,
+                    }
+                )
+                continue
+            await client.query(prompt)
+            response = asyncio.create_task(_receive_result(client, limit))
             while True:
-                command = await commands.get()
-                operation = command.get("op")
-                if operation == "stop":
-                    return
-                if operation != "query":
-                    continue
-                prompt = command.get("prompt")
-                if not isinstance(prompt, str) or not prompt:
+                control = asyncio.create_task(commands.get())
+                done, _ = await asyncio.wait(
+                    {response, control}, return_when=asyncio.FIRST_COMPLETED
+                )
+                if response in done:
+                    control.cancel()
+                    await asyncio.gather(control, return_exceptions=True)
+                    await _emit_terminal(response)
+                    break
+                next_command = control.result()
+                next_operation = next_command.get("op")
+                if next_operation == "reader-failed":
+                    # stdin died mid-turn: end the pending turn explicitly
+                    # instead of waiting for a command that cannot arrive.
+                    error = _command_reader_error(next_command)
+                    response.cancel()
+                    await asyncio.gather(response, return_exceptions=True)
                     _emit(
                         {
                             "type": "result",
-                            "result": "Agent SDK query prompt is required",
+                            "result": str(error),
                             "isError": True,
                         }
                     )
-                    continue
-                await client.query(prompt)
-                response = asyncio.create_task(_receive_result(client))
-                while True:
-                    control = asyncio.create_task(commands.get())
-                    done, _ = await asyncio.wait(
-                        {response, control}, return_when=asyncio.FIRST_COMPLETED
-                    )
-                    if response in done:
-                        control.cancel()
-                        await asyncio.gather(control, return_exceptions=True)
-                        _emit(response.result())
-                        break
-                    next_command = control.result()
-                    if next_command.get("op") == "interrupt":
-                        await client.interrupt()
-                    elif next_command.get("op") == "stop":
-                        await client.interrupt()
-                        await response
-                        return
-        finally:
-            await client.__aexit__(None, None, None)
+                    raise error
+                if next_operation == "interrupt":
+                    await client.interrupt()
+                elif next_operation == "stop":
+                    await client.interrupt()
+                    await asyncio.wait({response})
+                    await _emit_terminal(response)
+                    return
     finally:
-        reader.cancel()
-        await asyncio.gather(reader, return_exceptions=True)
+        await client.__aexit__(None, None, None)
 
 
 def main() -> None:

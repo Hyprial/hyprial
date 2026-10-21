@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Self
 
-from hyprial.kernel import ipc_errors
+from hyprial.kernel import ipc_errors, path_is_reparse, private_metadata_violation
 
 __all__ = [
     "NATIVE_CONFIG_MAPPING_VERSION",
@@ -679,6 +679,15 @@ _RUNTIME_WRITABLE_NATIVE_PATHS = {"claude": frozenset({".claude.json"})}
 _RUNTIME_WRITE_TEMP = {"claude": re.compile(r"\.claude\.json\.tmp\.\d+\.[0-9a-f]+")}
 
 
+def _require_projection_private(path: Path, metadata: os.stat_result, *, mode: int, inspect: str, label: str) -> None:
+    try:
+        violation = private_metadata_violation(path, metadata, mode=mode)
+    except OSError as error:
+        raise AgentConfigError(f"cannot inspect {inspect} privacy: {error}") from error
+    if violation is not None:
+        raise AgentConfigError(f"{label} mode must be {mode:04o}" if violation == "unsafe-mode" else f"{label} must be account-private ({violation})")
+
+
 def verify_native_projection(
     projection: NativeConfigProjection, projection_root: Path
 ) -> None:
@@ -689,10 +698,9 @@ def verify_native_projection(
         metadata = root.lstat()
     except OSError as error:
         raise AgentConfigError(f"cannot inspect native projection root: {error}") from error
-    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+    if stat.S_ISLNK(metadata.st_mode) or path_is_reparse(metadata) or not stat.S_ISDIR(metadata.st_mode):
         raise AgentConfigError("native projection root must be a real directory")
-    if stat.S_IMODE(metadata.st_mode) != 0o700:
-        raise AgentConfigError("native projection root mode must be 0700")
+    _require_projection_private(root, metadata, mode=0o700, inspect="native projection root", label="native projection root")
     keep = _RUNTIME_WRITABLE_NATIVE_PATHS.get(projection.harness, frozenset())
     temp = _RUNTIME_WRITE_TEMP.get(projection.harness)
     scanned = _scan_projection_tree(root, root)
@@ -720,7 +728,7 @@ def _scan_config_tree(root: Path, directory: Path) -> list[ConfigManifestItem]:
             candidate = Path(entry.path)
             relative = candidate.relative_to(root).as_posix()
             metadata = entry.stat(follow_symlinks=False)
-            if stat.S_ISLNK(metadata.st_mode):
+            if stat.S_ISLNK(metadata.st_mode) or path_is_reparse(metadata):
                 raise AgentConfigError(f"config item {relative} must not be a symbolic link")
             if stat.S_ISDIR(metadata.st_mode):
                 items.extend(_scan_config_tree(root, candidate))
@@ -747,25 +755,17 @@ def _scan_projection_tree(
             candidate = Path(entry.path)
             relative = candidate.relative_to(root).as_posix()
             metadata = entry.stat(follow_symlinks=False)
-            if stat.S_ISLNK(metadata.st_mode):
+            if stat.S_ISLNK(metadata.st_mode) or path_is_reparse(metadata):
                 raise AgentConfigError(
                     f"native projection item {relative} must not be a symbolic link"
                 )
-            if stat.S_ISDIR(metadata.st_mode):
-                if stat.S_IMODE(metadata.st_mode) != 0o700:
-                    raise AgentConfigError(
-                        f"native projection directory {relative} mode must be 0700"
-                    )
+            is_directory = stat.S_ISDIR(metadata.st_mode)
+            if not is_directory and not stat.S_ISREG(metadata.st_mode):
+                raise AgentConfigError(f"native projection item {relative} must be a regular file")
+            _require_projection_private(candidate, metadata, mode=0o700 if is_directory else 0o600, inspect=f"native projection item {relative}", label=f"native projection {'directory' if is_directory else 'item'} {relative}")
+            if is_directory:
                 items.extend(_scan_projection_tree(root, candidate))
                 continue
-            if not stat.S_ISREG(metadata.st_mode):
-                raise AgentConfigError(
-                    f"native projection item {relative} must be a regular file"
-                )
-            if stat.S_IMODE(metadata.st_mode) != 0o600:
-                raise AgentConfigError(
-                    f"native projection item {relative} mode must be 0600"
-                )
             body = _read_regular_file(root, relative)
             items.append(ConfigManifestItem(relative, _sha256(body), len(body)))
     return items

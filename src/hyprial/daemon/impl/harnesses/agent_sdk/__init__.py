@@ -200,6 +200,28 @@ def _extra_args(args: tuple[str, ...]) -> dict[str, str | None]:
     return result
 
 
+def _sdk_worker_interpreter() -> str | None:
+    """The interpreter uv must build the isolated SDK environment from.
+
+    Without an explicit request uv elects an interpreter from the *worker's*
+    environment: the isolated agent HOME/XDG (so no managed installation is
+    registered), a PATH whose first ``python3`` can be older than the SDK's
+    3.10 floor, and a cwd that need not be a project.  2026-10-16: that
+    election picked Python 3.9 and the pinned release failed to resolve.  The
+    interpreter already running Hyprial is the one Python whose version is
+    guaranteed to satisfy the SDK, so it is requested by absolute path.
+    ``None`` means the path is unusable and uv keeps its historical
+    discovery, which is better than refusing to launch at all.
+    """
+
+    executable = sys.executable
+    if not executable or not os.path.isabs(executable):
+        return None
+    if not os.path.isfile(executable) or not os.access(executable, os.X_OK):
+        return None
+    return executable
+
+
 def sdk_worker_command(*, uv_executable: str | None = None) -> tuple[str, ...]:
     bundled = os.environ.get("HYPRIAL_BUNDLED_SDK_BOOTSTRAP")
     if bundled is not None:
@@ -219,6 +241,15 @@ def sdk_worker_command(*, uv_executable: str | None = None) -> tuple[str, ...]:
     if uv is None:
         raise RuntimeError("uv is required to launch the isolated Claude Agent SDK")
     worker = Path(__file__).with_name("_agent_sdk_worker.py")
+    interpreter = _sdk_worker_interpreter()
+    # A separate argv element, never a shell string: an interpreter path
+    # containing spaces must reach uv unsplit.  With no usable interpreter the
+    # pair is empty and uv keeps its own discovery.  The command is assembled in
+    # one returned tuple on purpose: `tests/support/ci` reads this argv
+    # statically to inventory download sites, and it resolves a returned literal
+    # but not an augmented assignment, so building the list incrementally would
+    # hide this uv fetch from that inventory.
+    pinned = ("--python", interpreter) if interpreter is not None else ()
     return (
         uv,
         "run",
@@ -226,6 +257,7 @@ def sdk_worker_command(*, uv_executable: str | None = None) -> tuple[str, ...]:
         "--no-project",
         "--with",
         f"claude-agent-sdk=={AGENT_SDK_VERSION}",
+        *pinned,
         "python",
         str(worker),
     )

@@ -2,9 +2,10 @@
 //
 // This is an isolated in-memory fixture with no network, no daemon and no
 // durable storage: nothing here proves the real node, identity or harness path
-// works. It exists only when the user asks for it (`?demo=1`), every row it
-// returns carries `simulation: true`, and its terminal state is `simulated`
-// rather than `completed` so the UI cannot present it as a finished turn.
+// works. It exists only for an explicit `createDemoConnection()` test fixture
+// (the production page never selects it), every row it returns carries
+// `simulation: true`, and its terminal state is `simulated` rather than
+// `completed` so the UI cannot present it as a finished turn.
 import { bindConnection, fail } from './connection.mjs';
 
 const DEFAULT_SESSIONS = Object.freeze([
@@ -67,6 +68,14 @@ export function createDemoConnection({ sessions, now = () => new Date().toISOStr
           terminal: stream.terminal ? { ...stream.terminal } : null,
         };
       },
+      async create(targetUri) {
+        // The explicit demo exposes no directory rows, so there is no listed
+        // target to create from; refusing keeps the demo from fabricating one.
+        if (typeof targetUri !== 'string' || !targetUri.trim()) {
+          fail('INVALID_ARGUMENT', 'demo create requires a target URI');
+        }
+        fail('CORE_TARGET_NOT_LISTED', 'The demo directory lists no targets to create a session for');
+      },
       async send(sessionId, args = {}) {
         requireSession(store, sessionId);
         const { text, idempotencyKey } = args;
@@ -95,6 +104,16 @@ export function createDemoConnection({ sessions, now = () => new Date().toISOStr
         const ack = { commandId: `demo-cmd-${sequence}`, acceptedAt: at, status: 'accepted', deduplicated: false, simulation: true };
         store.accepted.set(key, { payload, ack });
         return { ...ack };
+      },
+    },
+    targets: {
+      async list() {
+        return {
+          nodes: [],
+          targets: [],
+          counts: { nodes: 0, targets: 0 },
+          truncated: { nodes: false, targets: false },
+        };
       },
     },
     capabilities: {

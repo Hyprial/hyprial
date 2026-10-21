@@ -33,7 +33,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable
 
-from hyprial.kernel import ipc_errors
+from hyprial.kernel import current_uid, ipc_errors
 from hyprial.daemon.impl.transfer.execution.container import (
     ContainerError,
     DockerRunner,
@@ -115,7 +115,7 @@ def _local_login_user() -> str:
         )
     import pwd
 
-    return pwd.getpwuid(os.getuid()).pw_name
+    return pwd.getpwuid(current_uid()).pw_name
 
 
 def _resolve_destination_cwd(

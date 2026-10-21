@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import os
@@ -19,8 +18,8 @@ import warnings
 from dataclasses import replace
 from pathlib import Path
 
-from hyprial.kernel import SmolvmRuntimeSpec
-from hyprial.kernel import GUEST_WORKER_STATE, WorkerBinding
+from hyprial.kernel import SmolvmRuntimeSpec, current_uid, posix_metadata_enforced
+from hyprial.kernel import GUEST_WORKER_STATE, WorkerBinding, lock_exclusive
 from hyprial.daemon.impl.transfer.execution.smolvm import (
     _host_canaries,
     _private_environment,
@@ -108,15 +107,20 @@ def _directory(path: Path) -> None:
     if (
         not stat.S_ISDIR(info.st_mode)
         or path.resolve() != path
-        or info.st_uid != os.getuid()
-        or stat.S_IMODE(info.st_mode) != 0o700
+        or (
+            posix_metadata_enforced()
+            and (
+                info.st_uid != current_uid()
+                or stat.S_IMODE(info.st_mode) != 0o700
+            )
+        )
     ):
         raise SmolvmRuntimeError("Private runtime directory ownership/mode mismatch")
 
 
 def runtime_parent() -> Path:
     base = Path("/private/tmp") if platform.system() == "Darwin" else Path("/tmp")
-    return base / f"hv{os.getuid()}"
+    return base / f"hv{current_uid()}"
 
 
 def runtime_directory(state_dir: Path, actor: str) -> Path:
@@ -147,9 +151,9 @@ def reap_lock_husks(
     this uid's runtime parent, owned by this uid with mode 0700, holds nothing
     but `runtime.lock` (an empty leftover from an interrupted reap is also
     accepted), is older than `minimum_age_seconds`, is not `keep` (the runtime
-    this call is about to create), and its lock can be taken with
-    ``flock(LOCK_EX|LOCK_NB)`` - so no live generation still owns it. Anything
-    else is left untouched. Returns the removed directories.
+    this call is about to create), and its lock can be taken non-blocking -
+    so no live generation still owns it. Anything else is left untouched.
+    Returns the removed directories.
     """
     parent = runtime_parent() if parent is None else Path(parent)
     reference = time.time() if now is None else now
@@ -163,9 +167,12 @@ def reap_lock_husks(
             continue
         try:
             info = candidate.lstat()
-            if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+            if not stat.S_ISDIR(info.st_mode):
                 continue
-            if stat.S_IMODE(info.st_mode) != 0o700:
+            if posix_metadata_enforced() and (
+                info.st_uid != current_uid()
+                or stat.S_IMODE(info.st_mode) != 0o700
+            ):
                 continue
             entries = sorted(candidate.iterdir())
             if [entry.name for entry in entries] not in ([], ["runtime.lock"]):
@@ -176,7 +183,7 @@ def reap_lock_husks(
                 lock_info = lock.lstat()
                 if not stat.S_ISREG(lock_info.st_mode):
                     continue
-                if lock_info.st_uid != os.getuid():
+                if posix_metadata_enforced() and lock_info.st_uid != current_uid():
                     continue
                 newest = max(newest, lock_info.st_mtime)
             if minimum_age_seconds and reference - newest < minimum_age_seconds:
@@ -185,7 +192,7 @@ def reap_lock_husks(
                 fd = os.open(lock, os.O_RDWR | os.O_NOFOLLOW)
                 try:
                     try:
-                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        lock_exclusive(fd, blocking=False)
                     except OSError:
                         # A live generation still owns this lock; leave it alone.
                         continue
@@ -384,7 +391,7 @@ class SmolvmWorkerRuntime:
             )
             self._lease = os.fdopen(fd, "w")
             try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                lock_exclusive(fd, blocking=False)
             except BaseException:
                 self._lease.close()
                 self._lease = None
@@ -559,7 +566,7 @@ class SmolvmWorkerRuntime:
                 fd = os.open(self.output / "runtime.lock", os.O_RDWR | os.O_NOFOLLOW)
                 self._lease = os.fdopen(fd, "w")
                 try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    lock_exclusive(fd, blocking=False)
                 except BaseException:
                     self._lease.close()
                     self._lease = None

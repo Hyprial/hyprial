@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Literal, Protocol
 from xml.sax.saxutils import escape as xml_escape
 
+from hyprial.kernel import current_uid
+
 LAUNCHD_LABEL = "com.hyprial.hyprial.daemon"
 ServicePlatform = Literal["launchd", "systemd"]
 
@@ -150,7 +152,7 @@ class ServiceManager:
         self.service_home = Path(service_home or config.home)
         self.runner = runner or self._run
         self.handoff_standalone = handoff_standalone or (lambda: None)
-        self.uid = os.getuid() if uid is None else uid
+        self.uid = current_uid() if uid is None else uid
         self.username = username or os.environ.get("USER", "")
         self.sleep = sleep
         self.templates = ServiceTemplates()

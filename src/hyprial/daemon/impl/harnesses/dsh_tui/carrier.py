@@ -32,7 +32,11 @@ from hyprial.daemon.impl.mcp.wake import (
     WakeCoordinator,
     WakeStatus,
 )
-from hyprial.kernel import Logger
+from hyprial.kernel import (
+    Logger,
+    private_metadata_violation,
+    private_tree_violation,
+)
 
 CARRIER_READY_TIMEOUT_SECONDS = 30.0
 CONTROL_SOCKET_TIMEOUT_SECONDS = 2.0
@@ -111,14 +115,23 @@ class DshPluginWakeDriver:
     def _safe_socket(self) -> Path | None:
         try:
             info = self.control_socket.lstat()
-            parent = self.control_socket.parent.stat()
+            parent = self.control_socket.parent.lstat()
         except OSError:
             return None
         if not stat.S_ISSOCK(info.st_mode) or stat.S_ISLNK(info.st_mode):
             return None
-        if info.st_uid != os.getuid():
+        if stat.S_ISLNK(parent.st_mode) or not stat.S_ISDIR(parent.st_mode):
             return None
-        if parent.st_mode & 0o077:
+        try:
+            socket_violation = private_metadata_violation(
+                self.control_socket, info, mode=None
+            )
+            parent_violation = private_tree_violation(
+                self.control_socket.parent, parent
+            )
+        except OSError:
+            return None
+        if socket_violation is not None or parent_violation is not None:
             return None
         return self.control_socket
 

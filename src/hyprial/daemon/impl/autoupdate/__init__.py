@@ -25,7 +25,7 @@ from typing import Any, Literal, Protocol
 from xml.sax.saxutils import escape as xml_escape
 
 import hyprial.daemon.impl.updates as updates
-from hyprial.kernel import configured_hyprial_home
+from hyprial.kernel import configured_hyprial_home, current_uid
 
 AUTOUPDATE_LABEL = "com.hyprial.hyprial.autoupdate"
 SYSTEMD_SERVICE_UNIT = "hyprial-autoupdate.service"
@@ -480,7 +480,7 @@ class AutoUpdateManager:
         self.platform = platform
         self.service_home = Path(service_home or config.home)
         self.runner = runner or self._run
-        self.uid = os.getuid() if uid is None else uid
+        self.uid = current_uid() if uid is None else uid
         self.username = username or os.environ.get("USER", "")
         self.sleep = sleep
         self.templates = TimerTemplates()

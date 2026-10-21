@@ -16,6 +16,8 @@ UNSUPPORTED_OPERATION = "unsupported-operation"
 INVALID_ARGUMENT = "invalid-argument"
 #: The session id is not bound by this adapter instance.
 UNKNOWN_SESSION = "unknown-session"
+#: The target the caller named is not in the daemon's current agent directory.
+UNKNOWN_TARGET = "unknown-target"
 #: The caller tried to supply identity/authority fields; the adapter's
 #: sender is fixed by the trusted composition root, never by the request.
 IDENTITY_REJECTED = "identity-rejected"

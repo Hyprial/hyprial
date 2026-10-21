@@ -37,7 +37,7 @@ import subprocess
 from pathlib import Path
 from typing import Mapping, Sequence
 
-from hyprial.kernel import ipc_errors
+from hyprial.kernel import current_uid, ipc_errors
 
 #: Fixed paths INSIDE the worker image (scripts/build/docker/Dockerfile.hyprial-worker).
 CONTAINER_HOME = "/home/hyprial"
@@ -321,7 +321,7 @@ def wrap_worker_launch(
         cwd=str(cwd),
         home=worker_home(state_dir, harness, name),
         cred_volume=volume_name(name),
-        uid=os.getuid(),
+        uid=current_uid(),
         gid=os.getgid(),
     )
 

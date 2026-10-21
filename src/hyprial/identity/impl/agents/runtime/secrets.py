@@ -18,7 +18,12 @@ from enum import Enum
 from pathlib import Path
 from typing import Protocol
 
-from hyprial.kernel import ipc_errors
+from hyprial.kernel import (
+    PrivateAccessUnsupported,
+    harden_private_path,
+    ipc_errors,
+    private_metadata_violation,
+)
 from hyprial.identity.impl.agents.home.provisioner  import HomeReceipt
 
 __all__ = [
@@ -298,10 +303,11 @@ class SecretResolver:
             raise SecretResolutionError("io", grant.entry_id, "open") from None
         if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
             raise SecretResolutionError("unsafe-type", grant.entry_id, "open")
-        if metadata.st_uid != os.getuid():
-            raise SecretResolutionError("wrong-owner", grant.entry_id, "open")
-        if stat.S_IMODE(metadata.st_mode) != 0o600:
-            raise SecretResolutionError("unsafe-mode", grant.entry_id, "open")
+        violation = self._privacy_violation(
+            path, metadata, mode=0o600, entry_id=grant.entry_id, phase="open"
+        )
+        if violation is not None:
+            raise SecretResolutionError(violation, grant.entry_id, "open")
         try:
             text = path.read_text(encoding="utf-8")
         except PermissionError:
@@ -341,8 +347,11 @@ class SecretResolver:
             raise SecretResolutionError("io", entry_id, "ancestor") from None
         if stat.S_ISLNK(root_metadata.st_mode) or not stat.S_ISDIR(root_metadata.st_mode):
             raise SecretResolutionError("unsafe-path", entry_id, "ancestor")
-        if root_metadata.st_uid != os.getuid():
-            raise SecretResolutionError("wrong-owner", entry_id, "ancestor")
+        violation = self._privacy_violation(
+            current, root_metadata, mode=None, entry_id=entry_id, phase="ancestor"
+        )
+        if violation is not None:
+            raise SecretResolutionError(violation, entry_id, "ancestor")
         for part in relative.parts[:-1]:
             current /= part
             try:
@@ -355,10 +364,15 @@ class SecretResolver:
                 raise SecretResolutionError("io", entry_id, "ancestor") from None
             if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
                 raise SecretResolutionError("unsafe-path", entry_id, "ancestor")
-            if metadata.st_uid != os.getuid():
-                raise SecretResolutionError("wrong-owner", entry_id, "ancestor")
-            if current != self.hyprial_home and stat.S_IMODE(metadata.st_mode) != 0o700:
-                raise SecretResolutionError("unsafe-mode", entry_id, "ancestor")
+            violation = self._privacy_violation(
+                current,
+                metadata,
+                mode=None if current == self.hyprial_home else 0o700,
+                entry_id=entry_id,
+                phase="ancestor",
+            )
+            if violation is not None:
+                raise SecretResolutionError(violation, entry_id, "ancestor")
 
     def _ensure_private_directory(self, directory: Path) -> None:
         self._require_private_directory(
@@ -370,11 +384,35 @@ class SecretResolver:
             missing.append(current)
             current = current.parent
         for path in reversed(missing):
-            path.mkdir(mode=0o700)
+            try:
+                path.mkdir(mode=0o700)
+                harden_private_path(path, mode=0o700)
+            except PrivateAccessUnsupported:
+                raise SecretResolutionError(
+                    "unsupported-private-acl", directory.name, "write-parent"
+                ) from None
+            except OSError:
+                raise SecretResolutionError(
+                    "io", directory.name, "write-parent"
+                ) from None
         self._validate_ancestors(
             directory / ".prospective-entry", directory.name
         )
         self._require_private_directory(directory, directory.name, "write-parent")
+
+    @staticmethod
+    def _privacy_violation(
+        path: Path,
+        metadata: os.stat_result,
+        *,
+        mode: int | None,
+        entry_id: str,
+        phase: str,
+    ) -> str | None:
+        try:
+            return private_metadata_violation(path, metadata, mode=mode)
+        except OSError:
+            raise SecretResolutionError("io", entry_id, phase) from None
 
     @staticmethod
     def _require_private_directory(path: Path, entry_id: str, phase: str) -> None:
@@ -384,10 +422,11 @@ class SecretResolver:
             raise SecretResolutionError("io", entry_id, phase) from None
         if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
             raise SecretResolutionError("unsafe-path", entry_id, phase)
-        if metadata.st_uid != os.getuid():
-            raise SecretResolutionError("wrong-owner", entry_id, phase)
-        if stat.S_IMODE(metadata.st_mode) != 0o700:
-            raise SecretResolutionError("unsafe-mode", entry_id, phase)
+        violation = SecretResolver._privacy_violation(
+            path, metadata, mode=0o700, entry_id=entry_id, phase=phase
+        )
+        if violation is not None:
+            raise SecretResolutionError(violation, entry_id, phase)
 
     @staticmethod
     def _atomic_secret_write(path: Path, text: str) -> None:
@@ -403,6 +442,17 @@ class SecretResolver:
                 0o600,
             )
             try:
+                # Harden the empty staging file before any secret byte is
+                # written: rename preserves the file's security descriptor and
+                # mode, so the value is never on disk under inherited access.
+                try:
+                    harden_private_path(temporary, mode=0o600)
+                except PrivateAccessUnsupported:
+                    raise SecretResolutionError(
+                        "unsupported-private-acl", path.name, "write"
+                    ) from None
+                except OSError:
+                    raise SecretResolutionError("io", path.name, "write") from None
                 with os.fdopen(descriptor, "w", encoding="utf-8", closefd=False) as stream:
                     stream.write(text)
                     stream.flush()
@@ -410,7 +460,6 @@ class SecretResolver:
             finally:
                 os.close(descriptor)
             temporary.replace(path)
-            os.chmod(path, 0o600, follow_symlinks=False)
         except SecretResolutionError:
             raise
         except OSError:

@@ -10,7 +10,6 @@ import hashlib
 import json
 import os
 import platform
-import pwd
 import re
 import shutil
 import signal
@@ -19,6 +18,13 @@ import subprocess
 import threading
 from pathlib import Path
 from typing import Any
+
+from hyprial.kernel import current_uid, posix_metadata_enforced
+
+try:  # POSIX-only; the shared snapshot helpers stay importable on Windows.
+    import pwd
+except ImportError:  # pragma: no cover - Windows import path
+    pwd = None
 
 _SYSTEM_E2FS_DIRS = (
     "/opt/homebrew/opt/e2fsprogs/sbin",
@@ -86,7 +92,11 @@ def _snapshot(path: Path) -> dict[str, Any]:
 
 
 def _host_canaries() -> dict[str, Any]:
-    home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    if pwd is None:
+        raise SmolvmProbeError(
+            "SMOLVM_PROBE_UNSUPPORTED", "POSIX user identity is unavailable on this host"
+        )
+    home = Path(pwd.getpwuid(current_uid()).pw_dir)
     paths = [
         home / ".smolvm",
         home / "Library/Application Support/smolvm",
@@ -119,8 +129,13 @@ def _private_environment(output: Path, *, reuse: bool = False) -> dict[str, str]
         if (
             not stat.S_ISDIR(info.st_mode)
             or engine.resolve() != engine
-            or info.st_uid != os.getuid()
-            or stat.S_IMODE(info.st_mode) != 0o700
+            or (
+                posix_metadata_enforced()
+                and (
+                    info.st_uid != current_uid()
+                    or stat.S_IMODE(info.st_mode) != 0o700
+                )
+            )
         ):
             raise ValueError("Private runtime engine ownership/type/mode mismatch")
     env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C", "LC_ALL": "C"}
@@ -139,8 +154,13 @@ def _private_environment(output: Path, *, reuse: bool = False) -> dict[str, str]
             if (
                 not stat.S_ISDIR(info.st_mode)
                 or path.resolve() != path
-                or info.st_uid != os.getuid()
-                or stat.S_IMODE(info.st_mode) != 0o700
+                or (
+                    posix_metadata_enforced()
+                    and (
+                        info.st_uid != current_uid()
+                        or stat.S_IMODE(info.st_mode) != 0o700
+                    )
+                )
             ):
                 raise ValueError(
                     "Private runtime environment ownership/type/mode mismatch"

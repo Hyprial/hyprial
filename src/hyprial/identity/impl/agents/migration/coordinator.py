@@ -184,7 +184,7 @@ class AgentMigrationCoordinator():
         _ensure_private_directory(transaction, agent.actor, "transaction")
         persisted_plan = _read_plan(plan_path, agent.actor)
         if persisted_plan is None:
-            _write_json(plan_path, plan.to_json())
+            _write_json(plan_path, plan.to_json(), actor=agent.actor)
         elif persisted_plan != plan:
             raise AgentHomeMigrationError("plan-mismatch", "resume", actor=agent.actor)
         started = self._clock()
@@ -240,7 +240,6 @@ class AgentMigrationCoordinator():
                                     "backup-occupied", "publish", actor=agent.actor
                                 )
                             os.rename(target, backup)
-                        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
                         _safe_target_parents(target.parent, root, agent.actor)
                         os.rename(staged, target)
                         _fsync_directory(target.parent)

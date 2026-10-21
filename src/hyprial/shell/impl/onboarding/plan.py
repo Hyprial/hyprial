@@ -51,7 +51,7 @@ STEPS: tuple[OnboardingStep, ...] = (
         ("runtime-ready",),
         False,
         "默认 agent 会话",
-        "hyprial agent create --kind default",
+        "hyprial agent create --name default",
     ),
     OnboardingStep(
         "worker-agent",
@@ -59,7 +59,7 @@ STEPS: tuple[OnboardingStep, ...] = (
         ("default-agent",),
         False,
         "worker/developer agent",
-        "hyprial agent create --kind worker",
+        "hyprial agent create --name worker",
     ),
     OnboardingStep(
         "squire",

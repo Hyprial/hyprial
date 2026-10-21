@@ -1,11 +1,17 @@
-"""Cross-process fencing for offline writers sharing daemon JSON stores."""
+"""Cross-process fencing for offline writers sharing daemon JSON stores.
+
+The lock primitive is the kernel's platform file lock: ``flock`` on POSIX and a
+byte-range lock on Windows.  This module is imported while the daemon starts, so
+an unconditional ``fcntl`` import here would crash every Windows start.
+"""
 
 from __future__ import annotations
 
-import fcntl
 import os
 import time
 from contextlib import contextmanager
+
+from hyprial.kernel import lock_exclusive, unlock
 
 
 @contextmanager
@@ -17,10 +23,11 @@ def json_store_mutation(path, *, timeout=5.0):
     )
     deadline = time.monotonic() + max(0.0, timeout)
     try:
-        os.fchmod(descriptor, 0o600)
+        if hasattr(os, "fchmod"):  # Windows has no descriptor chmod; os.open's mode stands.
+            os.fchmod(descriptor, 0o600)
         while True:
             try:
-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                lock_exclusive(descriptor, blocking=False)
                 break
             except BlockingIOError as error:
                 if time.monotonic() >= deadline:
@@ -31,6 +38,6 @@ def json_store_mutation(path, *, timeout=5.0):
         try:
             yield
         finally:
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            unlock(descriptor)
     finally:
         os.close(descriptor)
