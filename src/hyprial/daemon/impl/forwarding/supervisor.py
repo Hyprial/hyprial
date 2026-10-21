@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from __future__ import annotations
 from __future__ import annotations
+import json
 import random
 import threading
 import time
@@ -15,6 +16,7 @@ import uuid
 from enum import StrEnum
 from hyprial.kernel import (
     DEFAULT_POLICIES,
+    FORWARDING_UP_ENV,
     PROCESS_LIFECYCLE,
     SupervisionPolicy,
 )
@@ -275,7 +277,10 @@ class ForwardingSidecarSupervisor:
         jitter_source: Callable[[], float] = random.random,
         own_io: bool = False,
         desired_exposures: Callable[[], Sequence[Mapping[str, object]]] | None = None,
-        directory: Callable[[], Mapping[str, str]] | None = None,
+        slots: Callable[[], tuple[str, ...]] | None = None,
+        slot_transport: str = "unix",
+        on_slots_reported: Callable[[tuple[str, ...]], None] | None = None,
+        up_slots: Callable[[], tuple[str, ...]] | None = None,
     ) -> None:
         self._environ = environ
         self._event_log = event_log
@@ -293,7 +298,10 @@ class ForwardingSidecarSupervisor:
         self._state_owner_closed = False
         self._closing_backend: ForwardingEndpoints | None = None
         self._desired_exposures = desired_exposures or (lambda: ())
-        self._directory = directory
+        self._slots = slots
+        self._slot_transport = slot_transport
+        self._on_slots_reported = on_slots_reported
+        self._up_slots = up_slots
         self._lock = threading.Lock()
         self._endpoints: ForwardingEndpoints | None = None
         self._failures: deque[float] = deque()
@@ -400,14 +408,14 @@ class ForwardingSidecarSupervisor:
             raise ForwardingSidecarError("forwarding sidecar is not running")
         return backend.controller.allow(keys, allow_any)
 
-    def map_peer(self, peer: str, address: str) -> int:
+    def map_peer(self, peer: str, address: str, slot: str) -> str:
         # Read through endpoints(), never ``self._endpoints`` directly:
         # with own_io=True the backend lives in the state owner and the
         # plain attribute stays None on a perfectly healthy sidecar.
         backend = self.endpoints()
         if backend is None:
             raise ForwardingSidecarError("forwarding sidecar is not running")
-        return backend.controller.map_peer(peer, address)
+        return backend.controller.map_peer(peer, address, slot)
 
     def unmap_peer(self, peer: str) -> None:
         backend = self.endpoints()
@@ -635,6 +643,25 @@ class ForwardingSidecarSupervisor:
         if not stale:
             self._spawn(expected_generation=expected_generation)
 
+    def _launch_environ(self) -> Mapping[str, str]:
+        """Refresh persisted TCP slot ports for every sidecar incarnation."""
+
+        if self._up_slots is None or self._slot_transport != "tcp":
+            return self._environ
+        raw = self._environ.get(FORWARDING_UP_ENV)
+        if not isinstance(raw, str) or not raw.strip():
+            return self._environ
+        try:
+            up = json.loads(raw)
+        except ValueError:
+            return self._environ
+        if not isinstance(up, dict):
+            return self._environ
+        up["slots"] = list(self._up_slots())
+        environ = dict(self._environ)
+        environ[FORWARDING_UP_ENV] = json.dumps(up, separators=(",", ":"))
+        return environ
+
     def _spawn(self, *, expected_generation: int) -> None:
         cell: dict[str, Any] = {"backend": None, "exit": None}
         token = uuid.uuid4().hex
@@ -644,7 +671,7 @@ class ForwardingSidecarSupervisor:
 
         controller: Any | None = None
         try:
-            controller = self._controller_factory(self._environ, _exit)
+            controller = self._controller_factory(self._launch_environ(), _exit)
             for exposure in self._desired_exposures():
                 # A single exposure the sidecar refuses is logged and skipped;
                 # it must not stop peer forwarding from starting.
@@ -677,7 +704,9 @@ class ForwardingSidecarSupervisor:
             controller,
             on_failure=self._note_status_failure,
             on_success=self._note_status_success,
-            directory=self._directory,
+            slots=self._slots,
+            slot_transport=self._slot_transport,
+            on_slots_reported=self._on_slots_reported,
         )
         if self._state_owner is not None:
             installed = self._state_owner.call(

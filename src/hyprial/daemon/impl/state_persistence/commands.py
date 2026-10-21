@@ -110,6 +110,16 @@ class ApplyHarnessLifecycle:
 
 
 @dataclass(frozen=True, slots=True)
+class RecordHarnessRestoreSettlement:
+    correlation_id: str
+    operation_id: str
+    attempted: int
+    restored: int
+    failed: int
+    deferred: int
+
+
+@dataclass(frozen=True, slots=True)
 class RetireDomainReceipt:
     correlation_id: str
     domain: str
@@ -385,6 +395,7 @@ StateCommand = (
     | CompareAndSaveDesired
     | ApplySessionLifecycle
     | ApplyHarnessLifecycle
+    | RecordHarnessRestoreSettlement
     | RetireDomainReceipt
     | ConfirmDomainReceipt
     | ClaimInteractiveSession

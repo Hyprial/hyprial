@@ -497,11 +497,9 @@ class _WiringTransportMixin:
 
     def _startup_compose_delivery_plane(self, transport: Any, forwarding_listen: tuple[str, ...]) -> _StartupGraph:
         """Compose presence, adapters, durable inbox, turn hooks, harness actor."""
-        trace_options = (
-            {"observation_sink": self._trace_presence_observation}
-            if getattr(self, "_trace_presence_enabled", False) else {}
+        directory = LivelinessDirectory(
+            transport, observation_sink=self._trace_presence_observation
         )
-        directory = LivelinessDirectory(transport, **trace_options)
         presence = _LocalPresence(
             directory,
             self.node_id,

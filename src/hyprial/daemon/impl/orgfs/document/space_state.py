@@ -49,7 +49,7 @@ from hyprial.daemon.impl.orgfs.storage.space_authority  import (
 from hyprial.daemon.impl.orgfs.storage.store  import StoreError
 
 
-from hyprial.daemon.impl.orgfs.document.model import _AcknowledgePurge, _ApplyContentUpdate, _ApplyEnvelope, _ApplyStructuredUpdate, _ApplyTreeUpdate, _CreateSpace, _FacadeEffectBatch, _HydrateContentSnapshot, _InstallReplacement, _InviteMember, _LoadSpace, _Mkdir, _Move, _Purge, _PurgePlanCommand, _RemoveMember, _RemoveNode, _Restore, _SPACE_STATE_CAPACITY, _SpaceStateCommand, _SpaceStateFailure, _SpaceStateOperation, _SpaceStateOutcome, _SpaceStateOwner, _SpaceStateWaiter, _Unban, _WriteBytes, _WriteText
+from hyprial.daemon.impl.orgfs.document.model import _AcknowledgePurge, _ApplyContentUpdate, _ApplyEnvelope, _ApplyStructuredUpdate, _ApplyTreeUpdate, _CreateSpace, _HydrateContentSnapshot, _InstallReplacement, _InviteMember, _LoadSpace, _Mkdir, _Move, _Purge, _PurgePlanCommand, _RemoveMember, _RemoveNode, _Restore, _SPACE_STATE_CAPACITY, _SpaceStateCommand, _SpaceStateFailure, _SpaceStateOperation, _SpaceStateOutcome, _SpaceStateOwner, _SpaceStateWaiter, _Unban, _WriteBytes, _WriteText
 
 class FacadeSpaceState:
     """Responsibility methods on the sole LocalOrgFs state host.
@@ -167,6 +167,8 @@ class FacadeSpaceState:
 
     def _ensure_space_state_owner(self, space_id: str) -> _SpaceStateOwner:
         with self._lock:
+            if space_id in self._detached_spaces:
+                raise OrgFsError("unknown-space", {"spaceId": space_id})
             existing = self._space_state_owners.get(space_id)
             if existing is not None:
                 return existing
@@ -297,12 +299,14 @@ class FacadeSpaceState:
             self._effect_context.pending = []
         try:
             authority_lock = self._lock if space_id == "__directory__" else self._space_lock(space_id)
+            outcome: _SpaceStateOutcome
             with authority_lock:
                 try:
                     value = self._execute_space_operation(command.operation)
+                    outcome = _SpaceStateOutcome(value=value)
                 except Exception as error:
                     details = getattr(error, "details", {})
-                    return _SpaceStateOutcome(
+                    outcome = _SpaceStateOutcome(
                         error=_SpaceStateFailure(
                             type(error).__name__,
                             str(getattr(error, "code", "internal")),
@@ -319,26 +323,14 @@ class FacadeSpaceState:
                     )
                 finally:
                     effects = tuple(self._effect_context.pending)
-                    if command.effect_operation_id is not None:
-                        if effects:
-                            with self._lock:
-                                self._effect_sequence += 1
-                                sequence = self._effect_sequence
-                            self._effect_lane.submit_reserved(
-                                EffectRequest(
-                                    command.effect_operation_id,
-                                    command.effect_generation,
-                                    _FacadeEffectBatch(sequence, effects),
-                                )
-                            )
-                        else:
-                            self._effect_lane.cancel_reservation(
-                                command.effect_operation_id, command.effect_generation
-                            )
-                            with self._lock:
-                                self._effect_waiters.pop(command.effect_operation_id, None)
                     del self._effect_context.pending
-                return _SpaceStateOutcome(value=value)
+            if command.effect_operation_id is not None:
+                self._submit_post_commit_effects(
+                    command.effect_operation_id,
+                    command.effect_generation,
+                    effects,
+                )
+            return outcome
         finally:
             self._space_state_context.running = False
 
@@ -460,6 +452,9 @@ class FacadeSpaceState:
         space_id = (
             "__directory__" if isinstance(operation, _CreateSpace) else operation.space_id
         )
+        with self._lock:
+            if space_id in self._detached_spaces:
+                raise OrgFsError("unknown-space", {"spaceId": space_id})
         owner = self._ensure_space_state_owner(space_id)
         operation_id = uuid.uuid4().hex
         effect_id: str | None = None
@@ -468,6 +463,8 @@ class FacadeSpaceState:
         with self._lock:
             if self._space_state_closing:
                 raise OrgFsError("unavailable", {"message": "orgfs is closing"})
+            if space_id in self._detached_spaces:
+                raise OrgFsError("unknown-space", {"spaceId": space_id})
             if len(owner.commands) >= _SPACE_STATE_CAPACITY:
                 raise OrgFsError(
                     "resource-exhausted",
@@ -514,7 +511,9 @@ class FacadeSpaceState:
                 {"message": "orgspace actor admission was " + admission.value},
             )
         waiter.done.wait()
-        if effect_id is not None and not getattr(self._effect_context, "in_effect_worker", False):
+        if effect_id is not None and not getattr(
+            self._effect_context, "in_effect_worker", False
+        ):
             self._wait_for_effect(effect_id)
         if waiter.error is not None:
             error = waiter.error

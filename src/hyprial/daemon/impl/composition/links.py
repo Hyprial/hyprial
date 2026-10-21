@@ -14,6 +14,10 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from hyprial.daemon.impl.composition.link_spaces import (
+    SPACE_REFRESH_MS,
+    OrgLinkSpaces,
+)
 from hyprial.daemon.impl.configuration.identity import normalize_agent_recipient
 from hyprial.daemon.impl.inbox import DEFAULT_HOLD_TTL_MS
 from hyprial.daemon.impl.inbox.contracts.api import (
@@ -33,9 +37,10 @@ from hyprial.daemon.impl.links.store import (
     LedgerRow,
     LinkStore,
 )
-from hyprial.daemon.impl.org.network.binding import resolve_org_directory_space
-from hyprial.daemon.impl.org.network.directory import OrgFsDirectoryStore
-from hyprial.daemon.impl.org.network.state import read_left_orgs
+from hyprial.daemon.impl.org.network.directory import (
+    OrgFsDirectoryStore as OrgFsDirectoryStore,
+)
+from hyprial.daemon.impl.org.network.state import read_left_orgs as read_left_orgs
 from hyprial.daemon.impl.pac.actors.marker import pac_worker_marker
 from hyprial.identity import directory_owner_principal
 from hyprial.daemon.impl.pac.storage.store import (
@@ -76,8 +81,6 @@ __all__ = [
 
 #: daemon-level bus events that merely wake the service (rulings 46/55).
 LINK_WAKE_EVENTS = ("graph.closed", "worker.cleanup.complete")
-#: ``OrgLinkSpaces`` refresh cadence: one org-meta read per five seconds.
-SPACE_REFRESH_MS = 5_000
 #: Grace for ``store.flush()`` and the service thread on the close path.
 LINK_SERVICE_CLOSE_TIMEOUT_S = 5.0
 #: ``link.space_ambiguous`` / ``link.local_agents_failed`` rate limit.
@@ -328,86 +331,6 @@ def _local_actor_candidates(app: Any) -> Callable[[], Iterable[str]]:
         return registry + interactive
 
     return candidates
-
-
-class OrgLinkSpaces:
-    """The orgfs directory spaces that hold ``link/`` (wp2-composition §3)."""
-
-    def __init__(
-        self,
-        fs: Any,
-        *,
-        home: Path,
-        clock_ms: Callable[[], int],
-        invalid_devices: Any,
-        logger: Callable[..., None] | None = None,
-    ) -> None:
-        self._fs = fs
-        self._home = Path(home)
-        self._clock = clock_ms
-        self._invalid_devices = invalid_devices
-        self._logger = logger
-        self._at_ms = -(10**18)
-        self._ready = False
-        self._spaces: tuple[str, ...] = ()
-        self._ambiguous: frozenset[str] = frozenset()
-
-    def __call__(self) -> tuple[str, ...]:
-        now = self._clock()
-        if self._ready and now - self._at_ms < SPACE_REFRESH_MS:
-            return self._spaces
-        self._at_ms = now
-        first = not self._ready
-        self._ready = True
-        result = self._resolve()
-        if result != self._spaces:
-            if not first:
-                self._note_transition(result)
-            if result:
-                self._log("link.spaces_changed", count=len(result), spaceIds=result[:8])
-        self._spaces = result
-        return result
-
-    def _resolve(self) -> tuple[str, ...]:
-        store = OrgFsDirectoryStore(
-            self._fs, logger=self._logger, invalid_devices=self._invalid_devices
-        )
-        left = set(read_left_orgs(self._home))
-        spaces: list[str] = []
-        ambiguous: set[str] = set()
-        for org in store.orgs():
-            if org in left:
-                continue
-            space, reason = resolve_org_directory_space(self._fs, org)
-            if space is None:
-                if reason == "ambiguous-directory-space":
-                    ambiguous.add(org)
-                    if org not in self._ambiguous:
-                        self._log("link.space_ambiguous", org=org)
-                continue
-            try:
-                state = store.org_state(org)
-            except Exception:  # noqa: BLE001 - unreadable meta means active
-                state = "active"
-            if state == "deleted":
-                continue
-            spaces.append(space.space_id)
-        self._ambiguous = frozenset(ambiguous)
-        return tuple(sorted(spaces))
-
-    def _note_transition(self, result: tuple[str, ...]) -> None:
-        if self._spaces and not result:
-            self._log("link.org_unavailable")
-        elif not self._spaces and result:
-            self._log("link.org_available")
-
-    def _log(self, event: str, **fields: Any) -> None:
-        if self._logger is None:
-            return
-        try:
-            self._logger("info", "daemon", event, **fields)
-        except Exception:  # noqa: BLE001 - logging never breaks a scan
-            pass
 
 
 class PresencePort:
@@ -852,6 +775,7 @@ def compose_link_service(
         stage = "describe"
         composed = {
             "spaces": len(spaces()),
+            "skippedOrgSpaces": spaces.skipped_count,
             "localAgents": len(identity.local_agents()),
             "orgAvailable": store.index().org_available,
             "bypass": service.bypass,

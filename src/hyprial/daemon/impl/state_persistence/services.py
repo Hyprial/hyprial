@@ -6,12 +6,30 @@ from collections.abc import Mapping
 from uuid import uuid4
 
 from hyprial.daemon.impl.desired_state import ServiceRegistry
-from .commands import RemoveServiceConnection, SetServiceConnection, SetServiceRegistry
+from .commands import (
+    RecordHarnessRestoreSettlement,
+    RemoveServiceConnection,
+    SetServiceConnection,
+    SetServiceRegistry,
+)
 from .commands import _snapshot_payload
 
 
 class ServiceDesiredPortMixin:
-    """Adds service mutations without creating a second persistence lane."""
+    """Adds small typed mutations without creating a second persistence lane."""
+
+    def harness_restore_settlement(self, operation_id: str):
+        return self._owner.read_harness_restore_settlement(operation_id)
+
+    def record_harness_restore_settlement(
+        self, operation_id, attempted, restored, failed, deferred
+    ):
+        return self._owner._call(
+            RecordHarnessRestoreSettlement(
+                f"state-restore-record-{uuid4().hex}", operation_id,
+                attempted, restored, failed, deferred,
+            )
+        )
 
     def set_service_connection(self, name: str, local_port: int):
         return self._owner._call(

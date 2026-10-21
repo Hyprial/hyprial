@@ -152,6 +152,11 @@ class StatePersistenceAuthority:
     ) -> HarnessLaunchSpec | None:
         return self._projection.harness_spec(name, excluding=excluding)
 
+    def read_harness_restore_settlement(
+        self, operation_id: str
+    ) -> tuple[int, int, int, int] | None:
+        return self._desired_store.harness_restore_settlement(operation_id)
+
     def call_desired(self, operation: DesiredQuery, *args: object, **kwargs: object) -> Any:
         if any(callable(item) for item in args) or any(callable(item) for item in kwargs.values()):
             raise TypeError("state commands cannot carry executable callbacks")

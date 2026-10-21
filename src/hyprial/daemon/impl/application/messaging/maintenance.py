@@ -623,7 +623,13 @@ class _MaintenanceMixin:
                     cpu_seconds=time.thread_time() - started_cpu,
                 )
 
+        _timed("sessions.cleanup", self._clean_dead_interactive_sessions)
         _timed("routes.expire", lambda: self._expire_stale_channel_routes(now))
+        if now >= self._status_refresh_due:
+            self._status_refresh_due = now + 30.0
+            admission = self._request_status_refresh()
+            if not admission.accepted:
+                self._log("warn", "daemon", "status.refresh_overloaded")
         if now >= self._profile_refresh_due:
             self._profile_refresh_due = now + 30.0
             try:

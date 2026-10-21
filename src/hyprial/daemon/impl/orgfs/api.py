@@ -67,6 +67,8 @@ ORGFS_ERROR_CODES = frozenset(
         "purged",
         "resource-exhausted",
         "snapshot-barrier",
+        "space-purge-incomplete",
+        "space-purge-refused",
         "stale-plan",
         "stale-write",
         "too-large",
@@ -74,6 +76,7 @@ ORGFS_ERROR_CODES = frozenset(
         "unknown-doc",
         "unknown-space",
         "unavailable",
+        "unsafe-space-path",
     }
 )
 

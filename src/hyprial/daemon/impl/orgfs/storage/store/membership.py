@@ -129,6 +129,17 @@ class StoreMembership:
             ).fetchone()
             return None if row is None else bytes(row["version"])
 
+    def commit_envelope(self, doc_id: str, writer: str, seq: int) -> bytes | None:
+        """Return the exact bytes recorded under one immutable log key."""
+
+        with self._lock:
+            row = self._db.execute(
+                "SELECT envelope_bytes FROM commits "
+                "WHERE doc_id = ? AND writer = ? AND seq = ?",
+                (doc_id, writer, seq),
+            ).fetchone()
+            return None if row is None else bytes(row["envelope_bytes"])
+
     def _writer_for(self, author: str, actor: str | None) -> str:
         key = (author, actor)
         if key not in self._lanes:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from __future__ import annotations
 import os
 import time
 from collections.abc import Callable
@@ -39,6 +38,13 @@ if TYPE_CHECKING:
 from hyprial.daemon.impl.ipc.params import (
     JsonObject,
     _required_string,
+)
+from hyprial.daemon.impl.application.messaging.status.refresh import (
+    refresh_response_fields,
+    request_status_refresh,
+    status_refresh_fields,
+    storage_health_status,
+    zenoh_session_status,
 )
 
 
@@ -134,34 +140,31 @@ class _StatusViewsMixin:
             state_persistence=self._state_persistence.command_costs,
         )
 
-    def _zenoh_session_status(self) -> dict[str, object]:
-        authority = getattr(self, "_transport", None)
-        health = getattr(authority, "session_health", None) if authority is not None else None
-        if health is None:
-            return {"state": "unknown"}
-        try:
-            return dict(health())
-        except Exception:  # noqa: BLE001 - a status read must not fail ps
-            return {"state": "unknown"}
+    def _request_status_refresh(self):  # type: ignore[no-untyped-def]
+        return request_status_refresh(self)
+
+    def _status_refresh_fields(
+        self, operation_id: str | None = None
+    ) -> dict[str, object]:
+        return status_refresh_fields(self, operation_id)
+
+    def _zenoh_session_status(
+        self, operation_id: str | None = None
+    ) -> dict[str, object]:
+        return zenoh_session_status(self, operation_id)
+
+    def _storage_health_status(self) -> dict[str, object]:
+        return storage_health_status(self)
+
+    def _refresh_response_fields(self, params) -> dict[str, object]:
+        return refresh_response_fields(self, params)
 
     def _ipc_ps(self, params) -> Any:
-        self._trace_presence_snapshot(None)
         now = time.monotonic()
         restore_now_ms = self._restore_now_ms()
-        # Read the session projections once for the whole request and hand
-        # them to both recovery cleanup and route expiry: closing a route
-        # never edits the session store, so the pre-expiry read is exactly
-        # what expiry would read itself — the old second read was one
-        # redundant desired-state load per ps. A status read is also the
-        # recovery point for a carrier whose PID and birth identity prove it
-        # is gone; otherwise a dead interactive row would keep appearing
-        # beside a newer headless worker (card 706).
+        # Status is observational. Recovery and route expiry are maintenance
+        # responsibilities and must never run under an IPC read owner.
         interactive_sessions = self._agent_session_domains.session.read_sessions()
-        if hasattr(self, "_clean_dead_interactive_sessions"):
-            interactive_sessions = self._clean_dead_interactive_sessions(
-                interactive_sessions
-            )
-        self._expire_stale_channel_routes(now, sessions=interactive_sessions)
         # Node-wide pending: rows wait under agent URIs, not the node
         # id, so scoping this to the node inbox would report an empty
         # node with a full one (the runner-observation blind spot).
@@ -240,6 +243,7 @@ class _StatusViewsMixin:
                 if row.get("restoreStatus") == "blocked"
             ]
             return {
+                **self._refresh_response_fields(params),
                 "daemon": {
                     "running": True,
                     "pid": os.getpid(),
@@ -398,25 +402,24 @@ class _StatusViewsMixin:
                 "zenoh": {
                     "listen": list(self.zenoh_listen),
                     "connect": list(self.zenoh_connect),
-                    "session": self._zenoh_session_status(),
+                    "session": self._zenoh_session_status(
+                        params.get("refreshOperationId")
+                        if isinstance(params.get("refreshOperationId"), str)
+                        else None
+                    ),
                     "isolated": self._network_isolation_status()["effective"],
                     "isolation": self._network_isolation_status(),
                 },
                 "duplicateInstance": self._duplicate_instance_payload(),
                 "maintenance": self._maintenance_watchdog.status(),
-                "storageHealth": (
-                    self._database_health.status() if self._database_health is not None
-                    else {"healthy": None, "checkedAtMs": None}
-                ),
+                "storageHealth": self._storage_health_status(),
                 "orphanPersistence": (
                     self._harnesses.orphan_persistence_stats()
                     if callable(getattr(self._harnesses, "orphan_persistence_stats", None))
                     else {}
                 ),
                 "forwarding": self._forwarding_status_json(),
-                "tailnet": self._tailnet_status_json(
-                    refresh=params.get("refreshTailnetStatus") is True
-                ),
+                "tailnet": self._tailnet_status_json(),
                 "workerProxy": self._worker_proxy_status_json(),
                 "workflowWorkerCleanup": {
                     "attention": self._workflow_cleanup_attention_snapshot()
@@ -752,8 +755,6 @@ class _StatusViewsMixin:
 
     def _ipc_targets(self, params) -> Any:
         with self._worker_status_snapshot():
-            now = time.monotonic()
-            self._expire_stale_channel_routes(now)
             kind = params.get("kind")
             # targets answers "what can I deliver a message to?" (Allen's
             # definition).  Agents, users, and channel routes are the three
@@ -854,15 +855,42 @@ class _StatusViewsMixin:
                 )
             return {"targets": targets}
 
-    def _ipc_hosts(self) -> Any:
+    def _ipc_hosts(self, params) -> Any:
         with self._worker_status_snapshot():
-            nodes = self._online_host_nodes()
-            self._trace_presence_snapshot(nodes)
-            return {
-                "hosts": [
-                    {"nodeId": node, "status": "online"} for node in nodes
-                ]
-            }
+            current = set(self._online_host_nodes())
+        prefix = "host-presence:"
+        observed_targets = self._status_refresh.targets(prefix)
+        global_value = self._status_refresh.snapshot("host-presence")
+        global_nodes = set(global_value) if isinstance(global_value, tuple) else set()
+        retained_unknown = {
+            target.removeprefix(prefix)
+            for target in observed_targets
+            if self._status_refresh.snapshot(target) != "online"
+        }
+        nodes = current | retained_unknown
+        global_status = self._status_refresh.status("host-presence")
+        rows = []
+        for node in sorted(nodes):
+            target = f"{prefix}{node}"
+            evidence = self._status_refresh.snapshot(target)
+            fields = self._status_refresh.status(target)
+            if fields["observedAtMs"] is None and node in global_nodes:
+                evidence, fields = "online", global_status
+            rows.append(
+                {
+                    "nodeId": node,
+                    "status": (
+                        "online"
+                        if evidence == "online" and not fields["expired"]
+                        else "unknown"
+                    ),
+                    "observedAtMs": fields["observedAtMs"],
+                    "ageMs": fields["ageMs"],
+                    "stale": fields["stale"],
+                    "lastError": fields["lastError"],
+                }
+            )
+        return {**self._refresh_response_fields(params), "hosts": rows}
 
     def _online_host_nodes(self) -> tuple[str, ...]:
         """Online bare node identities proven by daemon mesh presence.

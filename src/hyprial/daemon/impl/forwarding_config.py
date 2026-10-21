@@ -20,11 +20,14 @@ from hyprial.identity import (
     device_key_path,
     read_device_record,
 )
+
+from .forwarding.policy import FORWARD_PROTOCOL_VERSION
 from hyprial.daemon.impl.network.tailcat import (
     BINARY_ENV,
     TailcatSidecarError,
     locate_tailcat_sidecar,
 )
+from hyprial.daemon.impl.forwarding.slots.store import SlotAssignments
 
 FORWARDING_TARGET_ENV = "HYPRIAL_FORWARDING_INBOUND_TARGET"
 #: A local DERP relay for tests, as a JSON object
@@ -52,26 +55,6 @@ class ForwardingConfigurationError(RuntimeError):
         super().__init__(message)
 
 
-def _loopback_target(raw: str) -> str:
-    parsed = urlsplit(f"//{raw}")
-    try:
-        host = parsed.hostname
-        port = parsed.port
-        address = ipaddress.ip_address(host or "")
-    except ValueError as error:
-        raise ForwardingConfigurationError(
-            "FORWARDING_TARGET_INVALID",
-            f"forwarding inbound target must be an explicit loopback host:port; got {raw!r}",
-        ) from error
-    if not address.is_loopback or port is None or port <= 0:
-        raise ForwardingConfigurationError(
-            "FORWARDING_TARGET_INVALID",
-            f"forwarding inbound target must be an explicit loopback host:port; got {raw!r}",
-        )
-    return raw
-
-
-
 def _stored_derp_map_url(hyprial_home: Path) -> str | None:
     """Return the configured HTTPS DERP map URL, or None for the default map."""
 
@@ -94,6 +77,26 @@ def _stored_derp_map_url(hyprial_home: Path) -> str | None:
             f"{path}: {FORWARDING_SETTINGS_KEY}.derpMapURL must be an https URL",
         )
     return raw
+
+
+def _loopback_target(raw: str) -> str:
+    parsed = urlsplit(f"//{raw}")
+    try:
+        host = parsed.hostname
+        port = parsed.port
+        address = ipaddress.ip_address(host or "")
+    except ValueError as error:
+        raise ForwardingConfigurationError(
+            "FORWARDING_TARGET_INVALID",
+            f"forwarding inbound target must be an explicit loopback host:port; got {raw!r}",
+        ) from error
+    if not address.is_loopback or port is None or port <= 0:
+        raise ForwardingConfigurationError(
+            "FORWARDING_TARGET_INVALID",
+            f"forwarding inbound target must be an explicit loopback host:port; got {raw!r}",
+        )
+    return raw
+
 
 def daemon_forwarding_environment(
     hyprial_home: Path,
@@ -142,7 +145,7 @@ def daemon_forwarding_environment(
         )
 
     up: dict[str, object] = {
-        "v": 3,
+        "v": FORWARD_PROTOCOL_VERSION,
         "op": "up",
         "keyFile": str(key_file),
         # Deny by default: the production builder has no org-directory allow
@@ -155,6 +158,14 @@ def daemon_forwarding_environment(
         "inboundTarget": f"tcp:{target}",
         "peerPort": DEFAULT_PEER_PORT,
     }
+    # Slot wire (stable-zenoh-session-slots §4): the sidecar listens on
+    # every slot at ``up``, in hold mode.  The fixed pool is the only way
+    # forwarding dials -- there is no rollback to per-peer loopback ports.
+    # A later ``map-peer`` naming a slot beyond this list (pool growth)
+    # implies a lazily-bound listener at the same directory and naming
+    # rule (unix), or a fresh kernel-assigned loopback TCP listener (tcp
+    # -- the Windows transport, where zenoh has no unixsock-stream).
+    up["slots"] = list(SlotAssignments(home).specs())
     derp_map_url = _stored_derp_map_url(home)
     if derp_map_url is not None:
         up["derpMapURL"] = derp_map_url

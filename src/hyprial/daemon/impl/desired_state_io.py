@@ -36,6 +36,7 @@ class DesiredStateOperation(StrEnum):
     RECORD_SESSION_AGENT_EFFECTS = "record_session_agent_effects"
     COMPLETE_SESSION_AGENT_EFFECT = "complete_session_agent_effect"
     APPLY_HARNESS_LIFECYCLE = "apply_harness_lifecycle"
+    RECORD_HARNESS_RESTORE_SETTLEMENT = "record_harness_restore_settlement"
     CONFIRM_HARNESS_LIFECYCLE = "confirm_harness_lifecycle"
     COMPLETE_HARNESS_LIFECYCLE = "complete_harness_lifecycle"
     RECORD_HARNESS_LIFECYCLE_FAILURE = "record_harness_lifecycle_failure"

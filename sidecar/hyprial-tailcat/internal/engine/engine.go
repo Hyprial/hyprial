@@ -16,9 +16,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-	"net/url"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -61,20 +59,31 @@ type UpConfig struct {
 	DERP            *DERPOverride
 	DERPMapURL      string
 	DERPMapCacheDir string
+	Slots           []string      // fixed outbound slot socket paths
+	SlotHold        time.Duration // 0 means defaultSlotHold
 }
 
-// Mapping describes one mapped peer.
+// Mapping describes one mapped peer: the slot it is bound to.
 type Mapping struct {
-	Peer      string
-	LocalPort int
+	Peer string
+	Slot string
 }
+
+// AdmissionAny marks an exposure that admits every authenticated key
+// (design §3.3, the join endpoint). Any other value, including the empty
+// string, restricts the exposure to the allow set.
+const AdmissionAny = "any"
 
 // Exposure describes one exposed Tailcat port.
 type Exposure struct {
 	Port          int
 	Target        string
 	ProxyProtocol string
+	Admission     string
 }
+
+// restricted reports whether the exposure admits only the allow set.
+func (x Exposure) restricted() bool { return x.Admission != AdmissionAny }
 
 // Sentinel errors mapped to protocol error codes by the serve layer.
 var (
@@ -88,7 +97,11 @@ var (
 
 type connPair struct {
 	left, right net.Conn
-	once        sync.Once
+	// peerKey is the authenticated tunnel key behind an inbound
+	// connection (zero for outbound pairs); Allow uses it to close only
+	// the connections of a revoked key.
+	peerKey key.NodePublic
+	once    sync.Once
 }
 
 func (p *connPair) close() {
@@ -99,14 +112,15 @@ func (p *connPair) close() {
 }
 
 type mappedPeer struct {
-	mapping  Mapping
-	address  string // secret: never logged or emitted
-	port     uint16
-	listener net.Listener
-	lease    *clientLease
-	cancel   context.CancelFunc
-	pairs    map[*connPair]struct{}
-	history  *connectionHistory
+	mapping Mapping
+	address string // secret: never logged or emitted
+	port    uint16
+	slot    *slotPort
+	lease   *clientLease
+	ctx     context.Context
+	cancel  context.CancelFunc
+	pairs   map[*connPair]struct{}
+	history *connectionHistory
 }
 
 type exposedPort struct {
@@ -133,6 +147,9 @@ type Engine struct {
 
 	inbound      net.Listener // peerPort listener toward inboundTarget
 	inboundPairs map[*connPair]struct{}
+	slots        map[string]*slotPort
+	slotOrder    []string      // resolved slot wire ids, up order then growth
+	slotHold     time.Duration // hold-mode drop timeout, for lazily-grown slots
 	mapped       map[string]*mappedPeer
 	services     map[string]*mappedService
 	clients      map[string]*pooledClient
@@ -220,17 +237,11 @@ func (e *Engine) Up(ctx context.Context, cfg UpConfig) (serverPublic, clientPubl
 	e.allowKeys = allowSet
 	e.allowAny.Store(cfg.AllowAny)
 	e.mu.Unlock()
-	server.AllowClient = func(k key.NodePublic) bool {
-		e.mu.Lock()
-		set := e.allowKeys
-		any := e.allowAny.Load()
-		e.mu.Unlock()
-		if any || (set != nil && set.Contains(k)) {
-			return true
-		}
-		e.deniedCount.Add(1)
-		return false
-	}
+	// Per-service admission (design §3.3): the tunnel handshake admits
+	// every key so an admission-any exposure (the join endpoint) stays
+	// reachable before the peer enters the allow set. The allow set is
+	// enforced per connection in acceptInbound and handleExposure.
+	server.AllowClient = func(key.NodePublic) bool { return true }
 
 	if err := server.Start(); err != nil {
 		cancel()
@@ -258,11 +269,25 @@ func (e *Engine) Up(ctx context.Context, cfg UpConfig) (serverPublic, clientPubl
 	e.ctx = engineCtx
 	e.cancel = cancel
 	e.inboundPairs = make(map[*connPair]struct{})
+	e.slots = make(map[string]*slotPort)
 	e.mapped = make(map[string]*mappedPeer)
 	e.services = make(map[string]*mappedService)
 	e.clients = make(map[string]*pooledClient)
 	e.exposed = make(map[int]*exposedPort)
 	e.mu.Unlock()
+
+	hold := cfg.SlotHold
+	if hold <= 0 {
+		hold = defaultSlotHold
+	}
+	e.mu.Lock()
+	e.slotHold = hold
+	e.slotOrder = nil
+	e.mu.Unlock()
+	if err := e.listenSlots(cfg.Slots, hold); err != nil {
+		e.Down()
+		return "", "", err
+	}
 
 	if cfg.InboundTarget != "" {
 		listenCtx, listenCancel := context.WithTimeout(ctx, 30*time.Second)
@@ -311,30 +336,39 @@ func parseAllowList(list []string) (*tailcat.KeySet, error) {
 }
 
 // Allow replaces the admission set. When the new set is closed
-// (allowAny=false), connected clients absent from it are disconnected
-// via Server.DisconnectClient.
+// (allowAny=false), established connections whose authenticated key is
+// absent from it are closed — zenoh inbound pairs and pairs on
+// restricted exposures. Connections on admission-any exposures stay up,
+// and the tunnel itself is never torn down (no DisconnectClient), so a
+// joiner connected only to the join endpoint is not cut off.
 func (e *Engine) Allow(list []string, allowAny bool) (int, error) {
 	set, err := parseAllowList(list)
 	if err != nil {
 		return 0, err
 	}
 	e.mu.Lock()
+	defer e.mu.Unlock()
 	if !e.up {
-		e.mu.Unlock()
 		return 0, ErrNotUp
 	}
 	e.allowKeys = set
 	e.allowAny.Store(allowAny)
-	server := e.server
-	e.mu.Unlock()
-
 	if allowAny {
 		return len(list), nil
 	}
-	for _, peer := range server.Status().Peer {
-		pub, err := key.ParseNodePublicUntyped(mem.S(strings.TrimPrefix(peer.PublicKey.String(), "nodekey:")))
-		if err == nil && !set.Contains(pub) {
-			if server.DisconnectClient(pub) {
+	for pair := range e.inboundPairs {
+		if !set.Contains(pair.peerKey) {
+			pair.close()
+			e.disconnected.Add(1)
+		}
+	}
+	for _, exposed := range e.exposed {
+		if !exposed.exposure.restricted() {
+			continue
+		}
+		for pair := range exposed.pairs {
+			if !set.Contains(pair.peerKey) {
+				pair.close()
 				e.disconnected.Add(1)
 			}
 		}
@@ -342,11 +376,13 @@ func (e *Engine) Allow(list []string, allowAny bool) (int, error) {
 	return len(list), nil
 }
 
-// MapPeer listens on 127.0.0.1:0 and forwards each accepted connection
-// to the peer's Tailcat address via Client.DialTCPPort. Repeating the
-// call with the same peer and address is idempotent; a new address for a
-// known peer replaces the mapping.
-func (e *Engine) MapPeer(peer, address string, port int) (Mapping, error) {
+// MapPeer binds a fixed slot to the peer's Tailcat address via
+// Client.DialTCPPort: held and future connections on the slot are
+// spliced through. Repeating the call with the same peer, address, and
+// slot is idempotent; a new address or slot for a known peer replaces
+// the mapping. A slot is required -- the fixed pool is the only mapping
+// shape in v4.
+func (e *Engine) MapPeer(peer, address string, port int, slot string) (Mapping, error) {
 	e.mu.Lock()
 	if !e.up {
 		e.mu.Unlock()
@@ -357,38 +393,10 @@ func (e *Engine) MapPeer(peer, address string, port int) (Mapping, error) {
 		// The parse error may embed the secret address; use a fixed message.
 		return Mapping{}, fmt.Errorf("%w: address is not a valid tailcat address", ErrBadInput)
 	}
-	e.mu.Lock()
-	if existing := e.mapped[peer]; existing != nil {
-		if existing.address == address && existing.port == uint16(port) {
-			mapping := existing.mapping
-			e.mu.Unlock()
-			return mapping, nil
-		}
-		e.unmapLocked(peer, existing)
+	if slot == "" {
+		return Mapping{}, fmt.Errorf("%w: missing slot", ErrBadInput)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		e.mu.Unlock()
-		return Mapping{}, fmt.Errorf("allocate local forwarding port: %w", err)
-	}
-	local := listener.Addr().(*net.TCPAddr).Port
-	lease := e.acquireClientLocked(address)
-	ctx, cancel := context.WithCancel(e.ctx)
-	mapped := &mappedPeer{
-		mapping:  Mapping{Peer: peer, LocalPort: local},
-		address:  address,
-		port:     uint16(port),
-		listener: listener,
-		lease:    lease,
-		cancel:   cancel,
-		pairs:    make(map[*connPair]struct{}),
-		history:  newConnectionHistory(peer, local),
-	}
-	e.mapped[peer] = mapped
-	e.wg.Add(1)
-	e.mu.Unlock()
-	go e.acceptOutbound(ctx, mapped, uint16(port))
-	return mapped.mapping, nil
+	return e.mapPeerSlot(peer, address, port, slot)
 }
 
 // UnmapPeer tears down a peer mapping.
@@ -408,12 +416,15 @@ func (e *Engine) UnmapPeer(peer string) error {
 	return nil
 }
 
-// unmapLocked removes the mapping and closes its listener and pairs; the
-// caller must hold e.mu. Client teardown happens asynchronously.
+// unmapLocked removes the mapping and closes its connections; the caller
+// must hold e.mu. The slot returns to hold mode (its listener stays
+// open). Client teardown happens asynchronously.
 func (e *Engine) unmapLocked(peer string, mapped *mappedPeer) {
 	delete(e.mapped, peer)
 	mapped.cancel()
-	_ = mapped.listener.Close()
+	if mapped.slot != nil && mapped.slot.bound == mapped {
+		mapped.slot.bound = nil
+	}
 	for pair := range mapped.pairs {
 		pair.close()
 	}
@@ -535,10 +546,7 @@ func validateDERPMap(dm *tailcfg.DERPMap) error {
 		return ErrBadInput
 	}
 	for _, region := range dm.Regions {
-		if region == nil {
-			return ErrBadInput
-		}
-		if len(region.Nodes) == 0 {
+		if region == nil || len(region.Nodes) == 0 {
 			return ErrBadInput
 		}
 		for _, node := range region.Nodes {
@@ -571,17 +579,18 @@ func (e *Engine) mappingsLocked() []Mapping {
 	return result
 }
 
-// DeniedCount reports how many client announcements the admission hook
-// has rejected. Test evidence hook: a denied counter increment proves the
-// hook fired rather than a generic network timeout.
+// DeniedCount reports how many inbound connections the per-connection
+// admission gate has closed (zenoh inbound and restricted exposures).
+// Test evidence hook: a denied counter increment proves the gate fired
+// rather than a generic network timeout.
 func (e *Engine) DeniedCount() int64 {
 	return e.deniedCount.Load()
 }
 
-// DisconnectedCount reports how many connected clients Allow has dropped
-// via Server.DisconnectClient. Test evidence hook: DisconnectClient
-// taking effect is observable even though Server.Status lags the client
-// set.
+// DisconnectedCount reports how many established connections Allow has
+// closed when their key fell out of the allow set. Test evidence hook:
+// selective revocation taking effect is observable even though
+// Server.Status lags the client set.
 func (e *Engine) DisconnectedCount() int64 {
 	return e.disconnected.Load()
 }
@@ -620,6 +629,7 @@ func (e *Engine) Down() {
 	for peer, mapped := range e.mapped {
 		e.unmapLocked(peer, mapped)
 	}
+	e.closeSlotsLocked()
 	for name, service := range e.services {
 		e.unmapServiceLocked(name, service)
 	}
@@ -638,6 +648,29 @@ func (e *Engine) Down() {
 	e.wg.Wait()
 }
 
+// admits reports whether the allow set admits pub.
+func (e *Engine) admits(pub key.NodePublic) bool {
+	if e.allowAny.Load() {
+		return true
+	}
+	e.mu.Lock()
+	set := e.allowKeys
+	e.mu.Unlock()
+	return set != nil && set.Contains(pub)
+}
+
+// inboundPeerKey resolves the authenticated tunnel key behind an
+// accepted connection. ok=false means callers must fail closed.
+func (e *Engine) inboundPeerKey(conn net.Conn) (key.NodePublic, bool) {
+	e.mu.Lock()
+	server := e.server
+	e.mu.Unlock()
+	if server == nil {
+		return key.NodePublic{}, false
+	}
+	return server.PeerKey(conn.RemoteAddr())
+}
+
 func (e *Engine) acceptInbound(listener net.Listener, inboundTarget string) {
 	defer e.wg.Done()
 	address := strings.TrimPrefix(inboundTarget, "tcp:")
@@ -646,13 +679,21 @@ func (e *Engine) acceptInbound(listener net.Listener, inboundTarget string) {
 		if err != nil {
 			return
 		}
+		// The tunnel admits every key; the zenoh route accepts only the
+		// allow set (design §3.3). Unknown keys fail closed.
+		pub, ok := e.inboundPeerKey(remote)
+		if !ok || !e.admits(pub) {
+			e.deniedCount.Add(1)
+			_ = remote.Close()
+			continue
+		}
 		dialer := net.Dialer{Timeout: dialTimeout}
 		local, err := dialer.DialContext(e.ctx, "tcp", address)
 		if err != nil {
 			_ = remote.Close()
 			continue
 		}
-		pair := &connPair{left: remote, right: local}
+		pair := &connPair{left: remote, right: local, peerKey: pub}
 		e.mu.Lock()
 		if !e.up {
 			e.mu.Unlock()
@@ -664,38 +705,6 @@ func (e *Engine) acceptInbound(listener net.Listener, inboundTarget string) {
 		e.splice(pair, func(_ spliceResult) {
 			e.mu.Lock()
 			delete(e.inboundPairs, pair)
-			e.mu.Unlock()
-		})
-	}
-}
-
-func (e *Engine) acceptOutbound(ctx context.Context, mapped *mappedPeer, port uint16) {
-	defer e.wg.Done()
-	for {
-		local, err := mapped.listener.Accept()
-		if err != nil {
-			return
-		}
-		dialCtx, cancel := context.WithTimeout(ctx, dialTimeout)
-		remote, err := e.dialTCPPort(dialCtx, mapped.lease, port)
-		cancel()
-		if err != nil {
-			_ = local.Close()
-			continue
-		}
-		pair := &connPair{left: local, right: remote}
-		e.mu.Lock()
-		if !e.up || e.mapped[mapped.mapping.Peer] != mapped {
-			e.mu.Unlock()
-			pair.close()
-			return
-		}
-		mapped.pairs[pair] = struct{}{}
-		e.mu.Unlock()
-		e.splice(pair, func(result spliceResult) {
-			e.mu.Lock()
-			mapped.history.record(result)
-			delete(mapped.pairs, pair)
 			e.mu.Unlock()
 		})
 	}
@@ -725,19 +734,19 @@ func (e *Engine) acceptExposure(ctx context.Context, exposed *exposedPort) {
 
 func (e *Engine) handleExposure(ctx context.Context, exposed *exposedPort, remote net.Conn) {
 	exposure := exposed.exposure
+	pub, havePub := e.inboundPeerKey(remote)
+	// A restricted exposure accepts only the allow set; unknown keys
+	// fail closed. An admission-any exposure admits every key.
+	if exposure.restricted() && (!havePub || !e.admits(pub)) {
+		e.deniedCount.Add(1)
+		_ = remote.Close()
+		return
+	}
 	var peerKeyText string
 	if exposure.ProxyProtocol == "v2" {
 		// Fail closed: an identity-carrying exposure never forwards a
 		// connection whose peer key could not be established.
-		e.mu.Lock()
-		server := e.server
-		e.mu.Unlock()
-		if server == nil {
-			_ = remote.Close()
-			return
-		}
-		pub, ok := server.PeerKey(remote.RemoteAddr())
-		if !ok {
+		if !havePub {
 			_ = remote.Close()
 			return
 		}
@@ -763,7 +772,7 @@ func (e *Engine) handleExposure(ctx context.Context, exposed *exposedPort, remot
 			return
 		}
 	}
-	pair := &connPair{left: remote, right: local}
+	pair := &connPair{left: remote, right: local, peerKey: pub}
 	e.mu.Lock()
 	if !e.up || e.exposed[exposure.Port] != exposed {
 		e.mu.Unlock()
@@ -833,47 +842,4 @@ func addrToAddrPort(addr net.Addr) (netip.AddrPort, error) {
 	default:
 		return netip.AddrPort{}, fmt.Errorf("unexpected address type %T", addr)
 	}
-}
-
-// diskDERPMapCache persists Tailcat DERP map responses owner-only so a
-// temporary map fetch failure falls back to the last good bytes.
-type diskDERPMapCache struct{ dir string }
-
-func (c diskDERPMapCache) paths(rawURL string) (string, string) {
-	base := filepath.Join(c.dir, "derpmap-"+url.QueryEscape(rawURL))
-	return base + ".json", base + ".etag"
-}
-
-func (c diskDERPMapCache) Get(rawURL string) ([]byte, string, time.Time, bool) {
-	dataPath, etagPath := c.paths(rawURL)
-	info, err := os.Stat(dataPath)
-	if err != nil {
-		return nil, "", time.Time{}, false
-	}
-	data, err := os.ReadFile(dataPath)
-	if err != nil {
-		return nil, "", time.Time{}, false
-	}
-	etag, _ := os.ReadFile(etagPath)
-	return data, strings.TrimSpace(string(etag)), info.ModTime(), true
-}
-
-func (c diskDERPMapCache) Put(rawURL string, data []byte, etag string) error {
-	if err := os.MkdirAll(c.dir, 0o700); err != nil {
-		return err
-	}
-	if err := os.Chmod(c.dir, 0o700); err != nil {
-		return err
-	}
-	dataPath, etagPath := c.paths(rawURL)
-	if err := os.WriteFile(dataPath, data, 0o600); err != nil {
-		return err
-	}
-	if err := os.Chmod(dataPath, 0o600); err != nil {
-		return err
-	}
-	if err := os.WriteFile(etagPath, []byte(etag), 0o600); err != nil {
-		return err
-	}
-	return os.Chmod(etagPath, 0o600)
 }

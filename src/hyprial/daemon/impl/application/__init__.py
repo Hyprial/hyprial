@@ -190,6 +190,9 @@ from hyprial.daemon.impl.application.messaging.inbox_surface.queries import (
 )
 from hyprial.daemon.impl.application.messaging.status.views import _StatusViewsMixin
 from hyprial.daemon.impl.application.messaging.status.snapshots import _WorkerSnapshotMixin
+from hyprial.daemon.impl.application.messaging.status.refresh import (
+    CoalescedRefreshAuthority,
+)
 from hyprial.daemon.impl.application.messaging.orgfs_bridge import _OrgFsBridgeMixin
 from hyprial.daemon.impl.application.messaging.work_items import _WorkItemsMixin
 from hyprial.daemon.impl.application.messaging.visibility import _VisibilityMixin
@@ -285,6 +288,7 @@ class DaemonApplication(
         """Release already-started authorities after a constructor failure."""
 
         for attribute, close_operation in (
+            ("_status_refresh", "close"),
             ("_database_health", "close"),
             ("_maintenance_watchdog", "close"),
             ("_operator_alarm_delivery", "close"),
@@ -450,9 +454,6 @@ class DaemonApplication(
         # at startup (kept additive during migration, plan §F).
         self._connect_configured: tuple[str, ...] = ()
         self._connect_discovered: tuple[str, ...] = ()
-        # Raw document retained from the discovery command already paid for at
-        # startup. ``ps`` only projects this snapshot; it never probes peers.
-        self._tailnet_status_snapshot: dict[str, object] | None = None
         self._tailnet_directory: object | None = None
         # The forwarding set a redial was last attempted for: a failed
         # rebuild is retried when the sidecar's set changes again, not on
@@ -576,6 +577,8 @@ class DaemonApplication(
         self._carrier_turn_ledgers: dict[tuple[str, str], object] = {}
         self._clock: Callable[[], float] = time.monotonic
         self._maintenance_scheduler = GenerationScheduler()
+        self._status_refresh = self._construct_or_rollback(CoalescedRefreshAuthority)
+        self._status_refresh_due = 0.0
         # Sees the tick that never returns, which reconcile_overrun cannot.
         self._maintenance_watchdog = self._construct_or_rollback(lambda: MaintenanceWatchdog(
             log=lambda level, event, **fields: self._log(

@@ -476,6 +476,16 @@ class _EndpointResolutionMixin:
         if backend is not None:
             forwarding = backend.list_reachable_endpoints()
             self._forwarding_effective = forwarding
+        elif forwarding_configured and self._slot_mode():
+            # Slot mode: the connect set is derivable from the home and
+            # the pool size alone, so a sidecar that failed its first
+            # start no longer costs the session its slots -- the fixed
+            # set goes in at open and the recovered sidecar is simply
+            # dialed when it binds (stable-zenoh-session-slots §5).
+            from hyprial.daemon.impl.forwarding.slots import slot_store_for_app
+
+            forwarding = slot_store_for_app(self).endpoints()
+            self._forwarding_effective = forwarding
         if self._forwarding_dialed is None:
             # What the Zenoh session actually dials is fixed by the FIRST
             # pass -- including the empty answer of a first-start failure,
@@ -529,14 +539,16 @@ class _EndpointResolutionMixin:
 
         return directory_peers_for_app(self)
 
-    def _tailnet_status_json(
-        self, *, refresh: bool = False
-    ) -> dict[str, object]:
-        """The ``ps`` wire's ``tailnet`` block, kept as an empty projection.
+    def _tailnet_status_json(self) -> dict[str, object]:
+        """Report that this generation has no tailnet status producer."""
 
-        # LAX(tailnet-cutover): 宿主 tailscale 已删除，正式做法是由组织目录
-        # 与边车 status 投影出本块（W-D/W-E 接线）；本轮返回固定空形状，
-        # 保持已发布的 wire 键不消失。
-        """
-
-        return {"self": {}, "peers": []}
+        return {
+            "supported": False,
+            "reason": "TAILNET_STATUS_PRODUCER_UNAVAILABLE",
+            "self": {},
+            "peers": [],
+            "observedAtMs": None,
+            "ageMs": None,
+            "stale": True,
+            "lastError": None,
+        }

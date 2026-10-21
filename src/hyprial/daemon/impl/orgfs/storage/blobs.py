@@ -399,6 +399,12 @@ class BlobStore:
         with self._purge_checker_lock:
             self._space_purge_projections[str(space_id)] = projection
 
+    def unregister_purge_projection(self, space_id: str) -> None:
+        """Forget an in-memory projection after its local space is detached."""
+
+        with self._purge_checker_lock:
+            self._space_purge_projections.pop(str(space_id), None)
+
     def put(self, space_id: str, data: BlobPayload, *, reason: str) -> str:
         """Store bytes once and add one idempotent per-space reference."""
 

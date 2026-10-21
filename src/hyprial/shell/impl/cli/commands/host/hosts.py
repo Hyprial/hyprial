@@ -42,6 +42,9 @@ def _render_hosts(rows: list[JsonObject]) -> str:
 @app.command()
 def hosts(
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+    refresh: bool = typer.Option(
+        False, "--refresh", help="Queue an asynchronous status refresh."
+    ),
 ) -> None:
     """List nodes announced on the network (online status only).
 
@@ -53,7 +56,9 @@ def hosts(
 
     def operation() -> Any:
         services = get_services()
-        result = services._daemon_request("hosts", {})
+        result = services._daemon_request(
+            "hosts", {"refresh": True} if refresh else {}
+        )
         if not isinstance(result, dict) or not isinstance(result.get("hosts"), list):
             raise services.CliError(
                 "INVALID_RESPONSE", "daemon hosts result must contain an array"

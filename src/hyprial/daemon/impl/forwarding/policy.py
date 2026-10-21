@@ -9,7 +9,7 @@ from pathlib import Path
 from hyprial.kernel import private_metadata_violation
 
 
-FORWARD_PROTOCOL_VERSION = 3
+FORWARD_PROTOCOL_VERSION = 4
 
 
 _PROXY_KEYS = frozenset(
@@ -34,7 +34,7 @@ def _normalize_exposure(exposure: Mapping[str, object]) -> dict[str, object]:
         raise ForwardingSidecarError("exposure port must be between 1 and 65535")
     if not isinstance(target, str) or not target:
         raise ForwardingSidecarError("exposure target must be a non-empty string")
-    # Python-side canonical value is "none"; protocol v3 writes "" on the
+    # Python-side canonical value is "none"; protocol v4 writes "" on the
     # wire (see controller.expose).  Both are accepted here so a persisted
     # entry and a raw wire event normalize to the same record.
     if proxy_protocol not in {"v2", "none", ""}:
@@ -123,7 +123,7 @@ def validate_exposure_target(target: str) -> str:
 
 
 def validate_peer_key_address(address: str) -> str:
-    """The ``addr`` argument of the v3 ``peer-key`` op (was v2 ``whois``)."""
+    """The ``addr`` argument of the v4 ``peer-key`` op (was v2 ``whois``)."""
 
     try:
         if address.startswith("["):

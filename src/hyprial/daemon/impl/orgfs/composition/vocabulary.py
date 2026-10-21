@@ -181,6 +181,12 @@ class _StoreRegistry(dict[str, LocalSpaceStore]):
         with self._entries_lock:
             return tuple(self.values())
 
+    def detach(self, key: str) -> LocalSpaceStore | None:
+        """Remove one store registration without opening a missing store."""
+
+        with self._entries_lock:
+            return dict.pop(self, key, None)
+
     def clear(self) -> None:
         with self._entries_lock:
             super().clear()

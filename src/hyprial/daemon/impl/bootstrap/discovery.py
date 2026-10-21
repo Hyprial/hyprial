@@ -28,13 +28,32 @@ from __future__ import annotations
 
 import subprocess
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from typing import Protocol, runtime_checkable
 
 # A directory query runs on the daemon's startup path, so it is bounded. A
 # discovery backend that hangs must degrade to "no endpoints today" rather
 # than hold up a daemon that has perfectly good configured endpoints.
 DISCOVERY_TIMEOUT_SECONDS = 5.0
+
+
+#: The ``map-peer`` slot spec asking for one new kernel-assigned loopback
+#: TCP slot (pool growth on the tcp transport); the sidecar answers with
+#: the resolved ``tcp:127.0.0.1:<port>`` id.
+TCP_SLOT_GROW_SPEC = "tcp:127.0.0.1:0"
+
+
+def slot_locator(slot_id: str) -> str:
+    """The zenoh locator dialing one slot wire id.
+
+    A wire id is what ``map-peer.slot`` names: an absolute socket path
+    (unix transport) or ``tcp:127.0.0.1:<port>`` (tcp transport, the
+    Windows scheme -- zenoh has no unixsock-stream there).
+    """
+
+    if slot_id.startswith("tcp:"):
+        return f"tcp/{slot_id[4:]}"
+    return f"unixsock-stream/{slot_id}"
 
 
 @runtime_checkable
@@ -54,11 +73,11 @@ class EndpointDiscovery(Protocol):
 
 @runtime_checkable
 class ForwardingController(Protocol):
-    """The daemon-owned protocol-v3 sidecar control surface."""
+    """The daemon-owned protocol-v4 sidecar control surface."""
 
-    def status(self) -> tuple[tuple[str, ...], dict[str, int]]: ...
+    def status(self) -> tuple[tuple[str, ...], dict[str, str]]: ...
 
-    def map_peer(self, peer: str, address: str) -> int: ...
+    def map_peer(self, peer: str, address: str, slot: str) -> str: ...
 
     def unmap_peer(self, peer: str) -> None: ...
 
@@ -66,16 +85,20 @@ class ForwardingController(Protocol):
 
 
 class ForwardingEndpoints:
-    """Swap directory peer addresses for sidecar-reported loopback endpoints.
+    """The fixed slot pool as an ``EndpointDiscovery`` (design §5).
 
     ``EndpointDiscovery`` still returns endpoint strings; only the backend
     changes. The controller owns the long-lived sidecar process and this
     object owns that controller for the daemon lifetime.
 
-    ``directory`` answers ``deviceId -> Tailcat address`` for every org member
-    except this node; for members missing a local mapping the sidecar is asked
-    to ``map-peer`` with that address, and mappings the directory no longer
-    names are unmapped.
+    The endpoint answer is the FIXED slot set -- independent of membership,
+    of the directory, and even of whether the sidecar currently answers --
+    so the zenoh connect set never changes while members come and go. The
+    fixed pool is the only way forwarding dials (there is no rollback to
+    per-peer loopback ports). Mapping is not discovery's job: the slot
+    reconcile (and the S2b peer-access actor) calls :meth:`bind` /
+    :meth:`unbind`, and the poll here only keeps the health hooks and
+    ``last_poll`` fed.
     """
 
     def __init__(
@@ -84,15 +107,29 @@ class ForwardingEndpoints:
         *,
         on_failure: Callable[[str], None] | None = None,
         on_success: Callable[[], None] | None = None,
-        directory: Callable[[], Mapping[str, str]] | None = None,
+        slots: Callable[[], tuple[str, ...]],
+        slot_transport: str = "unix",
+        on_slots_reported: Callable[[tuple[str, ...]], None] | None = None,
     ) -> None:
         self._controller = controller
         self._on_failure = on_failure
         self._on_success = on_success
-        self._directory = directory if directory is not None else (lambda: {})
-        # The last poll, for status/ps: who the sidecar reported and which
-        # local port each maps to, or why the poll failed.  Without it
-        # "which peers are we dialing?" had no answer anywhere (2026-09-24).
+        self._slots = slots
+        self._slot_transport = slot_transport
+        self._on_slots_reported = on_slots_reported
+        # What this incarnation already asked the sidecar to map
+        # (label -> (address, slot)): makes bind() idempotent per sidecar
+        # process, and dies with the backend so a relaunched sidecar is
+        # re-told everything.
+        self._bound: dict[str, tuple[str, int]] = {}
+        # tcp transport only: slot index -> wire id.  Ports are kernel-
+        # assigned per sidecar incarnation, so this table is seeded from
+        # the sidecar-reported ``up`` list and extended by growth binds;
+        # like ``_bound`` it dies with the backend.
+        self._slot_ids: dict[int, str] = {}
+        # The last poll, for status/ps: which slot each mapped peer dials,
+        # or why the poll failed.  Without it "which peers are we dialing?"
+        # had no answer anywhere (2026-09-24).
         self._last_poll: dict[str, object] | None = None
 
     @property
@@ -101,28 +138,31 @@ class ForwardingEndpoints:
 
         return self._controller
 
+    @property
+    def slot_mode(self) -> bool:
+        """True: the fixed slot pool is the only backend shape."""
+
+        return True
+
     def list_reachable_endpoints(self) -> tuple[str, ...]:
+        return self._slot_endpoints()
+
+    def _slot_endpoints(self) -> tuple[str, ...]:
+        """The fixed slot set, with the status poll kept for health only.
+
+        Unix transport: the endpoints are returned even when the poll
+        fails -- a slot's socket path outlives any sidecar incarnation,
+        and zenoh redialing a momentarily dead socket is harmless; that
+        indifference is the whole point of the fixed pool.  TCP transport
+        (the Windows scheme): the set is whatever this incarnation
+        reported at ``up`` plus growth binds, memoized so a failed poll
+        keeps the last known set rather than emptying the connect set.
+        """
+
+        endpoints = tuple(self.slot_locators().values())
         try:
-            wanted = {
-                str(peer): str(address)
-                for peer, address in self._directory().items()
-            }
-            _reported, mappings = self._controller.status()
-            for stale in sorted(set(mappings) - set(wanted)):
-                self._controller.unmap_peer(stale)
-                mappings.pop(stale, None)
-            for peer in sorted(wanted):
-                if peer not in mappings:
-                    mappings[peer] = self._controller.map_peer(peer, wanted[peer])
-            endpoints: list[str] = []
-            for peer in sorted(wanted):
-                port = mappings.get(peer)
-                if not isinstance(port, int) or port <= 0 or port > 65535:
-                    raise ValueError(
-                        f"sidecar returned invalid local port for {peer}: {port!r}"
-                    )
-                endpoints.append(f"tcp/127.0.0.1:{port}")
-        except Exception as error:  # noqa: BLE001 - discovery stays best effort
+            self._controller.status()
+        except Exception as error:  # noqa: BLE001 - health stays best effort
             self._last_poll = {
                 "atMs": time.time_ns() // 1_000_000,
                 "ok": False,
@@ -131,7 +171,8 @@ class ForwardingEndpoints:
             }
             if self._on_failure is not None:
                 self._on_failure(str(error))
-            return ()
+            return endpoints
+        by_index = self.slot_locators()
         self._last_poll = {
             "atMs": time.time_ns() // 1_000_000,
             "ok": True,
@@ -143,15 +184,97 @@ class ForwardingEndpoints:
             "derpMapURL": getattr(self._controller, "derp_map_url", None),
             "derpMapSource": getattr(self._controller, "derp_map_source", None),
             "peers": {
-                peer: f"tcp/127.0.0.1:{mappings[peer]}" for peer in sorted(wanted)
+                label: by_index[slot]
+                for label, (_address, slot) in sorted(self._bound.items())
+                if slot in by_index
             },
         }
-        # The success hook is what lets an owner tell "answered again" from
-        # "never answered": a wedged child that recovers must be visible as
-        # a state change, not inferred from the absence of failure events.
         if self._on_success is not None:
             self._on_success()
-        return tuple(endpoints)
+        return endpoints
+
+    def slot_locators(self) -> dict[int, str]:
+        """Slot index -> zenoh locator, for this backend's transport.
+
+        Unix: derived statically from the ``slots`` callable (the store's
+        fixed set, growth included).  TCP: the sidecar-reported ids of
+        this incarnation plus growth binds; empty until the sidecar's
+        ``up`` answer has been seen.
+        """
+
+        if self._slot_transport == "tcp":
+            self._seed_slot_ids()
+            return {
+                index: slot_locator(slot_id)
+                for index, slot_id in sorted(self._slot_ids.items())
+            }
+        return dict(enumerate(self._slots()))
+
+    def _seed_slot_ids(self) -> None:
+        """Populate the tcp index table from the sidecar's ``up`` report."""
+
+        if self._slot_ids:
+            return
+        reported = getattr(self._controller, "slots_reported", None)
+        if isinstance(reported, (list, tuple)) and all(
+            isinstance(slot_id, str) for slot_id in reported
+        ):
+            slot_ids = tuple(reported)
+            self._slot_ids = dict(enumerate(slot_ids))
+            if self._on_slots_reported is not None:
+                self._on_slots_reported(slot_ids)
+
+    def _slot_wire_id(self, slot: int) -> str:
+        """What ``map-peer.slot`` names for one slot index.
+
+        Unix: the socket path, stripped from the static locator (the
+        store grew before any growth bind, so the index is always
+        covered).  TCP: the incarnation's reported id, or the grow spec
+        asking the sidecar to open a new kernel-assigned listener.
+        """
+
+        if self._slot_transport == "tcp":
+            self._seed_slot_ids()
+            return self._slot_ids.get(slot, TCP_SLOT_GROW_SPEC)
+        endpoints = tuple(self._slots())
+        if slot >= len(endpoints):
+            raise ValueError(f"slot {slot} is beyond the fixed set of {len(endpoints)}")
+        locator = endpoints[slot]
+        prefix = "unixsock-stream/"
+        if not locator.startswith(prefix):
+            raise ValueError(f"slot {slot} locator is not a unix slot: {locator!r}")
+        return locator[len(prefix):]
+
+    def bind(self, peer: str, address: str, slot: int) -> bool:
+        """``map-peer`` onto a slot; True when a wire call was made.
+
+        Idempotent per sidecar incarnation: re-asserting the same
+        ``(address, slot)`` is free, a changed address on the same slot is
+        the §2 rebind (the sidecar drops the old splice and the dial
+        reaches the new peer), and a relaunched sidecar starts with an
+        empty memo so everything is re-told.
+        """
+
+        if self._bound.get(peer) == (address, slot):
+            return False
+        result = self._controller.map_peer(peer, address, self._slot_wire_id(slot))
+        if self._slot_transport == "tcp":
+            # A growth bind's answer is the new slot's resolved id; a
+            # rebind echoes the known one.  Either way the table holds
+            # the truth for this incarnation.
+            self._slot_ids[slot] = result
+            if self._on_slots_reported is not None:
+                self._on_slots_reported(
+                    tuple(self._slot_ids[index] for index in sorted(self._slot_ids))
+                )
+        self._bound[peer] = (address, slot)
+        return True
+
+    def unbind(self, peer: str) -> None:
+        """``unmap-peer`` and forget; the slot returns to hold mode."""
+
+        self._controller.unmap_peer(peer)
+        self._bound.pop(peer, None)
 
     @property
     def last_poll(self) -> dict[str, object] | None:

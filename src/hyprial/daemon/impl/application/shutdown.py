@@ -686,6 +686,7 @@ class _ShutdownMixin:
             if not gateway_owner.close(5.0):
                 raise RuntimeError("outbound Lark gateway did not drain")
         self._outbound_gateway_owners.clear()
+        self._status_refresh.close(timeout=1.0)
         self._presence = None
         self._user_delivery = None
         if self._fetch_receipt_publisher is not None:
@@ -764,11 +765,24 @@ class _ShutdownMixin:
             pass
 
     def _trace_presence_observation(self, event: Any) -> None:
+        if (
+            event.kind == "actor"
+            and event.admission == "accepted"
+            and classify_target_identity(event.identity) == TARGET_KIND_HOST
+        ):
+            self._status_refresh.record_observation(
+                f"host-presence:{event.identity}",
+                "unknown" if event.change == "delete" else "online",
+                observed_at_ms=event.observed_at_ms,
+            )
+        if not getattr(self, "_trace_presence_enabled", False):
+            return
         # The existing logger admits bytes without waiting for file I/O.
         self._log(
             "info", "zenoh", "zenoh.presence.observed",
             nodeId=self.node_id, key=event.key, kind=event.kind,
-            change=event.change, sampleGeneration=event.sample_generation,
+            change=event.change, observedAtMs=event.observed_at_ms,
+            sampleGeneration=event.sample_generation,
             presenceGeneration=event.presence_generation,
             transportGeneration=event.transport_generation,
             callbackHistoryComplete=event.history_complete,

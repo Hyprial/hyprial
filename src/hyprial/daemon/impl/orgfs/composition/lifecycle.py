@@ -274,6 +274,9 @@ class RuntimeLifecycle:
 
 
     def _ask_lifecycle(self, operation: _DirectoryCallOperation) -> object:
+        with self._resource_lock:
+            if operation.space_id in self._purging_spaces:
+                raise OrgFsError("unknown-space", {"spaceId": operation.space_id})
         if getattr(self._lifecycle_context, "running", False):
             if isinstance(operation, _JoinSpace):
                 return self._join_sync(operation.space_id)
@@ -461,6 +464,7 @@ class RuntimeLifecycle:
             )
         if replica is not None:
             mesh.attach_replica(replica)
+        self.facade.request_broadcast_drain(space_id)
         self._announce_all()
         return _SpaceResourceHandle(space_id, self._directory_generation)
 
@@ -554,14 +558,20 @@ class RuntimeLifecycle:
 
 
     def broadcast_pending(self, space_id: str) -> int:
-        mesh = self._mesh(space_id)
+        with self._resource_lock:
+            mesh = self._meshes.get(space_id)
+        if mesh is None:
+            mesh = self._mesh(space_id)
         return 0 if mesh is None else mesh.broadcast_pending()
 
 
     def broadcast_records(
         self, space_id: str, records: tuple[CommitRecord, ...]
     ) -> int:
-        mesh = self._mesh(space_id)
+        with self._resource_lock:
+            mesh = self._meshes.get(space_id)
+        if mesh is None:
+            mesh = self._mesh(space_id)
         if mesh is None:
             return 0
         if "broadcast_pending" in vars(mesh):

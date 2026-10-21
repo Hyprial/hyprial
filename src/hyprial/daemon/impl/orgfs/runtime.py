@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
 
 import json
@@ -46,6 +46,7 @@ from hyprial.daemon.impl.orgfs.composition.directory import RuntimeDirectory
 from hyprial.daemon.impl.orgfs.composition.lifecycle import RuntimeLifecycle
 from hyprial.daemon.impl.orgfs.composition.content import RuntimeContent
 from hyprial.daemon.impl.orgfs.composition.checkout import RuntimeCheckout
+from hyprial.daemon.impl.orgfs.composition.space_purge import RuntimeSpacePurge
 from hyprial.daemon.impl.orgfs.composition.vocabulary import ORGFS_AWAIT_RETRY_SECONDS as ORGFS_AWAIT_RETRY_SECONDS
 from hyprial.daemon.impl.orgfs.composition.vocabulary import ORGFS_CONTENT_WAIT_S as ORGFS_CONTENT_WAIT_S
 from hyprial.daemon.impl.orgfs.composition.vocabulary import _CheckoutSpace as _CheckoutSpace
@@ -76,6 +77,7 @@ class OrgFsRuntime(
     RuntimeLifecycle,
     RuntimeContent,
     RuntimeCheckout,
+    RuntimeSpacePurge,
 ):
     """Own all orgfs resources for one daemon generation."""
 
@@ -90,6 +92,7 @@ class OrgFsRuntime(
         logger: Callable[..., None] | None = None,
         owner_notifier: Callable[[str, str, dict[str, object]], None] | None = None,
         excluded_orgs: Callable[[], frozenset[str]] | None = None,
+        space_binding_state: Callable[[str], Mapping[str, object] | None] | None = None,
         announce_instrumentation_enabled: bool = False,
     ) -> None:
         self.state_dir = Path(state_dir)
@@ -100,6 +103,7 @@ class OrgFsRuntime(
         self._announce_instrumentation_enabled = announce_instrumentation_enabled
         self.owner_notifier = owner_notifier
         self._excluded_orgs = excluded_orgs or (lambda: frozenset())
+        self._space_binding_state = space_binding_state or (lambda _space_id: None)
         self.blobs = BlobAuthority(self.state_dir)
         self.stores = _StoreRegistry(self)
         self.facade = LocalOrgFs(
@@ -122,10 +126,16 @@ class OrgFsRuntime(
         self._replicas: dict[str, ReplicaAuthority] = {}
         self._replica_creation_locks: dict[str, Lock] = {}
         self._mesh_creations: dict[str, _MeshCreation] = {}
+        self._purging_spaces: set[str] = set(self._pending_space_purge_ids())
         spaces_root = self.state_dir / "orgfs" / "spaces"
         if spaces_root.is_dir():
             for path in sorted(spaces_root.iterdir()):
-                if not path.is_dir() or not (path / "journal.sqlite3").is_file():
+                if (
+                    not path.is_dir()
+                    or path.is_symlink()
+                    or not (path / "journal.sqlite3").is_file()
+                    or path.name in self._purging_spaces
+                ):
                     continue
                 self.stores.get(path.name)
                 self.facade.load_space(path.name)
@@ -179,6 +189,7 @@ class OrgFsRuntime(
         self._lifecycle_authority: _LifecycleAuthority | None = None
         self._lifecycle_context = threading.local()
         self._lifecycle_closing = False
+        self._resume_space_purges()
 
 
     def close(self) -> None:
@@ -252,6 +263,10 @@ class OrgFsRuntime(
         with self._resource_lock:
             meshes = tuple(self._meshes.values())
             replicas = tuple(self._replicas.values())
+        if not self.facade.drain_broadcasts(
+            tuple(mesh.store.space_id for mesh in meshes), timeout=5.0
+        ):
+            raise TimeoutError("orgfs commit broadcasts did not drain")
         for mesh in reversed(meshes):
             mesh.close()
         for replica in replicas:

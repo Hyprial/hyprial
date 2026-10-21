@@ -2,13 +2,15 @@ from __future__ import annotations
 
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 
 
 import hashlib
-
-
-
+import json
+import os
+from pathlib import Path
+import tempfile
 import time
 
 from typing import TYPE_CHECKING, Any
@@ -36,7 +38,29 @@ if TYPE_CHECKING:
     pass
 
 
-from hyprial.daemon.impl.orgfs.network.protocol import ORGFS_BLOB_FETCH_TIMEOUT_SECONDS, ORGFS_LOG_RANGE_LIMIT, _BLOB_ABSENCE_CODES, _b64, _decode_request, _decode_update_header, _elapsed_ms, _json_bytes, _reply_origin, _unb64
+from hyprial.daemon.impl.orgfs.network.protocol import ORGFS_BLOB_FETCH_TIMEOUT_SECONDS, ORGFS_LEGACY_SYNC_DOCUMENT_LIMIT, ORGFS_LOG_RANGE_LIMIT, _BLOB_ABSENCE_CODES, _b64, _decode_request, _decode_update_header, _elapsed_ms, _json_bytes, _reply_origin, _unb64
+
+
+@dataclass(slots=True)
+class _SyncProgress:
+    started: float
+    pages: int = 0
+    request_bytes: int = 0
+    response_bytes: int = 0
+
+    def metrics(self) -> dict[str, int]:
+        return {
+            "pages": self.pages,
+            "requestBytes": self.request_bytes,
+            "responseBytes": self.response_bytes,
+            "elapsedMs": _elapsed_ms(self.started),
+        }
+
+    def timeout(self, reason: str, message: str) -> StoreError:
+        return StoreError(
+            "no-holder-online", message, reason=reason, **self.metrics()
+        )
+
 
 class MeshSync:
     """Responsibility methods on the sole OrgFsMesh state host.
@@ -110,12 +134,23 @@ class MeshSync:
         timeout: float = 3.0,
         deadline_monotonic: float | None = None,
     ) -> int:
+        progress = _SyncProgress(time.monotonic())
         with self._worker_lock:
             self._sync_active.add(supplier)
         try:
-            imported = self._sync_from_once(
-                supplier, timeout=timeout, deadline_monotonic=deadline_monotonic
-            )
+            try:
+                imported = self._sync_from_once(
+                    supplier,
+                    timeout=timeout,
+                    deadline_monotonic=deadline_monotonic,
+                    _progress=progress,
+                )
+            except Exception as exc:
+                details = getattr(exc, "details", None)
+                if isinstance(details, dict):
+                    for key, value in progress.metrics().items():
+                        details.setdefault(key, value)
+                raise
             # Anti-entropy makes no-op syncs routine: only an import is news.
             self._log(
                 "info" if imported > 0 else "debug",
@@ -123,6 +158,7 @@ class MeshSync:
                 spaceId=self.store.space_id,
                 supplier=supplier,
                 importedCount=imported,
+                **progress.metrics(),
             )
             return imported
         finally:
@@ -139,13 +175,319 @@ class MeshSync:
                 self.schedule_sync_from(supplier)
 
 
+    def _sync_query(
+        self,
+        supplier: str,
+        request: bytes,
+        *,
+        timeout: float,
+        deadline_monotonic: float | None,
+        progress: _SyncProgress,
+    ) -> tuple[Mapping[str, Any], float]:
+        query_timeout = timeout
+        clipped_to_deadline = False
+        if deadline_monotonic is not None:
+            remaining = deadline_monotonic - time.monotonic()
+            if remaining <= 0:
+                raise progress.timeout(
+                    "deadline-expired-mid-sync",
+                    "sync deadline expired between response pages",
+                )
+            clipped_to_deadline = remaining < query_timeout
+            query_timeout = min(query_timeout, remaining)
+        progress.request_bytes += len(request)
+        replies = self.session.query(
+            self._keys.orgfs_sync(self.store.space_id, supplier),
+            request,
+            timeout=query_timeout,
+        )
+        if not replies:
+            if clipped_to_deadline:
+                raise progress.timeout(
+                    "deadline-expired-mid-sync",
+                    "sync deadline expired while awaiting the final page",
+                )
+            raise progress.timeout("no-reply", "supplier returned no sync reply")
+        progress.pages += 1
+        progress.response_bytes += len(replies[0].payload)
+        if deadline_monotonic is not None and time.monotonic() > deadline_monotonic:
+            raise progress.timeout(
+                "reply-after-deadline",
+                "supplier reply arrived after sync deadline",
+            )
+        return _decode_request(replies[0].payload), query_timeout
+
+
+    def _sync_cursor_path(self, supplier: str) -> Path | None:
+        root = getattr(self.store, "root", None)
+        if root is None:
+            return None
+        name = hashlib.sha256(supplier.encode("utf-8")).hexdigest()
+        return Path(root) / "sync-cursors" / f"{name}.json"
+
+
+    def _load_sync_cursor(self, supplier: str) -> str | None:
+        path = self._sync_cursor_path(supplier)
+        if path is None or not path.exists():
+            return None
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if (
+            not isinstance(value, dict)
+            or value.get("schemaVersion") != 1
+            or value.get("supplier") != supplier
+            or not isinstance(value.get("cursor"), str)
+        ):
+            return None
+        return value["cursor"]
+
+
+    def _save_sync_cursor(self, supplier: str, cursor: str | None) -> None:
+        path = self._sync_cursor_path(supplier)
+        if path is None:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if cursor is None:
+            path.unlink(missing_ok=True)
+        else:
+            descriptor, temporary_name = tempfile.mkstemp(
+                prefix=".sync-cursor-", dir=path.parent
+            )
+            temporary = Path(temporary_name)
+            try:
+                with os.fdopen(descriptor, "wb") as stream:
+                    stream.write(
+                        _json_bytes(
+                            {
+                                "schemaVersion": 1,
+                                "supplier": supplier,
+                                "cursor": cursor,
+                            }
+                        )
+                    )
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, path)
+            finally:
+                temporary.unlink(missing_ok=True)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+
+
+    @staticmethod
+    def _remote_error(value: Mapping[str, Any]) -> StoreError:
+        details = value.get("details")
+        return StoreError(
+            str(value.get("code")),
+            str(value.get("message")),
+            **(dict(details) if isinstance(details, Mapping) else {}),
+        )
+
+
+    def _sync_envelope_known(self, envelope: bytes) -> bool:
+        header = _decode_update_header(envelope, space_id=self.store.space_id)
+        origin = header["origin"]
+        existing = self._commit_envelope(
+            str(header["docId"]), str(origin["writer"]), int(header["seq"])
+        )
+        return existing == envelope
+
+
+    def _apply_sync_envelopes(
+        self,
+        value: Mapping[str, Any],
+        *,
+        supplier: str,
+        projection_attempted: dict[tuple[str, str], tuple[int, set[int]]],
+    ) -> int:
+        envelopes = value.get("envelopes")
+        if not isinstance(envelopes, list):
+            raise StoreError("invalid-argument", "sync envelopes must be an array")
+        applied = 0
+        for encoded in envelopes:
+            envelope = _unb64(encoded)
+            if self._sync_envelope_known(envelope):
+                continue
+            result = self._receive(
+                envelope,
+                supplier=supplier,
+                defer_blob_fetch=False,
+                projection_attempted=projection_attempted,
+            )
+            if result.status == "rejected" and result.code == "supplier-offline":
+                raise StoreError(
+                    "not-a-member",
+                    "supplier went offline during sync",
+                    reason="supplier-not-online",
+                )
+            if result.status == "applied" and result.code != "duplicate":
+                applied += 1
+        return applied
+
+
+    def _stream_sync_from(
+        self,
+        supplier: str,
+        *,
+        timeout: float,
+        deadline_monotonic: float | None,
+        progress: _SyncProgress,
+        projection_attempted: dict[tuple[str, str], tuple[int, set[int]]],
+    ) -> int | None:
+        cursor = self._load_sync_cursor(supplier)
+        applied = 0
+        while True:
+            request = _json_bytes(
+                {
+                    "schemaVersion": 1,
+                    "type": "orgfs-sync-stream",
+                    "spaceId": self.store.space_id,
+                    "requester": {"node": self.node_id, "author": self.author},
+                    "cursor": cursor,
+                    "maxBytes": ORGFS_PAGE_BYTES,
+                }
+            )
+            try:
+                value, _query_timeout = self._sync_query(
+                    supplier,
+                    request,
+                    timeout=timeout,
+                    deadline_monotonic=deadline_monotonic,
+                    progress=progress,
+                )
+            except Exception as exc:
+                details = getattr(exc, "details", None)
+                if isinstance(details, dict):
+                    details.setdefault("appliedCount", applied)
+                raise
+            if value.get("type") == "orgfs-error":
+                if str(value.get("code")) == "invalid-argument":
+                    self._save_sync_cursor(supplier, None)
+                    return None
+                raise self._remote_error(value)
+            if value.get("type") in {"orgfs-sync-page", "orgfs-sync-snapshot"}:
+                self._save_sync_cursor(supplier, None)
+                return None
+            if (
+                value.get("type") != "orgfs-sync-stream-page"
+                or value.get("supplier") != supplier
+            ):
+                raise StoreError("invalid-argument", "invalid stream sync response")
+            applied += self._apply_sync_envelopes(
+                value,
+                supplier=supplier,
+                projection_attempted=projection_attempted,
+            )
+            raw_cursor = value.get("next")
+            if raw_cursor is not None and not isinstance(raw_cursor, str):
+                raise StoreError("invalid-argument", "invalid stream sync cursor")
+            cursor = raw_cursor
+            self._save_sync_cursor(supplier, cursor)
+            if cursor is None:
+                return applied
+
+
+    def _legacy_sync_from(
+        self,
+        supplier: str,
+        *,
+        timeout: float,
+        deadline_monotonic: float | None,
+        progress: _SyncProgress,
+        projection_attempted: dict[tuple[str, str], tuple[int, set[int]]],
+        doc_ids: tuple[str, ...] | None = None,
+    ) -> int:
+        local = set(self._document_ids())
+        selected = tuple(local) if doc_ids is None else doc_ids
+        vectors = {
+            doc_id: _b64(self._frontier(doc_id))
+            for doc_id in selected
+            if doc_id in local
+        }
+        cursor: str | None = None
+        applied = 0
+        while True:
+            request = _json_bytes(
+                {
+                    "schemaVersion": 1,
+                    "type": "orgfs-sync",
+                    "spaceId": self.store.space_id,
+                    "docIds": doc_ids,
+                    "versionVectors": vectors,
+                    "requester": {"node": self.node_id, "author": self.author},
+                    "cursor": cursor,
+                    "maxBytes": ORGFS_PAGE_BYTES,
+                }
+            )
+            if len(request) > ORGFS_PAGE_BYTES:
+                raise StoreError(
+                    "sync-peer-incompatible",
+                    "bounded legacy sync request exceeds the wire limit",
+                    reason="legacy-request-too-large",
+                    requestBytes=len(request),
+                    limit=ORGFS_PAGE_BYTES,
+                )
+            value, query_timeout = self._sync_query(
+                supplier,
+                request,
+                timeout=timeout,
+                deadline_monotonic=deadline_monotonic,
+                progress=progress,
+            )
+            if value.get("type") == "orgfs-error":
+                raise self._remote_error(value)
+            if value.get("type") == "orgfs-sync-snapshot":
+                manifests = value.get("manifests")
+                if value.get("supplier") != supplier or not isinstance(manifests, list):
+                    raise StoreError("invalid-argument", "invalid snapshot response")
+                for manifest in manifests:
+                    if not isinstance(manifest, dict):
+                        raise StoreError(
+                            "invalid-argument", "snapshot manifest must be an object"
+                        )
+                    self._install_sync_snapshot(
+                        supplier, manifest, timeout=query_timeout
+                    )
+                    applied += 1
+                vectors = {
+                    doc_id: _b64(self._frontier(doc_id))
+                    for doc_id in selected
+                    if doc_id in set(self._document_ids())
+                }
+                cursor = None
+                continue
+            if (
+                value.get("type") != "orgfs-sync-page"
+                or value.get("supplier") != supplier
+            ):
+                raise StoreError("invalid-argument", "invalid legacy sync response")
+            applied += self._apply_sync_envelopes(
+                value,
+                supplier=supplier,
+                projection_attempted=projection_attempted,
+            )
+            raw_cursor = value.get("next")
+            if raw_cursor is not None and not isinstance(raw_cursor, str):
+                raise StoreError("invalid-argument", "invalid legacy sync cursor")
+            cursor = raw_cursor
+            if cursor is None:
+                return applied
+
+
     def _sync_from_once(
         self,
         supplier: str,
         *,
         timeout: float,
         deadline_monotonic: float | None,
+        _progress: _SyncProgress | None = None,
     ) -> int:
+        progress = _progress or _SyncProgress(time.monotonic())
         projection_attempted: dict[
             tuple[str, str], tuple[int, set[int]]
         ] = {}
@@ -162,123 +504,72 @@ class MeshSync:
                 "supplier's device owner is not a current member",
                 reason="supplier-not-member",
             )
-        cursor: str | None = None
-        applied = 0
-        starting_vectors = {
-            doc_id: _b64(self._frontier(doc_id))
-            for doc_id in self._document_ids()
-        }
-        exhausted_pending: tuple[tuple[str, str, str], ...] | None = None
-        while True:
-            query_timeout = timeout
-            if deadline_monotonic is not None:
-                remaining = deadline_monotonic - time.monotonic()
-                if remaining <= 0:
-                    raise StoreError("no-holder-online", "sync deadline expired")
-                query_timeout = min(query_timeout, remaining)
-            request = _json_bytes(
-                {
-                    "schemaVersion": 1,
-                    "type": "orgfs-sync",
-                    "spaceId": self.store.space_id,
-                    "docIds": None,
-                    "versionVectors": starting_vectors,
-                    "requester": {"node": self.node_id, "author": self.author},
-                    "cursor": cursor,
-                    "maxBytes": ORGFS_PAGE_BYTES,
-                }
-            )
-            replies = self.session.query(
-                self._keys.orgfs_sync(self.store.space_id, supplier),
-                request,
-                timeout=query_timeout,
-            )
-            if not replies:
-                raise StoreError("no-holder-online", "supplier did not answer")
-            value = _decode_request(replies[0].payload)
-            if value.get("type") == "orgfs-error":
-                raise StoreError(str(value.get("code")), str(value.get("message")))
-            if value.get("type") == "orgfs-sync-snapshot":
-                if value.get("supplier") != supplier:
-                    raise StoreError(
-                        "invalid-argument", "snapshot supplier does not match"
-                    )
-                manifests = value.get("manifests")
-                if not isinstance(manifests, list) or not manifests:
-                    raise StoreError(
-                        "invalid-argument", "snapshot response has no manifests"
-                    )
-                for manifest in manifests:
-                    if not isinstance(manifest, dict):
-                        raise StoreError(
-                            "invalid-argument", "snapshot manifest must be an object"
-                        )
-                    self._install_sync_snapshot(
-                        supplier, manifest, timeout=query_timeout
-                    )
-                    applied += 1
-                if value.get("next") is not None:
-                    raise StoreError(
-                        "invalid-argument", "snapshot response cannot be paginated"
-                    )
-                starting_vectors = {
-                    doc_id: _b64(self._frontier(doc_id))
-                    for doc_id in self._document_ids()
-                }
-                cursor = None
-                continue
-            if (
-                value.get("type") != "orgfs-sync-page"
-                or value.get("supplier") != supplier
-            ):
-                raise StoreError("invalid-argument", "invalid sync response")
-            envelopes = value.get("envelopes")
-            if not isinstance(envelopes, list):
-                raise StoreError("invalid-argument", "sync envelopes must be an array")
-            for encoded in envelopes:
-                result = self._receive(
-                    _unb64(encoded),
+        applied = self._stream_sync_from(
+            supplier,
+            timeout=timeout,
+            deadline_monotonic=deadline_monotonic,
+            progress=progress,
+            projection_attempted=projection_attempted,
+        )
+        if applied is None:
+            local_count = len(self._document_ids())
+            if local_count > ORGFS_LEGACY_SYNC_DOCUMENT_LIMIT:
+                self._log(
+                    "warn",
+                    "orgfs.sync.legacy.skipped",
+                    reason="legacy-peer-large-space",
                     supplier=supplier,
-                    defer_blob_fetch=False,
-                    projection_attempted=projection_attempted,
+                    spaceId=self.store.space_id,
+                    documentCount=local_count,
+                    limit=ORGFS_LEGACY_SYNC_DOCUMENT_LIMIT,
                 )
-                if result.status == "rejected" and result.code == "supplier-offline":
-                    # Presence can change after the initial gate. Do not let
-                    # join hydrate a partial page; reuse its bounded retry path.
-                    raise StoreError(
-                        "not-a-member",
-                        "supplier went offline during sync",
-                        reason="supplier-not-online",
-                    )
-                if result.status == "applied":
-                    applied += 1
-            cursor = value.get("next")
-            if cursor is None:
-                pending = tuple(
-                    (
-                        record.old_physical_doc_id,
-                        record.replacement_doc_id,
-                        record.snapshot_id,
-                    )
-                    for record in self._pending_replacements()
+                raise StoreError(
+                    "sync-peer-incompatible",
+                    "legacy supplier fallback is disabled for a large space",
+                    reason="legacy-peer-large-space",
+                    documentCount=local_count,
+                    limit=ORGFS_LEGACY_SYNC_DOCUMENT_LIMIT,
                 )
-                if pending:
-                    if pending == exhausted_pending:
-                        raise StoreError(
-                            "snapshot-unavailable",
-                            "supplier did not offer the pending replacement snapshot",
-                            supplier=supplier,
-                            pendingReplacementDocIds=tuple(
-                                replacement for _old, replacement, _snapshot in pending
-                            ),
-                        )
-                    exhausted_pending = pending
-                    starting_vectors = {
-                        doc_id: _b64(self._frontier(doc_id))
-                        for doc_id in self._document_ids()
-                    }
-                    continue
-                return applied
+            bounded_docs = tuple(dict.fromkeys(("meta", *self._document_ids())))
+            self._log(
+                "info",
+                "orgfs.sync.legacy.bounded",
+                reason="legacy-peer-bounded-known-documents",
+                supplier=supplier,
+                spaceId=self.store.space_id,
+                documentCount=len(bounded_docs),
+            )
+            applied = self._legacy_sync_from(
+                supplier,
+                timeout=timeout,
+                deadline_monotonic=deadline_monotonic,
+                progress=progress,
+                projection_attempted=projection_attempted,
+                doc_ids=bounded_docs,
+            )
+        pending = tuple(self._pending_replacements())
+        if not pending:
+            return applied
+        replacements = tuple(record.replacement_doc_id for record in pending)
+        applied += self._legacy_sync_from(
+            supplier,
+            timeout=timeout,
+            deadline_monotonic=deadline_monotonic,
+            progress=progress,
+            projection_attempted=projection_attempted,
+            doc_ids=tuple(dict.fromkeys(("meta", *replacements))),
+        )
+        remaining = tuple(self._pending_replacements())
+        if remaining:
+            raise StoreError(
+                "snapshot-unavailable",
+                "supplier did not offer the pending replacement snapshot",
+                supplier=supplier,
+                pendingReplacementDocIds=tuple(
+                    record.replacement_doc_id for record in remaining
+                ),
+            )
+        return applied
 
 
     def sync_log_range_from(

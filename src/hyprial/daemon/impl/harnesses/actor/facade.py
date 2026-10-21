@@ -54,7 +54,15 @@ from hyprial.daemon.impl.harnesses.runtime.ports  import (
 from hyprial.kernel import PortCommandRejected
 from hyprial.kernel import ReadinessReport
 
-from .contracts import HarnessProjection, HarnessRestoreSummary, HarnessRuntimeClosed, _AWAIT_SETTLEMENT, _AwaitSettlement, _Reply, _launch_projection
+from .contracts import (
+    HarnessProjection,
+    HarnessRestoreSummary,
+    HarnessRuntimeClosed,
+    HarnessSettlementOutcomeUnknown,
+    HarnessSettlementReceipt,
+    _Reply,
+    _launch_projection,
+)
 from .io_port import validate_harness_cwd
 
 if TYPE_CHECKING:  # pragma: no cover - annotation-only, same package
@@ -94,25 +102,38 @@ class HarnessRuntimeFacade:
 
         The wait itself carries a derived wall-clock backstop (F1): the
         settlement bound the batch is structurally owed -- admission rounds
-        times the per-start timeout, plus a round of margin -- so a lost
-        settlement raises ``TimeoutError`` into the daemon's degraded-start
-        path (gate opens with ``harness.recovery.failed``) instead of
-        hanging the gate closed forever.  With start timers disabled the
-        wait stays unlimited (``_AWAIT_SETTLEMENT``): the operator opted
-        out of settlement deadlines.  A runtime stop still ends the wait:
-        ``_fail_pending`` raises ``HarnessRuntimeClosed`` here.
+        times the per-start timeout, plus a round of margin. When effect
+        timers are disabled, the facade's local reply budget remains the
+        containment bound. Elapsing either bound reports outcome-unknown with
+        a stable receipt; it does not cancel or resubmit the admitted starts.
         """
 
         targets = tuple(desired)
-        budget = self._actor.restore_settlement_budget(len(targets))
-        event = self._request(
-            RestoreHarnessesCommand(
-                uuid.uuid4().hex, tuple(_launch_projection(spec) for spec in targets)
-            ),
-            HarnessRestoreCompleted,
-            timeout=_AWAIT_SETTLEMENT if budget is None else budget,
+        projections = tuple(_launch_projection(spec) for spec in targets)
+        operation_id = uuid.uuid4().hex
+        receipt = HarnessSettlementReceipt(
+            operation_id,
+            tuple(f"{spec.harness}:{spec.name}" for spec in targets),
         )
+        budget = self._actor.restore_settlement_budget(len(targets))
+        try:
+            event = self._request(
+                RestoreHarnessesCommand(operation_id, projections),
+                HarnessRestoreCompleted,
+                timeout=self._reply_timeout if budget is None else budget,
+            )
+        except TimeoutError as error:
+            raise HarnessSettlementOutcomeUnknown(receipt) from error
         return cast(HarnessRestoreCompleted, event).result
+
+    def recover_restore(
+        self, receipt: HarnessSettlementReceipt
+    ) -> HarnessRestoreSummary | None:
+        """Read the exact correlated restore result, without resubmission."""
+
+        if not isinstance(receipt, HarnessSettlementReceipt):
+            raise TypeError("receipt must be a HarnessSettlementReceipt")
+        return self._actor.restore_result(receipt.operation_id)
 
     def reconcile(self) -> int:
         with self._pending_lock:
@@ -390,15 +411,13 @@ class HarnessRuntimeFacade:
         command: HarnessCommand,
         expected: type[object],
         *,
-        timeout: float | _AwaitSettlement | None = None,
+        timeout: float | None = None,
     ) -> object:
         reply: _Reply[object] = _Reply()
         with self._pending_lock:
             self._pending[command.correlation_id] = (expected, reply)
         reply.set_cancel(lambda: self._cancel(command.correlation_id))
         self._actor.submit(command)
-        if isinstance(timeout, _AwaitSettlement):
-            return reply.wait()
         return reply.wait(self._reply_timeout if timeout is None else timeout)
 
     def _cancel(self, correlation_id: str) -> None:

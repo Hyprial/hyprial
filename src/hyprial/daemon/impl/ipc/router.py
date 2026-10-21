@@ -170,6 +170,7 @@ _IPC_STATS_METHODS = frozenset(
         "orgfs.resolve",
         "orgfs.restore",
         "orgfs.serve",
+        "orgfs.space_purge",
         "orgfs.spaces",
         "orgfs.stat",
         "orgfs.stat_at",
@@ -391,10 +392,7 @@ class _IpcDispatchMixin:
                     )
                 ),
                 "restorePending": not restore_done,
-                "storageHealth": (
-                    self._database_health.status() if self._database_health is not None
-                    else {"healthy": None, "checkedAtMs": None}
-                ),
+                "storageHealth": self._storage_health_status(),
                 "zenoh": {
                     "listen": list(self.zenoh_listen),
                     "connect": list(self.zenoh_connect),
@@ -512,7 +510,7 @@ class _IpcDispatchMixin:
         if method == "targets":
             return self._ipc_targets(params)
         if method == "hosts":
-            return self._ipc_hosts()
+            return self._ipc_hosts(params)
         if method in {"session.register", "session.register_guarded"}:
             return self._ipc_session_register(
                 params,

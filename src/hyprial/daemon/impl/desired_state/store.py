@@ -38,6 +38,7 @@ from .documents import (
 from .sessions import _DesiredStateSessionsMixin
 from .store_io import _DesiredStateStoreIoMixin
 from .services import ServiceRegistry
+from .settlements import _HarnessSettlementStoreMixin
 
 
 _STORES_BY_DB_PATH: "weakref.WeakValueDictionary[Path, DesiredStateStore]" = (
@@ -84,7 +85,11 @@ def _register_store(store: "DesiredStateStore") -> None:
         _STORES_BY_DB_PATH[key] = store
 
 
-class DesiredStateStore(_DesiredStateSessionsMixin, _DesiredStateStoreIoMixin):
+class DesiredStateStore(
+    _HarnessSettlementStoreMixin,
+    _DesiredStateSessionsMixin,
+    _DesiredStateStoreIoMixin,
+):
 
     def __init__(self, legacy_path: Path, state_db: StateDatabase | None = None) -> None:
         self.legacy_path = Path(legacy_path)

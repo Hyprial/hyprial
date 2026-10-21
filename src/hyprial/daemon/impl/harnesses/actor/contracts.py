@@ -154,6 +154,22 @@ class _HarnessActorGeneration:
 HarnessRestoreSummary = HarnessRestoreProjection
 
 
+@dataclass(frozen=True, slots=True)
+class HarnessSettlementReceipt:
+    operation_id: str
+    targets: tuple[str, ...]
+
+
+class HarnessSettlementOutcomeUnknown(TimeoutError):
+    """An admitted harness command is still settling; query its receipt."""
+
+    def __init__(self, receipt: HarnessSettlementReceipt) -> None:
+        super().__init__(
+            f"harness settlement outcome is unknown: {receipt.operation_id}"
+        )
+        self.receipt = receipt
+
+
 @dataclass(slots=True)
 class _RestoreBatch:
     correlation_id: str
@@ -541,30 +557,6 @@ def _is_io_completion(command: object) -> bool:
         command,
         (HarnessProcessStarted, HarnessCallIoCompleted, HarnessStopIoCompleted),
     )
-
-
-class _AwaitSettlement:
-    """``_request`` timeout marker: wait for the event itself, no deadline.
-
-    Restore is the only user.  Its wait used to carry a fleet-scaled
-    wall-clock budget (rounds x start timeout, capped by a ceiling held under
-    the CLI's 90s) because restore ran on the startup path, ahead of
-    ``daemon.json``.  Both halves of that coupling are gone: restore runs on
-    its own thread behind the serving boundary, and each target's disposition
-    is a readiness report, so the batch's only legitimate bound is the
-    per-start settlement timer every admitted start carries -- a reconcile
-    strategy parameter, not a startup clock.  F1 completed that argument: a
-    target a lifecycle effect owns settles immediately as deferred, so every
-    key has a disposition owner and the structural bound is total.  The
-    facade derives its wall-clock backstop from exactly that structure (see
-    ``restore_settlement_budget``); this marker remains only for the
-    timer-disabled opt-out, where no deadline exists to derive.  A runtime
-    stop still ends the wait: ``_fail_pending`` raises
-    ``HarnessRuntimeClosed`` here.
-    """
-
-
-_AWAIT_SETTLEMENT = _AwaitSettlement()
 
 
 def process_identities_match(

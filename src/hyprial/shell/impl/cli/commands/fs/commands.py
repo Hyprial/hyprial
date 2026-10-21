@@ -14,7 +14,7 @@ from hyprial.kernel import parse_orgfs_uri
 import typer
 
 from hyprial.shell.impl.cli.commands.common.support import JsonObject, _local_operator_identity, _message_claim_params
-from hyprial.shell.impl.cli.output import CliResult, render_generic
+from hyprial.shell.impl.cli.output import CliResult, confirm as ask, render_generic
 fs_app = typer.Typer(help="Share and synchronize organization folders.")
 
 
@@ -514,15 +514,60 @@ def fs_purge_plan(
 @fs_app.command("purge")
 def fs_purge(
     space_id: str = typer.Argument(..., help="Space UUID."),
-    plan_id: str = typer.Argument(..., help="Exact reviewed purge plan ID."),
+    plan_id: str | None = typer.Argument(
+        None, help="Optional reviewed content-purge plan ID."
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", help="Confirm local replica removal without a prompt."
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
-    """Execute an unchanged owner-reviewed purge plan."""
-    _fs_run(
-        "orgfs.purge",
-        {"spaceId": space_id, "planId": plan_id},
-        json_output=json_output,
-    )
+    """Purge a local replica, or execute a supplied content-purge plan.
+
+    Without PLAN_ID this removes only this node's replica. It does not
+    broadcast a deletion to peers.
+    """
+    if plan_id is not None:
+        _fs_run(
+            "orgfs.purge",
+            {"spaceId": space_id, "planId": plan_id},
+            json_output=json_output,
+        )
+        return
+
+    services = get_services()
+
+    def render(result: Mapping[str, Any]) -> str:
+        if result.get("purged"):
+            outcome = f"Purged local replica {space_id!r}."
+        else:
+            outcome = f"Local replica {space_id!r} was already absent."
+        return outcome + " This local-only purge did not broadcast deletion to peers."
+
+    def operation() -> CliResult:
+        if not yes:
+            if json_output or not services._stdin_isatty():
+                raise services.CliError(
+                    "USER_ACTION_REQUIRED",
+                    f"purging space {space_id!r} permanently removes only this "
+                    "node's local replica; re-run with --yes to confirm",
+                )
+            if not ask(
+                f"Purge only this node's local replica for space {space_id!r}?"
+            ):
+                raise services.CliError(
+                    "PURGE_DECLINED", f"space {space_id!r} was not purged"
+                )
+        result = services._daemon_request(
+            "orgfs.space_purge", {"spaceId": space_id}
+        )
+        if not isinstance(result, dict):
+            raise services.CliError(
+                "INVALID_RESPONSE", "orgfs.space_purge must return an object"
+            )
+        return CliResult(result, render=render)
+
+    services._execute(operation, json_output=json_output)
 
 
 @fs_app.command("purge-status")

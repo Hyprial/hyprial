@@ -29,7 +29,7 @@ from hyprial.kernel import (
     ActorHandle,
     ActorRuntime,
     AdmissionResult)
-from hyprial.kernel import EffectLane, EffectRequest
+from hyprial.kernel import EffectLane
 
 from hyprial.kernel import (
     canonical_orgfs_uri,
@@ -46,7 +46,8 @@ from hyprial.daemon.impl.orgfs.api  import (
 from hyprial.daemon.impl.orgfs.storage.store  import CommitRecord
 
 ORGFS_TEXT_MAX = 4 * 1024 * 1024
-_FACADE_EFFECT_CAPACITY = 128
+_FACADE_EFFECT_CAPACITY = 32
+_FACADE_NETWORK_EFFECT_CAPACITY = 64
 _SPACE_STATE_CAPACITY = 64
 _MUTATING_FACADE_METHODS = frozenset(
     {
@@ -367,8 +368,11 @@ def _facade_locked(method: Callable[..., Any]) -> Callable[..., Any]:
         if outermost:
             self._effect_context.pending = []
         result: Any = None
-        wait_for_completion = False
         operation_id: str | None = None
+        generation = self._effect_generation
+        reserved = False
+        effects: tuple[object, ...] = ()
+        wait_for_callbacks = False
         authority_lock = (
             self._lock
             if method.__name__ in {"create_space", "spaces"}
@@ -379,66 +383,54 @@ def _facade_locked(method: Callable[..., Any]) -> Callable[..., Any]:
             )
         )
         try:
-            with authority_lock:
-                if (
-                    outermost
-                    and method.__name__ in _MUTATING_FACADE_METHODS
-                    and self._effect_closed
-                ):
-                    raise OrgFsError("unavailable", {"message": "orgfs is closing"})
-                generation = self._effect_generation
-                reserved = False
-                if (
-                    outermost
-                    and method.__name__ in _MUTATING_FACADE_METHODS
-                    and self._needs_post_commit_effects()
-                ):
-                    self._ensure_effect_lane()
-                    operation_id = uuid.uuid4().hex
-                    admission = self._effect_lane.reserve(operation_id, generation)
-                    if admission is not AdmissionResult.ACCEPTED:
+            try:
+                with authority_lock:
+                    if (
+                        outermost
+                        and method.__name__ in _MUTATING_FACADE_METHODS
+                        and self._effect_closed
+                    ):
                         raise OrgFsError(
-                            "resource-exhausted",
-                            {
-                                "message": "orgfs post-commit effect lane is "
-                                + admission.value,
-                                "operationId": operation_id,
-                            },
+                            "unavailable", {"message": "orgfs is closing"}
                         )
-                    reserved = True
-                    with self._lock:
-                        self._effect_waiters[operation_id] = threading.Event()
-                try:
-                    result = method(self, *args, **kwargs)
-                finally:
-                    if outermost:
-                        effects = tuple(self._effect_context.pending)
-                        if operation_id is not None and reserved:
-                            if effects:
-                                with self._lock:
-                                    self._effect_sequence += 1
-                                    sequence = self._effect_sequence
-                                request = EffectRequest(
-                                    operation_id,
-                                    generation,
-                                    _FacadeEffectBatch(sequence, effects),
-                                )
-                                self._effect_lane.submit_reserved(request)
-                                wait_for_completion = True
-                            else:
-                                self._effect_lane.cancel_reservation(
-                                    operation_id, generation
-                                )
-                                with self._lock:
-                                    self._effect_waiters.pop(operation_id, None)
+                    generation = self._effect_generation
+                    if (
+                        outermost
+                        and method.__name__ in _MUTATING_FACADE_METHODS
+                        and self._needs_post_commit_effects()
+                    ):
+                        self._ensure_effect_lane()
+                        operation_id = uuid.uuid4().hex
+                        admission = self._effect_lane.reserve(operation_id, generation)
+                        if admission is not AdmissionResult.ACCEPTED:
+                            raise OrgFsError(
+                                "resource-exhausted",
+                                {
+                                    "message": "orgfs post-commit effect lane is "
+                                    + admission.value,
+                                    "operationId": operation_id,
+                                },
+                            )
+                        reserved = True
+                        with self._lock:
+                            self._effect_waiters[operation_id] = threading.Event()
+                    try:
+                        result = method(self, *args, **kwargs)
+                    finally:
+                        if outermost:
+                            effects = tuple(self._effect_context.pending)
+            finally:
+                if operation_id is not None and reserved:
+                    wait_for_callbacks = self._submit_post_commit_effects(
+                        operation_id, generation, effects
+                    )
+                if wait_for_callbacks and not getattr(
+                    self._effect_context, "in_effect_worker", False
+                ):
+                    self._wait_for_effect(operation_id)
         finally:
             if outermost:
                 del self._effect_context.pending
-        if (
-            wait_for_completion
-            and not getattr(self._effect_context, "in_effect_worker", False)
-        ):
-            self._wait_for_effect(operation_id)
         return result
 
     return locked

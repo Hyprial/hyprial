@@ -46,7 +46,10 @@ from hyprial.daemon.impl.lifecycle_manager  import (
     LifecycleSpec,
     LifecycleState,
 )
-from hyprial.daemon.impl.lifecycle.lifecycle_coordinator  import LifecycleCoordinator
+from hyprial.daemon.impl.lifecycle.lifecycle_coordinator  import (
+    LifecycleCoordinator,
+    LifecycleReservationOutcomeUnknown,
+)
 from hyprial.daemon.impl.network.route_ports  import RouteSpec
 from hyprial.daemon.impl.route_registration  import (
     RoutePreparationFailed,
@@ -247,7 +250,22 @@ class _LifecycleOpsMixin:
             kind=kind,
             budgetMs=budget_ms,
         )
-        admission = manager.submit(operation)
+        try:
+            admission = manager.submit(operation)
+        except LifecycleReservationOutcomeUnknown as error:
+            self._log_lifecycle_operation(
+                "error",
+                "daemon.lifecycle.reservation.outcome_unknown",
+                operationId=operation_id,
+                kind=kind,
+                elapsedMs=int((time.monotonic() - started) * 1000),
+                budgetMs=budget_ms,
+            )
+            raise DaemonRequestError(
+                ipc_errors.SUBMIT_OUTCOME_UNKNOWN,
+                f"lifecycle reservation outcome is unknown: {operation_id}",
+                {"operationId": error.operation_id},
+            ) from error
         if admission is not PortAdmission.ACCEPTED:
             self._log_lifecycle_operation(
                 "error",

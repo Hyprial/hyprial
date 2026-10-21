@@ -15,6 +15,12 @@ from hyprial.daemon.impl.forwarding  import (
     ForwardingSidecarError,
     ForwardingSidecarSupervisor,
 )
+from hyprial.daemon.impl.forwarding.slots import (
+    ensure_slots_dir,
+    reconcile_slot_bindings,
+    slot_store_for_app,
+    slot_transport,
+)
 if TYPE_CHECKING:
     pass
 
@@ -23,6 +29,24 @@ if TYPE_CHECKING:
 
 #: How often an owner/admin daemon fulfils org leave requests (§4.3).
 _ORG_LEAVE_INTERVAL_SECONDS = 30.0
+
+
+def record_tcp_slot_ports(app: object, reported: tuple[str, ...]) -> None:
+    """Persist resolved TCP slots and surface a one-time port fallback."""
+
+    store = slot_store_for_app(app)
+    requested = store.specs()
+    mismatches = store.record_tcp_ports(reported, requested=requested)
+    for index, wanted, got in mismatches:
+        app._log(
+            "warn",
+            "zenoh",
+            "zenoh.slots.port_fallback",
+            slot=index,
+            requested=wanted,
+            reported=got,
+            detail="persisted tcp slot port was unavailable; using the reported port",
+        )
 
 
 class _ForwardingOpsMixin:
@@ -38,6 +62,14 @@ class _ForwardingOpsMixin:
             return
         self._forwarding_start_attempted = True
         self._warn_rejected_exposures()
+        if slot_transport() == "unix":
+            # Every up request this supervisor is about to send names one
+            # unix socket path per slot under the home, and a fresh home
+            # ships without that directory -- the sidecar's listen-time
+            # MkdirAll is the second line of defense, so the daemon owns
+            # its side of the wire here: idempotent, unix-only, before
+            # any slots-carrying up can leave the process (e2e 2026-10-08).
+            ensure_slots_dir(self.hyprial_home)
         supervisor = ForwardingSidecarSupervisor(
             {**os.environ, **self._forwarding_environment},
             event_log=lambda level, event, **fields: self._log(
@@ -46,7 +78,10 @@ class _ForwardingOpsMixin:
             scheduler=self._maintenance_scheduler,
             own_io=True,
             desired_exposures=self._exposure_store.list,
-            directory=self._tailcat_directory_peers,
+            slots=lambda: slot_store_for_app(self).endpoints(),
+            slot_transport=slot_transport(),
+            on_slots_reported=lambda ids: record_tcp_slot_ports(self, ids),
+            up_slots=lambda: slot_store_for_app(self).specs(),
         )
         self._forwarding_supervisor = supervisor
         supervisor.ensure_started()
@@ -80,6 +115,19 @@ class _ForwardingOpsMixin:
         if self._forwarding_supervisor is not None:
             return self._forwarding_supervisor.endpoints()
         return self._forwarding_discovery
+
+    def _slot_mode(self) -> bool:
+        """Whether forwarding dials the fixed slot pool on this daemon.
+
+        A test-injected slot backend answers for itself; otherwise slot
+        mode is "forwarding is configured" -- the fixed pool is the only
+        way forwarding dials (no rollback valve).
+        """
+
+        backend = self._forwarding_backend()
+        if backend is not None:
+            return bool(getattr(backend, "slot_mode", False))
+        return bool(self._forwarding_environment)
 
     def _forwarding_diagnostic_counters(self) -> dict[str, int]:
         snapshot = getattr(
@@ -174,6 +222,9 @@ class _ForwardingOpsMixin:
                 "derpMapURL": poll.get("derpMapURL"),
                 "derpMapSource": poll.get("derpMapSource"),
             }
+            slots_by_peer: dict[str, int] = {}
+            if getattr(backend, "slot_mode", False):
+                slots_by_peer = slot_store_for_app(self).assignments
             telemetry = poll.get("connectionTelemetry")
             status["connectionTelemetry"] = (
                 telemetry
@@ -184,9 +235,45 @@ class _ForwardingOpsMixin:
                 if isinstance(poll.get(key), str):
                     status[key] = poll[key]
             status["peers"] = [
-                {"peer": peer, "endpoint": endpoint, "dialed": endpoint in dialed}
+                {
+                    "peer": peer,
+                    "endpoint": endpoint,
+                    "dialed": endpoint in dialed,
+                    **(
+                        {"slot": slots_by_peer[peer]}
+                        if peer in slots_by_peer
+                        else {}
+                    ),
+                }
                 for peer, endpoint in sorted(peer_endpoints.items())
             ]
+        if backend is not None and getattr(backend, "slot_mode", False):
+            # The slot → peer projection the design asks status to answer:
+            # which slot dials whom, how big the pool is, how much is free.
+            store = slot_store_for_app(self)
+            assignments = store.assignments
+            # The live backend knows the locator per index on every
+            # transport (tcp ports are per-incarnation); the store's
+            # static set only covers unix.
+            locators = getattr(backend, "slot_locators", None)
+            endpoints_by_slot = (
+                locators() if callable(locators)
+                else dict(enumerate(store.endpoints()))
+            )
+            status["slots"] = {
+                "poolSize": store.pool_size,
+                "free": store.pool_size - len(assignments),
+                "assigned": [
+                    {
+                        "slot": slot,
+                        "peer": peer,
+                        "endpoint": endpoints_by_slot.get(slot),
+                    }
+                    for peer, slot in sorted(
+                        assignments.items(), key=lambda item: item[1]
+                    )
+                ],
+            }
         return status
 
     def _reconcile_forwarding_endpoints(self) -> None:
@@ -195,6 +282,14 @@ class _ForwardingOpsMixin:
         backend = self._forwarding_backend()
         if backend is None:
             return
+        if getattr(backend, "slot_mode", False):
+            # Slot binding runs BEFORE the endpoint read: membership
+            # changes only rebind slots (never touching the set), and a
+            # pool growth must be visible in this very read so the one
+            # remaining rebuild below dials it.  The S2b peer-access
+            # actor will drive the same pass event-wise; this tick stays
+            # as the time-driven floor (liveness fallback, retries).
+            reconcile_slot_bindings(self, reason="tick")
         previous = self._forwarding_effective
         current = backend.list_reachable_endpoints()
         self._forwarding_effective = current

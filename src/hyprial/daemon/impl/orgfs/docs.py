@@ -143,6 +143,7 @@ class LocalOrgFs(FacadeEffects, FacadeSpaceState, FacadeProjection, FacadeSpaces
         self._space_locks: dict[str, threading.RLock] = {}
         self._space_state_context = threading.local()
         self._space_state_owners: dict[str, _SpaceStateOwner] = {}
+        self._detached_spaces: set[str] = set()
         self._space_state_closing = False
         self._effect_context = threading.local()
         self._effect_sequence = 0
@@ -152,6 +153,12 @@ class LocalOrgFs(FacadeEffects, FacadeSpaceState, FacadeProjection, FacadeSpaces
         self._effect_runtime: ActorRuntime | None = None
         self._effect_actor: ActorHandle | None = None
         self._effect_lane: EffectLane[_FacadeEffectBatch, _FacadeEffectResult] | None = None
+        self._network_effect_lane: EffectLane[str, _FacadeEffectResult] | None = None
+        self._network_effect_stop = threading.Event()
+        self._network_effect_draining = False
+        self._network_effect_spaces: dict[str, str] = {}
+        self._network_due_spaces: set[str] = set()
+        self._network_active_spaces: set[str] = set()
         self._effect_closed = False
         self._watchers: dict[str, _Watch] = {}
         self._meta_watchers: dict[str, _MetaWatch] = {}
@@ -161,4 +168,3 @@ class LocalOrgFs(FacadeEffects, FacadeSpaceState, FacadeProjection, FacadeSpaces
         self._events: dict[str, list[ChangeEvent]] = {}
         self._purge_plans: dict[str, tuple[PurgePlan, tuple[dict[str, str], ...]]] = {}
         self._pending_outbox: dict[str, list[CommitRecord]] = {}
-        self._broadcast_inflight: set[tuple[str, int, bytes]] = set()

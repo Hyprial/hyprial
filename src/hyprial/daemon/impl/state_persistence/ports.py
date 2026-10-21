@@ -61,6 +61,7 @@ from .commands import (
     ReadDesiredQuery,
     ReadJournalQuery,
     RecordHarnessLifecycleFailure,
+    RecordHarnessRestoreSettlement,
     RecordSessionAgentEffects,
     RemoveAdapterRegistration,
     RemoveChannelPin,
@@ -278,6 +279,11 @@ class _Generation:
                     version=command.version,
                 )
                 self.projection.publish(self.desired.published_state())
+            elif isinstance(command, RecordHarnessRestoreSettlement):
+                result = self.desired.record_harness_restore_settlement(
+                    command.operation_id, command.attempted, command.restored,
+                    command.failed, command.deferred,
+                )
             elif isinstance(command, RetireDomainReceipt):
                 result = self.desired.retire_lifecycle_receipt(
                     command.domain, command.attempt_token, command.resource_token

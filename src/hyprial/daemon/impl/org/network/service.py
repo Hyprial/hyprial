@@ -105,7 +105,7 @@ class OrgNetworkService(CasdoorMembershipMixin):
         store: OrgFsDirectoryStore | None = None,
         invalid_devices: InvalidDeviceQuarantine | None = None,
         policy: OrgPolicy | None = None,
-        map_peer: Callable[[str, str], int] | None = None,
+        map_peer: Callable[[str, str], int | None] | None = None,
         unmap_peer: Callable[[str], None] | None = None,
         request_redial: Callable[[], None] | None = None,
         read_own_address: Callable[[], str | None] | None = None,
@@ -643,9 +643,7 @@ class OrgNetworkService(CasdoorMembershipMixin):
     def _execute_step(self, link: InviteLink, kind: str) -> str:
         if kind == "connect-inviter":
             peer = self._peer_label(link.inviter, link.inviter_device)
-            local_port = self._require_map_peer()(
-                peer, link.inviter_address
-            )
+            slot = self._require_map_peer()(peer, link.inviter_address)
             # Authorize this one peer for the directory-driven reconcile
             # before triggering it: the invite link is the credential, and
             # the directory row only exists after join + sync.
@@ -659,7 +657,8 @@ class OrgNetworkService(CasdoorMembershipMixin):
             )
             if self._request_redial is not None:
                 self._request_redial()
-            return f"mapped inviter on 127.0.0.1:{local_port}"
+            where = f"slot {slot}" if slot is not None else "a fixed slot"
+            return f"mapped inviter on {where}"
         if kind == "join-org":
             self._join_with_retry(link.space_id)
             self._join_with_retry(link.acl_space_id)
@@ -845,7 +844,7 @@ class OrgNetworkService(CasdoorMembershipMixin):
         self._remove_orgfs_member(org, space_id, user)
         return []
 
-    def _require_map_peer(self) -> Callable[[str, str], int]:
+    def _require_map_peer(self) -> Callable[[str, str], int | None]:
         if self._map_peer is None:
             raise OrgNetworkError(
                 "FORWARDING_UNAVAILABLE",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from bisect import bisect_right
 
 from collections.abc import Iterable, Mapping
 
@@ -38,7 +39,7 @@ if TYPE_CHECKING:
     pass
 
 
-from hyprial.daemon.impl.orgfs.network.protocol import ORGFS_LOG_RANGE_LIMIT, ORGFS_REPLICA_SYNC_SCAN_ROWS, _READ_DIRECT, _b64, _decode_request, _decode_update_header, _error, _json_bytes, _unb64
+from hyprial.daemon.impl.orgfs.network.protocol import ORGFS_LOG_RANGE_LIMIT, ORGFS_REPLICA_SYNC_SCAN_ROWS, ORGFS_SYNC_PAGE_DOCUMENT_LIMIT, _READ_DIRECT, _b64, _decode_request, _decode_update_header, _error, _json_bytes, _unb64
 
 class MeshQueries:
     """Responsibility methods on the sole OrgFsMesh state host.
@@ -111,6 +112,17 @@ class MeshQueries:
         )
 
 
+    def _commit_envelope(self, doc_id: str, writer: str, seq: int) -> bytes | None:
+        value = self._read(
+            _ReadStore("commit_envelope", doc_id=doc_id, writer=writer, seq=seq)
+        )
+        return (
+            self.store.commit_envelope(doc_id, writer, seq)
+            if value is _READ_DIRECT
+            else (None if value is None else bytes(value))
+        )
+
+
     def _covered(self, version: bytes, vv: bytes) -> bool:
         value = self._read(_ReadStore("covered", version=version, vv=vv))
         return bool(value) if value is not _READ_DIRECT else self.store._covered(version, vv)
@@ -147,22 +159,254 @@ class MeshQueries:
         return hashlib.sha256(_json_bytes(body)).hexdigest()[:24]
 
 
-    def _flatten_missing(
-        self, doc_ids: tuple[str, ...], vectors: Mapping[str, Any]
-    ) -> list[bytes]:
-        missing: list[bytes] = []
-        for doc_id in doc_ids:
-            vv = _unb64(vectors.get(doc_id, ""))
-            cursor: str | None = None
-            while True:
-                page = self._export_since(
-                    doc_id, vv, cursor=cursor, max_bytes=ORGFS_PAGE_BYTES
+    @staticmethod
+    def _encode_sync_cursor(
+        fingerprint: str, doc_index: int, export_cursor: str | None
+    ) -> str:
+        return (
+            base64.urlsafe_b64encode(
+                _json_bytes(
+                    {
+                        "fingerprint": fingerprint,
+                        "docIndex": doc_index,
+                        "exportCursor": export_cursor,
+                    }
                 )
-                missing.extend(page.envelopes)
-                cursor = page.next
-                if cursor is None:
-                    break
-        return missing
+            )
+            .decode("ascii")
+            .rstrip("=")
+        )
+
+
+    @staticmethod
+    def _decode_sync_cursor(
+        raw_cursor: object, fingerprint: str
+    ) -> tuple[int, str | None]:
+        if raw_cursor is None:
+            return 0, None
+        try:
+            decoded = json.loads(base64.urlsafe_b64decode(str(raw_cursor) + "=="))
+            doc_index = decoded.get("docIndex")
+            export_cursor = decoded.get("exportCursor")
+            if (
+                decoded.get("fingerprint") != fingerprint
+                or type(doc_index) is not int
+                or doc_index < 0
+                or (export_cursor is not None and not isinstance(export_cursor, str))
+            ):
+                raise ValueError
+            return doc_index, export_cursor
+        except Exception as exc:
+            raise StoreError(
+                "bad-cursor", "cursor does not match this sync request"
+            ) from exc
+
+
+    def _document_page(self, value: Mapping[str, Any]) -> bytes:
+        if str(value.get("spaceId")) != self.store.space_id:
+            raise StoreError("unknown-space", "sync requested another space")
+        if not self._requester_allowed(value):
+            raise StoreError("not-a-member", "requester is not a space member")
+        max_bytes = value.get("maxBytes", ORGFS_PAGE_BYTES)
+        if (
+            isinstance(max_bytes, bool)
+            or not isinstance(max_bytes, int)
+            or not 0 < max_bytes <= ORGFS_PAGE_BYTES
+        ):
+            raise StoreError(
+                "invalid-argument", "maxBytes is outside the allowed range"
+            )
+        raw_cursor = value.get("cursor")
+        if raw_cursor is None:
+            offset = 0
+        elif type(raw_cursor) is int and raw_cursor >= 0:
+            offset = raw_cursor
+        else:
+            raise StoreError("bad-cursor", "document cursor is invalid")
+        known = self._document_ids()
+        doc_ids = tuple(dict.fromkeys(("meta", *sorted(known))))
+        if offset > len(doc_ids):
+            raise StoreError("bad-cursor", "document cursor is outside the result set")
+        selected: list[str] = []
+        index = offset
+        encoded_array_size = 2
+        while index < len(doc_ids):
+            encoded_size = len(
+                json.dumps(doc_ids[index], ensure_ascii=False).encode("utf-8")
+            )
+            added = encoded_size + (1 if selected else 0)
+            next_index = index + 1
+            candidate_next = next_index if next_index < len(doc_ids) else None
+            empty_candidate_size = len(
+                _json_bytes(
+                    {
+                        "schemaVersion": 1,
+                        "type": "orgfs-sync-documents-page",
+                        "supplier": self.node_id,
+                        "docIds": [],
+                        "next": candidate_next,
+                    }
+                )
+            )
+            if empty_candidate_size + encoded_array_size + added - 2 > max_bytes:
+                if not selected:
+                    raise StoreError("too-large", "one document id cannot fit")
+                break
+            selected.append(doc_ids[index])
+            encoded_array_size += added
+            index = next_index
+        response = _json_bytes(
+            {
+                "schemaVersion": 1,
+                "type": "orgfs-sync-documents-page",
+                "supplier": self.node_id,
+                "docIds": selected,
+                "next": index if index < len(doc_ids) else None,
+            }
+        )
+        if len(response) > max_bytes:
+            raise StoreError("too-large", "document page exceeds maxBytes")
+        return response
+
+
+    @staticmethod
+    def _encode_stream_cursor(
+        after_doc_id: str | None, doc_id: str | None, export_cursor: str | None
+    ) -> str:
+        return (
+            base64.urlsafe_b64encode(
+                _json_bytes(
+                    {
+                        "afterDocId": after_doc_id,
+                        "docId": doc_id,
+                        "exportCursor": export_cursor,
+                    }
+                )
+            )
+            .decode("ascii")
+            .rstrip("=")
+        )
+
+
+    @staticmethod
+    def _decode_stream_cursor(
+        raw_cursor: object, doc_ids: tuple[str, ...]
+    ) -> tuple[int, str | None, str | None]:
+        if raw_cursor is None:
+            return 0, None, None
+        if not isinstance(raw_cursor, str):
+            raise StoreError("bad-cursor", "stream cursor is invalid")
+        try:
+            decoded = json.loads(base64.urlsafe_b64decode(raw_cursor + "=="))
+            after_doc_id = decoded.get("afterDocId")
+            doc_id = decoded.get("docId")
+            export_cursor = decoded.get("exportCursor")
+            if any(
+                value is not None and not isinstance(value, str)
+                for value in (after_doc_id, doc_id, export_cursor)
+            ):
+                raise ValueError
+            if doc_id is not None:
+                if doc_id not in doc_ids or export_cursor is None:
+                    raise ValueError
+                return doc_ids.index(doc_id), after_doc_id, export_cursor
+            if export_cursor is not None:
+                raise ValueError
+            if after_doc_id is None:
+                return 0, None, None
+            if after_doc_id == "meta":
+                return 1, after_doc_id, None
+            regular = doc_ids[1:]
+            return 1 + bisect_right(regular, after_doc_id), after_doc_id, None
+        except Exception as exc:
+            raise StoreError("bad-cursor", "stream cursor is invalid") from exc
+
+
+    def _stream_sync_page(self, value: Mapping[str, Any]) -> bytes:
+        if str(value.get("spaceId")) != self.store.space_id:
+            raise StoreError("unknown-space", "sync requested another space")
+        if not self._requester_allowed(value):
+            raise StoreError("not-a-member", "requester is not a space member")
+        max_bytes = value.get("maxBytes", ORGFS_PAGE_BYTES)
+        if (
+            isinstance(max_bytes, bool)
+            or not isinstance(max_bytes, int)
+            or not 0 < max_bytes <= ORGFS_PAGE_BYTES
+        ):
+            raise StoreError(
+                "invalid-argument", "maxBytes is outside the allowed range"
+            )
+        if self.replica_store is not None:
+            return self._replica_sync_page(
+                {
+                    **value,
+                    "docIds": None,
+                    "versionVectors": {},
+                },
+                tuple(dict.fromkeys(("meta", *self._document_ids()))),
+                max_bytes,
+                response_type="orgfs-sync-stream-page",
+            )
+        doc_ids = tuple(dict.fromkeys(("meta", *sorted(self._document_ids()))))
+        index, after_doc_id, export_cursor = self._decode_stream_cursor(
+            value.get("cursor"), doc_ids
+        )
+        selected: list[str] = []
+        scanned = 0
+        used = len(
+            _json_bytes(
+                {
+                    "schemaVersion": 1,
+                    "type": "orgfs-sync-stream-page",
+                    "supplier": self.node_id,
+                    "envelopes": [],
+                    "next": "x" * 512,
+                }
+            )
+        )
+        while index < len(doc_ids) and scanned < ORGFS_SYNC_PAGE_DOCUMENT_LIMIT:
+            doc_id = doc_ids[index]
+            remaining = max_bytes - used
+            page = self._export_since(
+                doc_id,
+                b"",
+                cursor=export_cursor,
+                max_bytes=max(1, remaining - 1024),
+            )
+            encoded = [_b64(envelope) for envelope in page.envelopes]
+            added = sum(len(item.encode("ascii")) + 3 for item in encoded)
+            if used + added > max_bytes:
+                if not selected:
+                    raise StoreError("too-large", "one envelope cannot fit in maxBytes")
+                break
+            selected.extend(encoded)
+            used += added
+            if page.next is not None:
+                export_cursor = page.next
+                break
+            after_doc_id = doc_id
+            export_cursor = None
+            index += 1
+            scanned += 1
+        next_cursor = None
+        if index < len(doc_ids):
+            next_cursor = self._encode_stream_cursor(
+                after_doc_id,
+                doc_ids[index] if export_cursor is not None else None,
+                export_cursor,
+            )
+        response = _json_bytes(
+            {
+                "schemaVersion": 1,
+                "type": "orgfs-sync-stream-page",
+                "supplier": self.node_id,
+                "envelopes": selected,
+                "next": next_cursor,
+            }
+        )
+        if len(response) > max_bytes:
+            raise StoreError("too-large", "sync stream page exceeds maxBytes")
+        return response
 
 
     def _sync_page(self, value: Mapping[str, Any]) -> bytes:
@@ -199,23 +443,19 @@ class MeshQueries:
                 "invalid-argument", "maxBytes is outside the allowed range"
             )
         if self.replica_store is not None:
-            return self._replica_sync_page(value, doc_ids, max_bytes)
+            return self._replica_sync_page(
+                value,
+                doc_ids,
+                max_bytes,
+                response_type="orgfs-sync-page",
+            )
         fingerprint = self._cursor_fingerprint(value, doc_ids)
-        offset = 0
-        raw_cursor = value.get("cursor")
-        if raw_cursor is not None:
-            try:
-                decoded = json.loads(base64.urlsafe_b64decode(str(raw_cursor) + "=="))
-                if decoded.get("fingerprint") != fingerprint or not isinstance(
-                    decoded.get("offset"), int
-                ):
-                    raise ValueError
-                offset = int(decoded["offset"])
-            except Exception as exc:
-                raise StoreError(
-                    "bad-cursor", "cursor does not match this sync request"
-                ) from exc
-        if offset == 0:
+        doc_index, export_cursor = self._decode_sync_cursor(
+            value.get("cursor"), fingerprint
+        )
+        if doc_index > len(doc_ids):
+            raise StoreError("bad-cursor", "cursor is outside the document set")
+        if doc_index == 0 and export_cursor is None:
             manifests: list[Mapping[str, Any]] = []
             meta_probe = self._export_since(
                 "meta",
@@ -224,10 +464,16 @@ class MeshQueries:
                 max_bytes=ORGFS_PAGE_BYTES,
             )
             # A retirement cannot be interpreted until the requester has its
-            # owner-written meta prefix.  Send that prefix first; the next
-            # round may then return the replacement snapshot manifest.
+            # owner-written meta prefix. Send that prefix first; only committed
+            # replacement records can require a snapshot probe afterward.
             if not meta_probe.envelopes:
+                replacement_ids = {
+                    record.replacement_doc_id
+                    for record in self._retirement_records()
+                }
                 for doc_id in doc_ids:
+                    if doc_id not in replacement_ids:
+                        continue
                     probe = self._export_since(
                         doc_id,
                         _unb64(vectors.get(doc_id, "")),
@@ -250,20 +496,28 @@ class MeshQueries:
                         "too-large", "snapshot manifest page exceeds maxBytes"
                     )
                 return response
-        missing = self._flatten_missing(doc_ids, vectors)
-        if offset < 0 or offset > len(missing):
-            raise StoreError("bad-cursor", "cursor is outside the result set")
-        encoded_envelopes: list[str] = []
-        index = offset
-        while index < len(missing):
-            trial = [*encoded_envelopes, _b64(missing[index])]
-            next_value = (
-                base64.urlsafe_b64encode(
-                    _json_bytes({"fingerprint": fingerprint, "offset": index + 1})
-                )
-                .decode("ascii")
-                .rstrip("=")
-                if index + 1 < len(missing)
+        while doc_index < len(doc_ids):
+            doc_id = doc_ids[doc_index]
+            vector = _unb64(vectors.get(doc_id, ""))
+            if export_cursor is None and vector and vector == self._frontier(doc_id):
+                doc_index += 1
+                continue
+            page = self._export_since(
+                doc_id,
+                vector,
+                cursor=export_cursor,
+                # Store paging already accounts for base64 envelope size; keep
+                # only the outer response and cursor overhead out of its budget.
+                max_bytes=max(1, max_bytes - 1024),
+            )
+            if not page.envelopes:
+                doc_index += 1
+                export_cursor = None
+                continue
+            next_doc_index = doc_index if page.next is not None else doc_index + 1
+            next_cursor = (
+                self._encode_sync_cursor(fingerprint, next_doc_index, page.next)
+                if next_doc_index < len(doc_ids)
                 else None
             )
             response = _json_bytes(
@@ -271,32 +525,20 @@ class MeshQueries:
                     "schemaVersion": 1,
                     "type": "orgfs-sync-page",
                     "supplier": self.node_id,
-                    "envelopes": trial,
-                    "next": next_value,
+                    "envelopes": [_b64(envelope) for envelope in page.envelopes],
+                    "next": next_cursor,
                 }
             )
             if len(response) > max_bytes:
-                if not encoded_envelopes:
-                    raise StoreError("too-large", "one envelope cannot fit in maxBytes")
-                break
-            encoded_envelopes = trial
-            index += 1
-        next_cursor = (
-            base64.urlsafe_b64encode(
-                _json_bytes({"fingerprint": fingerprint, "offset": index})
-            )
-            .decode("ascii")
-            .rstrip("=")
-            if index < len(missing)
-            else None
-        )
+                raise StoreError("too-large", "sync page exceeds maxBytes")
+            return response
         response = _json_bytes(
             {
                 "schemaVersion": 1,
                 "type": "orgfs-sync-page",
                 "supplier": self.node_id,
-                "envelopes": encoded_envelopes,
-                "next": next_cursor,
+                "envelopes": [],
+                "next": None,
             }
         )
         if len(response) > max_bytes:
@@ -305,7 +547,12 @@ class MeshQueries:
 
 
     def _replica_sync_page(
-        self, value: Mapping[str, Any], doc_ids: tuple[str, ...], max_bytes: int
+        self,
+        value: Mapping[str, Any],
+        doc_ids: tuple[str, ...],
+        max_bytes: int,
+        *,
+        response_type: str,
     ) -> bytes:
         if self.replica_store is None:
             raise StoreError("invalid-argument", "replica store is unavailable")
@@ -365,7 +612,7 @@ class MeshQueries:
             response = _json_bytes(
                 {
                     "schemaVersion": 1,
-                    "type": "orgfs-sync-page",
+                    "type": response_type,
                     "supplier": self.node_id,
                     "envelopes": trial,
                     "next": encode_cursor(key) if candidate_more else None,
@@ -383,15 +630,18 @@ class MeshQueries:
             if last_scanned_key is None:
                 raise StoreError("bad-cursor", "replica sync made no cursor progress")
             next_cursor = encode_cursor(last_scanned_key)
-        return _json_bytes(
+        response = _json_bytes(
             {
                 "schemaVersion": 1,
-                "type": "orgfs-sync-page",
+                "type": response_type,
                 "supplier": self.node_id,
                 "envelopes": selected,
                 "next": next_cursor,
             }
         )
+        if len(response) > max_bytes:
+            raise StoreError("too-large", "sync page exceeds maxBytes")
+        return response
 
 
     def _frontier_reply(self, value: Mapping[str, Any]) -> bytes:
@@ -426,6 +676,10 @@ class MeshQueries:
             kind = value.get("type")
             if kind == "orgfs-sync":
                 response = self._sync_page(value)
+            elif kind == "orgfs-sync-stream":
+                response = self._stream_sync_page(value)
+            elif kind == "orgfs-sync-documents":
+                response = self._document_page(value)
             elif kind == "orgfs-frontier":
                 response = self._frontier_reply(value)
             else:

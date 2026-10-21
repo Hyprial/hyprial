@@ -12,7 +12,7 @@ import time
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from queue import Full, Queue
+from queue import Empty, Full, Queue
 from typing import Callable, cast
 from uuid import uuid4
 
@@ -28,6 +28,7 @@ from hyprial.kernel import LifecycleMutationCompleted
 from hyprial.kernel import LifecycleMutationRequest
 from hyprial.daemon.impl.lifecycle_manager  import (
     LifecycleOperation,
+    LifecycleOperationConflict,
     LifecyclePorts, LifecycleProcessManager, LifecycleResult, LifecycleState,
     LifecycleStepFailed, LifecycleStepUnresolved,
     _LifecycleStore, _Step, _plan,
@@ -45,6 +46,16 @@ LIFECYCLE_WAIT_STORE_RECHECK_SECONDS = 1.0
 
 # Resource scheduling key namespace; these keys are not canonical Agent URIs.
 _AGENT_RESOURCE_NAMESPACE = "agent"
+
+
+class LifecycleReservationOutcomeUnknown(TimeoutError):
+    """A stable lifecycle operation may have committed; query its receipt."""
+
+    def __init__(self, operation_id: str) -> None:
+        super().__init__(
+            f"lifecycle reservation outcome is unknown; query {operation_id}"
+        )
+        self.operation_id = operation_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -464,6 +475,7 @@ class LifecycleCoordinator:
         capacity: int = 32, effect_workers: int = 4,
         completion_timeout: float = 2.0, admission_deadline: float = 1.0,
         operation_deadline: float = LIFECYCLE_OPERATION_DEADLINE_SECONDS,
+        reservation_timeout: float = 2.0,
         admission_backoff: tuple[float, ...] = (0.005, 0.01, 0.02),
         combined_shared_receipts: bool = False,
         event_sink: Callable[..., None] | None = None,
@@ -471,6 +483,8 @@ class LifecycleCoordinator:
     ) -> None:
         if capacity < 1 or effect_workers < 1:
             raise ValueError("capacity and effect_workers must be positive")
+        if reservation_timeout <= 0:
+            raise ValueError("reservation_timeout must be positive")
         self._store = cast(_LifecycleStore, journal_store) if journal_store is not None else _LifecycleStore(
             state if isinstance(state, StateDatabase) else StateDatabase(Path(state))
         )
@@ -481,6 +495,7 @@ class LifecycleCoordinator:
         )
         self._effects: Queue[_ReserveWork | _AdvanceWork | None] = Queue(maxsize=capacity)
         self._capacity = capacity
+        self._reservation_timeout = reservation_timeout
         self._condition = threading.Condition()
         self._pending: dict[str, LifecycleOperation] = {}
         self._active: dict[str, LifecycleOperation] = {}
@@ -571,7 +586,22 @@ class LifecycleCoordinator:
                 self._incoming.discard(request_id)
                 self._answers.pop(request_id, None)
             return PortAdmission.CLOSING
-        outcome = answer.get()  # Durable reservation is the acceptance point.
+        try:
+            outcome = answer.get(timeout=self._reservation_timeout)
+        except Empty:
+            with self._condition:
+                self._answers.pop(request_id, None)
+            try:
+                reserved = self._store.load(operation.operation_id)
+            except Exception:
+                raise LifecycleReservationOutcomeUnknown(
+                    operation.operation_id
+                ) from None
+            if reserved != operation:
+                raise LifecycleOperationConflict(
+                    f"operationId {operation.operation_id!r} was reused with a different request"
+                )
+            return PortAdmission.ACCEPTED
         if isinstance(outcome, BaseException):
             raise outcome
         return outcome

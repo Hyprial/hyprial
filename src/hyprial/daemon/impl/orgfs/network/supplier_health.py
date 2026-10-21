@@ -251,29 +251,41 @@ class SupplierSyncMixin:
                 except Exception as exc:  # noqa: BLE001 - best-effort lane
                     # A non-member supplier never becomes one inside this
                     # budget; retrying only burns the sync window.
-                    member_refusal = (
-                        getattr(exc, "details", None) or {}
-                    ).get("reason") == "supplier-not-member"
+                    details = getattr(exc, "details", None) or {}
+                    code = getattr(exc, "code", "sync-failed")
+                    reason = details.get("reason", code)
+                    member_refusal = reason == "supplier-not-member"
+                    budget_exhausted = reason == "deadline-expired-mid-sync"
                     retry_scheduled = (
                         attempt < len(delays)
                         and not member_refusal
+                        and not budget_exhausted
                         and self._supplier_allowed(supplier)
                         and time.monotonic() + delays[attempt] < deadline
                     )
                     self._log(
                         "warn",
                         "orgfs.sync.failed",
-                        reason=getattr(exc, "code", "sync-failed"),
+                        reason=reason,
+                        code=code,
+                        message=str(exc),
                         supplier=supplier,
                         spaceId=self.store.space_id,
                         attempt=attempt,
                         retryScheduled=retry_scheduled,
+                        pages=details.get("pages"),
+                        requestBytes=details.get("requestBytes"),
+                        responseBytes=details.get("responseBytes"),
+                        elapsedMs=details.get("elapsedMs"),
                     )
-                    self._record_supplier_sync_failure(
-                        supplier,
-                        getattr(exc, "code", "sync-failed"),
-                        shared=self._supplier_failure_is_global(exc),
-                    )
+                    if budget_exhausted:
+                        self._clear_supplier_sync_failure(supplier)
+                    else:
+                        self._record_supplier_sync_failure(
+                            supplier,
+                            code,
+                            shared=self._supplier_failure_is_global(exc),
+                        )
                     if not retry_scheduled:
                         return
 

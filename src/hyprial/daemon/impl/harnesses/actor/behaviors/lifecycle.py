@@ -435,6 +435,17 @@ class _LifecycleBehavior:
 
     def _on_restore(self, command: RestoreHarnessesCommand) -> None:
         self._closing = False
+        settled = self._cached_restore_result(command.correlation_id)
+        if settled is not None:
+            self._emit_event(
+                HarnessRestoreCompleted(
+                    command.correlation_id,
+                    self._handler_generation,
+                    self._version,
+                    settled,
+                )
+            )
+            return
         desired_specs = tuple(_launch_spec(spec) for spec in command.specs)
         desired = {self._key(spec): spec for spec in desired_specs}
         self._records = {key: _Record(spec=spec) for key, spec in desired.items()}

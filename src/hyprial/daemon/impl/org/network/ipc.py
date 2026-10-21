@@ -62,24 +62,31 @@ def _invalid_device_quarantine(app: Any) -> InvalidDeviceQuarantine:
 def _build_service(app: Any) -> OrgNetworkService:
     fs = app._require_orgfs_runtime().facade
 
-    def map_peer(peer: str, address: str) -> int:
-        # v3 seam (tailnet cutover §4.2): the supervisor's map_peer takes
-        # the peer's Tailcat address, which only the org directory holds.
+    def map_peer(peer: str, address: str) -> int | None:
+        # The invite/join bootstrap connects a peer by assigning it a
+        # fixed slot (the only dialing shape; design §5): start the
+        # sidecar, then bind the slot.  The address is the peer's Tailcat
+        # address, which only the org directory holds.
+        from hyprial.daemon.impl.forwarding.slots import bind_peer_slot
+
         app._start_forwarding_supervisor()
         supervisor = getattr(app, "_forwarding_supervisor", None)
         if supervisor is None:
             raise OrgNetworkError(
                 "FORWARDING_UNAVAILABLE", "forwarding sidecar is not configured"
             )
-        return supervisor.map_peer(peer, address)
+        return bind_peer_slot(app, peer, address)
 
     def unmap_peer(peer: str) -> None:
         # Unlike map_peer this never *starts* the sidecar: a daemon whose
-        # forwarding is down has nothing mapped to undo.
+        # forwarding is down has nothing mapped to undo.  Releasing the
+        # slot (unmap + free) keeps the pool reusable.
+        from hyprial.daemon.impl.forwarding.slots import unbind_peer_slot
+
         supervisor = getattr(app, "_forwarding_supervisor", None)
         if supervisor is None:
             return
-        supervisor.unmap_peer(peer)
+        unbind_peer_slot(app, peer)
 
     def read_own_address() -> str | None:
         try:

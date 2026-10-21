@@ -1,4 +1,4 @@
-// Package serve implements the protocol-v3 stdio lifecycle of
+// Package serve implements the protocol-v4 stdio lifecycle of
 // `hyprial-tailcat forward` (design doc §3.3): emit hello, consume
 // newline-delimited JSON commands, emit events, and on stdin EOF or down
 // shut everything down, emit exited, and return.
@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"time"
 
 	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tailcat/internal/buildinfo"
 	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tailcat/internal/engine"
@@ -66,7 +67,7 @@ func Run(ctx context.Context, input io.Reader, output io.Writer, diag io.Writer)
 			command, err := proto.ParseCommand(line)
 			if err != nil {
 				logf("rejected malformed request")
-				event := proto.Error(proto.CodeBadRequest, "invalid protocol-v3 request")
+				event := proto.Error(proto.CodeBadRequest, "invalid protocol-v4 request")
 				event.RequestID = parseErrorRequestID(line)
 				if err := writer.Write(event); err != nil {
 					eng.Down()
@@ -110,7 +111,7 @@ func handle(ctx context.Context, eng *engine.Engine, command proto.Command, writ
 		if err != nil {
 			return writeError(writer, err, proto.CodeStartFailed, command.RequestID)
 		}
-		event := proto.RunningState(serverPublic, clientPublic, nil)
+		event := proto.RunningState(serverPublic, clientPublic, nil, eng.SlotIDs())
 		event.DERPMapURL, event.DERPMapSource = eng.DERPMap()
 		return writer.Write(event)
 	case "status":
@@ -118,17 +119,19 @@ func handle(ctx context.Context, eng *engine.Engine, command proto.Command, writ
 		if state != "Running" {
 			return writeResponse(writer, proto.State("Down"), command.RequestID)
 		}
-		event := proto.RunningState(serverPublic, clientPublic, toPeerMappings(peers))
+		event := proto.RunningState(
+			serverPublic, clientPublic, toPeerMappings(peers), eng.SlotIDs(),
+		)
 		projected := toConnectionTelemetry(telemetry)
 		event.ConnectionTelemetry = &projected
 		event.DERPMapURL, event.DERPMapSource = eng.DERPMap()
 		return writeResponse(writer, event, command.RequestID)
 	case "map-peer":
-		mapping, err := eng.MapPeer(command.Peer, command.Address, command.Port)
+		mapping, err := eng.MapPeer(command.Peer, command.Address, command.Port, command.Slot)
 		if err != nil {
 			return writeError(writer, err, proto.CodeInternal, command.RequestID)
 		}
-		return writeResponse(writer, proto.PeerMapped(mapping.Peer, mapping.LocalPort), command.RequestID)
+		return writeResponse(writer, proto.SlotMapped(mapping.Peer, mapping.Slot), command.RequestID)
 	case "map-service", "unmap-service", "service-status":
 		return handleService(eng, command, writer)
 	case "unmap-peer":
@@ -144,12 +147,13 @@ func handle(ctx context.Context, eng *engine.Engine, command proto.Command, writ
 		return writeResponse(writer, proto.Allowed(count, command.AllowAny), command.RequestID)
 	case "expose":
 		exposure, err := eng.Expose(ctx, engine.Exposure{
-			Port: command.Port, Target: command.Target, ProxyProtocol: command.ProxyProtocol,
+			Port: command.Port, Target: command.Target,
+			ProxyProtocol: command.ProxyProtocol, Admission: command.Admission,
 		})
 		if err != nil {
 			return writeError(writer, err, proto.CodeInternal, command.RequestID)
 		}
-		return writeResponse(writer, proto.Exposed(exposure.Port, exposure.Target, exposure.ProxyProtocol), command.RequestID)
+		return writeResponse(writer, proto.Exposed(exposure.Port, exposure.Target, exposure.ProxyProtocol, exposure.Admission), command.RequestID)
 	case "unexpose":
 		if err := eng.Unexpose(command.Port); err != nil {
 			return writeError(writer, err, proto.CodeInternal, command.RequestID)
@@ -176,6 +180,8 @@ func upConfig(up *proto.UpRequest) engine.UpConfig {
 		AddressFile:     up.AddressFile,
 		DERPMapURL:      up.DERPMapURL,
 		DERPMapCacheDir: up.DERPMapCacheDir,
+		Slots:           up.Slots,
+		SlotHold:        time.Duration(up.SlotHoldMs) * time.Millisecond,
 	}
 	if up.DERP != nil {
 		cfg.DERP = &engine.DERPOverride{
@@ -194,14 +200,14 @@ func toConnectionTelemetry(source engine.ConnectionTelemetry) proto.ConnectionTe
 		recent := make([]proto.ConnectionClose, 0, len(slot.Recent))
 		for _, close := range slot.Recent {
 			recent = append(recent, proto.ConnectionClose{
-				Peer: close.Peer, MapPort: close.MapPort,
+				Peer: close.Peer, Slot: close.Slot, MapPort: close.MapPort,
 				BytesIn: close.BytesIn, BytesOut: close.BytesOut,
 				DurationMs: close.DurationMs, CloseSide: close.CloseSide,
 				Errors: proto.CopyErrors{In: close.ErrorIn, Out: close.ErrorOut},
 			})
 		}
 		slots = append(slots, proto.SlotConnectionTelemetry{
-			Peer: slot.Peer, MapPort: slot.MapPort, ClosedCount: slot.ClosedCount,
+			Peer: slot.Peer, Slot: slot.Slot, MapPort: slot.MapPort, ClosedCount: slot.ClosedCount,
 			ErrorCounts: slot.ErrorCounts, Recent: recent,
 		})
 	}
@@ -211,7 +217,9 @@ func toConnectionTelemetry(source engine.ConnectionTelemetry) proto.ConnectionTe
 func toPeerMappings(mappings []engine.Mapping) []proto.PeerMapping {
 	peers := make([]proto.PeerMapping, 0, len(mappings))
 	for _, mapping := range mappings {
-		peers = append(peers, proto.PeerMapping{Peer: mapping.Peer, LocalPort: mapping.LocalPort})
+		peers = append(peers, proto.PeerMapping{
+			Peer: mapping.Peer, Slot: mapping.Slot,
+		})
 	}
 	return peers
 }

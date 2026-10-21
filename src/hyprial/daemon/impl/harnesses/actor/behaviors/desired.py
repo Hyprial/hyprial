@@ -15,6 +15,7 @@ from hyprial.daemon.impl.harnesses.runtime.ports  import (
     EnsureHarnessCommand,
     HarnessDesiredStateManaged,
     HarnessMutationCompleted,
+    HarnessRestoreCompleted,
     HarnessSessionRefsReconciled,
     RemoveHarnessCommand,
 )
@@ -82,6 +83,10 @@ class _DesiredBehavior:
             return
         if completion.error_code is not None:
             self._handle_desired_error(kind, context, command, completion)
+            return
+        if kind == "restore_settlement":
+            self._remember_restore_result(command.correlation_id, command.result)
+            self._publish_event(command)
             return
         if kind == 'receipt':
             self._handle_desired_receipt(context, command, completion)
@@ -591,6 +596,24 @@ class _DesiredBehavior:
 
 
     def _emit_event(self, event: object) -> None:
+        if isinstance(event, HarnessRestoreCompleted):
+            if self._persistence is not None and self._durable_restore_settlements:
+                result = event.result
+                self._persist_desired(
+                    DesiredStateOperation.RECORD_HARNESS_RESTORE_SETTLEMENT,
+                    event,
+                    (
+                        event.correlation_id,
+                        result.attempted,
+                        result.restored,
+                        result.failed,
+                        result.deferred,
+                    ),
+                    context=("restore_settlement", event),
+                )
+                return
+            self._remember_restore_result(event.correlation_id, event.result)
+
         from hyprial.kernel  import (
             MutationProvenance,
         )

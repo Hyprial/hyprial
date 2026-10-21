@@ -12,6 +12,9 @@ from dataclasses import dataclass, replace
 from hyprial.identity import desired_generation
 from hyprial.kernel import PortAdmission, canonical_user_uri, DaemonRequestError, ipc_errors
 from hyprial.daemon.impl.lifecycle_manager import LifecycleOperation, LifecycleState
+from hyprial.daemon.impl.lifecycle.lifecycle_coordinator import (
+    LifecycleReservationOutcomeUnknown,
+)
 from uuid import uuid4
 
 from hyprial.daemon.impl.harnesses.runtime.transfer_ports import (
@@ -666,6 +669,13 @@ class _TransferP2Mixin:
                     )
                     try:
                         admitted = manager.submit(operation)
+                    except LifecycleReservationOutcomeUnknown:
+                        self._rotate_transfer_deferred(
+                            key,
+                            deferred,
+                            replace(deferred, operation=operation.operation_id),
+                        )
+                        continue
                     except Exception as error:
                         admitted = None
                         self._log("warn", "daemon", "transfer.restore.wake_unavailable",

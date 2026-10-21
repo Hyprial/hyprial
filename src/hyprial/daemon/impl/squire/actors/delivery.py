@@ -18,7 +18,10 @@ from uuid import uuid4
 from hyprial.kernel import ActorRuntime, ActorSpec, AdmissionResult
 from hyprial.kernel import EffectCompleted, EffectLane, EffectRequest
 from hyprial.kernel import ipc_errors
-from hyprial.daemon.impl.squire.actors.ledger  import UserDeliveryLedgerAuthority
+from hyprial.daemon.impl.squire.actors.ledger  import (
+    LedgerOutcomeUnknown,
+    UserDeliveryLedgerAuthority,
+)
 
 if TYPE_CHECKING:
     from hyprial.daemon.impl.squire.addressing  import (
@@ -86,7 +89,6 @@ class UserDeliveryActor:
         self._slots = threading.BoundedSemaphore(capacity)
         self._closed = False
         self._persistence_retries = 0
-        self._persistence_pace = threading.Event()
         self._generation = 1
         self._rejected = self._failed = 0
         self._pending: dict[str, DeliverToUser] = {}
@@ -146,6 +148,8 @@ class UserDeliveryActor:
                 self._rejected += 1
 
     def _execute(self, effect):
+        from hyprial.daemon.impl.squire.addressing import UserDeliveryResult
+
         request = effect.command.request
         if isinstance(effect, PrepareDelivery):
             if not self._receiver.owns(request.owner):
@@ -162,13 +166,26 @@ class UserDeliveryActor:
             # This bounded I/O slot retains the native result and canonical
             # claim until durability succeeds. Retrying a ledger commit must
             # never call the native adapter again or publish a false refusal.
-            while True:
+            try:
+                return self._ledger_owner.record(request.idempotency_key, result)
+            except LedgerOutcomeUnknown as error:
+                with self._guard:
+                    self._persistence_retries += 1
                 try:
-                    return self._ledger_owner.record(request.idempotency_key, result)
+                    recovered = self._ledger_owner.recover(error.receipt)
                 except Exception:
-                    with self._guard:
-                        self._persistence_retries += 1
-                    self._persistence_pace.wait(0.05)
+                    recovered = None
+                if recovered is not None:
+                    return recovered
+            except Exception:
+                pass
+            return UserDeliveryResult(
+                request.message_id,
+                False,
+                code=ipc_errors.SUBMIT_OUTCOME_UNKNOWN,
+                message="native delivery completed but its ledger outcome is unknown",
+                definitely_not_sent=False,
+            )
         if isinstance(effect, MarkJoinedDelivery):
             stored = (
                 self._ledger_owner.mark_duplicate(request.idempotency_key)

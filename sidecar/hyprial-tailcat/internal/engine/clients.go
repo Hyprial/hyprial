@@ -5,6 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -143,4 +147,47 @@ func (e *Engine) clientLeaseCount(address string) int {
 		return client.refs
 	}
 	return 0
+}
+
+// diskDERPMapCache persists Tailcat DERP map responses owner-only so a
+// temporary map fetch failure falls back to the last good bytes.
+type diskDERPMapCache struct{ dir string }
+
+func (c diskDERPMapCache) paths(rawURL string) (string, string) {
+	base := filepath.Join(c.dir, "derpmap-"+url.QueryEscape(rawURL))
+	return base + ".json", base + ".etag"
+}
+
+func (c diskDERPMapCache) Get(rawURL string) ([]byte, string, time.Time, bool) {
+	dataPath, etagPath := c.paths(rawURL)
+	info, err := os.Stat(dataPath)
+	if err != nil {
+		return nil, "", time.Time{}, false
+	}
+	data, err := os.ReadFile(dataPath)
+	if err != nil {
+		return nil, "", time.Time{}, false
+	}
+	etag, _ := os.ReadFile(etagPath)
+	return data, strings.TrimSpace(string(etag)), info.ModTime(), true
+}
+
+func (c diskDERPMapCache) Put(rawURL string, data []byte, etag string) error {
+	if err := os.MkdirAll(c.dir, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chmod(c.dir, 0o700); err != nil {
+		return err
+	}
+	dataPath, etagPath := c.paths(rawURL)
+	if err := os.WriteFile(dataPath, data, 0o600); err != nil {
+		return err
+	}
+	if err := os.Chmod(dataPath, 0o600); err != nil {
+		return err
+	}
+	if err := os.WriteFile(etagPath, []byte(etag), 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(etagPath, 0o600)
 }

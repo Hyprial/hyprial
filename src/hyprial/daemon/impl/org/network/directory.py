@@ -583,20 +583,28 @@ class OrgFsDirectoryStore:
         """Classify lifecycle metadata and expose malformed marker data."""
 
         space_id = self._space_id(org)
-        legacy_state = self._unmarked_org_state(space_id)
         try:
             text, _version = self._fs.read_text(space_id, ORG_META_DOC)
         except OrgFsError as error:
             if error.code == "unknown-doc":
-                return legacy_state, None
+                return self._unmarked_org_state(space_id), None
             raise
         try:
             record = json.loads(text)
         except ValueError:
-            return legacy_state, self._org_state_problem(org, "invalid-json")
-        state = record.get("state") if isinstance(record, dict) else None
+            return self._unmarked_org_state(space_id), self._org_state_problem(
+                org, "invalid-json"
+            )
+        if not isinstance(record, dict):
+            return self._unmarked_org_state(space_id), self._org_state_problem(
+                org, "invalid-object"
+            )
+        state = record.get("state")
         if not isinstance(state, str) or not state:
-            return legacy_state, None
+            reason = "missing-state" if state is None else "invalid-state"
+            return self._unmarked_org_state(space_id), self._org_state_problem(
+                org, reason
+            )
         if state in {"active", "creating", "partial", "deleted"}:
             return state, None
         return "partial", self._org_state_problem(

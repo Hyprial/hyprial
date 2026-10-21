@@ -10,7 +10,7 @@ from __future__ import annotations
 import threading
 import time
 import uuid
-from collections import deque
+from collections import OrderedDict, deque
 from collections.abc import Callable
 from pathlib import Path
 from typing import get_args
@@ -88,7 +88,7 @@ from .behaviors.desired import _DesiredBehavior
 from .behaviors.lifecycle import _LifecycleBehavior
 from .behaviors.process_events import _ProcessEventsBehavior
 from .behaviors.reconcile import _ReconcileBehavior
-from .contracts import HarnessProjection, ProcessIdentity, _ClaimScan, _ClaimScanOutcome, _CompletionReceipt, _DeliveryReservation, _EnsureFailureFence, _HarnessActorGeneration, _LIFECYCLE_SETTLED_CAPACITY, _PendingCallRegistry, _Record, _RestoreBatch, _default_identity_reader, _is_io_completion
+from .contracts import HarnessProjection, HarnessRestoreSummary, ProcessIdentity, _ClaimScan, _ClaimScanOutcome, _CompletionReceipt, _DeliveryReservation, _EnsureFailureFence, _HarnessActorGeneration, _LIFECYCLE_SETTLED_CAPACITY, _PendingCallRegistry, _Record, _RestoreBatch, _default_identity_reader, _is_io_completion
 from .io_port import ProcessIoPort
 
 class HarnessRuntimeActor(
@@ -157,6 +157,9 @@ class HarnessRuntimeActor(
         ] = {}
         self._stop_retry_bindings: dict[str, object] = {}
         self._restore_batches: dict[str, _RestoreBatch] = {}
+        self._restore_result_lock = threading.Lock()
+        self._restore_result_capacity = mailbox_capacity
+        self._restore_results: OrderedDict[str, HarnessRestoreSummary] = OrderedDict()
         self._calls = _PendingCallRegistry()
         self._result_claim_capacity = 256
         self._delivery_reservations: dict[str, _DeliveryReservation] = {}
@@ -187,6 +190,11 @@ class HarnessRuntimeActor(
             self._event_sinks.append(event_sink)
         self._closing = False
         self._desired_state = desired_state
+        self._durable_restore_settlements = bool(
+            desired_state is not None
+            and hasattr(desired_state, "record_harness_restore_settlement")
+            and hasattr(desired_state, "harness_restore_settlement")
+        )
         self._automatic_restore_allowed = automatic_restore_allowed
         self._logger = orphan_logger
         self._identity_reader = identity_reader
@@ -326,15 +334,46 @@ class HarnessRuntimeActor(
         a disposition owner) into a ``TimeoutError`` on the caller's
         degraded-start path instead of a gate that never opens.
 
-        ``None`` when start timers are disabled (start timeout 0): that is
-        the operator's explicit opt-out of settlement deadlines, and no
-        ceiling is invented for them -- the wait stays
-        ``_AWAIT_SETTLEMENT``.
+        ``None`` when start timers are disabled (start timeout 0): no effect
+        deadline can be derived. The facade still applies its finite local
+        completion budget and reports outcome-unknown with a stable receipt.
         """
         if self._start_timeout_seconds <= 0:
             return None
         rounds = restore_rounds(target_count, self._start_admission_width)
         return (rounds + 1) * self._start_timeout_seconds
+
+
+    def _cached_restore_result(
+        self, operation_id: str
+    ) -> HarnessRestoreSummary | None:
+        with self._restore_result_lock:
+            result = self._restore_results.get(operation_id)
+            if result is not None:
+                self._restore_results.move_to_end(operation_id)
+            return result
+
+
+    def restore_result(self, operation_id: str) -> HarnessRestoreSummary | None:
+        result = self._cached_restore_result(operation_id)
+        if result is not None or not self._durable_restore_settlements:
+            return result
+        stored = self._desired_state.harness_restore_settlement(operation_id)
+        if stored is None:
+            return None
+        result = HarnessRestoreSummary(*stored)
+        self._remember_restore_result(operation_id, result)
+        return result
+
+
+    def _remember_restore_result(
+        self, operation_id: str, result: HarnessRestoreSummary
+    ) -> None:
+        with self._restore_result_lock:
+            self._restore_results[operation_id] = result
+            self._restore_results.move_to_end(operation_id)
+            while len(self._restore_results) > self._restore_result_capacity:
+                self._restore_results.popitem(last=False)
 
 
     def read_harness(self, harness_id: str) -> HarnessStatusProjection | None:

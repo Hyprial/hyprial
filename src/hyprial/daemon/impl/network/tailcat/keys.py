@@ -80,7 +80,7 @@ def ensure_device_key(
         ) from error
     if (
         not isinstance(public, dict)
-        or public.get("v") != 3
+        or public.get("v") != 4
         or not isinstance(public.get("serverPublic"), str)
         or not public["serverPublic"]
         or not isinstance(public.get("clientPublic"), str)

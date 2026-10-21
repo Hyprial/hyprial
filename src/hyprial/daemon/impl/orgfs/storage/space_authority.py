@@ -133,6 +133,7 @@ class _ReadStore:
         "frontier",
         "export_since",
         "commit_version",
+        "commit_envelope",
         "log_range",
         "member_mode",
         "retired",
@@ -420,6 +421,12 @@ class OrgSpaceAuthority:
                     )
                 elif operation.kind == "commit_version":
                     value = store.commit_version(
+                        operation.doc_id or "",
+                        operation.writer or "",
+                        int(operation.seq or 0),
+                    )
+                elif operation.kind == "commit_envelope":
+                    value = store.commit_envelope(
                         operation.doc_id or "",
                         operation.writer or "",
                         int(operation.seq or 0),

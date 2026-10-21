@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any
 
 from hyprial.daemon.impl.state_db  import StateDatabase
+from .settlements import HARNESS_SETTLEMENT_SCHEMA
 from .services import (
     _SERVICE_SCHEMA,
     delete_service_state,
@@ -50,7 +51,7 @@ from .services import (
 
 SHADOW_SCHEMA_VERSION = 1
 
-_SCHEMA = """
+_SCHEMA = HARNESS_SETTLEMENT_SCHEMA + """
 CREATE TABLE IF NOT EXISTS desired_state_meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL

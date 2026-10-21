@@ -13,6 +13,14 @@ from hyprial.shell.impl.cli.commands.common.support import JsonObject
 def process_status(
     connector_kind: str | None = typer.Argument(None, help="Optional connector kind."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+    refresh: bool = typer.Option(
+        False, "--refresh", help="Queue an asynchronous status refresh."
+    ),
+    refresh_operation_id: str | None = typer.Option(
+        None,
+        "--refresh-operation-id",
+        help="Look up one recent asynchronous status refresh.",
+    ),
 ) -> None:
     """Show daemon and connector status."""
     services = get_services()
@@ -20,7 +28,12 @@ def process_status(
     def operation() -> JsonObject:
         services = get_services()
         try:
-            result = services._daemon_request("ps", restore_wait=0.0)
+            params: JsonObject = {}
+            if refresh:
+                params["refresh"] = True
+            if refresh_operation_id is not None:
+                params["refreshOperationId"] = refresh_operation_id
+            result = services._daemon_request("ps", params, restore_wait=0.0)
         # PR #332 F4②: both projections branch on the registered transient
         # classes instead of comparing code strings.  Other transient
         # failures (disconnected / timeout) surface to the CLI error

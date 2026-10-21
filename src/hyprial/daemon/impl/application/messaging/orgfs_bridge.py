@@ -27,7 +27,11 @@ from hyprial.kernel import (
     canonical_agent_uri,
     canonical_user_uri,
 )
-from hyprial.identity import is_org_acl_space
+from hyprial.identity import (
+    ORG_META_DOC,
+    is_org_acl_space,
+    org_from_space_name,
+)
 if TYPE_CHECKING:
     pass
 
@@ -70,6 +74,7 @@ _ORGFS_MUTATING_METHODS = frozenset(
         "orgfs.remove_member",
         "orgfs.restore",
         "orgfs.serve",
+        "orgfs.space_purge",
         "orgfs.unban",
         "orgfs.write",
     }
@@ -169,6 +174,40 @@ class _OrgFsBridgeMixin(_IdentityBindingMixin):
             }
         return value
 
+    def _orgfs_space_binding_state(
+        self, space_id: str
+    ) -> dict[str, object] | None:
+        runtime = self._orgfs_runtime
+        if runtime is None:
+            return None
+        info = next(
+            (item for item in runtime.facade.spaces() if item.space_id == space_id),
+            None,
+        )
+        if info is None:
+            return None
+        org = org_from_space_name(info.name)
+        if org is None and is_org_acl_space(info.name):
+            org = info.name.removesuffix("-acl")
+        if org is None:
+            return None
+        directory = next(
+            (item for item in runtime.facade.spaces() if item.name == org),
+            None,
+        )
+        if directory is None:
+            deleted = runtime._deleted_org_state(org)
+            return {"org": org, "state": deleted or "missing"}
+        try:
+            text, _version = runtime.facade.read_text(
+                directory.space_id, ORG_META_DOC
+            )
+            metadata = json.loads(text)
+        except Exception:
+            return {"org": org, "state": "unknown"}
+        state = metadata.get("state") if isinstance(metadata, dict) else None
+        return {"org": org, "state": str(state or "unknown")}
+
     def _require_orgfs_runtime(self) -> OrgFsRuntime:
         if self._orgfs_runtime is None:
             self._orgfs_runtime = OrgFsRuntime(
@@ -184,6 +223,7 @@ class _OrgFsBridgeMixin(_IdentityBindingMixin):
                 ),
                 owner_notifier=self._notify_orgfs_owner,
                 excluded_orgs=lambda: frozenset(read_left_orgs(self.hyprial_home)),
+                space_binding_state=self._orgfs_space_binding_state,
                 announce_instrumentation_enabled=getattr(
                     self, "_trace_presence_enabled", False
                 ),
@@ -268,8 +308,10 @@ class _OrgFsBridgeMixin(_IdentityBindingMixin):
 
         runtime = self._require_orgfs_runtime()
         fs = runtime.facade
-        if method in _ORGFS_MUTATING_METHODS and _targets_org_acl_space(
-            fs, method, params
+        if (
+            method in _ORGFS_MUTATING_METHODS
+            and method != "orgfs.space_purge"
+            and _targets_org_acl_space(fs, method, params)
         ):
             self._admit_org_acl_mutation(fs, method, params, trusted_origin)
 
@@ -501,6 +543,8 @@ class _OrgFsBridgeMixin(_IdentityBindingMixin):
                 return self._orgfs_json(
                     runtime.purge(required("spaceId"), required("planId"))
                 )
+            if method == "orgfs.space_purge":
+                return runtime.purge_space(required("spaceId"))
             if method == "orgfs.purge_status":
                 return self._orgfs_json(
                     runtime.purge_status(required("spaceId"), required("planId"))

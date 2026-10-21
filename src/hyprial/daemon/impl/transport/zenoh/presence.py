@@ -34,6 +34,8 @@ _REBUILD_RECONCILE_TIMEOUT_SECONDS = 1.0
 @dataclass(frozen=True, slots=True)
 class PresenceObservation:
     key: str
+    identity: str
+    observed_at_ms: int
     kind: str
     change: str
     sample_generation: int | None
@@ -131,18 +133,35 @@ class LivelinessDirectory:
         self._update("mailbox", sample)
 
     def _update(self, kind: str, sample: TransportSample) -> None:
+        observed_at_ms = time.time_ns() // 1_000_000
         generation = self._authority.projection().generation
+        identity = self._keys.decode_identity(sample.key.rsplit("/", 1)[-1])
         transport_projection = None
         if sample.generation is not None and self._session_generation is not None:
             transport_projection = self._session_generation()
             if sample.generation != transport_projection.generation:
-                self._observe(kind, sample, generation, transport_projection, "stale")
+                self._observe(
+                    kind,
+                    identity,
+                    observed_at_ms,
+                    sample,
+                    generation,
+                    transport_projection,
+                    "stale",
+                )
                 return
-        identity = self._keys.decode_identity(sample.key.rsplit("/", 1)[-1])
         admission = self._authority.change(
             kind, identity, sample.kind != "delete", generation=generation
         )
-        self._observe(kind, sample, generation, transport_projection, admission.value)
+        self._observe(
+            kind,
+            identity,
+            observed_at_ms,
+            sample,
+            generation,
+            transport_projection,
+            admission.value,
+        )
         if admission.value != "accepted":
             logger.error(
                 "presence admission %s; generation is unknown", admission.value
@@ -154,7 +173,16 @@ class LivelinessDirectory:
                 f"presence admission {admission.value}; history replay required"
             )
 
-    def _observe(self, kind, sample, generation, transport_projection, admission):
+    def _observe(
+        self,
+        kind,
+        identity,
+        observed_at_ms,
+        sample,
+        generation,
+        transport_projection,
+        admission,
+    ):
         sink = self._observation_sink
         if sink is None:
             return
@@ -162,6 +190,8 @@ class LivelinessDirectory:
             sink(
                 PresenceObservation(
                     str(sample.key)[:512],
+                    identity,
+                    observed_at_ms,
                     kind,
                     str(sample.kind),
                     sample.generation,

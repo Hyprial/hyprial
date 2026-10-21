@@ -152,6 +152,7 @@ def network_view(
                 "dialed",
                 "restartRequired",
                 "lastPoll",
+                "slots",
                 "connectionTelemetry",
                 "derpMapURL",
                 "derpMapSource",

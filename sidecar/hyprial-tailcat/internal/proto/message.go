@@ -1,8 +1,13 @@
-// Package proto implements the hyprial-tailcat stdio protocol v3:
+// Package proto implements the hyprial-tailcat stdio protocol v4:
 // newline-delimited JSON commands and events. It is a closed wire
-// contract: unknown ops, unknown fields, and any version other than 3
+// contract: unknown ops, unknown fields, and any version other than 4
 // are rejected. See docs/design/tailnet-cutover-architecture-2026-10-03.md
-// §3.3.
+// §3.3 (v3 baseline),
+// docs/design/design-orgfs-requester-authentication-2026-10-08.md §3.3
+// (v4: per-service admission on expose), and
+// design branch design/socialware-data-layer-2026-10-06:
+// docs/design/design-stable-zenoh-session-slots-2026-10-08.md §4
+// (v4: fixed slot pool — up.slots, map-peer.slot, hold mode).
 package proto
 
 import (
@@ -17,11 +22,22 @@ import (
 	"sync"
 )
 
-// Version is the only accepted protocol version.
-const Version = 3
+// Version is the only accepted protocol version. v4 adds the expose
+// admission policy and the fixed slot pool (#1294 and the slots change
+// share one v4); coordinate any further bump with in-flight protocol
+// work so one release carries one version.
+const Version = 4
 
-// MaxRequestIDLength bounds correlation data accepted or echoed by v3.
+// MaxRequestIDLength bounds correlation data accepted or echoed by v4.
 const MaxRequestIDLength = 128
+
+// Admission policy values accepted on expose commands. Absent means
+// AdmissionAllow: an exposure is restricted to the allow set unless the
+// daemon explicitly opens it.
+const (
+	AdmissionAny   = "any"
+	AdmissionAllow = "allow"
+)
 
 // Error codes emitted on error events.
 const (
@@ -48,7 +64,10 @@ type DERPConfig struct {
 	InsecureForTests bool   `json:"insecureForTests"`
 }
 
-// UpRequest is the parsed payload of an up command.
+// UpRequest is the parsed payload of an up command. Slots are the fixed
+// outbound slot socket paths pre-listened in hold mode; SlotHoldMs bounds
+// how long an unbound slot keeps a held connection (0 means the default,
+// zenoh's open timeout).
 type UpRequest struct {
 	KeyFile         string
 	Allow           []string
@@ -59,9 +78,11 @@ type UpRequest struct {
 	DERP            *DERPConfig
 	DERPMapURL      string
 	DERPMapCacheDir string
+	Slots           []string
+	SlotHoldMs      int
 }
 
-// Command is a parsed protocol-v3 command. Which fields are populated
+// Command is a parsed protocol-v4 command. Which fields are populated
 // depends on Op. Address is secret (it embeds the peer pre-shared key)
 // and must never be logged or echoed back.
 type Command struct {
@@ -72,11 +93,13 @@ type Command struct {
 	Up               *UpRequest
 	Peer             string
 	Address          string // map-peer only; secret
+	Slot             string // map-peer only; one of the up slots
 	Port             int    // map-peer, expose, unexpose
 	Keys             []string
 	AllowAny         bool
 	Target           string
 	ProxyProtocol    string
+	Admission        string // expose only; "any" or "allow"
 	Addr             string
 	ServerPublic     string
 	RemotePort       int
@@ -84,10 +107,11 @@ type Command struct {
 	LocalPort        int
 }
 
-// PeerMapping is one entry of the peers array on state events.
+// PeerMapping is one entry of the peers array on state events: the
+// slot the peer is bound to (the fixed pool is the only mapping shape).
 type PeerMapping struct {
-	Peer      string `json:"peer"`
-	LocalPort int    `json:"localPort"`
+	Peer string `json:"peer"`
+	Slot string `json:"slot,omitempty"`
 }
 
 // CopyErrors records the normalized outcomes of both io.Copy directions.
@@ -96,10 +120,11 @@ type CopyErrors struct {
 	Out string `json:"out"`
 }
 
-// ConnectionClose is one completed connection through a mapped peer port.
+// ConnectionClose is one completed connection through a mapped peer slot.
 type ConnectionClose struct {
 	Peer       string     `json:"peer"`
-	MapPort    int        `json:"mapPort"`
+	Slot       string     `json:"slot,omitempty"`
+	MapPort    *int       `json:"mapPort"`
 	BytesIn    int64      `json:"bytesIn"`
 	BytesOut   int64      `json:"bytesOut"`
 	DurationMs int64      `json:"durationMs"`
@@ -107,10 +132,11 @@ type ConnectionClose struct {
 	Errors     CopyErrors `json:"errors"`
 }
 
-// SlotConnectionTelemetry is one mapped port's bounded close history.
+// SlotConnectionTelemetry is one mapped slot's bounded close history.
 type SlotConnectionTelemetry struct {
 	Peer        string            `json:"peer"`
-	MapPort     int               `json:"mapPort"`
+	Slot        string            `json:"slot,omitempty"`
+	MapPort     *int              `json:"mapPort"`
 	ClosedCount int64             `json:"closedCount"`
 	ErrorCounts map[string]int64  `json:"errorCounts"`
 	Recent      []ConnectionClose `json:"recent"`
@@ -134,22 +160,24 @@ type Event struct {
 	ServerPublic        string               `json:"serverPublic,omitempty"`
 	ClientPublic        string               `json:"clientPublic,omitempty"`
 	Peers               *[]PeerMapping       `json:"peers,omitempty"`
+	Slots               []string             `json:"slots,omitempty"`
 	ConnectionTelemetry *ConnectionTelemetry `json:"connectionTelemetry,omitempty"`
+	DERPMapURL          string               `json:"derpMapURL,omitempty"`
+	DERPMapSource       string               `json:"derpMapSource,omitempty"`
 	Code                string               `json:"code,omitempty"`
 	Message             string               `json:"message,omitempty"`
 	Peer                string               `json:"peer,omitempty"`
-	LocalPort           int                  `json:"localPort,omitempty"`
+	Slot                string               `json:"slot,omitempty"`
 	Count               *int                 `json:"count,omitempty"`
 	AllowAny            *bool                `json:"allowAny,omitempty"`
 	Port                int                  `json:"port,omitempty"`
 	Target              string               `json:"target,omitempty"`
 	ProxyProtocol       *string              `json:"proxyProtocol,omitempty"`
+	Admission           *string              `json:"admission,omitempty"`
 	Addr                string               `json:"addr,omitempty"`
 	Found               *bool                `json:"found,omitempty"`
 	Key                 *string              `json:"key,omitempty"`
 	RequestID           string               `json:"requestId,omitempty"`
-	DERPMapURL          string               `json:"derpMapURL,omitempty"`
-	DERPMapSource       string               `json:"derpMapSource,omitempty"`
 	Service             *ServiceMapping      `json:"service,omitempty"`
 	Services            *[]ServiceMapping    `json:"services,omitempty"`
 	Name                any                  `json:"name,omitempty"`
@@ -160,8 +188,8 @@ type Event struct {
 // Capabilities is the fixed capability list announced on hello.
 var Capabilities = []string{
 	"map-peer", "unmap-peer", "allow", "expose", "unexpose", "peer-key",
-	"service-connect-v1", "forwarding-request-id-v1", "connection-telemetry-v1",
-	"derp-map-v1",
+	"service-connect-v1", "forwarding-request-id-v1", "peer-slots-v1",
+	"connection-telemetry-v1", "derp-map-v1",
 }
 
 func Hello(sidecar, tailcat string) Event {
@@ -177,19 +205,25 @@ func State(state string) Event {
 }
 
 // RunningState is the successful up or status result; the peers key is
-// always serialized, as [] when empty.
-func RunningState(serverPublic, clientPublic string, peers []PeerMapping) Event {
+// always serialized, as [] when empty.  Slots are the resolved slot wire
+// ids in up order (growth appended) -- on the tcp transport they carry
+// the kernel-assigned ports the daemon dials; omitted when the pool is
+// empty (a slot-free up).
+func RunningState(serverPublic, clientPublic string, peers []PeerMapping, slots []string) Event {
 	if peers == nil {
 		peers = []PeerMapping{}
 	}
 	return Event{
 		V: Version, Event: "state", State: "Running",
 		ServerPublic: serverPublic, ClientPublic: clientPublic, Peers: &peers,
+		Slots: slots,
 	}
 }
 
-func PeerMapped(peer string, localPort int) Event {
-	return Event{V: Version, Event: "peer-mapped", Peer: peer, LocalPort: localPort}
+// SlotMapped is the peer-mapped event: a slot binding reporting the
+// resolved slot wire id (there is no localPort shape in v4).
+func SlotMapped(peer, slot string) Event {
+	return Event{V: Version, Event: "peer-mapped", Peer: peer, Slot: slot}
 }
 
 func PeerUnmapped(peer string) Event {
@@ -200,9 +234,13 @@ func Allowed(count int, allowAny bool) Event {
 	return Event{V: Version, Event: "allowed", Count: &count, AllowAny: &allowAny}
 }
 
-// Exposed always serializes proxyProtocol, even when empty, per §3.3.
-func Exposed(port int, target, proxyProtocol string) Event {
-	return Event{V: Version, Event: "exposed", Port: port, Target: target, ProxyProtocol: &proxyProtocol}
+// Exposed always serializes proxyProtocol (even when empty, per §3.3)
+// and admission.
+func Exposed(port int, target, proxyProtocol, admission string) Event {
+	return Event{
+		V: Version, Event: "exposed", Port: port, Target: target,
+		ProxyProtocol: &proxyProtocol, Admission: &admission,
+	}
 }
 
 func Unexposed(port int) Event {
@@ -240,7 +278,7 @@ func ProtocolError(message string) error { return fmt.Errorf("%w: %s", errProtoc
 func IsProtocolError(err error) bool     { return errors.Is(err, errProtocol) }
 
 // ParseCommand rejects malformed, version-mismatched, unknown-op,
-// missing, and extra fields, keeping v3 a closed wire contract.
+// missing, and extra fields, keeping v4 a closed wire contract.
 func ParseCommand(line []byte) (Command, error) {
 	var raw map[string]json.RawMessage
 	if err := decodeExact(line, &raw); err != nil {
@@ -341,6 +379,28 @@ func ParseCommand(line []byte) (Command, error) {
 	}
 }
 
+// tcpSlotGrowSpec asks for one new loopback TCP slot with a
+// kernel-assigned port (the Windows transport -- zenoh dials no unix
+// sockets there; design §8 and notes/windows-unixsock-2026-10-08.md).
+const tcpSlotGrowSpec = "tcp:127.0.0.1:0"
+
+// ValidateSlotSpec accepts the two slot wire-id forms: an absolute unix
+// socket path, or "tcp:<loopback-ip>:<port>" (port 0 = kernel-assigned,
+// the grow spec).
+func ValidateSlotSpec(spec string) error {
+	if strings.HasPrefix(spec, "tcp:") {
+		address, err := netip.ParseAddrPort(spec[len("tcp:"):])
+		if err != nil || !address.Addr().IsLoopback() {
+			return ProtocolError("tcp slot must be an explicit loopback ip:port")
+		}
+		return nil
+	}
+	if !filepath.IsAbs(spec) {
+		return ProtocolError("slot must be an absolute socket path or a tcp:ip:port spec")
+	}
+	return nil
+}
+
 type upWire struct {
 	V               int             `json:"v"`
 	Op              string          `json:"op"`
@@ -353,13 +413,15 @@ type upWire struct {
 	DERP            json.RawMessage `json:"derp,omitempty"`
 	DERPMapURL      string          `json:"derpMapURL,omitempty"`
 	DERPMapCacheDir string          `json:"derpMapCacheDir,omitempty"`
+	Slots           []string        `json:"slots,omitempty"`
+	SlotHoldMs      int             `json:"slotHoldMs,omitempty"`
 }
 
 func parseUp(line []byte, raw map[string]json.RawMessage) (Command, error) {
 	if err := onlyKeys(
 		raw, "v", "op", "keyFile", "allow", "allowAny",
 		"inboundTarget", "peerPort", "addressFile", "derp",
-		"derpMapURL", "derpMapCacheDir",
+		"derpMapURL", "derpMapCacheDir", "slots", "slotHoldMs",
 	); err != nil {
 		return Command{}, err
 	}
@@ -389,6 +451,11 @@ func parseUp(line []byte, raw map[string]json.RawMessage) (Command, error) {
 	if wire.PeerPort == 0 {
 		wire.PeerPort = DefaultPeerPort
 	}
+	if wire.InboundTarget != "" {
+		if err := validateTCPTarget(wire.InboundTarget); err != nil {
+			return Command{}, err
+		}
+	}
 	if wire.DERPMapURL != "" && !strings.HasPrefix(wire.DERPMapURL, "https://") {
 		return Command{}, ProtocolError("derpMapURL must be https")
 	}
@@ -398,10 +465,26 @@ func parseUp(line []byte, raw map[string]json.RawMessage) (Command, error) {
 	if wire.DERP != nil && wire.DERPMapURL != "" {
 		return Command{}, ProtocolError("derp and derpMapURL are mutually exclusive")
 	}
-	if wire.InboundTarget != "" {
-		if err := validateTCPTarget(wire.InboundTarget); err != nil {
+	seen := make(map[string]struct{}, len(wire.Slots))
+	for _, slot := range wire.Slots {
+		if err := ValidateSlotSpec(slot); err != nil {
 			return Command{}, err
 		}
+		// A tcp grow spec (port 0) may repeat: each occurrence asks for
+		// its own kernel-assigned listener.
+		if slot == tcpSlotGrowSpec {
+			continue
+		}
+		if _, dup := seen[slot]; dup {
+			return Command{}, ProtocolError("slots entries must be unique")
+		}
+		seen[slot] = struct{}{}
+	}
+	if wire.SlotHoldMs < 0 {
+		return Command{}, ProtocolError("slotHoldMs must not be negative")
+	}
+	if wire.SlotHoldMs > 0 && len(wire.Slots) == 0 {
+		return Command{}, ProtocolError("slotHoldMs requires slots")
 	}
 	var derp *DERPConfig
 	if len(wire.DERP) > 0 && !bytes.Equal(bytes.TrimSpace(wire.DERP), []byte("null")) {
@@ -420,11 +503,12 @@ func parseUp(line []byte, raw map[string]json.RawMessage) (Command, error) {
 		InboundTarget: wire.InboundTarget, PeerPort: wire.PeerPort,
 		AddressFile: wire.AddressFile, DERP: derp,
 		DERPMapURL: wire.DERPMapURL, DERPMapCacheDir: wire.DERPMapCacheDir,
+		Slots: wire.Slots, SlotHoldMs: wire.SlotHoldMs,
 	}}, nil
 }
 
 func parseMapPeer(line []byte, raw map[string]json.RawMessage) (Command, error) {
-	if err := onlyKeys(raw, "v", "op", "requestId", "peer", "address", "port"); err != nil {
+	if err := onlyKeys(raw, "v", "op", "requestId", "peer", "address", "slot", "port"); err != nil {
 		return Command{}, err
 	}
 	if _, ok := raw["address"]; !ok {
@@ -436,6 +520,7 @@ func parseMapPeer(line []byte, raw map[string]json.RawMessage) (Command, error) 
 		RequestID string `json:"requestId,omitempty"`
 		Peer      string `json:"peer"`
 		Address   string `json:"address"`
+		Slot      string `json:"slot,omitempty"`
 		Port      int    `json:"port,omitempty"`
 	}
 	if err := decodeExact(line, &wire); err != nil {
@@ -447,6 +532,12 @@ func parseMapPeer(line []byte, raw map[string]json.RawMessage) (Command, error) 
 	if !strings.HasPrefix(wire.Address, "tc") {
 		return Command{}, ProtocolError("address must be a tailcat address")
 	}
+	if _, present := raw["slot"]; !present {
+		return Command{}, ProtocolError("missing slot")
+	}
+	if err := ValidateSlotSpec(wire.Slot); err != nil {
+		return Command{}, err
+	}
 	if wire.Port < 0 || wire.Port > 65535 {
 		return Command{}, ProtocolError("port must be a valid TCP port")
 	}
@@ -454,7 +545,10 @@ func parseMapPeer(line []byte, raw map[string]json.RawMessage) (Command, error) 
 		wire.Port = DefaultPeerPort
 	}
 	requestID, err := optionalRequestID(raw)
-	return Command{Op: "map-peer", RequestID: requestID, Peer: wire.Peer, Address: wire.Address, Port: wire.Port}, err
+	return Command{
+		Op: "map-peer", RequestID: requestID, Peer: wire.Peer,
+		Address: wire.Address, Slot: wire.Slot, Port: wire.Port,
+	}, err
 }
 
 func parseAllow(line []byte, raw map[string]json.RawMessage) (Command, error) {
@@ -486,7 +580,7 @@ func parseAllow(line []byte, raw map[string]json.RawMessage) (Command, error) {
 }
 
 func parseExpose(line []byte, raw map[string]json.RawMessage) (Command, error) {
-	if err := onlyKeys(raw, "v", "op", "requestId", "port", "target", "proxyProtocol"); err != nil {
+	if err := onlyKeys(raw, "v", "op", "requestId", "port", "target", "proxyProtocol", "admission"); err != nil {
 		return Command{}, err
 	}
 	for _, key := range []string{"port", "target", "proxyProtocol"} {
@@ -501,15 +595,24 @@ func parseExpose(line []byte, raw map[string]json.RawMessage) (Command, error) {
 		Port          int    `json:"port"`
 		Target        string `json:"target"`
 		ProxyProtocol string `json:"proxyProtocol"`
+		Admission     string `json:"admission,omitempty"`
 	}
 	if err := decodeExact(line, &wire); err != nil {
 		return Command{}, ProtocolError("invalid expose fields")
 	}
-	if err := ValidateExposure(wire.Port, wire.Target, wire.ProxyProtocol); err != nil {
+	// Admission defaults closed: an exposure is restricted to the allow
+	// set unless the daemon asks for "any" explicitly.
+	if _, ok := raw["admission"]; !ok {
+		wire.Admission = AdmissionAllow
+	}
+	if err := ValidateExposure(wire.Port, wire.Target, wire.ProxyProtocol, wire.Admission); err != nil {
 		return Command{}, err
 	}
 	requestID, err := optionalRequestID(raw)
-	return Command{Op: "expose", RequestID: requestID, Port: wire.Port, Target: wire.Target, ProxyProtocol: wire.ProxyProtocol}, err
+	return Command{
+		Op: "expose", RequestID: requestID, Port: wire.Port,
+		Target: wire.Target, ProxyProtocol: wire.ProxyProtocol, Admission: wire.Admission,
+	}, err
 }
 
 func optionalRequestID(raw map[string]json.RawMessage) (string, error) {
@@ -524,13 +627,16 @@ func optionalRequestID(raw map[string]json.RawMessage) (string, error) {
 	return requestID, nil
 }
 
-// ValidateExposure checks a port/target/proxyProtocol triple.
-func ValidateExposure(port int, target, proxyProtocol string) error {
+// ValidateExposure checks a port/target/proxyProtocol/admission tuple.
+func ValidateExposure(port int, target, proxyProtocol, admission string) error {
 	if port <= 0 || port > 65535 {
 		return ProtocolError("port must be a valid TCP port")
 	}
 	if proxyProtocol != "" && proxyProtocol != "v2" {
 		return ProtocolError("proxyProtocol must be empty or v2")
+	}
+	if admission != AdmissionAny && admission != AdmissionAllow {
+		return ProtocolError("admission must be any or allow")
 	}
 	switch {
 	case strings.HasPrefix(target, "unix:"):
@@ -555,24 +661,23 @@ func validateTCPTarget(target string) error {
 
 // eventFields is the closed per-event key set used by ParseEvent.
 var eventFields = map[string][]string{
-	"hello": {"sidecar", "tailcat", "capabilities"},
-
-	"peer-mapped":      {"peer", "localPort", "requestId"},
+	"hello":            {"sidecar", "tailcat", "capabilities"},
+	"state":            {"state", "serverPublic", "clientPublic", "peers", "slots", "connectionTelemetry", "derpMapURL", "derpMapSource", "requestId"},
+	"peer-mapped":      {"peer", "slot", "requestId"},
 	"peer-unmapped":    {"peer", "requestId"},
 	"allowed":          {"count", "allowAny", "requestId"},
-	"exposed":          {"port", "target", "proxyProtocol", "requestId"},
+	"exposed":          {"port", "target", "proxyProtocol", "admission", "requestId"},
 	"unexposed":        {"port", "requestId"},
 	"peer-key":         {"addr", "found", "key", "requestId"},
 	"service-mapped":   {"requestId", "service"},
 	"service-unmapped": {"requestId", "name", "removed"},
 	"service-status":   {"requestId", "services"},
-	"state":            {"state", "serverPublic", "clientPublic", "peers", "connectionTelemetry", "derpMapURL", "derpMapSource", "requestId"},
 	"service-failed":   {"requestId", "op", "name", "code", "message"},
 	"error":            {"code", "message", "requestId"},
 	"exited":           {},
 }
 
-// ParseEvent validates one protocol-v3 event line: version 3, a known
+// ParseEvent validates one protocol-v4 event line: version 4, a known
 // event name, and only the fields defined for that event. Tests and
 // contract golden checkers use it to exercise the same closed contract
 // on the event side.

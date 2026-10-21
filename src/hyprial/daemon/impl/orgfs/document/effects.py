@@ -48,7 +48,7 @@ from hyprial.daemon.impl.orgfs.storage.space_authority  import (
 from hyprial.daemon.impl.orgfs.storage.store  import CommitRecord
 
 
-from hyprial.daemon.impl.orgfs.document.model import _BroadcastPending, _FACADE_EFFECT_CAPACITY, _FacadeEffectBatch, _FacadeEffectResult, _MetaWatchNotification, _ReconcileReplicaBlobs, _WatchNotification
+from hyprial.daemon.impl.orgfs.document.model import _BroadcastPending, _FACADE_EFFECT_CAPACITY, _FACADE_NETWORK_EFFECT_CAPACITY, _FacadeEffectBatch, _FacadeEffectResult, _MetaWatchNotification, _ReconcileReplicaBlobs, _WatchNotification
 
 class FacadeEffects:
     """Responsibility methods on the sole LocalOrgFs state host.
@@ -126,12 +126,6 @@ class FacadeEffects:
             elif keys and store is not None and hasattr(store, "unbroadcast_through"):
                 current = (*current, *store.unbroadcast_through(tuple(keys)))
         with self._lock:
-            current = tuple(
-                record
-                for record in current
-                if (record.writer, record.seq, record.envelope_bytes)
-                not in self._broadcast_inflight
-            )
             if not current:
                 return ()
             pending = self._pending_outbox.setdefault(space_id, [])
@@ -143,16 +137,15 @@ class FacadeEffects:
         unique: dict[tuple[str, int, bytes], CommitRecord] = {}
         for record in combined:
             unique[(record.writer, record.seq, record.envelope_bytes)] = record
-        result = tuple(unique.values())
-        with self._lock:
-            self._broadcast_inflight.update(
-                (record.writer, record.seq, record.envelope_bytes)
-                for record in result
-            )
-        return result
+        return tuple(unique.values())
 
 
     def _ensure_effect_lane(self) -> None:
+        with self._lock:
+            self._ensure_effect_lane_locked()
+
+
+    def _ensure_effect_lane_locked(self) -> None:
         if self._effect_closed:
             raise OrgFsError("unavailable", {"message": "orgfs is closing"})
         if self._effect_lane is not None:
@@ -173,6 +166,14 @@ class FacadeEffects:
                 else _FacadeEffectResult(("owner-closed",))
             )
 
+        def execute_network(space_id: str) -> _FacadeEffectResult:
+            owner = owner_ref()
+            return (
+                owner._execute_network_effect(space_id)
+                if owner is not None
+                else _FacadeEffectResult(("owner-closed",))
+            )
+
         handle = runtime.start(
             ActorSpec(
                 "orgfs-post-commit-effects",
@@ -184,11 +185,18 @@ class FacadeEffects:
         self._effect_runtime = runtime
         self._effect_actor = handle
         self._effect_lane = EffectLane(
-            name="orgfs-post-commit",
+            name="orgfs-post-commit-callbacks",
             execute=execute_batch,
             complete=lambda completion: runtime.tell(handle, completion),
             capacity=_FACADE_EFFECT_CAPACITY,
             workers=1,
+        )
+        self._network_effect_lane = EffectLane(
+            name="orgfs-post-commit-network",
+            execute=execute_network,
+            complete=lambda completion: runtime.tell(handle, completion),
+            capacity=_FACADE_NETWORK_EFFECT_CAPACITY,
+            workers=4,
         )
 
 
@@ -226,20 +234,6 @@ class FacadeEffects:
                             mesh, "reconcile_replica_blobs"
                         ):
                             mesh.reconcile_replica_blobs(effect.space_id)
-                    else:
-                        mesh = self.mesh
-                        if mesh is not None:
-                            try:
-                                if effect.records and hasattr(mesh, "broadcast_records"):
-                                    mesh.broadcast_records(effect.space_id, effect.records)
-                                elif hasattr(mesh, "broadcast_pending"):
-                                    mesh.broadcast_pending(effect.space_id)
-                            finally:
-                                with self._lock:
-                                    self._broadcast_inflight.difference_update(
-                                        (record.writer, record.seq, record.envelope_bytes)
-                                        for record in effect.records
-                                    )
                 except Exception as exc:
                     failures.append(type(exc).__name__)
             return _FacadeEffectResult(tuple(failures))
@@ -247,10 +241,162 @@ class FacadeEffects:
             self._effect_context.in_effect_worker = False
 
 
+    def _space_has_unbroadcast(self, space_id: str) -> bool:
+        try:
+            store = self._store(space_id)
+            return bool(
+                store is not None
+                and hasattr(store, "unbroadcast")
+                and tuple(store.unbroadcast())
+            )
+        except Exception:
+            return True
+
+
+    def _execute_network_effect(self, space_id: str) -> _FacadeEffectResult:
+        failures: list[str] = []
+        with self._lock:
+            detached = space_id in self._detached_spaces
+        if self._network_effect_stop.is_set() or detached:
+            return _FacadeEffectResult(())
+        try:
+            mesh = self.mesh
+            if mesh is not None and hasattr(mesh, "broadcast_pending"):
+                mesh.broadcast_pending(space_id)
+        except Exception as exc:
+            failures.append(type(exc).__name__)
+        with self._lock:
+            detached = space_id in self._detached_spaces
+        if not detached and self._space_has_unbroadcast(space_id):
+            self._network_effect_stop.wait(0.05)
+        return _FacadeEffectResult(tuple(failures))
+
+
+    def _pump_network_effects(self) -> None:
+        lane = self._network_effect_lane
+        if lane is None:
+            return
+        while True:
+            with self._lock:
+                available = self._network_due_spaces - self._network_active_spaces
+                if not available or self._effect_closed:
+                    return
+                space_id = min(available)
+                operation_id = uuid.uuid4().hex
+                self._network_due_spaces.discard(space_id)
+                self._network_active_spaces.add(space_id)
+                self._network_effect_spaces[operation_id] = space_id
+                generation = self._effect_generation
+            admission = lane.submit(
+                EffectRequest(operation_id, generation, space_id)
+            )
+            if admission is AdmissionResult.ACCEPTED:
+                continue
+            with self._lock:
+                self._network_effect_spaces.pop(operation_id, None)
+                self._network_active_spaces.discard(space_id)
+                self._network_due_spaces.add(space_id)
+            return
+
+
+    def request_broadcast_drain(self, space_id: str) -> None:
+        with self._lock:
+            if (
+                self._effect_closed
+                or self._network_effect_draining
+                or space_id in self._detached_spaces
+            ):
+                return
+            self._ensure_effect_lane()
+            self._network_due_spaces.add(space_id)
+        self._pump_network_effects()
+
+
+    def drain_broadcasts(
+        self, space_ids: tuple[str, ...], timeout: float = 5.0
+    ) -> bool:
+        targets = frozenset(space_ids)
+        if not targets:
+            return True
+        with self._lock:
+            if self._effect_closed:
+                return False
+            self._ensure_effect_lane_locked()
+            self._network_due_spaces.update(targets)
+            self._network_effect_draining = True
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            self._pump_network_effects()
+            with self._lock:
+                lane = self._network_effect_lane
+                active = self._network_active_spaces & targets
+                due = self._network_due_spaces & targets
+            outstanding = lane.snapshot().outstanding if lane is not None else 0
+            if not active and not due and outstanding == 0:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.005)
+
+
+    def _submit_post_commit_effects(
+        self,
+        operation_id: str,
+        generation: int,
+        effects: tuple[object, ...],
+    ) -> bool:
+        callbacks = tuple(
+            effect for effect in effects if not isinstance(effect, _BroadcastPending)
+        )
+        broadcasts = {
+            effect.space_id
+            for effect in effects
+            if isinstance(effect, _BroadcastPending)
+        }
+        lane = self._effect_lane
+        for space_id in broadcasts:
+            self.request_broadcast_drain(space_id)
+        submitted_callbacks = lane is not None and bool(callbacks or broadcasts)
+        if submitted_callbacks:
+            with self._lock:
+                self._effect_sequence += 1
+                sequence = self._effect_sequence
+            lane.submit_reserved(
+                EffectRequest(
+                    operation_id,
+                    generation,
+                    _FacadeEffectBatch(sequence, callbacks),
+                )
+            )
+        elif lane is not None:
+            lane.cancel_reservation(operation_id, generation)
+            with self._lock:
+                self._effect_waiters.pop(operation_id, None)
+        return submitted_callbacks
+
+
     def _on_effect_completion(self, command: object) -> None:
         if not isinstance(command, EffectCompleted):
             raise TypeError("orgfs effect owner received an invalid completion")
         with self._lock:
+            space_id = self._network_effect_spaces.get(command.operation_id)
+            can_retry = (
+                space_id is not None
+                and not self._effect_closed
+                and not self._network_effect_draining
+                and space_id not in self._detached_spaces
+            )
+        retry = bool(
+            can_retry
+            and space_id is not None
+            and self._space_has_unbroadcast(space_id)
+        )
+        with self._lock:
+            if space_id is not None:
+                self._network_effect_spaces.pop(command.operation_id, None)
+                self._network_active_spaces.discard(space_id)
+                if retry and space_id not in self._detached_spaces:
+                    self._network_due_spaces.add(space_id)
             if command.generation == self._effect_generation:
                 if command.error is not None:
                     self._effect_failures.append(command.error)
@@ -258,11 +404,13 @@ class FacadeEffects:
                     self._effect_failures.extend(command.result.failures)
                 del self._effect_failures[:-32]
             waiter = self._effect_waiters.pop(command.operation_id, None)
-        lane = self._effect_lane
+        lane = self._network_effect_lane if space_id is not None else self._effect_lane
         if lane is not None:
             lane.acknowledge(command.operation_id, command.generation)
         if waiter is not None:
             waiter.set()
+        if space_id is not None:
+            self._pump_network_effects()
 
 
     def _wait_for_effect(self, operation_id: str | None) -> None:
@@ -274,11 +422,74 @@ class FacadeEffects:
             waiter.wait(60.0)
 
 
+    def detach_space(self, space_id: str, timeout: float = 5.0) -> bool:
+        """Fence one space, drain its authorities, and drop its facade state."""
+
+        deadline = time.monotonic() + timeout
+        with self._lock:
+            self._detached_spaces.add(space_id)
+            self._network_due_spaces.discard(space_id)
+            owner = self._space_state_owners.get(space_id)
+        if owner is not None:
+            while time.monotonic() < deadline:
+                snapshot = owner.runtime.snapshot(owner.actor)
+                if (
+                    snapshot.queued == 0
+                    and snapshot.in_flight == 0
+                    and not owner.deferred
+                ):
+                    break
+                time.sleep(0.005)
+            else:
+                return False
+            if not owner.effects.close(max(0.0, deadline - time.monotonic())):
+                return False
+            if not owner.runtime.stop(
+                owner.actor, timeout=max(0.0, deadline - time.monotonic())
+            ):
+                return False
+        while time.monotonic() < deadline:
+            with self._lock:
+                network_drained = space_id not in self._network_active_spaces
+                effects_drained = not self._effect_waiters
+            if network_drained and effects_drained:
+                break
+            time.sleep(0.005)
+        else:
+            return False
+        with self._lock:
+            authority = self._space_authorities.get(space_id)
+        if authority is not None and not authority.close(
+            timeout=max(0.0, deadline - time.monotonic())
+        ):
+            return False
+        with self._space_lock(space_id):
+            with self._lock:
+                space = self._spaces.pop(space_id, None)
+                if space is not None:
+                    for watcher in (*space.watches, *space.meta_watches):
+                        watcher.close()
+                        self._watchers.pop(watcher.watch_id, None)
+                        self._meta_watchers.pop(watcher.watch_id, None)
+                self._space_state_owners.pop(space_id, None)
+                self._space_authorities.pop(space_id, None)
+                self._events.pop(space_id, None)
+                self._pending_outbox.pop(space_id, None)
+                self._purge_plans = {
+                    plan_id: saved
+                    for plan_id, saved in self._purge_plans.items()
+                    if saved[0].space_id != space_id
+                }
+                self._space_locks.pop(space_id, None)
+        return True
+
+
     def close_effects(self, timeout: float = 5.0) -> bool:
         with self._lock:
             self._space_state_closing = True
             state_owners = tuple(self._space_state_owners.items())
             lane = self._effect_lane
+            network_lane = self._network_effect_lane
             runtime = self._effect_runtime
             actor = self._effect_actor
             authorities = tuple(self._space_authorities.values())
@@ -303,8 +514,13 @@ class FacadeEffects:
                 return False
         with self._lock:
             self._effect_closed = True
+        self._network_effect_stop.set()
         if lane is not None:
             if not lane.close(max(0.0, deadline - time.monotonic())):
+                return False
+            if network_lane is not None and not network_lane.close(
+                max(0.0, deadline - time.monotonic())
+            ):
                 return False
             with self._lock:
                 self._effect_generation += 1
@@ -313,6 +529,7 @@ class FacadeEffects:
                     return False
             with self._lock:
                 self._effect_lane = None
+                self._network_effect_lane = None
                 self._effect_runtime = None
                 self._effect_actor = None
         for authority in authorities:
@@ -336,56 +553,47 @@ class FacadeEffects:
         """Reserve bounded observer custody around structured-document writes."""
 
         outermost = not hasattr(self._effect_context, "pending")
-        wait_for_completion = False
+        wait_for_callbacks = False
         operation_id: str | None = None
+        generation = self._effect_generation
+        reserved = False
+        effects: tuple[object, ...] = ()
         authority_lock = self._lock if space_id is None else self._space_lock(space_id)
-        with authority_lock:
-            generation = self._effect_generation
-            reserved = False
-            if outermost and self._needs_post_commit_effects():
-                self._ensure_effect_lane()
-                operation_id = uuid.uuid4().hex
-                admission = self._effect_lane.reserve(operation_id, generation)
-                if admission is not AdmissionResult.ACCEPTED:
-                    raise OrgFsError(
-                        "resource-exhausted",
-                        {"message": "orgfs post-commit effect lane is " + admission.value},
-                    )
-                reserved = True
-                with self._lock:
-                    self._effect_waiters[operation_id] = threading.Event()
-            if outermost:
-                self._effect_context.pending = []
-            try:
-                yield
-            finally:
+        try:
+            with authority_lock:
+                generation = self._effect_generation
+                if outermost and self._needs_post_commit_effects():
+                    self._ensure_effect_lane()
+                    operation_id = uuid.uuid4().hex
+                    admission = self._effect_lane.reserve(operation_id, generation)
+                    if admission is not AdmissionResult.ACCEPTED:
+                        raise OrgFsError(
+                            "resource-exhausted",
+                            {
+                                "message": "orgfs post-commit effect lane is "
+                                + admission.value
+                            },
+                        )
+                    reserved = True
+                    with self._lock:
+                        self._effect_waiters[operation_id] = threading.Event()
                 if outermost:
-                    effects = tuple(self._effect_context.pending)
-                    del self._effect_context.pending
-                    if operation_id is not None and reserved:
-                        if effects:
-                            with self._lock:
-                                self._effect_sequence += 1
-                                sequence = self._effect_sequence
-                            self._effect_lane.submit_reserved(
-                                EffectRequest(
-                                    operation_id,
-                                    generation,
-                                    _FacadeEffectBatch(sequence, effects),
-                                )
-                            )
-                            wait_for_completion = True
-                        else:
-                            self._effect_lane.cancel_reservation(
-                                operation_id, generation
-                            )
-                            with self._lock:
-                                self._effect_waiters.pop(operation_id, None)
-        if (
-            wait_for_completion
-            and not getattr(self._effect_context, "in_effect_worker", False)
-        ):
-            self._wait_for_effect(operation_id)
+                    self._effect_context.pending = []
+                try:
+                    yield
+                finally:
+                    if outermost:
+                        effects = tuple(self._effect_context.pending)
+                        del self._effect_context.pending
+        finally:
+            if operation_id is not None and reserved:
+                wait_for_callbacks = self._submit_post_commit_effects(
+                    operation_id, generation, effects
+                )
+            if wait_for_callbacks and not getattr(
+                self._effect_context, "in_effect_worker", False
+            ):
+                self._wait_for_effect(operation_id)
 
 
     def _store(self, space_id: str) -> Any:
@@ -394,6 +602,9 @@ class FacadeEffects:
         if hasattr(self.stores, "commit"):
             return self.stores
         if isinstance(self.stores, Mapping):
+            with self._lock:
+                if space_id in self._detached_spaces:
+                    return None
             return self.stores.get(space_id)
         return None
 

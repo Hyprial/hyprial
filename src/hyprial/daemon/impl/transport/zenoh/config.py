@@ -94,6 +94,12 @@ def _validate_endpoints(endpoints: tuple[str, ...]) -> None:
 
     for endpoint in endpoints:
         protocol, separator, address = endpoint.partition("/")
+        if protocol == "unixsock-stream":
+            # The slot-pool locator shape: the address is an absolute
+            # socket path, not host:port (stable-zenoh-session-slots §3).
+            if separator and address.startswith("/") and len(address) > 1:
+                continue
+            raise ValueError(f"not a zenoh endpoint: {endpoint!r}")
         host, colon, port = address.rpartition(":")
         if not separator or not protocol or not colon or not host or not port.isdigit():
             raise ValueError(f"not a zenoh endpoint: {endpoint!r}")

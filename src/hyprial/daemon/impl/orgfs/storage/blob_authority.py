@@ -516,6 +516,12 @@ class BlobAuthority:
                 raise BlobError("blob authority is closed")
         self._store.register_purge_projection(space_id, digests)
 
+    def unregister_purge_projection(self, space_id: str) -> None:
+        with self._lock:
+            if self._closing or self._closed:
+                raise BlobError("blob authority is closed")
+        self._store.unregister_purge_projection(space_id)
+
     def close(self, timeout: float = 5.0) -> bool:
         deadline = time.monotonic() + max(0.0, timeout)
         with self._lock:
