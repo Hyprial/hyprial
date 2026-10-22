@@ -317,6 +317,15 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
   daemon session fence；`send`/`reply` 还必须带 `--summary`；本机人工代发必须用
   `--from user:<owner> --on-behalf-of <actor>`，线上 sender 始终是 user 而不是 actor。
   `hyprial ack <mid> --from <自身 actor>` 只适用于有匹配 session 的 worker。
+- `hyprial agent config rebind <name> --source <绝对目录> [--dry-run] [--json]` —
+  修复既有 P2 agent 的配置根 C。先 `hyprial down <name>`；命令会从 durable desired state、
+  supervisor 和运行 lease 证明已静止，不以 `ps.connectors` 为依据。暂存目录及子目录必须为
+  当前用户所有且模式 `0700`，普通文件必须为 `0600`；符号链接、root 文件、credential 路径和
+  疑似 secret 内容会被拒绝。成功后保存 durable receipt，并且只 CAS 更新 C binding；agent URI、
+  incarnation、home、routine 不变。崩溃后用同一条 rebind 命令恢复。回滚用
+  `hyprial agent config rebind <name> --rollback <receipt-id> [--json]`；它重验 receipt、hash 和
+  静止状态，恢复原 binding 后清理该次发布的 revision。遇到 `AGENT_CONFIG_CAS_MISMATCH`、
+  `AGENT_INCARNATION_MISMATCH` 或 drift 错误时停止，不要覆盖现场。
 - `hyprial query <actor> inbox|outbox [--json]` — 人查看某个本机 actor 的收件箱(待处理消息 +
   系统通知,含正文)或发件箱(它发出、仍在排队的消息)。**只读**:不取走、不 ack、不清通知,
   agent 之后照样收到。⛔ 不要拿 MCP 的 harness_read 或 daemon 的 message.pending.list 来"看一眼":

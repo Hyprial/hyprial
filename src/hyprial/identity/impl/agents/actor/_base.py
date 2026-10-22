@@ -17,6 +17,7 @@ from hyprial.identity.impl.agents.home.provisioner import HomeReceipt
 from hyprial.identity.impl.agents.migration.actor import MigrationOutcome
 from hyprial.identity.impl.agents.migration.actor import MigrationRequest
 from collections import OrderedDict
+from contextlib import AbstractContextManager
 from hyprial.identity.impl.agents.actor.ports import PinAgentAdapterCommand
 from typing import Protocol
 from hyprial.identity.impl.agents.actor.ports import RestoreDispositionProjection
@@ -37,6 +38,8 @@ Harness/Adapter implementations.
 """
 class _DesiredStatePort(Protocol):
     def load(self) -> object: ...
+
+    def config_rebind_fence(self) -> AbstractContextManager[object]: ...
 
     def remove_channel_pin(self, channel: str) -> tuple[object, str | None]: ...
 
@@ -212,6 +215,7 @@ class _MigrationWaiter:
 class _RuntimeContextFence:
     actor: str
     receipt: HomeReceipt
+    config_digest: str
     secret_grants: tuple[tuple[str, int], ...]
     consumed: bool = False
 @dataclass(frozen=True, slots=True)
@@ -236,6 +240,7 @@ class _RuntimeLaunchState:
         self,
         context: AgentRuntimeContext,
         receipt: HomeReceipt,
+        config_digest: str,
         secret_grants: tuple[tuple[str, int], ...],
     ) -> AgentRuntimeContext:
         if context.home_resource_token != receipt.resource_token:
@@ -259,7 +264,7 @@ class _RuntimeLaunchState:
                     )
                 self.contexts.pop(evictable, None)
             self.contexts[token] = _RuntimeContextFence(
-                context.actor, receipt, secret_grants
+                context.actor, receipt, config_digest, secret_grants
             )
             self.contexts.move_to_end(token)
         return replace(context, launch_token=token)

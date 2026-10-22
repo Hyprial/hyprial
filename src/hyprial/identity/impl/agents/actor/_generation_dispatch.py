@@ -11,6 +11,7 @@ from hyprial.identity.impl.agents.home.provisioner import AgentHomeError
 from hyprial.identity.impl.agents.registry._base import AgentHomeReservation
 from hyprial.identity.impl.agents.actor.ports import AgentLifecycleReceiptCompleted
 from hyprial.identity.impl.agents.runtime.context import AgentRuntimeContext
+from hyprial.identity.impl.agents.registry.config_binding import agent_config_digest
 from hyprial.identity.impl.agents.actor.ports import AgentSecretGrantCompleted
 from hyprial.identity.impl.agents.actor.ports import BindAgentCommand
 from hyprial.identity.impl.agents.actor.ports import BlockAgentCommand
@@ -749,8 +750,11 @@ class _GenerationDispatchMixin:
                         (grant.grant_id, grant.revision)
                         for grant in self.registry.secret_inventory(value.actor)
                     )
+                    config_digest = agent_config_digest(
+                        self.registry.require(value.actor).config
+                    )
                     value = launches.register_context(
-                        value, pending.receipt, grants
+                        value, pending.receipt, config_digest, grants
                     )
                 complete(event.correlation_id, value, None)
                 return

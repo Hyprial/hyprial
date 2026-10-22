@@ -99,7 +99,7 @@ class _AgentRegistryOpsMixin:
                     "Agent write before retrying",
                 )
             return {"ok": True, "restored": True, "agent": replacement.to_json()}
-        if method.startswith("agent.migrate."):
+        if method.startswith("agent.migrate.") or method == "agent.config.rebind":
             return self._handle_agent_migration(method, params)
         if method in ("agent.grant", "agent.revoke", "agent.grants"):
             # L0: the local host operator records these facts. This ledger is

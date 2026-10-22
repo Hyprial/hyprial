@@ -90,7 +90,8 @@ from hyprial.shell.impl.cli.commands.gui.commands import gui_command, gui_status
 from hyprial.shell.impl.cli.commands.login.flow import _ensure_login_device, _prove_daemon_absent, _run_login_cli_flow
 from hyprial.shell.impl.cli.commands.squire.squire import _squire_setup_operation, squire_app, squire_setup
 from hyprial.shell.impl.cli.commands.squire.user_proxy import _stored_user_proxy_route, user_proxy_app, user_proxy_setup, user_proxy_status
-from hyprial.shell.impl.cli.commands.agent.admin import agent_app, agent_destroy, agent_list, agent_unblock, migration_app, secret_app
+from hyprial.shell.impl.cli.commands.agent.admin import agent_app, agent_destroy, agent_list, agent_unblock, config_app as agent_config_app, migration_app, secret_app
+from hyprial.shell.impl.cli.commands.agent.config_rebind import agent_config_rebind
 from hyprial.shell.impl.cli.commands.agent.create import _create_agent_for_start, agent_create, agent_host_invite
 from hyprial.shell.impl.cli.commands.agent.grant import agent_grant, agent_grants, agent_revoke
 from hyprial.shell.impl.cli.commands.agent.home import _MIGRATION_ROUTINE_BINDING_FIELDS, _guard_agent_migration_routines, _migration_manifest, _routine_binding_matches_agent, agent_home_census, agent_migrate_execute, agent_migrate_preflight, agent_migrate_rollback
@@ -280,6 +281,7 @@ set_service_resolver(_cli_services)
 # --- group wiring (original add_typer order) -------------------------------
 agent_app.add_typer(secret_app, name="secret")
 agent_app.add_typer(migration_app, name="migrate")
+agent_app.add_typer(agent_config_app, name="config")
 agent_app.add_typer(tiers_app, name="tiers")
 agent_app.add_typer(provider_app, name="provider")
 app.add_typer(adapter_app, name="adapter")
@@ -450,7 +452,7 @@ __all__ = [
     "adapter_list", "adapter_media_get", "adapter_onboard", "adapter_pin", "adapter_pins",
     "adapter_reload", "adapter_remove", "adapter_route_add", "adapter_route_candidates", "adapter_route_list",
     "adapter_route_remove", "adapter_start", "adapter_status", "adapter_stop", "adapter_unpin",
-    "agent_app", "agent_create", "agent_destroy", "agent_grant", "agent_grants", "agent_tiers",
+    "agent_app", "agent_config_app", "agent_config_rebind", "agent_create", "agent_destroy", "agent_grant", "agent_grants", "agent_tiers",
     "agent_home_census", "agent_host_invite", "agent_list", "agent_migrate_execute", "agent_migrate_preflight", "agent_migrate_rollback",
     "agent_provider_login", "provider_app",
     "agent_restore_policy", "agent_restore_threshold", "agent_revoke", "agent_secret_entry_write", "agent_secret_grant",

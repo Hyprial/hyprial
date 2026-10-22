@@ -64,6 +64,7 @@ _IPC_STATS_METHODS = frozenset(
         "adapter.stop",
         "adapter.unpin",
         "agent.create",
+        "agent.config.rebind",
         "agent.destroy",
         "agent.destroy.preview",
         "agent.ensure-home",
@@ -652,6 +653,8 @@ class _IpcDispatchMixin:
         if method == "adapter.pins":
             return self._ipc_adapter_pins()
         if method.startswith("agent."):
+            if method == "agent.config.rebind" and _trusted_message_origin == "worker":
+                raise DaemonRequestError(ipc_errors.CALLER_NOT_AUTHORIZED, "config rebind requires local operator IPC")
             # One boundary for the agent RPCs: the registry raises its own
             # typed errors, and every one of them already carries the IPC code
             # it should surface as. Translating here keeps handle()'s contract
@@ -670,7 +673,9 @@ class _IpcDispatchMixin:
                     return self._handle_agent_create_with_default(params)
                 return self._handle_agent(method, params)
             except (AgentError, DomainCommandError) as error:
-                raise DaemonRequestError(error.code, str(error)) from error
+                raise DaemonRequestError(
+                    error.code, str(error), data=getattr(error, "data", None)
+                ) from error
             except RegistryHomeError as error:
                 raise DaemonRequestError(AgentError.code, str(error)) from error
         if method == "shutdown":

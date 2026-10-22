@@ -7,6 +7,7 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Mapping
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 from uuid import uuid4
@@ -566,6 +567,16 @@ class _DesiredPort(ServiceDesiredPortMixin):
         self, name: str, *, excluding: str | None = None
     ) -> HarnessLaunchSpec | None:
         return self._owner.harness_spec(name, excluding=excluding)
+
+    def config_rebind_fence(self) -> AbstractContextManager[object]:
+        """Reserve the desired-state write authority for one rebind CAS.
+
+        Yields the durable store view: a reader inside the fence sees every
+        commit that won the authority first, never a projection that a
+        blocked writer has not published yet.
+        """
+
+        return self._owner._desired_store.config_rebind_fence()
 
     def settled_result(self, correlation_id: str) -> object:
         completion = self._owner.settled_result(correlation_id)

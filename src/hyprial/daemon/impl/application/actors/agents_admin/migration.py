@@ -67,13 +67,38 @@ class _AgentMigrationMixin:
             MigrationPreflightManifest,
         )
 
-        requested = _required_string(params.get("agent"), "agent")
+        parameter = "name" if method == "agent.config.rebind" else "agent"
+        requested = _required_string(params.get(parameter), parameter)
         try:
             actor = self.agents.require(requested).actor
             manifest = None
             migration_id = None
             authorization_window = None
-            if method == "agent.migrate.preflight":
+            source = None
+            rollback_receipt_id = None
+            dry_run = False
+            if method == "agent.config.rebind":
+                raw_source = params.get("source")
+                raw_rollback = params.get("rollbackReceiptId")
+                if raw_source is not None:
+                    source = _required_string(raw_source, "source")
+                if raw_rollback is not None:
+                    rollback_receipt_id = _required_string(
+                        raw_rollback, "rollbackReceiptId"
+                    )
+                if (source is None) == (rollback_receipt_id is None):
+                    raise ValueError(
+                        "exactly one of source or rollbackReceiptId is required"
+                    )
+                raw_dry_run = params.get("dryRun", False)
+                if not isinstance(raw_dry_run, bool):
+                    raise ValueError("dryRun must be a boolean")
+                dry_run = raw_dry_run
+                if rollback_receipt_id is not None and dry_run:
+                    raise ValueError(
+                        "dryRun cannot be combined with rollbackReceiptId"
+                    )
+            elif method == "agent.migrate.preflight":
                 manifest = MigrationPreflightManifest.from_json(params.get("manifest"))
             elif method in {"agent.migrate.execute", "agent.migrate.rollback"}:
                 migration_id = _required_string(params.get("migrationId"), "migrationId")
@@ -86,8 +111,14 @@ class _AgentMigrationMixin:
                     ipc_errors.METHOD_NOT_FOUND, f"unknown daemon method {method}"
                 )
             return self._agent_session_domains.agent.run_migration(
-                method, actor, manifest=manifest, migration_id=migration_id,
+                method,
+                actor,
+                manifest=manifest,
+                migration_id=migration_id,
                 authorization_window=authorization_window,
+                source=source,
+                rollback_receipt_id=rollback_receipt_id,
+                dry_run=dry_run,
             )
         except (TypeError, ValueError, OSError) as error:
             raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, str(error)) from error

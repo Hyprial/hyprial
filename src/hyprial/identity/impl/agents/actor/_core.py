@@ -53,7 +53,11 @@ from hyprial.identity.impl.agents.actor.ports import UnpinAgentAdapterCommand
 from hyprial.identity.impl.agents.home.provisioner import WorkspaceSummary
 from hyprial.kernel import canonical_agent_uri
 from hyprial.kernel import parse_agent_uri
-from hyprial.identity.impl.agents.migration.actor import run_migration_effect
+from hyprial.identity.impl.agents.migration.actor import (
+    bind_config_quiescent,
+    config_rebind_quiescence,
+    run_migration_effect,
+)
 import threading
 import time
 from uuid import uuid4
@@ -361,12 +365,10 @@ class AgentActor:
             with self._migration_lock:
                 busy = self._migration_lease is not None
             with self._runtime_launches.condition:
-                launch_busy = (
-                    agent.actor in self._runtime_launches.destroying
-                    or any(
-                        lease.receipt.actor == agent.actor
-                        for lease in self._runtime_launches.leases.values()
-                    )
+                destroy_busy = agent.actor in self._runtime_launches.destroying
+                launch_busy = any(
+                    lease.receipt.actor == agent.actor
+                    for lease in self._runtime_launches.leases.values()
                 )
             home_busy = any(
                 self._migration_command_actor(pending.command) == agent.actor
@@ -377,7 +379,13 @@ class AgentActor:
                 or self._migration_command_actor(pending.command) == agent.actor
                 for pending in self._pending_pins.values()
             )
-            if busy or launch_busy or home_busy or pin_busy:
+            if (
+                busy
+                or destroy_busy
+                or (launch_busy and request.method != "agent.config.rebind")
+                or home_busy
+                or pin_busy
+            ):
                 raise AgentMigrationBusy("Agent migration or target effect is busy")
             receipt = self._registry.home_receipt(agent.actor, validate_mirror=False)
             operation_id = request.operation_id
@@ -456,6 +464,36 @@ class AgentActor:
                 _refresh_projection(
                     self._projection, self._registry, self._liveness, self._version.bump()
                 )
+            elif command.kind == "bind-config-quiescent":
+                if not isinstance(command.config, AgentConfig):
+                    raise ValueError("config rebind requires a typed AgentConfig")
+                if command.expected_current_config_digest is None:
+                    raise ValueError("config rebind requires an expected config digest")
+                updated, proof = bind_config_quiescent(
+                    agent,
+                    desired_state=self._desired_state,
+                    liveness=self._liveness,
+                    runtime_launches=self._runtime_launches,
+                    registry=self._registry,
+                    config=command.config,
+                    expected_current_config_digest=(
+                        command.expected_current_config_digest
+                    ),
+                )
+                _refresh_projection(
+                    self._projection, self._registry, self._liveness, self._version.bump()
+                )
+                value = {
+                    "agent": Agent.from_json(updated.to_json(), "config-rebind.agent"),
+                    "proof": proof,
+                }
+            elif command.kind == "quiescence":
+                value = config_rebind_quiescence(
+                    agent,
+                    desired_state=self._desired_state,
+                    liveness=self._liveness,
+                    runtime_launches=self._runtime_launches,
+                )
             else:
                 raise ValueError("unsupported migration owner call")
             result = MigrationOwnerResult(value=value)
@@ -515,6 +553,9 @@ class AgentActor:
         manifest: MigrationPreflightManifest | None = None,
         migration_id: str | None = None,
         authorization_window: MigrationAuthorizationWindow | None = None,
+        source: str | None = None,
+        rollback_receipt_id: str | None = None,
+        dry_run: bool = False,
         operation_id: str | None = None,
         timeout: float | None = None,
     ) -> dict[str, object]:
@@ -522,7 +563,15 @@ class AgentActor:
 
         token = operation_id or uuid4().hex
         request = MigrationRequest(
-            token, method, actor, manifest, migration_id, authorization_window
+            token,
+            method,
+            actor,
+            manifest,
+            migration_id,
+            authorization_window,
+            source,
+            rollback_receipt_id,
+            dry_run,
         )
         with self._migration_lock:
             settled = self._migration_settled.get(token)

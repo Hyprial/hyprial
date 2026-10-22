@@ -28,6 +28,11 @@ migration_app = typer.Typer(
     no_args_is_help=True,
 )
 
+config_app = typer.Typer(
+    help="Validate, atomically replace, or roll back an existing P2 config root.",
+    no_args_is_help=True,
+)
+
 @agent_app.command("list")
 def agent_list(
     inactive_since: str | None = typer.Option(

@@ -15,7 +15,8 @@ from hyprial.daemon.impl.desired_state.documents import (
 import sqlite3
 import threading
 import weakref
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from hyprial.daemon.impl.desired_state.sqlite  import DesiredStateSqliteShadow
@@ -47,6 +48,11 @@ _STORES_BY_DB_PATH: "weakref.WeakValueDictionary[Path, DesiredStateStore]" = (
 
 
 _STORE_REGISTRY_LOCK = threading.Lock()
+
+# A config-rebind fence is held only across one binding CAS and the read that
+# proves it; waiting longer than this means another authority holder is stuck
+# and the rebind must fail closed instead of pinning a daemon thread.
+_CONFIG_REBIND_FENCE_TIMEOUT_S = 60.0
 
 
 def _collect_retired_rows(
@@ -187,6 +193,29 @@ class DesiredStateStore(
             # compensation -- one storage, no cross-storage window.
             self._sqlite_shadow.write_document(document)
             self._published_state = validated
+
+    @contextmanager
+    def config_rebind_fence(self) -> Iterator["DesiredStateStore"]:
+        """Reserve the desired-state authority across one binding mutation.
+
+        A config rebind proves quiescence and then mutates durable identity
+        config. Holding this fence across both turns two separate facts into
+        one: every desired-state writer commits either before the proof (and
+        the proof is false) or after the mutation (and the proof stays true).
+        Reentrant, so the fenced owner may still read or stage state itself.
+        The yielded view reads the durable document, not a projection a
+        blocked writer may not have published yet.
+        """
+
+        if not self._lock.acquire(timeout=_CONFIG_REBIND_FENCE_TIMEOUT_S):
+            raise DesiredStateError(
+                "desired-state authority stayed reserved; the configuration "
+                "rebind quiescence proof cannot be extended"
+            )
+        try:
+            yield self
+        finally:
+            self._lock.release()
 
     def set_service_connection(self, name: str, local_port: int) -> DesiredState:
         from .services import ServiceConnection

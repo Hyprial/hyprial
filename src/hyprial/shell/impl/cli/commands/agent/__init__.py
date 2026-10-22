@@ -1,6 +1,6 @@
 """Agent command family, split by command responsibility."""
 
-from . import admin, create, grant, home, restore, secret  # noqa: F401
+from . import admin, config_rebind, create, grant, home, restore, secret  # noqa: F401
 
 _ORDER = {
     name: index

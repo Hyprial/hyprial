@@ -35,6 +35,7 @@ from hyprial.identity.impl.agents.registry.config_binding import agent_config_di
 
 from ._base import (
     AgentLaunchInProgress,
+    AgentRuntimeContextStale,
     AgentRuntimeLaunchMismatch,
     AgentUpdateConflict,
     _AgentStateEffectCompleted,
@@ -57,6 +58,11 @@ class _GenerationOpsMixin:
         try:
             fence = launches.acquire_candidate(command.launch_token)
             self.registry.confirm_home_authority(fence.receipt)
+            current = self.registry.require(fence.actor)
+            if agent_config_digest(current.config) != fence.config_digest:
+                raise AgentRuntimeContextStale(
+                    "runtime context config binding is stale"
+                )
         except (AgentError, AgentHomeError) as error:
             if fence is not None:
                 launches.retire_context(command.launch_token, fence)
