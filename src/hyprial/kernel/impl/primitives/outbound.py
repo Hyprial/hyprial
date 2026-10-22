@@ -2,7 +2,7 @@
 
 Some of the endpoints Hyprial talks to sit behind an edge that refuses
 urllib's stock ``Python-urllib/<version>`` agent.  Measured 2026-10-20 against
-``https://auth.hyprial.com`` (Cloudflare): the token grant answered ``403``
+the default profile's issuer (Cloudflare): the token grant answered ``403``
 with ``error_code 1010`` / ``browser_signature_banned`` for the stock agent and
 ``200`` for ``hyprial-daemon/<version>``, ``curl/<version>`` and a browser
 agent alike.  ``org create`` therefore failed on every node whose

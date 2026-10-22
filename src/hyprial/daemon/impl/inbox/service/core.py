@@ -727,6 +727,9 @@ class InboxServiceCoreMixin:
         outcomes: list[SubmissionResult] = []
         for row in rows:
             message = self._row_message(row)
+            # The ACK probe is a transport query, not a column, so it cannot move
+            # into the limited SELECT; the branches below therefore decide per
+            # claimed row instead of filtering after the claim.
             if self._ack_received(message):
                 self.retire_outbox_receipt(
                     message.sender, message.message_id, now_ms=now
@@ -734,9 +737,7 @@ class InboxServiceCoreMixin:
                 outcomes.append(
                     SubmissionResult(message.message_id, True, queued=False)
                 )
-                continue
-            expired = now >= int(row["expires_at_ms"])
-            if expired:
+            elif now >= int(row["expires_at_ms"]):
                 self._outbox_to_dlq(row, "TTL_EXPIRED", now)
                 outcomes.append(
                     SubmissionResult(message.message_id, False, code="TTL_EXPIRED")

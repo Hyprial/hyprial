@@ -7,12 +7,7 @@ import time
 from collections.abc import Mapping
 from typing import Any
 
-
-def _locator_port(locator: str) -> int | None:
-    try:
-        return int(locator.split("?", 1)[0].rsplit(":", 1)[1])
-    except (IndexError, ValueError):
-        return None
+from hyprial.daemon.impl.transport.zenoh.config import locator_port
 
 
 class ZenohLinkDiagnosticsMixin:
@@ -71,10 +66,10 @@ class ZenohLinkDiagnosticsMixin:
         with self._diagnostic_guard:
             endpoint = src if src in self._endpoint_peers else dst
             peer_node = self._endpoint_peers.get(endpoint)
-            peer_map_port = _locator_port(endpoint) if peer_node is not None else None
+            peer_map_port = locator_port(endpoint) if peer_node is not None else None
             other = dst if endpoint == src else src
             local_ephemeral_port = (
-                _locator_port(other) if peer_node is not None else None
+                locator_port(other) if peer_node is not None else None
             )
             if kind == "put":
                 self._link_opened_at[key] = (

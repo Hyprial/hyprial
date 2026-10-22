@@ -104,6 +104,23 @@ def _validate_endpoints(endpoints: tuple[str, ...]) -> None:
         if not separator or not protocol or not colon or not host or not port.isdigit():
             raise ValueError(f"not a zenoh endpoint: {endpoint!r}")
 
+def locator_port(endpoint: str) -> int | None:
+    """The port a TCP zenoh locator dials, or ``None`` when it names none.
+
+    This reads **zenoh's** locator grammar -- ``<protocol>/<host>:<port>``,
+    optionally followed by a ``?``-query of locator options -- not the
+    ``agent:``/``channel:`` identity grammar owned by :mod:`hyprial.uri`.  A
+    ``unixsock-stream`` locator names a socket path, so it has no port.  This
+    module owns the locator grammar, so link diagnostics asks here instead of
+    taking the string apart again.
+    """
+
+    address = endpoint.partition("/")[2].partition("?")[0]
+    host, colon, port = address.rpartition(":")
+    if not colon or not host or not port.isdigit():
+        return None
+    return int(port)
+
 @dataclass(frozen=True, slots=True)
 class ZenohConfig:
     listen: tuple[str, ...] = ()
