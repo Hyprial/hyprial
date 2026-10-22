@@ -492,9 +492,10 @@ def main(arguments: list[str] | None = None) -> int:
     )
     stream_holder.append(stream)
 
+    health_stopped = threading.Event()
+
     def watch_health() -> None:
-        while True:
-            time.sleep(health_interval)
+        while not health_stopped.wait(health_interval):
             health.check_once()
 
     threading.Thread(
@@ -503,6 +504,7 @@ def main(arguments: list[str] | None = None) -> int:
     try:
         stream.start()
     finally:
+        health_stopped.set()
         close_adapter = getattr(adapter, "close", None)
         if callable(close_adapter):
             close_adapter()
