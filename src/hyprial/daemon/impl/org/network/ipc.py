@@ -18,6 +18,8 @@ from hyprial.kernel import canonical_user_uri, parse_agent_uri
 from hyprial.daemon.impl.configuration.identity import normalize_agent_recipient
 from hyprial.daemon.impl.ipc.params import JsonObject, _optional_boolean, _required_string
 from hyprial.daemon.impl.orgfs.api import OrgFsError
+from hyprial.daemon.impl.org.network.access import PeerAccessActor
+from hyprial.daemon.impl.org.network.access.snapshot import with_bootstrap
 from hyprial.daemon.impl.org.network.casdoor import casdoor_groups_for_home
 from hyprial.daemon.impl.org.network.casdoor.client import CasdoorGroupError
 from hyprial.daemon.impl.org.network.casdoor.membership import (
@@ -135,7 +137,7 @@ def _translate(error: BaseException) -> DaemonRequestError:
 def ipc_org_create(app: Any, params: JsonObject) -> dict:
     org = _required_string(params.get("org"), "org")
     try:
-        return _build_service(app).create(org)
+        return _access_changed(app, "org-create", _build_service(app).create(org))
     except OrgFsError as error:
         raise _translate(error) from error
     except (InviteError, OrgNetworkError, ValueError) as error:
@@ -160,7 +162,7 @@ def ipc_org_invite(app: Any, params: JsonObject) -> dict:
     try:
         result = _build_service(app).invite(org, user)
         _membership_changed(app, org, user)
-        return result
+        return _access_changed(app, "org-invite", result)
     except OrgFsError as error:
         raise _translate(error) from error
     except (InviteError, OrgNetworkError, ValueError) as error:
@@ -184,7 +186,7 @@ def _publish_identity_binding_after_join(app: Any) -> None:
 def ipc_org_execute(app: Any, params: JsonObject) -> dict:
     link = _required_string(params.get("link"), "link")
     try:
-        result = _build_service(app).execute(link)
+        result = _access_changed(app, "org-execute", _build_service(app).execute(link))
         _publish_identity_binding_after_join(app)
         return result
     except OrgFsError as error:
@@ -198,7 +200,7 @@ def ipc_org_join(app: Any, params: JsonObject) -> dict:
 
     link = _required_string(params.get("link"), "link")
     try:
-        result = _build_service(app).join(link)
+        result = _access_changed(app, "org-join", _build_service(app).join(link))
         _publish_identity_binding_after_join(app)
         return result
     except OrgFsError as error:
@@ -210,7 +212,7 @@ def ipc_org_join(app: Any, params: JsonObject) -> dict:
 def ipc_org_leave(app: Any, params: JsonObject) -> dict:
     org = _required_string(params.get("org"), "org")
     try:
-        return _build_service(app).leave(org)
+        return _access_changed(app, "org-leave", _build_service(app).leave(org))
     except OrgFsError as error:
         raise _translate(error) from error
     except (InviteError, OrgNetworkError, ValueError) as error:
@@ -223,7 +225,7 @@ def ipc_org_remove(app: Any, params: JsonObject) -> dict:
     try:
         result = _build_service(app).remove(org, user)
         _membership_changed(app, org, user)
-        return result
+        return _access_changed(app, "org-remove", result)
     except OrgFsError as error:
         raise _translate(error) from error
     except (InviteError, OrgNetworkError, ValueError) as error:
@@ -233,7 +235,7 @@ def ipc_org_remove(app: Any, params: JsonObject) -> dict:
 def ipc_org_delete(app: Any, params: JsonObject) -> dict:
     org = _required_string(params.get("org"), "org")
     try:
-        return _build_service(app).delete(org)
+        return _access_changed(app, "org-delete", _build_service(app).delete(org))
     except OrgFsError as error:
         raise _translate(error) from error
     except (InviteError, OrgNetworkError, ValueError) as error:
@@ -456,26 +458,28 @@ def process_leave_requests_for_app(app: Any) -> dict:
 
 
 def directory_peers_for_app(app: Any) -> dict[str, str]:
-    """The directory peers callback for endpoint discovery (§4.2 seam).
+    """Return the snapshot-derived dial set without a per-tick OrgFS read."""
 
-    Answers the peers this node dials (one dialer per pair, see
-    ``dialing.dial_peers``).  If choosing the direction fails, it dials every
-    member rather than none: mutual dialing is the old behaviour, nobody
-    dialing is a disconnected pair.  Only a directory that cannot answer at
-    all yields an empty mapping -- discovery must not stop a daemon starting.
-    """
-
+    actor = getattr(app, "_peer_access_actor", None)
+    snapshot = actor.snapshot() if actor is not None else None
+    if snapshot is not None:
+        # Join writes its invite-authorized bootstrap peer after a snapshot
+        # can already exist. Merge that small local file on every tick.
+        snapshot = with_bootstrap(snapshot, Path(app.hyprial_home))
+    state = getattr(app, "_org_dial_state", None)
+    if state is None:
+        state = DialState()
+        app._org_dial_state = state
+    service: Any | None = None
     try:
-        service = _build_service(app)
+        if snapshot is None:
+            service = _build_service(app)
     except Exception:  # noqa: BLE001 - discovery must never raise
         return {}
     try:
-        state = getattr(app, "_org_dial_state", None)
-        if state is None:
-            state = DialState()
-            app._org_dial_state = state
         return dial_peers(
             service,
+            snapshot=snapshot,
             state=state,
             log=getattr(app, "_log", None),
             is_live=_host_liveliness(app),
@@ -490,8 +494,10 @@ def directory_peers_for_app(app: Any) -> dict[str, str]:
                 errorType=type(error).__name__,
                 detail=str(error)[:200],
             )
+        if snapshot is not None:
+            return dict(snapshot.peers)
         try:
-            return service.directory_peers()
+            return service.directory_peers() if service is not None else {}
         except Exception:  # noqa: BLE001 - discovery must never raise
             return {}
 
@@ -576,6 +582,33 @@ def _host_liveliness(app: Any):  # type: ignore[no-untyped-def]
     return lambda device: device in getattr(runtime, "_lively_peers", ())
 
 
+def _access_changed(app: Any, reason: str, result: Any) -> Any:
+    """Ask the peer-access actor to rebuild after a local org mutation."""
+
+    actor = getattr(app, "_peer_access_actor", None)
+    if actor is not None:
+        actor.request(reason)
+    return result
+
+
+def start_peer_access_for_app(app: Any) -> PeerAccessActor:
+    """Start this daemon's directory-driven allow/dial/leave actor."""
+
+    actor = PeerAccessActor(
+        service_factory=lambda: _build_service(app),
+        facade=app._require_orgfs_runtime().facade,
+        supervisor=lambda: getattr(app, "_forwarding_supervisor", None),
+        log=lambda level, domain, event, **fields: app._log(
+            level, domain, event, **fields
+        ),
+        request_redial=lambda: app._reconcile_forwarding_endpoints(),
+        process_leaves=lambda: _build_service(app).process_leave_requests(),
+    )
+    app._peer_access_actor = actor
+    actor.start()
+    return actor
+
+
 __all__ = [
     "directory_peers_for_app",
     "ipc_org_acl_grant",
@@ -593,5 +626,6 @@ __all__ = [
     "ipc_org_repair",
     "publish_self_for_app",
     "start_casdoor_membership_sync",
+    "start_peer_access_for_app",
     "stop_casdoor_membership_sync",
 ]

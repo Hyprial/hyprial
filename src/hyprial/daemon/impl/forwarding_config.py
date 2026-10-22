@@ -148,10 +148,10 @@ def daemon_forwarding_environment(
         "v": FORWARD_PROTOCOL_VERSION,
         "op": "up",
         "keyFile": str(key_file),
-        # Deny by default: the production builder has no org-directory allow
-        # synchronization yet, so it must not open the sidecar to every
-        # tailnet peer.  An empty allow set with allowAny=false refuses all
-        # peers until a derived, authenticated allow set exists.
+        # Every sidecar is born deny-all. The peer-access actor replaces this
+        # from the org directory and the supervisor replays it on each launch.
+        # An org owner's node remains allowAny until the owner join endpoint
+        # exists (LAX(join-endpoint), access/snapshot.py).
         "allow": [],
         "allowAny": False,
         "addressFile": str(address_path(home)),

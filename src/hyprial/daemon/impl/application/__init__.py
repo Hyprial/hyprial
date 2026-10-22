@@ -806,6 +806,7 @@ class DaemonApplication(
         self._org_identity_binding_suppression: Any | None = None
         self._casdoor_membership_sync: Any | None = None
         self._casdoor_webhook: Any | None = None
+        self._peer_access_actor: Any | None = None
         # Re-entrant: publication holds it and the deferred branch takes it again.
         self._org_identity_binding_publication_lock = threading.RLock()
         self._org_identity_binding_pending_all = False

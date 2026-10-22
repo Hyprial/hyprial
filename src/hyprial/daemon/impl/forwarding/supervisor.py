@@ -281,6 +281,8 @@ class ForwardingSidecarSupervisor:
         slot_transport: str = "unix",
         on_slots_reported: Callable[[tuple[str, ...]], None] | None = None,
         up_slots: Callable[[], tuple[str, ...]] | None = None,
+        desired_allow: Callable[[], tuple[Sequence[str], bool]] | None = None,
+        on_installed: Callable[[], object] | None = None,
     ) -> None:
         self._environ = environ
         self._event_log = event_log
@@ -302,6 +304,10 @@ class ForwardingSidecarSupervisor:
         self._slot_transport = slot_transport
         self._on_slots_reported = on_slots_reported
         self._up_slots = up_slots
+        # Every incarnation is born deny-all and receives the current
+        # directory-derived allow set before it becomes the live backend.
+        self._desired_allow = desired_allow
+        self._on_installed = on_installed
         self._lock = threading.Lock()
         self._endpoints: ForwardingEndpoints | None = None
         self._failures: deque[float] = deque()
@@ -662,6 +668,27 @@ class ForwardingSidecarSupervisor:
         environ[FORWARDING_UP_ENV] = json.dumps(up, separators=(",", ":"))
         return environ
 
+    def _report_slots(self, controller: Any) -> None:
+        """Persist this incarnation's TCP ports before allow replay."""
+
+        if self._on_slots_reported is None:
+            return
+        reported = getattr(controller, "slots_reported", None)
+        if isinstance(reported, (list, tuple)):
+            self._on_slots_reported(tuple(str(slot_id) for slot_id in reported))
+
+    def _notify_installed(self) -> None:
+        if self._on_installed is None:
+            return
+        try:
+            self._on_installed()
+        except Exception as error:  # noqa: BLE001 - a listener must not fail launch
+            self._event_log(
+                "error",
+                "zenoh.forwarding.installed_hook_failed",
+                detail=str(error)[:500],
+            )
+
     def _spawn(self, *, expected_generation: int) -> None:
         cell: dict[str, Any] = {"backend": None, "exit": None}
         token = uuid.uuid4().hex
@@ -672,6 +699,7 @@ class ForwardingSidecarSupervisor:
         controller: Any | None = None
         try:
             controller = self._controller_factory(self._launch_environ(), _exit)
+            self._report_slots(controller)
             for exposure in self._desired_exposures():
                 # A single exposure the sidecar refuses is logged and skipped;
                 # it must not stop peer forwarding from starting.
@@ -682,6 +710,18 @@ class ForwardingSidecarSupervisor:
                         "error",
                         "network.exposure.rejected",
                         port=exposure.get("port"),
+                        detail=str(error)[:500],
+                    )
+            if self._desired_allow is not None:
+                # A refused allow leaves the sidecar deny-all. The forced
+                # post-install rebuild retries without weakening access.
+                try:
+                    keys, allow_any = self._desired_allow()
+                    controller.allow(list(keys), allow_any)
+                except ForwardingSidecarError as error:
+                    self._event_log(
+                        "error",
+                        "zenoh.forwarding.allow_failed",
                         detail=str(error)[:500],
                     )
         except Exception as error:  # noqa: BLE001 - visible no-fallback path
@@ -724,6 +764,7 @@ class ForwardingSidecarSupervisor:
                     "info", "zenoh.forwarding.started", failures=count,
                     detail="forwarding sidecar recovered after failure",
                 )
+            self._notify_installed()
             return
         with self._lock:
             stale = (
@@ -748,6 +789,7 @@ class ForwardingSidecarSupervisor:
                 failures=count,
                 detail="forwarding sidecar recovered after failure",
             )
+        self._notify_installed()
 
     def _account_for_failure(self, *, reason: str, exit_status: int | None) -> None:
         if self._state_owner is not None:

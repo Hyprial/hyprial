@@ -595,50 +595,11 @@ class OrgNetworkService(CasdoorMembershipMixin):
         return {"published": published, "skipped": skipped}
 
     def directory_peers(self) -> dict[str, str]:
-        """Stable peer label → address for every other member device (§4.2).
+        """Return other current member devices from one access snapshot."""
 
-        Rows and labels are always keyed by ``(owner, deviceId)`` and rendered
-        as ``owner/deviceId``.  Labels therefore never change when a colliding
-        device appears later.
+        from hyprial.daemon.impl.org.network.access.snapshot import directory_peers
 
-        Two sources, directory first: the synced OrgFS rows, then the
-        invite-authorized bootstrap peers the directory does not name yet
-        (§2.5 -- the joining node's own directory is empty until sync, and
-        without the bootstrap half the reconcile would unmap the inviter
-        in the redial that ``connect-inviter`` triggers).  A bootstrap
-        entry the directory has caught up with is pruned here: the
-        directory row is authoritative from that point on.
-        """
-
-        rows: dict[tuple[str, str], str] = {}
-        for org in self._orgs():
-            try:
-                devices = self._store.list_devices(org)
-            except (OrgFsError, ValueError) as error:
-                self._log(
-                    "warn",
-                    "org",
-                    "org.directory_peers.failed",
-                    org=org,
-                    detail=str(error),
-                )
-                continue
-            for device in devices:
-                self._add_directory_peer(rows, device)
-        peers = self._render_directory_peers(rows)
-        directory_peers = {
-            self._peer_label(owner, device_id) for owner, device_id in rows
-        }
-        bootstrap = read_bootstrap_peers(self._home)
-        shadowed = [peer for peer in bootstrap if peer in directory_peers]
-        if shadowed:
-            remove_bootstrap_peers(self._home, shadowed)
-        for peer, entry in bootstrap.items():
-            identity = (entry["inviter"], entry["deviceId"])
-            if peer in directory_peers or identity == (self._owner, self._node_id):
-                continue
-            peers[peer] = entry["address"]
-        return peers
+        return directory_peers(self)
 
     def _execute_step(self, link: InviteLink, kind: str) -> str:
         if kind == "connect-inviter":

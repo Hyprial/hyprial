@@ -523,6 +523,7 @@ class _WiringTransportMixin:
         from hyprial.daemon.impl.org.network import start_casdoor_membership_sync
 
         start_casdoor_membership_sync(self)  # owner side of the Casdoor group sync
+        self._start_peer_access_safely()
         network_delivery = ZenohDeliveryTransport(
             transport, presence, origin_node=self.node_id
         )

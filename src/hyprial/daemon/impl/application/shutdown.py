@@ -95,6 +95,11 @@ _CLOSE_UNBUDGETED_STEPS = (
         "actor (2s); one in-flight Casdoor read is bounded by its 15s request timeout",
     ),
     (
+        "org-peer-access",
+        "closes its OrgFS watches and drains the peer-access actor (2s default); "
+        "an in-flight rebuild is one directory read plus one sidecar allow call",
+    ),
+    (
         "orgfs-runtime",
         "drains only finite blob recoveries; each network query has a 3s timeout, "
         "but total time scales with finite blob size, so there is no honest fixed budget",
@@ -657,6 +662,15 @@ class _ShutdownMixin:
             from hyprial.daemon.impl.org.network import stop_casdoor_membership_sync
 
             attempt(lambda: stop_casdoor_membership_sync(self), "org-casdoor-sync")
+        peer_access = getattr(self, "_peer_access_actor", None)
+        if peer_access is not None:
+            self._peer_access_actor = None
+
+            def stop_peer_access() -> None:
+                if not peer_access.stop():
+                    raise RuntimeError("peer-access actor did not drain")
+
+            attempt(stop_peer_access, "org-peer-access")
         if self._orgfs_runtime is not None:
             orgfs_runtime = self._orgfs_runtime
             self._orgfs_runtime = None

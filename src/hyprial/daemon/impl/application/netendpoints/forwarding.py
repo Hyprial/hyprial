@@ -82,6 +82,8 @@ class _ForwardingOpsMixin:
             slot_transport=slot_transport(),
             on_slots_reported=lambda ids: record_tcp_slot_ports(self, ids),
             up_slots=lambda: slot_store_for_app(self).specs(),
+            desired_allow=self._peer_access_desired_allow,
+            on_installed=self._peer_access_sidecar_installed,
         )
         self._forwarding_supervisor = supervisor
         supervisor.ensure_started()
@@ -275,6 +277,33 @@ class _ForwardingOpsMixin:
                 ],
             }
         return status
+
+    def _start_peer_access_safely(self) -> None:
+        """Start directory-driven peer access once OrgFS is available."""
+
+        if getattr(self, "_peer_access_actor", None) is not None:
+            return
+        try:
+            from hyprial.daemon.impl.org.network import start_peer_access_for_app
+
+            start_peer_access_for_app(self)
+        except Exception as error:  # noqa: BLE001 - deny-all is the safe fallback
+            self._log(
+                "warn",
+                "org",
+                "org.access.start-failed",
+                errorType=type(error).__name__,
+                detail=str(error)[:300],
+            )
+
+    def _peer_access_sidecar_installed(self) -> None:
+        actor = getattr(self, "_peer_access_actor", None)
+        if actor is not None:
+            actor.request("sidecar-launch", force=True)
+
+    def _peer_access_desired_allow(self) -> tuple[tuple[str, ...], bool]:
+        actor = getattr(self, "_peer_access_actor", None)
+        return actor.desired_allow() if actor is not None else ((), False)
 
     def _reconcile_forwarding_endpoints(self) -> None:
         self._publish_org_directory_if_address_changed()

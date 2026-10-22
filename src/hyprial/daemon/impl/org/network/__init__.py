@@ -15,6 +15,7 @@ from hyprial.daemon.impl.org.network.ipc import (
     process_leave_requests_for_app,
     publish_self_for_app,
     start_casdoor_membership_sync,
+    start_peer_access_for_app,
     stop_casdoor_membership_sync,
 )
 from hyprial.daemon.impl.org.network.policy import OrgFsDerivedPolicy
@@ -38,5 +39,6 @@ __all__ = [
     "process_leave_requests_for_app",
     "publish_self_for_app",
     "start_casdoor_membership_sync",
+    "start_peer_access_for_app",
     "stop_casdoor_membership_sync",
 ]

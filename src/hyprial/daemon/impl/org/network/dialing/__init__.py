@@ -154,6 +154,7 @@ def _apply_fallback(
 def dial_peers(
     service: Any,
     *,
+    snapshot: Any | None = None,
     state: DialState | None = None,
     log: Callable[..., None] | None = None,
     is_live: Callable[[str], bool] | None = None,
@@ -166,22 +167,26 @@ def dial_peers(
     and the last answer per peer, so ``org.dial_direction.resolved`` is
     logged on a change only.  ``is_live(device_id)`` reads host liveliness;
     without it the fallback never arms.
+
+    With an access ``snapshot``, this tick reads no OrgFS directory state.
     """
 
-    peers = service.directory_peers()
+    peers = dict(snapshot.peers) if snapshot is not None else service.directory_peers()
     if not peers:
         return peers
     now = clock()
     if state is not None and state.started is None:
         state.started = now
     cached = state.membership if state is not None else None
-    if cached is not None and now - cached[0] < _MEMBERSHIP_TTL_S:
+    if snapshot is not None:
+        peer_orgs, added = snapshot.peer_orgs, snapshot.added
+    elif cached is not None and now - cached[0] < _MEMBERSHIP_TTL_S:
         peer_orgs, added = cached[1]
     else:
         peer_orgs, added = _membership(service)
         if state is not None:
             state.membership = (now, (peer_orgs, added))
-    own = (service._owner, service._node_id)
+    own = snapshot.own if snapshot is not None else (service._owner, service._node_id)
     chosen: dict[str, str] = {}
     for label, address in peers.items():
         peer_user, _, peer_device = label.partition("/")
