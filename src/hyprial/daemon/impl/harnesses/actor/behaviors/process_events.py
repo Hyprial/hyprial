@@ -152,10 +152,12 @@ class _ProcessEventsBehavior:
         detail: str,
         *,
         permanent: bool = False,
+        consume_budget: bool = True,
     ) -> None:
         record.last_error = detail
         was_failed = self._is_failed(record)
-        record.failures += 1
+        if consume_budget:
+            record.failures += 1
         if permanent:
             record.restore_failed_terminal = True
         if self._is_failed(record):

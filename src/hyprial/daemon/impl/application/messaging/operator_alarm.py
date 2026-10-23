@@ -47,6 +47,36 @@ class _OperatorAlarmOutcome:
     definitely_not_sent: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class HarnessFailureReport:
+    event: str
+    detail: str
+    alarm_kind: str
+    reason: str | None = None
+    text: str | None = None
+
+
+def harness_failure_report(harness: str, error: object) -> HarnessFailureReport:
+    """Distinguish deterministic Pi start refusals from exhausted retries."""
+
+    precondition = isinstance(error, str) and error.startswith(
+        ("Pi P2 headless launch", "Pi P2 cwd", "Pi P2 SDK bridge")
+    )
+    if precondition:
+        return HarnessFailureReport(
+            "daemon.harness.start_precondition_failed",
+            error,
+            "harness-start-precondition",
+            f"HARNESS_START_PRECONDITION_FAILED:{harness}",
+            error,
+        )
+    return HarnessFailureReport(
+        "daemon.harness.failed",
+        "harness retry budget exhausted; explicit start is required",
+        "harness-failed",
+    )
+
+
 class OperatorAlarmDelivery:
     """Run the potentially blocking owner-DM transport outside maintenance."""
 
@@ -141,6 +171,11 @@ class OperatorAlarmDelivery:
                 f"托管 worker {name} 已失败，重启预算已用完，不会再自动重启。"
                 f"节点：{request.node}。"
                 f"处理：{action}。"
+            )
+        if request.kind == "harness-start-precondition":
+            return (
+                "托管 worker 启动前置检查未通过；未自动重试，也未消耗重启预算。"
+                f"节点：{request.node}。原因与下一步：{alarm.text or alarm.reason}"
             )
         if request.kind == "state-writer-slow":
             numbers = alarm.text or f"原因 {alarm.reason}"

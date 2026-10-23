@@ -84,6 +84,8 @@ class ProcessFacts:
     running: bool
     pid: int | None
     last_error: str | None
+    permanent_start_failure: bool
+    start_precondition_failure: bool
     session_ref: str | None
     worker_channel: WorkerChannelFacts
     endpoint: str | None
@@ -189,10 +191,13 @@ class ProcessOwner:
         channel = getattr(process, "worker_channel", None)
         home = getattr(process, "dsh_home", None)
         liveness = getattr(process, "liveness", None)
+        failure = getattr(process, "last_failure", None)
         return ProcessFacts(
             bool(process.running),
             integer("pid"),
             string("last_error"),
+            bool(getattr(failure, "permanent_start_failure", False)),
+            bool(getattr(failure, "start_precondition_failure", False)),
             string("session_ref"),
             WorkerChannelFacts(getattr(channel, "session_ref", None)),
             string("endpoint"),
@@ -403,6 +408,14 @@ class ProcessOwner:
     @property
     def last_error(self):
         return self.facts().last_error
+
+    @property
+    def permanent_start_failure(self):
+        return self.facts().permanent_start_failure
+
+    @property
+    def start_precondition_failure(self):
+        return self.facts().start_precondition_failure
 
     @property
     def session_ref(self):

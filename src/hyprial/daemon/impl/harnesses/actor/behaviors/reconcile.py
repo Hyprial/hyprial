@@ -108,6 +108,13 @@ class _ReconcileBehavior:
                                 False,
                             )
                         ),
+                        consume_budget=not bool(
+                            getattr(
+                                completed.error,
+                                "start_precondition_failure",
+                                False,
+                            )
+                        ),
                     )
                     self._report_readiness(
                         key,
@@ -146,13 +153,58 @@ class _ReconcileBehavior:
                 continue
             if process is not None:
                 runtime_error = getattr(process, "last_error", None)
+                runtime_failure = getattr(process, "last_failure", None)
                 if runtime_error:
                     record.last_error = str(runtime_error)
-                if record.started_at is not None and now - record.started_at < 60.0:
+                permanent_start_failure = bool(
+                    getattr(process, "permanent_start_failure", False)
+                    or (
+                        runtime_failure is not None
+                        and getattr(
+                            runtime_failure,
+                            "permanent_start_failure",
+                            False,
+                        )
+                    )
+                )
+                start_precondition_failure = bool(
+                    getattr(process, "start_precondition_failure", False)
+                    or (
+                        runtime_failure is not None
+                        and getattr(
+                            runtime_failure,
+                            "start_precondition_failure",
+                            False,
+                        )
+                    )
+                )
+                early_exit = (
+                    record.started_at is not None
+                    and now - record.started_at < 60.0
+                )
+                if early_exit:
                     # A launcher returning a handle is not proof of a stable run.
                     # Preserve the crash-loop budget across successful respawns.
                     record.failures = record.early_exits
-                    self._record_failure(key, record, record.last_error or "harness exited before stable run")
+                if permanent_start_failure:
+                    # Streaming clients are constructed asynchronously after the
+                    # launcher returns their process handle.  Preserve the same
+                    # terminal/budget classification used by synchronous launch
+                    # failures instead of reducing the exception to last_error.
+                    self._record_failure(
+                        key,
+                        record,
+                        record.last_error or "harness start failed",
+                        permanent=True,
+                        consume_budget=not start_precondition_failure,
+                    )
+                    record.early_exits = record.failures
+                elif early_exit:
+                    self._record_failure(
+                        key,
+                        record,
+                        record.last_error or "harness exited before stable run",
+                    )
                     record.early_exits = record.failures
                 else:
                     record.early_exits = 0

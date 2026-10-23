@@ -248,6 +248,9 @@ from hyprial.kernel.impl.primitives.duration import (
     DurationParseError,
     parse_duration,
 )
+from hyprial.kernel.impl.primitives.git_environment import (
+    git_subprocess_environment,
+)
 from hyprial.kernel.impl.primitives.node_identity import resolve_node_id
 from hyprial.kernel.impl.primitives.outbound import (
     user_agent,
@@ -375,6 +378,7 @@ __all__ = [
     "FORWARDING_UP_ENV",
     "GRAPH_END_STATES",
     "GenerationScheduler",
+    "git_subprocess_environment",
     "GraphEndState",
     "graph_closed_event_payload",
     "HOOK_EVENT_SCHEMA_VERSION",

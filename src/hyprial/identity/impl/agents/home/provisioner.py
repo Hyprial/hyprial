@@ -14,6 +14,7 @@ import hashlib
 import os
 import shutil
 import stat
+import subprocess
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Self
@@ -22,6 +23,7 @@ from uuid import uuid4
 from hyprial.kernel import (
     PrivateAccessUnsupported,
     current_uid,
+    git_subprocess_environment,
     harden_private_path,
     posix_metadata_enforced,
     private_metadata_violation,
@@ -157,7 +159,11 @@ class HomeProvisioningAttempt:
 
 @dataclass(frozen=True, slots=True)
 class WorkspaceSummary:
-    """Visible, no-follow inventory of one agent workspace."""
+    """Visible, no-follow inventory of one agent workspace.
+
+    The initialized Git repository is the empty default-workspace skeleton, so
+    its visible metadata is included in file and byte totals.
+    """
 
     path: str
     exists: bool
@@ -476,7 +482,7 @@ class AgentHomeProvisioner:
         return "partial"
 
     def ensure_workspace(self, receipt: HomeReceipt) -> Path:
-        """Create the optional private workspace after validating home custody."""
+        """Create the private default workspace as its own Git working tree."""
 
         root = self.validate(receipt)
         workspace = root / _WORKSPACE_RELATIVE
@@ -494,7 +500,86 @@ class AgentHomeProvisioner:
             "validate-workspace",
             mode=0o700,
         )
+        self._ensure_workspace_repository(workspace, receipt.actor)
         return workspace
+
+    @staticmethod
+    def _ensure_workspace_repository(workspace: Path, actor: str) -> None:
+        """Make only the agent-owned default workspace a Git toplevel."""
+
+        workspace_root = workspace.resolve(strict=True)
+        marker = workspace_root / ".git"
+        environment = git_subprocess_environment()
+
+        def discover() -> Path | None:
+            try:
+                completed = subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(workspace_root),
+                        "rev-parse",
+                        "--show-toplevel",
+                    ],
+                    check=False,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=10,
+                    env=environment,
+                )
+            except (OSError, subprocess.TimeoutExpired) as error:
+                raise AgentHomeError("io", actor, "workspace-git-discover") from error
+            line = completed.stdout.strip()
+            if completed.returncode != 0 or not line or "\n" in line:
+                return None
+            try:
+                return Path(line).resolve(strict=True)
+            except OSError:
+                return None
+
+        def owns_git_boundary() -> bool:
+            if marker.is_symlink() or not marker.is_dir():
+                return False
+            try:
+                marker.resolve(strict=True).relative_to(workspace_root)
+            except (OSError, ValueError):
+                return False
+            return True
+
+        if discover() == workspace_root:
+            if owns_git_boundary():
+                return
+            raise AgentHomeError("unsafe", actor, "workspace-git-boundary")
+        if marker.exists() or marker.is_symlink():
+            raise AgentHomeError("unsafe", actor, "workspace-git-boundary")
+        try:
+            initialized = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(workspace_root),
+                    f"--git-dir={marker}",
+                    f"--work-tree={workspace_root}",
+                    "init",
+                    "--quiet",
+                ],
+                check=False,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=10,
+                env=environment,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise AgentHomeError("io", actor, "workspace-git-init") from error
+        if (
+            initialized.returncode != 0
+            or discover() != workspace_root
+            or not owns_git_boundary()
+        ):
+            raise AgentHomeError("io", actor, "workspace-git-init")
 
     def workspace_summary(self, receipt: HomeReceipt) -> WorkspaceSummary:
         """Count visible workspace files and bytes without following symlinks."""

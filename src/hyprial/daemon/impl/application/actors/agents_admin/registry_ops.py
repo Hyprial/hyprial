@@ -390,10 +390,10 @@ class _AgentRegistryOpsMixin:
             else:
                 agent = existing
                 routine_warning = None
-            # When the caller says which harness it is about to launch, refuse
-            # here if the agent is already being served -- before a TUI has
-            # been spawned -- and otherwise hand back the A9 handover notice so
-            # it can be put in front of the agent's first turn.
+            if existing is None and requested_cwd is None:
+                self._agent_session_domains.agent.prepare_workspace(agent.actor)
+            # A harness-bound create refuses a served agent before spawning a
+            # TUI and otherwise returns A9 handover for the first turn.
             handover: HandoverNotice | None = None
             resume_before: Agent | None = None
             if harness_name is not None:
@@ -424,8 +424,8 @@ class _AgentRegistryOpsMixin:
                             agent,
                         )
                 assert agent is not None
-                if effective_cwd == self._agent_session_domains.agent.resolve_workspace_path(
-                    agent.actor
+                if harness_name == "pi" and effective_cwd == (
+                    self._agent_session_domains.agent.resolve_workspace_path(agent.actor)
                 ):
                     self._agent_session_domains.agent.prepare_workspace(agent.actor)
             if (

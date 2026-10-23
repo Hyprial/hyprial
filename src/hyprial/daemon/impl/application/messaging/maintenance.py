@@ -1,8 +1,6 @@
 """Maintenance scheduler: domain ticks, agent activity, outbox wakes, inbox watch, readiness and dispatch-gate diagnostics."""
 
 from __future__ import annotations
-
-from __future__ import annotations
 import json
 import queue
 import threading
@@ -29,6 +27,7 @@ from hyprial.daemon.impl.runtime  import ReconcileSummary
 if TYPE_CHECKING:
     pass
 
+from hyprial.daemon.impl.application.messaging.operator_alarm import harness_failure_report
 from hyprial.daemon.impl.application.messaging.status.snapshots import (
     _WorkerStatusSnapshot,
 )
@@ -410,15 +409,16 @@ class _MaintenanceMixin:
                 item=item,
                 items=[{"item": name, "ms": ms} for name, ms in top],
             )
+        status = {row.get("id"): row for row in self._harnesses.status()}
         for failed in getattr(outcome, "harness_failed", ()):
-            self._log(
-                "error",
-                "daemon",
-                "daemon.harness.failed",
-                harness=failed,
-                detail="harness retry budget exhausted; explicit start is required",
+            report = harness_failure_report(failed, status.get(failed, {}).get("error"))
+            self._log("error", "daemon", report.event, harness=failed, detail=report.detail)
+            self._raise_harness_failed_alarm(
+                failed,
+                kind=report.alarm_kind,
+                reason=report.reason,
+                text=report.text,
             )
-            self._raise_harness_failed_alarm(failed)
         self._aggregate_readiness_reports(getattr(outcome, "harness_readiness", ()))
         for adapter_event in adapter_events:
             fields = dict(adapter_event)
@@ -706,7 +706,11 @@ class _MaintenanceMixin:
         return outcome, adapter_events, adapter_restarts, tuple(phases)
 
     def _raise_harness_failed_alarm(
-        self, key: str, *, kind: str = "harness-failed", reason: str | None = None,
+        self,
+        key: str,
+        *,
+        kind: str = "harness-failed",
+        reason: str | None = None,
         text: str | None = None,
     ) -> None:
         """Best-effort operator alarm for one harness whose budget ran out.

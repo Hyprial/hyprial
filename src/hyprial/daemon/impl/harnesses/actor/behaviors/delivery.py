@@ -581,6 +581,9 @@ class _DeliveryBehavior:
                 permanent=bool(
                     getattr(event.error, "permanent_start_failure", False)
                 ),
+                consume_budget=not bool(
+                    getattr(event.error, "start_precondition_failure", False)
+                ),
             )
             self._finish_start_attempt(event.harness_id, record, False, event.error)
             return

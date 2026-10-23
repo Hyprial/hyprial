@@ -77,6 +77,7 @@ from hyprial.kernel.interface import (
     FORWARDING_UP_ENV as FORWARDING_UP_ENV,
     GRAPH_END_STATES as GRAPH_END_STATES,
     GenerationScheduler as GenerationScheduler,
+    git_subprocess_environment as git_subprocess_environment,
     GraphEndState as GraphEndState,
     graph_closed_event_payload as graph_closed_event_payload,
     HOOK_EVENT_SCHEMA_VERSION as HOOK_EVENT_SCHEMA_VERSION,

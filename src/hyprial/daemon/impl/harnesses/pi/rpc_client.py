@@ -98,8 +98,9 @@ class PiRpcClient:
                 if spec.containerized:
                     raise ValueError("Pi P2 SDK bridge is not supported in containers")
                 trust = resolve_approved_pi_project(
-                    cwd=spec.cwd,
-                    runtime_args=spec.args,
+                    cwd=spec.cwd, runtime_args=spec.args, command_name=spec.name,
+                    command_model_provider=spec.model_provider, command_model=spec.model,
+                    command_session_ref=spec.session_ref,
                 )
                 sdk_launch = pi_sdk_launch_from_runtime_context(
                     runtime_context,

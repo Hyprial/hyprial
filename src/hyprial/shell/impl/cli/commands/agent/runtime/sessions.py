@@ -283,7 +283,15 @@ def _start_interactive_pi(
             pi_command = (os.environ.get("HARNESS_PI_BIN", "pi"),)
             try:
                 trust = resolve_approved_pi_project(
-                    cwd=str(cwd), runtime_args=runtime_args
+                    cwd=str(cwd),
+                    runtime_args=runtime_args,
+                    command_name=name,
+                    command_headless=False,
+                    command_tmux=tmux,
+                    command_model_provider=model_provider,
+                    command_model=model,
+                    command_session_ref=resume,
+                    command_json_output=json_output,
                 )
                 sdk_launch = pi_sdk_launch_from_public_projection(
                     runtime_projection,

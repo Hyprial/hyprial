@@ -157,14 +157,7 @@ class SequentialTurnProcess(
             )
             self._progress_dropped = 0
             self._progress_seq = 0
-            # Verbatim providerError of the turn being received, when the
-            # failure came from the model backend itself (assistant
-            # stopReason=error).  Set by _receive_result and consumed by the
-            # very next log call in the same pump iteration -- there is no
-            # await between them, so a plain attribute needs no lock.  It
-            # exists because HarnessResult has no field for it (its home is
-            # the daemon contract), while worker.turn.failed must name the
-            # shape and carry the model vendor's own words (card 260).
+            # Verbatim upstream error for the next worker.turn.failed log.
             self._turn_provider_error: str | None = None
             self._lock = threading.RLock()
             self._interrupt_waiters: dict[
@@ -191,6 +184,8 @@ class SequentialTurnProcess(
             self._abort_timers: dict[int, threading.Timer] = {}
             self._stop_interrupt_pending = False
             self.last_error: str | None = None
+            # Preserve async start classification beside display-safe text.
+            self.last_failure: BaseException | None = None
             self._repeated_failures: dict[str, int] = {}
             # Published so a status surface can show a delivery that keeps failing.
             self.repeated_failure_delivery_id: str | None = None
@@ -483,6 +478,7 @@ class SequentialTurnProcess(
                             self._client = client
                             self._connecting_client = None
                         self.last_error = None
+                        self.last_failure = None
                         self._ready.set()
                         self._startup_settled.set()
                         connect_failures = 0
@@ -840,6 +836,7 @@ class SequentialTurnProcess(
                         connect_failures += 1
                         failures_for_delay = connect_failures
                     self.last_error = failure
+                    self.last_failure = error
                     with self._lock:
                         self._client = None
                         self._connecting_client = None

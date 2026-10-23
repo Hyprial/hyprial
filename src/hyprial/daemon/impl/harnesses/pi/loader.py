@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 from hashlib import sha256
@@ -18,6 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Mapping
 
 from hyprial.daemon.impl.harnesses.model_provider import pi_model_definitions
+from hyprial.kernel import git_subprocess_environment
 
 if TYPE_CHECKING:
     from hyprial.identity import AgentRuntimeContext
@@ -368,13 +370,92 @@ def find_pi_package_root(
     raise ValueError(f"Pi SDK package root not found beside {resolved}")
 
 
+class PiStartPreconditionError(ValueError):
+    """A deterministic P2 configuration refusal that retry cannot heal."""
+
+    code = "HARNESS_START_FAILED"
+    permanent_start_failure = True
+    start_precondition_failure = True
+
+
+def _pi_recovery_command(
+    *,
+    name: str | None,
+    cwd: str,
+    runtime_args: tuple[str, ...],
+    headless: bool,
+    tmux: bool,
+    model_provider: str | None,
+    model: str | None,
+    session_ref: str | None,
+    json_output: bool,
+) -> str:
+    argv = ["hyprial", "start", "pi", "--name", name or "<agent-name>"]
+    if headless:
+        argv.append("--headless")
+    elif tmux:
+        argv.append("--tmux")
+    argv.extend(("--cwd", cwd))
+    if model_provider is not None:
+        argv.extend(("--provider", model_provider))
+    if model is not None:
+        argv.extend(("--model", model))
+    if session_ref is not None:
+        argv.extend(("--resume", session_ref))
+
+    pi_args = ["--approve"]
+    misplaced_json = False
+    index = 0
+    while index < len(runtime_args):
+        value = runtime_args[index]
+        if value in {"--provider", "--model"} and index + 1 < len(runtime_args):
+            pi_args.extend((value, runtime_args[index + 1]))
+            index += 2
+            continue
+        if value.startswith(("--provider=", "--model=")) or value in {
+            "--approve",
+            "--offline",
+        }:
+            if value not in pi_args:
+                pi_args.append(value)
+        elif value == "--json":
+            misplaced_json = True
+        index += 1
+    if json_output or misplaced_json:
+        argv.append("--json")
+    return shlex.join([*argv, "--", *pi_args])
+
+
 def resolve_approved_pi_project(
-    *, cwd: str | None, runtime_args: tuple[str, ...]
+    *,
+    cwd: str | None,
+    runtime_args: tuple[str, ...],
+    command_name: str | None = None,
+    command_headless: bool = True,
+    command_tmux: bool = False,
+    command_model_provider: str | None = None,
+    command_model: str | None = None,
+    command_session_ref: str | None = None,
+    command_json_output: bool = False,
 ) -> PiProjectTrustReceipt:
     """Turn Pi's explicit per-launch approval into a bounded Git trust receipt."""
 
     if cwd is None:
         raise ValueError("Pi P2 launch requires an explicit cwd")
+
+    def recovery_command(*, git_cwd: bool = False) -> str:
+        return _pi_recovery_command(
+            name=command_name,
+            cwd=("/absolute/path/to/git-working-tree" if git_cwd else cwd),
+            runtime_args=runtime_args,
+            headless=command_headless,
+            tmux=command_tmux,
+            model_provider=command_model_provider,
+            model=command_model,
+            session_ref=command_session_ref,
+            json_output=command_json_output,
+        )
+
     approved = False
     index = 0
     while index < len(runtime_args):
@@ -394,9 +475,17 @@ def resolve_approved_pi_project(
         if value == "--offline":
             index += 1
             continue
-        raise ValueError(f"Pi P2 SDK bridge does not support argument {value!r}")
+        raise PiStartPreconditionError(
+            f"Pi P2 SDK bridge does not support argument {value!r}. "
+            "Arguments after '--' go to Pi; hyprial options such as --json "
+            f"belong before '--'. Run: `{recovery_command()}`."
+        )
     if not approved:
-        raise ValueError("Pi P2 headless launch requires explicit --approve trust")
+        raise PiStartPreconditionError(
+            "Pi P2 headless launch requires explicit --approve trust. "
+            "--headless and --tmux share this P2 precondition. "
+            f"Run: `{recovery_command()}`."
+        )
     resolved_cwd = Path(cwd).resolve(strict=True)
     completed = subprocess.run(
         ["git", "-C", str(resolved_cwd), "rev-parse", "--show-toplevel"],
@@ -406,9 +495,14 @@ def resolve_approved_pi_project(
         stderr=subprocess.PIPE,
         text=True,
         timeout=10,
+        env=git_subprocess_environment(),
     )
     if completed.returncode != 0:
-        raise ValueError("Pi P2 cwd is not inside an approved Git repository")
+        raise PiStartPreconditionError(
+            "Pi P2 cwd is not inside an approved Git repository. A qualifying "
+            "cwd is a directory inside a Git working tree. "
+            f"Run: `{recovery_command(git_cwd=True)}`."
+        )
     line = completed.stdout.strip()
     if not line or "\n" in line:
         raise ValueError("Pi P2 Git root discovery returned an invalid path")

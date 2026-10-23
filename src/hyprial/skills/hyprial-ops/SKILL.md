@@ -283,6 +283,10 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
   (daemon 解析并审计)。⛔ 不要再同时写 harness 名或厂商/模型参数:`start pi --tier super` 以前会
   **静默丢掉 --tier**,起一个没有模型的 pi(落到全局默认);现在直接 `INVALID_ARGUMENT`,什么都不创建。
   要指定模型就用显式写法:`hyprial start pi` 加厂商与模型两个选项(见 `hyprial start --help`)。
+- Pi 的 agent-home P2 启动前置对 `--headless` 与 `--tmux` 相同：每次启动都必须在 `--` 后显式传
+  `--approve`，且 `--cwd` 必须是 Git working tree 内的目录。未显式 `--cwd` 时，agent 自有的默认
+  `workspace/` 会初始化为独立 Git 仓库；绝不自动修改用户指定的 cwd。完整示例：
+  `hyprial start pi --name worker --headless --cwd /absolute/path/to/git-working-tree -- --approve`。
 - `hyprial start claude|pi|codex --headless --resume <session-id> --name ... --cwd ...` —— 恢复一个既有会话。
   不加 `--resume` 时，若同一 harness/name 已有 desired-state 行，会接续其已学 sessionRef（708）；
   要显式新会话请先 down 掉旧规格再 start。id 取自 start/transfer 返回的 `sessionRef`,或 transcript 文件名
