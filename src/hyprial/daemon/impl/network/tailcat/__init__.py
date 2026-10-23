@@ -13,4 +13,5 @@ from .binary import (  # noqa: F401
 )
 from .keys import (  # noqa: F401
     ensure_device_key,
+    reissue_device_key,
 )

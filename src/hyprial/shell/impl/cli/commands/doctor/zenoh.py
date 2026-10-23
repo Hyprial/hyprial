@@ -39,6 +39,33 @@ def _metrics(result: JsonObject, base: dict[str, object]) -> dict[str, object]:
     return metrics
 
 
+def _never_connected_check(
+    result: JsonObject, base: dict[str, object]
+) -> JsonObject | None:
+    metrics = _metrics(result, base)
+    telemetry = metrics.get("connectionTelemetry")
+    slots = telemetry.get("slots") if isinstance(telemetry, dict) else None
+    never_connected = [
+        slot.get("peer")
+        for slot in slots or ()
+        if isinstance(slot, dict)
+        and isinstance(slot.get("dialFailures"), int)
+        and slot["dialFailures"] > 0
+        and slot.get("splicesEstablished") == 0
+    ]
+    if not never_connected:
+        return None
+    return {
+        "name": "zenoh",
+        "status": "warn",
+        "detail": (
+            f"{len(never_connected)} forwarding peer(s) failed dialing and "
+            "never established a splice"
+        ),
+        "metrics": metrics,
+    }
+
+
 def _zenoh_doctor_check(result: JsonObject) -> JsonObject:
     """Check the running daemon's explicit Zenoh transport endpoints.
 
@@ -76,8 +103,7 @@ def _zenoh_doctor_check(result: JsonObject) -> JsonObject:
                 "metrics": _metrics(result, session),
                 "action": {
                     "command": (
-                        "grep 'zenoh.session' "
-                        "~/.hyprial/state/logs/daemon.jsonl"
+                        "grep 'zenoh.session' ~/.hyprial/state/logs/daemon.jsonl"
                     ),
                     "description": (
                         "Inspect the session close/rebuild events; deploy the "
@@ -85,6 +111,9 @@ def _zenoh_doctor_check(result: JsonObject) -> JsonObject:
                     ),
                 },
             }
+        connection_check = _never_connected_check(result, session)
+        if connection_check is not None:
+            return connection_check
         if state == "rebuilding":
             since = session.get("rebuildingSinceMs")
             if not isinstance(since, int) or isinstance(since, bool):
@@ -120,8 +149,7 @@ def _zenoh_doctor_check(result: JsonObject) -> JsonObject:
                 "metrics": _metrics(result, session),
                 "action": {
                     "command": (
-                        "grep 'zenoh.session' "
-                        "~/.hyprial/state/logs/daemon.jsonl"
+                        "grep 'zenoh.session' ~/.hyprial/state/logs/daemon.jsonl"
                     ),
                     "description": (
                         "Inspect the rebuild events; restart the daemon if the "
@@ -151,6 +179,11 @@ def _zenoh_doctor_check(result: JsonObject) -> JsonObject:
                 "description": "Configure explicit Zenoh endpoints, then restart the daemon.",
             },
         }
+    connection_check = _never_connected_check(
+        result, session if isinstance(session, dict) else {}
+    )
+    if connection_check is not None:
+        return connection_check
     return {
         "name": "zenoh",
         "status": "ok",
@@ -159,7 +192,5 @@ def _zenoh_doctor_check(result: JsonObject) -> JsonObject:
             "reachable -- actual peer connectivity must be proven by a real "
             "send/ack"
         ),
-        "metrics": _metrics(
-            result, {"listen": list(listen), "connect": list(connect)}
-        ),
+        "metrics": _metrics(result, {"listen": list(listen), "connect": list(connect)}),
     }

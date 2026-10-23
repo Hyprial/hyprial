@@ -881,7 +881,8 @@ class _StatusViewsMixin:
                     "nodeId": node,
                     "status": (
                         "online"
-                        if evidence == "online" and not fields["expired"]
+                        if node in current
+                        or (evidence == "online" and not fields["expired"])
                         else "unknown"
                     ),
                     "observedAtMs": fields["observedAtMs"],

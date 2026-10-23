@@ -42,7 +42,11 @@ from hyprial.daemon.impl.org.network.state import (
 )
 from hyprial.daemon.impl.org.network.status.view import network_view
 from hyprial.kernel import canonical_user_uri, ipc_errors, parse_user_uri
-from hyprial.identity import DeviceRecord, read_device_record
+from hyprial.identity import (
+    DeviceRecord,
+    mark_first_published,
+    read_device_record,
+)
 from hyprial.identity import (
     ACTION_INVITE,
     ACTION_LEAVE,
@@ -683,6 +687,8 @@ class OrgNetworkService(CasdoorMembershipMixin):
                 "the forwarding sidecar has not written this device's "
                 "Tailcat address yet",
             )
+        published_at = self._now().isoformat()
+        binding = mark_first_published(self._home, published_at)
         device = DirectoryDevice(
             device_id=record.device_id,
             owner=record.owner,
@@ -690,7 +696,9 @@ class OrgNetworkService(CasdoorMembershipMixin):
             client_public=record.client_public,
             address=address,
             key_generation=record.key_generation,
-            updated_at=self._now().isoformat(),
+            updated_at=published_at,
+            machine_fingerprint=binding.machine_fingerprint,
+            first_published_at=binding.first_published_at,
         )
         # A member writes only their *own* device row (the owner check is
         # the caller's half of "member 只能写自己的设备记录"); anything

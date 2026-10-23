@@ -55,8 +55,6 @@ _RESPONSE_BUFFER_CAPACITY = 128
 _RESPONSE_BUFFER_MAX_AGE_SECONDS = 60.0
 
 
-
-
 def _child_environment(environ: Mapping[str, str]) -> dict[str, str]:
     return {
         key: value
@@ -90,7 +88,10 @@ class ForwardingSidecarController:
             raise ValueError("forwarding sidecar up request must carry an allow list")
         if not isinstance(self._up.get("allowAny"), bool):
             raise ValueError("forwarding sidecar up request must carry allowAny")
-        if not isinstance(self._up.get("addressFile"), str) or not self._up["addressFile"]:
+        if (
+            not isinstance(self._up.get("addressFile"), str)
+            or not self._up["addressFile"]
+        ):
             raise ValueError("forwarding sidecar up request must name an addressFile")
         self._timeout = timeout
         self._on_exit = on_exit
@@ -583,8 +584,7 @@ class ForwardingSidecarController:
         """Replace the admission set; the sidecar drops clients not in it."""
 
         if any(
-            not isinstance(key, str) or not key.startswith("nodekey:")
-            for key in keys
+            not isinstance(key, str) or not key.startswith("nodekey:") for key in keys
         ):
             raise ForwardingSidecarError(
                 "BAD_REQUEST: keys entries must be nodekey strings"
@@ -660,8 +660,7 @@ class ForwardingSidecarController:
                         while len(stale) > _STALE_SERVICE_REQUEST_CAPACITY:
                             stale.pop(next(iter(stale)))
                         cutoff = (
-                            time.monotonic()
-                            - _STALE_SERVICE_REQUEST_MAX_AGE_SECONDS
+                            time.monotonic() - _STALE_SERVICE_REQUEST_MAX_AGE_SECONDS
                         )
                         for stale_id, recorded_at in tuple(stale.items()):
                             if recorded_at < cutoff:
@@ -765,6 +764,16 @@ class ForwardingSidecarController:
 
 
 _BASE_ERRORS = {"eof", "reset", "timeout", "canceled"}
+_DIAL_ERRORS = {"canceled", "timeout", "refused", "unreachable", "neterr", "other"}
+_DIAL_REASON_KEYS = {"timeout", "refused", "neterr", "other"}
+_NEW_DIAL_KEYS = {
+    "dialAttempts",
+    "dialFailures",
+    "dialFailureReasons",
+    "splicesEstablished",
+    "closeReasons",
+    "lastDialAtMs",
+}
 _CLOSE_SIDES = {"local", "peer", "both"}
 _MAX_SLOTS = 256
 _MAX_OTHER_LENGTH = 40
@@ -808,23 +817,75 @@ def parse_connection_telemetry(value: object) -> dict[str, Any] | None:
     normalized_slots: list[dict[str, Any]] = []
     for item in slots:
         base_keys = {"peer", "mapPort", "closedCount", "errorCounts", "recent"}
-        if not isinstance(item, dict) or set(item) not in (
-            base_keys,
-            base_keys | {"slot"},
+        optional_keys = {"slot", "dialFailureCount", "lastDialError"} | _NEW_DIAL_KEYS
+        if (
+            not isinstance(item, dict)
+            or not base_keys <= set(item)
+            or not set(item) <= base_keys | optional_keys
         ):
             raise _invalid()
         peer = item["peer"]
         slot, port = _parse_telemetry_identity(item)
         counters, recent = item["errorCounts"], item["recent"]
+        has_new_dial = bool(set(item) & _NEW_DIAL_KEYS)
+        reasons = item.get("dialFailureReasons")
+        close_reasons = item.get("closeReasons")
         if (
             not isinstance(peer, str)
             or not peer
             or len(peer) > 512
             or not _integer(item["closedCount"])
+            or ("dialFailureCount" in item and not _integer(item["dialFailureCount"]))
+            or (has_new_dial and not _NEW_DIAL_KEYS <= set(item))
+            or (
+                has_new_dial
+                and (
+                    not _integer(item["dialAttempts"])
+                    or not _integer(item["dialFailures"])
+                    or item["dialFailures"] > item["dialAttempts"]
+                    or not _integer(item["splicesEstablished"])
+                    or item["splicesEstablished"] > item["dialAttempts"]
+                    or item["dialFailures"] + item["splicesEstablished"]
+                    != item["dialAttempts"]
+                    or not _integer(item["lastDialAtMs"])
+                    or not isinstance(reasons, dict)
+                    or set(reasons) != _DIAL_REASON_KEYS
+                    or not all(_integer(count) for count in reasons.values())
+                    or sum(reasons.values()) != item["dialFailures"]
+                    or not isinstance(close_reasons, dict)
+                    or not all(
+                        _error_class(key) and _integer(count)
+                        for key, count in close_reasons.items()
+                    )
+                )
+            )
+            or (
+                "lastDialError" in item
+                and (
+                    not isinstance(item["lastDialError"], str)
+                    or item["lastDialError"] not in _DIAL_ERRORS
+                )
+            )
+            or (
+                "lastDialError" in item
+                and "dialFailureCount" not in item
+                and not has_new_dial
+            )
+            or (
+                "dialFailureCount" in item
+                and (item["dialFailureCount"] > 0) != ("lastDialError" in item)
+            )
+            or (
+                has_new_dial
+                and item["dialFailures"]
+                != item.get("dialFailureCount", item["dialFailures"])
+            )
+            or (
+                has_new_dial and (item["dialFailures"] > 0) != ("lastDialError" in item)
+            )
             or not isinstance(counters, dict)
             or not all(
-                _error_class(key) and _integer(count)
-                for key, count in counters.items()
+                _error_class(key) and _integer(count) for key, count in counters.items()
             )
             or not isinstance(recent, list)
             or len(recent) > capacity
@@ -836,12 +897,22 @@ def parse_connection_telemetry(value: object) -> dict[str, Any] | None:
             "closedCount": item["closedCount"],
             "errorCounts": dict(counters),
             "recent": [
-                _parse_close(close, peer=peer, slot=slot, port=port)
-                for close in recent
+                _parse_close(close, peer=peer, slot=slot, port=port) for close in recent
             ],
         }
         if slot is not None:
             normalized["slot"] = slot
+        if "dialFailureCount" in item:
+            normalized["dialFailureCount"] = item["dialFailureCount"]
+        if has_new_dial:
+            for key in _NEW_DIAL_KEYS:
+                normalized[key] = (
+                    dict(item[key])
+                    if key in {"dialFailureReasons", "closeReasons"}
+                    else item[key]
+                )
+        if "lastDialError" in item:
+            normalized["lastDialError"] = item["lastDialError"]
         normalized_slots.append(normalized)
     return {"ringCapacity": capacity, "slots": normalized_slots}
 
@@ -865,7 +936,13 @@ def _parse_close(
     value: object, *, peer: str, slot: str | None, port: int | None
 ) -> dict[str, Any]:
     base_keys = {
-        "peer", "mapPort", "bytesIn", "bytesOut", "durationMs", "closeSide", "errors"
+        "peer",
+        "mapPort",
+        "bytesIn",
+        "bytesOut",
+        "durationMs",
+        "closeSide",
+        "errors",
     }
     if not isinstance(value, dict) or set(value) not in (
         base_keys,

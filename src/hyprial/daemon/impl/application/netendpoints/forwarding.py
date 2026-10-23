@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from __future__ import annotations
 import hashlib
+import json
 import os
 import time
 from typing import TYPE_CHECKING
+from hyprial.kernel import FORWARDING_COMMAND_ENV
 from hyprial.daemon.impl.bootstrap.discovery  import (
     ForwardingEndpoints,
     merge_endpoints,
@@ -61,6 +62,7 @@ class _ForwardingOpsMixin:
         ):
             return
         self._forwarding_start_attempted = True
+        self._ensure_tailcat_machine_binding()
         self._warn_rejected_exposures()
         if slot_transport() == "unix":
             # Every up request this supervisor is about to send names one
@@ -87,6 +89,38 @@ class _ForwardingOpsMixin:
         )
         self._forwarding_supervisor = supervisor
         supervisor.ensure_started()
+
+    def _ensure_tailcat_machine_binding(self) -> None:
+        """Adopt a legacy key or rotate a copied-home identity before launch."""
+
+        from hyprial.daemon.impl.network.tailcat import BINARY_ENV, ensure_device_key
+        from hyprial.identity import consume_rotation_event, read_device_record
+
+        record = read_device_record(self.hyprial_home)
+        if record is None:
+            return
+        environ = {**os.environ, **self._forwarding_environment}
+        if BINARY_ENV not in environ:
+            try:
+                command = json.loads(environ.get(FORWARDING_COMMAND_ENV, "[]"))
+            except (TypeError, ValueError):
+                command = []
+            if isinstance(command, list) and command and isinstance(command[0], str):
+                environ[BINARY_ENV] = command[0]
+        ensure_device_key(
+            self.hyprial_home,
+            owner=record.owner,
+            device_id=record.device_id,
+            environ=environ,
+        )
+        event = consume_rotation_event(self.hyprial_home)
+        if event is not None:
+            self._log(
+                "warn",
+                "zenoh",
+                "tailcat.identity-reissued",
+                **event,
+            )
 
     def _warn_rejected_exposures(self) -> None:
         """Say out loud which persisted exposures will not be served.

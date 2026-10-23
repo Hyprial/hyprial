@@ -1,8 +1,6 @@
 """Runtime graph composition, transport phases: state preparation, endpoints, delivery plane and the runtime bridge."""
 
 from __future__ import annotations
-
-from __future__ import annotations
 import os
 import threading
 import time
@@ -14,9 +12,7 @@ from uuid import uuid4
 from hyprial.daemon.impl.transfer.execution.container import CONTAINER_PYTHON as _CONTAINER_PYTHON
 from hyprial.daemon.impl.application.wiring.quota_hooks import wire_quota_hooks
 from hyprial.daemon.impl.application.wiring import reply_reminder_hooks
-from hyprial.daemon.impl.adapters.lark.runtime.runtime import (
-    AdapterRuntime,
-    )
+from hyprial.daemon.impl.adapters.lark.runtime.runtime import AdapterRuntime
 from hyprial.daemon.impl.adapters.lark.worker.process import (
     LarkWorkerLauncher,
 )
@@ -505,36 +501,40 @@ class _WiringTransportMixin:
             self.node_id,
             interactive_liveness=self._interactive_actor_liveness,
         )
-        self._require_orgfs_runtime().bind_transport(
-            transport,
-            observe_supplier_online=directory.observe_actor_online,
-            supplier_online=lambda supplier: (
-                classify_target_identity(supplier) == TARGET_KIND_HOST
-                and presence.actor_online(supplier)
+        self._startup_step(
+            lambda: self._require_orgfs_runtime().bind_transport(
+                transport,
+                observe_supplier_online=directory.observe_actor_online,
+                supplier_online=lambda supplier: (
+                    classify_target_identity(supplier) == TARGET_KIND_HOST
+                    and presence.actor_online(supplier)
+                ),
+                holder_candidates=lambda: tuple(
+                    actor
+                    for actor in presence.raw_online_actors()
+                    if classify_target_identity(actor) == TARGET_KIND_HOST
+                    and presence.liveness_keeps(actor)
+                ),
             ),
-            holder_candidates=lambda: tuple(
-                actor
-                for actor in presence.raw_online_actors()
-                if classify_target_identity(actor) == TARGET_KIND_HOST
-                and presence.liveness_keeps(actor)
-            ),
+            DaemonStartupPhase.ACTOR_RUNTIME_ORGFS_TRANSPORT,
         )
-        self._start_org_identity_bindings_safely()
+        self._startup_step(
+            lambda: self._start_org_identity_bindings_safely(),
+            DaemonStartupPhase.ACTOR_RUNTIME_IDENTITY_BINDINGS,
+        )
         from hyprial.daemon.impl.org.network import start_casdoor_membership_sync
-
-        start_casdoor_membership_sync(self)  # owner side of the Casdoor group sync
-        self._start_peer_access_safely()
+        self._startup_step(
+            lambda: start_casdoor_membership_sync(self),
+            DaemonStartupPhase.ACTOR_RUNTIME_CASDOOR_SYNC,
+        )
+        self._startup_step(
+            self._start_peer_access_safely,
+            DaemonStartupPhase.ACTOR_RUNTIME_FORWARDING_RECONFIGURE,
+        )
         network_delivery = ZenohDeliveryTransport(
             transport, presence, origin_node=self.node_id
         )
-        # Local-first wrapper (#101): a managed local actor is delivered by
-        # calling ``inbox.receive`` directly, because one Zenoh session cannot
-        # receipt its own publication.  The terminal-state semantics survive
-        # unchanged on this path: ``receive`` writes the authoritative
-        # ``fetched`` / ``ACK_RECEIVED`` record inside the transaction that
-        # commits the message. The holder's receipt mirror carries the same
-        # public reason, while recipient-node provenance keeps the direct
-        # observation authoritative.
+        # Local delivery retains the network path's terminal-state semantics.
         local_delivery = LocalFirstDeliveryTransport(
             network_delivery,
             origin_node=self.node_id,

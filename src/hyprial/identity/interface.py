@@ -73,6 +73,8 @@ if TYPE_CHECKING:
     from hyprial.identity.impl.agents.actor.ports import DestroyAgentCommand as DestroyAgentCommand
     from hyprial.identity.impl.provider_auth.helper import DeviceLoginRunner as DeviceLoginRunner
     from hyprial.identity.impl.device import DeviceRecord as DeviceRecord
+    from hyprial.identity.impl.device import MachineBinding as MachineBinding
+    from hyprial.identity.impl.device import consume_rotation_event as consume_rotation_event
     from hyprial.identity.impl.org_directory import DirectoryDevice as DirectoryDevice
     from hyprial.identity.impl.org_directory import DirectoryStore as DirectoryStore
     from hyprial.identity.impl.org_directory import directory_device_path as directory_device_path
@@ -230,6 +232,9 @@ if TYPE_CHECKING:
     from hyprial.identity.impl.agents.state.worker_state import desired_generation as desired_generation
     from hyprial.identity.impl.device import device_key_path as device_key_path
     from hyprial.identity.impl.device import device_record_path as device_record_path
+    from hyprial.identity.impl.device import machine_binding_path as machine_binding_path
+    from hyprial.identity.impl.device import machine_fingerprint as machine_fingerprint
+    from hyprial.identity.impl.device import mark_first_published as mark_first_published
     from hyprial.identity.impl.org_directory import encode_invite as encode_invite
     from hyprial.identity.impl.agents.runtime.enforcement import explain as explain
     from hyprial.identity.impl.agents.runtime.visibility import explain_target as explain_target
@@ -252,6 +257,7 @@ if TYPE_CHECKING:
     from hyprial.identity.impl.principal import principal_kind as principal_kind
     from hyprial.identity.impl.principal import principal_matches_local_actor as principal_matches_local_actor
     from hyprial.identity.impl.device import read_device_record as read_device_record
+    from hyprial.identity.impl.device import read_machine_binding as read_machine_binding
     from hyprial.identity.impl.agents.state.worker_proxy import read_worker_proxy as read_worker_proxy
     from hyprial.identity.impl.agents.runtime.capabilities import runtime_capabilities as runtime_capabilities
     from hyprial.identity.impl.agents.runtime.context import shared_credential_status as shared_credential_status
@@ -262,6 +268,7 @@ if TYPE_CHECKING:
     from hyprial.identity.impl.agents.runtime.visibility import visible_targets as visible_targets
     from hyprial.identity.impl.agents.home.environment import whitelist_replacement_environment as whitelist_replacement_environment
     from hyprial.identity.impl.device import write_device_record as write_device_record
+    from hyprial.identity.impl.device import write_machine_binding as write_machine_binding
     from hyprial.identity.impl.agents.state.worker_proxy import write_worker_proxy_field as write_worker_proxy_field
 
 _FACADE_EXPORTS = {
@@ -335,6 +342,8 @@ _FACADE_EXPORTS = {
     'DestroyAgentCommand': ('hyprial.identity.impl.agents.actor.ports', 'DestroyAgentCommand'),
     'DeviceLoginRunner': ('hyprial.identity.impl.provider_auth.helper', 'DeviceLoginRunner'),
     'DeviceRecord': ('hyprial.identity.impl.device', 'DeviceRecord'),
+    'MachineBinding': ('hyprial.identity.impl.device', 'MachineBinding'),
+    'consume_rotation_event': ('hyprial.identity.impl.device', 'consume_rotation_event'),
     'DirectoryDevice': ('hyprial.identity.impl.org_directory', 'DirectoryDevice'),
     'DirectoryStore': ('hyprial.identity.impl.org_directory', 'DirectoryStore'),
     'directory_device_path': ('hyprial.identity.impl.org_directory', 'directory_device_path'),
@@ -492,6 +501,9 @@ _FACADE_EXPORTS = {
     'desired_generation': ('hyprial.identity.impl.agents.state.worker_state', 'desired_generation'),
     'device_key_path': ('hyprial.identity.impl.device', 'device_key_path'),
     'device_record_path': ('hyprial.identity.impl.device', 'device_record_path'),
+    'machine_binding_path': ('hyprial.identity.impl.device', 'machine_binding_path'),
+    'machine_fingerprint': ('hyprial.identity.impl.device', 'machine_fingerprint'),
+    'mark_first_published': ('hyprial.identity.impl.device', 'mark_first_published'),
     'encode_invite': ('hyprial.identity.impl.org_directory', 'encode_invite'),
     'explain': ('hyprial.identity.impl.agents.runtime.enforcement', 'explain'),
     'explain_target': ('hyprial.identity.impl.agents.runtime.visibility', 'explain_target'),
@@ -514,6 +526,7 @@ _FACADE_EXPORTS = {
     'principal_kind': ('hyprial.identity.impl.principal', 'principal_kind'),
     'principal_matches_local_actor': ('hyprial.identity.impl.principal', 'principal_matches_local_actor'),
     'read_device_record': ('hyprial.identity.impl.device', 'read_device_record'),
+    'read_machine_binding': ('hyprial.identity.impl.device', 'read_machine_binding'),
     'read_worker_proxy': ('hyprial.identity.impl.agents.state.worker_proxy', 'read_worker_proxy'),
     'runtime_capabilities': ('hyprial.identity.impl.agents.runtime.capabilities', 'runtime_capabilities'),
     'shared_credential_status': ('hyprial.identity.impl.agents.runtime.context', 'shared_credential_status'),
@@ -524,6 +537,7 @@ _FACADE_EXPORTS = {
     'visible_targets': ('hyprial.identity.impl.agents.runtime.visibility', 'visible_targets'),
     'whitelist_replacement_environment': ('hyprial.identity.impl.agents.home.environment', 'whitelist_replacement_environment'),
     'write_device_record': ('hyprial.identity.impl.device', 'write_device_record'),
+    'write_machine_binding': ('hyprial.identity.impl.device', 'write_machine_binding'),
     'write_worker_proxy_field': ('hyprial.identity.impl.agents.state.worker_proxy', 'write_worker_proxy_field'),
 }
 
@@ -616,6 +630,8 @@ __all__ = [
     'DestroyAgentCommand',
     'DeviceLoginRunner',
     'DeviceRecord',
+    'MachineBinding',
+    'consume_rotation_event',
     'DirectoryDevice',
     'DirectoryStore',
     'directory_device_path',
@@ -773,6 +789,9 @@ __all__ = [
     'desired_generation',
     'device_key_path',
     'device_record_path',
+    'machine_binding_path',
+    'machine_fingerprint',
+    'mark_first_published',
     'encode_invite',
     'explain',
     'explain_target',
@@ -795,6 +814,7 @@ __all__ = [
     'principal_kind',
     'principal_matches_local_actor',
     'read_device_record',
+    'read_machine_binding',
     'read_worker_proxy',
     'runtime_capabilities',
     'shared_credential_status',
@@ -805,5 +825,6 @@ __all__ = [
     'visible_targets',
     'whitelist_replacement_environment',
     'write_device_record',
+    'write_machine_binding',
     'write_worker_proxy_field',
 ]

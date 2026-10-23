@@ -207,8 +207,13 @@ func toConnectionTelemetry(source engine.ConnectionTelemetry) proto.ConnectionTe
 			})
 		}
 		slots = append(slots, proto.SlotConnectionTelemetry{
-			Peer: slot.Peer, Slot: slot.Slot, MapPort: slot.MapPort, ClosedCount: slot.ClosedCount,
-			ErrorCounts: slot.ErrorCounts, Recent: recent,
+			Peer: slot.Peer, Slot: slot.Slot, MapPort: slot.MapPort,
+			DialAttempts: slot.DialAttempts, DialFailures: slot.DialFailures,
+			DialFailureReasons: slot.DialFailureReasons,
+			SplicesEstablished: slot.SplicesEstablished,
+			DialFailureCount:   slot.DialFailureCount, LastDialAtMs: slot.LastDialAtMs,
+			LastDialError: slot.LastDialError, ClosedCount: slot.ClosedCount,
+			CloseReasons: slot.CloseReasons, ErrorCounts: slot.ErrorCounts, Recent: recent,
 		})
 	}
 	return proto.ConnectionTelemetry{RingCapacity: source.RingCapacity, Slots: slots}

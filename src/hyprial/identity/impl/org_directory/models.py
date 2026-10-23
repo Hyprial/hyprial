@@ -87,9 +87,7 @@ _NUMERIC_DATE_LIMIT = 1 << 53
 #: for an invite in ``group-internal`` already passed the old 240 file-name
 #: bound) while still refusing an unbounded id on the wire.
 MAX_PROTECTED_DOC_ID_LENGTH = 1024
-_PROTECTED_DOC_SECTIONS = frozenset(
-    {"devices", "people", "leaves", "invites", "org"}
-)
+_PROTECTED_DOC_SECTIONS = frozenset({"devices", "people", "leaves", "invites", "org"})
 
 #: The exact camelCase keys of the frozen wire shape (§4.1).
 _RECORD_KEYS = frozenset(
@@ -103,6 +101,8 @@ _RECORD_KEYS = frozenset(
         "updatedAt",
     }
 )
+_OPTIONAL_RECORD_KEYS = frozenset({"machineFingerprint", "firstPublishedAt"})
+_MACHINE_FINGERPRINT = re.compile(r"[0-9a-f]{64}\Z")
 
 
 def binding_assertion_claims_unverified(proof: str) -> dict[str, object]:
@@ -167,10 +167,12 @@ class DirectoryDevice:
     address: str
     key_generation: int
     updated_at: str
+    machine_fingerprint: str | None = None
+    first_published_at: str | None = None
 
     def as_record(self) -> dict[str, object]:
-        """The camelCase JSON projection — the frozen wire shape (§4.1)."""
-        return {
+        """The camelCase JSON projection, including optional binding metadata."""
+        record: dict[str, object] = {
             "deviceId": self.device_id,
             "owner": self.owner,
             "serverPublic": self.server_public,
@@ -179,6 +181,11 @@ class DirectoryDevice:
             "keyGeneration": self.key_generation,
             "updatedAt": self.updated_at,
         }
+        if self.machine_fingerprint is not None:
+            record["machineFingerprint"] = self.machine_fingerprint
+        if self.first_published_at is not None:
+            record["firstPublishedAt"] = self.first_published_at
+        return record
 
     @classmethod
     def from_record(cls, value: Mapping[str, object]) -> "DirectoryDevice":
@@ -192,7 +199,7 @@ class DirectoryDevice:
             raise ValueError(
                 f"directory device record must be a JSON object, got {type(value).__name__}"
             )
-        unknown = sorted(set(value) - _RECORD_KEYS)
+        unknown = sorted(set(value) - _RECORD_KEYS - _OPTIONAL_RECORD_KEYS)
         if unknown:
             raise ValueError(f"directory device record has unknown keys: {unknown}")
         missing = sorted(_RECORD_KEYS - set(value))
@@ -206,6 +213,12 @@ class DirectoryDevice:
             address=_non_empty_string(value["address"], "address"),
             key_generation=_generation(value["keyGeneration"]),
             updated_at=_utc_timestamp(value["updatedAt"], "updatedAt"),
+            machine_fingerprint=_optional_fingerprint(
+                value.get("machineFingerprint"), "machineFingerprint"
+            ),
+            first_published_at=_optional_timestamp(
+                value.get("firstPublishedAt"), "firstPublishedAt"
+            ),
         )
 
 
@@ -405,9 +418,7 @@ def _decode_base32_segments(token: str, *, count: int, kind: str) -> list[str]:
             or not length_text.isdigit()
             or (length_text.startswith("0") and length_text != "0")
         ):
-            raise ValueError(
-                f"protected {kind} id has a non-canonical segment length"
-            )
+            raise ValueError(f"protected {kind} id has a non-canonical segment length")
         length = int(length_text)
         start = separator + 1
         end = start + length
@@ -525,6 +536,20 @@ def _generation(value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ValueError("keyGeneration must be an integer >= 1")
     return value
+
+
+def _optional_fingerprint(value: object, label: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or _MACHINE_FINGERPRINT.fullmatch(value) is None:
+        raise ValueError(f"{label} must be 64 lowercase hex digits")
+    return value
+
+
+def _optional_timestamp(value: object, label: str) -> str | None:
+    if value is None:
+        return None
+    return _utc_timestamp(value, label)
 
 
 def _utc_timestamp(value: object, label: str) -> str:

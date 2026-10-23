@@ -228,6 +228,9 @@ func (e *Engine) forwardSlotConn(mapped *mappedPeer, local net.Conn) {
 	remote, err := e.dialTCPPort(dialCtx, mapped.lease, mapped.port)
 	cancel()
 	if err != nil {
+		e.mu.Lock()
+		mapped.history.recordDialFailure(err)
+		e.mu.Unlock()
 		_ = local.Close()
 		return
 	}
@@ -238,6 +241,7 @@ func (e *Engine) forwardSlotConn(mapped *mappedPeer, local net.Conn) {
 		pair.close()
 		return
 	}
+	mapped.history.recordDialSuccess()
 	mapped.pairs[pair] = struct{}{}
 	e.mu.Unlock()
 	e.splice(pair, func(result spliceResult) {
@@ -379,12 +383,20 @@ type ConnectionClose struct {
 
 // SlotConnectionTelemetry is the bounded status projection for one map-peer listener.
 type SlotConnectionTelemetry struct {
-	Peer        string
-	Slot        string
-	MapPort     *int
-	ClosedCount int64
-	ErrorCounts map[string]int64
-	Recent      []ConnectionClose
+	Peer               string
+	Slot               string
+	MapPort            *int
+	DialAttempts       int64
+	DialFailures       int64
+	DialFailureReasons map[string]int64
+	SplicesEstablished int64
+	DialFailureCount   int64
+	LastDialAtMs       int64
+	LastDialError      string
+	ClosedCount        int64
+	CloseReasons       map[string]int64
+	ErrorCounts        map[string]int64
+	Recent             []ConnectionClose
 }
 
 // ConnectionTelemetry is the complete bounded map-peer splice projection.
@@ -394,19 +406,30 @@ type ConnectionTelemetry struct {
 }
 
 type connectionHistory struct {
-	peer        string
-	slot        string
-	mapPort     *int
-	closedCount int64
-	errorCounts map[string]int64
-	recent      []ConnectionClose
+	peer               string
+	slot               string
+	mapPort            *int
+	dialAttempts       int64
+	dialFailures       int64
+	dialFailureReasons map[string]int64
+	splicesEstablished int64
+	lastDialAtMs       int64
+	lastDialError      string
+	closedCount        int64
+	closeReasons       map[string]int64
+	errorCounts        map[string]int64
+	recent             []ConnectionClose
 }
 
 func newConnectionHistory(peer, slot string, mapPort *int) *connectionHistory {
 	return &connectionHistory{
 		peer: peer, slot: slot, mapPort: mapPort,
-		errorCounts: make(map[string]int64),
-		recent:      make([]ConnectionClose, 0, connectionHistoryCapacity),
+		dialFailureReasons: map[string]int64{
+			"timeout": 0, "refused": 0, "neterr": 0, "other": 0,
+		},
+		closeReasons: make(map[string]int64),
+		errorCounts:  make(map[string]int64),
+		recent:       make([]ConnectionClose, 0, connectionHistoryCapacity),
 	}
 }
 
@@ -425,8 +448,43 @@ func telemetryMapPort(slot string) *int {
 	return &port
 }
 
+func (h *connectionHistory) recordDialFailure(err error) {
+	h.dialAttempts++
+	h.dialFailures++
+	h.lastDialAtMs = time.Now().UnixMilli()
+	h.lastDialError = normalizeDialError(err)
+	h.dialFailureReasons[h.lastDialError]++
+}
+
+func (h *connectionHistory) recordDialSuccess() {
+	h.dialAttempts++
+	h.splicesEstablished++
+	h.lastDialAtMs = time.Now().UnixMilli()
+}
+
+func normalizeDialError(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, os.ErrDeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return "refused"
+	case errors.Is(err, syscall.ENETUNREACH), errors.Is(err, syscall.EHOSTUNREACH):
+		return "neterr"
+	}
+	var netError net.Error
+	if errors.As(err, &netError) {
+		if netError.Timeout() {
+			return "timeout"
+		}
+		return "neterr"
+	}
+	return "other"
+}
+
 func (h *connectionHistory) record(result spliceResult) {
 	h.closedCount++
+	h.closeReasons[result.errorIn]++
+	h.closeReasons[result.errorOut]++
 	h.errorCounts[result.errorIn]++
 	h.errorCounts[result.errorOut]++
 	record := ConnectionClose{
@@ -444,13 +502,26 @@ func (h *connectionHistory) record(result spliceResult) {
 }
 
 func (h *connectionHistory) snapshot() SlotConnectionTelemetry {
+	failureReasons := make(map[string]int64, len(h.dialFailureReasons))
+	for class, count := range h.dialFailureReasons {
+		failureReasons[class] = count
+	}
+	closeReasons := make(map[string]int64, len(h.closeReasons))
+	for class, count := range h.closeReasons {
+		closeReasons[class] = count
+	}
 	counts := make(map[string]int64, len(h.errorCounts))
 	for class, count := range h.errorCounts {
 		counts[class] = count
 	}
 	return SlotConnectionTelemetry{
-		Peer: h.peer, Slot: h.slot, MapPort: h.mapPort, ClosedCount: h.closedCount,
-		ErrorCounts: counts, Recent: append([]ConnectionClose(nil), h.recent...),
+		Peer: h.peer, Slot: h.slot, MapPort: h.mapPort,
+		DialAttempts: h.dialAttempts, DialFailures: h.dialFailures,
+		DialFailureReasons: failureReasons, SplicesEstablished: h.splicesEstablished,
+		DialFailureCount: h.dialFailures, LastDialAtMs: h.lastDialAtMs,
+		LastDialError: h.lastDialError, ClosedCount: h.closedCount,
+		CloseReasons: closeReasons, ErrorCounts: counts,
+		Recent: append([]ConnectionClose(nil), h.recent...),
 	}
 }
 

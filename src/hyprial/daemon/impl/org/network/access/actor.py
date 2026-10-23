@@ -34,7 +34,11 @@ import threading
 import time
 from typing import Any
 
-from hyprial.daemon.impl.org.network.access.snapshot import AccessSnapshot, OrgAccess, build_access_snapshot
+from hyprial.daemon.impl.org.network.access.snapshot import (
+    AccessSnapshot,
+    OrgAccess,
+    build_access_snapshot,
+)
 from hyprial.identity import DIRECTORY_DIR, LEAVES_DIR
 from hyprial.kernel import (
     ActorRuntime,
@@ -88,6 +92,7 @@ class PeerAccessActor:
         after_allow: Callable[[str], object] | None = None,
         request_redial: Callable[[], object] | None = None,
         process_leaves: Callable[[], object] | None = None,
+        reissue_identity: Callable[[str, str], object] | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._service_factory = service_factory
@@ -97,6 +102,7 @@ class PeerAccessActor:
         self._after_allow = after_allow
         self._request_redial = request_redial
         self._process_leaves = process_leaves
+        self._reissue_identity = reissue_identity
         self._clock = clock
         self._unreadable_since: dict[str, float] = {}  # effect lane only (capacity 1)
         self._guard = threading.Lock()
@@ -114,7 +120,11 @@ class PeerAccessActor:
         self._retry_generation = 0
         self._runtime = ActorRuntime()
         self._handle = self._runtime.start(
-            ActorSpec(name="org-peer-access", handler_factory=lambda: self._receive, mailbox_capacity=64)
+            ActorSpec(
+                name="org-peer-access",
+                handler_factory=lambda: self._receive,
+                mailbox_capacity=64,
+            )
         )
         self._effects: EffectLane[_Work, _Result] = EffectLane(
             name="org-peer-access-rebuild",
@@ -130,7 +140,9 @@ class PeerAccessActor:
 
         self.request("start", leaves=True)
 
-    def request(self, reason: str, *, leaves: bool = False, force: bool = False) -> AdmissionResult:
+    def request(
+        self, reason: str, *, leaves: bool = False, force: bool = False
+    ) -> AdmissionResult:
         """A directory change, a joined/left org, or a new sidecar (``force``)."""
 
         with self._guard:
@@ -151,7 +163,11 @@ class PeerAccessActor:
     def idle(self) -> bool:
         state = self._runtime.snapshot(self._handle)
         with self._guard:
-            return not self._pending and not self._active and state.queued == state.in_flight == 0
+            return (
+                not self._pending
+                and not self._active
+                and state.queued == state.in_flight == 0
+            )
 
     def stop(self, *, timeout: float = 2.0) -> bool:
         deadline = time.monotonic() + max(0.0, timeout)
@@ -195,7 +211,12 @@ class PeerAccessActor:
                     if result.applied is not None:
                         self._applied = result.applied
             if command.error is not None:
-                self._log("warn", "org", "org.access.rebuild-failed", detail=str(command.error)[:300])
+                self._log(
+                    "warn",
+                    "org",
+                    "org.access.rebuild-failed",
+                    detail=str(command.error)[:300],
+                )
         else:
             raise TypeError("unsupported peer-access command")
         self._pump()
@@ -215,7 +236,10 @@ class PeerAccessActor:
             self._active = True
             self._sequence += 1
             operation = str(self._sequence)
-        if self._effects.submit(EffectRequest(operation, 1, work)) is not AdmissionResult.ACCEPTED:
+        if (
+            self._effects.submit(EffectRequest(operation, 1, work))
+            is not AdmissionResult.ACCEPTED
+        ):
             with self._guard:
                 self._active = False
 
@@ -227,18 +251,41 @@ class PeerAccessActor:
             try:
                 self._process_leaves()
             except Exception as error:  # noqa: BLE001 - a leave failure must not stop access
-                self._log("warn", "org", "org.leave_requests.failed", detail=str(error)[:300])
+                self._log(
+                    "warn", "org", "org.leave_requests.failed", detail=str(error)[:300]
+                )
         snapshot = build_access_snapshot(self._service_factory(), self._carry())
         self.rebuilds += 1
+        if (
+            snapshot.reissue_reason is not None
+            and snapshot.reissue_token is not None
+            and self._reissue_identity is not None
+        ):
+            try:
+                self._reissue_identity(snapshot.reissue_reason, snapshot.reissue_token)
+            except Exception as error:  # noqa: BLE001 - deny set must still land
+                self._log(
+                    "error",
+                    "org",
+                    "org.access.identity-reissue-failed",
+                    detail=str(error)[:300],
+                )
         now = self._clock()
         self._unreadable_since = {
             org: self._unreadable_since.get(org, now) for org in snapshot.unreadable
         }
         if snapshot.incomplete:
             self._log(
-                "warn", "org", "org.access.rebuild-incomplete", reason=reason,
-                carried=sorted(org for org in snapshot.unreadable if org in snapshot.orgs),
-                dropped=sorted(org for org in snapshot.unreadable if org not in snapshot.orgs),
+                "warn",
+                "org",
+                "org.access.rebuild-incomplete",
+                reason=reason,
+                carried=sorted(
+                    org for org in snapshot.unreadable if org in snapshot.orgs
+                ),
+                dropped=sorted(
+                    org for org in snapshot.unreadable if org not in snapshot.orgs
+                ),
             )
             self._retry_later()
         with self._guard:
@@ -251,12 +298,19 @@ class PeerAccessActor:
             try:
                 self._after_allow(reason)
             except Exception as error:  # noqa: BLE001 - a hook failure must not stop access
-                self._log("warn", "org", "org.access.after-allow-failed", detail=str(error)[:300])
+                self._log(
+                    "warn",
+                    "org",
+                    "org.access.after-allow-failed",
+                    detail=str(error)[:300],
+                )
         if self._request_redial is not None:
             self._request_redial()
         return _Result(snapshot, applied)
 
-    def _apply_allow(self, snapshot: AccessSnapshot, reason: str) -> tuple[tuple[str, ...], bool] | None:
+    def _apply_allow(
+        self, snapshot: AccessSnapshot, reason: str
+    ) -> tuple[tuple[str, ...], bool] | None:
         supervisor = self._supervisor()
         if supervisor is None:
             return None  # a sidecar that starts later replays desired_allow
@@ -267,8 +321,12 @@ class PeerAccessActor:
             self._log("warn", "org", "org.access.allow-failed", detail=str(error)[:300])
             return None
         self._log(
-            "info", "org", "org.access.allowed",
-            keys=len(keys), allowAny=allow_any, reason=reason,
+            "info",
+            "org",
+            "org.access.allowed",
+            keys=len(keys),
+            allowAny=allow_any,
+            reason=reason,
         )
         return snapshot.allow
 
@@ -293,7 +351,9 @@ class PeerAccessActor:
             self._retry_generation += 1
             generation = self._retry_generation
         self._scheduler.schedule(
-            "incomplete", generation, INCOMPLETE_REBUILD_DELAY_S,
+            "incomplete",
+            generation,
+            INCOMPLETE_REBUILD_DELAY_S,
             lambda _generation: self.request("retry-incomplete"),
         )
 
@@ -307,7 +367,11 @@ class PeerAccessActor:
         with self._guard:
             if self._closed:
                 return
-            gone = [] if keep_unlisted else [key for key in self._watches if key not in wanted]
+            gone = (
+                []
+                if keep_unlisted
+                else [key for key in self._watches if key not in wanted]
+            )
             missing = [key for key in wanted if key not in self._watches]
         for key in gone:
             with self._guard:
@@ -317,12 +381,18 @@ class PeerAccessActor:
         for key in missing:
             space_id, kind, glob = wanted[key]
             if kind == "meta":
-                registration = self._facade.watch_meta(space_id, lambda: self.request("membership"))
+                registration = self._facade.watch_meta(
+                    space_id, lambda: self.request("membership")
+                )
             elif kind == "leaves":
                 registration = self._facade.watch(
-                    space_id, glob, lambda _event: self.request("leave-request", leaves=True)
+                    space_id,
+                    glob,
+                    lambda _event: self.request("leave-request", leaves=True),
                 )
             else:
-                registration = self._facade.watch(space_id, glob, lambda _event: self.request("device-row"))
+                registration = self._facade.watch(
+                    space_id, glob, lambda _event: self.request("device-row")
+                )
             with self._guard:
                 self._watches[key] = registration

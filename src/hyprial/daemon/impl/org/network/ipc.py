@@ -16,7 +16,11 @@ from typing import Any
 from hyprial.kernel import DaemonRequestError, ipc_errors
 from hyprial.kernel import canonical_user_uri, parse_agent_uri
 from hyprial.daemon.impl.configuration.identity import normalize_agent_recipient
-from hyprial.daemon.impl.ipc.params import JsonObject, _optional_boolean, _required_string
+from hyprial.daemon.impl.ipc.params import (
+    JsonObject,
+    _optional_boolean,
+    _required_string,
+)
 from hyprial.daemon.impl.orgfs.api import OrgFsError
 from hyprial.daemon.impl.org.network.access import PeerAccessActor
 from hyprial.daemon.impl.org.network.access.snapshot import with_bootstrap
@@ -92,7 +96,9 @@ def _build_service(app: Any) -> OrgNetworkService:
 
     def read_own_address() -> str | None:
         try:
-            return address_path(Path(app.hyprial_home)).read_text("utf-8").strip() or None
+            return (
+                address_path(Path(app.hyprial_home)).read_text("utf-8").strip() or None
+            )
         except OSError:
             return None
 
@@ -266,7 +272,9 @@ def ipc_org_network(app: Any, params: JsonObject) -> dict:
     sync = getattr(app, "_casdoor_membership_sync", None)
     # Owner side only (design §3): casdoorOnly, last sync time, last error.
     result["casdoorSync"] = (
-        {name: sync.status(name) for name in result.get("orgs", [])} if sync is not None else None
+        {name: sync.status(name) for name in result.get("orgs", [])}
+        if sync is not None
+        else None
     )
     return result
 
@@ -290,10 +298,8 @@ def _org_acl_entry_or_forbidden(
         return
     raise DaemonRequestError(
         ipc_errors.ORG_ACL_GRANT_FORBIDDEN,
-        f"{method} is available only to the owner's terminal or the "
-        "owner's user-proxy",
-        {"method": method}
-        | ({"caller": entry[1]} if entry is not None else {}),
+        f"{method} is available only to the owner's terminal or the owner's user-proxy",
+        {"method": method} | ({"caller": entry[1]} if entry is not None else {}),
     )
 
 
@@ -312,8 +318,7 @@ def _org_acl_owner_space(app: Any, org: str) -> None:
     if space.owner != author:
         raise DaemonRequestError(
             ipc_errors.ORG_ACL_GRANT_FORBIDDEN,
-            "ACL entry grants live on the owner node; this node does not "
-            f"own {org}",
+            f"ACL entry grants live on the owner node; this node does not own {org}",
             {"org": org, "reason": "not-owner-node"},
         )
 
@@ -357,9 +362,7 @@ def ipc_org_acl_grant(
         app, params, method="org.acl.grant", trusted_origin=trusted_origin
     )
     _org_acl_owner_space(app, org)
-    agent = _org_acl_owned_agent(
-        app, _required_string(params.get("agent"), "agent")
-    )
+    agent = _org_acl_owned_agent(app, _required_string(params.get("agent"), "agent"))
     now_ms = int(time.time() * 1000)
     until_ms = params.get("untilMs")
     if until_ms is not None:
@@ -374,8 +377,11 @@ def ipc_org_acl_grant(
                 {"untilMs": until_ms, "nowMs": now_ms},
             )
     entry = add_org_acl_grant(
-        Path(app.hyprial_home), org, agent,
-        granted_at_ms=now_ms, until_ms=until_ms,
+        Path(app.hyprial_home),
+        org,
+        agent,
+        granted_at_ms=now_ms,
+        until_ms=until_ms,
     )
     app._log("info", "org", "org.acl.grant", org=org, agent=agent, untilMs=until_ms)
     return {"org": org, "agent": agent, **entry}
@@ -415,8 +421,7 @@ def ipc_org_acl_ls(
     return {
         "org": org,
         "grants": [
-            {"agent": agent, **entry}
-            for agent, entry in sorted(grants.items())
+            {"agent": agent, **entry} for agent, entry in sorted(grants.items())
         ],
     }
 
@@ -530,7 +535,9 @@ def start_casdoor_membership_sync(app: Any) -> None:
         return
     sync = CasdoorMembershipSync(
         service_factory=lambda: _build_service(app),
-        confirmed=ConfirmedMembers(Path(app.hyprial_home) / "org-sync" / "confirmed-members.json"),
+        confirmed=ConfirmedMembers(
+            Path(app.hyprial_home) / "org-sync" / "confirmed-members.json"
+        ),
         log=log,
     )
     app._casdoor_membership_sync = sync
@@ -591,6 +598,25 @@ def _access_changed(app: Any, reason: str, result: Any) -> Any:
     return result
 
 
+def _reissue_conflicting_identity(app: Any, reason: str, token: str) -> None:
+    from hyprial.daemon.impl.network.tailcat import reissue_device_key
+    from hyprial.identity import consume_rotation_event
+
+    record = reissue_device_key(app.hyprial_home, reason=reason, conflict_token=token)
+    if record is None:
+        return
+    event = consume_rotation_event(app.hyprial_home)
+    app._log(
+        "error",
+        "org",
+        "org.access.identity-reissued",
+        **(event or {"deviceId": record.device_id, "reason": reason}),
+    )
+    supervisor = getattr(app, "_forwarding_supervisor", None)
+    if supervisor is not None:
+        supervisor.restart(reason=reason)
+
+
 def start_peer_access_for_app(app: Any) -> PeerAccessActor:
     """Start this daemon's directory-driven allow/dial/leave actor."""
 
@@ -603,6 +629,9 @@ def start_peer_access_for_app(app: Any) -> PeerAccessActor:
         ),
         request_redial=lambda: app._reconcile_forwarding_endpoints(),
         process_leaves=lambda: _build_service(app).process_leave_requests(),
+        reissue_identity=lambda reason, token: _reissue_conflicting_identity(
+            app, reason, token
+        ),
     )
     app._peer_access_actor = actor
     actor.start()

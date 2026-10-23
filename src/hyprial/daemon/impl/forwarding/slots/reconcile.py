@@ -20,10 +20,10 @@ Slot lifecycle rules (§5):
 
 * a device to dial gets a free slot assigned (reusing the persisted one),
   then ``map-peer``;
-* a removed device is ``unmap-peer``-ed first, and only then is its slot
-  released -- an unmap that fails while the sidecar is up keeps the slot
-  assigned so the next pass retries, instead of handing a spliced slot to
-  another peer;
+* replacements are mapped before removed devices are ``unmap-peer``-ed, so a
+  directory swap never clears the live set before filling it; each removed
+  device's slot is released only after unmap succeeds, so a failed unmap keeps
+  the assignment for the next pass instead of handing out a spliced slot;
 * an exhausted pool grows by one base step and raises an alarm
   (``zenoh.slots.pool_exhausted``); the growth is what the one remaining
   ``reconfigure_connect`` caller then dials.
@@ -31,9 +31,14 @@ Slot lifecycle rules (§5):
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal, TypedDict
 
 from .store import SlotAssignments
+
+
+class _PeerReconcileFailure(TypedDict):
+    operation: Literal["bind", "unbind", "directory"]
+    peer: str
 
 
 def slot_store_for_app(app: Any) -> SlotAssignments:
@@ -93,15 +98,33 @@ def bind_peer_slot(app: Any, device_label: str, address: str) -> int | None:
     if backend is None:
         return slot
     try:
-        if backend.bind(device_label, address, slot):
+        changed = backend.bind(device_label, address, slot)
+        if changed is None:
             _log(
-                app, "info", "zenoh.slots.bound",
-                peer=device_label, slot=slot, address=address,
+                app,
+                "warn",
+                "zenoh.slots.bind_failed",
+                peer=device_label,
+                slot=slot,
+                errorType="MissingResult",
+            )
+            return None
+        if changed:
+            _log(
+                app,
+                "info",
+                "zenoh.slots.bound",
+                peer=device_label,
+                slot=slot,
             )
     except Exception as error:  # noqa: BLE001 - one peer must not stop the rest
         _log(
-            app, "warn", "zenoh.slots.bind_failed",
-            peer=device_label, slot=slot, detail=str(error)[:300],
+            app,
+            "warn",
+            "zenoh.slots.bind_failed",
+            peer=device_label,
+            slot=slot,
+            errorType=type(error).__name__,
         )
         return None
     return slot
@@ -135,12 +158,12 @@ def unbind_peer_slot(app: Any, device_label: str) -> int | None:
 
 
 def reconcile_slot_bindings(app: Any, *, reason: str = "tick") -> dict[str, object]:
-    """One idempotent pass: unbind the gone, bind the missing, report readings.
+    """One idempotent pass: bind replacements, unbind the gone, report readings.
 
-    Unbinds run first so a leave-and-join wave frees slots before new
-    assignments can force a pool growth.  Never raises: a failure on one
-    peer is logged and the pass continues, because this runs on the
-    daemon's reconcile tick.
+    Binds run first so a leave-and-join wave never exposes an empty live set;
+    this may briefly grow the pool rather than reusing a departing peer's slot.
+    Never raises: a failure on one peer is logged and the pass continues,
+    because this runs on the daemon's reconcile tick.
     """
 
     store = slot_store_for_app(app)
@@ -156,20 +179,77 @@ def reconcile_slot_bindings(app: Any, *, reason: str = "tick") -> dict[str, obje
             from hyprial.daemon.impl.org.network import directory_peers_for_app
 
             wanted = directory_peers_for_app(app)
-    except Exception:  # noqa: BLE001 - the tick must survive a directory fault
-        wanted = {}
+    except Exception as error:  # noqa: BLE001 - keep the last applied view
+        _log(
+            app,
+            "warn",
+            "zenoh.slots.directory_failed",
+            errorType=type(error).__name__,
+        )
+        peers = sorted(store.assignments) or ["<directory>"]
+        return {
+            "reason": reason,
+            "status": "partial",
+            "bound": [],
+            "unbound": [],
+            "failed": [
+                {"operation": "directory", "peer": peer} for peer in peers
+            ],
+            "grown": False,
+            "poolSize": store.pool_size,
+        }
+
+    assignments_before = set(store.assignments)
+    removed = sorted(assignments_before - set(wanted))
+    added = sorted(set(wanted) - assignments_before)
+    raw_guards = getattr(app, "_slot_replacement_guards", None)
+    if not isinstance(raw_guards, dict):
+        raw_guards = {}
+        app._slot_replacement_guards = raw_guards
+    guards: dict[str, str] = raw_guards
+    for replacement, old in tuple(guards.items()):
+        if replacement not in wanted or old not in removed:
+            guards.pop(replacement, None)
+    guarded_new = set(guards)
+    guarded_old = set(guards.values())
+    unpaired_new = [label for label in added if label not in guarded_new]
+    unpaired_old = [label for label in removed if label not in guarded_old]
+    for replacement, old in zip(unpaired_new, unpaired_old, strict=False):
+        guards[replacement] = old
+
     unbound: list[str] = []
     bound: list[str] = []
-    for label in sorted(set(store.assignments) - set(wanted)):
-        if unbind_peer_slot(app, label) is not None:
-            unbound.append(label)
+    failed: list[_PeerReconcileFailure] = []
+    failed_binds: set[str] = set()
+    # Apply the replacement set before withdrawing the old one.  A failed
+    # replacement guards its paired old mapping until a later pass applies
+    # the replacement successfully.  The ephemeral pairing only spans one
+    # sidecar lifetime; after restart there is no old live mapping to guard.
     for label in sorted(wanted):
-        if bind_peer_slot(app, label, wanted[label]) is not None:
+        if bind_peer_slot(app, label, wanted[label]) is None:
+            failed_binds.add(label)
+            failed.append({"operation": "bind", "peer": label})
+        else:
             bound.append(label)
+    protected_old = {
+        old for replacement, old in guards.items() if replacement in failed_binds
+    }
+    for label in removed:
+        if label in protected_old:
+            continue
+        if unbind_peer_slot(app, label) is None:
+            failed.append({"operation": "unbind", "peer": label})
+            continue
+        unbound.append(label)
+        for replacement, old in tuple(guards.items()):
+            if old == label:
+                guards.pop(replacement, None)
     return {
         "reason": reason,
+        "status": "partial" if failed else "ok",
         "bound": bound,
         "unbound": unbound,
+        "failed": failed,
         "grown": store.pool_size > pool_before,
         "poolSize": store.pool_size,
     }

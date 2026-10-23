@@ -134,12 +134,20 @@ type ConnectionClose struct {
 
 // SlotConnectionTelemetry is one mapped slot's bounded close history.
 type SlotConnectionTelemetry struct {
-	Peer        string            `json:"peer"`
-	Slot        string            `json:"slot,omitempty"`
-	MapPort     *int              `json:"mapPort"`
-	ClosedCount int64             `json:"closedCount"`
-	ErrorCounts map[string]int64  `json:"errorCounts"`
-	Recent      []ConnectionClose `json:"recent"`
+	Peer               string            `json:"peer"`
+	Slot               string            `json:"slot,omitempty"`
+	MapPort            *int              `json:"mapPort"`
+	DialAttempts       int64             `json:"dialAttempts"`
+	DialFailures       int64             `json:"dialFailures"`
+	DialFailureReasons map[string]int64  `json:"dialFailureReasons"`
+	SplicesEstablished int64             `json:"splicesEstablished"`
+	DialFailureCount   int64             `json:"dialFailureCount"`
+	LastDialAtMs       int64             `json:"lastDialAtMs"`
+	LastDialError      string            `json:"lastDialError,omitempty"`
+	ClosedCount        int64             `json:"closedCount"`
+	CloseReasons       map[string]int64  `json:"closeReasons"`
+	ErrorCounts        map[string]int64  `json:"errorCounts"`
+	Recent             []ConnectionClose `json:"recent"`
 }
 
 // ConnectionTelemetry is additive status data, never a per-packet event stream.

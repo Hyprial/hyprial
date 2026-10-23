@@ -39,6 +39,7 @@ _FORWARDING_LAUNCH_KEY = "forwarding-sidecar-relaunch"
 class _SupervisorAction(StrEnum):
     SNAPSHOT = "snapshot"
     BEGIN_START = "begin_start"
+    BEGIN_RESTART = "begin_restart"
     BEGIN_CLOSE = "begin_close"
     OBSERVE_EXIT = "observe_exit"
     STATUS_FAILURE = "status_failure"
@@ -171,6 +172,12 @@ class ForwardingSupervisorState:
                 return False
             self._first_happened = True
             return True
+        if action is _SupervisorAction.BEGIN_RESTART:
+            if self._closed or self._backend is None:
+                return None
+            backend, self._backend = self._backend, None
+            self._consecutive = 0
+            return (backend, self._generation)
         if action is _SupervisorAction.BEGIN_CLOSE:
             if self._closed:
                 return None
@@ -443,6 +450,44 @@ class ForwardingSidecarSupervisor:
                 return
             self._first_happened = True
         self._spawn(expected_generation=0)
+
+    def restart(self, *, reason: str) -> None:
+        """Atomically replace the current child after an identity reissue.
+
+        A deliberate controller close suppresses its exit callback, so this
+        path must detach the old incarnation and launch its replacement
+        itself.  Detaching first keeps status truthful if close or launch
+        fails: the closed child is never reported as running.
+        """
+
+        if self._state_owner is not None:
+            if self._state_owner_closed:
+                return
+            restart = self._state_owner.call(_SupervisorAction.BEGIN_RESTART)
+            if restart is None:
+                return
+            assert isinstance(restart, tuple)
+            backend, generation = restart
+            assert isinstance(backend, ForwardingEndpoints)
+            assert isinstance(generation, int)
+        else:
+            with self._lock:
+                if self._closed or self._endpoints is None:
+                    return
+                backend, self._endpoints = self._endpoints, None
+                self._consecutive = 0
+                generation = self._generation
+        self._event_log("warn", "forwarding-restart-requested", reason=reason)
+        try:
+            backend.close()
+        except Exception as error:  # noqa: BLE001 - replacement must still launch
+            self._event_log(
+                "warn",
+                "zenoh.forwarding.restart_close_failed",
+                reason=reason,
+                errorType=type(error).__name__,
+            )
+        self._spawn(expected_generation=generation)
 
     def close(self) -> None:
         """Stop owning the child; no relaunch may fire after this."""
