@@ -44,6 +44,7 @@ from hyprial.daemon.impl.orgfs.projection.purge  import (
     PurgeBlob,
     PurgeDocument,
     PurgePlan,
+    PurgeReplacement,
     PurgeResult,
     PurgeSnapshot,
     PurgeStatus,
@@ -306,6 +307,9 @@ class FacadePurge:
             raise OrgFsError(
                 "invalid-argument", {"message": "purge requires a durable authority"}
             )
+        completed = self._purge_completed_result(space, authority, plan_id)
+        if completed is not None:
+            return completed
         with self._lock:
             saved = self._purge_plans.get(plan_id)
         if saved is None:
@@ -339,7 +343,71 @@ class FacadePurge:
         self._purge_phase_install_replacements(space, authority, replacements, content_nodes, replacement_metadata)
         space_id = self._purge_phase_publish_frontiers(space, authority, plan_id, replacements, space_id)
         self._purge_phase_delete_retired_objects(authority, replacements, plan, space_id)
-        return self._purge_phase_acknowledge(space, store, space_id, plan_id)
+        return self._purge_phase_acknowledge(space, store, authority, space_id, plan_id)
+
+    def _purge_replacement_receipt(
+        self, space: _Space, authority: OrgSpaceAuthority, plan_id: str
+    ) -> tuple[PurgeReplacement, ...]:
+        """Derive the receipt from committed records only.
+
+        A retirement record is durable before the replacement is installed and
+        the snapshot point is published after it; requiring both, with the same
+        plan and snapshot id, keeps a purge that never completed out of the
+        receipt.  Ids and digests only: no content, paths or raw errors.
+        """
+
+        points = space.meta.get("snapshotPoints", type=Map)
+        published = points.to_py() if points is not None else {}
+        records = tuple(authority.read(_ReadStore("retirement_records")) or ())
+        receipt: list[PurgeReplacement] = []
+        for record in sorted(records, key=lambda item: item.old_physical_doc_id):
+            if record.plan_id != plan_id:
+                continue
+            point = published.get(record.replacement_doc_id)
+            if (
+                not isinstance(point, dict)
+                or point.get("snapshotId") != record.snapshot_id
+                or point.get("planId") != plan_id
+            ):
+                continue
+            receipt.append(
+                PurgeReplacement(
+                    doc_id=record.old_physical_doc_id,
+                    replacement_doc_id=record.replacement_doc_id,
+                    snapshot_id=record.snapshot_id,
+                    # install_replacement refuses bytes whose sha256 differs
+                    # from the committed record, so this digest was verified
+                    # against the installed snapshot, not asserted here.
+                    snapshot_sha256=record.snapshot_id,
+                )
+            )
+        return tuple(receipt)
+
+    def _purge_completed_result(
+        self, space: _Space, authority: OrgSpaceAuthority, plan_id: str
+    ) -> PurgeResult | None:
+        """Return the durable receipt of an already completed purge plan.
+
+        Replaying a completed plan must not re-execute it (fresh replacement
+        ids would make the receipt a lie) and must not expire it either; the
+        same committed records answer every replay and every restart.
+        """
+
+        plans = space.meta.get("purgePlans", type=Map)
+        if plan_id not in (plans.to_py() if plans is not None else {}):
+            return None
+        acks = space.meta.get("purgeAcks", type=Map)
+        mine = (acks.to_py() if acks is not None else {}).get(self.node_id)
+        if not isinstance(mine, dict) or plan_id not in mine:
+            return None
+        status = self.purge_status(space.info.space_id, plan_id)
+        return PurgeResult(
+            plan_id,
+            True,
+            status.acknowledged,
+            status.pending,
+            self._purge_replacement_receipt(space, authority, plan_id),
+        )
 
     def _purge_phase_prepare_replacements(self, space: _Space, targets: Sequence[Mapping[str, str]]) -> tuple[_PurgeReplacements, dict[str, str], _PurgeContentMetadata]:
         replacements: dict[str, tuple[str, bytes, str]] = {}
@@ -602,7 +670,7 @@ class FacadePurge:
                 if hasattr(self.blobs, "delete_if_unreferenced"):
                     self.blobs.delete_if_unreferenced(blob.sha)
 
-    def _purge_phase_acknowledge(self, space: _Space, store: Any, space_id: str, plan_id: str) -> PurgeResult:
+    def _purge_phase_acknowledge(self, space: _Space, store: Any, authority: OrgSpaceAuthority, space_id: str, plan_id: str) -> PurgeResult:
         if hasattr(store, "_fault"):
             store._fault("before_purge_ack")
         self._forget_history(space)
@@ -620,7 +688,13 @@ class FacadePurge:
 
         self._commit(space, "meta", acknowledge)
         status = self.purge_status(space_id, plan_id)
-        return PurgeResult(plan_id, True, status.acknowledged, status.pending)
+        return PurgeResult(
+            plan_id,
+            True,
+            status.acknowledged,
+            status.pending,
+            self._purge_replacement_receipt(space, authority, plan_id),
+        )
 
 
     @_facade_locked

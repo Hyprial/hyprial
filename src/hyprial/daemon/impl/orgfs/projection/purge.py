@@ -204,11 +204,37 @@ class PurgePlan:
 
 
 @dataclass(frozen=True, slots=True)
+class PurgeReplacement:
+    """One committed retirement's replacement, as ids and digests only.
+
+    ``snapshot_id`` is the identifier the retirement record and the published
+    snapshot point carry; the store verifies it against the sha256 of the
+    installed snapshot bytes on install.  ``snapshot_sha256`` is that same
+    digest named as what it is, so a consumer never has to know the identity
+    encoding.  Neither field carries content, a path or a raw error.
+    """
+
+    doc_id: str
+    replacement_doc_id: str
+    snapshot_id: str
+    snapshot_sha256: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "docId": self.doc_id,
+            "replacementDocId": self.replacement_doc_id,
+            "snapshotId": self.snapshot_id,
+            "snapshotSha256": self.snapshot_sha256,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class PurgeResult:
     plan_id: str
     executed_locally: bool
     acknowledged: tuple[str, ...]
     pending: tuple[str, ...]
+    replacements: tuple[PurgeReplacement, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -216,6 +242,7 @@ class PurgeResult:
             "executedLocally": self.executed_locally,
             "acknowledged": list(self.acknowledged),
             "pending": list(self.pending),
+            "replacements": [item.to_dict() for item in self.replacements],
         }
 
     def __getitem__(self, key: str) -> Any:
@@ -244,6 +271,7 @@ __all__ = [
     "PurgeBlob",
     "PurgeDocument",
     "PurgePlan",
+    "PurgeReplacement",
     "PurgeResult",
     "PurgeSnapshot",
     "PurgeStatus",
