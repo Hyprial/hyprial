@@ -15,7 +15,7 @@ import sys
 import typer
 
 from hyprial.shell.impl.cli.commands.common.root import app
-from hyprial.shell.impl.cli.commands.common.support import JsonObject, _DAEMON_IPC_ROUNDTRIP_SECONDS, _resolved_agent_cwd, _resolved_interactive_resume_cwd, _user_proxy_launch_params
+from hyprial.shell.impl.cli.commands.common.support import JsonObject, _daemon_ipc_roundtrip_seconds, _resolved_agent_cwd, _resolved_interactive_resume_cwd, _user_proxy_launch_params
 @app.command(
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True}
 )
@@ -144,7 +144,7 @@ def start(
             # Availability recorded by `agent tiers probe` never enters this path.
             resolved = services._daemon_request(
                 "dispatch.matrix.resolve", {"tier": tier, "name": name},
-                timeout=_DAEMON_IPC_ROUNDTRIP_SECONDS,
+                timeout=_daemon_ipc_roundtrip_seconds(),
             )
             choice = resolved["selected"]
             harness_kind, model_provider, model = choice["harness"], choice["provider"], choice["model"]

@@ -262,6 +262,41 @@ _RESTORE_WAIT_MAX_SECONDS = 900.0
 _DAEMON_IPC_ROUNDTRIP_SECONDS = 15.0
 
 
+#: Upper bound for ``HYPRIAL_IPC_ROUNDTRIP_SECONDS``.  Raising the client's
+#: patience must not turn a visible DAEMON_ERROR into an invisible wait: the
+#: daemon's own worst case (lock budget 8s + busy timeout, see
+#: ``daemon/impl/state_db.py``) is far below this, so anything above it only
+#: hides a hang.
+_DAEMON_IPC_ROUNDTRIP_MAX_SECONDS = 300.0
+
+
+def _daemon_ipc_roundtrip_seconds() -> float:
+    """Effective per-request IPC patience, in seconds.
+
+    Default ``_DAEMON_IPC_ROUNDTRIP_SECONDS`` (15s).
+    ``HYPRIAL_IPC_ROUNDTRIP_SECONDS`` overrides it so that a delay
+    *distribution* can be measured at all: with a fixed deadline every
+    observation slower than it is indistinguishable from a hang, and the
+    successes are right-censored (their true latency is unobservable).  That
+    makes "raise the deadline to see the tail" a measurement need, not a
+    tuning knob.
+
+    Unparseable or out-of-range values fall back to the default rather than
+    failing the command: a debugging override must never be able to make the
+    CLI unusable.  ``0`` is rejected on purpose -- a zero-timeout client
+    would report every call as a timeout.
+    """
+
+    raw = os.environ.get("HYPRIAL_IPC_ROUNDTRIP_SECONDS")
+    try:
+        value = _DAEMON_IPC_ROUNDTRIP_SECONDS if raw is None else float(raw)
+    except ValueError:
+        return _DAEMON_IPC_ROUNDTRIP_SECONDS
+    if not math.isfinite(value) or not 0.0 < value <= _DAEMON_IPC_ROUNDTRIP_MAX_SECONDS:
+        return _DAEMON_IPC_ROUNDTRIP_SECONDS
+    return value
+
+
 _RESTORE_FOLLOWUP_POLL_INTERVAL_SECONDS = 2.0
 
 
@@ -291,7 +326,7 @@ def _daemon_request(
     method: str,
     params: JsonObject | None = None,
     *,
-    timeout: float = _DAEMON_IPC_ROUNDTRIP_SECONDS,
+    timeout: float | None = None,
     restore_wait: float | None = None,
 ) -> Any:
     """Call the daemon's version-1 newline-delimited JSON IPC protocol.
@@ -305,6 +340,8 @@ def _daemon_request(
     """
     services = get_services()
 
+    if timeout is None:
+        timeout = _daemon_ipc_roundtrip_seconds()
     budget = _restore_wait_budget() if restore_wait is None else restore_wait
     deadline = services.time.monotonic() + budget
     while True:
@@ -324,11 +361,13 @@ def _daemon_request_once(
     method: str,
     params: JsonObject | None = None,
     *,
-    timeout: float = _DAEMON_IPC_ROUNDTRIP_SECONDS,
+    timeout: float | None = None,
 ) -> Any:
     """Call the daemon's version-1 newline-delimited JSON IPC protocol."""
     services = get_services()
 
+    if timeout is None:
+        timeout = _daemon_ipc_roundtrip_seconds()
     request_id = str(services.uuid4())
     frame: JsonObject = {"version": 1, "id": request_id, "method": method}
     if params is not None:
