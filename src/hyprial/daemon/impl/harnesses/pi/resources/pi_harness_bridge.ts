@@ -179,14 +179,15 @@ export default function (pi: ExtensionAPI, observer?: BridgeObserver) {
     name: "harness_read",
     label: "Harness Read",
     description:
-      "Read the daemon-owned durable inbox, returning each message's summary and " +
-      "body byte count. Use harness_read_body for the full body. Messages remain " +
-      "pending until harness_reply or harness_ack succeeds.",
+      "Read the daemon-owned durable inbox as one coalesced batch " +
+      "(inbox-batch-v1): every pending item with its full body, or the single " +
+      "private spill file when it exceeds the inline budget. Inject " +
+      "delivery.text as-is and settle every listed messageId separately with " +
+      "harness_reply or harness_ack; do not re-read a body that is inline.",
     parameters: Type.Object({}),
     async execute() {
-      // Shared interactive session-carrier fetch contract. Keep in sync with
-      // hyprial.contracts.session.SESSION_FETCH_PARAM.
-      return invoke("message.pending.list", { fetched: true }, false);
+      // One daemon-rendered batch; this extension never formats a message.
+      return invoke("message.pending.batch", {}, false);
     },
   });
 

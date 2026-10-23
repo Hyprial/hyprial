@@ -20,6 +20,10 @@ METHOD_PARAMS = {
     "identity.whoami": frozenset(),
     "targets": frozenset({"kind"}),
     "message.pending.list": frozenset({"fetched"}),
+    # Coalesced batch read: cursor replay and successor capture.  There is
+    # deliberately no exclusion set -- the signed predecessor cursor is the
+    # only successor boundary.
+    "message.pending.batch": frozenset({"cursor", "afterCursor"}),
     "progress.list": frozenset({"deliveryId", "sinceSeq"}),
     "message.send": frozenset({"to", "message", "summary"}),
     "message.reply": frozenset({"messageId", "message", "summary"}),

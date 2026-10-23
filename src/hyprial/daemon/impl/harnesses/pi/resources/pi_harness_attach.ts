@@ -11,12 +11,13 @@
  *      session protocol shared with the Claude Channel carrier;
  *   2. polls the daemon-owned durable inbox (observation reads: no `fetched`
  *      flag) on a ~1s cadence with failure backoff;
- *   3. on new pending messages, performs the explicit consumption read
- *      (`fetched: true` — the SESSION_FETCH_PARAM contract boundary) and
- *      injects ONE batched user message via `pi.sendUserMessage(text,
- *      { deliverAs: "followUp" })`. deliverAs is ALWAYS passed: it is ignored
- *      when idle (message sends immediately) and queues safely while the user
- *      is mid-turn, so there is no idle/streaming check to race;
+ *   3. on new pending messages, captures ONE daemon batch
+ *      (`message.pending.batch`) at the injection edge and injects its
+ *      `delivery.text` byte for byte via `pi.sendUserMessage(text,
+ *      { deliverAs: "followUp" })`. This extension renders nothing. deliverAs
+ *      is ALWAYS passed: it is ignored when idle (message sends immediately)
+ *      and queues safely while the user is mid-turn, so there is no
+ *      idle/streaming check to race;
  *   4. reports the turn: `session.turn.started` before the fetched read,
  *      `session.turn.ended` when the run settles, both under one reportId,
  *      held and retried until the daemon confirms (an extension restart is a
@@ -89,62 +90,12 @@ interface TurnReport {
   status?: "completed" | "failed";
 }
 
-interface PendingMessage {
-  messageId: string;
-  from: string;
-  to: string;
-  intent: string;
-  kind: "message" | "notice";
-  summary: string | null;
-  bodyBytes: number;
-  /** Resolved human sender line, or null when the adapter reported none. */
-  sender: string | null;
-}
-
-/**
- * Mirrors hyprial.daemon.api.describe_sender: only a verified row names an
- * owner, and every other standing says so, because a platform display name
- * is free text and can equal an owner's real name.
- */
-function describeSender(origin: unknown): string | null {
-  if (typeof origin !== "object" || origin === null) return null;
-  const sender = (origin as Record<string, unknown>).sender;
-  if (typeof sender !== "object" || sender === null) return null;
-  const record = sender as Record<string, unknown>;
-  const name =
-    (typeof record.displayName === "string" && record.displayName) ||
-    (typeof record.platformId === "string" && record.platformId) ||
-    "unknown";
-  const owner = typeof record.owner === "string" ? record.owner : "";
-  if (record.standing === "verified" && owner) {
-    return `${name} (owner ${owner}, verified)`;
-  }
-  if (record.standing === "verified") {
-    return `${name} (verified person, no hyprial owner)`;
-  }
-  const candidateUsers = Array.isArray(record.candidateUsers)
-    ? record.candidateUsers.filter((item) => typeof item === "string")
-    : [];
-  if (record.standing === "ambiguous" && candidateUsers.length > 0) {
-    // Mirrors describe_sender: user-store candidates are people, and a
-    // guest among them has no owner to name.
-    return `${name} (NOT verified: sender ambiguous between users ${candidateUsers.join(", ")})`;
-  }
-  if (record.standing === "ambiguous") {
-    const candidates = Array.isArray(record.candidateOwners)
-      ? record.candidateOwners.filter((item) => typeof item === "string")
-      : [];
-    return `${name} (NOT verified: owner ambiguous between ${candidates.join(", ")})`;
-  }
-  if (record.standing === "observed") {
-    return `${name} (NOT verified: display name only, no owner)`;
-  }
-  return `${name} (NOT verified: sender unresolved)`;
-}
-
-/** One injected batch of Harness messages and its completion lifecycle. */
+/** One frozen daemon snapshot and its completion lifecycle. */
 interface OutstandingBatch {
-  messages: PendingMessage[];
+  /** The daemon-issued snapshot cursor (also this batch's delivery id). */
+  cursor: string;
+  /** Every member the snapshot froze, in daemon order. */
+  members: string[];
   /** The exact text handed to pi.sendUserMessage (consumption proof match). */
   injectedText: string;
   /** True once a user message_start carried injectedText into a real run. */
@@ -156,6 +107,14 @@ interface OutstandingBatch {
    * agent_settled must not settle early).
    */
   settled: boolean;
+}
+
+interface CapturedBatch {
+  cursor: string;
+  text: string;
+  members: string[];
+  /** True when the daemon answered a spill-mode snapshot. */
+  spilled: boolean;
 }
 
 function errorCode(error: unknown): string {
@@ -175,69 +134,32 @@ function messageText(message: unknown): string | null {
   return parts.length ? parts.join("") : null;
 }
 
-function parsePending(result: Record<string, unknown>): PendingMessage[] {
-  const raw = result.messages;
-  if (!Array.isArray(raw)) return [];
-  const messages: PendingMessage[] = [];
+/**
+ * Read only the fields the carrier needs: the cursor, the daemon text and the
+ * ordered member ids.  Every other byte of presentation stays in the daemon.
+ */
+function parseBatch(result: Record<string, unknown>): CapturedBatch | null {
+  const cursor = typeof result.cursor === "string" ? result.cursor : "";
+  const delivery = result.delivery;
+  const text =
+    typeof delivery === "object" && delivery !== null &&
+    typeof (delivery as Record<string, unknown>).text === "string"
+      ? ((delivery as Record<string, unknown>).text as string)
+      : "";
+  const raw = Array.isArray(result.items) ? result.items : [];
+  const members: string[] = [];
   for (const item of raw) {
     const row = item as Record<string, unknown>;
-    if (typeof row.messageId !== "string" || !row.messageId) continue;
-    messages.push({
-      messageId: row.messageId,
-      from: typeof row.from === "string" ? row.from : "unknown",
-      to: typeof row.to === "string" ? row.to : "unknown",
-      intent: typeof row.intent === "string" ? row.intent : "event",
-      kind: row.kind === "notice" ? "notice" : "message",
-      summary: typeof row.summary === "string" ? row.summary : null,
-      bodyBytes: Number.isInteger(row.bodyBytes) ? (row.bodyBytes as number) : 0,
-      sender: describeSender(row.origin),
-    });
+    if (typeof row.messageId === "string" && row.messageId) {
+      members.push(row.messageId);
+    }
   }
-  return messages;
-}
-
-function senderSuffix(message: PendingMessage): string {
-  return message.sender === null ? "" : `; sender: ${message.sender}`;
-}
-
-/** wp5.md 2.3, byte for byte; tests/daemon/harnesses/carrier/injection_golden.json. */
-function injectionBlock(message: PendingMessage): string {
-  if (message.kind === "notice") return `notice: ${message.summary ?? ""}`;
-  const id = message.messageId;
-  return (
-    `summary: ${message.summary ? message.summary : SUMMARY_FREE}\n` +
-    `(intent: ${message.intent}, kind: message, messageId: ${id}, ` +
-    `bodyBytes: ${message.bodyBytes})\n` +
-    `Full body: harness_read_body("${id}") or \`hyprial read ${id}\`. ` +
-    `Reply with harness_reply("${id}", …); if no reply is needed, harness_ack("${id}").`
-  );
-}
-
-function formatBatch(messages: PendingMessage[]): string {
-  if (messages.length === 1) {
-    const message = messages[0];
-    return (
-      `[Harness Network message from ${message.from} to ${message.to} ` +
-      `(intent: ${message.intent}, messageId: ${message.messageId})` +
-      senderSuffix(message) +
-      `]\n` +
-      injectionBlock(message)
-    );
-  }
-  const body = messages
-    .map(
-      (message, index) =>
-        `[${index + 1}] from: ${message.from} to: ${message.to} ` +
-        `(intent: ${message.intent}, messageId: ${message.messageId})` +
-        senderSuffix(message) +
-        `\n` +
-        injectionBlock(message),
-    )
-    .join("\n\n");
-  return (
-    `[Harness Network: ${messages.length} pending messages. ` +
-    `Each item below is a summary only; read a body on demand and reply or ack each item explicitly.]\n\n${body}`
-  );
+  if (!cursor || !text || members.length === 0) return null;
+  const mode =
+    typeof delivery === "object" && delivery !== null
+      ? (delivery as Record<string, unknown>).mode
+      : null;
+  return { cursor, text, members, spilled: mode === "spill" };
 }
 
 export default function (pi: ExtensionAPI) {
@@ -278,6 +200,8 @@ export default function (pi: ExtensionAPI) {
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
   let heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
   let outstanding: OutstandingBatch | null = null;
+  /** Newest cursor this session holds; a consumed one is the successor parent. */
+  let chainHead: string | null = null;
   const completed = new Set<string>(); // ack accepted (or already done)
   const kept = new Set<string>();
   let openTurn: string | null = null;
@@ -447,18 +371,17 @@ export default function (pi: ExtensionAPI) {
     return callDaemon("message.pending.wait", signed(params), false);
   }
 
-  /** The explicit carrier consumption boundary: fetched=true, fenced. */
-  async function fetchPending(): Promise<{
-    result: Record<string, unknown>;
-    messages: PendingMessage[];
-  }> {
+  /** The sole carrier consumption boundary: one daemon-rendered batch. */
+  async function captureBatch(
+    params: Record<string, unknown>,
+  ): Promise<CapturedBatch | null> {
     const result = await callDaemon(
-      "message.pending.list",
-      signed({ fetched: true }),
+      "message.pending.batch",
+      signed(params),
       false,
     );
     watch.observe(result);
-    return { result, messages: parsePending(result) };
+    return parseBatch(result);
   }
 
   function inject(text: string) {
@@ -487,7 +410,7 @@ export default function (pi: ExtensionAPI) {
   }
 
   async function injectQueuedOnce(): Promise<void> {
-    // wp5.md 4.4: turn.started must be accepted before the fetched read.
+    // wp5.md 4.4: turn.started must be accepted before the consuming read.
     const turnWasOpen = openTurn !== null;
     const abandonEmptyTurn = () => {
       if (!turnWasOpen && !agentRunning && outstanding === null) {
@@ -496,38 +419,67 @@ export default function (pi: ExtensionAPI) {
       }
     };
     if (!(await openTurnIfNeeded())) return;
-    let fetched: PendingMessage[];
+    let captured: CapturedBatch | null;
     try {
-      ({ messages: fetched } = await fetchPending());
+      // The first capture has no cursor; after an earlier batch was consumed
+      // its cursor is the only successor boundary (never an exclusion count).
+      captured = await captureBatch(
+        chainHead === null ? {} : { afterCursor: chainHead },
+      );
     } catch (error) {
       watch.observeRejection(errorCode(error));
       if (watch.quiet) stopLaneTimers();
       abandonEmptyTurn();
       return;
     }
-    // The fetched read is the consumption boundary. Include every still
-    // pending row it returns so a message arriving between observation and
-    // fetch is never marked fetched without being injected.
-    const fresh = fetched.filter((m) => !completed.has(m.messageId) && !kept.has(m.messageId));
-    for (const messageId of [...queuedForInjection]) {
-      if (!fetched.some((message) => message.messageId === messageId)) {
-        queuedForInjection.delete(messageId);
-      }
+    if (captured === null) {
+      abandonEmptyTurn();
+      return;
     }
+    const fresh = captured.members.filter(
+      (messageId) => !completed.has(messageId) && !kept.has(messageId),
+    );
     if (fresh.length === 0) {
       abandonEmptyTurn();
       return;
     }
-    for (const message of fresh) queuedForInjection.delete(message.messageId);
-    const text = formatBatch(fresh);
+    for (const messageId of [...queuedForInjection]) {
+      if (!captured.members.includes(messageId)) {
+        queuedForInjection.delete(messageId);
+      }
+    }
+    for (const messageId of captured.members) queuedForInjection.delete(messageId);
+    chainHead = captured.cursor;
     outstanding = {
-      messages: fresh,
-      injectedText: text,
+      cursor: captured.cursor,
+      members: captured.members,
+      injectedText: captured.text,
       consumed: false,
       injectRetries: 0,
       settled: false,
     };
-    inject(text);
+    inject(captured.text);
+  }
+
+  /**
+   * A generation change re-announces the batch already in flight by replaying
+   * its exact cursor.  It never recaptures a changed count and never injects
+   * messages that were merely queued.
+   */
+  async function replayCursor(cursor: string): Promise<void> {
+    let captured: CapturedBatch | null;
+    try {
+      captured = await captureBatch({ cursor });
+    } catch (error) {
+      watch.observeRejection(errorCode(error));
+      if (watch.quiet) stopLaneTimers();
+      return;
+    }
+    if (captured === null) return;
+    if (outstanding !== null && outstanding.cursor === cursor) {
+      outstanding.injectedText = captured.text;
+    }
+    inject(captured.text);
   }
 
   async function applyChange(change: InboxChange | null): Promise<void> {
@@ -549,20 +501,12 @@ export default function (pi: ExtensionAPI) {
         queuedForInjection.add(messageId);
       }
     }
-    if (change.rewake.length > 0 && outstanding !== null) {
-      // Only the in-flight batch is re-announced; messages merely queued are
-      // injected once, by injectQueued, when that batch completes.
-      const inFlight = new Set(outstanding.messages.map((m) => m.messageId));
-      const backlog = parsePending({ messages: change.rewake }).filter(
-        (message) =>
-          inFlight.has(message.messageId) && !completed.has(message.messageId),
-      );
-      if (backlog.length > 0) {
-        // A generation change explicitly bypasses ordinary de-duplication:
-        // re-inject the backlog notice even when an earlier copy is still
-        // queued in pi, so a daemon restart cannot strand the wake.
-        inject(formatBatch(backlog));
-      }
+    if (change.rewake.length > 0) {
+      // Only the batch this session already holds is re-announced, by
+      // replaying its cursor; messages merely queued are injected once when
+      // that batch completes.
+      const cursor = outstanding?.cursor ?? chainHead;
+      if (cursor !== null) void replayCursor(cursor);
     }
   }
 
@@ -581,8 +525,7 @@ export default function (pi: ExtensionAPI) {
 
   async function completeOutstandingOnce(): Promise<void> {
     if (outstanding === null) return;
-    for (const message of outstanding.messages) {
-      const id = message.messageId;
+    for (const id of outstanding.members) {
       if (completed.has(id) || kept.has(id)) continue;
       const answer = await callDaemon("message.settle_hint", signed({ messageId: id }), false);
       if (answer.hint === "ack") {
@@ -760,7 +703,7 @@ export default function (pi: ExtensionAPI) {
         inject(outstanding.injectedText);
         return;
       }
-      for (const message of outstanding.messages) kept.add(message.messageId);
+      for (const messageId of outstanding.members) kept.add(messageId);
       outstanding = null;
       endTurn("failed");
       await flushReports();

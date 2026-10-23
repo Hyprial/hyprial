@@ -14,7 +14,6 @@ from pydantic import Field
 
 from hyprial import __version__
 from hyprial.kernel import ipc_errors
-from hyprial.kernel import session_fetch_params
 
 from hyprial.daemon.impl.mcp.api  import DaemonRequestRejected
 from hyprial.daemon.impl.mcp.proxy  import StatelessDaemonProxy
@@ -206,18 +205,17 @@ def create_mcp_server(
 
     @server.tool(
         description=(
-            "Read the daemon-owned durable inbox, returning each message's "
-            "summary and body byte count. Use harness_read_body for the full "
-            "body. Messages remain pending until harness_reply or harness_ack "
-            "succeeds."
+            "Read the daemon-owned durable inbox as one coalesced batch "
+            "(inbox-batch-v1): every pending item with its full body, or the "
+            "one private spill file when it exceeds the inline budget. Inject "
+            "delivery.text as-is, settle every listed messageId separately, "
+            "and do not re-read bodies that are already inline."
         )
     )
     async def harness_read(ctx: Context) -> dict[str, Any]:
         if channel_adapter is not None:
             return await channel_adapter.harness_read()
-        return await invoke(
-            ctx, "message.pending.list", session_fetch_params(), mutation=False
-        )
+        return await invoke(ctx, "message.pending.batch", {}, mutation=False)
 
     @server.tool(
         description=(

@@ -113,8 +113,9 @@ class InboxServiceOutboxMixin:
         return self._db.execute(
             """INSERT OR IGNORE INTO system_notices(
                    message_id, conversation_id, sender, recipient, payload,
-                   intent, lifecycle, idempotency_key, created_at_ms, summary
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   intent, lifecycle, idempotency_key, created_at_ms, summary,
+                   arrival_ordinal
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 notice.message_id,
                 notice.conversation_id,
@@ -126,6 +127,7 @@ class InboxServiceOutboxMixin:
                 notice.idempotency_key,
                 notice.created_at_ms,
                 notice.summary,
+                self._next_arrival_ordinal(),
             ),
         )
     def _has_system_notice(self, message_id: str) -> bool:
@@ -154,11 +156,21 @@ class InboxServiceOutboxMixin:
                 )
         return notices
     @_synchronized
-    def dismiss_system_notice(self, message_id: str) -> bool:
+    def dismiss_system_notice(
+        self, message_id: str, *, recipient: str | None = None
+    ) -> bool:
+        """Remove one notice, optionally scoped to the caller's own inbox key."""
+
         with self._db:
-            cursor = self._db.execute(
-                "DELETE FROM system_notices WHERE message_id = ?", (message_id,)
-            )
+            if recipient is None:
+                cursor = self._db.execute(
+                    "DELETE FROM system_notices WHERE message_id = ?", (message_id,)
+                )
+            else:
+                cursor = self._db.execute(
+                    "DELETE FROM system_notices WHERE message_id = ? AND recipient = ?",
+                    (message_id, recipient),
+                )
         return cursor.rowcount == 1
     @_synchronized
     def submit_progress_event(self, event: ProgressEvent, *, recipient: str) -> bool:

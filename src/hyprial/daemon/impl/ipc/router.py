@@ -124,6 +124,7 @@ _IPC_STATS_METHODS = frozenset(
         "message.ack",
         "message.history",
         "message.pending.list",
+        "message.pending.batch",
         "message.pending.wait",
         "message.query",
         IPC_MESSAGE_READ_BODY,
@@ -536,6 +537,8 @@ class _IpcDispatchMixin:
             )
         if method == "message.pending.list":
             return self._ipc_message_pending_list(method, params, _trusted_message_origin=_trusted_message_origin)
+        if method == "message.pending.batch":
+            return self._ipc_message_pending_batch(method, params, _trusted_message_origin=_trusted_message_origin)
         if method == "message.pending.wait":
             return self._ipc_message_pending_wait(method, params, _trusted_message_origin=_trusted_message_origin)
         if method.startswith("routine."):

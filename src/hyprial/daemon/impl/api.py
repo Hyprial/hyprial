@@ -15,7 +15,26 @@ from typing import Any, Mapping, Protocol, runtime_checkable
 
 from hyprial.kernel import ipc_errors
 
-from hyprial.kernel import HarnessLaunchSpec
+from hyprial.kernel import (
+    ADAPTER_URI_PREFIX,
+    CHANNEL_URI_PREFIX,
+    HarnessLaunchSpec,
+)
+
+
+def visible_message_origin(body: object, sender: str) -> dict[str, Any]:
+    """Project stored provenance without granting trust to a missing record."""
+
+    origin = body.get("origin") if isinstance(body, dict) else None
+    if isinstance(origin, dict) and origin:
+        return origin
+    if sender.startswith((CHANNEL_URI_PREFIX, ADAPTER_URI_PREFIX)):
+        via = "adapter"
+    elif sender.startswith("user:"):
+        via = "operator"
+    else:
+        via = "daemon"
+    return {"via": via}
 
 
 def _freeze_delivery_json(value: object) -> object:
@@ -53,10 +72,30 @@ class HarnessDelivery:
     hook_request: bool = False
     #: True only when reconcile sourced this delivery from ``system_notices``.
     notice: bool = False
+    #: The frozen snapshot cursor when ``message`` is a complete
+    #: ``inbox-batch-v1`` rendering.  Final model boundaries pass
+    #: ``message`` verbatim in that case; the scalar prompt header is only
+    #: for the retained single-message/mechanism path.
+    batch_cursor: str | None = None
+    #: Ordered members this batch delivery claims and settles independently.
+    message_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        if self.message_ids and self.delivery_id not in self.message_ids:
+            raise ValueError("a batch delivery id must be one of its member message ids")
         if self.origin is not None:
             object.__setattr__(self, "origin", _freeze_delivery_json(self.origin))
+
+    def model_prompt(self) -> str:
+        """The exact model input for this delivery.
+
+        A batch delivery already carries the daemon's complete
+        ``inbox-batch-v1`` rendering, so the scalar header would wrap it a
+        second time.  Everything else keeps the historical prompt, including
+        mechanism hook text.
+        """
+
+        return self.message if self.batch_cursor is not None else delivery_prompt(self)
 
 
 def describe_sender(origin: Mapping[str, Any] | None) -> str | None:
@@ -286,6 +325,13 @@ class HarnessResult:
     #: sent AS the worker to this address instead of replied to the sender.
     #: The daemon performs the send; the harness never holds a send path.
     forward_to: str | None = None
+    #: Ordered inbox members represented by one managed batch turn.  The turn
+    #: has no separate identity, so ``delivery_id`` is one of these member IDs.
+    message_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.message_ids and self.delivery_id not in self.message_ids:
+            raise ValueError("a batch result id must be one of its member message ids")
 
 
 @runtime_checkable

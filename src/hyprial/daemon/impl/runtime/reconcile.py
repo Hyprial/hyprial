@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from hyprial.daemon.impl.runtime.settlement import (
     _RETRY_PUMP_JOIN_SECONDS,
     _RETRY_PUMP_RETRY_FLOOR_SECONDS,
@@ -19,10 +21,11 @@ from hyprial.daemon.impl.api  import (
     HarnessDelivery,
 )
 from hyprial.kernel import DesiredStateError, parse_agent_uri
-from hyprial.daemon.impl.harnesses.carrier.contract import (
-    injection_from_inbox,
-    render_injection,
+from hyprial.daemon.impl.inbox.batch.render import (
+    render_scalar_notice,
+    render_scalar_summary,
 )
+from hyprial.daemon.impl.inbox.batch.service import capture_batch
 from hyprial.daemon.impl.harnesses.turn_delivery.protocol import (
     is_mechanism_hook_request,
     mechanism_of,
@@ -239,7 +242,14 @@ class _BridgeReconcileMixin:
         harness = self._harness_kind(parsed[2]) if parsed is not None else None
         if harness is not None and mechanism_of(harness) == "python_worker":
             return self._message_text(message)
-        return render_injection(injection_from_inbox(message))
+        return render_scalar_summary(
+            message_id=message.message_id,
+            sender=message.sender,
+            recipient=message.recipient,
+            intent=message.intent,
+            summary=message.summary or "",
+            body_bytes=len(message.payload),
+        )
 
     def _dispatch_harness_deliveries(self) -> int:
         accepted = self._drain_dispatch_offer_outcomes()
@@ -283,7 +293,24 @@ class _BridgeReconcileMixin:
                     recipient,
                     {message.message_id for message in (*pending_messages, *notices)},
                 )
+            # One daemon-rendered batch per idle actor, plus the retained
+            # scalar path for mechanism hook requests (never model text).
+            batch_members, batch_dispatched = (
+                ((), False)
+                if actor_held
+                else self._dispatch_batch(
+                    actor,
+                    recipient,
+                    messages=messages,
+                    pending_result_ids=pending_result_ids,
+                )
+            )
+            if batch_dispatched:
+                accepted += 1
             for message in messages:
+                if message.message_id in batch_members:
+                    # Already claimed by the accepted batch delivery.
+                    continue
                 hook_request = is_mechanism_hook_request(message)
                 if actor_held and not hook_request:
                     # Keep scanning only for mechanism-owned hook requests.
@@ -366,8 +393,11 @@ class _BridgeReconcileMixin:
                         conversation_id=notice.conversation_id,
                         sender=notice.sender,
                         recipient=notice.recipient,
-                        message=render_injection(
-                            injection_from_inbox(notice, notice=True)
+                        message=render_scalar_notice(
+                            sender=notice.sender,
+                            recipient=notice.recipient,
+                            text=notice.summary or "",
+                            created_at_ms=notice.created_at_ms,
                         ),
                         origin=self._message_origin(notice),
                         hook_request=is_mechanism_hook_request(notice),
@@ -396,6 +426,129 @@ class _BridgeReconcileMixin:
                         dismiss_notice(notice.message_id)
                         accepted += 1
         return accepted
+
+    def _model_eligible(self, message: InboxMessage) -> bool:
+        """May this row join a model-facing batch?
+
+        Mechanism hook requests and Python/TypeSafe worker protocol frames stay
+        scalar and isolated by contract: their payload is machine protocol, not
+        text to concatenate with a model batch.
+        """
+
+        if is_mechanism_hook_request(message):
+            return False
+        parsed = parse_agent_uri(message.recipient)
+        harness = self._harness_kind(parsed[2]) if parsed is not None else None
+        return not (harness is not None and mechanism_of(harness) == "python_worker")
+
+    def _dispatch_batch(
+        self,
+        actor: str,
+        recipient: str,
+        *,
+        messages: tuple[InboxMessage, ...],
+        pending_result_ids: frozenset[str],
+    ) -> tuple[tuple[str, ...], bool]:
+        """Offer one already-rendered batch to this actor's managed worker.
+
+        A managed batch claims every member before enqueue so the next tick
+        cannot also start scalar turns for younger rows.  The turn result is
+        telemetry: no member is replied to or acked from it.
+        """
+
+        claimed = self._batch_claims.get(actor, ())
+        candidates = tuple(
+            message
+            for message in messages
+            if message.message_id not in pending_result_ids
+            and message.message_id not in self._pending_settle_results
+            and self._model_eligible(message)
+            and message.message_id not in claimed
+        )
+        if not candidates or claimed:
+            # One accepted, unconsumed batch edge per actor: no successor while
+            # a batch turn still owns its members.
+            return claimed, False
+        try:
+            view = capture_batch(
+                self.inbox,
+                recipient,
+                keys=(recipient,),
+                limit_bytes=self._inbox_batch_inline_bytes(),
+                epoch="",
+                include_notices=False,
+                only=tuple(message.message_id for message in candidates),
+            )
+        except Exception:  # noqa: BLE001 - one actor's capture may not stop the tick
+            return claimed, False
+        if not view.text or not view.cursor:
+            return claimed, False
+        members = view.message_ids
+        if not members:
+            return claimed, False
+        first = candidates[0]
+        delivery = HarnessDelivery(
+            # A batch is only a one-shot transport wrapper, never an identity.
+            # The queue's required key is therefore the first real member ID;
+            # ``message_ids`` remains the complete ordered settlement set.
+            delivery_id=members[0],
+            conversation_id=first.conversation_id,
+            sender=first.sender,
+            recipient=first.recipient,
+            message=view.text,
+            origin=self._message_origin(first),
+            batch_cursor=view.cursor,
+            message_ids=members,
+        )
+        # Preserve the existing first-member hook interception.  The batch
+        # already carries that member's ID, so no wrapper identity is minted.
+        if self._delivery_hooks is not None:
+            hook_delivery = replace(
+                delivery, delivery_id=first.message_id, message_ids=()
+            )
+            prepared = self._delivery_hooks.prepare_delivery(hook_delivery)
+            if prepared is None:
+                return claimed, False
+            delivery = replace(delivery, hook_text=prepared.hook_text)
+        offers = self._dispatch_offers
+        if offers is not None:
+            offered = offers.offer(actor, delivery, original=first, retry=False, notice=False)
+            if not offered:
+                return claimed, False
+        elif not self.harnesses.dispatch(actor, delivery):
+            return claimed, False
+        for message in candidates:
+            self._note_delivery_seen(actor, message)
+            self._refresh_queued_hold(
+                message.message_id,
+                worker=recipient,
+                now_ms=self._clock_ms(),
+                force=True,
+            )
+            if self._delivery_hooks is not None:
+                self._delivery_hooks.mark_dispatched(message.message_id)
+        claimed = *claimed, *members
+        self._batch_claims[actor] = claimed
+        return claimed, True
+
+    def _release_batch_claim(
+        self, delivery_id: str, message_ids: tuple[str, ...] = ()
+    ) -> None:
+        """Release the real members named by a result."""
+
+        members = frozenset(message_ids or (delivery_id,))
+        for actor, claimed in tuple(self._batch_claims.items()):
+            remaining = tuple(member for member in claimed if member not in members)
+            if len(remaining) == len(claimed):
+                continue
+            if remaining:
+                self._batch_claims[actor] = remaining
+            else:
+                self._batch_claims.pop(actor, None)
+
+    def _inbox_batch_inline_bytes(self) -> int:
+        value = getattr(self, "_inbox_batch_inline_limit_bytes", None)
+        return value if isinstance(value, int) and not isinstance(value, bool) else 16 * 1024
 
     def _drain_dispatch_offer_outcomes(self) -> int:
         offers = self._dispatch_offers

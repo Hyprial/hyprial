@@ -229,6 +229,15 @@ class DaemonEventBridge(_BridgeForwardsMixin, _BridgeReconcileMixin, _BridgeResu
         # never re-dispatched meanwhile: the answer exists, asking the model
         # again is what looped wangshuo-sprite on 2026-09-24.
         self._pending_settle_results: dict[str, HarnessResult] = {}
+        #: Members an accepted managed batch already claimed, keyed only by
+        #: actor.  The wrapper's transient turn id is never a settlement key.
+        self._batch_claims: dict[str, tuple[str, ...]] = {}
+        #: Actor-mode batch members not yet durably classified.  The outer key
+        #: exists only until the transient Harness claim can be retired.
+        self._pending_batch_members: dict[str, dict[str, HarnessResult]] = {}
+        from hyprial.daemon.impl.inbox.batch import inline_limit_from_environment
+
+        self._inbox_batch_inline_limit_bytes = inline_limit_from_environment()
         self._pending_forward_outcomes: dict[str, ForwardOutcome] = {}
         self._clock_ms = clock_ms or (lambda: time.time_ns() // 1_000_000)
         # Refresh halfway through the existing hold budget.  This leaves one

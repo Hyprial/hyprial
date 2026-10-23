@@ -21,10 +21,6 @@ from hyprial.kernel import Logger
 
 from hyprial.daemon.impl.harnesses.carrier.codex_carrier_store  import CodexCarrierStore
 from hyprial.daemon.impl.harnesses.carrier.codex_carrier_support import TurnReportRelay
-from hyprial.daemon.impl.harnesses.carrier.contract import (
-    injection_from_row,
-    render_injection,
-)
 from hyprial.daemon.impl.harnesses.carrier.interactive_carrier_runtime  import (
     FETCHED,
     FINAL_OBSERVED,
@@ -524,8 +520,19 @@ class CodexInteractiveCarrier(_CarrierSettlementMixin):
                 state.delivery.delivery_id
                 for state in self._carrier_runtime.snapshots()
             }
+            # A batch claims every member, so a younger member must not look
+            # "new" on the next poll just because only the head is the turn key.
+            # The durable store is the truth here: a failed/removed delivery
+            # drops its row, which is exactly when a re-capture may happen.
+            for state in self._carrier_runtime.snapshots():
+                known |= set(state.delivery.message_ids)
             if self._store is not None:
                 known |= self._store.kept_ids(self.actor)
+                known |= {
+                    member
+                    for stored in self._store.load(self.actor, self.session_ref)
+                    for member in stored.delivery.message_ids
+                }
             return known
 
         def _forget_gone_ids(self, response: Mapping[str, object]) -> None:
@@ -579,53 +586,66 @@ class CodexInteractiveCarrier(_CarrierSettlementMixin):
                 if isinstance(item, Mapping) and isinstance(item.get("messageId"), str)
             }
             if listed_ids - known:
-                fetched = self.daemon_request(
-                    "message.pending.list",
-                    self._signed({"fetched": True}),
-                ).get("messages", [])
-                for item in fetched if isinstance(fetched, list) else []:
-                    if not isinstance(item, dict):
-                        continue
-                    # Only the contract's summary block reaches the model; the
-                    # row's body is never read.
-                    injection = injection_from_row(item)
-                    if injection is None:
-                        continue
-                    message_id = injection.message_id
-                    if message_id in known:
-                        # The fetched listing keeps returning a row until it is
-                        # settled, so a delivery that already progressed past
-                        # FETCHED reappears here on every poll that admits a new
-                        # message.  Re-staging it trips the store's
-                        # already-correlated guard, and that exception used to
-                        # abort the whole poll iteration.
-                        continue
+                # One daemon-rendered batch per injection edge.  The list above
+                # was the doorbell; this is the sole consuming read, and its
+                # delivery.text is injected byte for byte (no local renderer).
+                batch = self.daemon_request("message.pending.batch", self._signed())
+                items = batch.get("items")
+                delivery_block = batch.get("delivery")
+                cursor = batch.get("cursor")
+                text = (
+                    delivery_block.get("text")
+                    if isinstance(delivery_block, Mapping)
+                    else None
+                )
+                members = tuple(
+                    item["messageId"]
+                    for item in (items if isinstance(items, list) else [])
+                    if isinstance(item, Mapping)
+                    and isinstance(item.get("messageId"), str)
+                )
+                if isinstance(text, str) and text and isinstance(cursor, str) and members:
+                    fresh = [member for member in members if member not in known]
+                    first = next(
+                        (
+                            item
+                            for item in (items if isinstance(items, list) else [])
+                            if isinstance(item, Mapping)
+                            and item.get("messageId") == (fresh[0] if fresh else members[0])
+                        ),
+                        {},
+                    )
                     delivery = HarnessDelivery(
-                        delivery_id=message_id,
-                        conversation_id=str(item.get("conversationId") or message_id),
-                        sender=str(item.get("from") or "unknown"),
+                        delivery_id=(fresh[0] if fresh else members[0]),
+                        conversation_id=str(
+                            first.get("conversationId")
+                            or (fresh[0] if fresh else members[0])
+                        ),
+                        sender=str(first.get("from") or "unknown"),
                         recipient=self.actor,
-                        message=render_injection(injection),
+                        message=text,
                         origin=(
-                            item.get("origin")
-                            if isinstance(item.get("origin"), dict)
+                            first.get("origin")
+                            if isinstance(first.get("origin"), dict)
                             else None
                         ),
+                        batch_cursor=cursor,
+                        message_ids=members,
                     )
                     try:
                         accepted = self._stage_carrier_fetched(
                             delivery,
-                            str(item.get("intent") or "request"),
+                            str(first.get("intent") or "request"),
                         )
-                    except Exception as error:  # noqa: BLE001 - isolate one poisoned row
+                    except Exception as error:  # noqa: BLE001 - isolate one poisoned edge
                         self._log(
                             "error",
                             "worker.carrier.error",
                             stage="carrier-admission",
-                            messageId=message_id,
+                            messageId=delivery.delivery_id,
                             error=str(error) or type(error).__name__,
                         )
-                        continue
+                        accepted = True
                     if not accepted:
                         self._log(
                             "error",

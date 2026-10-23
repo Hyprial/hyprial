@@ -71,6 +71,24 @@ class WakeDriver(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class _BatchCustody:
+    """One accepted snapshot's custody at one injection point.
+
+    ``consumed`` is the connector's proof that a real model turn took this
+    exact text; ``replay`` is an explicit, bounded re-delivery (a connector
+    generation rearm or a restart recovery), never a count-change response.
+    """
+
+    cursor: str
+    message_ids: tuple[str, ...]
+    text: str
+    predecessor_cursor: str | None = None
+    consumed: bool = False
+    replay: bool = False
+    generation: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class _QueuedWake:
     actor: str
     delivery_id: str
@@ -79,6 +97,7 @@ class _QueuedWake:
     not_before: float = 0.0
     state: WakeDeliveryState = WakeDeliveryState.QUEUED
     origin: Mapping[str, object] | None = None
+    batch: _BatchCustody | None = None
 
 
 class WakeCoordinator:
@@ -189,6 +208,144 @@ class WakeCoordinator:
         self._pending_count += 1
         return True
 
+    def enqueue_batch(
+        self,
+        actor: str,
+        *,
+        cursor: str,
+        message_ids: Iterable[str],
+        text: str,
+        predecessor_cursor: str | None = None,
+        generation: str | None = None,
+    ) -> bool:
+        """Queue one accepted-edge candidate without replacing an unconsumed one.
+
+        Enqueuing is not injection.  While an earlier batch at this actor is
+        signalled and unconsumed, this record simply waits: the debounce rule
+        is enforced in :meth:`dispatch_due`, where the driver -- and therefore
+        the only user-visible noise -- lives.
+        """
+
+        if not actor or not cursor or not text:
+            raise ValueError("a batch wake requires actor, cursor and text")
+        members = tuple(message_ids)
+        if not members:
+            raise ValueError("a batch wake requires at least one message id")
+        if self._batch_item(actor, cursor) is not None:
+            return False
+        key = (actor, cursor)
+        if key in self._keys:
+            return False
+        self._keys.add(key)
+        queue = self._queues.get(actor)
+        if queue is None:
+            queue = deque()
+            self._queues[actor] = queue
+            self._actors.append(actor)
+        queue.append(
+            _QueuedWake(
+                actor=actor,
+                delivery_id=cursor,
+                message_id=members[0],
+                batch=_BatchCustody(
+                    cursor=cursor,
+                    message_ids=members,
+                    text=text,
+                    predecessor_cursor=predecessor_cursor,
+                    generation=generation,
+                ),
+            )
+        )
+        self._pending_count += 1
+        return True
+
+    def _batch_item(self, actor: str, cursor: str) -> _QueuedWake | None:
+        for item in self._queues.get(actor, ()):
+            if item.batch is not None and item.batch.cursor == cursor:
+                return item
+        return None
+
+    def _rewrite(self, actor: str, item: _QueuedWake, **changes: object) -> None:
+        """Replace one queue entry in place (frozen dataclasses, one deque)."""
+
+        self._queues[actor] = deque(
+            replace(queued, **changes) if queued is item else queued  # type: ignore[arg-type]
+            for queued in self._queues.get(actor, ())
+        )
+
+    def observe_batch_consumed(self, actor: str, *, cursor: str) -> bool:
+        """A real model turn took this text: the cursor moves to AWAITING_ACK."""
+
+        item = self._batch_item(actor, cursor)
+        if item is None or item.batch is None:
+            return False
+        changed = item.state is not WakeDeliveryState.AWAITING_ACK
+        self._rewrite(
+            actor,
+            item,
+            state=WakeDeliveryState.AWAITING_ACK,
+            not_before=(
+                self._clock() + self._read_retry_delay
+                if changed
+                else item.not_before
+            ),
+            batch=replace(item.batch, consumed=True, replay=False),
+        )
+        return changed
+
+    def rearm_batch(self, actor: str, *, cursor: str, generation: str) -> bool:
+        """A connector generation change replays the retained cursor exactly once."""
+
+        item = self._batch_item(actor, cursor)
+        if item is None or item.batch is None:
+            return False
+        if item.batch.generation == generation:
+            return False
+        self._rewrite(
+            actor,
+            item,
+            not_before=self._clock(),
+            batch=replace(item.batch, replay=True, generation=generation),
+        )
+        return True
+
+    def recover_batch(
+        self,
+        actor: str,
+        *,
+        cursor: str,
+        message_ids: Iterable[str],
+        text: str,
+        generation: str,
+    ) -> bool:
+        """Restart recovery: queue exactly one record for an accepted cursor."""
+
+        if not self.enqueue_batch(
+            actor,
+            cursor=cursor,
+            message_ids=message_ids,
+            text=text,
+            generation=generation,
+        ):
+            return False
+        item = self._batch_item(actor, cursor)
+        if item is None or item.batch is None:
+            return False
+        self._rewrite(
+            actor,
+            item,
+            state=WakeDeliveryState.SIGNALLED,
+            not_before=self._clock(),
+            batch=replace(item.batch, replay=True, generation=generation),
+        )
+        return True
+
+    def batch_members(self, actor: str, *, cursor: str) -> tuple[str, ...]:
+        item = self._batch_item(actor, cursor)
+        if item is None or item.batch is None:
+            return ()
+        return item.batch.message_ids
+
     def delivery_state(self, actor: str, delivery_id: str) -> WakeDeliveryState | None:
         queue = self._queues.get(actor, ())
         return next(
@@ -249,21 +406,57 @@ class WakeCoordinator:
         return changed
 
     def complete(self, actor: str, delivery_id: str) -> bool:
-        """Clear one key only after a successful daemon reply/ack."""
+        """Settle one id: a scalar delivery key, or one batch member.
 
-        key = (actor, delivery_id)
+        Settlement stays per message id.  A batch record is retired only when
+        its last member settles; until then the record keeps its exact cursor
+        and text, so a recovery replay can only return the live subset.
+        """
+
         queue = self._queues.get(actor)
-        if key not in self._keys or queue is None:
+        if queue is None:
             return False
-        remaining = deque(item for item in queue if item.delivery_id != delivery_id)
-        self._keys.remove(key)
-        self._pending_count -= 1
-        if remaining:
-            self._queues[actor] = remaining
-        else:
-            del self._queues[actor]
-            self._actors = deque(item for item in self._actors if item != actor)
-        return True
+        key = (actor, delivery_id)
+        if key in self._keys:
+            remaining = deque(
+                item for item in queue if item.delivery_id != delivery_id
+            )
+            self._keys.remove(key)
+            self._pending_count -= 1
+            if remaining:
+                self._queues[actor] = remaining
+            else:
+                del self._queues[actor]
+                self._actors = deque(item for item in self._actors if item != actor)
+            return True
+        for item in queue:
+            if item.batch is None or delivery_id not in item.batch.message_ids:
+                continue
+            rest = tuple(
+                member for member in item.batch.message_ids if member != delivery_id
+            )
+            if rest:
+                self._queues[actor] = deque(
+                    replace(
+                        queued,
+                        message_id=rest[0],
+                        batch=replace(item.batch, message_ids=rest),
+                    )
+                    if queued is item
+                    else queued
+                    for queued in queue
+                )
+                return True
+            self._keys.discard((actor, item.delivery_id))
+            self._pending_count -= 1
+            remaining = deque(queued for queued in queue if queued is not item)
+            if remaining:
+                self._queues[actor] = remaining
+            else:
+                del self._queues[actor]
+                self._actors = deque(entry for entry in self._actors if entry != actor)
+            return True
+        return False
 
     async def dispatch_due(self) -> list[WakeOutcome]:
         now = self._clock()
@@ -277,8 +470,22 @@ class WakeCoordinator:
         for _ in range(visits):
             actor = self._actors.popleft()
             queue = self._queues[actor]
+            if _signalled_batch_unconsumed(queue):
+                # One accepted model-input edge is unconsumed here: count
+                # changes, the old short resignal cadence and every overdue
+                # recovery timer make zero driver calls, across cursors.
+                self._actors.append(actor)
+                continue
             due_index = None
             for index, queued_item in enumerate(queue):
+                if (
+                    queued_item.batch is not None
+                    and queued_item.state == WakeDeliveryState.SIGNALLED
+                    and not queued_item.batch.replay
+                ):
+                    # A signalled batch is never re-sent on a timer; only an
+                    # explicit generation rearm or a restart recovery replays.
+                    continue
                 if queued_item.not_before <= now:
                     due_index = index
                     break
@@ -319,7 +526,32 @@ class WakeCoordinator:
                 )
             )
             next_attempt = item.attempt + 1
-            if item.state == WakeDeliveryState.AWAITING_ACK:
+            batch = item.batch
+            if batch is not None and attempt.status == WakeStatus.ACCEPTED:
+                # An accepted batch edge is not settlement. It is SIGNALLED
+                # (or stays AWAITING_ACK for an explicit recovery replay) and
+                # keeps its exact cursor/text; no timer may re-send it.
+                queue.insert(
+                    due_index,
+                    replace(
+                        item,
+                        state=(
+                            WakeDeliveryState.AWAITING_ACK
+                            if item.state == WakeDeliveryState.AWAITING_ACK
+                            else WakeDeliveryState.SIGNALLED
+                        ),
+                        attempt=next_attempt,
+                        not_before=now
+                        + (
+                            self._read_retry_delay
+                            if item.state == WakeDeliveryState.AWAITING_ACK
+                            else self._resignal_delay(next_attempt)
+                        ),
+                        batch=replace(batch, replay=False),
+                    ),
+                )
+                outcomes[-1] = replace(outcomes[-1], status=WakeStatus.SIGNALLED)
+            elif item.state == WakeDeliveryState.AWAITING_ACK:
                 # Read custody is proof the session saw this delivery; this
                 # wake was the long-timeout fallback for a session that may
                 # have died after read. Whatever the transport said, stay in
@@ -389,12 +621,34 @@ class WakeCoordinator:
             return
 
 
+def _signalled_batch_unconsumed(queue: Sequence[_QueuedWake]) -> bool:
+    """True while one accepted batch here has no proof of model consumption."""
+
+    return any(
+        item.batch is not None
+        and item.state == WakeDeliveryState.SIGNALLED
+        and not item.batch.replay
+        for item in queue
+    )
+
+
 def _formal_command(
     item: _QueuedWake,
     session: InteractiveSession,
     *,
     unread_batch_size: int,
 ) -> WakeCommand:
+    if item.batch is not None:
+        # The daemon renderer owns every byte of the injected text.
+        return WakeCommand(
+            kind="formal",
+            actor=item.actor,
+            delivery_id=item.batch.cursor,
+            cwd=session.cwd,
+            command=session.command,
+            prompt=item.batch.text,
+            origin=item.origin,
+        )
     if item.state == WakeDeliveryState.AWAITING_ACK:
         prompt = (
             f"Harness delivery_id={item.delivery_id} for actor={item.actor} remains "

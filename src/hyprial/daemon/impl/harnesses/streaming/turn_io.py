@@ -9,6 +9,7 @@ import queue
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -47,6 +48,17 @@ class _SteerUnknown(RuntimeError):
 
 
 class _SequentialTurnIoMixin:
+        @staticmethod
+        def _member_deliveries(delivery):  # type: ignore[no-untyped-def]
+            """Project one batch turn onto each of its real member IDs."""
+
+            if not delivery.message_ids:
+                return (delivery,)
+            return tuple(
+                replace(delivery, delivery_id=member, message_ids=())
+                for member in delivery.message_ids
+            )
+
         def _record_turn_outcome(self, result: HarnessResult) -> int:
             """Track consecutive failures of one delivery; return the run length.
     
@@ -58,17 +70,22 @@ class _SequentialTurnIoMixin:
             """
     
             with self._lock:
+                failure_id = (
+                    result.message_ids[0]
+                    if result.message_ids
+                    else result.delivery_id
+                )
                 if result.status is not HarnessResultStatus.FAILED:
-                    self._repeated_failures.pop(result.delivery_id, None)
+                    self._repeated_failures.pop(failure_id, None)
                     self.repeated_failure_delivery_id = None
                     self.repeated_failure_count = 0
                     return 0
-                repeats = self._repeated_failures.get(result.delivery_id, 0) + 1
-                self._repeated_failures[result.delivery_id] = repeats
+                repeats = self._repeated_failures.get(failure_id, 0) + 1
+                self._repeated_failures[failure_id] = repeats
                 # Published for `hyprial top`: this incident's tell was one delivery
                 # failing over and over, and no surface showed it for 45 hours.
                 # Detection, not diagnosis -- doctor only helps once suspicious.
-                self.repeated_failure_delivery_id = result.delivery_id
+                self.repeated_failure_delivery_id = failure_id
                 self.repeated_failure_count = repeats
                 return repeats
 
@@ -89,46 +106,47 @@ class _SequentialTurnIoMixin:
                     names = self._turn_tool_names.setdefault(delivery.delivery_id, [])
                     if observation.tool_name not in names:
                         names.append(observation.tool_name)
-            try:
-                event = ProgressEvent(
-                    delivery_id=delivery.delivery_id,
-                    conversation_id=delivery.conversation_id,
-                    actor=delivery.recipient,
-                    harness=self.harness,
-                    phase=observation.phase,
-                    seq=self._progress_seq,
-                    emitted_at_ms=time.time_ns() // 1_000_000,
-                    summary=observation.summary,
-                    tool_call_id=observation.tool_call_id,
-                    tool_name=observation.tool_name,
-                    detail=observation.detail,
-                    terminal=observation.terminal,
-                )
-            except ProgressEventError as error:
-                logger = self._logger
-                if logger is not None:
-                    try:
-                        logger.info(
-                            "worker.progress.invalid",
-                            deliveryId=delivery.delivery_id,
-                            phase=observation.phase,
-                            detail=str(error),
-                        )
-                    except OSError:
-                        pass
-                return
-            self._progress_seq += 1
-            while True:
+            for member_delivery in self._member_deliveries(delivery):
                 try:
-                    self._progress.put_nowait(event)
-                    return
-                except queue.Full:
+                    event = ProgressEvent(
+                        delivery_id=member_delivery.delivery_id,
+                        conversation_id=member_delivery.conversation_id,
+                        actor=member_delivery.recipient,
+                        harness=self.harness,
+                        phase=observation.phase,
+                        seq=self._progress_seq,
+                        emitted_at_ms=time.time_ns() // 1_000_000,
+                        summary=observation.summary,
+                        tool_call_id=observation.tool_call_id,
+                        tool_name=observation.tool_name,
+                        detail=observation.detail,
+                        terminal=observation.terminal,
+                    )
+                except ProgressEventError as error:
+                    logger = self._logger
+                    if logger is not None:
+                        try:
+                            logger.info(
+                                "worker.progress.invalid",
+                                deliveryId=member_delivery.delivery_id,
+                                phase=observation.phase,
+                                detail=str(error),
+                            )
+                        except OSError:
+                            pass
+                    continue
+                self._progress_seq += 1
+                while True:
                     try:
-                        self._progress.get_nowait()
-                    except queue.Empty:
-                        continue
-                    with self._lock:
-                        self._progress_dropped += 1
+                        self._progress.put_nowait(event)
+                        break
+                    except queue.Full:
+                        try:
+                            self._progress.get_nowait()
+                        except queue.Empty:
+                            continue
+                        with self._lock:
+                            self._progress_dropped += 1
 
         def _submit_turn_io(
             self,
@@ -364,10 +382,11 @@ class _SequentialTurnIoMixin:
                 started = getattr(observer, "turn_started", None)
                 if callable(started):
                     try:
-                        started(
-                            event.delivery,
-                            started_at_ms=event.emitted_at_ms,
-                        )
+                        for delivery in self._member_deliveries(event.delivery):
+                            started(
+                                delivery,
+                                started_at_ms=event.emitted_at_ms,
+                            )
                     except Exception:
                         # Turn admission is authoritative; hooks are advisory.
                         pass

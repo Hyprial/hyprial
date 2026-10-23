@@ -71,6 +71,7 @@ from hyprial.shell.impl.cli.commands.message.reply import reply
 from hyprial.shell.impl.cli.commands.message.read import read_body
 from hyprial.shell.impl.cli.commands.message.outbox import outbox_app, outbox_list, outbox_prune
 from hyprial.shell.impl.cli.commands.message.delivery import delivery_app, delivery_status
+from hyprial.shell.impl.cli.commands.inbox.batch import inbox_app
 from hyprial.shell.impl.cli.commands.link.commands import link_add, link_app, link_drop, link_list, link_stats
 from hyprial.shell.impl.cli.commands.log.history import RFC3339, _entry_timestamp, _is_log_entry, _read_log_history
 from hyprial.shell.impl.cli.commands.log.query import query_command
@@ -291,6 +292,7 @@ app.add_typer(mcp_app, name="mcp")
 app.add_typer(squire_app, name="squire")
 app.add_typer(user_proxy_app, name="user-proxy")
 app.add_typer(outbox_app, name="outbox")
+app.add_typer(inbox_app, name="inbox")
 app.add_typer(link_app, name="link")
 app.add_typer(delivery_app, name="delivery")
 app.add_typer(autoupdate_app, name="autoupdate")

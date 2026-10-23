@@ -16,6 +16,11 @@ class TurnDeliveryProjection:
     hook_text: str | None = None
     hook_request: bool = False
     notice: bool = False
+    #: Set when ``message`` is a complete ``inbox-batch-v1`` rendering; the
+    #: final model boundary passes it verbatim instead of adding the scalar
+    #: delivery header.  ``message_ids`` are the ordered members it claims.
+    batch_cursor: str | None = None
+    message_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +72,7 @@ class TurnResultProjection:
     output: str = ""
     error: str | None = None
     failure_code: str | None = None
+    message_ids: tuple[str, ...] = ()
 
     def to_payload(self) -> dict[str, object]:
         return {

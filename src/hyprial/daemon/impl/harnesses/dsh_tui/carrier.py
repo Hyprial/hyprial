@@ -184,10 +184,11 @@ class DshPluginWakeDriver:
         return None
 
     async def wake(self, command: WakeCommand) -> WakeAttempt:
-        text = f"[Harness Network] {command.prompt}"
+        # The daemon renderer is byte-authoritative: no local prefix, no local
+        # reformatting.  The plugin injects exactly this text.
         frame: dict[str, object] = {
             "type": "wake",
-            "prompt": text,
+            "prompt": command.prompt,
             "outcomeTimeoutMs": int(DSH_WAKE_OUTCOME_SECONDS * 1000),
         }
         response = await anyio.to_thread.run_sync(

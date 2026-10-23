@@ -4,14 +4,16 @@ A carrier is any adapter that puts a pending inbox row in front of an agent
 turn.  This module owns the three things every carrier shares, and nothing
 about a particular harness:
 
-* how a pending row becomes an injection block (``render_injection``) --
-  summary only, never the body;
 * the four calls the daemon answers a carrier with (``CarrierPort``);
 * the turn IPC method names carriers report on.
 
 The one place that decides ``ack`` versus ``keep`` is
 ``inbox.contracts.settlement.settle_hint_for``, not this module: the message
 authority must not depend on the carrier package.
+
+There is deliberately no renderer here any more.  All model-facing batch text
+comes from ``daemon.impl.inbox.batch`` (``inbox-batch-v1``); a connector that
+formats its own prompt would be a second presentation authority.
 """
 
 from __future__ import annotations
@@ -22,8 +24,6 @@ from typing import Any, Protocol
 
 from hyprial.kernel import DaemonRequestError, ipc_errors
 
-from hyprial.daemon.impl.inbox.contracts.api import InboxMessage
-from hyprial.daemon.impl.inbox.contracts.summary import body_bytes, body_text
 from hyprial.daemon.impl.links.ports import IPC_MESSAGE_SETTLE_HINT, SettleHint
 
 __all__ = [
@@ -36,9 +36,6 @@ __all__ = [
     "IpcCarrierPort",
     "SettleOutcome",
     "TURN_END_STATUSES",
-    "injection_from_inbox",
-    "injection_from_row",
-    "render_injection",
     "settle_injected",
 ]
 
@@ -47,7 +44,8 @@ IPC_SESSION_TURN_ENDED = "session.turn.ended"
 IPC_MESSAGE_ACK = "message.ack"
 TURN_END_STATUSES = frozenset({"completed", "failed"})
 INJECTION_KINDS = frozenset({"message", "notice"})
-#: Persisted injection text version (the codex store records this string).
+#: Persisted scalar injection text version (the codex store records it for
+#: pre-batch rows).  A batch row records ``inbox-batch-v1`` instead.
 INJECTION_FORMAT = "summary-v1"
 
 _NO_SUMMARY = "(none; the sender gave no summary)"
@@ -64,73 +62,6 @@ class Injection:
     kind: str
     summary: str | None
     body_bytes: int
-
-
-def _text(value: object) -> str:
-    return value if isinstance(value, str) else ""
-
-
-def injection_from_row(row: Mapping[str, Any]) -> Injection | None:
-    """Read only the §8.1 fields; never the body, payload or topic."""
-
-    message_id = row.get("messageId")
-    if not isinstance(message_id, str) or not message_id:
-        return None
-    kind = row.get("kind")
-    if kind not in INJECTION_KINDS:
-        kind = "message"
-    summary = row.get("summary")
-    measured = row.get("bodyBytes")
-    return Injection(
-        message_id=message_id,
-        sender=_text(row.get("from")),
-        recipient=_text(row.get("to")),
-        intent=_text(row.get("intent")),
-        kind=kind,
-        summary=summary if isinstance(summary, str) else None,
-        body_bytes=measured if isinstance(measured, int) and not isinstance(measured, bool) else 0,
-    )
-
-
-def injection_from_inbox(message: InboxMessage, *, notice: bool = False) -> Injection:
-    """Build an injection from a durable row.  A notice carries its own text."""
-
-    if notice:
-        return Injection(
-            message_id=message.message_id,
-            sender=message.sender,
-            recipient=message.recipient,
-            intent=message.intent,
-            kind="notice",
-            summary=body_text(message),
-            body_bytes=0,
-        )
-    return Injection(
-        message_id=message.message_id,
-        sender=message.sender,
-        recipient=message.recipient,
-        intent=message.intent,
-        kind="message",
-        summary=message.summary,
-        body_bytes=body_bytes(message),
-    )
-
-
-def render_injection(item: Injection) -> str:
-    """The exact block a model sees.  The body is never inlined."""
-
-    if item.kind == "notice":
-        return f"notice: {item.summary or ''}"
-    summary = item.summary if item.summary else _NO_SUMMARY
-    message_id = item.message_id
-    return (
-        f"summary: {summary}\n"
-        f"(intent: {item.intent}, kind: message, messageId: {message_id}, "
-        f"bodyBytes: {item.body_bytes})\n"
-        f'Full body: harness_read_body("{message_id}") or `hyprial read {message_id}`. '
-        f'Reply with harness_reply("{message_id}", …); if no reply is needed, '
-        f'harness_ack("{message_id}").'
-    )
 
 
 class CarrierPort(Protocol):

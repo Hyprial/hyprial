@@ -11,6 +11,8 @@ from hyprial.daemon.impl.inbox.contracts.ports  import (
     AcknowledgeMessageCommand,
     AdmittedDispatchableCommand,
     AdmittedPendingCommand,
+    BatchSnapshotCommand,
+    BatchSnapshotCompleted,
     CloseInboxCommand,
     DismissSystemNoticeCommand,
     DrainSystemNoticesCommand,
@@ -309,7 +311,29 @@ class DeliveryCustodyLifecycleMixin:
             self._publish_bool(
                 command.correlation_id,
                 "dismiss_system_notice",
-                self._service.dismiss_system_notice(command.message_id),
+                self._service.dismiss_system_notice(
+                    command.message_id, recipient=command.recipient
+                ),
+            )
+            return
+        if isinstance(command, BatchSnapshotCommand):
+            selection = self._service.batch_snapshot(
+                command.recipient,
+                keys=command.keys,
+                now_ms=command.now_ms,
+                cursor=command.cursor,  # type: ignore[arg-type]
+                after=command.after,  # type: ignore[arg-type]
+                after_digest=command.after_digest,
+                include_notices=command.include_notices,
+                only=command.only,
+            )
+            self._publish(
+                BatchSnapshotCompleted(
+                    command.correlation_id,
+                    self._generation,
+                    self._committed_version(),
+                    selection,
+                )
             )
             return
         if isinstance(command, SubmitProgressCommand):

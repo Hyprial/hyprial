@@ -176,6 +176,22 @@ class DrainSystemNoticesCommand:
 class DismissSystemNoticeCommand:
     correlation_id: str
     message_id: str
+    recipient: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BatchSnapshotCommand:
+    """Select one frozen inbox batch on the inbox actor thread (§3.3)."""
+
+    correlation_id: str
+    recipient: str
+    keys: tuple[str, ...]
+    now_ms: int | None = None
+    cursor: object | None = None
+    after: object | None = None
+    after_digest: str | None = None
+    include_notices: bool = True
+    only: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -265,6 +281,7 @@ InboxCommand: TypeAlias = (
     | ReceiveSystemNoticeCommand
     | DrainSystemNoticesCommand
     | DismissSystemNoticeCommand
+    | BatchSnapshotCommand
     | SubmitProgressCommand
     | ReceiveProgressCommand
     | FetchPendingCommand
@@ -364,6 +381,14 @@ class InboxClosed:
 
 
 @dataclass(frozen=True, slots=True)
+class BatchSnapshotCompleted:
+    correlation_id: str
+    generation: int
+    version: int
+    selection: object
+
+
+@dataclass(frozen=True, slots=True)
 class BoolMutationCompleted:
     correlation_id: str
     generation: int
@@ -437,6 +462,7 @@ InboxEvent: TypeAlias = (
     | RetryIoCompleted
     | InboxPruneCompleted
     | BoolMutationCompleted
+    | BatchSnapshotCompleted
     | FailureMutationCompleted
     | HarnessFailureSettled
     | MessagesMutationCompleted

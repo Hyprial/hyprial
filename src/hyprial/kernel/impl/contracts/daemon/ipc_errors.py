@@ -143,6 +143,11 @@ MESSAGE_BODY_UNAVAILABLE = "MESSAGE_BODY_UNAVAILABLE"
 # carrier began branching on it to classify a settlement target as already
 # settled elsewhere.
 MESSAGE_ACK_UNAVAILABLE = "MESSAGE_ACK_UNAVAILABLE"
+# Minted by ``message.pending.batch`` when its rendering exceeds the inline
+# budget and no private actor state root is available for the one spill file.
+# Deliberately distinct from a size limit: the batch is refused rather than
+# written to a shared directory or sent unbounded inline.
+INBOX_BATCH_SPILL_UNAVAILABLE = "INBOX_BATCH_SPILL_UNAVAILABLE"
 USER_DELIVERY_UNAVAILABLE = "USER_DELIVERY_UNAVAILABLE"
 USER_DELIVERY_FAILED = "USER_DELIVERY_FAILED"
 ROUTE_ADAPTER_UNCONFIGURED = "ROUTE_ADAPTER_UNCONFIGURED"

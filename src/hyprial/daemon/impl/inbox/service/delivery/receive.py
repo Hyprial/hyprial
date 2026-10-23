@@ -125,8 +125,9 @@ class InboxServiceReceiveMixin:
                     """INSERT INTO inbox (
                            message_id, conversation_id, sender, recipient, payload, intent,
                            lifecycle, idempotency_key, created_at_ms, received_at_ms,
-                           message_expires_at_ms, expires_at_ms, origin_node, summary
-                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                           message_expires_at_ms, expires_at_ms, origin_node, summary,
+                           arrival_ordinal
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         message.message_id,
                         message.conversation_id,
@@ -149,6 +150,7 @@ class InboxServiceReceiveMixin:
                         ),
                         message.origin_node,
                         message.summary,
+                        self._next_arrival_ordinal(),
                     ),
                 )
                 for key in keys:

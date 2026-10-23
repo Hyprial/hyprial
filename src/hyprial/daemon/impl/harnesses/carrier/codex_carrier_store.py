@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import threading
@@ -32,6 +33,29 @@ class StoredTurnReport:
     phase: str
     status: str | None
     delivery_id: str
+
+
+def _injection_format_of(delivery: HarnessDelivery) -> str:
+    """The persisted text version: a batch is not a scalar summary block."""
+
+    return "inbox-batch-v1" if delivery.batch_cursor is not None else INJECTION_FORMAT
+
+
+def _batch_ids_json(delivery: HarnessDelivery) -> str | None:
+    return json.dumps(list(delivery.message_ids)) if delivery.message_ids else None
+
+
+def _batch_ids_from_row(row: sqlite3.Row) -> tuple[str, ...]:
+    if "batch_message_ids" not in row.keys():
+        return ()
+    raw = row["batch_message_ids"]
+    if not isinstance(raw, str) or not raw:
+        return ()
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return ()
+    return tuple(item for item in value if isinstance(item, str)) if isinstance(value, list) else ()
 
 
 class CodexCarrierStore:
@@ -87,6 +111,16 @@ class CodexCarrierStore:
             # ``message`` is an old body and must never reach a model.
             self._db.execute(
                 "ALTER TABLE codex_interactive_delivery ADD COLUMN injection_format TEXT"
+            )
+        if "batch_cursor" not in columns:
+            # Inbox-batch correlation only: the cursor and its ordered members.
+            # This is not an inbox and never becomes one.
+            self._db.execute(
+                "ALTER TABLE codex_interactive_delivery ADD COLUMN batch_cursor TEXT"
+            )
+        if "batch_message_ids" not in columns:
+            self._db.execute(
+                "ALTER TABLE codex_interactive_delivery ADD COLUMN batch_message_ids TEXT"
             )
         self._db.execute(
             "CREATE TABLE IF NOT EXISTS codex_turn_report (actor TEXT NOT NULL, "
@@ -150,8 +184,9 @@ class CodexCarrierStore:
                 """
                 INSERT INTO codex_interactive_delivery (
                     actor, message_id, session_ref, conversation_id, sender,
-                    message, intent, state, injection_format
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'FETCHED', ?)
+                    message, intent, state, injection_format, batch_cursor,
+                    batch_message_ids
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'FETCHED', ?, ?, ?)
                 ON CONFLICT(actor, message_id) DO NOTHING
                 """,
                 (
@@ -162,14 +197,16 @@ class CodexCarrierStore:
                     delivery.sender,
                     delivery.message,
                     intent,
-                    INJECTION_FORMAT,
+                    _injection_format_of(delivery),
+                    delivery.batch_cursor,
+                    _batch_ids_json(delivery),
                 ),
             )
             self._db.execute(
                 """
                 UPDATE codex_interactive_delivery
                 SET conversation_id = ?, sender = ?, message = ?, intent = ?,
-                    injection_format = ?
+                    injection_format = ?, batch_cursor = ?, batch_message_ids = ?
                 WHERE actor = ? AND message_id = ? AND state = 'FETCHED'
                 """,
                 (
@@ -177,7 +214,9 @@ class CodexCarrierStore:
                     delivery.sender,
                     delivery.message,
                     intent,
-                    INJECTION_FORMAT,
+                    _injection_format_of(delivery),
+                    delivery.batch_cursor,
+                    _batch_ids_json(delivery),
                     actor,
                     delivery.delivery_id,
                 ),
@@ -422,6 +461,12 @@ class CodexCarrierStore:
                 sender=str(row["sender"]),
                 recipient=str(row["actor"]),
                 message=str(row["message"]),
+                batch_cursor=(
+                    str(row["batch_cursor"])
+                    if "batch_cursor" in row.keys() and row["batch_cursor"]
+                    else None
+                ),
+                message_ids=_batch_ids_from_row(row),
             ),
             intent=str(row["intent"]),
             state=str(row["state"]),

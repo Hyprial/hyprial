@@ -29,6 +29,8 @@ from hyprial.daemon.impl.inbox.contracts.ports  import (
     AdmittedDispatchableCommand,
     AdmittedPendingCommand,
     AlarmCompleted,
+    BatchSnapshotCommand,
+    BatchSnapshotCompleted,
     AcknowledgeCompleted,
     AcknowledgeMessageCommand,
     BoolMutationCompleted,
@@ -88,6 +90,7 @@ class DeliveryCustodyFacade:
         timeout: float = DELIVERY_CUSTODY_CALL_TIMEOUT_SECONDS,
     ) -> None:
         self._coordinator = coordinator
+        self._database = Path(database)
         self._reads = InboxReadProjection(database)
         self._timeout = timeout
         self.delivery_status = DeliveryStatusProjection(self._reads)
@@ -391,12 +394,52 @@ class DeliveryCustodyFacade:
             )
         )
 
-    def dismiss_system_notice(self, message_id: str) -> bool:
+    def dismiss_system_notice(
+        self, message_id: str, *, recipient: str | None = None
+    ) -> bool:
         return self._bool(
             DismissSystemNoticeCommand(
-                self._correlation("dismiss-notice"), message_id
+                self._correlation("dismiss-notice"), message_id, recipient
             )
         )
+
+    def batch_snapshot(
+        self,
+        recipient: str,
+        *,
+        keys: tuple[str, ...],
+        now_ms: int | None = None,
+        cursor: object | None = None,
+        after: object | None = None,
+        after_digest: str | None = None,
+        include_notices: bool = True,
+        only: tuple[str, ...] | None = None,
+    ) -> object:
+        """One frozen batch selection, admitted on the inbox actor thread."""
+
+        event = self._call(
+            BatchSnapshotCommand(
+                self._correlation("batch-snapshot"),
+                recipient,
+                tuple(keys),
+                now_ms,
+                cursor,
+                after,
+                after_digest,
+                include_notices,
+                only,
+            ),
+            BatchSnapshotCompleted,
+        )
+        assert isinstance(event, BatchSnapshotCompleted)
+        return event.selection
+
+    def batch_cursor_key(self) -> bytes:
+        """The persistent cursor-MAC key for this installation's inbox."""
+
+        from hyprial.daemon.impl.inbox.batch.cursor import cursor_key
+
+        return cursor_key(self._database, "")
 
     def submit_progress_event(self, event: ProgressEvent, *, recipient: str) -> bool:
         return self._bool(

@@ -21,16 +21,13 @@ from hyprial.daemon.impl.api import (
     HarnessResult,
     HarnessResultStatus,
     classify_harness_failure,
-    delivery_prompt,
 )
 from hyprial.kernel import ProcessLiveness, ProcessLivenessState
 from hyprial.daemon.impl.inbox.tracking.progress import ProgressEvent
 from hyprial.kernel import Logger
 
-
 if TYPE_CHECKING:
     pass
-
 from hyprial.daemon.impl.harnesses.turn_delivery.turn.turn_ports import (
     CloseTurnPumpCommand,
     EnqueueTurnCommand,
@@ -39,7 +36,6 @@ from hyprial.daemon.impl.harnesses.turn_delivery.turn.turn_ports import (
     TurnResultProjection,
 )
 from hyprial.daemon.impl.harnesses.turn_delivery.turn.turn_runtime import TurnRuntime, provider_failure_is_terminal
-
 
 from hyprial.daemon.impl.harnesses.streaming.base import BaseTurnProcess
 from hyprial.daemon.impl.harnesses.streaming.protocol import (
@@ -287,6 +283,7 @@ class SequentialTurnProcess(
                             hook_text=delivery.hook_text,
                             hook_request=delivery.hook_request,
                             notice=delivery.notice,
+                            batch_cursor=getattr(delivery, "batch_cursor", None), message_ids=getattr(delivery, "message_ids", ()),
                         ),
                     )
                 )
@@ -311,6 +308,7 @@ class SequentialTurnProcess(
                     output=result.output,
                     error=result.error,
                     failure_code=result.failure_code,
+                    message_ids=result.message_ids,
                 )
                 for result in self._turn_runtime.drain_results(limit)
             )
@@ -329,14 +327,20 @@ class SequentialTurnProcess(
                     )
                 if delivery is None:
                     continue
+                observed = tuple(
+                    (member, replace(result, delivery_id=member.delivery_id,
+                                     message_ids=()))
+                    for member in self._member_deliveries(delivery)
+                )
                 try:
-                    observer(
-                        delivery,
-                        result,
-                        started_at_ms=started_at_ms,
-                        ended_at_ms=ended_at_ms,
-                        tool_names=tool_names,
-                    )
+                    for member_delivery, member_result in observed:
+                        observer(
+                            member_delivery,
+                            member_result,
+                            started_at_ms=started_at_ms,
+                            ended_at_ms=ended_at_ms,
+                            tool_names=tool_names,
+                        )
                 except Exception:
                     # Turn settlement is authoritative; an observer is advisory.
                     pass
@@ -511,16 +515,11 @@ class SequentialTurnProcess(
                                     hook_text=projection.hook_text,
                                     hook_request=projection.hook_request,
                                     notice=projection.notice,
+                                    batch_cursor=projection.batch_cursor, message_ids=projection.message_ids,
                                 )
                             channel = getattr(self, "worker_channel", None)
                             if channel is not None:
-                                from hyprial.daemon.impl.pac.contracts.delivery import (
-                                    ALREADY_CONSUMED,
-                                    EXPIRED,
-                                    TERMINALLY_FAILED,
-                                    WITHDRAWN,
-                                    delivery_current,
-                                )
+                                from hyprial.daemon.impl.pac.contracts.delivery import (ALREADY_CONSUMED, EXPIRED, TERMINALLY_FAILED, WITHDRAWN, delivery_current)
                                 from hyprial.daemon.impl.inbox.authority.read import (
                                     delivery_pending,
                                 )
@@ -612,7 +611,7 @@ class SequentialTurnProcess(
                                         time.time_ns() // 1_000_000
                                     )
                             turn_started = True
-                            await client.query(delivery_prompt(current))
+                            await client.query(current.model_prompt())
                             # A selected delivery is not interruptible until the
                             # harness has accepted it as a native turn.  Publishing
                             # it before query() returns lets clients with no turn

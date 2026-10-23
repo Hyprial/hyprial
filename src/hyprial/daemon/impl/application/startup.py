@@ -237,6 +237,16 @@ class _StartupMixin:
             self._warn_if_worker_proxy_absent()
             step(self._start_runtime, DaemonStartupPhase.ACTOR_RUNTIME)
             step(self._start_database_health, DaemonStartupPhase.ACTOR_RUNTIME)
+            # Bounded, best-effort cleanup of the actor-private inbox-batch
+            # cache (§6 of the batch design).  It never casts a message
+            # decision and never blocks startup.
+            try:
+                self._sweep_inbox_batch_spills()
+            except Exception as error:  # noqa: BLE001 - cache cleanup only
+                self._log(
+                    "warn", "daemon", "inbox.batch.spill_sweep_failed",
+                    errorType=type(error).__name__,
+                )
             # Activate only when a protected record or persisted intent exists.
             # Otherwise the first service RPC performs the same composition;
             # an unconfigured daemon owns no service threads or polling work.

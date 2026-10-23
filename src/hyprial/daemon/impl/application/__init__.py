@@ -50,6 +50,9 @@ from hyprial.daemon.impl.inbox import (
     ZenohInboxEndpoint,
 )
 from hyprial.daemon.impl.inbox.tracking.fetch_receipts import FetchReceiptPublisher
+from hyprial.daemon.impl.inbox.batch import (
+    inline_limit_from_environment as inbox_batch_inline_limit_from_environment,
+)
 from hyprial.kernel import configured_hyprial_home
 from hyprial.kernel import Logger
 from hyprial.daemon.impl.operations.management_actor import RegistryManagementAuthority as RegistryManagementHandler
@@ -655,6 +658,9 @@ class DaemonApplication(
         # expose — mutations go through Agent commands; the daemon-side
         # environment composition is a read, not a mutation.
         self._agent_registry = self._agent_session_domains._registry  # noqa: SLF001
+        # Coalesced inbox batch: the aggregate inline budget is configuration,
+        # read once so one daemon cannot render two different budgets.
+        self._inbox_batch_inline_bytes = inbox_batch_inline_limit_from_environment()
         self._agent_migration_lock = threading.Lock()
         keep_migration = self._construct_or_rollback(
             lambda: migrate_legacy_agent_keep_list(

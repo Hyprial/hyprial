@@ -7,6 +7,16 @@ from hyprial.daemon.impl.inbox.contracts.api  import (
     InboxPruneItem,
     OutboxPruneItem,
 )
+from hyprial.daemon.impl.inbox.batch.contract import (
+    SOURCE_INBOX,
+    SOURCE_NOTICE,
+    BatchBounds,
+    BatchCursor,
+    BatchMember,
+    BatchRow,
+    BatchSelection,
+)
+from hyprial.daemon.impl.inbox.contracts.summary import body_bytes, body_text
 from hyprial.daemon.impl.inbox.history import (
     conversation_messages as _conversation_messages,
 )
@@ -536,6 +546,312 @@ class InboxServiceProjectionMixin:
         for message in admitted:
             self.retire_outbox_receipt(message.sender, message.message_id, now_ms=now)
         return admitted
+
+    # -- inbox batch selection (read-only projection over live rows) --------
+
+    def _batch_high_waters(self) -> tuple[int, int, int]:
+        inbox_high = int(
+            self._db.execute(
+                "SELECT COALESCE(MAX(arrival_ordinal), 0) FROM inbox"
+            ).fetchone()[0]
+        )
+        notice_high = int(
+            self._db.execute(
+                "SELECT COALESCE(MAX(arrival_ordinal), 0) FROM system_notices"
+            ).fetchone()[0]
+        )
+        sequence = self._db.execute(
+            "SELECT ordinal FROM inbox_arrival_sequence WHERE singleton = 1"
+        ).fetchone()
+        capture_ordinal = int(sequence[0])
+        return inbox_high, notice_high, capture_ordinal
+
+    @staticmethod
+    def _batch_keys_sql(keys: tuple[str, ...]) -> str:
+        return ", ".join("?" for _ in keys)
+
+    def _batch_live_inbox(
+        self, keys: tuple[str, ...], now: int, *, since: int | None = None
+    ) -> tuple[InboxMessage, ...]:
+        placeholders = self._batch_keys_sql(keys)
+        since_sql = "" if since is None else "AND arrival_ordinal > ?"
+        params: tuple[object, ...] = (*keys, now)
+        if since is not None:
+            params += (since,)
+        rows = self._db.execute(
+            f"""SELECT * FROM inbox WHERE recipient IN ({placeholders})
+                  AND consumed = 0 AND (expires_at_ms IS NULL OR expires_at_ms > ?)
+                  AND NOT EXISTS (SELECT 1 FROM harness_failure_settlements
+                                   WHERE harness_failure_settlements.message_id = inbox.message_id
+                                     AND harness_failure_settlements.terminal = 1)
+                  {since_sql} ORDER BY arrival_ordinal""",  # noqa: S608
+            params,
+        ).fetchall()
+        return tuple(self._row_message(row) for row in rows)
+
+    def _batch_live_notices(
+        self, keys: tuple[str, ...], *, since: int | None = None
+    ) -> tuple[InboxMessage, ...]:
+        placeholders = self._batch_keys_sql(keys)
+        since_sql = "" if since is None else "AND arrival_ordinal > ?"
+        params: tuple[object, ...] = (*keys,) if since is None else (*keys, since)
+        rows = self._db.execute(
+            f"SELECT * FROM system_notices WHERE recipient IN ({placeholders}) "  # noqa: S608
+            f"{since_sql} ORDER BY arrival_ordinal",
+            params,
+        ).fetchall()
+        return tuple(self._row_message(row) for row in rows)
+
+    def _batch_ordinals(self, source: str, ids: tuple[str, ...]) -> dict[str, int]:
+        if not ids:
+            return {}
+        table = "inbox" if source == SOURCE_INBOX else "system_notices"
+        placeholders = ", ".join("?" for _ in ids)
+        rows = self._db.execute(
+            f"SELECT message_id, arrival_ordinal FROM {table} "  # noqa: S608
+            f"WHERE message_id IN ({placeholders})",
+            ids,
+        ).fetchall()
+        return {str(row[0]): int(row[1] or 0) for row in rows}
+
+    @staticmethod
+    def _batch_deferred_rows(
+        source: str,
+        messages: tuple[InboxMessage, ...],
+        ordinals: dict[str, int],
+        keys: set[tuple[str, str, int]],
+    ) -> tuple[InboxMessage, ...]:
+        return tuple(
+            m for m in messages if (source, m.message_id, ordinals[m.message_id]) in keys
+        )
+    def _batch_row(self, source: str, message: InboxMessage, ordinal: int) -> BatchRow:
+        return BatchRow(
+            SOURCE_INBOX if source == SOURCE_INBOX else SOURCE_NOTICE,
+            message,
+            ordinal,
+            body_text(message),
+            body_bytes(message),
+        )
+
+    def _batch_choose(
+        self,
+        recipient: str,
+        *,
+        keys: tuple[str, ...],
+        now: int,
+        inbox_rows: tuple[InboxMessage, ...],
+        notice_rows: tuple[InboxMessage, ...],
+        bounds: BatchBounds,
+        deferred: tuple[BatchMember, ...] = (),
+        predecessor_digest: str | None = None,
+    ) -> BatchSelection:
+        """Admit inbox candidates once, then freeze members and deferred."""
+
+        admitted = self._admit_dispatch(inbox_rows, now, frozenset())
+        admitted_ids = {message.message_id for message in admitted}
+        deleted = tuple(
+            message for message in inbox_rows if message.message_id not in admitted_ids
+        )
+        inbox_ordinals = self._batch_ordinals(
+            SOURCE_INBOX, tuple(message.message_id for message in inbox_rows)
+        )
+        notice_ordinals = self._batch_ordinals(
+            SOURCE_NOTICE, tuple(message.message_id for message in notice_rows)
+        )
+        rows: list[BatchRow] = []
+        seen: set[tuple[str, str]] = set()
+        for source, messages, ordinals in (
+            (SOURCE_INBOX, inbox_rows, inbox_ordinals),
+            (SOURCE_NOTICE, notice_rows, notice_ordinals),
+        ):
+            for message in messages:
+                key = (source, message.message_id)
+                if key in seen or (
+                    source == SOURCE_INBOX and message.message_id not in admitted_ids
+                ):
+                    continue
+                seen.add(key)
+                rows.append(
+                    self._batch_row(source, message, ordinals[message.message_id])
+                )
+        still_deferred = tuple(
+            BatchMember(SOURCE_INBOX, m.message_id, inbox_ordinals[m.message_id])
+            for m in deleted
+        )
+        merged: list[BatchMember] = []
+        seen_deferred: set[tuple[str, str, int]] = set()
+        for member in (*deferred, *still_deferred):
+            key = (member.source, member.message_id, member.ordinal)
+            if key in seen_deferred:
+                continue
+            seen_deferred.add(key)
+            merged.append(member)
+        self._batch_stamp(admitted, notice_rows, now)
+        return BatchSelection(
+            recipient, bounds, tuple(rows), tuple(merged), predecessor_digest
+        )
+
+    def _batch_stamp(
+        self,
+        inbox_rows: tuple[InboxMessage, ...],
+        notice_rows: tuple[InboxMessage, ...],
+        now: int,
+    ) -> None:
+        """One-way fetched stamp and its receipts; never an acknowledgement."""
+
+        if inbox_rows:
+            meta = self._inbound_ledger_meta(inbox_rows)
+            with self._db:
+                self._db.executemany(
+                    """UPDATE inbox SET fetched_at_ms = COALESCE(fetched_at_ms, ?)
+                        WHERE message_id = ?""",
+                    ((now, message.message_id) for message in inbox_rows),
+                )
+                fresh = [
+                    message
+                    for message in inbox_rows
+                    if self._write_inbound_ledger_locked(
+                        actor=message.recipient,
+                        message=message,
+                        received_at_ms=meta[message.message_id][0],
+                        expires_at_ms=meta[message.message_id][1],
+                    )
+                ]
+            for message in fresh:
+                self._sink_injected(
+                    message.recipient, message, meta[message.message_id][0]
+                )
+            for message in inbox_rows:
+                self.retire_outbox_receipt(
+                    message.sender, message.message_id, now_ms=now
+                )
+        if notice_rows:
+            with self._db:
+                self._db.executemany(
+                    """UPDATE system_notices
+                          SET fetched_at_ms = COALESCE(fetched_at_ms, ?)
+                        WHERE message_id = ?""",
+                    ((now, message.message_id) for message in notice_rows),
+                )
+
+    @_synchronized
+    def batch_snapshot(
+        self,
+        recipient: str,
+        *,
+        keys: tuple[str, ...],
+        now_ms: int | None = None,
+        cursor: BatchCursor | None = None,
+        after: BatchCursor | None = None,
+        after_digest: str | None = None,
+        include_notices: bool = True,
+        only: tuple[str, ...] | None = None,
+    ) -> BatchSelection:
+        """Select exactly one frozen batch; a read, never a settlement.
+
+        A first capture freezes both high-waters and the shared ordinal, an
+        exact member vector and the link-held identities.  A ``cursor`` replay
+        reads only that vector and subtracts settled members.  An
+        ``after`` successor admits the predecessor's still-deferred rows plus
+        rows above its capture bound, and never repeats a predecessor member.
+        """
+
+        now = self._now_ms() if now_ms is None else now_ms
+        allowed = None if only is None else frozenset(only)
+
+        def keep(messages: tuple[InboxMessage, ...]) -> tuple[InboxMessage, ...]:
+            if allowed is None:
+                return messages
+            return tuple(m for m in messages if m.message_id in allowed)
+
+        if cursor is not None and after is not None:
+            raise ValueError("cursor and afterCursor are mutually exclusive")
+        inbox_high, notice_high, capture_ordinal = self._batch_high_waters()
+        bounds = BatchBounds(inbox_high, notice_high, capture_ordinal)
+        if cursor is not None:
+            live_inbox = {
+                i.message_id: i for i in keep(self._batch_live_inbox(keys, now))
+            }
+            live_notices = (
+                {i.message_id: i for i in keep(self._batch_live_notices(keys))}
+                if include_notices
+                else {}
+            )
+            inbox_ordinals = self._batch_ordinals(
+                SOURCE_INBOX,
+                tuple(m.message_id for m in cursor.members if m.source == SOURCE_INBOX),
+            )
+            notice_ordinals = self._batch_ordinals(
+                SOURCE_NOTICE,
+                tuple(m.message_id for m in cursor.members if m.source == SOURCE_NOTICE),
+            )
+            rows: list[BatchRow] = []
+            for member in cursor.members:
+                if member.source == SOURCE_INBOX:
+                    message = live_inbox.get(member.message_id)
+                    live_ordinal = inbox_ordinals.get(member.message_id)
+                else:
+                    message = live_notices.get(member.message_id)
+                    live_ordinal = notice_ordinals.get(member.message_id)
+                if message is None or live_ordinal != member.ordinal:
+                    continue
+                rows.append(self._batch_row(member.source, message, member.ordinal))
+            admitted = tuple(r.message for r in rows if r.source == SOURCE_INBOX)
+            noticed = tuple(r.message for r in rows if r.source == SOURCE_NOTICE)
+            self._batch_stamp(admitted, noticed, now)
+            return BatchSelection(
+                recipient, cursor.bounds, tuple(rows), cursor.deferred,
+                cursor.predecessor_digest,
+            )
+        if after is None:
+            return self._batch_choose(
+                recipient,
+                keys=keys,
+                now=now,
+                inbox_rows=keep(self._batch_live_inbox(keys, now)),
+                notice_rows=(
+                    keep(self._batch_live_notices(keys)) if include_notices else ()
+                ),
+                bounds=bounds,
+            )
+        deferred_keys = {
+            (m.source, m.message_id, m.ordinal) for m in after.deferred
+        }
+        new_inbox = keep(
+            self._batch_live_inbox(keys, now, since=after.bounds.capture_ordinal)
+        )
+        new_notices = (
+            keep(self._batch_live_notices(keys, since=after.bounds.capture_ordinal))
+            if include_notices
+            else ()
+        )
+        live_inbox = keep(self._batch_live_inbox(keys, now))
+        live_notices = keep(self._batch_live_notices(keys)) if include_notices else ()
+        inbox_ordinals = self._batch_ordinals(
+            SOURCE_INBOX, tuple(message.message_id for message in live_inbox)
+        )
+        notice_ordinals = self._batch_ordinals(
+            SOURCE_NOTICE, tuple(message.message_id for message in live_notices)
+        )
+        deferred_inbox = self._batch_deferred_rows(
+            SOURCE_INBOX, live_inbox, inbox_ordinals, deferred_keys
+        )
+        deferred_notices = self._batch_deferred_rows(
+            SOURCE_NOTICE, live_notices, notice_ordinals, deferred_keys
+        )
+        inbox_candidates = tuple(
+            {m.message_id: m for m in (*deferred_inbox, *new_inbox)}.values())
+        notice_candidates = tuple(
+            {m.message_id: m for m in (*deferred_notices, *new_notices)}.values())
+        return self._batch_choose(
+            recipient,
+            keys=keys,
+            now=now,
+            inbox_rows=inbox_candidates,
+            notice_rows=notice_candidates,
+            bounds=bounds,
+            predecessor_digest=after_digest,
+        )
 
     def _clear_nonterminal_failures(
         self, messages: tuple[InboxMessage, ...], completed_turn: bool

@@ -174,18 +174,25 @@ class _CarrierSettlementMixin:
             if state.turn_id is not None:
                 self._report_turn_ended(state.turn_id, "completed", message_id)
             port = HintPort(self.daemon_request, self._signed, self._daemon_error_code)
-            outcome = settle_injected(port, [message_id])
+            members = state.delivery.message_ids or (message_id,)
+            outcome = settle_injected(port, members)
             if outcome.acked:
+                # A batch turn is telemetry, not a reply to every member; each
+                # id above was settled on its own hint.  Kept members stay
+                # pending in the daemon and are simply no longer tracked here.
                 self._settle_confirmed(state)
             elif outcome.kept:
                 self._settle_kept(state)
-            elif message_id in port.ack_unavailable:
+            elif len(members) == 1 and message_id in port.ack_unavailable:
                 self._settle_ack_unavailable(state)
             else:
                 self._defer_settlement(
                     state,
                     method="message.settle_hint",
-                    error=port.errors.get(message_id, "settlement not confirmed"),
+                    error=port.errors.get(
+                        next(iter(outcome.deferred), message_id),
+                        "settlement not confirmed",
+                    ),
                 )
 
         def _settle_kept(self, state: CarrierDeliverySnapshot) -> None:

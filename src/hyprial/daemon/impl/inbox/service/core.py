@@ -68,6 +68,7 @@ class InboxServiceCoreMixin:
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA synchronous=FULL")  # durability: FULL -- F7 accepted inbox/ack commits require WAL fsync before success
         self._transport = transport
+        self.database = database
         self.retry_policy = retry_policy or RetryPolicy()
         self.max_inbox_items = max_inbox_items
         self.max_custody_bytes = max_custody_bytes
@@ -184,7 +185,8 @@ class InboxServiceCoreMixin:
                 acknowledged_at_ms INTEGER,
                 fetched_at_ms INTEGER,
                 origin_node TEXT,
-                summary TEXT
+                summary TEXT,
+                arrival_ordinal INTEGER
             );
             CREATE INDEX IF NOT EXISTS inbox_fifo ON inbox(recipient, consumed, arrival_id);
 
@@ -262,7 +264,9 @@ class InboxServiceCoreMixin:
                 lifecycle TEXT NOT NULL,
                 idempotency_key TEXT,
                 created_at_ms INTEGER NOT NULL,
-                summary TEXT
+                summary TEXT,
+                arrival_ordinal INTEGER,
+                fetched_at_ms INTEGER
             );
             CREATE INDEX IF NOT EXISTS system_notices_recipient
                 ON system_notices(recipient, created_at_ms);
@@ -322,6 +326,7 @@ class InboxServiceCoreMixin:
             # rows keep NULL (their physical origin was never recorded —
             # exactly the forensic gap this column closes going forward).
             self._db.execute("ALTER TABLE inbox ADD COLUMN origin_node TEXT")
+        self._create_batch_schema(inbox_columns)
         outbox_columns = {
             str(row["name"])
             for row in self._db.execute("PRAGMA table_info(outbox)").fetchall()
@@ -459,6 +464,94 @@ class InboxServiceCoreMixin:
         )
         self._create_link_ledger_schema()
         self._db.commit()
+
+    def _create_batch_schema(self, inbox_columns: set[str]) -> None:
+        """Arrival ordinals shared by inbox rows and real system notices.
+
+        ``arrival_id`` only orders one physical table; a batch interleaves both
+        sources, so one monotonic ordinal is allocated per accepted row from
+        this one sequence.  The migration is deterministic: inbox rows keep
+        their ``arrival_id`` order, then notices follow by insertion rowid.
+        Cross-source order for pre-migration rows was never recorded, which is
+        declared here rather than guessed from sender timestamps.
+        """
+
+        notice_columns = {
+            str(row["name"])
+            for row in self._db.execute(
+                "PRAGMA table_info(system_notices)"
+            ).fetchall()
+        }
+        if "arrival_ordinal" not in inbox_columns:
+            self._db.execute("ALTER TABLE inbox ADD COLUMN arrival_ordinal INTEGER")
+        if "arrival_ordinal" not in notice_columns:
+            self._db.execute(
+                "ALTER TABLE system_notices ADD COLUMN arrival_ordinal INTEGER"
+            )
+        if "fetched_at_ms" not in notice_columns:
+            self._db.execute(
+                "ALTER TABLE system_notices ADD COLUMN fetched_at_ms INTEGER"
+            )
+        self._db.execute(
+            "UPDATE inbox SET arrival_ordinal = arrival_id WHERE arrival_ordinal IS NULL"
+        )
+        self._db.execute(
+            """UPDATE system_notices
+                  SET arrival_ordinal = (SELECT COALESCE(MAX(arrival_id), 0) FROM inbox)
+                                        + rowid
+                WHERE arrival_ordinal IS NULL"""
+        )
+        # After the ALTER: on a legacy database the column does not exist yet
+        # while the executescript runs, so the index cannot live there.
+        self._db.execute(
+            "CREATE INDEX IF NOT EXISTS system_notices_fifo "
+            "ON system_notices(recipient, arrival_ordinal)"
+        )
+        # A MAX(live rows) allocator can reuse an ordinal after the former
+        # maximum is settled and deleted. Cursor identity must survive that
+        # deletion and a daemon restart, so retain a one-row high-water.
+        self._db.execute(
+            """CREATE TABLE IF NOT EXISTS inbox_arrival_sequence (
+                   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                   ordinal INTEGER NOT NULL
+               )"""
+        )
+        live_high = self._db.execute(
+            """SELECT COALESCE(MAX(ordinal), 0) FROM (
+                   SELECT MAX(arrival_ordinal) AS ordinal FROM inbox
+                   UNION ALL
+                   SELECT MAX(arrival_ordinal) AS ordinal FROM system_notices
+               )"""
+        ).fetchone()
+        high = int(live_high[0] if live_high is not None else 0)
+        self._db.execute(
+            "INSERT OR IGNORE INTO inbox_arrival_sequence(singleton, ordinal) "
+            "VALUES (1, ?)",
+            (high,),
+        )
+        self._db.execute(
+            "UPDATE inbox_arrival_sequence SET ordinal = MAX(ordinal, ?) "
+            "WHERE singleton = 1",
+            (high,),
+        )
+
+    def _next_arrival_ordinal(self) -> int:
+        """Allocate from the durable sequence both inbox sources share."""
+
+        row = self._db.execute(
+            """UPDATE inbox_arrival_sequence SET ordinal = ordinal + 1
+                 WHERE singleton = 1 RETURNING ordinal"""
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("inbox arrival sequence is unavailable")
+        return int(row[0])
+
+    def batch_cursor_key(self) -> bytes:
+        """The persistent, installation-local cursor MAC key."""
+
+        from hyprial.daemon.impl.inbox.batch.cursor import cursor_key
+
+        return cursor_key(self.database, self.node_id)
     @staticmethod
     def _now_ms() -> int:
         return time.time_ns() // 1_000_000

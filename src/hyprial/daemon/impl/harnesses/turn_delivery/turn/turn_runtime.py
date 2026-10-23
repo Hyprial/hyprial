@@ -418,7 +418,9 @@ class _TurnShard:
             or command.result.delivery_id != current.delivery.delivery_id
         ):
             return
-        result = command.result
+        result = replace(
+            command.result, message_ids=current.delivery.message_ids
+        )
         if result.delivery_id in self._interrupted:
             result = replace(
                 result,
@@ -590,6 +592,7 @@ class _TurnShard:
                     if terminal
                     else "HARNESS_TRANSIENT_FAILURE"
                 ),
+                message_ids=current.delivery.message_ids,
             )
             with self._projection.lock:
                 self._projection.results.append(result)
@@ -653,6 +656,7 @@ class _TurnShard:
                     status="failed",
                     error="turn actor failed while native I/O was in flight",
                     failure_code="HARNESS_TRANSIENT_FAILURE",
+                    message_ids=queued.delivery.message_ids,
                 )
                 with self._projection.lock:
                     self._projection.results.append(result)

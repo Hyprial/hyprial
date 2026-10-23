@@ -128,6 +128,29 @@ class _BridgeResultsMixin:
             return False
 
     def _settle_claimed_result_business(self, result: HarnessResult) -> bool:
+        release_batch_claim = getattr(self, "_release_batch_claim", None)
+        if callable(release_batch_claim):
+            release_batch_claim(result.delivery_id, result.message_ids)
+        if result.message_ids:
+            pending = self._pending_batch_members.setdefault(
+                result.delivery_id,
+                {
+                    member: replace(result, delivery_id=member, message_ids=())
+                    for member in result.message_ids
+                },
+            )
+            for member, member_result in tuple(pending.items()):
+                if self._settle_claimed_result_member(member_result):
+                    pending.pop(member, None)
+            if pending:
+                return False
+            self._pending_batch_members.pop(result.delivery_id, None)
+            return True
+        return self._settle_claimed_result_member(result)
+
+    def _settle_claimed_result_member(self, result: HarnessResult) -> bool:
+        """Apply the pre-batch classifier to one inbox member."""
+
         self._queued_delivery_holds.pop(result.delivery_id, None)
         terminal_attempt = self._finish_attempt(result.delivery_id)
         if terminal_attempt is None:
@@ -333,11 +356,25 @@ class _BridgeResultsMixin:
             )
             if self._settle_failed_result(failed, original, attempt=attempt):
                 settled += 1
-        results = [
+        raw_results = [
             *self._pending_workflow_results.values(),
             *self._pending_settle_results.values(),
             *self.harnesses.drain_results(),
         ]
+        results: list[HarnessResult] = []
+        for result in raw_results:
+            # The managed batch has no identity of its own.  Every outcome
+            # becomes one ordinary result per member before any inbox lookup.
+            release_batch_claim = getattr(self, "_release_batch_claim", None)
+            if callable(release_batch_claim):
+                release_batch_claim(result.delivery_id, result.message_ids)
+            if result.message_ids:
+                results.extend(
+                    replace(result, delivery_id=member, message_ids=())
+                    for member in result.message_ids
+                )
+            else:
+                results.append(result)
         for result in results:
             # The worker released this delivery from its queue before exposing
             # the result.  Reply/ack settlement has its own retry ownership.

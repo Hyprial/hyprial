@@ -7,6 +7,7 @@ import inspect
 import json
 import threading
 import time
+from pathlib import Path
 from typing import Any, TYPE_CHECKING
 from hyprial.kernel import AdmissionResult
 from hyprial.kernel import ipc_errors
@@ -24,6 +25,8 @@ if TYPE_CHECKING:
 
 from hyprial.daemon.impl.inbox.contracts.settlement import settle_hint_for
 from hyprial.daemon.impl.inbox.contracts.summary import body_bytes, body_text
+from hyprial.daemon.impl.inbox import batch as inbox_batch
+from hyprial.daemon.impl.inbox import AckResult
 
 from hyprial.daemon.impl.application.messaging.delivery.sends import (
     _undeliverable_outbox_recipient,
@@ -226,11 +229,14 @@ class _MessageQueriesMixin:
             )
         keys = self._message_consumer_keys(params, actor=actor)
         messages: list[JsonObject] = []
-        drain_notices = getattr(self._inbox, "drain_system_notices", None)
+        notices_reader = getattr(self._inbox, "system_notices", None)
+        # Non-destructive by contract: repeated list/wait calls return the same
+        # notice until its explicit per-ID ack, so a doorbell poll can never
+        # delete a notice before the batch snapshot includes it.
         notices = tuple(
             notice
             for key in keys
-            for notice in (drain_notices(key) if callable(drain_notices) else ())
+            for notice in (notices_reader(key) if callable(notices_reader) else ())
         )
         fetch_pending = getattr(self._inbox, "fetch_pending", None)
         admitted_pending = getattr(self._inbox, "admitted_pending", None)
@@ -302,11 +308,103 @@ class _MessageQueriesMixin:
             messages.append(row)
         return {"ok": True, "messages": messages, "daemonEpoch": self.epoch}
 
+    def _ipc_message_pending_batch(self, method, params, _trusted_message_origin: str | None = None) -> Any:
+        """One coalesced, full-body snapshot of everything this caller has pending.
+
+        A consuming *read* in the existing sense (one-way fetched stamp plus
+        fetch receipts), never an acknowledgement: reply/ack stay per message
+        id.  A ``cursor`` replays one frozen snapshot; ``afterCursor`` captures
+        its successor.  The order, the text and the spill file all come from
+        ``inbox.batch``; connectors never reformat them.
+        """
+
+        caller = self._authenticated_message_caller(
+            params,
+            method=method,
+            trusted_origin=_trusted_message_origin,
+        )
+        actor = caller.subject
+        keys = self._message_consumer_keys(params, actor=actor)
+        raw_cursor = params.get("cursor")
+        raw_after = params.get("afterCursor")
+        if raw_cursor is not None and raw_after is not None:
+            raise DaemonRequestError(
+                ipc_errors.INVALID_ARGUMENT,
+                "cursor and afterCursor are mutually exclusive",
+            )
+        for name, value in (("cursor", raw_cursor), ("afterCursor", raw_after)):
+            if value is not None and not isinstance(value, str):
+                raise DaemonRequestError(
+                    ipc_errors.INVALID_ARGUMENT, f"{name} must be a string"
+                )
+        try:
+            view = inbox_batch.capture_batch(
+                self._inbox,
+                actor,
+                keys=keys,
+                cursor_token=raw_cursor,
+                after_token=raw_after,
+                limit_bytes=self._inbox_batch_inline_limit(),
+                actor_home=self._inbox_batch_actor_home(actor),
+                epoch=self.epoch,
+            )
+        except inbox_batch.CursorError as error:
+            if error.foreign_actor:
+                raise DaemonRequestError(
+                    ipc_errors.CALLER_NOT_AUTHORIZED, str(error)
+                ) from error
+            raise DaemonRequestError(
+                ipc_errors.INVALID_ARGUMENT, str(error)
+            ) from error
+        except inbox_batch.SpillUnavailable as error:
+            raise DaemonRequestError(
+                ipc_errors.INBOX_BATCH_SPILL_UNAVAILABLE, str(error)
+            ) from error
+        return view.response
+
+    def _inbox_batch_inline_limit(self) -> int:
+        limit = getattr(self, "_inbox_batch_inline_bytes", None)
+        if isinstance(limit, int) and not isinstance(limit, bool):
+            return limit
+        return inbox_batch.DEFAULT_INLINE_LIMIT_BYTES
+
+    def _inbox_batch_actor_home(self, actor: str) -> Any:
+        registry = getattr(self, "_agent_registry", None)
+        if registry is None:
+            return None
+        try:
+            receipt = registry.home_receipt(actor, validate_mirror=False)
+        except Exception:  # noqa: BLE001 - no private home means no spill file
+            return None
+        return Path(receipt.path)
+
+    def _sweep_inbox_batch_spills(self) -> int:
+        """Bounded startup cleanup of the actor-private batch cache (§6).
+
+        A cache is not authority: this only ages out old files and caps each
+        actor at 32.  A missing/unknown home is skipped, never created, and a
+        failure here can never block daemon startup.
+        """
+
+        registry = getattr(self, "_agent_registry", None)
+        if registry is None:
+            return 0
+        removed = 0
+        for agent in registry.list()[:512]:
+            try:
+                receipt = registry.home_receipt(
+                    agent.actor, validate_mirror=False
+                )
+            except Exception:  # noqa: BLE001 - one bad home must not stop the sweep
+                continue
+            removed += inbox_batch.prune(Path(receipt.path))
+        return removed
+
     def _ipc_message_pending_wait(self, method, params, _trusted_message_origin: str | None = None) -> Any:
         """Hold until this caller has a message it has not seen, or a short bound.
 
         The doorbell for Channel children: ``message.pending.list`` stays the
-        only reader (and the only thing that drains notices); this method only
+        only reader; this method only
         answers *when* to call it.  ``knownMessageIds`` is what the caller saw
         on its last list, so a message that lands between that list and this
         wait returns at once instead of after the hold.  Nothing is written.
@@ -452,6 +550,20 @@ class _MessageQueriesMixin:
                 result = self._inbox.ack(key, message_id)
                 if result.acknowledged:
                     break
+        if not result.acknowledged:
+            # A real system notice is acknowledged by the same per-id call:
+            # ordinary inbox aliases failed, so try the caller's own notice
+            # rows.  One id, one recipient, no drain, no other message moved.
+            dismiss = getattr(self._inbox, "dismiss_system_notice", None)
+            if callable(dismiss):
+                for key in self._message_consumer_keys(params, actor=actor):
+                    try:
+                        dismissed = dismiss(message_id, recipient=key)
+                    except TypeError:
+                        dismissed = dismiss(message_id)
+                    if dismissed:
+                        result = AckResult(message_id, True)
+                        break
         return {
             "ok": result.acknowledged,
             "messageId": result.message_id,
@@ -755,13 +867,13 @@ class _MessageQueriesMixin:
     def _message_query(self, params: JsonObject) -> JsonObject:
         """Read one local actor's inbox or outbox for a person, changing nothing.
 
-        ``message.pending.list`` is the CONSUMER surface: even without the
-        explicit fetch marker it drains the actor's system notices
-        (``drain_system_notices`` deletes them), so a person "just looking"
-        through it would eat notices meant for the agent.  This method reads
-        the same rows through the non-draining readers only -- no fence, no
-        fetch stamp, no receipt, no notice drain -- so the agent's next
-        ``harness_read`` sees exactly what it would have seen.
+        ``message.pending.list`` is the CONSUMER surface: with the explicit
+        fetch marker it stamps fetched and publishes fetch receipts, which a
+        person "just looking" must not do on the agent's behalf.  This method
+        reads the same rows through the non-consuming readers only -- no
+        fence, no fetch stamp, no receipt -- so the agent's next
+        ``harness_read`` sees exactly what it would have seen.  Notices are
+        peeked by both surfaces (only a per-id ack consumes one).
         """
 
         view = _required_string(params.get("view"), "view")

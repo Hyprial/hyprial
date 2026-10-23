@@ -23,7 +23,6 @@ from hyprial.kernel import (
     CHANNEL_PROTOCOL_VERSION,
     ipc_errors,
 )
-from hyprial.kernel import session_fetch_params
 
 from hyprial.daemon.impl.inbox_watch import (
     Heartbeat,
@@ -161,6 +160,12 @@ class ClaudeChannelAdapter:
         self.tmux_session = tmux_session
         self._lease_token = lease_token or secrets.token_urlsafe(32)
         self._message_deliveries: dict[str, str] = {}
+        #: cursor -> ordered member ids of the snapshot that cursor froze.
+        self._batch_members: dict[str, tuple[str, ...]] = {}
+        #: Newest cursor this session holds; successors branch from it.
+        self._chain_head: str | None = None
+        #: Cursor whose text a real model turn demonstrably took.
+        self._consumed_cursor: str | None = None
         self.watch = InboxWatch(
             poll_interval_ms=poll_interval_ms,
             heartbeat_interval_ms=heartbeat_interval_ms,
@@ -263,23 +268,81 @@ class ClaudeChannelAdapter:
             raise
 
     async def apply(self, change: InboxChange | None, response: dict[str, Any]) -> None:
-        """Turn one list answer into coordinator state, then wake what is due."""
+        """Turn one list answer into one batch edge, then wake what is due.
 
-        delivery_ids = self._remember_messages(response, observed=False)
-        # Every listed row is (re-)enqueued -- idempotent, and it heals a key
-        # the coordinator lost; out-of-band completion stays keyed on the
-        # deliveries tracked before the read.
-        self._complete_out_of_band(self._tracked_before_list, delivery_ids)
-        if change is not None and change.rewake:
-            self.coordinator.rearm(
-                self.actor,
-                (
-                    self._message_deliveries[row["messageId"]]
-                    for row in change.rewake
-                    if row["messageId"] in self._message_deliveries
-                ),
-            )
+        ``message.pending.list`` is an observation/doorbell here.  The sole
+        consuming read is ``message.pending.batch``, called exactly at the
+        injection edge, and its ``delivery.text`` is the whole injection.
+        """
+
+        self._complete_out_of_band(
+            self._tracked_before_list, _pending_ids(response)
+        )
+        if change is None:
+            await self.coordinator.dispatch_due()
+            return
+        if change.rewake:
+            # A daemon epoch/generation change re-announces the batch already
+            # in flight, by replaying its exact cursor (never a fresh capture
+            # of a changed count).  The generation fence makes this one
+            # explicit pre-consumption replay per generation.
+            await self._capture_batch(replay=self._chain_head)
+            if self._chain_head is not None:
+                self.coordinator.rearm_batch(
+                    self.actor,
+                    cursor=self._chain_head,
+                    generation=str(response.get("daemonEpoch") or "recovery"),
+                )
+        elif change.new:
+            await self._capture_batch(successor=self._consumed_cursor)
         await self.coordinator.dispatch_due()
+
+    async def _capture_batch(
+        self, *, replay: str | None = None, successor: str | None = None
+    ) -> None:
+        params: dict[str, Any] = {}
+        if replay is not None:
+            params["cursor"] = replay
+        elif successor is not None:
+            params["afterCursor"] = successor
+        result = await self._tool_call("message.pending.batch", params, mutation=False)
+        self._remember_batch(result)
+
+    def _remember_batch(self, result: dict[str, Any]) -> bool:
+        """Accept one daemon batch as this session's outstanding edge."""
+
+        cursor = result.get("cursor")
+        items = result.get("items")
+        delivery = result.get("delivery")
+        if not isinstance(cursor, str) or not cursor:
+            return False
+        if not isinstance(items, list) or not isinstance(delivery, dict):
+            return False
+        text = delivery.get("text")
+        members = tuple(
+            str(item["messageId"])
+            for item in items
+            if isinstance(item, dict) and isinstance(item.get("messageId"), str)
+        )
+        for item in items:
+            if not isinstance(item, dict) or not isinstance(
+                item.get("messageId"), str
+            ):
+                self._count_invalid_row()
+        if not isinstance(text, str) or not text or not members:
+            return False
+        existing = self.coordinator.batch_members(self.actor, cursor=cursor)
+        if existing:
+            # Same snapshot re-announced: keep the accepted text/id set.
+            members = existing
+        self._batch_members[cursor] = members
+        self._chain_head = cursor
+        for message_id in members:
+            self._message_deliveries[message_id] = cursor
+        self.coordinator.enqueue_batch(
+            self.actor, cursor=cursor, message_ids=members, text=text
+        )
+        return True
 
     # -- one-shot helpers (startup, recovery, tests) -----------------------
 
@@ -343,15 +406,35 @@ class ClaudeChannelAdapter:
                 self._begin_turn(uuid4().hex, "read")
             await self._ensure_started(self._tool_call)
         tracked = self.coordinator.pending_deliveries(self.actor)
-        result = await self._tool_call(
-            "message.pending.list", session_fetch_params(), mutation=False
+        # The tool read is itself a consumption edge: replay the cursor this
+        # session already holds (exact same text/ids) or capture the first
+        # batch.  The answer is the shared schema; nothing is re-rendered.
+        params: dict[str, Any] = (
+            {"cursor": self._chain_head} if self._chain_head is not None else {}
         )
+        result = await self._tool_call("message.pending.batch", params, mutation=False)
         self._note_injected(result)
         # A tool read can be the first to see a restarted daemon.
         self.watch.observe(result)
-        delivery_ids = self._remember_messages(result, observed=True)
-        self._complete_out_of_band(tracked, delivery_ids)
-        self.coordinator.observe_read(self.actor, delivery_ids)
+        cursor = result.get("cursor")
+        if isinstance(cursor, str) and cursor:
+            members = self._batch_members.get(
+                cursor, self.coordinator.batch_members(self.actor, cursor=cursor)
+            )
+            if members:
+                self._batch_members[cursor] = tuple(members)
+                self._chain_head = cursor
+                for message_id in members:
+                    self._message_deliveries[message_id] = cursor
+                if not self.coordinator.observe_batch_consumed(
+                    self.actor, cursor=cursor
+                ):
+                    self._remember_batch(result)
+                    self.coordinator.observe_batch_consumed(
+                        self.actor, cursor=cursor
+                    )
+                self._consumed_cursor = cursor
+        self._complete_out_of_band(tracked, _pending_ids(result, key="items"))
         return result
 
     async def harness_reply(
@@ -467,9 +550,9 @@ class ClaudeChannelAdapter:
             self._save_open_turn()
 
     def _note_injected(self, result: dict[str, Any]) -> None:
-        """Remember what this turn's fetched read put in front of the model."""
+        """Remember what this turn's batch read put in front of the model."""
 
-        for row in result.get("messages", ()):
+        for row in result.get("items", ()):
             if isinstance(row, dict) and row.get("kind") != "notice":
                 message_id = row.get("messageId")
                 if isinstance(message_id, str):
@@ -511,44 +594,6 @@ class ClaudeChannelAdapter:
 
     # -- coordinator bookkeeping -------------------------------------------
 
-    def _remember_messages(
-        self, result: dict[str, Any], *, observed: bool
-    ) -> tuple[str, ...]:
-        messages = result.get("messages", ())
-        if not isinstance(messages, list):
-            raise TypeError("daemon pending response messages must be an array")
-        delivery_ids: list[str] = []
-        for value in messages:
-            # Row by row: one row the coordinator cannot accept is skipped
-            # and counted, never allowed to stop the rows after it from
-            # waking (review 844 on #1152).
-            # Rows without a usable messageId are already counted by the
-            # core (deliver.invalid); count here only what the core accepted.
-            if not isinstance(value, dict):
-                continue
-            message_id = value.get("messageId")
-            delivery_id = value.get("deliveryId")
-            if not isinstance(message_id, str) or not message_id:
-                continue
-            if not isinstance(delivery_id, str):
-                self._count_invalid_row()
-                continue
-            if not observed:
-                origin = value.get("origin")
-                try:
-                    self.coordinator.enqueue(
-                        self.actor,
-                        delivery_id,
-                        message_id=message_id,
-                        origin=origin if isinstance(origin, dict) else None,
-                    )
-                except (TypeError, ValueError):
-                    self._count_invalid_row()
-                    continue
-            self._message_deliveries[message_id] = delivery_id
-            delivery_ids.append(delivery_id)
-        return tuple(delivery_ids)
-
     def _count_invalid_row(self) -> None:
         counters = self.watch.counters
         counters["deliver.invalid"] = counters.get("deliver.invalid", 0) + 1
@@ -564,24 +609,45 @@ class ClaudeChannelAdapter:
     def _complete_out_of_band(
         self, tracked: tuple[str, ...], current: tuple[str, ...]
     ) -> None:
-        """Complete keys whose deliveries left the daemon queue out of band.
+        """Complete members whose messages left the daemon queue out of band.
 
-        The inbox is daemon-authoritative: `hyprial ack`, another session, or a
-        harness auto-ack may consume a pending message without this session's
-        harness_reply/harness_ack ever seeing it.  Only keys tracked before the
-        daemon read are eligible, so a delivery enqueued concurrently with the
+        The inbox is daemon-authoritative: ``hyprial ack``, another session, or
+        a harness auto-ack may consume a pending message without this session's
+        harness_reply/harness_ack ever seeing it.  Only cursors tracked before
+        the daemon read are eligible, so a batch enqueued concurrently with the
         read can never be completed against a stale pending list.
         """
 
-        remaining = set(current)
-        for delivery_id in tracked:
-            if delivery_id not in remaining:
-                self.coordinator.complete(self.actor, delivery_id)
+        present = set(current)
+        for cursor in tracked:
+            members = self.coordinator.batch_members(self.actor, cursor=cursor)
+            for message_id in members:
+                if message_id not in present:
+                    self.coordinator.complete(self.actor, message_id)
+                    self._message_deliveries.pop(message_id, None)
+            if not self.coordinator.batch_members(self.actor, cursor=cursor):
+                self._batch_members.pop(cursor, None)
         self._message_deliveries = {
-            message_id: delivery_id
-            for message_id, delivery_id in self._message_deliveries.items()
-            if delivery_id in remaining
+            message_id: cursor
+            for message_id, cursor in self._message_deliveries.items()
+            if cursor in self._batch_members
+            or self.coordinator.batch_members(self.actor, cursor=cursor)
         }
+
+
+def _pending_ids(
+    result: dict[str, Any], *, key: str = "messages"
+) -> tuple[str, ...]:
+    """Message ids one pending-list or batch answer names (invalid rows skipped)."""
+
+    rows = result.get(key, ())
+    if not isinstance(rows, list):
+        return ()
+    return tuple(
+        str(row["messageId"])
+        for row in rows
+        if isinstance(row, dict) and isinstance(row.get("messageId"), str)
+    )
 
 
 def _now_ms() -> int:

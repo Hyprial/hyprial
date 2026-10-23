@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from hyprial.daemon.impl.adapters.lark.contracts.reply_bridge import (
     lark_reply_adapter,
 )
+from hyprial.daemon.impl.api import visible_message_origin
 from hyprial.kernel import ipc_errors
 from hyprial.kernel import DaemonRequestError
 from hyprial.daemon.impl.identity import IdentityResolverError
@@ -64,6 +65,7 @@ _CONSUMER_METHODS = frozenset(
     {
         "message.ack",
         "message.history",
+        "message.pending.batch",
         "message.pending.list",
         "message.pending.wait",
         "message.status",
@@ -102,19 +104,10 @@ _SENDER_STANDINGS = frozenset({"verified", "observed", "ambiguous", "unresolved"
 
 _SENDER_FIELD_MAX_CHARS = 256
 
-def _visible_message_origin(body: object, sender: str) -> JsonObject:
-    """Return stored provenance, with a conservative legacy-path fallback."""
 
-    origin = body.get("origin") if isinstance(body, dict) else None
-    if isinstance(origin, dict) and origin:
-        return origin
-    if sender.startswith((CHANNEL_URI_PREFIX, ADAPTER_URI_PREFIX)):
-        via = "adapter"
-    elif sender.startswith("user:"):
-        via = "operator"
-    else:
-        via = "daemon"
-    return {"via": via}
+def _visible_message_origin(body: object, sender: str) -> JsonObject:
+    return visible_message_origin(body, sender)
+
 
 def _message_origin(metadata: object) -> JsonObject | None:
     """Carry a message's reported origin through to its reader.
