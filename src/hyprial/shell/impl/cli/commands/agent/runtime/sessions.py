@@ -543,9 +543,8 @@ def _start_interactive_codex(
         CodexInteractiveCarrier,
         CodexInteractiveResumeError,
         CodexInteractiveResumePending,
-        interactive_channel_config_args,
+        build_codex_launch_inputs,
     )
-    from hyprial.daemon import codex_provider_configuration as codex_model_provider_configuration
 
     from hyprial.shell.impl.plugins import PluginManifestError, codex_plan, load_manifest
 
@@ -667,9 +666,16 @@ def _start_interactive_codex(
             profile_base = apply_runtime_environment_profile(
                 os.environ, runtime_environment, secret_environment
             )
-            provider_args, provider_environment = codex_model_provider_configuration(
+            launch_inputs = build_codex_launch_inputs(
                 provider_spec,
                 os.environ if runtime_environment is None else profile_base,
+                tool_profile=runtime_projection is not None,
+                interactive_channel={
+                    "actor": actor,
+                    "session_ref_file": session_ref_file,
+                    "hyprial_home": services._hyprial_home(),
+                    "state_dir": services._state_dir(),
+                },
                 allow_legacy_home_fallback=runtime_projection is None,
             )
             environment = apply_runtime_environment_profile(
@@ -679,24 +685,17 @@ def _start_interactive_codex(
                 child_state_environment(
                     services._hyprial_home(), services._state_dir()
                 ),
-                provider_environment,
+                launch_inputs.environment,
             )
             server = CodexInteractiveAppServer(
                 socket_path,
                 cwd=cwd,
-                command=(codex_bin, *provider_args),
+                command=(codex_bin,),
                 env=environment,
                 # Plugin MCP servers run in the app server, not the remote TUI;
                 # so does harness-bridge, whose sessionRef is published below.
-                config_args=(
-                    *plugin_plan.config_args,
-                    *interactive_channel_config_args(
-                        actor=actor,
-                        session_ref_file=session_ref_file,
-                        hyprial_home=services._hyprial_home(),
-                        state_dir=services._state_dir(),
-                    ),
-                ),
+                config_args=(*plugin_plan.config_args, *launch_inputs.argv),
+                expected_session_flags=launch_inputs.expected_session_flags,
                 model_provider=model_provider,
                 projection_root=(
                     None
@@ -719,7 +718,7 @@ def _start_interactive_codex(
                     and runtime_projection.get("authorityPrepared") is True
                 ),
             )
-            argv = [codex_bin, *provider_args]
+            argv = [codex_bin, *launch_inputs.provider_argv]
             if resume is not None:
                 argv.extend(("resume", resume))
             argv.extend(

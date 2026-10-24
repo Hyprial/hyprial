@@ -28,6 +28,10 @@ from hyprial.identity import (
     validate_shared_credential_environment,
 )
 
+from hyprial.daemon.impl.harnesses.codex.launch.inputs import (
+    _provider_flags,
+    build_codex_launch_inputs,
+)
 from hyprial.daemon.impl.harnesses.codex.native_env import (
     CodexAgentHomeError,
     CodexNativeLoadEvidence,
@@ -100,17 +104,18 @@ def interactive_channel_config_args(
     launcher has registered the discovered thread.
     """
 
-    from hyprial.daemon.impl.harnesses.worker_channel import build_worker_channel
+    from hyprial.kernel import HarnessLaunchSpec
 
-    server = build_worker_channel(
-        actor=actor, session_ref="pending", hyprial_home=hyprial_home, state_dir=state_dir
-    ).mcp_server
-    args = [*server["args"], "--session-ref-file", str(session_ref_file)]  # type: ignore[misc]
-    env = {k: v for k, v in server["env"].items() if k != "HYPRIAL_WORKER_SESSION_REF"}  # type: ignore[attr-defined]
-    pairs = ",".join(f"{json.dumps(k)}={json.dumps(v)}" for k, v in sorted(env.items()))
-    prefix = "mcp_servers.harness-bridge"
-    values = {"command": json.dumps(server["command"]), "args": json.dumps(args), "env": "{" + pairs + "}"}
-    return tuple(x for key, value in values.items() for x in ("-c", f"{prefix}.{key}={value}"))
+    return build_codex_launch_inputs(
+        HarnessLaunchSpec("codex", actor, False),
+        {},
+        interactive_channel={
+            "actor": actor,
+            "session_ref_file": session_ref_file,
+            "hyprial_home": hyprial_home,
+            "state_dir": state_dir,
+        },
+    ).argv
 
 
 class CodexInteractiveAppServer:
@@ -132,6 +137,7 @@ class CodexInteractiveAppServer:
         startup_timeout_seconds: float = 30.0,
         request_timeout_seconds: float = 15.0,
         config_args: tuple[str, ...] = (),
+        expected_session_flags: Mapping[str, object] | None = None,
         model_provider: str | None = None,
         projection_root: Path | None = None,
         native_root: Path | None = None,
@@ -188,14 +194,22 @@ class CodexInteractiveAppServer:
                 shared_credential=shared_credential,
             )
         self.config_args = tuple(config_args)
-        if self._native_root is not None:
-            self.config_args = (
-                *self.config_args,
-                "-c",
-                'shell_environment_policy.inherit="all"',
-                "-c",
-                "allow_login_shell=false",
-            )
+        if expected_session_flags is None:
+            if self._native_root is not None:
+                self.config_args = (
+                    *self.config_args,
+                    "-c",
+                    'shell_environment_policy.inherit="all"',
+                    "-c",
+                    "allow_login_shell=false",
+                )
+            self._expected_session_flags = _provider_flags(self.config_args)
+        else:
+            self._expected_session_flags = dict(expected_session_flags)
+            if _provider_flags(self.config_args) != self._expected_session_flags:
+                raise ValueError(
+                    "interactive Codex argv and expected session flags disagree"
+                )
         self.startup_timeout_seconds = startup_timeout_seconds
         self.request_timeout_seconds = request_timeout_seconds
         self._process: subprocess.Popen[Any] | None = None
@@ -283,7 +297,7 @@ class CodexInteractiveAppServer:
                                 native_root=self._native_root,
                                 cwd=self.cwd,
                                 model_provider=self.model_provider,
-                                require_tool_profile=True,
+                                expected_session_flags=self._expected_session_flags,
                                 shared_credential=self._shared_credential,
                             )
                         return

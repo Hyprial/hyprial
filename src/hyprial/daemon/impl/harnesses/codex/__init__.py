@@ -18,8 +18,12 @@ from hyprial.daemon.impl.harnesses.codex.client import (
     CodexAppServerClient,
     CodexAppServerProcess,
 )
-from hyprial.daemon.impl.harnesses.codex.native_env import (
+from hyprial.daemon.impl.harnesses.codex.launch import (
     HARNESS_BRIDGE_MCP_SERVER_NAME,
+    CodexLaunchInputs,
+    build_codex_launch_inputs,
+)
+from hyprial.daemon.impl.harnesses.codex.native_env import (
     _git_metadata_roots,
     _sandbox_writable_roots_config,
     _server_request_response,
@@ -69,6 +73,7 @@ __all__ = [
     "interactive_channel_config_args",
     "CodexInteractiveCarrier",
     "CodexInteractiveTurnClient",
+    "CodexLaunchInputs",
     "CodexNativeLoadEvidence",
     "HARNESS_BRIDGE_MCP_SERVER_NAME",
     "MANAGED_TURN_IDLE_TIMEOUT_SECONDS",
@@ -89,6 +94,7 @@ __all__ = [
     "_thread_config",
     "_validate_codex_native_load",
     "_worker_channel_config",
+    "build_codex_launch_inputs",
     "prepare_codex_runtime_context",
     "prepare_codex_runtime_roots",
     "resolve_codex_p2_resume_model",

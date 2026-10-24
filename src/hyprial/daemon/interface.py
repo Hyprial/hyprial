@@ -40,6 +40,8 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.harnesses.codex.app_server import CodexInteractiveResumePending as CodexInteractiveResumePending
     from hyprial.daemon.impl.harnesses.codex.app_server import interactive_channel_config_args as interactive_channel_config_args
     from hyprial.daemon.impl.harnesses.codex.carrier import CodexInteractiveCarrier as CodexInteractiveCarrier
+    from hyprial.daemon.impl.harnesses.codex.launch import CodexLaunchInputs as CodexLaunchInputs
+    from hyprial.daemon.impl.harnesses.codex.launch import build_codex_launch_inputs as build_codex_launch_inputs
     from hyprial.daemon.impl.harnesses.capabilities import DECLARED_HARNESSES as DECLARED_HARNESSES
     from hyprial.daemon.impl.configuration.network_profile import DEFAULT_PROFILE as DEFAULT_PROFILE
     from hyprial.daemon.impl.application import DaemonApplication as DaemonApplication
@@ -352,6 +354,8 @@ _FACADE_EXPORTS = {
     'CodexInteractiveResumePending': ('hyprial.daemon.impl.harnesses.codex.app_server', 'CodexInteractiveResumePending'),
     'interactive_channel_config_args': ('hyprial.daemon.impl.harnesses.codex.app_server', 'interactive_channel_config_args'),
     'CodexInteractiveCarrier': ('hyprial.daemon.impl.harnesses.codex.carrier', 'CodexInteractiveCarrier'),
+    'CodexLaunchInputs': ('hyprial.daemon.impl.harnesses.codex.launch', 'CodexLaunchInputs'),
+    'build_codex_launch_inputs': ('hyprial.daemon.impl.harnesses.codex.launch', 'build_codex_launch_inputs'),
     'resolve_codex_executable': ('hyprial.daemon.impl.harnesses.codex.process', 'resolve_codex_executable'),
     'DECLARED_HARNESSES': ('hyprial.daemon.impl.harnesses.capabilities', 'DECLARED_HARNESSES'),
     'DEFAULT_PROFILE': ('hyprial.daemon.impl.configuration.network_profile', 'DEFAULT_PROFILE'),
@@ -684,6 +688,7 @@ __all__ = [
     'CodexInteractiveResumePending',
     'interactive_channel_config_args',
     'CodexInteractiveCarrier',
+    'CodexLaunchInputs',
     'resolve_codex_executable',
     'DECLARED_HARNESSES',
     'DEFAULT_PROFILE',
@@ -776,6 +781,7 @@ __all__ = [
     'application_lock_wait_timeout',
     'assert_bundle_identity',
     'audience_for_sender',
+    'build_codex_launch_inputs',
     'build_plan',
     'candidate_json',
     'capability_scopes',

@@ -11,11 +11,8 @@ import stat
 import subprocess
 import sys as sys
 from collections.abc import Mapping
-from dataclasses import dataclass
 from collections.abc import Callable
 from pathlib import Path
-
-from hyprial.kernel import private_metadata_violation
 
 from hyprial.identity import (
     whitelist_replacement_environment,
@@ -33,27 +30,17 @@ from hyprial.daemon.impl.harnesses.codex.process import (
     codex_launch_executables,
     resolve_codex_executable,
 )
+from hyprial.daemon.impl.harnesses.codex.launch.validation import (
+    CodexNativeLoadEvidence as CodexNativeLoadEvidence,
+)
+from hyprial.daemon.impl.harnesses.codex.launch.validation import (
+    _validate_codex_native_load as _validate_codex_native_load,
+)
 from hyprial.daemon.impl.harnesses.codex.projection import (
     CodexAgentHomeError,
     codex_projection_item_matches,
     private_directory as _private_directory,
     write_or_verify_projection_file as _write_or_verify_projection_file,
-)
-
-_CODEX_SUPPORTED_AUTH_STORES = frozenset({"file", "ephemeral"})
-
-_CODEX_PROJECT_RESERVED_KEYS = frozenset(
-    {
-        "allow_login_shell",
-        "approvals_reviewer",
-        "chatgpt_base_url",
-        "cli_auth_credentials_store",
-        "forced_login_method",
-        "model_provider",
-        "model_providers",
-        "openai_base_url",
-        "shell_environment_policy",
-    }
 )
 
 _CODEX_MUTABLE_ROOT_FILE = re.compile(
@@ -68,12 +55,12 @@ _CODEX_ARG0_ENTRY = re.compile(r"tmp/arg0/codex-arg0[A-Za-z0-9]+/(?P<name>[^/]+)
 _CODEX_ARG0_ALIASES = frozenset(
     {"apply_patch", "applypatch", "codex-execve-wrapper", "codex-linux-sandbox"}
 )
-
 _CODEX_MUTABLE_FILES = frozenset(
     {
         ".sandbox_migration",
         # Codex SQLite housekeeping lock, not a personality/config input.
         ".sqlite-maintenance.lock",
+        "app-server-control/app-server-startup.lock",
         "auth.json",
         "history.jsonl",
         "installation_id",
@@ -97,19 +84,6 @@ _CODEX_MUTABLE_PREFIXES = (
     "skills/.system/",
     "thread-writer-locks/",
 )
-
-@dataclass(frozen=True, slots=True)
-class CodexNativeLoadEvidence:
-    """Non-secret observations returned by the real Codex app-server."""
-
-    codex_home: str
-    layer_types: tuple[str, ...]
-    effective_model: str | None
-    auth_store: str
-    account_type: str | None
-    requires_openai_auth: bool
-    user_skills: tuple[str, ...]
-    project_skills: tuple[str, ...]
 
 def _allowed_codex_mutable_file(relative: str) -> bool:
     return (
@@ -298,341 +272,6 @@ def prepare_codex_runtime_context(
         receipt=context.projection_receipt,
         read_only=context.authority_prepared,
         shared_credential=context.shared_credential,
-    )
-
-def _inside(path: Path, root: Path) -> bool:
-    try:
-        path.resolve().relative_to(root.resolve())
-    except (OSError, ValueError):
-        return False
-    return True
-
-def _nearest_project_root(cwd: Path) -> Path:
-    current = cwd.resolve()
-    for candidate in (current, *current.parents):
-        if (candidate / ".git").exists():
-            return candidate
-    return current
-
-def _require_mapping(value: object, label: str) -> dict[str, object]:
-    if not isinstance(value, dict):
-        raise CodexAgentHomeError(f"Codex app-server {label} must be an object")
-    return value
-
-def _require_private(path: Path, metadata: os.stat_result, *, mode: int, label: str) -> None:
-    try:
-        violation = private_metadata_violation(path, metadata, mode=mode)
-    except OSError as error:
-        raise CodexAgentHomeError(f"{label} privacy cannot be inspected") from error
-    if violation == "unsafe-mode":
-        raise CodexAgentHomeError(f"{label} mode must be {mode:04o}")
-    if violation is not None:
-        raise CodexAgentHomeError(f"{label} must be account-private ({violation})")
-
-def _validate_codex_native_load(
-    *,
-    initialize: object,
-    config_read: object,
-    account_read: object,
-    skills_list: object,
-    native_root: Path,
-    cwd: Path,
-    model_provider: str | None,
-    require_tool_profile: bool = False,
-    shared_credential: SharedCredentialBinding | None = None,
-) -> CodexNativeLoadEvidence:
-    """Validate real app-server receipts before a P2 thread starts or resumes."""
-
-    expected_root = Path(native_root)
-    if not expected_root.is_absolute():
-        raise CodexAgentHomeError("resolved CODEX_HOME must be absolute")
-    try:
-        root_metadata = expected_root.lstat()
-    except OSError as error:
-        raise CodexAgentHomeError("resolved CODEX_HOME is unreadable") from error
-    if stat.S_ISLNK(root_metadata.st_mode) or not stat.S_ISDIR(root_metadata.st_mode):
-        raise CodexAgentHomeError("resolved CODEX_HOME must be a real directory")
-    _require_private(expected_root, root_metadata, mode=0o700, label="resolved CODEX_HOME")
-    initialized = _require_mapping(initialize, "initialize result")
-    observed_home = initialized.get("codexHome")
-    if not isinstance(observed_home, str) or not observed_home:
-        raise CodexAgentHomeError("Codex initialize omitted codexHome")
-    if Path(observed_home).resolve() != expected_root.resolve():
-        raise CodexAgentHomeError(
-            "Codex initialize codexHome does not match the resolved CODEX_HOME"
-        )
-
-    config_result = _require_mapping(config_read, "config/read result")
-    config = _require_mapping(config_result.get("config"), "effective config")
-    raw_layers = config_result.get("layers")
-    if not isinstance(raw_layers, list):
-        raise CodexAgentHomeError("Codex config/read omitted layers")
-    project_root = _nearest_project_root(Path(cwd))
-    layer_types: list[str] = []
-    user_files: list[Path] = []
-    system_files: list[Path] = []
-    session_flags: dict[str, object] | None = None
-    for index, raw_layer in enumerate(raw_layers):
-        layer = _require_mapping(raw_layer, f"config layer {index}")
-        name = _require_mapping(layer.get("name"), f"config layer {index} name")
-        layer_type = name.get("type")
-        if layer_type not in {"sessionFlags", "project", "user", "system"}:
-            raise CodexAgentHomeError(
-                f"Codex config/read returned unsupported layer {layer_type!r}"
-            )
-        layer_types.append(layer_type)
-        layer_config = _require_mapping(
-            layer.get("config"), f"config layer {index} config"
-        )
-        if layer_type == "sessionFlags":
-            if session_flags is not None:
-                raise CodexAgentHomeError(
-                    "Codex config/read returned multiple session-flags layers"
-                )
-            session_flags = layer_config
-        if layer_type == "project":
-            raw_folder = name.get("dotCodexFolder")
-            if (
-                not isinstance(raw_folder, str)
-                or Path(raw_folder).name != ".codex"
-                or not _inside(Path(raw_folder), project_root)
-            ):
-                raise CodexAgentHomeError(
-                    "Codex project config escaped the repository root"
-                )
-            reserved = sorted(_CODEX_PROJECT_RESERVED_KEYS.intersection(layer_config))
-            if reserved:
-                raise CodexAgentHomeError(
-                    "Codex project config attempted to override reserved key "
-                    f"{reserved[0]}"
-                )
-            project_mcp = layer_config.get("mcp_servers")
-            if project_mcp is not None:
-                project_mcp_config = _require_mapping(
-                    project_mcp, "project config mcp_servers"
-                )
-                if HARNESS_BRIDGE_MCP_SERVER_NAME in project_mcp_config:
-                    raise CodexAgentHomeError(
-                        "Codex project config attempted to override reserved MCP "
-                        f"server {HARNESS_BRIDGE_MCP_SERVER_NAME}"
-                    )
-        if layer_type == "user":
-            raw_file = name.get("file")
-            if isinstance(raw_file, str) and raw_file:
-                user_files.append(Path(raw_file))
-        if layer_type == "system":
-            raw_file = name.get("file")
-            if isinstance(raw_file, str) and raw_file:
-                system_files.append(Path(raw_file))
-    if tuple(layer_types) != tuple(
-        sorted(
-            layer_types,
-            key={"sessionFlags": 0, "project": 1, "user": 2, "system": 3}.get,
-        )
-    ):
-        raise CodexAgentHomeError(
-            "Codex config layer order must be session flags, project, user, system"
-        )
-    if layer_types.count("user") != 1 or layer_types.count("system") != 1:
-        raise CodexAgentHomeError(
-            "Codex config/read must contain exactly one user and system layer"
-        )
-    if system_files != [Path("/etc/codex/config.toml")]:
-        raise CodexAgentHomeError(
-            "Codex system config layer must remain /etc/codex/config.toml"
-        )
-    custom_provider = model_provider not in {None, "openai"}
-    if session_flags is not None:
-        provider_session_flags = {
-            "model",
-            "model_provider",
-            "model_providers",
-            "model_reasoning_effort",
-        }
-        tool_session_flags = {"allow_login_shell", "shell_environment_policy"}
-        allowed_session_flags = provider_session_flags | tool_session_flags
-        extras = sorted(set(session_flags) - allowed_session_flags)
-        if extras:
-            raise CodexAgentHomeError(
-                "Codex session-flags layer is not an approved launch input: "
-                f"{extras[0]}"
-            )
-        observed_provider_flags = provider_session_flags.intersection(session_flags)
-        if bool(observed_provider_flags) != custom_provider:
-            raise CodexAgentHomeError(
-                "Codex session-flags provider overrides do not match the launch mode"
-            )
-        if custom_provider and session_flags.get("model_provider") != model_provider:
-            raise CodexAgentHomeError(
-                "Codex session-flags provider does not match the launch selection"
-            )
-        if custom_provider:
-            providers = _require_mapping(
-                session_flags.get("model_providers"),
-                "session-flags model_providers",
-            )
-            provider_config = _require_mapping(
-                providers.get(str(model_provider)),
-                "session-flags selected provider",
-            )
-            if provider_config.get("requires_openai_auth") is not False:
-                raise CodexAgentHomeError(
-                    "Codex custom provider session flags must disable OpenAI authentication"
-                )
-            env_key = provider_config.get("env_key")
-            if not isinstance(env_key, str) or not env_key:
-                raise CodexAgentHomeError(
-                    "Codex custom provider session flags must name an environment key"
-                )
-        observed_tool_flags = tool_session_flags.intersection(session_flags)
-        if bool(observed_tool_flags) != require_tool_profile:
-            raise CodexAgentHomeError(
-                "Codex session-flags tool profile does not match the launch mode"
-            )
-        if require_tool_profile and (
-            session_flags.get("allow_login_shell") is not False
-            or session_flags.get("shell_environment_policy") != {"inherit": "all"}
-        ):
-            raise CodexAgentHomeError(
-                "Codex session-flags tool profile does not preserve the approved environment"
-            )
-    elif custom_provider or require_tool_profile:
-        raise CodexAgentHomeError(
-            "Codex managed launch omitted its session-flags layer"
-        )
-    expected_user_config = expected_root / "config.toml"
-    if len(user_files) != 1 or user_files[0].resolve() != expected_user_config.resolve():
-        raise CodexAgentHomeError(
-            "Codex user config layer did not come from resolved CODEX_HOME/config.toml"
-        )
-    try:
-        config_metadata = expected_user_config.lstat()
-    except OSError as error:
-        raise CodexAgentHomeError("Codex user config.toml is unreadable") from error
-    if stat.S_ISLNK(config_metadata.st_mode) or not stat.S_ISREG(config_metadata.st_mode):
-        raise CodexAgentHomeError("Codex user config.toml must be a regular file")
-    _require_private(
-        expected_user_config, config_metadata, mode=0o600, label="Codex user config.toml"
-    )
-
-    auth_store = config.get("cli_auth_credentials_store")
-    if auth_store not in _CODEX_SUPPORTED_AUTH_STORES:
-        raise CodexAgentHomeError(
-            f"Codex credential store {auth_store!r} is unsupported for agent-home P2"
-        )
-    auth_path = expected_root / "auth.json"
-    auth_present = auth_path.exists() or auth_path.is_symlink()
-    if auth_store == "file":
-        if shared_credential is not None:
-            if shared_credential.native_path != auth_path:
-                raise CodexAgentHomeError(
-                    "Codex shared credential binding names another native path"
-                )
-            validate_shared_credential_binding(shared_credential)
-        else:
-            try:
-                metadata = auth_path.lstat()
-            except OSError as error:
-                raise CodexAgentHomeError(
-                    "Codex file credential store requires agent-owned auth.json"
-                ) from error
-            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
-                raise CodexAgentHomeError("Codex auth.json must be a regular file")
-            _require_private(
-                auth_path, metadata, mode=0o600, label="Codex auth.json"
-            )
-    elif auth_present:
-        raise CodexAgentHomeError(
-            "Codex ephemeral credential store must not fall back to auth.json"
-        )
-
-    account_result = _require_mapping(account_read, "account/read result")
-    requires_openai_auth = account_result.get("requiresOpenaiAuth")
-    if not isinstance(requires_openai_auth, bool):
-        raise CodexAgentHomeError("Codex account/read omitted requiresOpenaiAuth")
-    raw_account = account_result.get("account")
-    account_type: str | None = None
-    if raw_account is not None:
-        account = _require_mapping(raw_account, "account/read account")
-        raw_type = account.get("type")
-        if isinstance(raw_type, str) and raw_type:
-            account_type = raw_type
-    if custom_provider and requires_openai_auth:
-        raise CodexAgentHomeError(
-            "Codex custom provider still requires OpenAI authentication"
-        )
-    if custom_provider and auth_present:
-        raise CodexAgentHomeError(
-            "Codex found both native auth.json and custom-provider authentication"
-        )
-    if requires_openai_auth and account_type is None:
-        raise CodexAgentHomeError(
-            "Codex account/read found no authenticated subject for this process"
-        )
-
-    skills_result = _require_mapping(skills_list, "skills/list result")
-    rows = skills_result.get("data")
-    if not isinstance(rows, list):
-        raise CodexAgentHomeError("Codex skills/list omitted data")
-    row = next(
-        (
-            item
-            for item in rows
-            if isinstance(item, dict) and item.get("cwd") == str(cwd)
-        ),
-        None,
-    )
-    if row is None:
-        raise CodexAgentHomeError("Codex skills/list omitted the requested cwd")
-    errors = row.get("errors")
-    if errors not in (None, []):
-        raise CodexAgentHomeError("Codex skills/list reported loader errors")
-    raw_skills = row.get("skills")
-    if not isinstance(raw_skills, list):
-        raise CodexAgentHomeError("Codex skills/list omitted skills")
-    user_skills: list[str] = []
-    project_skills: list[str] = []
-    for raw_skill in raw_skills:
-        skill = _require_mapping(raw_skill, "skill entry")
-        name = skill.get("name")
-        path = skill.get("path")
-        scope = skill.get("scope")
-        if not isinstance(name, str) or not isinstance(path, str):
-            raise CodexAgentHomeError("Codex skill entry omitted name or path")
-        skill_path = Path(path)
-        if scope == "user":
-            if not _inside(skill_path, expected_root / "skills"):
-                raise CodexAgentHomeError(
-                    f"Codex user skill {name!r} escaped resolved CODEX_HOME"
-                )
-            user_skills.append(name)
-        elif scope == "repo":
-            if not _inside(skill_path, project_root):
-                raise CodexAgentHomeError(
-                    f"Codex project skill {name!r} escaped the repository root"
-                )
-            project_skills.append(name)
-        elif scope == "system":
-            if not _inside(skill_path, expected_root / "skills" / ".system"):
-                raise CodexAgentHomeError(
-                    f"Codex system skill {name!r} escaped resolved CODEX_HOME"
-                )
-        else:
-            raise CodexAgentHomeError(
-                f"Codex skill {name!r} used unsupported scope {scope!r}"
-            )
-
-    return CodexNativeLoadEvidence(
-        codex_home=str(expected_root),
-        layer_types=tuple(layer_types),
-        effective_model=(
-            config.get("model") if isinstance(config.get("model"), str) else None
-        ),
-        auth_store=str(auth_store),
-        account_type=account_type,
-        requires_openai_auth=requires_openai_auth,
-        user_skills=tuple(sorted(user_skills)),
-        project_skills=tuple(sorted(project_skills)),
     )
 
 def verify_codex_native_projection(
