@@ -5,12 +5,15 @@
 package keys
 
 import (
+	"crypto/hkdf"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 
 	"github.com/tailscale/tailcat"
+	"go4.org/mem"
 	"tailscale.com/types/key"
 )
 
@@ -45,8 +48,30 @@ type Material struct {
 // ServerPublic returns the inbound identity announced to clients.
 func (m Material) ServerPublic() key.NodePublic { return m.ServerPrivate.Public() }
 
-// ClientPublic returns the outbound identity servers allowlist.
+// ClientPublic returns the master outbound identity. Servers admit only a
+// client key derived from it for their own server public key.
 func (m Material) ClientPublic() key.NodePublic { return m.ClientPrivate.Public() }
+
+const clientPerServerInfo = "hyprial-tailcat/client-per-server/v1\x00"
+
+// DeriveClientPrivate deterministically separates one Tailcat client identity
+// per target server. Neither the master key nor an address leaves this package.
+func DeriveClientPrivate(master key.NodePrivate, server key.NodePublic) (key.NodePrivate, error) {
+	masterRaw := master.Raw32()
+	serverRaw := server.Raw32()
+	info := make([]byte, 0, len(clientPerServerInfo)+len(serverRaw))
+	info = append(info, clientPerServerInfo...)
+	info = append(info, serverRaw[:]...)
+	derived, err := hkdf.Key(sha256.New, masterRaw[:], nil, string(info), 32)
+	if err != nil {
+		return key.NodePrivate{}, fmt.Errorf("derive per-server client key: %w", err)
+	}
+	// Match X25519 private-scalar clamping before constructing the node key.
+	derived[0] &= 248
+	derived[31] &= 127
+	derived[31] |= 64
+	return key.NodePrivateFromRaw32(mem.B(derived)), nil
+}
 
 // PublicKeys is the only data genkey may print: the two public keys.
 type PublicKeys struct {

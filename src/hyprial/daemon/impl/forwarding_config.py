@@ -149,9 +149,10 @@ def daemon_forwarding_environment(
         "op": "up",
         "keyFile": str(key_file),
         # Every sidecar is born deny-all. The peer-access actor replaces this
-        # from the org directory and the supervisor replays it on each launch.
-        # An org owner's node remains allowAny until the owner join endpoint
-        # exists (LAX(join-endpoint), access/snapshot.py).
+        # from authenticated OrgFS member/device records, and the supervisor
+        # replays it on each launch. Bootstrap addresses, mesh presence and org
+        # ownership confer no inbound authority; protocol v5 admits only the
+        # derived client keys published for this server.
         "allow": [],
         "allowAny": False,
         "addressFile": str(address_path(home)),

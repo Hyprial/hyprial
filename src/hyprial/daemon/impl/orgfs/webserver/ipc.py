@@ -176,16 +176,41 @@ class DirectoryNodeKeyResolver:
         if not isinstance(result, dict):
             return None
         directory = result.get("directory")
-        if not isinstance(directory, dict):
+        self_record = result.get("self")
+        if not isinstance(directory, dict) or not isinstance(self_record, dict):
             return None
+        local_server = self_record.get("serverPublic")
+        if not isinstance(local_server, str) or not local_server:
+            return None
+        identities: set[tuple[str, str]] = set()
         for devices in directory.values():
             if not isinstance(devices, list):
                 continue
             for device in devices:
                 if not isinstance(device, dict):
                     continue
-                if nodekey in (device.get("serverPublic"), device.get("clientPublic")):
-                    owner = device.get("owner")
-                    if isinstance(owner, str) and owner.strip():
-                        return owner.strip()
-        return None
+                derived = device.get("clientPublicByServer")
+                master = device.get("clientPublic")
+                if not isinstance(derived, dict) or not isinstance(master, str):
+                    continue
+                values = tuple(derived.values())
+                if (
+                    any(not isinstance(value, str) for value in values)
+                    or len(set(values)) != len(values)
+                    or master in values
+                    or derived.get(local_server) != nodekey
+                ):
+                    continue
+                owner = device.get("owner")
+                device_id = device.get("deviceId")
+                if (
+                    isinstance(owner, str)
+                    and owner.strip()
+                    and isinstance(device_id, str)
+                    and device_id.strip()
+                ):
+                    identities.add((owner.strip(), device_id.strip()))
+        if len(identities) != 1:
+            return None
+        owner, _device_id = identities.pop()
+        return owner

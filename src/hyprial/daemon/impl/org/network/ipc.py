@@ -102,6 +102,26 @@ def _build_service(app: Any) -> OrgNetworkService:
         except OSError:
             return None
 
+    def derive_client_key(server_public: str) -> str:
+        app._start_forwarding_supervisor()
+        supervisor = getattr(app, "_forwarding_supervisor", None)
+        if supervisor is None:
+            raise OrgNetworkError(
+                "CLIENT_KEY_DERIVATION_UNAVAILABLE",
+                "forwarding sidecar is not configured",
+            )
+        return supervisor.derive_client_key(server_public)
+
+    def local_server_public() -> str | None:
+        supervisor = getattr(app, "_forwarding_supervisor", None)
+        backend = supervisor.endpoints() if supervisor is not None else None
+        value = (
+            getattr(backend.controller, "server_public", None)
+            if backend is not None
+            else None
+        )
+        return value if isinstance(value, str) and value else None
+
     return OrgNetworkService(
         fs=fs,
         home=Path(app.hyprial_home),
@@ -116,6 +136,8 @@ def _build_service(app: Any) -> OrgNetworkService:
         ),
         map_peer=map_peer,
         unmap_peer=unmap_peer,
+        derive_client_key=derive_client_key,
+        local_server_public=local_server_public,
         request_redial=lambda: app._reconcile_forwarding_endpoints(),
         read_own_address=read_own_address,
         forwarding_status=lambda: app._forwarding_status_json(),

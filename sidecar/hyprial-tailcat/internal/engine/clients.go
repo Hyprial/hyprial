@@ -15,15 +15,19 @@ import (
 
 	"github.com/tailscale/tailcat"
 	"tailscale.com/types/logger"
+
+	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tailcat/internal/keys"
 )
 
 type pooledClient struct {
+	poolKey      string
 	address      string
 	client       *tailcat.Client
 	refs         int
-	retired      bool
+	leases       map[*clientLease]struct{}
 	ready        atomic.Bool
 	closeOnce    sync.Once
+	closeErr     error
 	closeForTest func()
 }
 
@@ -42,24 +46,56 @@ func parseClientAddress(address string) (tailcat.ConnInfo, error) {
 }
 
 // acquireClientLocked shares one lazily-started Tailcat transport between all
-// mesh and service listeners for one secret address. The caller holds e.mu.
-func (e *Engine) acquireClientLocked(address string) *clientLease {
-	entry := e.clients[address]
-	if entry == nil || entry.retired {
+// mesh and service listeners for one server public key. Address or PSK changes
+// cannot create a second connection with the same derived identity while the
+// existing generation still has leases. The caller holds e.mu.
+func (e *Engine) acquireClientLocked(address string) (*clientLease, error) {
+	info, err := parseClientAddress(address)
+	if err != nil {
+		return nil, err
+	}
+	poolKey := info.ServerPublic.String()
+	entry := e.clients[poolKey]
+	if entry == nil || entry.address != address {
+		clientKey, err := keys.DeriveClientPrivate(e.material.ClientPrivate, info.ServerPublic.NodePublic)
+		if err != nil {
+			return nil, err
+		}
 		client := &tailcat.Client{
-			Key: e.material.ClientPrivate, Server: tailcat.Addr(address),
+			Key: clientKey, Server: tailcat.Addr(address),
 			Logf: logger.Logf(quiet),
 		}
-		entry = &pooledClient{address: address, client: client}
-		e.clients[address] = entry
+		replacement := &pooledClient{
+			poolKey: poolKey, address: address, client: client,
+			leases: make(map[*clientLease]struct{}),
+		}
+		if entry != nil {
+			// Close the old DERP connection before publishing a replacement
+			// with the same derived key, then migrate every surviving lease.
+			if err := e.closeClientForHandoffLocked(entry); err != nil {
+				return nil, fmt.Errorf("%w: previous client generation did not close", errClientUnavailable)
+			}
+			replacement.refs = entry.refs
+			for lease := range entry.leases {
+				lease.entry = replacement
+				replacement.leases[lease] = struct{}{}
+			}
+			entry.refs = 0
+			entry.leases = nil
+		}
+		entry = replacement
+		e.clients[poolKey] = entry
 	}
+	lease := &clientLease{entry: entry}
 	entry.refs++
-	return &clientLease{entry: entry}
+	entry.leases[lease] = struct{}{}
+	return lease, nil
 }
 
-// dialTCPPort retires a failed client generation so a later mapping gets a
-// fresh Client and repeats Tailcat's admission handshake. Existing leases keep
-// their generation until they are explicitly remapped or released.
+// dialTCPPort keeps the server's client generation after a failed stream
+// dial. A port-level failure does not prove that the shared transport is bad,
+// and replacing it while mesh or service leases remain would put two DERP
+// connections with the same per-server identity on the relay.
 func (e *Engine) dialTCPPort(ctx context.Context, lease *clientLease, port uint16) (net.Conn, error) {
 	e.mu.Lock()
 	if lease == nil || lease.entry == nil {
@@ -70,31 +106,14 @@ func (e *Engine) dialTCPPort(ctx context.Context, lease *clientLease, port uint1
 	client := entry.client
 	e.mu.Unlock()
 	if client == nil {
-		e.retireClient(entry)
 		return nil, errClientUnavailable
 	}
 	remote, err := client.DialTCPPort(ctx, port)
 	if err != nil {
-		e.retireClient(entry)
 		return nil, err
 	}
 	entry.ready.Store(true)
 	return remote, nil
-}
-
-func (e *Engine) retireClient(entry *pooledClient) {
-	if entry == nil {
-		return
-	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if entry.retired {
-		return
-	}
-	entry.retired = true
-	if e.clients[entry.address] == entry {
-		delete(e.clients, entry.address)
-	}
 }
 
 // releaseClientLocked drops one listener lease. The transport closes only
@@ -105,45 +124,58 @@ func (e *Engine) releaseClientLocked(lease *clientLease) {
 	}
 	entry := lease.entry
 	lease.entry = nil
+	delete(entry.leases, lease)
 	if entry.refs > 0 {
 		entry.refs--
 	}
 	if entry.refs > 0 {
 		return
 	}
-	entry.retired = true
-	if e.clients[entry.address] == entry {
-		delete(e.clients, entry.address)
+	if e.clients[entry.poolKey] == entry {
+		delete(e.clients, entry.poolKey)
 	}
 	e.closeClientLocked(entry)
 }
 
+func (e *Engine) closeClientForHandoffLocked(entry *pooledClient) error {
+	entry.closeOnce.Do(func() {
+		if entry.closeForTest != nil {
+			entry.closeForTest()
+			return
+		}
+		if entry.client != nil {
+			entry.closeErr = entry.client.Close()
+		}
+	})
+	return entry.closeErr
+}
+
 func (e *Engine) closeClientLocked(entry *pooledClient) {
 	entry.closeOnce.Do(func() {
-		e.wg.Add(1)
-		go func() {
-			defer e.wg.Done()
-			if entry.closeForTest != nil {
-				entry.closeForTest()
-				return
-			}
-			if entry.client == nil {
-				return
-			}
-			if entry.ready.Load() {
-				drainCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-				_ = entry.client.DrainTCP(drainCtx)
-				cancel()
-			}
-			_ = entry.client.Close()
-		}()
+		if entry.closeForTest != nil {
+			entry.closeForTest()
+			return
+		}
+		if entry.client == nil {
+			return
+		}
+		if entry.ready.Load() {
+			drainCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			_ = entry.client.DrainTCP(drainCtx)
+			cancel()
+		}
+		_ = entry.client.Close()
 	})
 }
 
 func (e *Engine) clientLeaseCount(address string) int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if client := e.clients[address]; client != nil {
+	poolKey := address
+	if info, err := parseClientAddress(address); err == nil {
+		poolKey = info.ServerPublic.String()
+	}
+	if client := e.clients[poolKey]; client != nil {
 		return client.refs
 	}
 	return 0

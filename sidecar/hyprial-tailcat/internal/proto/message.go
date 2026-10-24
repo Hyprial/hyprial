@@ -1,6 +1,6 @@
-// Package proto implements the hyprial-tailcat stdio protocol v4:
+// Package proto implements the hyprial-tailcat stdio protocol v5:
 // newline-delimited JSON commands and events. It is a closed wire
-// contract: unknown ops, unknown fields, and any version other than 4
+// contract: unknown ops, unknown fields, and any version other than 5
 // are rejected. See docs/design/tailnet-cutover-architecture-2026-10-03.md
 // §3.3 (v3 baseline),
 // docs/design/design-orgfs-requester-authentication-2026-10-08.md §3.3
@@ -22,13 +22,11 @@ import (
 	"sync"
 )
 
-// Version is the only accepted protocol version. v4 adds the expose
-// admission policy and the fixed slot pool (#1294 and the slots change
-// share one v4); coordinate any further bump with in-flight protocol
-// work so one release carries one version.
-const Version = 4
+// Version is the only accepted protocol version. v5 adds deterministic
+// per-server client-key derivation without exposing private material.
+const Version = 5
 
-// MaxRequestIDLength bounds correlation data accepted or echoed by v4.
+// MaxRequestIDLength bounds correlation data accepted or echoed by v5.
 const MaxRequestIDLength = 128
 
 // Admission policy values accepted on expose commands. Absent means
@@ -82,7 +80,7 @@ type UpRequest struct {
 	SlotHoldMs      int
 }
 
-// Command is a parsed protocol-v4 command. Which fields are populated
+// Command is a parsed protocol-v5 command. Which fields are populated
 // depends on Op. Address is secret (it embeds the peer pre-shared key)
 // and must never be logged or echoed back.
 type Command struct {
@@ -197,7 +195,7 @@ type Event struct {
 var Capabilities = []string{
 	"map-peer", "unmap-peer", "allow", "expose", "unexpose", "peer-key",
 	"service-connect-v1", "forwarding-request-id-v1", "peer-slots-v1",
-	"connection-telemetry-v1", "derp-map-v1",
+	"connection-telemetry-v1", "derp-map-v1", "client-key-derivation-v1",
 }
 
 func Hello(sidecar, tailcat string) Event {
@@ -229,7 +227,7 @@ func RunningState(serverPublic, clientPublic string, peers []PeerMapping, slots 
 }
 
 // SlotMapped is the peer-mapped event: a slot binding reporting the
-// resolved slot wire id (there is no localPort shape in v4).
+// resolved slot wire id (there is no localPort shape in v5).
 func SlotMapped(peer, slot string) Event {
 	return Event{V: Version, Event: "peer-mapped", Peer: peer, Slot: slot}
 }
@@ -240,6 +238,13 @@ func PeerUnmapped(peer string) Event {
 
 func Allowed(count int, allowAny bool) Event {
 	return Event{V: Version, Event: "allowed", Count: &count, AllowAny: &allowAny}
+}
+
+func ClientKeyDerived(serverPublic, clientPublic string) Event {
+	return Event{
+		V: Version, Event: "client-key-derived",
+		ServerPublic: serverPublic, ClientPublic: clientPublic,
+	}
 }
 
 // Exposed always serializes proxyProtocol (even when empty, per §3.3)
@@ -286,7 +291,7 @@ func ProtocolError(message string) error { return fmt.Errorf("%w: %s", errProtoc
 func IsProtocolError(err error) bool     { return errors.Is(err, errProtocol) }
 
 // ParseCommand rejects malformed, version-mismatched, unknown-op,
-// missing, and extra fields, keeping v4 a closed wire contract.
+// missing, and extra fields, keeping v5 a closed wire contract.
 func ParseCommand(line []byte) (Command, error) {
 	var raw map[string]json.RawMessage
 	if err := decodeExact(line, &raw); err != nil {
@@ -336,6 +341,27 @@ func ParseCommand(line []byte) (Command, error) {
 		return Command{Op: op, RequestID: requestID, Peer: wire.Peer}, err
 	case "allow":
 		return parseAllow(line, raw)
+	case "derive-client-key":
+		if err := onlyKeys(raw, "v", "op", "requestId", "serverPublic"); err != nil {
+			return Command{}, err
+		}
+		var wire struct {
+			V            int    `json:"v"`
+			Op           string `json:"op"`
+			RequestID    string `json:"requestId,omitempty"`
+			ServerPublic string `json:"serverPublic"`
+		}
+		if err := decodeExact(line, &wire); err != nil || !strings.HasPrefix(wire.ServerPublic, "nodekey:") {
+			return Command{}, ProtocolError("serverPublic must be a nodekey string")
+		}
+		requestID, err := optionalRequestID(raw)
+		if err != nil {
+			return Command{}, err
+		}
+		if requestID == "" {
+			return Command{}, ProtocolError("derive-client-key requires requestId")
+		}
+		return Command{Op: op, RequestID: requestID, ServerPublic: wire.ServerPublic}, nil
 	case "expose":
 		return parseExpose(line, raw)
 	case "unexpose":
@@ -669,23 +695,24 @@ func validateTCPTarget(target string) error {
 
 // eventFields is the closed per-event key set used by ParseEvent.
 var eventFields = map[string][]string{
-	"hello":            {"sidecar", "tailcat", "capabilities"},
-	"state":            {"state", "serverPublic", "clientPublic", "peers", "slots", "connectionTelemetry", "derpMapURL", "derpMapSource", "requestId"},
-	"peer-mapped":      {"peer", "slot", "requestId"},
-	"peer-unmapped":    {"peer", "requestId"},
-	"allowed":          {"count", "allowAny", "requestId"},
-	"exposed":          {"port", "target", "proxyProtocol", "admission", "requestId"},
-	"unexposed":        {"port", "requestId"},
-	"peer-key":         {"addr", "found", "key", "requestId"},
-	"service-mapped":   {"requestId", "service"},
-	"service-unmapped": {"requestId", "name", "removed"},
-	"service-status":   {"requestId", "services"},
-	"service-failed":   {"requestId", "op", "name", "code", "message"},
-	"error":            {"code", "message", "requestId"},
-	"exited":           {},
+	"hello":              {"sidecar", "tailcat", "capabilities"},
+	"state":              {"state", "serverPublic", "clientPublic", "peers", "slots", "connectionTelemetry", "derpMapURL", "derpMapSource", "requestId"},
+	"peer-mapped":        {"peer", "slot", "requestId"},
+	"peer-unmapped":      {"peer", "requestId"},
+	"allowed":            {"count", "allowAny", "requestId"},
+	"client-key-derived": {"serverPublic", "clientPublic", "requestId"},
+	"exposed":            {"port", "target", "proxyProtocol", "admission", "requestId"},
+	"unexposed":          {"port", "requestId"},
+	"peer-key":           {"addr", "found", "key", "requestId"},
+	"service-mapped":     {"requestId", "service"},
+	"service-unmapped":   {"requestId", "name", "removed"},
+	"service-status":     {"requestId", "services"},
+	"service-failed":     {"requestId", "op", "name", "code", "message"},
+	"error":              {"code", "message", "requestId"},
+	"exited":             {},
 }
 
-// ParseEvent validates one protocol-v4 event line: version 4, a known
+// ParseEvent validates one protocol-v5 event line: version 5, a known
 // event name, and only the fields defined for that event. Tests and
 // contract golden checkers use it to exercise the same closed contract
 // on the event side.
@@ -723,6 +750,12 @@ func ParseEvent(line []byte) (Event, error) {
 		}
 	} else if _, err := optionalRequestID(raw); err != nil {
 		return Event{}, err
+	}
+	invalidDerived := event.RequestID == "" ||
+		!strings.HasPrefix(event.ServerPublic, "nodekey:") ||
+		!strings.HasPrefix(event.ClientPublic, "nodekey:")
+	if name == "client-key-derived" && invalidDerived {
+		return Event{}, ProtocolError("invalid client-key-derived event")
 	}
 	return event, nil
 }

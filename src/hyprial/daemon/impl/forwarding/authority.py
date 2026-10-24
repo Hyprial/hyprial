@@ -73,6 +73,12 @@ class _AllowSidecar:
 
 
 @dataclass(frozen=True, slots=True)
+class _DeriveClientKeySidecar:
+    operation_id: str
+    server_public: str
+
+
+@dataclass(frozen=True, slots=True)
 class _CloseSidecar:
     operation_id: str
 
@@ -203,6 +209,8 @@ class ForwardingControllerAuthority:
                 value = self._controller.peer_key(command.address)
             elif isinstance(command, _AllowSidecar):
                 value = self._controller.allow(command.keys, command.allow_any)
+            elif isinstance(command, _DeriveClientKeySidecar):
+                value = self._controller.derive_client_key(command.server_public)
             elif isinstance(command, _MapServiceSidecar):
                 value = self._controller.map_service(
                     command.name,
@@ -238,7 +246,7 @@ class ForwardingControllerAuthority:
         return result
 
     def map_peer(self, peer: str, address: str, slot: str) -> str:
-        """Bind ``peer`` onto the fixed ``slot`` (protocol v4).
+        """Bind ``peer`` onto the fixed ``slot`` (protocol v5).
 
         Returns the bound slot wire id (the resolved id on a tcp growth
         bind); the fixed slot pool is the only mapping shape.
@@ -268,6 +276,13 @@ class ForwardingControllerAuthority:
             _AllowSidecar(uuid.uuid4().hex, tuple(keys), bool(allow_any))
         )
         assert isinstance(result, dict)
+        return result
+
+    def derive_client_key(self, server_public: str) -> str:
+        result = self._call(
+            _DeriveClientKeySidecar(uuid.uuid4().hex, server_public)
+        )
+        assert isinstance(result, str)
         return result
 
     def map_service(

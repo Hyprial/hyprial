@@ -321,6 +321,25 @@ func writeAddressFile(path, address string) error {
 	return os.Chmod(path, 0600)
 }
 
+// DeriveClientPublic returns the public identity this device uses only for
+// the named target server. Private key material never crosses this boundary.
+func (e *Engine) DeriveClientPublic(serverPublic string) (string, error) {
+	public, err := key.ParseNodePublicUntyped(mem.S(strings.TrimPrefix(serverPublic, "nodekey:")))
+	if err != nil {
+		return "", fmt.Errorf("%w: bad target server nodekey", ErrBadInput)
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !e.up {
+		return "", ErrNotUp
+	}
+	derived, err := keys.DeriveClientPrivate(e.material.ClientPrivate, public)
+	if err != nil {
+		return "", err
+	}
+	return derived.Public().String(), nil
+}
+
 func parseAllowList(list []string) (*tailcat.KeySet, error) {
 	set := &tailcat.KeySet{}
 	for _, entry := range list {
@@ -418,7 +437,7 @@ func (e *Engine) UnmapPeer(peer string) error {
 
 // unmapLocked removes the mapping and closes its connections; the caller
 // must hold e.mu. The slot returns to hold mode (its listener stays
-// open). Client teardown happens asynchronously.
+// open). The final client lease closes before another generation can dial.
 func (e *Engine) unmapLocked(peer string, mapped *mappedPeer) {
 	delete(e.mapped, peer)
 	mapped.cancel()

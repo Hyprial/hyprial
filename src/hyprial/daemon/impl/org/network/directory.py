@@ -291,6 +291,10 @@ class OrgFsDirectoryStore:
             for device in candidates
             if device.server_public not in conflicts
             and device.client_public not in conflicts
+            and not any(
+                client in conflicts
+                for client in device.client_public_by_server.values()
+            )
         ]
         devices.sort(key=lambda device: (device.device_id, device.owner))
         pending.sort(key=lambda row: (row["deviceId"], row["owner"]))
@@ -830,10 +834,15 @@ class OrgFsDirectoryStore:
         uses: dict[str, tuple[set[str], set[str]]] = {}
         for device in devices:
             owner = directory_owner_principal(device.owner)
-            for field, key in (
+            keys = [
                 ("serverPublic", device.server_public),
                 ("clientPublic", device.client_public),
-            ):
+                *(
+                    (f"clientPublicByServer[{server}]", client)
+                    for server, client in (device.client_public_by_server or {}).items()
+                ),
+            ]
+            for field, key in keys:
                 fields, owners = uses.setdefault(key, (set(), set()))
                 fields.add(field)
                 owners.add(owner)

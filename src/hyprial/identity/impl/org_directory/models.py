@@ -12,7 +12,7 @@ import base64
 import json
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from hyprial.kernel import (
@@ -96,6 +96,7 @@ _RECORD_KEYS = frozenset(
         "owner",
         "serverPublic",
         "clientPublic",
+        "clientPublicByServer",
         "address",
         "keyGeneration",
         "updatedAt",
@@ -167,6 +168,7 @@ class DirectoryDevice:
     address: str
     key_generation: int
     updated_at: str
+    client_public_by_server: Mapping[str, str] = field(default_factory=dict)
     machine_fingerprint: str | None = None
     first_published_at: str | None = None
 
@@ -177,6 +179,7 @@ class DirectoryDevice:
             "owner": self.owner,
             "serverPublic": self.server_public,
             "clientPublic": self.client_public,
+            "clientPublicByServer": dict(self.client_public_by_server or {}),
             "address": self.address,
             "keyGeneration": self.key_generation,
             "updatedAt": self.updated_at,
@@ -205,11 +208,20 @@ class DirectoryDevice:
         missing = sorted(_RECORD_KEYS - set(value))
         if missing:
             raise ValueError(f"directory device record is missing keys: {missing}")
+        client_public = _nodekey(value["clientPublic"], "clientPublic")
+        client_public_by_server = _client_public_by_server(
+            value["clientPublicByServer"]
+        )
+        if client_public in client_public_by_server.values():
+            raise ValueError(
+                "clientPublicByServer clients must not equal master clientPublic"
+            )
         return cls(
             device_id=_non_empty_string(value["deviceId"], "deviceId"),
             owner=_non_empty_string(value["owner"], "owner"),
             server_public=_nodekey(value["serverPublic"], "serverPublic"),
-            client_public=_nodekey(value["clientPublic"], "clientPublic"),
+            client_public=client_public,
+            client_public_by_server=client_public_by_server,
             address=_non_empty_string(value["address"], "address"),
             key_generation=_generation(value["keyGeneration"]),
             updated_at=_utc_timestamp(value["updatedAt"], "updatedAt"),
@@ -529,6 +541,21 @@ def _nodekey(value: object, label: str) -> str:
     if not text.startswith("nodekey:") or len(text) <= len("nodekey:"):
         raise ValueError(f"{label} must look like 'nodekey:…'")
     return text
+
+
+def _client_public_by_server(value: object) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        raise ValueError("clientPublicByServer must be a JSON object")
+    if len(value) > 1024:
+        raise ValueError("clientPublicByServer has more than 1024 entries")
+    result: dict[str, str] = {}
+    for server, client in value.items():
+        parsed_server = _nodekey(server, "clientPublicByServer server")
+        parsed_client = _nodekey(client, "clientPublicByServer client")
+        result[parsed_server] = parsed_client
+    if len(set(result.values())) != len(result):
+        raise ValueError("clientPublicByServer clients must be unique")
+    return result
 
 
 def _generation(value: object) -> int:

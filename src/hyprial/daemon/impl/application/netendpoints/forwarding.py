@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 
 #: How often an owner/admin daemon fulfils org leave requests (§4.3).
 _ORG_LEAVE_INTERVAL_SECONDS = 30.0
+_ORG_KEY_PUBLICATION_INTERVAL_SECONDS = 10.0
 
 
 def record_tcp_slot_ports(app: object, reported: tuple[str, ...]) -> None:
@@ -342,6 +343,11 @@ class _ForwardingOpsMixin:
     def _reconcile_forwarding_endpoints(self) -> None:
         self._publish_org_directory_if_address_changed()
         self._process_org_leave_requests_throttled()
+        from hyprial.daemon.impl.org.network.admission import (
+            sync_directory_admission_for_app,
+        )
+
+        sync_directory_admission_for_app(self)
         backend = self._forwarding_backend()
         if backend is None:
             return
@@ -393,13 +399,13 @@ class _ForwardingOpsMixin:
         process_leave_requests_for_app(self)
 
     def _publish_org_directory_if_address_changed(self) -> None:
-        """§4.3 publish_self: refresh the org directories when the address file changes.
+        """Refresh directory address and per-server client-key projections.
 
         The sidecar writes the Tailcat address file once it is up; until then
         there is nothing publishable, and after a rotation the row must be
-        rewritten.  Keyed on the file's content digest so the tick stays
-        cheap and only real changes reach OrgFS.  Best effort: a failure
-        logs and retries on the next tick.
+        rewritten. The address digest triggers immediate publication; a
+        bounded cadence also discovers newly published peer server keys.
+        Best effort: a failure is retried on a later maintenance tick.
         """
 
         try:
@@ -409,12 +415,22 @@ class _ForwardingOpsMixin:
         except OSError:
             return
         digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
-        if digest == getattr(self, "_org_directory_address_digest", None):
+        now = time.monotonic()
+        address_changed = digest != getattr(
+            self, "_org_directory_address_digest", None
+        )
+        last = getattr(self, "_org_directory_keys_checked_at", None)
+        if (
+            not address_changed
+            and last is not None
+            and now - last < _ORG_KEY_PUBLICATION_INTERVAL_SECONDS
+        ):
             return
         from hyprial.daemon.impl.org.network import publish_self_for_app
 
         outcome = publish_self_for_app(self)
-        if outcome.get("published"):
+        self._org_directory_keys_checked_at = now
+        if not outcome.get("skipped"):
             self._org_directory_address_digest = digest
 
     def _redial_forwarding(self, current: tuple[str, ...]) -> None:

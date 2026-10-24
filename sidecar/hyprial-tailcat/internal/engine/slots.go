@@ -301,7 +301,11 @@ func (e *Engine) mapPeerSlot(peer, address string, port int, slotSpec string) (M
 	if other := slot.bound; other != nil {
 		e.unmapLocked(other.mapping.Peer, other)
 	}
-	lease := e.acquireClientLocked(address)
+	lease, err := e.acquireClientLocked(address)
+	if err != nil {
+		e.mu.Unlock()
+		return Mapping{}, err
+	}
 	ctx, cancel := context.WithCancel(e.ctx)
 	mapped := &mappedPeer{
 		mapping: Mapping{Peer: peer, Slot: slot.id},

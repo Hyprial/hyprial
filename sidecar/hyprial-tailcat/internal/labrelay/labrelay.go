@@ -5,6 +5,7 @@
 package labrelay
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http/httptest"
@@ -151,6 +152,20 @@ func Start(t testing.TB) *Relay {
 	}
 	t.Cleanup(relay.Close)
 	return relay
+}
+
+// DuplicateClientCounts reports the relay's current duplicate-key gauges.
+func (r *Relay) DuplicateClientCounts() (keys, connections int, err error) {
+	var metrics map[string]any
+	if err := json.Unmarshal([]byte(r.derp.ExpVar(false).String()), &metrics); err != nil {
+		return 0, 0, fmt.Errorf("decode DERP metrics: %w", err)
+	}
+	keysValue, keysOK := metrics["gauge_current_dup_client_keys"].(float64)
+	connectionsValue, connectionsOK := metrics["gauge_current_dup_client_conns"].(float64)
+	if !keysOK || !connectionsOK {
+		return 0, 0, fmt.Errorf("DERP duplicate gauges are unavailable")
+	}
+	return int(keysValue), int(connectionsValue), nil
 }
 
 // Config returns the up command's derp object pointing at this relay.

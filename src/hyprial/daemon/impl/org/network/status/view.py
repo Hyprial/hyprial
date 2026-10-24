@@ -64,6 +64,7 @@ def network_view(
     authorization_error: type[Exception],
     forwarding_status: Callable[[], Mapping[str, Any] | None] | None,
     own_address: Callable[[], str | None],
+    server_public: str,
     logger: Callable[..., None],
 ) -> dict[str, Any]:
     """Return directory, mapped-peer, and sidecar panes with source status."""
@@ -172,6 +173,7 @@ def network_view(
         "self": {
             "deviceId": node_id,
             "owner": owner,
+            "serverPublic": server_public,
             "addressPresent": address is not None,
         },
         "mappedPeers": mapped_peers,

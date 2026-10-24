@@ -421,6 +421,12 @@ class ForwardingSidecarSupervisor:
             raise ForwardingSidecarError("forwarding sidecar is not running")
         return backend.controller.allow(keys, allow_any)
 
+    def derive_client_key(self, server_public: str) -> str:
+        backend = self.endpoints()
+        if backend is None:
+            raise ForwardingSidecarError("forwarding sidecar is not running")
+        return backend.controller.derive_client_key(server_public)
+
     def map_peer(self, peer: str, address: str, slot: str) -> str:
         # Read through endpoints(), never ``self._endpoints`` directly:
         # with own_io=True the backend lives in the state owner and the

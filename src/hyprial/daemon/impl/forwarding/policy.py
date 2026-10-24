@@ -9,7 +9,7 @@ from pathlib import Path
 from hyprial.kernel import private_metadata_violation
 
 
-FORWARD_PROTOCOL_VERSION = 4
+FORWARD_PROTOCOL_VERSION = 5
 
 
 _PROXY_KEYS = frozenset(
@@ -26,6 +26,14 @@ _PROXY_KEYS = frozenset(
 )
 
 
+def _child_environment(environ: Mapping[str, str]) -> dict[str, str]:
+    return {
+        key: value
+        for key, value in environ.items()
+        if not key.startswith("TS_") and key not in _PROXY_KEYS
+    }
+
+
 def _normalize_exposure(exposure: Mapping[str, object]) -> dict[str, object]:
     port = exposure.get("port")
     target = exposure.get("target")
@@ -34,7 +42,7 @@ def _normalize_exposure(exposure: Mapping[str, object]) -> dict[str, object]:
         raise ForwardingSidecarError("exposure port must be between 1 and 65535")
     if not isinstance(target, str) or not target:
         raise ForwardingSidecarError("exposure target must be a non-empty string")
-    # Python-side canonical value is "none"; protocol v4 writes "" on the
+    # Python-side canonical value is "none"; protocol v5 writes "" on the
     # wire (see controller.expose).  Both are accepted here so a persisted
     # entry and a raw wire event normalize to the same record.
     if proxy_protocol not in {"v2", "none", ""}:
@@ -123,7 +131,7 @@ def validate_exposure_target(target: str) -> str:
 
 
 def validate_peer_key_address(address: str) -> str:
-    """The ``addr`` argument of the v4 ``peer-key`` op (was v2 ``whois``)."""
+    """Validate the ``addr`` argument of the ``peer-key`` operation."""
 
     try:
         if address.startswith("["):
@@ -141,6 +149,17 @@ def validate_peer_key_address(address: str) -> str:
     if not 1 <= port <= 65535:
         raise ForwardingSidecarError("addr must be an IP:port string")
     return address
+
+
+def parse_derp_map(event: dict[str, object]) -> tuple[str | None, str | None]:
+    """Return the sidecar-reported DERP map URL and source, if any."""
+
+    raw_url = event.get("derpMapURL")
+    raw_source = event.get("derpMapSource")
+    return (
+        raw_url if isinstance(raw_url, str) else None,
+        raw_source if isinstance(raw_source, str) else None,
+    )
 
 
 class ForwardingSidecarError(RuntimeError):

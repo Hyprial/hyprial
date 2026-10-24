@@ -1,5 +1,5 @@
 // hyprial-tailcat is the hyprial Tailcat sidecar: version, genkey, and
-// the forward stdio protocol v4. See
+// the forward stdio protocol v5. See
 // docs/design/tailnet-cutover-architecture-2026-10-03.md §3.
 //
 // Secrets never enter argv or stdout: genkey takes only an output path,

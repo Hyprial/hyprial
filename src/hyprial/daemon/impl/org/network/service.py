@@ -111,6 +111,8 @@ class OrgNetworkService(CasdoorMembershipMixin):
         policy: OrgPolicy | None = None,
         map_peer: Callable[[str, str], int | None] | None = None,
         unmap_peer: Callable[[str], None] | None = None,
+        derive_client_key: Callable[[str], str] | None = None,
+        local_server_public: Callable[[], str | None] | None = None,
         request_redial: Callable[[], None] | None = None,
         read_own_address: Callable[[], str | None] | None = None,
         casdoor: CasdoorGroups | None = None,
@@ -147,6 +149,8 @@ class OrgNetworkService(CasdoorMembershipMixin):
         )
         self._map_peer = map_peer
         self._unmap_peer = unmap_peer
+        self._derive_client_key = derive_client_key
+        self._local_server_public = local_server_public
         self._request_redial = request_redial
         self._read_own_address = read_own_address
         self._casdoor = casdoor
@@ -410,9 +414,8 @@ class OrgNetworkService(CasdoorMembershipMixin):
                 if entry.get("org") == org
             ],
         )
-        # The production sidecar launches deny-by-default (empty allow,
-        # allowAny=false) until org-directory allow synchronization lands,
-        # so the leaver is already refused rather than being revoked later.
+        # The next forwarding reconcile replaces the inbound allow-set from
+        # current org membership; this left org no longer contributes keys.
         self._log("info", "org", "org.leave", org=org, spaceId=space.space_id)
         return {
             "org": org,
@@ -432,9 +435,8 @@ class OrgNetworkService(CasdoorMembershipMixin):
         )
         space = self._require_space(org)
         removed_devices = self._remove_member_and_devices(org, space.space_id, user)
-        # The production sidecar launches deny-by-default (empty allow,
-        # allowAny=false), so established Tailcat connections are not
-        # admitted until an authenticated allow set is derived.
+        # The next forwarding reconcile removes this user's keys from the
+        # derived allow-set; sidecar Allow disconnects revoked clients.
         self._log("info", "org", "org.remove", org=org, user=user)
         return {
             "org": org,
@@ -578,6 +580,7 @@ class OrgNetworkService(CasdoorMembershipMixin):
             authorization_error=OrgNetworkError,
             forwarding_status=self._forwarding_status,
             own_address=self._own_address,
+            server_public=self._require_device_record().server_public,
             logger=self._log,
         )
 
@@ -662,7 +665,7 @@ class OrgNetworkService(CasdoorMembershipMixin):
                     raise
                 self._sleep(JOIN_RETRY_SECONDS)
 
-    def _publish_into(self, org: str) -> True:
+    def _publish_into(self, org: str) -> bool:
         """Write this device's row into one org's directory.
 
         A missing address (sidecar not up yet) or a missing device record
@@ -689,6 +692,50 @@ class OrgNetworkService(CasdoorMembershipMixin):
             )
         published_at = self._now().isoformat()
         binding = mark_first_published(self._home, published_at)
+        directory_devices = self._store.list_devices(org)
+        own_identity = (self._owner, self._node_id)
+        current = next(
+            (
+                candidate
+                for candidate in directory_devices
+                if (
+                    candidate.owner.removeprefix("user:"),
+                    candidate.device_id,
+                )
+                == own_identity
+            ),
+            None,
+        )
+        previous_mapping = (
+            dict(current.client_public_by_server)
+            if current is not None
+            and current.key_generation == record.key_generation
+            and current.client_public == record.client_public
+            else {}
+        )
+        target_servers = {
+            device.server_public
+            for device in directory_devices
+            if (device.owner.removeprefix("user:"), device.device_id) != own_identity
+        }
+        if len(target_servers) > 1024:
+            raise OrgNetworkError(
+                "CLIENT_KEY_DERIVATION_LIMIT",
+                "the directory has too many target server keys",
+            )
+        if target_servers and self._derive_client_key is None:
+            raise OrgNetworkError(
+                "CLIENT_KEY_DERIVATION_UNAVAILABLE",
+                "the forwarding sidecar cannot derive per-server client keys",
+            )
+        client_public_by_server: dict[str, str] = {}
+        for server_public in sorted(target_servers):
+            cached = previous_mapping.get(server_public)
+            if cached is not None:
+                client_public_by_server[server_public] = cached
+                continue
+            assert self._derive_client_key is not None
+            client_public_by_server[server_public] = self._derive_client_key(server_public)
         device = DirectoryDevice(
             device_id=record.device_id,
             owner=record.owner,
@@ -697,6 +744,7 @@ class OrgNetworkService(CasdoorMembershipMixin):
             address=address,
             key_generation=record.key_generation,
             updated_at=published_at,
+            client_public_by_server=client_public_by_server,
             machine_fingerprint=binding.machine_fingerprint,
             first_published_at=binding.first_published_at,
         )
@@ -713,6 +761,16 @@ class OrgNetworkService(CasdoorMembershipMixin):
                 "ORG_ACTION_NOT_AUTHORIZED",
                 f"writing device {device.device_id!r} in org {org!r} is not allowed",
             )
+        if current is not None and (
+            current.server_public == device.server_public
+            and current.client_public == device.client_public
+            and current.client_public_by_server == device.client_public_by_server
+            and current.address == device.address
+            and current.key_generation == device.key_generation
+            and current.machine_fingerprint == device.machine_fingerprint
+            and current.first_published_at == device.first_published_at
+        ):
+            return False
         self._store.put_device(org, device)
         return True
 

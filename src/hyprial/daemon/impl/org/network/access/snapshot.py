@@ -5,12 +5,11 @@ One read of the directory spaces gives everything the network side needs:
 - ``peers``: the other member devices (label -> Tailcat address), plus the
   invite-authorized bootstrap peers the directory does not name yet;
 - ``peer_orgs`` / ``added``: the ordering inputs of the one-dialer rule;
-- ``allow_keys``: the client nodekeys the sidecar admits inbound;
-- ``allow_any``: True on every device of a user who owns an org, for all of
-  that node's orgs.  ``LAX(join-endpoint)``: until the owner's join endpoint
-  exists, a joiner's key is unknown before its row syncs (org-improver,
-  2026-10-08; the join endpoint is a separate PAC and must ship in 0.5.5; it
-  flips ``test_an_org_owner_admits_every_key_until_the_join_endpoint``).
+- ``allow_keys``: only the per-server derived client nodekeys that the sidecar
+  admits inbound; master client keys and keys derived for another server never
+  confer authority;
+- ``allow_any``: always false. Protocol v5 admission is fail-closed and has no
+  owner-wide compatibility exception.
 - ``orgs``: each org's own contribution (``OrgAccess``), so one unreadable
   org can be carried forward without freezing the others;
 - ``unreadable`` / ``incomplete``: orgs that could not be read this time.
@@ -45,6 +44,7 @@ from hyprial.daemon.impl.org.network.state import (
     remove_bootstrap_peers,
 )
 from hyprial.daemon.impl.orgfs.api import OrgFsError
+from hyprial.identity import read_device_record
 from hyprial.kernel import canonical_user_uri
 
 
@@ -124,6 +124,8 @@ def _org_view(service: Any, org: str) -> tuple[str, Any, list[Any], list[Any]] |
     current = [
         device for device in devices if device.owner.removeprefix("user:") in names
     ]
+    if service._owner.removeprefix("user:") not in names:
+        current = []
     return space.space_id, space, members, current
 
 
@@ -168,7 +170,26 @@ def directory_peers(service: Any) -> dict[str, str]:
     return build_access_snapshot(service).peers  # type: ignore[return-value]
 
 
-def _org_access(service: Any, org: str) -> OrgAccess | None:
+def _derived_admission_key(device: Any, local_server_public: str) -> str | None:
+    """Return this server's valid derived key, or reject the whole row."""
+
+    derived = getattr(device, "client_public_by_server", None)
+    if not isinstance(derived, Mapping):
+        return None
+    values = tuple(derived.values())
+    if (
+        not all(isinstance(value, str) and is_admissible_key(value) for value in values)
+        or len(set(values)) != len(values)
+        or device.client_public in values
+    ):
+        return None
+    key = derived.get(local_server_public)
+    return key if isinstance(key, str) and is_admissible_key(key) else None
+
+
+def _org_access(
+    service: Any, org: str, local_server_public: str
+) -> OrgAccess | None:
     view = _org_view(service, org)
     if view is None:
         return None
@@ -184,20 +205,21 @@ def _org_access(service: Any, org: str) -> OrgAccess | None:
             devices[identity] = device.address
         else:
             devices.setdefault(identity, "")
-        client_keys[identity] = device.client_public
-        machine_fingerprints[identity] = device.machine_fingerprint
-        first_published[identity] = _added_at(device.first_published_at)
-        if is_admissible_key(device.client_public):
-            keys.add(device.client_public)
-        elif device.client_public:
+        admission_key = _derived_admission_key(device, local_server_public)
+        if admission_key is not None:
+            client_keys[identity] = admission_key
+            keys.add(admission_key)
+        elif getattr(device, "client_public_by_server", None):
             service._log(
                 "warn",
                 "org",
                 "org.access.invalid-key",
                 org=org,
                 peer=service._peer_label(*identity),
-                detail="client key is not nodekey:<64 hex>",
+                detail="derived client key row is invalid for this server",
             )
+        machine_fingerprints[identity] = device.machine_fingerprint
+        first_published[identity] = _added_at(device.first_published_at)
     return OrgAccess(
         space_id=space_id,
         owned=space.owner == canonical_user_uri(service._owner),
@@ -267,17 +289,22 @@ def build_access_snapshot(
     """Read every org once; an unreadable org contributes ``carry[org]`` if given."""
 
     own = (service._owner, service._node_id)
+    live_server_public = getattr(service, "_local_server_public", None)
+    local_server_public = live_server_public() if callable(live_server_public) else None
+    if not local_server_public:
+        record = read_device_record(service._home)
+        local_server_public = record.server_public if record is not None else ""
     orgs: dict[str, OrgAccess] = {}
     unreadable: list[str] = []
     for org in service._orgs():
-        part = _org_access(service, org)
+        part = _org_access(service, org, local_server_public)
         if part is None:
             unreadable.append(org)
             part = (carry or {}).get(org)
         if part is not None:
             orgs[org] = part
     rows: dict[tuple[str, str], str] = {}
-    keys_by_identity: dict[tuple[str, str], str] = {}
+    claims: dict[str, set[tuple[str, str]]] = {}
     fingerprints: dict[tuple[str, str], str | None] = {}
     first_published: dict[tuple[str, str], datetime | None] = {}
     peer_orgs: dict[str, set[str]] = {}
@@ -285,7 +312,9 @@ def build_access_snapshot(
         for identity, address in part.devices.items():
             if address:
                 rows.setdefault(identity, address)
-            keys_by_identity.setdefault(identity, part.client_keys[identity])
+            admission_key = part.client_keys.get(identity)
+            if admission_key is not None:
+                claims.setdefault(admission_key, set()).add(identity)
             fingerprints.setdefault(identity, part.machine_fingerprints[identity])
             first_published.setdefault(identity, part.first_published[identity])
             if identity != own:
@@ -301,8 +330,10 @@ def build_access_snapshot(
     denied_labels = frozenset(service._peer_label(*identity) for identity in denied)
     allow_keys = {
         key
-        for identity, key in keys_by_identity.items()
-        if identity != own and identity not in denied and is_admissible_key(key)
+        for key, identities in claims.items()
+        if len(identities) == 1
+        and own not in identities
+        and not identities.intersection(denied)
     }
     for label in denied_labels:
         peer_orgs.pop(label, None)
@@ -316,8 +347,8 @@ def build_access_snapshot(
         ),
         peer_orgs=peer_orgs,
         added={org: part.added for org, part in orgs.items()},
-        allow_keys=tuple(sorted(allow_keys)),
-        allow_any=any(part.owned for part in orgs.values()),
+        allow_keys=() if unreadable else tuple(sorted(allow_keys)),
+        allow_any=False,
         spaces=tuple((org, part.space_id) for org, part in orgs.items()),
         orgs=orgs,
         unreadable=tuple(unreadable),

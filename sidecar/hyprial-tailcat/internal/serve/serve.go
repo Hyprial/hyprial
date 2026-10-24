@@ -1,4 +1,4 @@
-// Package serve implements the protocol-v4 stdio lifecycle of
+// Package serve implements the protocol-v5 stdio lifecycle of
 // `hyprial-tailcat forward` (design doc §3.3): emit hello, consume
 // newline-delimited JSON commands, emit events, and on stdin EOF or down
 // shut everything down, emit exited, and return.
@@ -67,7 +67,7 @@ func Run(ctx context.Context, input io.Reader, output io.Writer, diag io.Writer)
 			command, err := proto.ParseCommand(line)
 			if err != nil {
 				logf("rejected malformed request")
-				event := proto.Error(proto.CodeBadRequest, "invalid protocol-v4 request")
+				event := proto.Error(proto.CodeBadRequest, "invalid protocol-v5 request")
 				event.RequestID = parseErrorRequestID(line)
 				if err := writer.Write(event); err != nil {
 					eng.Down()
@@ -145,6 +145,16 @@ func handle(ctx context.Context, eng *engine.Engine, command proto.Command, writ
 			return writeError(writer, err, proto.CodeInternal, command.RequestID)
 		}
 		return writeResponse(writer, proto.Allowed(count, command.AllowAny), command.RequestID)
+	case "derive-client-key":
+		clientPublic, err := eng.DeriveClientPublic(command.ServerPublic)
+		if err != nil {
+			return writeError(writer, err, proto.CodeInternal, command.RequestID)
+		}
+		return writeResponse(
+			writer,
+			proto.ClientKeyDerived(command.ServerPublic, clientPublic),
+			command.RequestID,
+		)
 	case "expose":
 		exposure, err := eng.Expose(ctx, engine.Exposure{
 			Port: command.Port, Target: command.Target,

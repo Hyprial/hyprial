@@ -59,7 +59,7 @@ def _tailcat_sidecar_doctor_check() -> JsonObject:
         "status": "ok",
         "detail": (
             f"tailcat sidecar verified (sidecar {record.get('sidecar')}, "
-            "protocol v4)"
+            "protocol v5)"
         ),
     }
 

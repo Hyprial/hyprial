@@ -119,9 +119,15 @@ func (e *Engine) MapService(request ServiceRequest) (ServiceMapping, error) {
 		return ServiceMapping{}, ErrPortInUse
 	}
 	localPort := listener.Addr().(*net.TCPAddr).Port
+	lease, err := e.acquireClientLocked(request.Address)
+	if err != nil {
+		_ = listener.Close()
+		e.mu.Unlock()
+		return ServiceMapping{}, err
+	}
 	ctx, cancel := context.WithCancel(e.ctx)
 	service := &mappedService{
-		request: request, listener: listener, lease: e.acquireClientLocked(request.Address),
+		request: request, listener: listener, lease: lease,
 		cancel: cancel, pairs: make(map[*connPair]struct{}),
 		mapping: ServiceMapping{
 			Name: request.Name, DeviceID: request.DeviceID,

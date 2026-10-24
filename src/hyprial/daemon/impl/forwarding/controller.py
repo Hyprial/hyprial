@@ -1,4 +1,4 @@
-"""The forwarding sidecar process controller (closed v4 JSON-lines wire)."""
+"""The forwarding sidecar process controller (closed v5 JSON-lines wire)."""
 
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ from .authority import (  # noqa: F401  (re-exported; the authority moved out)
     ForwardingControllerAuthority,
     _AllowSidecar,
     _CloseSidecar,
+    _DeriveClientKeySidecar,
     _ExposeSidecar,
     _MapSidecarPeer,
     _PeerKeySidecar,
@@ -35,8 +36,9 @@ from .authority import (  # noqa: F401  (re-exported; the authority moved out)
 from .policy import (
     FORWARD_PROTOCOL_VERSION,
     ForwardingSidecarError,
-    _PROXY_KEYS,
+    _child_environment,
     _normalize_exposure,
+    parse_derp_map,
 )
 from .services import (
     ServiceControlError,
@@ -55,16 +57,8 @@ _RESPONSE_BUFFER_CAPACITY = 128
 _RESPONSE_BUFFER_MAX_AGE_SECONDS = 60.0
 
 
-def _child_environment(environ: Mapping[str, str]) -> dict[str, str]:
-    return {
-        key: value
-        for key, value in environ.items()
-        if not key.startswith("TS_") and key not in _PROXY_KEYS
-    }
-
-
 class ForwardingSidecarController:
-    """Own one candidate sidecar process and its closed v4 JSON-lines wire."""
+    """Own one candidate sidecar process and its closed v5 JSON-lines wire."""
 
     def __init__(
         self,
@@ -79,7 +73,7 @@ class ForwardingSidecarController:
             raise ValueError("forwarding sidecar command must not be empty")
         self._up = dict(up)
         if self._up.get("v") != FORWARD_PROTOCOL_VERSION or self._up.get("op") != "up":
-            raise ValueError("forwarding sidecar up request must be protocol v4")
+            raise ValueError("forwarding sidecar up request must be protocol v5")
         if not isinstance(self._up.get("keyFile"), str) or not self._up["keyFile"]:
             raise ValueError("forwarding sidecar up request must name a keyFile")
         if not isinstance(self._up.get("allow"), list) or not all(
@@ -97,6 +91,7 @@ class ForwardingSidecarController:
         self._on_exit = on_exit
         self._expose_capable = False
         self._service_capable = False
+        self._client_key_derivation_capable = False
         self._forwarding_request_ids = False
         self._service_wire_failed = False
         self._stale_service_requests: dict[str, float] = {}
@@ -105,19 +100,13 @@ class ForwardingSidecarController:
         self._response_condition = threading.Condition()
         self._response_buffer: deque[tuple[float, dict[str, Any]]] = deque()
         self._response_reader = False
+        self._reader_fatal: ForwardingSidecarError | None = None
         self._active_service_request_id: str | None = None
         self._dropped_service_responses = 0
         self._service_timeout = SERVICE_CONTROL_TIMEOUT_SECONDS
-        # Whether the last ``status`` answer carried a ``peers`` key at all.
-        # Current sidecars send an explicit ``[]`` for an empty mesh, so an
-        # absent key means a build that does not report peers -- which must
-        # not look the same as "nobody is online" (forwarding defaults plan
-        # §C).  None until the first status.
+        # None means the sidecar has not yet reported peer/slot state.
         self.peers_reported: bool | None = None
-        # The slot wire ids this sidecar incarnation reported (state
-        # ``slots``, request order).  On the tcp transport they carry the
-        # kernel-assigned ports the daemon dials; None until a state
-        # event names them.
+        # TCP slot ids contain the kernel-assigned ports the daemon dials.
         self.slots_reported: tuple[str, ...] | None = None
         self.connection_telemetry: dict[str, Any] | None = None
         self._lock = threading.Lock()
@@ -201,11 +190,7 @@ class ForwardingSidecarController:
             self._events.put(None)
 
     def _drain_stderr(self) -> None:
-        # Keep the tail instead of discarding every chunk.  The sidecar's
-        # stderr is the only place a failure explains itself, and the protocol
-        # carries a single bounded code: draining to ``pass`` collapses every
-        # distinct cause into one indistinguishable message, and leaves
-        # nothing to read afterwards.
+        # Keep the bounded tail so protocol failures retain sidecar diagnostics.
         assert self._process.stderr is not None
         try:
             for line in self._process.stderr:
@@ -224,12 +209,8 @@ class ForwardingSidecarController:
     def _status_failure(self, message: str) -> ForwardingSidecarError:
         """A status failure that carries whatever the sidecar said about it."""
 
-        # Reads the tail defensively: this is a diagnostic on a failure path,
-        # and a reader that raises AttributeError here would replace the
-        # forwarding fault with a reporting fault -- the same trade
-        # _mirror_startup_event_to_stderr and _log_lifecycle_operation make.
-        # It is reachable uninitialized because tests construct the controller
-        # through object.__new__ to stub _request (no process is spawned).
+        # Tests may construct an uninitialized controller to stub _request.
+        # Do not replace the forwarding fault with a diagnostic AttributeError.
         tail = " | ".join(getattr(self, "_stderr_tail", ()))
         return ForwardingSidecarError(
             message if not tail else f"{message} (sidecar stderr: {tail})"
@@ -254,6 +235,12 @@ class ForwardingSidecarController:
         except (BrokenPipeError, OSError) as error:
             raise ForwardingSidecarError("forwarding sidecar stdin closed") from error
 
+    def _record_reader_fatal(self, message: str) -> ForwardingSidecarError:
+        with self._response_condition:
+            self._reader_fatal = self._reader_fatal or ForwardingSidecarError(message)
+            self._response_condition.notify_all()
+            return self._reader_fatal
+
     def _next(self, *, deadline: float) -> dict[str, Any]:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -266,17 +253,21 @@ class ForwardingSidecarController:
             ) from error
         if raw is None:
             code = self._process.poll()
-            raise ForwardingSidecarError(
+            raise self._record_reader_fatal(
                 f"forwarding sidecar closed stdout with status {code}"
             )
         try:
             event = json.loads(raw)
         except (UnicodeDecodeError, ValueError) as error:
-            raise ForwardingSidecarError(
+            raise self._record_reader_fatal(
                 "forwarding sidecar emitted invalid JSON"
             ) from error
         if not isinstance(event, dict) or event.get("v") != FORWARD_PROTOCOL_VERSION:
-            raise ForwardingSidecarError("forwarding sidecar emitted a non-v4 event")
+            observed = event.get("v") if isinstance(event, dict) else None
+            raise self._record_reader_fatal(
+                "forwarding sidecar protocol mismatch: "
+                f"expected v{FORWARD_PROTOCOL_VERSION}, saw v{observed}"
+            )
         return event
 
     @staticmethod
@@ -290,6 +281,7 @@ class ForwardingSidecarController:
             self._response_condition = threading.Condition()
             self._response_buffer = deque()
             self._response_reader = False
+            self._reader_fatal = None
         if not hasattr(self, "_active_service_request_id"):
             self._active_service_request_id = None
         if not hasattr(self, "_dropped_service_responses"):
@@ -307,6 +299,9 @@ class ForwardingSidecarController:
         condition = self._response_condition
         while True:
             with condition:
+                fatal = self._reader_fatal
+                if fatal is not None:
+                    raise ForwardingSidecarError(str(fatal)) from fatal
                 stale = getattr(self, "_stale_service_requests", {})
                 now = time.monotonic()
                 if isinstance(stale, set):
@@ -371,7 +366,7 @@ class ForwardingSidecarController:
         deadline = time.monotonic() + self._timeout
         hello = self._next(deadline=deadline)
         if hello.get("event") != "hello" or not hello.get("sidecar"):
-            raise ForwardingSidecarError("forwarding sidecar v4 hello mismatch")
+            raise ForwardingSidecarError("forwarding sidecar v5 hello mismatch")
         capabilities = hello.get("capabilities")
         capability_set = (
             set(capabilities)
@@ -382,6 +377,10 @@ class ForwardingSidecarController:
         self._expose_capable = {"expose", "unexpose", "peer-key"} <= capability_set
         self._service_capable = "service-connect-v1" in capability_set
         self._forwarding_request_ids = "forwarding-request-id-v1" in capability_set
+        self._client_key_derivation_capable = {
+            "client-key-derivation-v1",
+            "forwarding-request-id-v1",
+        } <= capability_set
         self._send(self._up)
         while True:
             event = self._next(deadline=deadline)
@@ -392,7 +391,7 @@ class ForwardingSidecarController:
                     f"unexpected forwarding startup event {event.get('event')!r}"
                 )
             if event.get("state") == "Running":
-                # Protocol v4: the Running state must carry serverPublic,
+                # Protocol v5: the Running state must carry serverPublic,
                 # clientPublic and a ``peers`` key (possibly empty).
                 if not isinstance(event.get("serverPublic"), str) or not isinstance(
                     event.get("clientPublic"), str
@@ -400,6 +399,7 @@ class ForwardingSidecarController:
                     raise ForwardingSidecarError(
                         "forwarding sidecar Running state lacks its public keys"
                     )
+                self.server_public = event["serverPublic"]
                 if not isinstance(event.get("peers"), list):
                     raise ForwardingSidecarError(
                         "forwarding sidecar Running state lacks a peers list"
@@ -449,11 +449,7 @@ class ForwardingSidecarController:
     def status(self) -> tuple[tuple[str, ...], dict[str, str]]:
         event = self._request({"v": FORWARD_PROTOCOL_VERSION, "op": "status"}, "state")
         self._note_slots_reported(event)
-        # Protocol v4 answers ``status`` with a ``state`` event whose
-        # ``peers`` entries are ``{peer, slot}``.  An absent ``peers`` key
-        # is forgiven (treated as "no mapped peer yet") for the same
-        # reason it always was; an explicit non-list is still a protocol
-        # violation.
+        # An absent peers key means no mapped peer; a non-list is invalid.
         raw_peers = event.get("peers")
         self.peers_reported = "peers" in event
         self.connection_telemetry = parse_connection_telemetry(
@@ -485,14 +481,9 @@ class ForwardingSidecarController:
         return tuple(peers), mappings
 
     def map_peer(self, peer: str, address: str, slot: str) -> str:
-        """Bind ``peer`` at ``address`` onto the fixed ``slot``.
+        """Bind a peer onto a fixed Unix/TCP slot and return its wire id.
 
-        Protocol v4: ``peer-mapped`` answers with the slot (never a
-        ``localPort``) and this returns its wire id.  A slot is an
-        absolute socket path (unix transport) or ``tcp:127.0.0.1:<port>``
-        (tcp transport -- the Windows scheme); port 0 asks the sidecar to
-        open a new kernel-assigned listener (pool growth), and the answer
-        then names the resolved id instead of echoing the request.
+        TCP port 0 requests a kernel-assigned listener for pool growth.
         """
         if not isinstance(address, str) or not address.startswith("tc"):
             raise ForwardingSidecarError(
@@ -545,7 +536,7 @@ class ForwardingSidecarController:
     def expose(self, exposure: Mapping[str, object]) -> dict[str, object]:
         self._require_expose_capability()
         normalized = _normalize_exposure(exposure)
-        # Protocol v4 writes the Python-side "none" as "" on the wire.
+        # Protocol v5 writes the Python-side "none" as "" on the wire.
         wire = dict(normalized)
         if wire["proxyProtocol"] == "none":
             wire["proxyProtocol"] = ""
@@ -568,7 +559,7 @@ class ForwardingSidecarController:
             raise ForwardingSidecarError("unexposed event does not match request")
 
     def peer_key(self, address: str) -> dict[str, object]:
-        """The v4 replacement for v2 ``whois``: which nodekey owns ``addr``."""
+        """The ``peer-key`` operation: which nodekey owns ``addr``."""
 
         self._require_expose_capability()
         event = self._request(
@@ -579,6 +570,33 @@ class ForwardingSidecarController:
             raise ForwardingSidecarError("peer-key event does not match request")
         keys = ("addr", "found", "key")
         return {key: event[key] for key in keys if key in event}
+
+    def derive_client_key(self, server_public: str) -> str:
+        """Return this device's public client identity for one target server."""
+
+        if not self._client_key_derivation_capable:
+            raise ForwardingSidecarError(
+                "SIDECAR_CLIENT_KEY_DERIVATION_UNSUPPORTED: forwarding sidecar "
+                "does not advertise client-key-derivation-v1 with "
+                "forwarding-request-id-v1"
+            )
+        event = self._request(
+            {
+                "v": FORWARD_PROTOCOL_VERSION,
+                "op": "derive-client-key",
+                "serverPublic": server_public,
+            },
+            "client-key-derived",
+        )
+        if (
+            event.get("serverPublic") != server_public
+            or not isinstance(event.get("clientPublic"), str)
+            or not str(event["clientPublic"]).startswith("nodekey:")
+        ):
+            raise ForwardingSidecarError(
+                "client-key-derived event does not match request"
+            )
+        return str(event["clientPublic"])
 
     def allow(self, keys: Sequence[str], allow_any: bool) -> dict[str, object]:
         """Replace the admission set; the sidecar drops clients not in it."""
@@ -978,14 +996,3 @@ def _parse_close(
     if slot is not None:
         normalized["slot"] = slot
     return normalized
-
-
-def parse_derp_map(event: dict[str, object]) -> tuple[str | None, str | None]:
-    """Return the sidecar-reported DERP map URL and source, if any."""
-
-    raw_url = event.get("derpMapURL")
-    raw_source = event.get("derpMapSource")
-    return (
-        raw_url if isinstance(raw_url, str) else None,
-        raw_source if isinstance(raw_source, str) else None,
-    )
