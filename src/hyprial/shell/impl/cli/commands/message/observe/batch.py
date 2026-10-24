@@ -1,4 +1,4 @@
-"""The ``hyprial inbox batch`` view: one daemon-rendered coalesced batch.
+"""The ``hyprial message batch`` view: one daemon-rendered coalesced batch.
 
 Thin on purpose.  The daemon owns ordering, truncation and the spill file, so
 this command never renders a batch itself: human output is ``delivery.text``
@@ -15,10 +15,9 @@ import typer
 
 from hyprial.shell.impl.cli.commands.common.services import get_services
 from hyprial.shell.impl.cli.commands.common.support import _message_claim_params
+from hyprial.shell.impl.cli.commands.message import message_app
 from hyprial.shell.impl.cli.commands.message.send import _validate_from_identity
 from hyprial.shell.impl.cli.output import CliResult
-
-inbox_app = typer.Typer(help="Read the daemon-owned inbox as one coalesced batch.")
 
 
 def _render_batch(data: Mapping[str, Any]) -> str:
@@ -32,8 +31,8 @@ def _render_batch(data: Mapping[str, Any]) -> str:
     return ""
 
 
-@inbox_app.command("batch")
-def inbox_batch(
+@message_app.command("batch")
+def message_batch(
     source: str = typer.Option(
         ...,
         "--from",
@@ -76,4 +75,4 @@ def inbox_batch(
     services._execute(operation, json_output=json_output, allow_missing_home=True)
 
 
-__all__ = ["inbox_app", "inbox_batch"]
+__all__ = ["message_batch"]

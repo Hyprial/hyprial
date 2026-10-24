@@ -12,11 +12,11 @@ import typer
 
 def register_session_commands(app, get_dependencies):
 
-    @app.command()
+    @app.command("move")
     def transfer(
         name: str = typer.Argument(..., help="Managed headless worker name."),
         to: str = typer.Option(
-            ..., "--to", help="SSH destination: [user@]<exact nodeId from this home's hyprial hosts>."
+            ..., "--to", help="SSH destination: [user@]<exact nodeId from this home's hyprial host list>."
         ),
         harness: str | None = typer.Option(
             None, "--harness", help="Disambiguate when several harnesses share the name."

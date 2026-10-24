@@ -146,8 +146,8 @@ def restart_daemon(
 ) -> DaemonLaunchResult:
     """Shared restart skeleton: graceful stop, survivor bookkeeping, launch, verdicts.
 
-    F5 (2026-10-12, Allen direct ruling): ``hyprial restart`` and
-    ``_restart_daemon_onto_install`` (upgrade + ``autoupdate restart``)
+    F5 (2026-10-12, Allen direct ruling): ``hyprial daemon restart`` and
+    ``_restart_daemon_onto_install`` (upgrade + ``upgrade apply``)
     carried near-identical stop/survivor/launch/verdict blocks -- the
     2026-08-30/31 incident discipline lived in two places that had already
     drifted once in wording. This is the one copy; the callers keep their
@@ -160,7 +160,7 @@ def restart_daemon(
       do not merge across commands.
     - ``before_pid=None`` (no before daemon to be fresh against) skips the
       fresh-pid verdict.
-    - ``stop=False`` skips the graceful stop entirely (``hyprial restart``
+    - ``stop=False`` skips the graceful stop entirely (``hyprial daemon restart``
       with no running daemon never attempted a stop; keep it that way).
 
     Returns the typed launch answer. Raises ``CliError(INVALID_RESPONSE)``
@@ -168,6 +168,33 @@ def restart_daemon(
     never fatal -- that is the point of the annotations below.
     """
     services = get_services()
+
+    from hyprial.shell.impl.cli.commands.daemon.service import (
+        restart_supervised_daemon,
+    )
+
+    try:
+        supervised = restart_supervised_daemon(before_pid)
+    except services.CliError as error:
+        if error.code in {"SERVICE_SUPERVISION_LOST", "SERVICE_OWNERSHIP_REFUSED"}:
+            result["supervision"] = "lost"
+            error_data = error.data if isinstance(error.data, dict) else {}
+            restart_data = error_data.get("restart")
+            if isinstance(restart_data, dict):
+                reason = restart_data.get("reason")
+                if isinstance(reason, str):
+                    result["supervisionReason"] = reason
+            if "supervisionReason" not in result:
+                result["supervisionReason"] = (
+                    "supervisor-ownership-refused"
+                    if error.code == "SERVICE_OWNERSHIP_REFUSED"
+                    else "supervisor-custody-lost"
+                )
+        raise
+    if supervised is not None:
+        result["supervision"] = "supervised"
+        return supervised
+    result["supervision"] = "unsupervised"
 
     if stop:
         try:
@@ -287,7 +314,7 @@ def _restart_daemon_onto_install(
 ) -> JsonObject:
     """Restart the running daemon onto the version already installed.
 
-    Shared by the upgrade path and ``hyprial autoupdate restart`` (the
+    Shared by the upgrade path and ``hyprial daemon upgrade apply`` (the
     person-confirmed restart of an upgrade that was installed without one).
     ``resolution`` needs only ``tag`` and ``commit``.
     """

@@ -29,6 +29,7 @@ from hyprial.daemon.impl.operations.service import (
     LAUNCHD_LABEL,
     ServiceConfig,
     ServiceManager,
+    ServiceOwnershipError,
     ServiceStatus,
     ServiceTemplates,
 )
@@ -53,6 +54,7 @@ __all__ = [
     "ReconcileSummary",
     "ServiceConfig",
     "ServiceManager",
+    "ServiceOwnershipError",
     "ServiceStatus",
     "ServiceTemplates",
     "StreamingHarnessProcess",

@@ -9,12 +9,11 @@ from .models import (
     RegistrySnapshot,
     ServiceConnectError,
 )
-from .registry import BUILTIN_API, CatalogRegistry, parse_catalog_document
+from .registry import CatalogRegistry, parse_catalog_document
 from .resolver import ProtectedResolver
 
 __all__ = [
     "AccessSnapshot",
-    "BUILTIN_API",
     "CatalogEntry",
     "CatalogRegistry",
     "CatalogTrust",

@@ -38,9 +38,9 @@ def config_set(
     """Set an operator switch in settings.json.
 
     ``autoUpgrade`` (spec autoupdate-isolated-home r1) gates every automatic
-    self-upgrade: the daemon scheduler and the ``autoupdate run`` timer entry
-    point skip until this is explicitly ``true``.  The manual
-    ``hyprial upgrade`` is an operator's explicit act and stays ungated.
+    self-upgrade: the daemon scheduler and its ``autoupdate run`` child skip
+    until this is explicitly ``true``.  The manual
+    ``hyprial daemon upgrade`` is an operator's explicit act and stays ungated.
 
     ``forwarding.mode`` is the durable forwarding switch: ``auto`` (the
     default) forwards through the sidecar on a sidecar-joined home, ``off``

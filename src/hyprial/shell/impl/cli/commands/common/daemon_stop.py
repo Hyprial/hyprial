@@ -212,16 +212,6 @@ def _wait_daemon_teardown_receipt(
     # ⚠️ Default True: a caller that forgets the flag gets the strict wait. The
     # other default would silently drop the exit requirement for some future
     # "about to start a replacement" path, and that is the nine-hour outage.
-    # ⭐ `require_exit` is the caller's context, moved out of prose into the
-    # signature. The docstring above says "the caller of this function is about
-    # to start or upgrade a daemon" -- true of the upgrade path, false of
-    # `hyprial daemon stop`, which starts nothing. A precondition that lives only in
-    # a docstring cannot stop itself being applied where it does not hold, and
-    # on 2026-08-31 that cost four CI failures.
-    #
-    # ⚠️ Default True: a caller that forgets the flag gets the strict wait. The
-    # other default would silently drop the exit requirement for some future
-    # "about to start a replacement" path -- the nine-hour outage.
     receipts_are_sufficient = old_pid is None or not require_exit
     teardown_done = False
     # Report how long we actually waited, not the nominal budget. The previous

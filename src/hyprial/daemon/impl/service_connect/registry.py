@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from pathlib import PurePosixPath
 
 import yaml
@@ -50,7 +51,7 @@ def _construct_unique_mapping(
             ) from error
         if duplicate:
             raise ConstructorError(
-                None, None, "duplicate catalog key", key_node.start_mark
+                None, None, f"duplicate catalog key {key!r}", key_node.start_mark
             )
         result[key] = loader.construct_object(value_node, deep=deep)
     return result
@@ -58,21 +59,6 @@ def _construct_unique_mapping(
 
 _UniqueKeyLoader.add_constructor(
     yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_unique_mapping
-)
-
-
-BUILTIN_API = CatalogEntry.from_json(
-    {
-        "name": "api",
-        "deviceId": "sub2api",
-        "remotePort": 8080,
-        "protocol": "http",
-        "localPort": 18080,
-        "usage": "claude-code-baseurl",
-        "env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:{port}"},
-        "auth": "sub2api API key; agents request grant sub2api-key through hq",
-        "guide": "Export the printed environment manually. Existing streams break on restart.\n",
-    }
 )
 
 
@@ -126,36 +112,56 @@ class CatalogRegistry:
         owner: str | None,
         cached: ServiceRegistry | None = None,
         now_ms=None,
+        discovered: Callable[[], tuple[CatalogEntry, ...]] | None = None,
     ) -> None:
         self._orgfs = orgfs
         self.space_id = space_id
         self.owner = owner
         self._cached = cached
         self._now_ms = now_ms or (lambda: int(time.time() * 1000))
+        self._discovered = discovered
 
     def load(self) -> RegistrySnapshot:
-        if self.space_id is None or self.owner is None:
-            return self._builtin(None)
-        try:
-            overrides = self._read_orgfs()
-        except ServiceConnectError as error:
-            cache = self._matching_cache()
-            if cache is not None:
-                return self._merge(
-                    tuple(_catalog_entry(entry) for entry in cache.entries),
-                    source="cache",
-                    error=str(error),
-                    cache=cache,
+        error: str | None = None
+        overrides: tuple[CatalogEntry, ...] = ()
+        cache: ServiceRegistry | None = None
+        # Source labels follow the BRANCH (orgfs success / cache fallback /
+        # discovery-only), not the entry count: an empty OrgFS space is still
+        # an OrgFS read.
+        source = "discovery"
+        if self.space_id is not None and self.owner is not None:
+            source = "orgfs"
+            try:
+                overrides = self._read_orgfs()
+            except ServiceConnectError as orgfs_error:
+                cache = self._matching_cache()
+                error = str(orgfs_error)
+                source = "discovery"
+                if cache is not None:
+                    source = "cache"
+                    overrides = tuple(
+                        _catalog_entry(entry) for entry in cache.entries
+                    )
+            else:
+                cache = ServiceRegistry(
+                    1,
+                    self.space_id,
+                    self.owner,
+                    self._now_ms(),
+                    tuple(_desired_entry(entry) for entry in overrides),
                 )
-            return self._builtin(str(error))
-        cache = ServiceRegistry(
-            1,
-            self.space_id,
-            self.owner,
-            self._now_ms(),
-            tuple(_desired_entry(entry) for entry in overrides),
+        discovered = self._discovered_services()
+        return self._merge_with_discovery(
+            discovered,
+            overrides,
+            source=source,
+            error=error,
+            cache=cache,
         )
-        return self._merge(overrides, source="orgfs", error=None, cache=cache)
+
+    def _discovered_services(self) -> tuple[CatalogEntry, ...]:
+        discovery = self._discovered
+        return discovery() if discovery is not None else ()
 
     def _read_orgfs(self) -> tuple[CatalogEntry, ...]:
         if self._orgfs is None:
@@ -207,26 +213,31 @@ class CatalogRegistry:
             return cache
         return None
 
-    def _builtin(self, error: str | None) -> RegistrySnapshot:
-        return RegistrySnapshot(
-            (BUILTIN_API,), "builtin", self.space_id, self.owner, error, None
-        )
-
-    def _merge(
+    def _merge_with_discovery(
         self,
+        discovered: tuple[CatalogEntry, ...],
         overrides: tuple[CatalogEntry, ...],
         *,
         source: str,
         error: str | None,
-        cache: ServiceRegistry,
+        cache: ServiceRegistry | None,
     ) -> RegistrySnapshot:
-        entries = {BUILTIN_API.name: BUILTIN_API}
-        entries.update({entry.name: entry for entry in overrides})
+        # Load order (spec: service module split): OrgFS documents first, then
+        # shipped service declarations; a same-name conflict is won by the
+        # explicit OrgFS entry.  The winner rule is fixed, so the observable
+        # signal is the conflict list itself -- without it a shadowed shipped
+        # declaration is silent (the review's ② c).
+        entries = {entry.name: entry for entry in discovered}
+        explicit = {entry.name: entry for entry in overrides}
+        conflicts = tuple(sorted(entries.keys() & explicit.keys()))
+        entries.update(explicit)
+        snapshot_cache = cache
         return RegistrySnapshot(
             tuple(entries[key] for key in sorted(entries)),
             source,
             self.space_id,
             self.owner,
             error,
-            cache,
+            snapshot_cache,
+            conflicts,
         )

@@ -65,7 +65,6 @@ class CliServices:
     _stopped_process: Callable[..., Any]
     _stored_user_proxy_route: Callable[..., Any]
     _squire_setup_operation: Callable[..., Any]
-    _timer_config: Callable[..., Any]
     _wait_for_daemon: Callable[..., Any]
     initialize_hyprial_home: Callable[..., Any]
     notify_upgrade_failure: Callable[..., Any]

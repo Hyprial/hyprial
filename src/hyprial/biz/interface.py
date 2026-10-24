@@ -21,6 +21,8 @@ if TYPE_CHECKING:
     from hyprial.biz.impl.routine.execution.service import RoutineServiceError as RoutineServiceError
     from hyprial.biz.impl.routine.contracts.schema import RoutineSpec as RoutineSpec
     from hyprial.biz.impl.routine.storage.store import RoutineStore as RoutineStore
+    from hyprial.biz.impl.service.discovery import discover_installed_services as discover_installed_services
+    from hyprial.biz.impl.service.discovery import ServiceDiscoveryError as ServiceDiscoveryError
     from hyprial.biz.impl.usage_actor import UsageAuthority as UsageAuthority
     from hyprial.biz.impl.workflow.identity import actor_owner as actor_owner
     from hyprial.biz.impl.routine.execution.coordinator import add_command as add_command
@@ -54,6 +56,8 @@ _FACADE_EXPORTS = {
     'RoutineServiceError': ('hyprial.biz.impl.routine.execution.service', 'RoutineServiceError'),
     'RoutineSpec': ('hyprial.biz.impl.routine.contracts.schema', 'RoutineSpec'),
     'RoutineStore': ('hyprial.biz.impl.routine.storage.store', 'RoutineStore'),
+    'discover_installed_services': ('hyprial.biz.impl.service.discovery', 'discover_installed_services'),
+    'ServiceDiscoveryError': ('hyprial.biz.impl.service.discovery', 'ServiceDiscoveryError'),
     'UsageAuthority': ('hyprial.biz.impl.usage_actor', 'UsageAuthority'),
     'actor_owner': ('hyprial.biz.impl.workflow.identity', 'actor_owner'),
     'add_command': ('hyprial.biz.impl.routine.execution.coordinator', 'add_command'),
@@ -110,6 +114,8 @@ __all__ = [
     'actor_owner',
     'add_command',
     'check_actor_claim',
+    'discover_installed_services',
+    'ServiceDiscoveryError',
     'load_routine',
     'load_routine_text',
     'remove_command',

@@ -1,4 +1,4 @@
-"""Per-actor health projection behind ``top.snapshot`` / ``hyprial top``.
+"""Per-actor health projection behind ``top.snapshot`` / ``hyprial agent top``.
 
 The question this module answers is "is this agent actually doing work", not
 "is the process alive". Actor membership and liveness arrive from
@@ -25,6 +25,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from hyprial.identity import is_inactive
 from hyprial.kernel import route_path
 
 from hyprial.kernel import canonical_agent_uri, short_actor_name
@@ -307,12 +308,17 @@ def classify_actor(
         last_activity_ms = stats.last_turn_ended_at_ms or stats.process_started_at_ms
     idle_for_ms = now_ms - last_activity_ms if last_activity_ms is not None else None
     if pending_count > 0:
-        if idle_for_ms is not None and idle_for_ms >= thresholds.backlog_idle_ms:
+        if is_inactive(
+            last_activity_ms,
+            now_ms=now_ms,
+            threshold_ms=thresholds.backlog_idle_ms,
+        ):
             return "backlog", {"idleMs": idle_for_ms, "pending": pending_count}
         return "ok", {}
-    if stats is not None and (
-        stats.turn_count == 0
-        or (idle_for_ms is not None and idle_for_ms >= thresholds.idle_ms)
+    if stats is not None and is_inactive(
+        last_activity_ms,
+        now_ms=now_ms,
+        threshold_ms=thresholds.idle_ms,
     ):
         return "idle", {}
     return "ok", {}

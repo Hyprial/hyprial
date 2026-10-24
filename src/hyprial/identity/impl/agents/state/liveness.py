@@ -79,7 +79,7 @@ class AgentBinding:
 
 
 class AgentAlreadyRunning(RuntimeError):
-    """``hyprial start`` may not attach to an agent that already has a connector.
+    """``hyprial agent start`` may not attach to an agent that already has a connector.
 
     This is **not** a name conflict.  ``foo`` is one agent and stays one
     agent; the objection is only that something is already speaking for it
@@ -98,13 +98,13 @@ class AgentAlreadyRunning(RuntimeError):
         where = (
             "exit that session"
             if existing.runtime == RUNTIME_INTERACTIVE
-            else f"run 'hyprial down {actor.rsplit(':', 1)[-1]}'"
+            else f"run 'hyprial agent stop {actor.rsplit(':', 1)[-1]}'"
         )
         super().__init__(
             f"agent {actor} already has a live connector on "
             f"{existing.harness} ({existing.runtime}"
             + (f", session {existing.session_id}" if existing.session_id else "")
-            + f"); hyprial start will not attach to a running agent. To move it to "
+            + f"); hyprial agent start will not attach to a running agent. To move it to "
             f"{harness}, stop the current connector first — {where} — then "
             f"start it again. This is not a name conflict: it stays the same "
             f"agent with the same identity, and its previous harness and "
@@ -176,7 +176,7 @@ class AgentLiveness:
         determined counts as alive: refusing with a message that names the
         remedy is recoverable, whereas letting a second connector onto the
         same URI reintroduces the silent message loss this change exists to
-        stop. ``hyprial down`` and ``session.unregister`` both release the
+        stop. ``hyprial agent stop`` and ``session.unregister`` both release the
         binding, so the remedy always works.
         """
 

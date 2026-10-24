@@ -275,7 +275,7 @@ class DesiredStateStore(
     ) -> tuple[MutationProvenance, bool]:
         """Commit the lifecycle fence and receipt; ensure rows wait for U0b.
 
-        Allen 2026-09-03: ``hyprial start`` must leave desired-state trace only
+        Allen 2026-09-03: ``hyprial agent start`` must leave desired-state trace only
         AFTER the process is actually up, so an EnsureHarnessCommand here
         writes the resource fence and the (incomplete) receipt -- the
         idempotency and rollback machinery -- but NOT the harnesses row.

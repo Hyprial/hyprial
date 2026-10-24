@@ -82,6 +82,7 @@ class WorkerChannelFacts:
 @dataclass(frozen=True, slots=True)
 class ProcessFacts:
     running: bool
+    dispatch_ready: bool
     pid: int | None
     last_error: str | None
     permanent_start_failure: bool
@@ -179,6 +180,7 @@ class ProcessOwner:
 
     def _read_facts(self):
         process = self._process
+        dispatch_ready = getattr(process, "dispatch_ready", None)
 
         def integer(name):
             value = getattr(process, name, None)
@@ -194,6 +196,7 @@ class ProcessOwner:
         failure = getattr(process, "last_failure", None)
         return ProcessFacts(
             bool(process.running),
+            bool(process.running if dispatch_ready is None else dispatch_ready),
             integer("pid"),
             string("last_error"),
             bool(getattr(failure, "permanent_start_failure", False)),
@@ -400,6 +403,10 @@ class ProcessOwner:
     @property
     def running(self):
         return self.facts().running
+
+    @property
+    def dispatch_ready(self):
+        return self.facts().dispatch_ready
 
     @property
     def pid(self):

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from hashlib import sha256
+import json
 from pathlib import Path
 import queue
 import sqlite3
@@ -38,6 +40,21 @@ from hyprial.daemon.impl.pac.workflows.runtime.types import (
     _handoff_sender,
     close_workflow,
 )
+
+
+def _implicit_operation_key(
+    yaml_text: str,
+    sender: str,
+    routine_name: str | None,
+    task_key: str | None,
+) -> str:
+    identity = json.dumps(
+        ["workflow-run-v1", yaml_text, sender, routine_name, task_key],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return sha256(identity).hexdigest()[:32]
+
 
 class _GraphWorkflowServiceCore:
     """Bounded resident cadence; the PAC database owns all durable facts."""
@@ -235,22 +252,26 @@ class _GraphWorkflowServiceCore:
             )
         try:
             spec = load_workflow_text(yaml_text)
+            # An omitted key means retry/restart of this exact dispatch identity.
+            # A deliberate second run must supply a new explicit operation key.
+            resolved_operation_key = operation_key or _implicit_operation_key(
+                yaml_text, sender, routine_name, task_key
+            )
             graph_id = None
-            if operation_key:
-                replay_store = self._open(
-                    read_only=self._graph_authority is not None
+            replay_store = self._open(
+                read_only=self._graph_authority is not None
+            )
+            try:
+                graph_id = replay_graph(
+                    replay_store,
+                    spec,
+                    sender=sender,
+                    operation_key=resolved_operation_key,
+                    routine_name=routine_name,
+                    task_key=task_key,
                 )
-                try:
-                    graph_id = replay_graph(
-                        replay_store,
-                        spec,
-                        sender=sender,
-                        operation_key=operation_key,
-                        routine_name=routine_name,
-                        task_key=task_key,
-                    )
-                finally:
-                    replay_store.close()
+            finally:
+                replay_store.close()
             if self._graph_authority is not None:
                 if graph_id is None:
                     if self.admit:
@@ -262,7 +283,7 @@ class _GraphWorkflowServiceCore:
                         sender=sender,
                         machine=self.machine,
                         local_owner=self.owner,
-                        operation_key=operation_key or uuid4().hex,
+                        operation_key=resolved_operation_key,
                         at=self.clock(),
                         routine_name=routine_name,
                         task_key=task_key,
@@ -279,7 +300,7 @@ class _GraphWorkflowServiceCore:
                         graph_id = compile_workflow(
                             store, spec, sender=sender, machine=self.machine,
                             local_owner=self.owner,
-                            operation_key=operation_key or uuid4().hex,
+                            operation_key=resolved_operation_key,
                             at=self.clock(), routine_name=routine_name,
                             task_key=task_key,
                         )

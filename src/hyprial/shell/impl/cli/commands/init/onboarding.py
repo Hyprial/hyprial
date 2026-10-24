@@ -18,7 +18,7 @@ FIRST_RUN_ROUTE_NAME = "squire"
 
 
 def _onboarding_scope_authorized(name: str) -> bool:
-    """Read the same tenant-scope evidence as ``adapter doctor --json``."""
+    """Read the same tenant-scope evidence as ``adapter scopes check --json``."""
     services = get_services()
 
     from hyprial.daemon import configured_scope_client, diagnose_scopes

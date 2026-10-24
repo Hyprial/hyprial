@@ -24,7 +24,7 @@ The reactor reads the graph structure + ``flag_events`` and writes
 never an inbox body or reply text.  :mod:`tests.test_pac_tripwire` keeps
 that a gate.
 
-Delivery (the actual ``hyprial send``) is a port: :class:`NotificationSender`
+Delivery (the actual ``hyprial message send``) is a port: :class:`NotificationSender`
 is implemented by the CLI (daemon ``message.send``) and by a stub in
 tests.  PAC records the notification row — including its exact text and
 sending identity — before delivering.  A transient delivery failure leaves the
@@ -127,7 +127,7 @@ class NotificationSender(Protocol):
     """The outbound port: how a notification reaches its owner.
 
     The daemon implementation rides the public ``message.send`` seam (the
-    same wire ``hyprial send`` uses).  It is outbound-only by construction;
+    same wire ``hyprial message send`` uses).  It is outbound-only by construction;
     the reactor holds no inbound surface at all.
     """
 

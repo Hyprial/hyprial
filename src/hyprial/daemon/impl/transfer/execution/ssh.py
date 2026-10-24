@@ -129,7 +129,11 @@ class SshRunner:
         command = ["ssh", self.host, *self._remote_hyprial, *argv, "--json"]
         # Receiving a worker blocks on strict-resume verification; the SSH
         # client timeout must outlive it by a comfortable margin.
-        timeout = 300.0 if argv and argv[0] == "transfer-receive" else None
+        timeout = (
+            300.0
+            if argv[:3] == ["agent", "transfer", "receive"]
+            else None
+        )
         result = self._run(command, stdin=stdin, timeout=timeout)
         if result.returncode != 0:
             raise RemoteError(

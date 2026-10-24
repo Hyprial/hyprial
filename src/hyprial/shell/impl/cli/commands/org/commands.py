@@ -38,7 +38,7 @@ org_app = typer.Typer(
         "Inspect and locally adopt organization context, and manage org "
         "membership over the Tailcat directory. Adoption is a local owner "
         "decision: the mesh can only stage candidates, and only "
-        "`org import <file>` fills the single accepted slot."
+        "`org context import <file>` fills the single accepted slot."
         " `org context validate` checks the accepted bytes against their "
         "adoption record and orgfs publish marker before or after a hand edit."
     )
@@ -47,9 +47,10 @@ org_app.add_typer(acl_app, name="acl")
 
 context_app = typer.Typer(
     help=(
-        "Validate the structured part of the organization context document: "
-        "the format of the fenced YAML block, and for the accepted slot its "
-        "adoption and orgfs publish state."
+        "Inspect, validate, and locally adopt the organization context document. "
+        "`fetch` stages candidates; `import` is the single owner-adopted slot; "
+        "`show`/`status` read what this node has accepted; `validate` checks "
+        "the fenced YAML and the accepted slot's adoption state."
     )
 )
 org_app.add_typer(context_app, name="context")
@@ -471,9 +472,9 @@ def _retry_binding_proof_before_join(*, json_output: bool) -> None:
 
 
 def _org_join_via_ipc(method: str, link: str, *, json_output: bool) -> None:
-    """Shared body of ``org join``/``org execute``: every link form — https
-    URL, ``hyprial://`` deep link, bare token, bare ``v1.`` — is passed
-    through untouched; decoding is the daemon's job (§5.1)."""
+    """Body of ``org join``: every link form — https URL, ``hyprial://``
+    deep link, bare token, bare ``v1.`` — is passed through untouched;
+    decoding is the daemon's job (§5.1)."""
     services = get_services()
 
     def operation() -> JsonObject:
@@ -515,23 +516,6 @@ def org_join(
 ) -> None:
     """Join an org from any invite-link form (§5.1/§5.2 path 1)."""
     _org_join_via_ipc("org.join", link, json_output=json_output)
-
-
-@org_app.command("execute")
-def org_execute(
-    link: str = typer.Argument(
-        ...,
-        help=(
-            "The invite link, or '-' to read it from stdin (keeps the secret "
-            "out of the shell history)."
-        ),
-    ),
-    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
-) -> None:
-    """Execute an invite link's declarative join workflow on this node.
-
-    Equivalent to ``org join`` (§5.2); kept under its original name."""
-    _org_join_via_ipc("org.execute", link, json_output=json_output)
 
 
 @org_app.command("leave")
@@ -759,7 +743,7 @@ def _org_human_view(data: Mapping[str, Any]) -> str:
     )
 
 
-@org_app.command("show")
+@context_app.command("show")
 def org_show(
     full: bool = typer.Option(
         False,
@@ -848,7 +832,7 @@ def _org_full_document(store: Any, document: Any) -> JsonObject:
     }
 
 
-@org_app.command("status")
+@context_app.command("status")
 def org_status(
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
@@ -867,7 +851,7 @@ def org_status(
     services._execute(operation, json_output=json_output)
 
 
-@org_app.command("fetch")
+@context_app.command("fetch")
 def org_fetch(
     source_target: str | None = typer.Option(
         None,
@@ -902,7 +886,7 @@ def org_fetch(
     services._execute(operation, json_output=json_output)
 
 
-@org_app.command("import")
+@context_app.command("import")
 def org_import(
     source: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
     force: bool = typer.Option(

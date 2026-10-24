@@ -1,9 +1,9 @@
-"""Twice-daily latest-tag pull scheduling and legacy timer integration.
+"""Twice-daily latest-tag pull scheduling owned by the daemon.
 
-The daemon owns the active 03:17/15:17 calendar and executes the existing
-``hyprial autoupdate run`` upgrade/restart path from a dedicated worker thread.
-Legacy launchd/systemd integration remains here only for the staged cutover:
-while its unit still exists, firing it delegates back to the live daemon.
+The daemon owns the active 03:17/15:17 calendar and executes the hidden
+``hyprial daemon upgrade run`` path from a dedicated worker thread.  Legacy
+launchd/systemd units are retired by the versioned ``autoupdate-timer-v1``
+upgrade step, not by daemon startup.
 """
 
 from __future__ import annotations
@@ -11,21 +11,17 @@ from __future__ import annotations
 import json
 import os
 import queue
-import re
+import stat
 import subprocess
 import sys
 import threading
-import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
 from datetime import datetime, timedelta
-from importlib.resources import files
 from pathlib import Path
 from typing import Any, Literal, Protocol
-from xml.sax.saxutils import escape as xml_escape
 
 import hyprial.daemon.impl.updates as updates
-from hyprial.kernel import configured_hyprial_home, current_uid
+from hyprial.kernel import configured_hyprial_home
 
 AUTOUPDATE_LABEL = "com.hyprial.hyprial.autoupdate"
 SYSTEMD_SERVICE_UNIT = "hyprial-autoupdate.service"
@@ -35,20 +31,15 @@ LOG_FILENAME = "autoupdate.log"
 AUTOUPDATE_CHILD_ENV = "HYPRIAL_AUTOUPDATE_IN_PROCESS_CHILD"
 AUTOUPDATE_TRIGGER_ENV = "HYPRIAL_AUTOUPDATE_TRIGGER"
 CALENDAR_RECHECK_SECONDS = 30.0
-# Records that this install enabled systemd lingering itself, so uninstall
-# (and a failed install) can restore the prior account policy without touching
-# linger that the operator enabled for unrelated services.
-LINGER_OWNERSHIP_FILENAME = "autoupdate-linger-owned"
 
 # Fixed twice-daily schedule (local time), deliberately off round hours so
 # fleet-wide installs do not stampede the Git remote at the same instant.
 SCHEDULE: tuple[tuple[int, int], ...] = ((3, 17), (15, 17))
 
-Platform = Literal["launchd", "systemd"]
 Json = dict[str, Any]
 
 
-class TimerCommandRunner(Protocol):
+class LegacyTimerCommandRunner(Protocol):
     def __call__(self, command: Sequence[str]) -> subprocess.CompletedProcess[str]: ...
 
 
@@ -64,9 +55,7 @@ def next_scheduled_run(now: datetime) -> datetime:
     for day_offset in (0, 1):
         day = now + timedelta(days=day_offset)
         for hour, minute in SCHEDULE:
-            candidate = day.replace(
-                hour=hour, minute=minute, second=0, microsecond=0
-            )
+            candidate = day.replace(hour=hour, minute=minute, second=0, microsecond=0)
             if candidate > now:
                 return candidate
     raise AssertionError("twice-daily schedule did not produce a future point")
@@ -75,7 +64,7 @@ def next_scheduled_run(now: datetime) -> datetime:
 class InProcessAutoUpdateScheduler:
     """Daemon-owned calendar trigger running wholly off the accept flow.
 
-    The worker starts the existing hidden ``autoupdate run`` entry point in a
+    The worker starts the hidden ``daemon upgrade run`` entry point in a
     child.  That preserves the proven upgrade/restart implementation while the
     child inherits the daemon's complete environment instead of a separately
     rendered launchd/systemd environment.
@@ -218,9 +207,7 @@ class InProcessAutoUpdateScheduler:
                     # leave any footprint beyond this one event.
                     with self._lock:
                         self._last_exit_code = None
-                        self._last_skip_reason = (
-                            updates.AUTOUPGRADE_DISABLED_REASON
-                        )
+                        self._last_skip_reason = updates.AUTOUPGRADE_DISABLED_REASON
                     self._emit(
                         "warning",
                         "autoupdate.run.skipped",
@@ -272,7 +259,8 @@ class InProcessAutoUpdateScheduler:
                     sys.executable,
                     "-m",
                     "hyprial.cli",
-                    "autoupdate",
+                    "daemon",
+                    "upgrade",
                     "run",
                     "--json",
                 ],
@@ -292,128 +280,181 @@ class InProcessAutoUpdateScheduler:
             pass
 
 
-def detect_platform() -> Platform | None:
-    if sys.platform == "darwin":
-        return "launchd"
-    if sys.platform.startswith("linux"):
-        return "systemd"
+def _run_legacy_timer_command(
+    command: Sequence[str],
+) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(command, text=True, capture_output=True, check=False)
+    except OSError as error:
+        return subprocess.CompletedProcess(command, 127, "", str(error))
+
+
+def _require_legacy_timer_command(
+    runner: LegacyTimerCommandRunner, command: Sequence[str]
+) -> None:
+    result = runner(command)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"legacy timer removal failed ({result.returncode}): "
+            f"{' '.join(command)}: {result.stderr.strip()}"
+        )
+
+
+def _collapsed_absolute(path: Path) -> str:
+    text = str(path)
+    return "/" + text.lstrip("/") if text.startswith("/") else text
+
+
+def _is_os_temp_alias(supplied: Path, canonical: Path) -> bool:
+    if not supplied.is_absolute():
+        return False
+    text = os.path.normpath(_collapsed_absolute(supplied))
+    resolved = str(canonical)
+    if text == "/tmp":
+        return resolved == "/private/tmp"
+    if text.startswith("/tmp/"):
+        return resolved == "/private" + text
+    if text == "/var":
+        return resolved == "/private/var"
+    if text.startswith("/var/"):
+        return resolved == "/private" + text
+    return False
+
+
+def canonical_timer_home(home: Path) -> tuple[Path, str | None]:
+    """Canonicalize HOME once; only the OS temp aliases are accepted."""
+
+    supplied = Path(home)
+    if not supplied.is_absolute():
+        return Path(os.path.realpath(supplied)), f"relative HOME refused: {supplied}"
+    if ".." in supplied.parts:
+        return Path(os.path.realpath(supplied)), f"dotdot HOME refused: {supplied}"
+    canonical = Path(os.path.realpath(supplied))
+    collapsed = Path(_collapsed_absolute(supplied))
+    if Path(os.path.abspath(collapsed)) != canonical and not _is_os_temp_alias(
+        collapsed, canonical
+    ):
+        return canonical, f"aliased HOME path: {supplied} resolves to {canonical}"
+    return canonical, None
+
+
+def legacy_timer_path_problem(path: Path, home: Path) -> str | None:
+    """Return why an exact timer path is unsafe to touch, or None."""
+
+    candidate = Path(path)
+    root, home_problem = canonical_timer_home(home)
+    if home_problem is not None:
+        return home_problem
+    try:
+        relative = candidate.relative_to(root)
+    except ValueError:
+        return "timer path is outside canonical HOME"
+    if ".." in relative.parts:
+        return f"aliased timer path: {candidate}"
+    current = root
+    for part in relative.parts:
+        current = current / part
+        try:
+            info = os.lstat(current)
+        except FileNotFoundError:
+            return None
+        except OSError as error:
+            return f"cannot inspect {current}: {error}"
+        if stat.S_ISLNK(info.st_mode):
+            return f"symlinked ancestor: {current}"
+    try:
+        info = os.lstat(candidate)
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        return f"cannot inspect {candidate}: {error}"
+    if stat.S_ISLNK(info.st_mode):
+        return f"symlink at exact path: {candidate}"
+    if not stat.S_ISREG(info.st_mode):
+        return f"not a regular file: {candidate}"
+    if info.st_nlink != 1:
+        return f"multiply linked file ({info.st_nlink} links): {candidate}"
+    if info.st_uid != os.getuid():
+        return f"not owned by current user: {candidate}"
+    if info.st_mode & 0o002:
+        return f"world-writable timer file: {candidate}"
     return None
 
 
-@dataclass(frozen=True, slots=True)
-class TimerConfig:
-    executable: Path
-    home: Path
-    hyprial_home: Path
-    state_dir: Path
-    path_env: str
+def remove_legacy_timer_units(
+    *,
+    home: Path,
+    platform: Literal["launchd", "systemd"] | None = None,
+    runner: LegacyTimerCommandRunner | None = None,
+    uid: int | None = None,
+) -> tuple[Path, ...]:
+    """Unload and remove timer units left by pre-daemon scheduling releases.
 
+    Detection is file-based and therefore has no side effects when no legacy
+    installation exists.  Unload happens before unlinking so a failed service
+    command leaves the unit files intact for the next startup and for operator
+    diagnosis instead of silently stranding an active timer.
+    """
 
-@dataclass(frozen=True, slots=True)
-class AutoUpdateStatus:
-    platform: Platform
-    unit: str
-    unit_paths: tuple[Path, ...]
-    installed: bool
-    loaded: bool
-    # systemd only: UnitFileState == enabled.  A timer can be loaded but
-    # disabled (manual systemctl disable), in which case it never fires.
-    enabled: bool | None = None
-    last_run: Json | None = None
-    boot_persistent: bool | None = None
-    changed: bool | None = None
+    selected = platform
+    if selected is None:
+        if sys.platform == "darwin":
+            selected = "launchd"
+        elif sys.platform.startswith("linux"):
+            selected = "systemd"
+        else:
+            return ()
+    command_runner = runner or _run_legacy_timer_command
+    service_home, home_problem = canonical_timer_home(Path(home))
+    if home_problem is not None:
+        raise RuntimeError(home_problem)
+    if selected == "launchd":
+        paths = (
+            service_home / "Library" / "LaunchAgents" / f"{AUTOUPDATE_LABEL}.plist",
+        )
+    else:
+        unit_dir = service_home / ".config" / "systemd" / "user"
+        paths = (
+            unit_dir / SYSTEMD_SERVICE_UNIT,
+            unit_dir / SYSTEMD_TIMER_UNIT,
+        )
+    for path in paths:
+        if path.exists() or path.is_symlink():
+            problem = legacy_timer_path_problem(path, service_home)
+            if problem is not None:
+                raise RuntimeError(problem)
+    existing = tuple(
+        path for path in paths if path.is_file() and not path.is_symlink()
+    )
+    if not existing:
+        return ()
 
-
-class TimerTemplates:
-    """Package-data launchd/systemd units for the update timer."""
-
-    def render_launchd(self, config: TimerConfig) -> str:
-        return self._render(
-            self._read("services/launchd.plist.template"),
-            {
-                "LABEL": AUTOUPDATE_LABEL,
-                "EXECUTABLE": str(config.executable.resolve()),
-                "HOME": str(config.home.resolve()),
-                "PATH": config.path_env,
-                "HYPRIAL_HOME": str(config.hyprial_home.resolve()),
-                "STDOUT_LOG": str((config.state_dir / LOG_FILENAME).resolve()),
-                "STDERR_LOG": str((config.state_dir / LOG_FILENAME).resolve()),
-                "HOUR_A": str(SCHEDULE[0][0]),
-                "MINUTE_A": f"{SCHEDULE[0][1]:02d}",
-                "HOUR_B": str(SCHEDULE[1][0]),
-                "MINUTE_B": f"{SCHEDULE[1][1]:02d}",
-            },
-            self._escape_xml,
+    if selected == "launchd":
+        domain = f"gui/{os.getuid() if uid is None else uid}"
+        probe = command_runner(("launchctl", "print", f"{domain}/{AUTOUPDATE_LABEL}"))
+        if probe.returncode == 0:
+            _require_legacy_timer_command(
+                command_runner,
+                ("launchctl", "bootout", f"{domain}/{AUTOUPDATE_LABEL}"),
+            )
+        elif probe.returncode != 113 and "Could not find service" not in probe.stderr:
+            raise RuntimeError(
+                f"legacy timer removal failed ({probe.returncode}): "
+                f"launchctl print {domain}/{AUTOUPDATE_LABEL}: {probe.stderr.strip()}"
+            )
+    elif paths[1].is_file():
+        _require_legacy_timer_command(
+            command_runner,
+            ("systemctl", "--user", "disable", "--now", SYSTEMD_TIMER_UNIT),
         )
 
-    def render_systemd_service(self, config: TimerConfig) -> str:
-        return self._render(
-            self._read("services/systemd.service.template"),
-            {
-                "EXECUTABLE_ARG": self._quote_systemd(str(config.executable.resolve())),
-                "HOME_ENV": self._quote_systemd(f"HOME={config.home.resolve()}"),
-                "PATH_ENV": self._quote_systemd(f"PATH={config.path_env}"),
-                "HYPRIAL_HOME_ENV": self._quote_systemd(
-                    f"HYPRIAL_HOME={config.hyprial_home.resolve()}"
-                ),
-                "STDOUT_ARG": self._quote_systemd(
-                    str((config.state_dir / LOG_FILENAME).resolve())
-                ),
-                "STDERR_ARG": self._quote_systemd(
-                    str((config.state_dir / LOG_FILENAME).resolve())
-                ),
-            },
-            lambda value: value,
+    for path in existing:
+        path.unlink()
+    if selected == "systemd":
+        _require_legacy_timer_command(
+            command_runner, ("systemctl", "--user", "daemon-reload")
         )
-
-    def render_systemd_timer(self, config: TimerConfig) -> str:
-        return self._render(
-            self._read("services/systemd.timer.template"),
-            {
-                "SERVICE_UNIT": SYSTEMD_SERVICE_UNIT,
-                "CALENDAR_A": self._calendar(SCHEDULE[0]),
-                "CALENDAR_B": self._calendar(SCHEDULE[1]),
-            },
-            lambda value: value,
-        )
-
-    @staticmethod
-    def _calendar(point: tuple[int, int]) -> str:
-        return f"{point[0]:02d}:{point[1]:02d}:00"
-
-    @staticmethod
-    def _read(name: str) -> str:
-        return files(__package__).joinpath(name).read_text(encoding="utf-8")
-
-    @staticmethod
-    def _render(
-        template: str,
-        replacements: dict[str, str],
-        escape: Callable[[str], str],
-    ) -> str:
-        def substitute(match: re.Match[str]) -> str:
-            key = match.group(1)
-            if key not in replacements:
-                raise ValueError(f"unknown template token {key}")
-            return escape(replacements[key])
-
-        rendered = re.sub(r"\{\{([A-Z0-9_]+)\}\}", substitute, template)
-        remaining = re.findall(r"\{\{[^}]+\}\}", rendered)
-        if remaining:
-            raise ValueError(f"unresolved template tokens: {remaining}")
-        return rendered
-
-    @staticmethod
-    def _escape_xml(value: str) -> str:
-        return xml_escape(value, {'"': "&quot;", "'": "&apos;"})
-
-    @staticmethod
-    def _quote_systemd(value: str) -> str:
-        return (
-            '"'
-            + value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
-            + '"'
-        )
+    return existing
 
 
 def write_last_run(state_dir: Path, record: Json) -> Path:
@@ -460,293 +501,3 @@ def read_last_run(state_dir: Path) -> Json | None:
             "error": f"last run {path} is not an object: {type(record).__name__}",
         }
     return record
-
-
-class AutoUpdateManager:
-    """Idempotent user-timer integration for the latest-tag pull."""
-
-    def __init__(
-        self,
-        config: TimerConfig,
-        *,
-        platform: Platform,
-        service_home: Path | None = None,
-        runner: TimerCommandRunner | None = None,
-        uid: int | None = None,
-        username: str | None = None,
-        sleep: Callable[[float], None] = time.sleep,
-    ) -> None:
-        self.config = config
-        self.platform = platform
-        self.service_home = Path(service_home or config.home)
-        self.runner = runner or self._run
-        self.uid = current_uid() if uid is None else uid
-        self.username = username or os.environ.get("USER", "")
-        self.sleep = sleep
-        self.templates = TimerTemplates()
-
-    @property
-    def unit_paths(self) -> tuple[Path, ...]:
-        if self.platform == "launchd":
-            return (
-                self.service_home
-                / "Library"
-                / "LaunchAgents"
-                / f"{AUTOUPDATE_LABEL}.plist",
-            )
-        base = self.service_home / ".config" / "systemd" / "user"
-        return (base / SYSTEMD_SERVICE_UNIT, base / SYSTEMD_TIMER_UNIT)
-
-    @property
-    def unit(self) -> str:
-        return AUTOUPDATE_LABEL if self.platform == "launchd" else SYSTEMD_TIMER_UNIT
-
-    def status(self) -> AutoUpdateStatus:
-        installed = all(path.is_file() for path in self.unit_paths)
-        loaded = self._loaded()
-        return AutoUpdateStatus(
-            self.platform,
-            self.unit,
-            self.unit_paths,
-            installed,
-            loaded,
-            enabled=(
-                self._systemd_enabled() if self.platform == "systemd" else None
-            ),
-            last_run=read_last_run(self.config.state_dir),
-            boot_persistent=(
-                self._linger_enabled() if self.platform == "systemd" else None
-            ),
-        )
-
-    def install(self) -> AutoUpdateStatus:
-        before = self.status()
-        self.config.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        linger_changed = False
-        if self.platform == "systemd" and not before.boot_persistent:
-            self._require(("loginctl", "enable-linger", self.username))
-            # Record ownership before any later step can fail, so a stranded
-            # half-install can still be rolled back (and uninstall can tell
-            # linger we own from linger the operator enabled themselves).
-            self._write_linger_marker()
-            linger_changed = True
-        try:
-            changed_file = False
-            for path, rendered in self._rendered_units():
-                existing = (
-                    path.read_text(encoding="utf-8") if path.is_file() else None
-                )
-                if existing != rendered:
-                    changed_file = True
-                    self._atomic_write(path, rendered)
-            if self.platform == "launchd":
-                if before.loaded and changed_file:
-                    self._unload()
-                if not before.loaded or changed_file:
-                    self._load()
-            elif changed_file:
-                if before.loaded:
-                    self._unload()
-                self._load()
-            elif not before.enabled:
-                # A manually disabled timer stays loaded; install must repair
-                # it, not silently report success.
-                self._load()
-        except BaseException:
-            if linger_changed:
-                self._restore_linger()
-            raise
-        after = self.status()
-        repaired = (
-            self.platform == "systemd"
-            and before.enabled is False
-            and after.enabled is True
-        )
-        return AutoUpdateStatus(
-            **{
-                field: getattr(after, field)
-                for field in (
-                    "platform",
-                    "unit",
-                    "unit_paths",
-                    "installed",
-                    "loaded",
-                    "enabled",
-                    "last_run",
-                    "boot_persistent",
-                )
-            },
-            changed=changed_file
-            or (self.platform == "launchd" and not before.loaded)
-            or repaired
-            or linger_changed,
-        )
-
-    def uninstall(self) -> AutoUpdateStatus:
-        before = self.status()
-        if before.loaded:
-            self._unload()
-        for path in self.unit_paths:
-            path.unlink(missing_ok=True)
-        if self.platform == "systemd" and (before.loaded or before.installed):
-            self._require(("systemctl", "--user", "daemon-reload"))
-        if self.platform == "systemd" and self._linger_marker_path().is_file():
-            self._restore_linger()
-        after = self.status()
-        return AutoUpdateStatus(
-            **{
-                field: getattr(after, field)
-                for field in (
-                    "platform",
-                    "unit",
-                    "unit_paths",
-                    "installed",
-                    "loaded",
-                    "enabled",
-                    "last_run",
-                    "boot_persistent",
-                )
-            },
-            changed=before.loaded or before.installed,
-        )
-
-    def _rendered_units(self) -> list[tuple[Path, str]]:
-        if self.platform == "launchd":
-            return [
-                (self.unit_paths[0], self.templates.render_launchd(self.config))
-            ]
-        return [
-            (self.unit_paths[0], self.templates.render_systemd_service(self.config)),
-            (self.unit_paths[1], self.templates.render_systemd_timer(self.config)),
-        ]
-
-    def _loaded(self) -> bool:
-        if self.platform == "launchd":
-            result = self.runner(("launchctl", "print", f"gui/{self.uid}/{AUTOUPDATE_LABEL}"))
-            return result.returncode == 0
-        result = self.runner(
-            (
-                "systemctl",
-                "--user",
-                "show",
-                SYSTEMD_TIMER_UNIT,
-                "--property=LoadState",
-            )
-        )
-        return (
-            result.returncode == 0
-            and "LoadState=loaded" in result.stdout
-        )
-
-    def _linger_enabled(self) -> bool:
-        result = self.runner(
-            ("loginctl", "show-user", self.username, "--property=Linger", "--value")
-        )
-        return result.returncode == 0 and result.stdout.strip() == "yes"
-
-    def _systemd_enabled(self) -> bool:
-        result = self.runner(
-            (
-                "systemctl",
-                "--user",
-                "show",
-                SYSTEMD_TIMER_UNIT,
-                "--property=UnitFileState",
-            )
-        )
-        return (
-            result.returncode == 0
-            and "UnitFileState=enabled" in result.stdout
-        )
-
-    def _linger_marker_path(self) -> Path:
-        return self.config.state_dir / LINGER_OWNERSHIP_FILENAME
-
-    def _write_linger_marker(self) -> None:
-        path = self._linger_marker_path()
-        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        path.write_text("enabled-by-hyprial-autoupdate\n", encoding="utf-8")
-        os.chmod(path, 0o600)
-
-    def _restore_linger(self) -> None:
-        """Best-effort rollback of linger we enabled.
-
-        The marker is removed only when disable-linger succeeds, so a failed
-        rollback can be retried by a later uninstall instead of stranding the
-        account-level policy change without any record of it.
-        """
-
-        result = self.runner(("loginctl", "disable-linger", self.username))
-        if result.returncode == 0:
-            self._linger_marker_path().unlink(missing_ok=True)
-
-    def _load(self) -> None:
-        if self.platform == "launchd":
-            command = (
-                "launchctl",
-                "bootstrap",
-                f"gui/{self.uid}",
-                str(self.unit_paths[0]),
-            )
-            for attempt in range(5):
-                result = self.runner(command)
-                if result.returncode == 0:
-                    return
-                transient = (
-                    result.returncode == 5 or "Input/output error" in result.stderr
-                )
-                if not transient or attempt == 4:
-                    self._raise_command(command, result)
-                self.sleep(0.25 * (attempt + 1))
-            return
-        # enable-linger starts the user manager asynchronously; on hosts
-        # without a login session (headless servers, WSL) the user bus can
-        # take a moment to come up, so wait for it briefly before reloading.
-        deadline = time.monotonic() + 5.0
-        while True:
-            result = self.runner(("systemctl", "--user", "daemon-reload"))
-            if result.returncode == 0:
-                break
-            if (
-                "Failed to connect to bus" not in result.stderr
-                or time.monotonic() >= deadline
-            ):
-                self._raise_command(("systemctl", "--user", "daemon-reload"), result)
-            self.sleep(0.5)
-        self._require(
-            ("systemctl", "--user", "enable", "--now", SYSTEMD_TIMER_UNIT)
-        )
-
-    def _unload(self) -> None:
-        if self.platform == "launchd":
-            self._require(("launchctl", "bootout", f"gui/{self.uid}/{AUTOUPDATE_LABEL}"))
-            return
-        self._require(("systemctl", "--user", "disable", "--now", SYSTEMD_TIMER_UNIT))
-
-    def _atomic_write(self, path: Path, rendered: str) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        temporary = path.with_name(f"{path.name}.tmp.{os.getpid()}")
-        temporary.write_text(rendered, encoding="utf-8")
-        os.chmod(temporary, 0o644)
-        os.replace(temporary, path)
-
-    def _require(self, command: Sequence[str]) -> None:
-        result = self.runner(command)
-        if result.returncode != 0:
-            self._raise_command(command, result)
-
-    @staticmethod
-    def _raise_command(
-        command: Sequence[str], result: subprocess.CompletedProcess[str]
-    ) -> None:
-        raise RuntimeError(
-            f"service command failed ({result.returncode}): {' '.join(command)}: "
-            f"{result.stderr.strip()}"
-        )
-
-    @staticmethod
-    def _run(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
-        try:
-            return subprocess.run(command, text=True, capture_output=True, check=False)
-        except OSError as error:
-            return subprocess.CompletedProcess(command, 127, "", str(error))

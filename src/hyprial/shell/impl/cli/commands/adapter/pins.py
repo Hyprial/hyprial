@@ -1,4 +1,4 @@
-"""``hyprial adapter pin/unpin/pins`` harness pinning."""
+"""``hyprial adapter pin/unpin`` harness pinning."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ def adapter_pin(
     Adapter and agent bind one-to-one: an adapter routes to exactly one agent,
     and an agent can be pinned by at most one adapter (pin the target
     elsewhere first requires 'hyprial adapter unpin' on its current adapter). The
-    agent must already exist ('hyprial agent create' / 'hyprial start'); the stored
+    agent must already exist ('hyprial agent create' / 'hyprial agent start'); the stored
     value is always its canonical URI. The pin lives on the agent's record and
     disappears with 'hyprial agent destroy'. Inbound-only: replies travel with
     each message's own correlation, never by reverse lookup of this pin.
@@ -45,13 +45,3 @@ def adapter_unpin(
         lambda: services._daemon_request("adapter.unpin", {"name": adapter}),
         json_output=json_output,
     )
-
-
-@adapter_app.command("pins")
-def adapter_pins(
-    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
-) -> None:
-    """List adapter receiver pins (adapter -> canonical agent URI)."""
-    services = get_services()
-
-    services._execute(lambda: services._daemon_request("adapter.pins", {}), json_output=json_output)

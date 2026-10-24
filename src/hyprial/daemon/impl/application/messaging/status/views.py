@@ -558,7 +558,7 @@ class _StatusViewsMixin:
         # actor's liveness probe falls back to one supervisor round trip
         # plus one full desired-state load per connector
         # (_managed_worker_running).  In production that was ~475 SQLite
-        # reads for 77 actors and `hyprial top` timed out at 15 s every
+        # reads for 77 actors and `hyprial agent top` timed out at 15 s every
         # time while `ps`, which installs the snapshot, answered.
         with self._worker_status_snapshot():
             actor_statuses = self._actor_status_snapshot()

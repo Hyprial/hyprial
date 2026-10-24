@@ -228,7 +228,7 @@ _DECLARATIONS: dict[tuple[str, bool], dict[Capability, CapabilitySupport]] = {
             "the dsh-tui carrier does not expose a turn event stream yet"
         ),
         Capability.MODEL_SELECT: _unsupported(
-            "choose the model inside dsh-tui; hyprial start dsh does not own "
+            "choose the model inside dsh-tui; hyprial agent start dsh does not own "
             "provider/model selection yet"
         ),
     },

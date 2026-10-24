@@ -255,7 +255,7 @@ def _fetch_recipient_public_key(remote: RemoteRunner, host: str) -> bytes:
     """
 
     try:
-        reply = remote.run_json(["transfer-recipient-key"])
+        reply = remote.run_json(["agent", "transfer", "recipient-key"])
     except RemoteError as error:
         raise TransferError(
             "TRANSFER_REMOTE_FAILED",
@@ -508,7 +508,7 @@ def _run_agent_home_chain(
     # nothing below compensates: only the pre-receive branch above rolls back.
     try:
         received = remote.run_json(
-            ["transfer-receive"],
+            ["agent", "transfer", "receive"],
             stdin=json.dumps(
                 {
                     "operationId": operation_id,

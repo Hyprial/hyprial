@@ -1,4 +1,4 @@
-"""The ``hyprial ack`` operator messaging command."""
+"""The ``hyprial message ack`` operator messaging command."""
 
 from __future__ import annotations
 
@@ -6,11 +6,11 @@ from hyprial.shell.impl.cli.commands.common.services import get_services
 
 import typer
 
-from hyprial.shell.impl.cli.commands.common.root import app
+from hyprial.shell.impl.cli.commands.message import message_app
 from hyprial.shell.impl.cli.commands.common.support import _message_claim_params
 
 
-@app.command()
+@message_app.command("ack")
 def ack(
     message_id: str = typer.Argument(..., help="Message ID to acknowledge."),
     source: str = typer.Option(..., "--from", help="Local acknowledging actor."),

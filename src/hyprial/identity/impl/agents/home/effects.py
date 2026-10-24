@@ -138,6 +138,7 @@ class AgentHomeEffectCompleted:
     settled: bool = True
     error_code: str | None = None
     error_detail: str | None = None
+    error_data: dict[str, object] | None = None
     payload_state: str | None = None
     payload_files: tuple[HomePayloadFile, ...] | None = None
 
@@ -322,19 +323,24 @@ class AgentHomeEffectLane:
             )
         except BaseException as error:
             expected = isinstance(error, (AgentHomeError, TypeError, ValueError))
+            explicit_code = getattr(error, "code", None)
             code = (
-                str(getattr(error, "code", "AGENT_ERROR"))
+                str(explicit_code)
+                if explicit_code
+                else "AGENT_ERROR"
                 if isinstance(error, AgentHomeError)
                 else ipc_errors.INVALID_ARGUMENT
                 if isinstance(error, (TypeError, ValueError))
                 else type(error).__name__
             )
+            data = getattr(error, "data", None)
             return AgentHomeEffectCompleted(
                 effect.correlation_id,
                 effect.generation,
                 settled=expected,
                 error_code=code,
                 error_detail=str(error),
+                error_data=dict(data) if isinstance(data, dict) else None,
             )
 
     def close(self, timeout: float = 5.0) -> bool:

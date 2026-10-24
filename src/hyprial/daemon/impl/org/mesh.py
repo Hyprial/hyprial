@@ -514,7 +514,7 @@ class OrgContextMesh:
         if allowed_sources is not None and source_node not in allowed_sources:
             self._reject(
                 "source-unreachable",
-                "response source was not present in hyprial targets",
+                "response source was not present in hyprial message targets",
                 source_node=source_node,
             )
             return None

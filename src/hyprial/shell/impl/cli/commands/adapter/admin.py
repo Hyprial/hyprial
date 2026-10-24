@@ -16,6 +16,7 @@ import typer
 
 from hyprial.shell.impl.cli.commands.common.support import JsonObject
 adapter_app = typer.Typer(help="Manage external-platform adapters.")
+scopes_app = typer.Typer(help="Inspect and authorize Lark App tenant scopes.")
 
 
 def _parse_adapter_routes(raw_routes: list[str]) -> tuple[Any, ...]:
@@ -107,8 +108,7 @@ def _read_adapter_secret(*, secret_file: Path | None, json_output: bool) -> str:
     return secret
 
 
-@adapter_app.command("add")
-def adapter_add(
+def _adapter_add_existing(
     name: str = typer.Argument(
         ..., help="Gateway name; also names the credential file lark-<name>.json."
     ),
@@ -205,8 +205,7 @@ def _present_verification_prompt(prompt: Any) -> None:
     )
 
 
-@adapter_app.command("onboard")
-def adapter_onboard(
+def _adapter_onboard(
     name: str = typer.Argument(
         ..., help="Gateway name; also names the credential file lark-<name>.json."
     ),
@@ -265,7 +264,7 @@ def adapter_onboard(
         if new and app_id is not None:
             raise services.CliError(
                 ipc_errors.INVALID_ARGUMENT,
-                "adapter onboard accepts either --new or --app-id, not both",
+                "adapter add accepts either --new or --app-id, not both",
             )
         routes = _parse_adapter_routes(route) if route else ()
         if default_route is not None and not routes:
@@ -348,7 +347,8 @@ def adapter_onboard(
                 ),
             },
             "nextStep": (
-                f"Run 'hyprial adapter authorize {name}' to request tenant-admin "
+                f"Run 'hyprial adapter scopes authorize {name}' to request "
+                "tenant-admin "
                 "approval for the declared scopes, then 'hyprial adapter reload' "
                 "so a running daemon picks the adapter up without a daemon "
                 "restart; afterwards 'hyprial adapter pin' and 'hyprial adapter "
@@ -357,6 +357,82 @@ def adapter_onboard(
         }
 
     services._execute(operation, json_output=json_output)
+
+
+@adapter_app.command("add")
+def adapter_add(
+    name: str = typer.Argument(
+        ..., help="Gateway name; also names the credential file lark-<name>.json."
+    ),
+    app_id: str | None = typer.Option(
+        None,
+        "--app-id",
+        help="Register this existing Lark App instead of onboarding one.",
+    ),
+    new: bool = typer.Option(
+        False,
+        "--new",
+        help="Always create a new App, ignoring HYPRIAL_LARK_APP_ID/SECRET.",
+    ),
+    route: list[str] = typer.Option(
+        [],
+        "--route",
+        help="Direct route as name=native_chat_id; repeatable.",
+    ),
+    default_route: str | None = typer.Option(
+        None, "--default-route", help="Route name to use as the gateway default."
+    ),
+    secret_file: Path | None = typer.Option(
+        None,
+        "--secret-file",
+        help="For --app-id, read the existing App secret from this file. Never "
+        "pass the secret on the command line; use this flag, stdin, or the "
+        "hidden prompt.",
+    ),
+    force: bool = typer.Option(
+        False, "--force", help="Overwrite an existing adapter of the same name."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Create or adopt a Lark App and register it as an adapter.
+
+    With no existing-App parameters, run the official human-authorized App
+    onboarding flow.  Supplying --app-id selects the registration-only path:
+    the App secret comes from --secret-file, stdin, or the hidden prompt and no
+    platform App is created or changed.
+    """
+
+    if app_id is not None and not new:
+        _adapter_add_existing(
+            name=name,
+            app_id=app_id,
+            route=route,
+            default_route=default_route,
+            secret_file=secret_file,
+            force=force,
+            json_output=json_output,
+        )
+        return
+    if secret_file is not None and app_id is None:
+        services = get_services()
+
+        def invalid_secret_file() -> JsonObject:
+            raise services.CliError(
+                ipc_errors.INVALID_ARGUMENT,
+                "--secret-file requires --app-id; omit both to onboard an App",
+            )
+
+        services._execute(invalid_secret_file, json_output=json_output)
+        return
+    _adapter_onboard(
+        name=name,
+        app_id=app_id,
+        new=new,
+        route=route,
+        default_route=default_route,
+        force=force,
+        json_output=json_output,
+    )
 
 
 def _confirm_adapter_stopped(name: str, *, force: bool) -> None:
@@ -530,7 +606,7 @@ def adapter_list(
     services._execute(lambda: services._daemon_request("adapter.list", {}), json_output=json_output)
 
 
-@adapter_app.command("doctor")
+@scopes_app.command("check")
 def adapter_doctor(
     name: str = typer.Argument(..., help="Configured Lark adapter name."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),

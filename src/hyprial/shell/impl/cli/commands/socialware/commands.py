@@ -1,4 +1,4 @@
-"""``hyprial install`` (retired stub) and self-upgrade install helpers."""
+"""``hyprial socialware install`` placeholder and upgrade helpers."""
 
 from __future__ import annotations
 
@@ -8,11 +8,18 @@ from typing import Any
 from hyprial.kernel import ipc_errors
 import typer
 
-from hyprial.shell.impl.cli.commands.common.root import app
 from hyprial.shell.impl.cli.commands.common.support import JsonObject, _probe_reports_running
 
 
-@app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
+socialware_app = typer.Typer(
+    help="Install and manage socialware applications (coming soon)."
+)
+
+
+@socialware_app.command(
+    "install",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
 def install(
     names: list[str] = typer.Argument(None, help="Accepted and ignored."),
     yes: bool = typer.Option(False, "--yes", help="Accepted and ignored."),
@@ -32,7 +39,9 @@ def install(
 
     def operation() -> JsonObject:
         services = get_services()
-        raise services.CliError("COMING_SOON", "hyprial install is coming soon")
+        raise services.CliError(
+            "COMING_SOON", "hyprial socialware install is coming soon"
+        )
 
     services._execute(operation, json_output=json_output, allow_missing_home=True)
 
@@ -75,7 +84,6 @@ def _prime_post_install_restart_imports() -> None:
     # Resolve the real public APIs while this installed distribution still
     # exists. Explicit imports retain lazy loading without runtime path strings.
     from hyprial.daemon import (
-        AutoUpdateManager,
         notify_upgrade_outcome,
         owner_process_status,
         restore_followup_budget_seconds,
@@ -84,7 +92,7 @@ def _prime_post_install_restart_imports() -> None:
     from hyprial.kernel import HarnessLaunchSpec, parse_channel_uri
 
     _ = (
-        AutoUpdateManager, owner_process_status, restore_followup_budget_seconds,
+        owner_process_status, restore_followup_budget_seconds,
         HarnessLaunchSpec, parse_channel_uri, notify_upgrade_outcome, run_self_check,
     )
 
@@ -114,6 +122,6 @@ def _require_installed_commit(
             "UPGRADE_COMMIT_MISMATCH",
             f"uv installed commit {installed.commit} but {resolution.commit} "
             f"was resolved; not restarting onto unresolved code. Re-run "
-            f"`hyprial upgrade`. {resolved_suffix}",
+            f"`hyprial daemon upgrade`. {resolved_suffix}",
             {**resolved, "installedCommit": installed.commit},
         )

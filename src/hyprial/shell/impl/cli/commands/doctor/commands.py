@@ -17,6 +17,7 @@ from hyprial.shell.impl.cli.commands.doctor.route_session import (
     _route_session_doctor_check,
 )
 from hyprial.shell.impl.cli.commands.doctor.zenoh import _zenoh_doctor_check
+from hyprial.shell.impl.cli.commands.doctor.upgrade_steps import _upgrade_steps_doctor_check
 
 
 def _tailcat_sidecar_doctor_check() -> JsonObject:
@@ -119,9 +120,20 @@ def _device_key_doctor_check() -> JsonObject:
     }
 
 
-def _doctor_result() -> JsonObject:
+def _doctor_result(*, fix: bool = False) -> JsonObject:
     services = get_services()
     checks: list[JsonObject] = []
+    checks.append(_upgrade_steps_doctor_check(fix=fix))
+    from hyprial.shell.impl.cli.commands.daemon.service import (
+        daemon_service_doctor_check,
+    )
+
+    service_check = daemon_service_doctor_check(
+        serving_pid=None if fix else _daemon_service_pid(),
+        fix=fix,
+    )
+    if service_check is not None:
+        checks.append(service_check)
     # Local tailnet-cutover checks run without a daemon: the sidecar binary
     # and the on-disk device key/record are host facts, not IPC facts.
     checks.append(_tailcat_sidecar_doctor_check())
@@ -218,6 +230,20 @@ def _doctor_result() -> JsonObject:
     }
 
 
+def _daemon_service_pid() -> int | None:
+    """Read the serving pid without making service diagnostics depend on ps."""
+
+    services = get_services()
+    try:
+        value = services._daemon_probe(timeout=1.0)
+    except (services.CliError, ipc_errors.TransientDaemonError, OSError):
+        return None
+    daemon = value.get("daemon") if isinstance(value, dict) else None
+    source = daemon if isinstance(daemon, dict) else value
+    pid = source.get("pid") if isinstance(source, dict) else None
+    return pid if type(pid) is int and pid > 0 else None
+
+
 def _org_metadata_doctor_check() -> JsonObject | None:
     """Report organization metadata and directory-row data problems."""
 
@@ -274,7 +300,7 @@ def _restore_doctor_check(result: JsonObject) -> JsonObject | None:
             "status": "warn",
             "detail": f"{detail}; {restore.get('degradedReason', 'policy unreadable')}",
             "action": {
-                "command": "hyprial agent restore-policy <name> always",
+                "command": "hyprial agent restore <name> always",
                 "description": (
                     "Repair the restore policy; degraded startup "
                     "restores connectors to preserve availability."
@@ -287,7 +313,7 @@ def _restore_doctor_check(result: JsonObject) -> JsonObject | None:
             "status": "warn",
             "detail": detail,
             "action": {
-                "command": "hyprial agent restore-policy <name> always",
+                "command": "hyprial agent restore <name> always",
                 "description": (
                     "Always restore or explicitly start dormant agents; clear blocked "
                     "agents with hyprial agent unblock <name>."
@@ -441,7 +467,7 @@ def _duplicate_instance_doctor_check(result: JsonObject) -> JsonObject | None:
             + coverage_note
         ),
         "action": {
-            "command": "hyprial ps --json",
+            "command": "hyprial daemon status --json",
             "description": (
                 "Inspect duplicateInstance, find the second daemon process "
                 "(a copied HYPRIAL_HOME is the known cause), and stop it by "
@@ -631,7 +657,7 @@ def _historical_inbox_doctor_check(result: JsonObject) -> JsonObject | None:
             "through the current actor automatically"
         ),
         "action": {
-            "command": "hyprial ps --json",
+            "command": "hyprial daemon status --json",
             "description": (
                 "Review historicalInboxRecipients, then use the exact old URI "
                 "with read/ack only after confirming that the node rename was "
@@ -796,7 +822,7 @@ def _mcp_channel_doctor_check(result: JsonObject) -> JsonObject | None:
                 "operational-liveness observation for this daemon generation"
             ),
             "action": {
-                "command": "hyprial start claude --name <name> [--resume <session-id>]",
+                "command": "hyprial agent start claude --name <name> [--resume <session-id>]",
                 "description": (
                     "Start or resume the coordinator through the upgraded hyprial "
                     "launcher to generate a current, fenced Channel process."
@@ -950,9 +976,10 @@ def _lark_inbound_doctor_check(result: JsonObject) -> JsonObject | None:
 
 @app.command()
 def doctor(
+    fix: bool = typer.Option(False, "--fix", help="Rerun pending upgrade steps."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
-    """Run read-only health checks."""
+    """Run health checks; ``--fix`` reruns pending upgrade steps."""
     services = get_services()
 
-    services._execute(lambda: _doctor_result(), json_output=json_output)
+    services._execute(lambda: _doctor_result(fix=fix), json_output=json_output)

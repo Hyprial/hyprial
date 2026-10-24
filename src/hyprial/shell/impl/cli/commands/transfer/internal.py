@@ -15,7 +15,7 @@ from hyprial.kernel import ipc_errors
 
 def register_hidden_session_commands(app, get_dependencies):
 
-    @app.command("transfer-precheck", hidden=True)
+    @app.command("precheck", hidden=True)
     def transfer_precheck(
         harness: str = typer.Option(..., "--harness"),
         name: str = typer.Option(..., "--name"),
@@ -37,7 +37,7 @@ def register_hidden_session_commands(app, get_dependencies):
         )
 
 
-    @app.command("transfer-receive", hidden=True)
+    @app.command("receive", hidden=True)
     def transfer_receive(
         json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
     ) -> None:
@@ -71,7 +71,7 @@ def register_hidden_session_commands(app, get_dependencies):
         _execute(operation, json_output=json_output)
 
 
-    @app.command("transfer-recipient-key", hidden=True)
+    @app.command("recipient-key", hidden=True)
     def transfer_recipient_key(
         json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
     ) -> None:
@@ -92,7 +92,7 @@ def register_hidden_session_commands(app, get_dependencies):
         )
 
 
-    @app.command("transfer-cred-stage", hidden=True)
+    @app.command("cred-stage", hidden=True)
     def transfer_cred_stage(
         name: str = typer.Option(..., "--name"),
         harness: str = typer.Option(..., "--harness"),
@@ -146,7 +146,7 @@ def register_hidden_session_commands(app, get_dependencies):
         _execute(operation, json_output=json_output)
 
 
-    @app.command("transfer-container-home", hidden=True)
+    @app.command("container-home", hidden=True)
     def transfer_container_home(
         name: str = typer.Option(..., "--name"),
         harness: str = typer.Option(..., "--harness"),
@@ -171,7 +171,7 @@ def register_hidden_session_commands(app, get_dependencies):
         _execute(operation, json_output=json_output)
 
 
-    @app.command("transfer-session-path", hidden=True)
+    @app.command("session-path", hidden=True)
     def transfer_session_path(
         harness: str = typer.Option(..., "--harness"),
         cwd: str = typer.Option(..., "--cwd"),

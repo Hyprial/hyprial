@@ -6,11 +6,31 @@ _ORDER = {
     name: index
     for index, name in enumerate(
         (
-            "create", "host-invite", "grant", "revoke", "grants", "list",
-            "home-census", "ensure-home", "readiness", "restore-policy", "restore-threshold", "unblock", "destroy",
+            "create",
+            "host-invite",
+            "list",
+            "readiness",
+            "ensure-home",
+            "start",
+            "stop",
+            "top",
+            "move",
+            "unblock",
+            "restore",
+            "grant",
+            "grants",
+            "destroy",
         )
     )
 }
 admin.agent_app.registered_commands.sort(
     key=lambda command: _ORDER.get(command.name or "", len(_ORDER))
 )
+
+
+def order_agent_commands() -> None:
+    """Re-apply the visible order after late registrations (``agent move``)."""
+
+    admin.agent_app.registered_commands.sort(
+        key=lambda command: _ORDER.get(command.name or "", len(_ORDER))
+    )

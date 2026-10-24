@@ -1,4 +1,4 @@
-"""``hyprial start`` - launch an agent session (headless or interactive)."""
+"""``hyprial agent start`` - launch an agent session (headless or interactive)."""
 
 from __future__ import annotations
 
@@ -14,10 +14,13 @@ import shutil
 import sys
 import typer
 
-from hyprial.shell.impl.cli.commands.common.root import app
+from hyprial.shell.impl.cli.commands.agent.admin import agent_app
 from hyprial.shell.impl.cli.commands.common.support import JsonObject, _daemon_ipc_roundtrip_seconds, _resolved_agent_cwd, _resolved_interactive_resume_cwd, _user_proxy_launch_params
-@app.command(
-    context_settings={"allow_extra_args": True, "ignore_unknown_options": True}
+
+
+@agent_app.command(
+    "start",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
 )
 def start(
     ctx: typer.Context,
@@ -42,7 +45,9 @@ def start(
         "--tmux",
         help=(
             "Run the interactive TUI inside a detached tmux session and "
-            "return attach commands (interactive claude, pi, and codex)."
+            "return attach commands (interactive claude, pi, and codex). "
+            "Detached Codex has no inbox carrier; for message delivery, run "
+            "the foreground Codex start inside your own tmux window."
         ),
     ),
     agent_preset: str | None = typer.Option(
@@ -133,7 +138,7 @@ def start(
                 ipc_errors.INVALID_ARGUMENT,
                 f"--tier {tier} chooses harness/provider/model itself; it "
                 f"cannot be combined with {', '.join(given)}. Use either "
-                f"`hyprial start --tier {tier} --name ...` or an explicit harness "
+                f"`hyprial agent start --tier {tier} --name ...` or an explicit harness "
                 "with --provider/--model",
             )
         if tier is not None and not explicit_selection:
@@ -213,7 +218,7 @@ def start(
         try:
             validate_model_selection(
                 harness_kind, model_provider, model,
-                context=f"hyprial start --name {name}",
+                context=f"hyprial agent start --name {name}",
             )
         except ModelProviderError as error:
             raise services.CliError(ipc_errors.INVALID_ARGUMENT, str(error)) from error

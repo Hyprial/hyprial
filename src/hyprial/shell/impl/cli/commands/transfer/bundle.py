@@ -13,7 +13,7 @@ from hyprial.kernel import resolve_node_id
 
 def register_bundle_commands(app, get_dependencies):
 
-    @app.command("transfer-bundle-export")
+    @app.command("bundle-export")
     def transfer_bundle_export(
         source_dir: Path = typer.Option(
             ...,
@@ -155,7 +155,7 @@ def register_bundle_commands(app, get_dependencies):
         _execute(operation, json_output=json_output)
 
 
-    @app.command("transfer-bundle-validate")
+    @app.command("bundle-validate")
     def transfer_bundle_validate(
         bundle_dir: Path = typer.Argument(..., help="Bundle directory to verify."),
         expect_owner: str | None = typer.Option(
@@ -217,7 +217,7 @@ def register_bundle_commands(app, get_dependencies):
         _execute(operation, json_output=json_output)
 
 
-    @app.command("transfer-bundle-receive")
+    @app.command("bundle-receive")
     def transfer_bundle_receive(
         bundle_dir: Path = typer.Argument(..., help="Bundle directory to land."),
         destination: Path = typer.Option(
@@ -276,7 +276,7 @@ def register_bundle_commands(app, get_dependencies):
         _execute(operation, json_output=json_output)
 
 
-    @app.command("transfer-bundle-land")
+    @app.command("bundle-land")
     def transfer_bundle_land(
         bundle_dir: Path = typer.Argument(..., help="Bundle directory this node has received."),
         actor: str | None = typer.Option(
@@ -328,7 +328,7 @@ def register_bundle_commands(app, get_dependencies):
 
 def register_bundle_complete_command(app, get_dependencies):
 
-    @app.command("transfer-bundle-complete")
+    @app.command("bundle-complete")
     def transfer_bundle_complete(
         home: Path = typer.Argument(
             ...,

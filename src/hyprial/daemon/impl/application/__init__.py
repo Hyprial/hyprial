@@ -8,8 +8,6 @@ subpackages and ``hyprial.daemon.impl.ipc``; every method has exactly one
 owner module and reads application state only through ``self``.
 """
 
-
-from __future__ import annotations
 from __future__ import annotations
 import os
 import queue
@@ -22,6 +20,7 @@ from typing import Any
 from uuid import uuid4
 from hyprial.kernel import GenerationScheduler
 from hyprial.daemon.impl.correlation.bounded_cadence  import BoundedCadence
+from hyprial.daemon.impl.service_connect  import CatalogEntry
 from hyprial.daemon.impl.state_persistence  import StatePersistenceAuthority
 from hyprial.daemon.impl.ipc.ipc_request_owner  import IpcRequestOwner
 from hyprial.daemon.impl.dispatch.runtime.diagnostics  import DispatchDiagnostics
@@ -141,12 +140,9 @@ from hyprial.kernel  import CallCostCounters
 from hyprial.daemon.impl.configuration.home_guard  import keepalive_duration_from_environment
 from hyprial.daemon.impl.configuration.home_lease_actor  import HomeLeaseAuthority as ActiveDaemonHeartbeat
 from hyprial.daemon.impl.runtime  import DaemonEventBridge, ReconcileSummary
-from hyprial.daemon.impl.dispatch.admission import (
-    LinkAdmission,
-)
+from hyprial.daemon.impl.dispatch.admission import LinkAdmission
 from hyprial.kernel import RESERVED_AGENT_ACTOR_NAMES
 from hyprial.daemon.impl.operations.top  import InteractiveTurnStats
-
 from hyprial.daemon.impl.application.startup import _StartupMixin
 from hyprial.daemon.impl.application.shutdown import _ShutdownMixin
 from hyprial.daemon.impl.application.wiring.transport import _WiringTransportMixin
@@ -165,9 +161,7 @@ from hyprial.daemon.impl.application.actors.agents_admin.readiness import _Agent
 from hyprial.daemon.impl.application.actors.agents_registry import _AgentsRegistryMixin
 from hyprial.daemon.impl.application.actors.sessions.routes import _SessionRoutesMixin
 from hyprial.daemon.impl.application.actors.sessions.registry import _SessionRegistryMixin
-from hyprial.daemon.impl.application.actors.sessions.turns import (
-    _SessionTurnsMixin,
-)
+from hyprial.daemon.impl.application.actors.sessions.turns import _SessionTurnsMixin
 from hyprial.daemon.impl.application.actors.transfer import _TransferOpsMixin
 from hyprial.daemon.impl.application.actors.transfer_p2 import _TransferP2Mixin
 from hyprial.daemon.impl.application.actors.lifecycle_ops import _LifecycleOpsMixin
@@ -184,18 +178,14 @@ from hyprial.daemon.impl.state_persistence.alarm import (
     StateWriterAlarm,
 )
 from hyprial.daemon.impl.application.messaging.operator_alarm import OperatorAlarmDelivery
-from hyprial.daemon.impl.application.messaging.inbox_surface.history import (
-    _MessageHistoryMixin,
-)
+from hyprial.daemon.impl.application.messaging.inbox_surface.history import _MessageHistoryMixin
 from hyprial.daemon.impl.application.messaging.inbox_surface.queries import (
     _MessageQueriesMixin,
     new_message_wait_slots,
 )
 from hyprial.daemon.impl.application.messaging.status.views import _StatusViewsMixin
 from hyprial.daemon.impl.application.messaging.status.snapshots import _WorkerSnapshotMixin
-from hyprial.daemon.impl.application.messaging.status.refresh import (
-    CoalescedRefreshAuthority,
-)
+from hyprial.daemon.impl.application.messaging.status.refresh import CoalescedRefreshAuthority
 from hyprial.daemon.impl.application.messaging.orgfs_bridge import _OrgFsBridgeMixin
 from hyprial.daemon.impl.application.messaging.work_items import _WorkItemsMixin
 from hyprial.daemon.impl.application.messaging.visibility import _VisibilityMixin
@@ -203,7 +193,6 @@ from hyprial.daemon.impl.application.messaging.maintenance import _MaintenanceMi
 from hyprial.daemon.impl.ipc.router import _IpcDispatchMixin
 from hyprial.daemon.impl.ipc.server import _IpcServerMixin
 from hyprial.daemon.impl.identity import IdentityResolver
-
 from hyprial.daemon.impl.application.netendpoints.endpoints import (
     _lock_wait_timeout as _lock_wait_timeout,
     _zenoh_endpoints as _zenoh_endpoints,
@@ -231,7 +220,6 @@ from hyprial.daemon.impl.application.wiring.transport import (
 )
 from hyprial.daemon.impl.ipc.router import _IPC_STATS_METHODS as _IPC_STATS_METHODS
 from hyprial.daemon.impl.ipc.server import _write_ipc_response as _write_ipc_response
-
 
 from hyprial.daemon.impl.application.actors.sessions.routes import _InteractiveRouteEffectGate
 from hyprial.daemon.impl.application.messaging.delivery.lark import _RouteGatewayCache
@@ -348,6 +336,8 @@ class DaemonApplication(
         forwarding_automatic: AutomaticForwarding | None = None,
         forwarding_unavailable: str | None = None,
         hook_consumers: HookConsumersFactory | None = None,
+        service_discovery: Callable[[], tuple[CatalogEntry, ...]] | None = None,
+        legacy_timer_home: Path | None = None,
     ) -> None:
         self.state_dir = Path(state_dir)
         self._agent_bot_attempts = AgentBotAttemptLedger(
@@ -496,6 +486,7 @@ class DaemonApplication(
         self._routine_template_renderer = routine_template_renderer
         self._hook_consumers_factory = hook_consumers
         self._hook_consumers: Mapping[str, Any] | None = None
+        self._service_discovery = service_discovery
         self._routine_coordinator: Any | None = None
         self._routine_legacy_lock = threading.RLock()
         self._pac_notification_io: InboxDeliveryIoAdapter | None = None
@@ -796,6 +787,17 @@ class DaemonApplication(
             internal_actors=RESERVED_AGENT_ACTOR_NAMES,
             logger=self._log,
         )
+        try:
+            from hyprial.daemon.impl.upgrade import upgrade_step_status
+
+            upgrade_status = upgrade_step_status(self.state_dir)
+            pending_steps = upgrade_status["pending"]
+            legacy_files = upgrade_status.get("legacyArgvFiles", [])
+        except Exception:  # noqa: BLE001 - startup inspection is diagnostic only
+            pending_steps = []
+            legacy_files = []
+        self._pending_upgrade_steps = pending_steps
+        self._legacy_upgrade_files = legacy_files
         if keep_migration.migrated:
             self._log(
                 "info",
@@ -833,7 +835,7 @@ class DaemonApplication(
         # idempotent replay of the same send still opens it).  Epoch-scoped
         # like the counters; the durable record stays daemon.jsonl.
         self._dispatch_gate_conversations: dict[str, str] = {}
-        # Subscription quota cache for `hyprial top`: refreshed by a background
+        # Subscription quota cache for `hyprial agent top`: refreshed by a background
         # thread (started in run()), read-only on every IPC path.  Injected
         # by from_environment so directly-constructed test applications never
         # start a network-touching refresher.
@@ -948,6 +950,7 @@ class DaemonApplication(
         quota_hook_consumer_factory: QuotaHookConsumerFactory | None = None,
         reply_reminder_consumer_factory: ReplyReminderConsumerFactory | None = None,
         hook_consumers: HookConsumersFactory | None = None,
+        service_discovery: Callable[[], tuple[CatalogEntry, ...]] | None = None,
     ) -> DaemonApplication:
         node_id = resolve_node_id()
         zenoh_listen = _endpoint_list("HYPRIAL_ZENOH_LISTEN")
@@ -982,6 +985,7 @@ class DaemonApplication(
             quota_hook_consumer_factory=quota_hook_consumer_factory,
             reply_reminder_consumer_factory=reply_reminder_consumer_factory,
             hook_consumers=hook_consumers,
+            service_discovery=service_discovery,
             routine_runtime_factory=routine_runtime_factory,
             routine_text_loader=routine_text_loader,
             routine_template_renderer=routine_template_renderer,
@@ -990,6 +994,7 @@ class DaemonApplication(
             forwarding_policy=policy,
             forwarding_automatic=automatic,
             forwarding_unavailable=unavailable,
+            legacy_timer_home=Path.home(),
         )
         app.network_isolated = isolated
         return app

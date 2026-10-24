@@ -1,6 +1,6 @@
 """The ``@deepseek-ai/dsh-mcp-client`` patch row shared by every dsh launch.
 
-The interactive launcher (``hyprial start dsh``) and the headless SDK launch
+The interactive launcher (``hyprial agent start dsh``) and the headless SDK launch
 (#1582, ``dsh_sdk/mcp_patch.py``) both mount a Hyprial stdio MCP server
 through this row; one builder keeps the two from drifting.
 

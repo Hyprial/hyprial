@@ -12,10 +12,10 @@ from hyprial.kernel import DaemonRequestError, ipc_errors, parse_agent_uri
 from hyprial.shell.impl.cli.commands.common.services import get_services
 from hyprial.shell.impl.cli.commands.common.support import JsonObject
 
-from hyprial.shell.impl.cli.commands.agent.admin import agent_app, migration_app
+from hyprial.shell.impl.cli.commands.agent.admin import agent_app, home_app, migration_app
 
 
-@agent_app.command("home-census")
+@home_app.command("census")
 def agent_home_census(
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:

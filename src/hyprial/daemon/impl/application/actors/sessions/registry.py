@@ -465,7 +465,7 @@ class _SessionRegistryMixin:
                     raise DaemonRequestError(
                         ipc_errors.RESUME_OUTCOME_UNKNOWN,
                         "guarded resume Session may or may not be committed; "
-                        "authoritative Session read-back failed. Check `hyprial ps` "
+                        "authoritative Session read-back failed. Check `hyprial daemon status` "
                         f"for actor {actor!r} and sessionRef {command.session_ref!r} "
                         f"before retrying: {read_error}",
                     ) from read_error
@@ -501,7 +501,7 @@ class _SessionRegistryMixin:
                         "command did not prove rejection and the authoritative "
                         "Session read-back is empty or still old. The Agent was not "
                         "restored because the Session may still commit. Check "
-                        f"`hyprial ps` and the session list for actor {actor!r} and "
+                        f"`hyprial daemon status` and the session list for actor {actor!r} and "
                         f"sessionRef {command.session_ref!r} before retrying",
                     ) from session_error
                 try:
@@ -634,7 +634,7 @@ class _SessionRegistryMixin:
                         f"pin target {value!r} does not resolve to an agent "
                         f"on this machine; the pin is kept unmigrated and is "
                         f"NOT routing. Create the agent ('hyprial agent create "
-                        f"--name {value}' or 'hyprial start') and it migrates "
+                        f"--name {value}' or 'hyprial agent start') and it migrates "
                         f"immediately, or drop it with 'hyprial adapter unpin "
                         f"{adapter}'"
                     ),

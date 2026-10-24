@@ -9,6 +9,7 @@ import typer
 
 from hyprial.biz import state_dir
 from hyprial.identity import PacError
+from hyprial.kernel import ipc_errors
 from hyprial.shell.impl.cli.commands.common.services import get_services
 from hyprial.shell.impl.cli.commands.workflow.internal.expansion import (
     render_workflow_status,
@@ -20,20 +21,6 @@ from hyprial.shell.impl.cli.commands.workflow.run import (
     _call, _call_result, _identity, history_app, workflow_app,
 )
 
-
-@workflow_app.command("status")
-def status(
-    run_id: str = typer.Argument(..., help="PAC graph ID."),
-    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
-):
-    """Read graph state, nodes, requests and evidence references."""
-    services = get_services()
-
-    def operation() -> CliResult:
-        result = _call_result("workflow.status", {"runId": run_id})
-        return CliResult(result, render=render_workflow_status)
-
-    services._execute(operation, json_output=json_output)
 
 @workflow_app.command("list")
 def list_workflows(
@@ -82,14 +69,50 @@ def inspect(
     node: str | None = typer.Option(
         None, "--node", help="Inspect one graph node by ID."
     ),
+    context: bool = typer.Option(
+        False,
+        "--context",
+        help="With --node, print that node's immutable workflow context.",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ):
-    """Inspect a graph or one node without changing it."""
-    _call(
-        "workflow.node.inspect" if node else "workflow.status",
-        {"runId": run_id, **({"target": node} if node else {})},
-        json_output=json_output,
-    )
+    """Inspect a graph, one node, or (--node --context) one node's context."""
+    services = get_services()
+
+    def operation():
+        from hyprial.daemon import node_context
+
+        if context:
+            if node is None:
+                raise services.CliError(
+                    ipc_errors.INVALID_ARGUMENT, "--context requires --node"
+                )
+            document = node_context(
+                state_dir() / "pac-graph.sqlite3", run_id, node
+            )
+            return CliResult(document, render=_render_context(run_id, node))
+        if node is None:
+            return CliResult(
+                _call_result("workflow.status", {"runId": run_id}),
+                render=render_workflow_status,
+            )
+        return _call_result(
+            "workflow.node.inspect", {"runId": run_id, "target": node}
+        )
+
+    services._execute(operation, json_output=json_output)
+
+def _render_context(graph_id: str, node_id: str):
+    def render(document: Any) -> str:
+        activation = document["currentActivation"]
+        return "\n".join([
+            f"graph {graph_id} node {node_id} version {document['version']} cursor {document['cursor']}",
+            f"brief: {document['briefRef']}",
+            f"completedCount: {document['completedCount']}",
+            f"currentActivation: {activation['round'] if activation is not None else 'none'}",
+        ])
+
+    return render
 
 @workflow_app.command("cancel")
 def cancel(
@@ -150,30 +173,6 @@ def _render_event(item: Any) -> str:
     if "seq" in item and "type" in item:
         return f"#{item['seq']} {item['type']} {item['graphId']}"
     return render_generic(item)
-
-@workflow_app.command("context")
-def context(
-    graph_id: str = typer.Argument(..., help="Graph id."),
-    node_id: str = typer.Argument(..., help="Node id."),
-    json_output: bool = typer.Option(False, "--json", help="Emit stable context JSON."),
-):
-    """Read one node's immutable workflow context."""
-    from hyprial.daemon import node_context
-
-    def render(document: Any) -> str:
-        activation = document["currentActivation"]
-        return "\n".join([
-            f"graph {graph_id} node {node_id} version {document['version']} cursor {document['cursor']}",
-            f"brief: {document['briefRef']}",
-            f"completedCount: {document['completedCount']}",
-            f"currentActivation: {activation['round'] if activation is not None else 'none'}",
-        ])
-
-    def operation() -> CliResult:
-        document = node_context(state_dir() / "pac-graph.sqlite3", graph_id, node_id)
-        return CliResult(document, render=render)
-
-    get_services()._execute(operation, json_output=json_output)
 
 @history_app.command("list")
 def history_list(

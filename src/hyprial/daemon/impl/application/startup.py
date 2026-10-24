@@ -453,14 +453,22 @@ class _StartupMixin:
 
     def _migrate_logs_at_startup(self) -> None:
         result = migrate_pre_trajectory_logs(self.state_dir)
-        if result is None:
-            return
-        self._log(
-            "info",
-            "daemon",
-            "logs.migrated",
-            fileCount=result.file_count,
-        )
+        if result is not None:
+            self._log(
+                "info",
+                "daemon",
+                "logs.migrated",
+                fileCount=result.file_count,
+            )
+        if self._pending_upgrade_steps or self._legacy_upgrade_files:
+            self._log(
+                "warn",
+                "daemon",
+                "upgrade.steps.pending",
+                steps=self._pending_upgrade_steps,
+                legacyArgvFiles=self._legacy_upgrade_files,
+                detail="run `hyprial daemon upgrade` or `hyprial doctor --fix`",
+            )
 
     def _warn_if_worker_proxy_absent(self) -> None:
         """One warning when model-vendor workers will connect directly.

@@ -50,7 +50,7 @@ Deliberately absent from :class:`Agent`:
     A harness is a *runtime binding*, not configuration. An agent may start on
     ``claude`` and be swapped to ``pi`` mid-life without touching a byte of its
     record; only ``harness_args`` (how to launch under each harness) and
-    ``preferred_harness`` (a default for ``hyprial start``) are persisted here.
+    ``preferred_harness`` (a default for ``hyprial agent start``) are persisted here.
 ``state``
     There is no ``retired`` state. Existing means active; ``destroy`` deletes
     (design §6.3, decision A6) — irreversibly, with no tombstone.
@@ -219,7 +219,7 @@ class Agent:
 
     # -- per-harness launch arguments; NOT "which harness is current" --
     harness_args: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
-    #: Only a default for ``hyprial start``; any harness may override it.
+    #: Only a default for ``hyprial agent start``; any harness may override it.
     preferred_harness: str | None = None
 
     # -- last session clues, for the A9 handover notice after a harness swap --

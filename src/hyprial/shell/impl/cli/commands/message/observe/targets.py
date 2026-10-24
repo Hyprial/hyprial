@@ -1,4 +1,4 @@
-"""The ``hyprial targets`` delivery-target overview command."""
+"""The ``hyprial message targets`` delivery-target overview command."""
 
 from __future__ import annotations
 
@@ -10,13 +10,16 @@ from typing import Any
 from hyprial.kernel import ipc_errors
 import typer
 
-from hyprial.shell.impl.cli.commands.common.root import app
 from hyprial.shell.impl.cli.commands.common.support import JsonObject
-_TARGETS_KIND_OPTIONS = ("agent", "user", "channel_route")
+from hyprial.shell.impl.cli.commands.message import message_app
+# Allen/R2 (B9): the CLI filter vocabulary drops ``channel_route``; configured
+# outbound routes are managed through ``adapter route list``.  An unfiltered
+# ``message targets`` may still surface channel-route rows from the daemon.
+_TARGETS_KIND_OPTIONS = ("agent", "user")
 
 
 def _render_targets(rows: list[JsonObject]) -> str:
-    """Plain-text table in the ``hyprial top`` style: preamble, header, columns.
+    """Plain-text table in the ``hyprial agent top`` style: preamble, header, columns.
 
     targets lists delivery promises only (Allen's definition), so every row
     is deliverable by construction; the KIND column stays because user and
@@ -38,7 +41,7 @@ def _render_targets(rows: list[JsonObject]) -> str:
         max([len(headers[index]), *(len(row[index]) for row in cells)])
         for index in range(len(headers))
     ]
-    lines = [f"hyprial targets   {len(rows)} targets"]
+    lines = [f"hyprial message targets   {len(rows)} targets"]
     lines.append(
         "  ".join(
             header.ljust(widths[index]) for index, header in enumerate(headers)
@@ -53,19 +56,19 @@ def _render_targets(rows: list[JsonObject]) -> str:
     return "\n".join(lines)
 
 
-@app.command()
-def targets(
+@message_app.command("targets")
+def message_targets(
     kind: str | None = typer.Option(
-        None, "--kind", help="Filter: agent, user, or channel_route."
+        None, "--kind", help="Filter: agent or user."
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
     """List live delivery targets.
 
-    A target is a delivery promise (Allen): connectors (``agent``), owners
-    with a completed squire profile (``user``), and configured outbound
-    routes (``channel_route``).  Nodes are network peers, not targets —
-    see ``hyprial hosts`` for node visibility.
+    A target is a delivery promise (Allen): connectors (``agent``) and owners
+    with a completed squire profile (``user``).  Configured outbound
+    ``channel_route`` entries are managed through ``adapter route list``.
+    Nodes are network peers, not targets — see ``hyprial host list``.
     """
     services = get_services()
 
@@ -74,7 +77,7 @@ def targets(
         if kind is not None and kind not in _TARGETS_KIND_OPTIONS:
             raise services.CliError(
                 ipc_errors.INVALID_ARGUMENT,
-                "--kind must be agent, user, or channel_route",
+                "--kind must be agent or user",
             )
         params: JsonObject = {}
         if kind is not None:

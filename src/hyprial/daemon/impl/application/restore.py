@@ -17,6 +17,7 @@ from hyprial.identity import (
 from hyprial.identity import (
     RestorePolicyError,
     desired_generation,
+    is_inactive,
 )
 from hyprial.kernel import DaemonStartupPhase
 from hyprial.kernel import PortAdmission
@@ -346,12 +347,17 @@ class _RestoreMixin:
                 else agent.created_at_ms
             )
             idle_age_ms = max(0, now_ms - effective_activity)
+            inactive = is_inactive(
+                effective_activity,
+                now_ms=now_ms,
+                threshold_ms=policy.threshold_ms,
+            )
             should_restore = (
                 blocked
                 or override != "none"
                 or (
                     agent_policy != "never"
-                    and (activity_unknown or idle_age_ms <= policy.threshold_ms)
+                    and (activity_unknown or not inactive)
                 )
             )
             if should_restore:

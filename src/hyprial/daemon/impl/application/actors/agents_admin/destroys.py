@@ -88,7 +88,7 @@ class _AgentDestroyMixin:
         something speaking for this actor right now? A dead connector never
         objects, so a crash self-heals without operator action.
 
-        The same harness objects too, not just a different one: ``hyprial start``
+        The same harness objects too, not just a different one: ``hyprial agent start``
         does not attach to a running agent, full stop. Re-running it is an
         error that names the remedy rather than a silent no-op.
         """

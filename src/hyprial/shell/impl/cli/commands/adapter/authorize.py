@@ -1,4 +1,4 @@
-"""``hyprial adapter authorize`` interactive flow."""
+"""``hyprial adapter scopes authorize`` interactive flow."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from hyprial.kernel import ipc_errors
 import os
 import typer
 
-from hyprial.shell.impl.cli.commands.adapter.admin import _verification_expiry, adapter_app
+from hyprial.shell.impl.cli.commands.adapter.admin import _verification_expiry, scopes_app
 from hyprial.shell.impl.cli.commands.common.support import JsonObject
 def _present_authorization_prompt(
     prompt: Any,
@@ -127,14 +127,14 @@ def _authorize_interactively(name: str, capabilities: Sequence[str]) -> JsonObje
             else {}
         ),
         "nextStep": (
-            f"Run 'hyprial adapter doctor {name}' to confirm the tenant grants; "
+            f"Run 'hyprial adapter scopes check {name}' to confirm the tenant grants; "
             "grants take effect on the Lark side, and 'hyprial adapter reload' "
             "covers any local config change -- no daemon restart is needed."
         ),
     }
 
 
-@adapter_app.command("authorize")
+@scopes_app.command("authorize")
 def adapter_authorize(
     name: str = typer.Argument(..., help="Configured Lark adapter name."),
     interactive: bool = typer.Option(
@@ -148,7 +148,7 @@ def adapter_authorize(
         "--capability",
         help="Optional gateway capability to add to an --interactive request; "
         "repeatable. Required capabilities are always included. See "
-        "'hyprial adapter doctor <name>' for the capability ids.",
+        "'hyprial adapter scopes check <name>' for the capability ids.",
     ),
     scope: list[str] = typer.Option(
         [],
@@ -247,9 +247,9 @@ def adapter_authorize(
                 if result.get("ok")
                 else {
                     "nextStep": (
-                        f"Run 'hyprial adapter doctor {name}' to see which "
+                        f"Run 'hyprial adapter scopes check {name}' to see which "
                         "capabilities are undeclared, then 'hyprial adapter "
-                        f"authorize {name} --interactive' to declare and "
+                        f"scopes authorize {name} --interactive' to declare and "
                         "authorize them with one link."
                     )
                 }

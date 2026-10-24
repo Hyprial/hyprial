@@ -228,7 +228,7 @@ def user_proxy_setup(
                     "AGENT_ALREADY_RUNNING",
                     f"user-proxy {proxy_name!r} is running with route "
                     f"{stored_route!r}, not {route_uri!r}; run "
-                    f"'hyprial down user-proxy {proxy_name}' before changing it",
+                    f"'hyprial agent stop {proxy_name}' before changing it",
                 )
 
         changed: list[str] = []

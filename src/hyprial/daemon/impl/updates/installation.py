@@ -321,7 +321,7 @@ def retired_track_warning(hyprial_home: Path) -> str | None:
         record = None
     except (OSError, json.JSONDecodeError):
         findings.append(
-            "settings.json is unreadable; hyprial upgrade will refuse until it parses"
+            "settings.json is unreadable; hyprial daemon upgrade will refuse until it parses"
         )
         record = None
     if isinstance(record, dict):
@@ -336,7 +336,7 @@ def retired_track_warning(hyprial_home: Path) -> str | None:
                 findings.append(
                     f"updateTrack {value!r} is not one of "
                     f"{', '.join(TRACK_TAGS)}; "
-                    "hyprial upgrade will refuse until it is fixed"
+                    "hyprial daemon upgrade will refuse until it is fixed"
                 )
             elif resolved != value:
                 findings.append(
@@ -493,7 +493,7 @@ def uv_tool_dir_guard(
     spellings (/tmp vs /private/tmp) compare equal.  This is the backstop
     guard: it fires even when the scheduler-level and source-level guards
     were bypassed, which is why it lives at the single ``uv tool install``
-    call site shared by ``hyprial upgrade`` and the autoupdate child.
+    call site shared by ``hyprial daemon upgrade`` and the autoupdate child.
     """
 
     resolution = resolve_uv_tool_dir(environ, runner)

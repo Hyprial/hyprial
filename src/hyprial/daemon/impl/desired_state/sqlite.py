@@ -535,7 +535,7 @@ class DesiredStateSqliteShadow:
         directions answered per candidate source): an agents row does not
         imply its harness ever started.  (1) Rows are created by ONE
         deliberately shared path -- the ``agent.create`` IPC, which
-        ``hyprial start`` calls FIRST ("a connector can never exist without an
+        ``hyprial agent start`` calls FIRST ("a connector can never exist without an
         identity") and which also creates rows for agents whose harness
         never started; the schema (agents.registry) has no source/creator
         column, so "who built this row" is not recoverable.  (2) created_at
@@ -552,7 +552,7 @@ class DesiredStateSqliteShadow:
         long-running harness whose only successes predate the journal,
         then a restart that crashes between commit and confirm, falls to
         the delete rule and loses the intent -- recovery is a fresh
-        ``hyprial start``) is recorded as a known limitation in the PR
+        ``hyprial agent start``) is recorded as a known limitation in the PR
         description.
         """
 

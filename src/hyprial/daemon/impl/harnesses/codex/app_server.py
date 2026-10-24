@@ -185,6 +185,7 @@ class CodexInteractiveAppServer:
                     launch_environment, command[0]
                 ),
                 read_only=authority_prepared,
+                shared_credential=shared_credential,
             )
         self.config_args = tuple(config_args)
         if self._native_root is not None:

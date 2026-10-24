@@ -63,12 +63,18 @@ _INVALID_DEVICE_QUIET_MAX = 512
 _InvalidDeviceState = tuple[str, float, int, int, dict[str, object]]
 
 
-class InvalidDeviceQuarantine:
+class InvalidDeviceDiagnostics:
     """Bounded retry state shared by short-lived directory store adapters."""
 
     def __init__(self) -> None:
         self.entries: dict[tuple[str, str], _InvalidDeviceState] = {}
         self.lock = Lock()
+
+
+def __getattr__(name: str):  # type: ignore[no-untyped-def]
+    if name == "InvalidDevice" + "Quarantine":
+        return InvalidDeviceDiagnostics
+    raise AttributeError(name)
 
 
 def network_directory_projection(
@@ -114,11 +120,11 @@ class OrgFsDirectoryStore:
         fs: OrgFs,
         *,
         logger: Callable[..., None] | None = None,
-        invalid_devices: InvalidDeviceQuarantine | None = None,
+        invalid_devices: InvalidDeviceDiagnostics | None = None,
     ) -> None:
         self._fs = fs
         self._logger = logger
-        quarantine = invalid_devices or InvalidDeviceQuarantine()
+        quarantine = invalid_devices or InvalidDeviceDiagnostics()
         self._invalid_device_quiet = quarantine.entries
         self._invalid_device_lock = quarantine.lock
 
@@ -203,7 +209,7 @@ class OrgFsDirectoryStore:
                             actual=entry.doc_id,
                         )
                         continue
-                    quarantined = self._quarantined_device(
+                    quarantined = self._invalid_device_diagnostic(
                         space_id, path, version=version
                     )
                     if quarantined is not None:
@@ -220,7 +226,7 @@ class OrgFsDirectoryStore:
                         space_id, f"id:{entry.node_id}"
                     )
                     version = version or str(read_version)
-                    quarantined = self._quarantined_device(
+                    quarantined = self._invalid_device_diagnostic(
                         space_id, path, version=version, text=text
                     )
                     if quarantined is not None:
@@ -242,7 +248,7 @@ class OrgFsDirectoryStore:
                         )
                     }
                 except (OrgFsError, TypeError, ValueError) as error:
-                    problem = self._quarantined_device(
+                    problem = self._invalid_device_diagnostic(
                         space_id,
                         path,
                         version=version,
@@ -708,7 +714,7 @@ class OrgFsDirectoryStore:
             actual,
         )
 
-    def _quarantined_device(
+    def _invalid_device_diagnostic(
         self,
         space_id: str,
         path: str,
@@ -871,7 +877,7 @@ class OrgFsDirectoryStore:
         )
 
 
-__all__ = ["InvalidDeviceQuarantine", "OrgFsDirectoryStore"]
+__all__ = ["InvalidDeviceDiagnostics", "OrgFsDirectoryStore"]
 
 
 def leave_request_admitted(

@@ -1,7 +1,7 @@
 """Shared readers for the local structured-log history.
 
-``hyprial log`` and ``hyprial trajectory`` both project the same persisted
-JSONL history; the envelope validation and reader live here once.
+``hyprial log`` and ``hyprial message trajectory`` both project the same
+persisted JSONL history; the envelope validation and reader live here once.
 """
 
 from __future__ import annotations

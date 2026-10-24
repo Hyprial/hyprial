@@ -75,7 +75,7 @@ STEPS: tuple[OnboardingStep, ...] = (
         ("squire",),
         True,
         "创建/接入飞书 App",
-        "hyprial adapter onboard <name>",
+        "hyprial adapter add <name>",
     ),
     OnboardingStep(
         "lark-authorize",
@@ -83,7 +83,7 @@ STEPS: tuple[OnboardingStep, ...] = (
         ("lark-app",),
         True,
         "租户授权 scopes",
-        "hyprial adapter authorize <name> --interactive",
+        "hyprial adapter scopes authorize <name> --interactive",
     ),
     OnboardingStep(
         "lark-route",
@@ -107,7 +107,7 @@ STEPS: tuple[OnboardingStep, ...] = (
         ("lark-authorize", "lark-pin", "lark-route"),
         False,
         "双向消息冒烟",
-        "hyprial send … / 等待回执",
+        "hyprial message send … / 等待回执",
     ),
 )
 

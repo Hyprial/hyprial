@@ -23,6 +23,28 @@ RESTORE_THRESHOLD_MS = 12 * 60 * 60 * 1_000
 RESTORE_POLICIES = frozenset({"active", "always", "never"})
 
 
+def is_inactive(
+    last_activity_at_ms: int | None,
+    *,
+    now_ms: int,
+    threshold_ms: int,
+) -> bool:
+    """Whether known activity is strictly older than the supplied threshold.
+
+    Equality stays active: restore policy already promises to restore agents
+    whose idle age is *at most* its threshold.  Callers inject ``now_ms`` so
+    restore, listing, diagnostics, and tests share the same clock boundary.
+    Unknown activity is not declared inactive.
+    """
+
+    if threshold_ms < 0:
+        raise ValueError("inactivity threshold must not be negative")
+    return (
+        last_activity_at_ms is not None
+        and now_ms - last_activity_at_ms > threshold_ms
+    )
+
+
 class RestorePolicyError(ValueError):
     """The restore policy could not be read or written without guessing."""
 
@@ -626,4 +648,5 @@ __all__ = [
     "RestorePolicyError",
     "RestorePolicyProjection",
     "desired_generation",
+    "is_inactive",
 ]

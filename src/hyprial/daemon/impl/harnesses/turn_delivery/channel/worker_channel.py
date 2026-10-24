@@ -54,20 +54,19 @@ WORKER_CLI_ALLOW_TOOLS = ("Bash(hyprial:*)",)
 
 #: Product commands that change daemon, org, or home state.  Allen 2026-10-17:
 #: allow the CLI but deny these, because ``Bash(hyprial:*)`` also matches
-#: ``hyprial restart``.  Claude Code evaluates deny before allow, so the
-#: overlapping allow cannot carve an exception out of these rules.  The same
-#: ruling tightened the list: ``down``/``upgrade`` are deploy and operations
-#: work that belongs to the infra controlled window, and ``agent destroy`` is
-#: destructive.  ``daemon`` stays as-is -- its read-only ``status`` is denied
-#: with the rest, which Allen accepted.  Keep these sorted.
+#: ``hyprial daemon restart``. Claude Code evaluates deny before allow, so the
+#: overlapping allow cannot carve an exception out of these rules. The same
+#: ruling tightened the list: ``agent stop``/``upgrade`` are deploy and
+#: operations work that belongs to the infra controlled window, and
+#: ``agent destroy`` is destructive. ``daemon`` stays as-is -- its read-only
+#: ``status`` is denied with the rest, which Allen accepted. Keep these sorted.
 WORKER_CLI_DENY_TOOLS = (
     "Bash(hyprial agent destroy:*)",
+    "Bash(hyprial agent stop:*)",
+    "Bash(hyprial daemon upgrade:*)",
     "Bash(hyprial daemon:*)",
-    "Bash(hyprial down:*)",
     "Bash(hyprial init:*)",
     "Bash(hyprial org:*)",
-    "Bash(hyprial restart:*)",
-    "Bash(hyprial upgrade:*)",
 )
 
 
@@ -154,10 +153,11 @@ def build_worker_channel(
 ) -> WorkerChannel:
     """Compose the worker's harness-bridge stdio server pinned to this daemon.
 
-    The server runs ``hyprial mcp agent-channel`` with the worker's canonical actor
-    and a fresh session ref; its environment is sourced from the daemon (not the
-    worker's inherited environment) so the stdio child always targets this
-    daemon's socket even under an ambient production override.
+    The server runs the module-private ``hyprial.daemon.impl.mcp.entry
+    agent-channel`` process with the worker's canonical actor and a fresh
+    session ref; its environment is sourced from the daemon (not the worker's
+    inherited environment) so the stdio child always targets this daemon's
+    socket even under an ambient production override.
     """
 
     if not actor or not session_ref:
@@ -167,8 +167,7 @@ def build_worker_channel(
         "command": python_executable or sys.executable,
         "args": [
             "-m",
-            "hyprial.cli",
-            "mcp",
+            "hyprial.daemon.impl.mcp.entry",
             "agent-channel",
             "--actor",
             actor,

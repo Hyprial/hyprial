@@ -435,7 +435,7 @@ def ensure_notify_anchor_canonical(
     so its state must live at the machine-global anchor.  A check running
     under an isolated HYPRIAL_HOME that nonetheless pushes a link would mint a
     flow whose completion state sits in a throwaway directory: the human
-    clicks, and no normally-run ``hyprial lark-auth complete`` can find the
+    clicks, and no normally-run ``hyprial adapter user-auth complete`` can find the
     pending code.  Local-only degradation (no route/sender) is always fine --
     it cannot orphan a flow.  Anything else fails loudly, here, at mint time,
     naming both anchors and the fix, instead of leaving a comment for a
@@ -451,7 +451,7 @@ def ensure_notify_anchor_canonical(
         "refusing to push an authorization link from a non-canonical state "
         f"anchor: {state_path} (canonical: {canonical_path}). A link pushed "
         "from here mints a device flow whose pending state lives in this "
-        "isolated home, while a normally-run `hyprial lark-auth complete` reads "
+        "isolated home, while a normally-run `hyprial adapter user-auth complete` reads "
         "the canonical anchor -- the human would click a link nobody can "
         "complete. Fix one of: run this command without HYPRIAL_HOME / "
         "HARNESS_STATE_DIR overrides, or drop --notify-route / "

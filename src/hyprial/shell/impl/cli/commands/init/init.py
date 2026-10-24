@@ -17,6 +17,7 @@ import os
 import typer
 
 from hyprial.shell.impl.cli.commands.common.root import app
+from hyprial.shell.impl.cli.output import confirm
 from hyprial.shell.impl.cli.commands.common.support import DAEMON_START_IDLE_BUDGET_SECONDS, JsonObject, _INIT_READY_TIMEOUT_ENV, _announce_setup_guidance, _append_warning, _squire_setup_warning
 
 
@@ -82,7 +83,7 @@ def _org_init_warning(warning: JsonObject | None) -> JsonObject | None:
     if isinstance(count, int) and not isinstance(count, bool) and count > 0:
         return {
             "code": "ORG_CONTEXT_CANDIDATES_RECEIVED",
-            "message": f"收到 {count} 个候选,hyprial org status 查看",
+            "message": f"收到 {count} 个候选,hyprial org context status 查看",
             "candidateCount": count,
         }
     return warning
@@ -209,6 +210,14 @@ def init(
         ),
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+    service: bool | None = typer.Option(
+        None,
+        "--service/--no-service",
+        help=(
+            "Install the per-user launchd/systemd service. Without either flag, "
+            "interactive init offers once and non-interactive init leaves it unchanged."
+        ),
+    ),
     ready_timeout: float = typer.Option(
         # ① is a constant boundary -- socket bound, accept running, ping
         # answerable -- but reaching it crosses named startup phases.  This is
@@ -270,6 +279,16 @@ def init(
         finally:
             for transaction in held_identity_transaction:
                 transaction.close()
+        requested = service
+        if requested is None and not json_output and services._stdin_isatty():
+            requested = confirm("Install the Hyprial daemon as a per-user service?")
+        if requested:
+            from hyprial.shell.impl.cli.commands.daemon.service import (
+                _install_status,
+                _run_service,
+            )
+
+            result["service"] = _run_service(_install_status)
         if not json_output:
             _announce_setup_guidance(result)
         return result

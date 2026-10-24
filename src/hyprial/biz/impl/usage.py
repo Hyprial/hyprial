@@ -1,4 +1,4 @@
-"""Subscription quota collection for ``hyprial top`` (background-refreshed, cache-read).
+"""Subscription quota collection for ``hyprial agent top`` (background-refreshed, cache-read).
 
 Design contract (all four are load-bearing):
 
@@ -417,7 +417,7 @@ def collect_codex(
 
 # Two independent credential sets exist on a pi-managed machine, refreshed
 # independently: pi keeps its own (self-refreshing while any kimi worker
-# runs -- exactly the population `hyprial top` observes), the kimi CLI keeps
+# runs -- exactly the population `hyprial agent top` observes), the kimi CLI keeps
 # its 900s one.  Prefer pi's; fall back to the CLI's; only when both are
 # expired does the source read n/a.  The field names differ between the two
 # files, and pi's `expires` has been observed in MILLISECONDS -- normalize

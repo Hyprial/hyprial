@@ -24,8 +24,8 @@
  *      new session and drops unconfirmed reports);
  *   5. after the turn ends, asks `message.settle_hint` for every injected id
  *      and obeys it: "ack" -> `message.ack`, "keep" -> send nothing. The
- *      carrier never replies on anyone's behalf and injects a summary only;
- *      the body is read on demand by the model through the harness tools;
+ *      carrier never replies on anyone's behalf; the daemon-rendered batch
+ *      already carries each inline body or the one spill-file path;
  *   6. unregisters on `session_shutdown`.
  *
  * Fence semantics inherited from the Claude Channel carrier:
@@ -81,7 +81,6 @@ const MAX_INJECT_RETRIES = 2;
 const CODE_SUPERSEDED = "SESSION_SUPERSEDED";
 const CODE_STALE = "STALE_SESSION";
 const CODE_ACK_UNAVAILABLE = "MESSAGE_ACK_UNAVAILABLE";
-const SUMMARY_FREE = "(none; the sender gave no summary)";
 const REPORT_RETRY_CAP_MS = 5000; // ceiling of the turn-report retry backoff
 
 interface TurnReport {
@@ -330,8 +329,8 @@ export default function (pi: ExtensionAPI) {
           ...(processIdentity
             ? { processPid: process.pid, processIdentity }
             : {}),
-          // Detached-tmux launches (`hyprial start pi --tmux`, #218): the daemon
-          // records the session name so `hyprial ps` shows where to attach. This
+          // Detached-tmux launches (`hyprial agent start pi --tmux`, #218): the daemon
+          // records the session name so `hyprial daemon status` shows where to attach. This
           // carrier is in-process: its lifetime already equals the pane's, and
           // session_shutdown unregisters best-effort (the TTL reclaims the rest).
           ...(identity.tmuxSession ? { tmuxSession: identity.tmuxSession } : {}),

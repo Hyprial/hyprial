@@ -676,10 +676,15 @@ class _LifecycleOpsMixin:
 
     def _ipc_down(self, params) -> Any:
         state = self.desired_state.load()
+        agents_only = params.get("agentsOnly") is True
         removed: list[str] = []
         if params.get("all") is True:
             for spec in state.harnesses:
-                if spec.harness == "lark" and self._lark_client is not None:
+                if spec.harness == "lark":
+                    # Adapters are never agents: `agent stop` is agents-only and
+                    # leaves adapter lifecycle to `adapter stop`.
+                    if agents_only or self._lark_client is None:
+                        continue
                     self._lark_client.stop(spec.name)
                 else:
                     operation_id = f"lifecycle-down:{uuid4().hex}"
@@ -698,6 +703,8 @@ class _LifecycleOpsMixin:
             target = _required_string(params.get("target"), "target")
             harness = params.get("provider")
             for spec in state.harnesses:
+                if agents_only and spec.harness == "lark":
+                    continue
                 if (
                     harness is None
                     and target in {spec.name, f"{spec.harness}:{spec.name}"}

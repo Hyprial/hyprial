@@ -85,23 +85,24 @@ class TransferCommands:
 
 
 def register_transfer_commands(
-    app: typer.Typer,
+    agent_app: typer.Typer,
+    agent_transfer_app: typer.Typer,
     transfer_runtime_app: typer.Typer,
     get_dependencies: Callable[[], TransferCliDependencies],
 ) -> TransferCommands:
-    """Register the family at the caller's original composition position."""
+    """Register the family: ``agent move`` plus the hidden ``agent transfer`` group."""
     callbacks: dict[str, Any] = {}
     # Original statement order: transfer_runtime commands, transfer +
     # parse_depends, bundle export/validate/receive/land, credential
     # seal/open, bundle complete, trust-source enrollment, then the hidden
     # receive-side commands.
     callbacks.update(runtime.register_runtime_commands(transfer_runtime_app, get_dependencies))
-    callbacks.update(move.register_session_commands(app, get_dependencies))
-    callbacks.update(bundle.register_bundle_commands(app, get_dependencies))
-    callbacks.update(credentials.register_credential_commands(app, get_dependencies))
-    callbacks.update(bundle.register_bundle_complete_command(app, get_dependencies))
-    callbacks.update(trust.register_trust_commands(app, get_dependencies))
-    callbacks.update(internal.register_hidden_session_commands(app, get_dependencies))
+    callbacks.update(move.register_session_commands(agent_app, get_dependencies))
+    callbacks.update(bundle.register_bundle_commands(agent_transfer_app, get_dependencies))
+    callbacks.update(credentials.register_credential_commands(agent_transfer_app, get_dependencies))
+    callbacks.update(bundle.register_bundle_complete_command(agent_transfer_app, get_dependencies))
+    callbacks.update(trust.register_trust_commands(agent_transfer_app, get_dependencies))
+    callbacks.update(internal.register_hidden_session_commands(agent_transfer_app, get_dependencies))
     return TransferCommands(
         transfer_runtime_downgrade_state=callbacks["transfer_runtime_downgrade_state"],
         transfer_runtime_probe=callbacks["transfer_runtime_probe"],

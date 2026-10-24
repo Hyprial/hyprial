@@ -260,8 +260,8 @@ def routine_status(
     services._execute(operation, json_output=json_output)
 
 
-@routine_app.command("rm")
-def routine_rm(
+@routine_app.command("remove")
+def routine_remove(
     name: str = typer.Argument(..., help="Routine name to remove."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:

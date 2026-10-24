@@ -9,17 +9,20 @@ import os
 import typer
 
 from hyprial.shell.impl.cli.commands.common.daemon_stop import _stop_daemon_for_operator
-from hyprial.shell.impl.cli.commands.common.support import JsonObject
+from hyprial.shell.impl.cli.commands.common.support import (
+    DAEMON_START_IDLE_BUDGET_SECONDS,
+    JsonObject,
+)
 
 
-daemon_app = typer.Typer(help="Run, stop, and inspect the Harness daemon.")
+daemon_app = typer.Typer(help="Run, stop, start, and inspect the Harness daemon.")
 
 
 @daemon_app.command("status")
 def daemon_status(
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
-    """Show exactly the daemon portion of ``hyprial ps``."""
+    """Show exactly the daemon portion of ``hyprial daemon status``."""
     services = get_services()
 
     def operation() -> JsonObject:
@@ -70,11 +73,32 @@ def daemon_status(
     services._execute(operation, json_output=json_output)
 
 
+@daemon_app.command("start")
+def daemon_start(
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Start the daemon in the background and return once it is serving.
+
+    This is the same launch primitive ``init`` uses.  Use ``daemon run`` when a
+    supervisor or process manager owns the foreground daemon process.
+    """
+    services = get_services()
+
+    def operation() -> JsonObject:
+        services = get_services()
+        launched = services._launch_daemon_process(
+            ready_timeout=DAEMON_START_IDLE_BUDGET_SECONDS
+        )
+        return launched.to_payload()
+
+    services._execute(operation, json_output=json_output)
+
+
 @daemon_app.command("run")
 def daemon_run(
     json_output: bool = typer.Option(False, "--json", help="Emit JSON after shutdown."),
 ) -> None:
-    """Run the product daemon in the foreground until SIGINT or SIGTERM."""
+    """Run the daemon in the foreground until SIGINT or SIGTERM (debug/process manager)."""
     services = get_services()
 
     def operation() -> JsonObject:

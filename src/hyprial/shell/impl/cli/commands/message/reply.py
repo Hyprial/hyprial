@@ -1,4 +1,4 @@
-"""The ``hyprial reply`` operator messaging command."""
+"""The ``hyprial message reply`` operator messaging command."""
 
 from __future__ import annotations
 
@@ -8,12 +8,12 @@ from typing import Any
 from hyprial.kernel import ipc_errors
 import typer
 
-from hyprial.shell.impl.cli.commands.common.root import app
+from hyprial.shell.impl.cli.commands.message import message_app
 from hyprial.shell.impl.cli.commands.common.support import _message_claim_params
 from hyprial.shell.impl.cli.commands.message.send import _require_summary
 
 
-@app.command()
+@message_app.command("reply")
 def reply(
     message_id: str = typer.Argument(..., help="Pending message ID to reply to."),
     message: list[str] = typer.Argument(..., help="Reply text."),

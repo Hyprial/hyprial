@@ -71,6 +71,7 @@ class _DeliveryBehavior:
                 if record.spec.name == command.name
                 and isinstance(record.process, StreamingHarnessProcess)
                 and record.process.running
+                and bool(getattr(record.process, "dispatch_ready", False))
             ),
             None,
         )

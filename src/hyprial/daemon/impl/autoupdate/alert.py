@@ -2,7 +2,7 @@
 
 On 2026-08-31 an autoupdate installed cleanly, stopped the running daemon, and
 never started a replacement. Production was down for 56 minutes, and **nothing
-told anyone**. It was found by a person happening to read `hyprial autoupdate
+told anyone**. It was found by a person happening to read `hyprial daemon upgrade
 status` afterwards.
 
 ⚠️ Why this does not use `deliver_alarm`
@@ -13,7 +13,7 @@ lifecycle actor -> Lark adapter. It is tested, and it is the wrong one here:
 the moment there is no daemon. An alert built on it would be silent exactly
 when it is needed, and green in every test, because tests have a live daemon.
 
-So this sends from the `hyprial autoupdate run` subprocess itself, reading the
+So this sends from the `hyprial daemon upgrade run` subprocess itself, reading the
 gateway credentials off disk. That subprocess is the one process guaranteed to
 still be alive: it is what performed the upgrade.
 
@@ -78,7 +78,7 @@ UPGRADE_DECLINED_DOWNGRADE = "declined-downgrade"
 # -- and the follow-up poll closes the state from the same CLI process.
 UPGRADE_UNCONFIRMED = "unconfirmed"
 #: Installed by the timer and deliberately NOT restarted: the owner restarts
-#: with ``hyprial autoupdate restart`` (Allen 2026-09-23: "改为用户手动回复重启
+#: with ``hyprial daemon upgrade apply`` (Allen 2026-09-23: "改为用户手动回复重启
 #: 才重启"; the reply path is a command he or an agent runs).
 UPGRADE_AWAITING_RESTART = "awaiting-restart"
 UPGRADE_FAILED = "failed"
@@ -526,7 +526,7 @@ def notify_restore_followup(
             f"主机: {host}\n"
             f"升级: {upgrade_detail}\n"
             "重启后等待已到按本机规模派生的上限,restore 仍未落定。\n"
-            "⇒ 请运行 `hyprial ps` 查看 adapter 状态;升级已安装,不要重复执行升级。"
+            "⇒ 请运行 `hyprial daemon status` 查看 adapter 状态;升级已安装,不要重复执行升级。"
         )
     else:
         summary = "⚠️ hyprial 重启后仍在启动 —— restore 仍未落定"
@@ -534,7 +534,7 @@ def notify_restore_followup(
             f"主机: {host}\n"
             f"升级: {upgrade_detail}\n"
             "重启后等待已到按本机规模派生的上限,restore 仍未落定。\n"
-            "⇒ 请运行 `hyprial ps` 查看 adapter 状态;升级已安装,不要重复执行升级。"
+            "⇒ 请运行 `hyprial daemon status` 查看 adapter 状态;升级已安装,不要重复执行升级。"
         )
     return _send_owner_message(
         hyprial_home=hyprial_home,
@@ -740,7 +740,7 @@ def notify_upgrade_outcome(
     ⚠️ `action` is four states, not a bool, and the reason is a bug this
     signature used to have. The parameter was `upgraded: bool`, and the caller
     passed a hardcoded `True` on the whole success path -- so "already current,
-    installed nothing" reported `✅ 升级完成`. `hyprial upgrade` runs on a timer and
+    installed nothing" reported `✅ 升级完成`. `hyprial daemon upgrade` runs on a timer and
     most runs install nothing, so the common case said something false.
 
     ⛔ And the obvious repair -- forward the result's real `upgraded` -- is
@@ -774,7 +774,7 @@ def notify_upgrade_outcome(
         detail = (
             f"主机: {host}\n"
             "daemon 仍在旧版本上运行,没有重启。\n"
-            "确认切换:运行 `hyprial autoupdate restart`(可自己运行,或让任一 agent 代为运行)。"
+            "确认切换:运行 `hyprial daemon upgrade apply`(可自己运行,或让任一 agent 代为运行)。"
             "重启期间消息会中断,恢复完成会再通知。\n"
             f"自检: {'通过' if check.ok else '未通过'} — {check.detail}"
         )
@@ -792,11 +792,11 @@ def notify_upgrade_outcome(
         # looking. A ✅ would ask nobody to look.
         # ⚠️ Every clause below is something that was measured, and an earlier
         # draft of it was wrong in a way worth recording. It said "the daemon is
-        # still starting" and "you can run `hyprial ps` right now", both inferred
+        # still starting" and "you can run `hyprial daemon status` right now", both inferred
         # from `cli._wait_for_daemon`'s comment: the socket is published before
         # adapter restore, and `ps` never reads `daemon.json`. The inference was
         # that IPC therefore answers throughout. It does not -- measured
-        # 2026-08-31 19:43: `hyprial ps` failed twice during restore and succeeded
+        # 2026-08-31 19:43: `hyprial daemon status` failed twice during restore and succeeded
         # at 19:44:25, the moment the daemon reported ready. The failures were
         # not DAEMON_UNAVAILABLE (that returns a payload carrying a `daemon`
         # key; these had none), so the daemon holds the socket and does not
@@ -810,15 +810,15 @@ def notify_upgrade_outcome(
             f"主机: {host}\n"
             f"升级: {upgrade_detail}\n"
             f"自检: {'通过' if check.ok else '未通过'} — {check.detail}\n"
-            "恢复期间 daemon 可能暂时答不上 `hyprial ps`"
+            "恢复期间 daemon 可能暂时答不上 `hyprial daemon status`"
             "(Lark adapter restore 可能要一分钟以上)—— 那不代表它死了。\n"
-            "⇒ 过几分钟再跑一次 `hyprial ps`:\n"
+            "⇒ 过几分钟再跑一次 `hyprial daemon status`:\n"
             # ⭐ "daemon 已恢复服务", never "恢复完成". The two are not the same
             # state, and the second one may never arrive: restore is best
             # effort, and an adapter can stay down indefinitely while the daemon
             # runs perfectly well -- a production adapter on this very machine
             # has been `quarantined` with `processRunning=False` for a long
-            # time, answering `hyprial ps` throughout.
+            # time, answering `hyprial daemon status` throughout.
             #
             # ⛔ The earlier wording said "恢复完成", which does not merely
             # misname things: it tells the reader to stop looking at the one
@@ -826,10 +826,10 @@ def notify_upgrade_outcome(
             # found only because someone kept looking after `ps` started
             # answering.
             "   · 能答上来 ⇒ daemon 已恢复服务,无需处理\n"
-            "     (adapter 是否全部起来,另看 `hyprial ps` 的 adapter 列 ——\n"
+            "     (adapter 是否全部起来,另看 `hyprial daemon status` 的 adapter 列 ——\n"
             "      恢复是 best effort,不是每次都会全起来)\n"
             f"   · {_UNCONFIRMED_ESCALATE_AFTER}后仍答不上来 ⇒ 那才是故障,"
-            "把 `hyprial ps` 的输出发出来"
+            "把 `hyprial daemon status` 的输出发出来"
         )
     elif check.ok and action == UPGRADE_ALREADY_CURRENT:
         # The heartbeat. Nothing was installed and nothing is wrong -- and this

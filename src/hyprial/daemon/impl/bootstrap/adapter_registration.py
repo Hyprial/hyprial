@@ -249,7 +249,7 @@ def _add_lark_gateway_unlocked(
     :class:`AdapterExistsError` subclass) on any validation failure, before any
     file is written.
 
-    ``allow_no_routes`` exists for App onboarding (``hyprial adapter onboard``): an
+    ``allow_no_routes`` exists for App onboarding (``hyprial adapter add``): an
     App that was just created has never been messaged, so no ``open_id`` or
     ``chat_id`` exists yet to bind a named outbound route to. Such a gateway is
     still inbound-capable -- inbound routes by the event's own ``chat_id`` and

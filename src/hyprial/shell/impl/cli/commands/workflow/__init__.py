@@ -6,8 +6,8 @@ _ORDER = {
     name: index
     for index, name in enumerate(
         (
-            "plan", "run", "status", "list", "inspect", "cancel", "events",
-            "context", "reset", "complete", "fail", "gc",
+            "plan", "run", "list", "inspect", "cancel", "events",
+            "reset", "complete", "fail", "gc",
         )
     )
 }

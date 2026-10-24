@@ -125,7 +125,7 @@ class OrgContextOrgFsBridge:
         raise OrgMigrationError(
             ipc_errors.ORG_SPACE_NOT_JOINED,
             detail,
-            {"hint": "hyprial fs join <spaceId>"},
+            {"hint": "hyprial fs space join <spaceId>"},
         )
 
     def _username(self) -> str:

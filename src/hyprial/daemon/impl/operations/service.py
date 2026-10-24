@@ -1,4 +1,13 @@
-"""Packaged launchd/systemd templates used by the CLI service manager."""
+"""Packaged launchd/systemd templates used by the CLI service manager.
+
+A supervisor status probe has one authoritative "not loaded" shape per manager.
+``launchctl print gui/$UID/com.hyprial.hyprial.daemon`` returns 113 and includes
+``Could not find service "com.hyprial.hyprial.daemon" in domain for user gui: $UID``.
+``systemctl --user show hyprial.service`` returns 4 and exactly
+``Unit hyprial.service could not be found.`` on stderr. Every other non-zero
+result is a manager command failure, including launchctl's exit-5 I/O failure
+and systemctl's exit-5 bus failure.
+"""
 
 from __future__ import annotations
 
@@ -17,6 +26,23 @@ from hyprial.kernel import current_uid
 
 LAUNCHD_LABEL = "com.hyprial.hyprial.daemon"
 ServicePlatform = Literal["launchd", "systemd"]
+SupervisionState = Literal["supervised", "unsupervised", "lost"]
+
+
+class ServiceOwnershipError(RuntimeError):
+    """The configured supervisor file is not owned by this Hyprial install."""
+
+    def __init__(self, message: str, *, reason: str = "service-file-unattributed") -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+class ServiceCommandError(RuntimeError):
+    """A supervisor command could not produce a trustworthy result."""
+
+    def __init__(self, message: str, *, reason: str) -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 class ServiceCommandRunner(Protocol):
@@ -34,6 +60,15 @@ class ServiceStatus:
     pid: int | None = None
     boot_persistent: bool | None = None
     changed: bool | None = None
+    attributed: bool | None = None
+    template_matches: bool | None = None
+    serving_pid: int | None = None
+    supervision: SupervisionState = "unsupervised"
+    relaunch_count: int | None = None
+    last_exit_code: int | None = None
+    ownership_busy: bool = False
+    ownership_reason: str | None = None
+    backup_path: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +181,7 @@ class ServiceManager:
         uid: int | None = None,
         username: str | None = None,
         sleep: Callable[[float], None] = time.sleep,
+        parent_pid: Callable[[int], int | None] | None = None,
     ) -> None:
         self.config = config
         self.platform = platform
@@ -155,6 +191,7 @@ class ServiceManager:
         self.uid = current_uid() if uid is None else uid
         self.username = username or os.environ.get("USER", "")
         self.sleep = sleep
+        self.parent_pid = parent_pid or self._parent_pid
         self.templates = ServiceTemplates()
 
     @property
@@ -172,13 +209,17 @@ class ServiceManager:
         installed = self.unit_path.is_file()
         if self.platform == "launchd":
             target = f"gui/{self.uid}/{LAUNCHD_LABEL}"
-            result = self.runner(("launchctl", "print", target))
+            result = self._invoke(("launchctl", "print", target))
             if result.returncode != 0:
+                if not self._reports_not_loaded(result):
+                    self._raise_command(("launchctl", "print", target), result)
                 return ServiceStatus(
                     "launchd", LAUNCHD_LABEL, self.unit_path, installed, False, False
                 )
             match = re.search(r"\bpid\s*=\s*(\d+)", result.stdout)
             pid = int(match.group(1)) if match else None
+            runs_match = re.search(r"\bruns\s*=\s*(\d+)", result.stdout)
+            exit_match = re.search(r"\blast exit code\s*=\s*(-?\d+)", result.stdout)
             running = bool(
                 re.search(r"\bstate\s*=\s*running\b", result.stdout)
                 or (pid is not None and pid > 0)
@@ -191,8 +232,10 @@ class ServiceManager:
                 True,
                 running,
                 pid,
+                relaunch_count=int(runs_match.group(1)) if runs_match else None,
+                last_exit_code=int(exit_match.group(1)) if exit_match else None,
             )
-        result = self.runner(
+        result = self._invoke(
             (
                 "systemctl",
                 "--user",
@@ -202,9 +245,27 @@ class ServiceManager:
                 "--property=ActiveState",
                 "--property=SubState",
                 "--property=MainPID",
+                "--property=NRestarts",
+                "--property=ExecMainStatus",
             )
         )
-        linger = self.runner(
+        if result.returncode != 0 and not self._reports_not_loaded(result):
+            self._raise_command(
+                (
+                    "systemctl",
+                    "--user",
+                    "show",
+                    "hyprial.service",
+                    "--property=LoadState",
+                    "--property=ActiveState",
+                    "--property=SubState",
+                    "--property=MainPID",
+                    "--property=NRestarts",
+                    "--property=ExecMainStatus",
+                ),
+                result,
+            )
+        linger = self._invoke(
             ("loginctl", "show-user", self.username, "--property=Linger", "--value")
         )
         boot_persistent = linger.returncode == 0 and linger.stdout.strip() == "yes"
@@ -228,6 +289,8 @@ class ServiceManager:
         )
         raw_pid = fields.get("MainPID", "0")
         pid = int(raw_pid) if raw_pid.isdigit() and int(raw_pid) > 0 else None
+        raw_restarts = fields.get("NRestarts", "")
+        raw_exit = fields.get("ExecMainStatus", "")
         return ServiceStatus(
             "systemd",
             "hyprial.service",
@@ -237,28 +300,159 @@ class ServiceManager:
             running,
             pid,
             boot_persistent,
+            relaunch_count=(int(raw_restarts) if raw_restarts.isdigit() else None),
+            last_exit_code=(int(raw_exit) if raw_exit.lstrip("-").isdigit() else None),
         )
+
+    def inspect(self, *, serving_pid: int | None = None) -> ServiceStatus:
+        """Combine supervisor, ownership, template, and serving-process facts."""
+
+        base = self.status()
+        existing = self._existing_text()
+        ownership_reason = self._ownership_reason(existing, loaded=base.loaded)
+        attributed = (
+            existing is not None
+            and self._is_attributed(existing)
+            and ownership_reason is None
+        )
+        expected = self._rendered()
+        template_matches = existing == expected if existing is not None else False
+        if not base.installed:
+            supervision: SupervisionState = "lost" if base.loaded else "unsupervised"
+        elif (
+            attributed
+            and base.loaded
+            and base.running
+            and serving_pid is not None
+            and self._matches_supervisor(base.pid, serving_pid)
+        ):
+            supervision = "supervised"
+        else:
+            supervision = "lost"
+        return self._copy_status(
+            base,
+            attributed=attributed,
+            template_matches=template_matches,
+            serving_pid=serving_pid,
+            supervision=supervision,
+            ownership_busy=self._ownership_busy(),
+            ownership_reason=ownership_reason,
+        )
+
+    def restart(
+        self,
+        serving_pid: Callable[[], int | None],
+        *,
+        attempts: int = 40,
+    ) -> ServiceStatus:
+        """Restart an owned service through its supervisor and verify custody."""
+
+        before = self.inspect(serving_pid=serving_pid())
+        if not before.installed or not before.attributed:
+            return before
+        if self.platform == "launchd":
+            self._require(
+                (
+                    "launchctl",
+                    "kickstart",
+                    "-k",
+                    f"gui/{self.uid}/{LAUNCHD_LABEL}",
+                )
+            )
+        else:
+            self._require(("systemctl", "--user", "restart", "hyprial.service"))
+        return self.wait_for_custody(
+            serving_pid,
+            attempts=attempts,
+            previous_job_pid=before.pid,
+        )
+
+    def wait_for_custody(
+        self,
+        serving_pid: Callable[[], int | None],
+        *,
+        attempts: int = 40,
+        previous_job_pid: int | None = None,
+    ) -> ServiceStatus:
+        """Wait until the serving socket and supervisor agree on process custody."""
+
+        latest = self.inspect(serving_pid=serving_pid())
+        for _attempt in range(attempts):
+            fresh_job = previous_job_pid is None or latest.pid != previous_job_pid
+            exact_job = latest.pid is not None and latest.serving_pid == latest.pid
+            if latest.supervision == "supervised" and fresh_job and exact_job:
+                return latest
+            self.sleep(0.25)
+            latest = self.inspect(serving_pid=serving_pid())
+        return self._copy_status(latest, supervision="lost")
+
+    def reconcile(
+        self,
+        serving_pid: Callable[[], int | None],
+        *,
+        stop_stray: Callable[[int], None],
+    ) -> ServiceStatus:
+        """Repair owned template/custody drift without adopting foreign files."""
+
+        current = self.inspect(serving_pid=serving_pid())
+        if (current.installed or current.loaded) and not current.attributed:
+            detail = (
+                f"foreign or unsafe service file {self.unit_path}"
+                if current.installed
+                else f"loaded service without owned file {self.unit_path}"
+            )
+            raise ServiceOwnershipError(
+                f"refusing to modify {detail}",
+                reason=current.ownership_reason or "service-file-unattributed",
+            )
+        stray = current.serving_pid if current.supervision == "lost" else None
+        if isinstance(stray, int):
+            stop_stray(stray)
+        backup: Path | None = None
+        if current.installed and current.template_matches is False:
+            backup = self._backup_existing()
+            self.install()
+        elif current.installed and not current.loaded:
+            self.install()
+        elif current.installed and current.supervision == "lost":
+            restarted = self.restart(serving_pid)
+            return self._copy_status(restarted, backup_path=backup)
+        fixed = self.wait_for_custody(serving_pid)
+        return self._copy_status(fixed, backup_path=backup)
 
     def install(self) -> ServiceStatus:
         before = self.status()
+        existing = self._existing_text()
+        ownership_reason = self._ownership_reason(existing, loaded=before.loaded)
+        if before.loaded and existing is None:
+            raise ServiceOwnershipError(
+                f"refusing to replace loaded service without owned file {self.unit_path}",
+                reason="supervisor-file-missing",
+            )
+        if ownership_reason is not None:
+            raise ServiceOwnershipError(
+                f"refusing to replace unsafe service file {self.unit_path}",
+                reason=ownership_reason,
+            )
+        if existing is not None and not self._is_attributed(existing):
+            raise ServiceOwnershipError(
+                f"refusing to replace foreign service file {self.unit_path}"
+            )
         self.config.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         if self.platform == "systemd" and before.boot_persistent is not True:
             self._require(("loginctl", "enable-linger", self.username))
-        rendered = (
-            self.templates.render_launchd(self.config)
-            if self.platform == "launchd"
-            else self.templates.render_systemd(self.config)
-        )
-        existing = (
-            self.unit_path.read_text(encoding="utf-8")
-            if self.unit_path.is_file()
-            else None
-        )
+        rendered = self._rendered()
         changed_file = existing != rendered
         if before.loaded and changed_file:
             self._unload()
         if changed_file:
             self._atomic_write(rendered)
+            written_reason = self._ownership_reason(rendered, loaded=False)
+            if written_reason is not None:
+                raise ServiceOwnershipError(
+                    f"refusing to load unsafe service file {self.unit_path}",
+                    reason=written_reason,
+                )
         if not before.loaded or changed_file:
             if not before.loaded:
                 self.handoff_standalone()
@@ -287,6 +481,22 @@ class ServiceManager:
 
     def uninstall(self) -> ServiceStatus:
         before = self.status()
+        existing = self._existing_text()
+        ownership_reason = self._ownership_reason(existing, loaded=before.loaded)
+        if before.loaded and existing is None:
+            raise ServiceOwnershipError(
+                f"refusing to unload service without owned file {self.unit_path}",
+                reason="supervisor-file-missing",
+            )
+        if ownership_reason is not None:
+            raise ServiceOwnershipError(
+                f"refusing to remove unsafe service file {self.unit_path}",
+                reason=ownership_reason,
+            )
+        if existing is not None and not self._is_attributed(existing):
+            raise ServiceOwnershipError(
+                f"refusing to remove foreign service file {self.unit_path}"
+            )
         if before.loaded:
             self._unload()
         self.unit_path.unlink(missing_ok=True)
@@ -310,6 +520,118 @@ class ServiceManager:
             changed=before.loaded or before.installed,
         )
 
+    def _rendered(self) -> str:
+        return (
+            self.templates.render_launchd(self.config)
+            if self.platform == "launchd"
+            else self.templates.render_systemd(self.config)
+        )
+
+    def _existing_text(self) -> str | None:
+        try:
+            return self.unit_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return None
+
+    def _ownership_reason(self, text: str | None, *, loaded: bool) -> str | None:
+        try:
+            directory_stat = self.unit_path.parent.stat()
+        except FileNotFoundError:
+            return "supervisor-file-missing" if loaded else None
+        if directory_stat.st_uid != os.getuid():
+            return "unit-directory-owner-mismatch"
+        if directory_stat.st_mode & 0o022:
+            return "unit-directory-permissions-unsafe"
+        if text is None:
+            return "supervisor-file-missing" if loaded else None
+        try:
+            unit_stat = self.unit_path.stat()
+        except FileNotFoundError:
+            return "supervisor-file-missing" if loaded else None
+        if unit_stat.st_uid != os.getuid():
+            return "unit-owner-mismatch"
+        if unit_stat.st_mode & 0o022:
+            return "unit-permissions-unsafe"
+        return None
+
+    def _reports_not_loaded(
+        self, result: subprocess.CompletedProcess[str]
+    ) -> bool:
+        if self.platform == "launchd":
+            expected = (
+                f'Could not find service "{LAUNCHD_LABEL}" in domain for user '
+                f"gui: {self.uid}"
+            )
+            return result.returncode == 113 and expected in result.stderr.splitlines()
+        return (
+            result.returncode == 4
+            and result.stderr.strip() == "Unit hyprial.service could not be found."
+        )
+
+    def _is_attributed(self, text: str) -> bool:
+        executable = str(self.config.executable.resolve())
+        if self.platform == "launchd":
+            return (
+                f"<string>{LAUNCHD_LABEL}</string>" in text
+                and f"<string>{ServiceTemplates._escape_xml(executable)}</string>"
+                in text
+                and "<string>daemon</string>" in text
+                and "<string>run</string>" in text
+            )
+        quoted = ServiceTemplates._quote_systemd(executable)
+        return (
+            f"ExecStart={quoted} daemon run" in text
+            and 'Environment="HYPRIAL_SERVICE_UNIT=hyprial.service"' in text
+        )
+
+    def _backup_existing(self) -> Path | None:
+        existing = self._existing_text()
+        if existing is None:
+            return None
+        backup = self.unit_path.with_name(
+            f"{self.unit_path.name}.backup.{time.time_ns()}"
+        )
+        backup.write_text(existing, encoding="utf-8")
+        os.chmod(backup, 0o600)
+        return backup
+
+    def _matches_supervisor(self, job_pid: int | None, serving_pid: int) -> bool:
+        return job_pid is not None and serving_pid == job_pid
+
+    def _ownership_busy(self) -> bool:
+        path = self.config.state_dir / "daemon-service.stderr.log"
+        try:
+            with path.open("rb") as stream:
+                stream.seek(0, os.SEEK_END)
+                size = stream.tell()
+                stream.seek(max(0, size - 64 * 1024))
+                return b"DAEMON_OWNERSHIP_BUSY" in stream.read()
+        except OSError:
+            return False
+
+    @staticmethod
+    def _copy_status(status: ServiceStatus, **changes: object) -> ServiceStatus:
+        fields = {
+            name: getattr(status, name) for name in ServiceStatus.__dataclass_fields__
+        }
+        fields.update(changes)
+        return ServiceStatus(**fields)  # type: ignore[arg-type]
+
+    @staticmethod
+    def _parent_pid(pid: int) -> int | None:
+        try:
+            result = subprocess.run(
+                ("ps", "-o", "ppid=", "-p", str(pid)),
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=2.0,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        value = result.stdout.strip()
+        return int(value) if result.returncode == 0 and value.isdigit() else None
+
     def _load(self) -> None:
         if self.platform == "launchd":
             command = (
@@ -319,7 +641,7 @@ class ServiceManager:
                 str(self.unit_path),
             )
             for attempt in range(5):
-                result = self.runner(command)
+                result = self._invoke(command)
                 if result.returncode == 0:
                     return
                 transient = (
@@ -339,8 +661,9 @@ class ServiceManager:
                 if not self.status().loaded:
                     return
                 self.sleep(0.25)
-            raise RuntimeError(
-                f"timed out waiting for launchd to unload {LAUNCHD_LABEL}"
+            raise ServiceCommandError(
+                f"timed out waiting for launchd to unload {LAUNCHD_LABEL}",
+                reason="manager-command-timeout",
             )
         self._require(("systemctl", "--user", "disable", "--now", "hyprial.service"))
 
@@ -351,8 +674,29 @@ class ServiceManager:
         os.chmod(temporary, 0o644)
         os.replace(temporary, self.unit_path)
 
+    def _invoke(self, command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        try:
+            return self.runner(command)
+        except ServiceCommandError:
+            raise
+        except subprocess.TimeoutExpired as error:
+            raise ServiceCommandError(
+                f"service command timed out: {' '.join(command)}",
+                reason="manager-command-timeout",
+            ) from error
+        except FileNotFoundError as error:
+            raise ServiceCommandError(
+                f"service command is unavailable: {' '.join(command)}: {error}",
+                reason="manager-command-unavailable",
+            ) from error
+        except OSError as error:
+            raise ServiceCommandError(
+                f"service command could not run: {' '.join(command)}: {error}",
+                reason="manager-command-failed",
+            ) from error
+
     def _require(self, command: Sequence[str]) -> None:
-        result = self.runner(command)
+        result = self._invoke(command)
         if result.returncode != 0:
             self._raise_command(command, result)
 
@@ -360,14 +704,18 @@ class ServiceManager:
     def _raise_command(
         command: Sequence[str], result: subprocess.CompletedProcess[str]
     ) -> None:
-        raise RuntimeError(
+        raise ServiceCommandError(
             f"service command failed ({result.returncode}): {' '.join(command)}: "
-            f"{result.stderr.strip()}"
+            f"{result.stderr.strip()}",
+            reason="manager-command-failed",
         )
 
     @staticmethod
     def _run(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
-        try:
-            return subprocess.run(command, text=True, capture_output=True, check=False)
-        except OSError as error:
-            return subprocess.CompletedProcess(command, 127, "", str(error))
+        return subprocess.run(
+            command,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=15.0,
+        )

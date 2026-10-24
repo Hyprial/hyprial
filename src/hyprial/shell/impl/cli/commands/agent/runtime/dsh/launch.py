@@ -1,4 +1,4 @@
-"""The `hyprial start dsh` launch contract (dsh-tui, carrier, bridge)."""
+"""The `hyprial agent start dsh` launch contract (dsh-tui, carrier, bridge)."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ from hyprial.shell.impl.cli.commands.agent.runtime.interactive import (
 
 
 DSH_TUI_REGISTRATION_TIMEOUT_SECONDS = 30.0
-# Allen's workspace-start ruling (2026-10-19): `hyprial start dsh` boots the
+# Allen's workspace-start ruling (2026-10-19): `hyprial agent start dsh` boots the
 # dsh-tui agent preset `standard` unless the launch overrides it. The value is
 # handed to the TUI as the documented DSH_TUI_PRESET launch instruction, which
 # outranks the persisted /preset choice and the cordis.yml default.
@@ -91,7 +91,7 @@ def _dsh_tui_binary() -> str:
 def _seed_dsh_tui_first_run_prefs(home: str | Path | None) -> None:
     """Mark dsh-tui's first-run guide and one-shot workspace home seen.
 
-    ``hyprial start dsh`` owns the dsh-tui launch contract, and the
+    ``hyprial agent start dsh`` owns the dsh-tui launch contract, and the
     workspace-start ruling (2026-10-19) is that the launch lands straight in a
     workspace with an agent running. On a fresh HOME dsh-tui instead opens its
     four-step first-run wizard and then the one-shot workspace home before any
@@ -135,21 +135,21 @@ def _reject_dsh_owned_runtime_args(runtime_args: tuple[str, ...]) -> None:
     if runtime_args and runtime_args[0] in _DSH_TUI_SUBCOMMANDS:
         raise services.CliError(
             ipc_errors.INVALID_ARGUMENT,
-            f"dsh-tui subcommand {runtime_args[0]} is not supported through hyprial start dsh",
+            f"dsh-tui subcommand {runtime_args[0]} is not supported through hyprial agent start dsh",
         )
     for arg in runtime_args:
         if not arg.startswith("-"):
             raise services.CliError(
                 ipc_errors.INVALID_ARGUMENT,
                 f"positional dsh-tui runtime argument {arg} is not supported; "
-                "interactive dsh accepts no prompt positional through hyprial start",
+                "interactive dsh accepts no prompt positional through hyprial agent start",
             )
         flag = arg.split("=", 1)[0]
         if flag in _DSH_OWNED_RUNTIME_FLAGS:
             raise services.CliError(
                 ipc_errors.INVALID_ARGUMENT,
                 f"{flag} changes the dsh-tui launch contract owned by hyprial; "
-                "use `hyprial start dsh --resume <session>` for resume",
+                "use `hyprial agent start dsh --resume <session>` for resume",
             )
 
 
@@ -167,8 +167,7 @@ def _write_dsh_launch_patch(
 
     args = [
         "-m",
-        "hyprial.cli",
-        "mcp",
+        "hyprial.daemon.impl.mcp.entry",
         "agent-channel",
         "--actor",
         actor_name,
@@ -221,16 +220,15 @@ def _dsh_session_id_from_launch(launch_dir: Path, resume: str | None) -> str | N
     return value or None
 
 
+_DSH_CARRIER_STDERR_FILENAME = "carrier.stderr"
 _DSH_CARRIER_STDERR_TAIL_LINES = 20
 
 
 def _dsh_carrier_stderr_tail(launch_dir: Path) -> str | None:
     """The last lines the carrier wrote to its (off-terminal) stderr."""
 
-    from hyprial.shell.impl.cli.commands.meta.mcp import DSH_CARRIER_STDERR_FILENAME
-
     try:
-        text = (launch_dir / DSH_CARRIER_STDERR_FILENAME).read_text(
+        text = (launch_dir / _DSH_CARRIER_STDERR_FILENAME).read_text(
             encoding="utf-8", errors="replace"
         )
     except OSError:
@@ -248,7 +246,7 @@ def _dsh_carrier_failure(
     if session_id is not None:
         detail = (
             f"{detail}; the DSH session was {session_id} - resume it with "
-            f"`hyprial start dsh --resume {session_id}`"
+            f"`hyprial agent start dsh --resume {session_id}`"
         )
     tail = _dsh_carrier_stderr_tail(launch_dir)
     if tail is not None:
@@ -486,8 +484,7 @@ def _start_interactive_dsh(
         carrier_argv = [
             sys.executable,
             "-m",
-            "hyprial.cli",
-            "mcp",
+            "hyprial.daemon.impl.mcp.entry",
             "dsh-carrier",
             "--actor",
             actor_name,

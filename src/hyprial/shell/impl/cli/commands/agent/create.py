@@ -40,7 +40,7 @@ def agent_create(
         None,
         "--preferred-harness",
         help=(
-            "Default harness for 'hyprial start'. Only a default: the agent is not "
+            "Default harness for 'hyprial agent start'. Only a default: the agent is not "
             "bound to it and may be started on any harness."
         ),
     ),
@@ -135,9 +135,9 @@ def _create_agent_for_start(
     model: str | None = None,
     include_resume_snapshot: bool = False,
 ) -> JsonObject:
-    """Route ``hyprial start`` through ``agent create`` before launching anything.
+    """Route ``hyprial agent start`` through ``agent create`` before launching anything.
 
-    Decision A5 keeps ``hyprial start`` working exactly as before but makes it go
+    Decision A5 keeps ``hyprial agent start`` working exactly as before but makes it go
     through agent creation, so a connector can never come up without an
     identity behind it. ``existing: reuse`` is what separates the two entry
     points: an explicit ``hyprial agent create`` on a taken name is an error, while

@@ -20,6 +20,46 @@ import subprocess
 
 from hyprial.shell.impl.cli.commands.common.support import JsonObject, _append_warning
 
+
+def _preflight_codex_credential(
+    projection: JsonObject | None, *, name: str, model_provider: str | None
+) -> None:
+    if projection is None:
+        return
+    from hyprial.identity import (
+        AgentRuntimeError,
+        SharedCredentialBinding,
+        preflight_codex_credential,
+    )
+    from hyprial.kernel import agent_uri_actor
+
+    shared = projection.get("sharedCredential")
+    binding = (
+        SharedCredentialBinding(
+            actor=agent_uri_actor(name) or name,
+            harness="codex",
+            native_path=Path(str(shared["nativePath"])),
+            target_path=Path(str(shared["targetPath"])),
+            agent_cwd=None,
+        )
+        if isinstance(shared, dict)
+        else None
+    )
+    try:
+        preflight_codex_credential(
+            native_root=Path(str(projection["nativeRoot"])),
+            actor=agent_uri_actor(name) or name,
+            model_provider=model_provider,
+            shared_credential=binding,
+        )
+    except AgentRuntimeError as error:
+        raise get_services().CliError(
+            error.code or ipc_errors.INVALID_ARGUMENT,
+            str(error),
+            data=error.data,
+        ) from error
+
+
 def _plugin_skip_warnings(skipped: Sequence[Any]) -> list[JsonObject]:
     return [
         {
@@ -166,7 +206,12 @@ def _runtime_context_environment(
 
 
 def _runtime_context_projection(
-    *, name: str, harness: str, cwd: Path
+    *,
+    name: str,
+    harness: str,
+    cwd: Path,
+    model_provider: str | None = None,
+    credential_preflight: bool = False,
 ) -> JsonObject | None:
     """Ask the daemon for one non-secret P2 root/profile projection.
 
@@ -180,7 +225,21 @@ def _runtime_context_projection(
 
     result = services._daemon_request(
         "agent.runtime-context",
-        {"name": name, "harness": harness, "cwd": str(cwd)},
+        {
+            "name": name,
+            "harness": harness,
+            "cwd": str(cwd),
+            **(
+                {"modelProvider": model_provider}
+                if model_provider is not None
+                else {}
+            ),
+            **(
+                {"credentialPreflight": True}
+                if credential_preflight
+                else {}
+            ),
+        },
     )
     if result.get("mode") == "legacy":
         return None

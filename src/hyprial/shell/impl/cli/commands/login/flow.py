@@ -725,6 +725,90 @@ def _login_device_id() -> str:
     return resolve_node_id()
 
 
+def _resume_login_cli_flow(
+    session: JsonObject, *, expected_issuer: str, json_output: bool
+) -> JsonObject:
+    """Resume post-authentication stages under the home identity fence."""
+
+    from hyprial.daemon import node_owner_or_none
+    from hyprial.identity import IdentityTransactionBusy, IdentityTransactionLock
+    from hyprial.shell.impl.login.session import (
+        inspect_login_session,
+        login_device_stage_complete,
+    )
+
+    services = get_services()
+    home = services._hyprial_home()
+    try:
+        transaction = IdentityTransactionLock.acquire(home)
+    except IdentityTransactionBusy as error:
+        raise services.CliError(error.code, str(error)) from error
+    except OSError as error:
+        raise services.CliError(
+            "IDENTITY_TRANSACTION_FAILED",
+            "cannot acquire the home identity transaction: "
+            f"{type(error).__name__}",
+        ) from error
+    try:
+        current = inspect_login_session(home, expected_issuer=expected_issuer)
+        try:
+            effective_owner = node_owner_or_none(hyprial_home=home)
+        except ValueError:
+            effective_owner = None
+        if (
+            current is None
+            or current != session
+            or current.get("owner") != effective_owner
+        ):
+            raise services.CliError(
+                "IDENTITY_TRANSACTION_STALE",
+                "the stored login session changed before device provisioning; "
+                "retry login against the current identity",
+            )
+
+        owner = current.get("owner")
+        issuer = current.get("issuer")
+        if not isinstance(owner, str) or not isinstance(issuer, str):
+            raise services.CliError(
+                "LOGIN_SESSION_INVALID",
+                "the stored login session is missing its owner or issuer",
+            )
+        if login_device_stage_complete(
+            home, owner=owner, device_id=_login_device_id()
+        ):
+            return current
+        device = _ensure_login_device(home, owner=owner)
+        if device.get("ready") is True:
+            warn(
+                f"  device key: ready (device {device.get('deviceId')})",
+                json_output=json_output,
+            )
+        else:
+            error = (
+                device.get("error")
+                if isinstance(device.get("error"), dict)
+                else {}
+            )
+            warn(
+                "  device key: NOT provisioned "
+                f"({error.get('code', 'DEVICE_KEY_FAILED')}: "
+                f"{error.get('message', '')})\n"
+                f"  next step: {device.get('nextStep')}",
+                json_output=json_output,
+            )
+        return {
+            "ok": True,
+            "status": "login-resumed",
+            "owner": owner,
+            "issuer": issuer,
+            "home": str(home),
+            "resumedStages": ["device"],
+            "device": device,
+        }
+    finally:
+        transaction.close()
+
+
 def _ensure_login_device(home: Path, *, owner: str) -> JsonObject:
     """Ensure the Tailcat device key after the identity commit (§4.4).
 

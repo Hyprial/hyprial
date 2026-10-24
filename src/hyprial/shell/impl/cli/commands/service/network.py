@@ -1,24 +1,28 @@
-"""``hyprial network`` tailnet exposure commands."""
+"""Network-facing leaves of ``hyprial service`` (R7 §2.13).
+
+These four leaves were ``hyprial host expose|unexpose|exposures|peer-key``
+(originally ``hyprial network …``): they describe what this machine offers on
+the organization network, which is the serving half of the ``service`` group.
+``peer-key`` is renamed ``whois`` at the CLI spelling; the daemon IPC method
+stays ``network.peerKey``.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any
 
-from hyprial.shell.impl.cli.commands.common.services import get_services
-
 import typer
 
+from hyprial.shell.impl.cli.commands.common.services import get_services
 from hyprial.shell.impl.cli.commands.common.support import JsonObject
+from hyprial.shell.impl.cli.commands.service.commands import service_app
 from hyprial.shell.impl.cli.output import CliResult
-network_app = typer.Typer(
-    help="Expose loopback services to Tailcat peers and inspect peer identity."
-)
 
 
-@network_app.command("expose")
-def network_expose(
-    port: int = typer.Argument(..., min=1, max=65535, help="Tailnet TCP port."),
+@service_app.command("expose")
+def service_expose(
+    port: int = typer.Argument(..., min=1, max=65535, help="Org-network TCP port."),
     target: str = typer.Option(
         ..., "--target", help="Local unix:/absolute/path or tcp:127.0.0.1:port target."
     ),
@@ -27,7 +31,11 @@ def network_expose(
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
-    """Persist and activate one inbound tailnet service exposure."""
+    """Publish one local service on the org network with caller identity.
+
+    The exposure carries PROXY protocol v2 with the caller's node key (TLV
+    0xE0), so the service behind it can resolve which organization member connected.
+    """
     services = get_services()
 
     def operation() -> JsonObject:
@@ -43,12 +51,12 @@ def network_expose(
     services._execute(operation, json_output=json_output)
 
 
-@network_app.command("unexpose")
-def network_unexpose(
-    port: int = typer.Argument(..., min=1, max=65535, help="Tailnet TCP port."),
+@service_app.command("unexpose")
+def service_unexpose(
+    port: int = typer.Argument(..., min=1, max=65535, help="Org-network TCP port."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
-    """Remove one desired and active inbound exposure."""
+    """Remove one desired and active published service."""
     services = get_services()
 
     def operation() -> JsonObject:
@@ -61,11 +69,11 @@ def network_unexpose(
     services._execute(operation, json_output=json_output)
 
 
-@network_app.command("exposures")
-def network_exposures(
+@service_app.command("exposures")
+def service_exposures(
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
-    """List the daemon's persistent desired inbound exposures."""
+    """List the services this machine publishes on the org network."""
     services = get_services()
 
     def render(result: Mapping[str, Any]) -> str:
@@ -81,7 +89,7 @@ def network_exposures(
             port = exposure.get("port") if isinstance(exposure, dict) else "?"
             reason = item.get("reason") if isinstance(item, dict) else ""
             lines.append(f"{port}\tNOT SERVED\t{reason}")
-        return "\n".join(lines) if lines else "No network exposures."
+        return "\n".join(lines) if lines else "No service exposures."
 
     def operation() -> CliResult:
         services = get_services()
@@ -93,16 +101,16 @@ def network_exposures(
     services._execute(operation, json_output=json_output)
 
 
-@network_app.command("peer-key")
-def network_peer_key(
-    address: str = typer.Argument(..., metavar="IP:PORT", help="Tailcat source address."),
+@service_app.command("whois")
+def service_whois(
+    address: str = typer.Argument(..., metavar="IP:PORT", help="Observed org-network source address."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
-    """Resolve a Tailcat connection address to the peer's node key.
+    """Resolve a connection address to the peer's node key.
 
-    Protocol v3 replaced ``network whois`` (tsnet LocalAPI) with
-    ``peer-key``: the sidecar answers from ``Server.PeerKey`` for an
-    address an exposed service observed.
+    Renamed from ``network peer-key``; protocol v3 replaced the tsnet
+    LocalAPI ``whois`` with the sidecar's ``Server.PeerKey`` for an address an
+    exposed service observed.
     """
     services = get_services()
 
@@ -114,3 +122,6 @@ def network_peer_key(
         return {"ok": True, **result}
 
     services._execute(operation, json_output=json_output)
+
+
+__all__ = ["service_expose", "service_exposures", "service_unexpose", "service_whois"]

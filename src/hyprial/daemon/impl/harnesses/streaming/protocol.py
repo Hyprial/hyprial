@@ -116,7 +116,7 @@ TURN_TIMEOUT_ENV = "HYPRIAL_TURN_TIMEOUT_SECONDS"
 TURN_IDLE_TIMEOUT_ENV = "HYPRIAL_TURN_IDLE_TIMEOUT_SECONDS"
 
 #: Observation phases the pump also persists to the worker JSONL log, so
-#: a stalled turn is visible to `hyprial top` and survives a restarted
+#: a stalled turn is visible to `hyprial agent top` and survives a restarted
 #: consumer.  The phase names describe the CONDITION, not the detector --
 #: connector-side steer probing (#277) can emit the same phases later.
 _TURN_CONDITION_EVENTS = {

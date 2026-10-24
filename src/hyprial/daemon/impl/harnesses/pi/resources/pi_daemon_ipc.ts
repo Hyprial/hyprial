@@ -10,8 +10,8 @@
  *   HYPRIAL_WORKER_ACTOR        the session's canonical agent URI
  *   HYPRIAL_WORKER_SESSION_REF  the session ref the daemon's fence accepts
  *   HYPRIAL_WORKER_TMUX_SESSION detached-tmux session name when the TUI runs
- *                           under `hyprial start --tmux` (optional; recorded on
- *                           the interactive registration so `hyprial ps` shows
+ *                           under `hyprial agent start --tmux` (optional; recorded on
+ *                           the interactive registration so `hyprial daemon status` shows
  *                           where to attach)
  *   HYPRIAL_HOME / HARNESS_STATE_DIR  locate THIS daemon's socket, never an
  *                           ambient production daemon
@@ -33,7 +33,7 @@ export const IPC_MAX_BYTES = 8 * 1024 * 1024;
 export interface WorkerIdentity {
   actor: string;
   sessionRef: string;
-  /** Detached-tmux session name, present only on `hyprial start --tmux` launches. */
+  /** Detached-tmux session name, present only on `hyprial agent start --tmux` launches. */
   tmuxSession?: string;
 }
 

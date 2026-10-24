@@ -124,6 +124,7 @@ def _verify_codex_native_inventory(
     expected: frozenset[str],
     session_root: Path,
     codex_executable: Path | Callable[[], Path],
+    shared_credential: SharedCredentialBinding | None = None,
 ) -> None:
     # Resolved lazily and once: only an arg0 alias needs the launched
     # executable, so a home without aliases never depends on codex's PATH.
@@ -153,6 +154,12 @@ def _verify_codex_native_inventory(
                 ) from error
             arg0 = _CODEX_ARG0_ENTRY.fullmatch(relative)
             if stat.S_ISLNK(metadata.st_mode):
+                if (
+                    shared_credential is not None
+                    and candidate == shared_credential.native_path
+                ):
+                    validate_shared_credential_binding(shared_credential)
+                    continue
                 if arg0 is not None and arg0.group("name") in _CODEX_ARG0_ALIASES:
                     try:
                         link = Path(os.readlink(candidate))
@@ -205,6 +212,7 @@ def prepare_codex_runtime_roots(
     codex_executable: Path | Callable[[], Path],
     receipt: ConfigProjectionReceipt | None = None,
     read_only: bool = False,
+    shared_credential: SharedCredentialBinding | None = None,
 ) -> None:
     """Publish an already-resolved P21 projection into the mutable Codex root."""
 
@@ -260,6 +268,7 @@ def prepare_codex_runtime_roots(
         expected=expected,
         session_root=session_root,
         codex_executable=codex_executable,
+        shared_credential=shared_credential,
     )
 
 def prepare_codex_runtime_context(
@@ -288,6 +297,7 @@ def prepare_codex_runtime_context(
         codex_executable=executable,
         receipt=context.projection_receipt,
         read_only=context.authority_prepared,
+        shared_credential=context.shared_credential,
     )
 
 def _inside(path: Path, root: Path) -> bool:
@@ -309,9 +319,7 @@ def _require_mapping(value: object, label: str) -> dict[str, object]:
         raise CodexAgentHomeError(f"Codex app-server {label} must be an object")
     return value
 
-def _require_private(
-    path: Path, metadata: os.stat_result, *, mode: int, label: str
-) -> None:
+def _require_private(path: Path, metadata: os.stat_result, *, mode: int, label: str) -> None:
     try:
         violation = private_metadata_violation(path, metadata, mode=mode)
     except OSError as error:
@@ -344,9 +352,7 @@ def _validate_codex_native_load(
         raise CodexAgentHomeError("resolved CODEX_HOME is unreadable") from error
     if stat.S_ISLNK(root_metadata.st_mode) or not stat.S_ISDIR(root_metadata.st_mode):
         raise CodexAgentHomeError("resolved CODEX_HOME must be a real directory")
-    _require_private(
-        expected_root, root_metadata, mode=0o700, label="resolved CODEX_HOME"
-    )
+    _require_private(expected_root, root_metadata, mode=0o700, label="resolved CODEX_HOME")
     initialized = _require_mapping(initialize, "initialize result")
     observed_home = initialized.get("codexHome")
     if not isinstance(observed_home, str) or not observed_home:
@@ -506,10 +512,7 @@ def _validate_codex_native_load(
     if stat.S_ISLNK(config_metadata.st_mode) or not stat.S_ISREG(config_metadata.st_mode):
         raise CodexAgentHomeError("Codex user config.toml must be a regular file")
     _require_private(
-        expected_user_config,
-        config_metadata,
-        mode=0o600,
-        label="Codex user config.toml",
+        expected_user_config, config_metadata, mode=0o600, label="Codex user config.toml"
     )
 
     auth_store = config.get("cli_auth_credentials_store")

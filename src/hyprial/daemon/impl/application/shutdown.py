@@ -700,7 +700,9 @@ class _ShutdownMixin:
             if not gateway_owner.close(5.0):
                 raise RuntimeError("outbound Lark gateway did not drain")
         self._outbound_gateway_owners.clear()
-        self._status_refresh.close(timeout=1.0)
+        status_refresh = getattr(self, "_status_refresh", None)
+        if status_refresh is not None:
+            status_refresh.close(timeout=1.0)
         self._presence = None
         self._user_delivery = None
         if self._fetch_receipt_publisher is not None:

@@ -71,7 +71,7 @@ def _dsh_tui_doctor_check(result: JsonObject) -> JsonObject | None:
                 "record alone"
             ),
             "action": {
-                "command": "hyprial start dsh --name <name> [--resume <session-id>]",
+                "command": "hyprial agent start dsh --name <name> [--resume <session-id>]",
                 "description": (
                     "Restart the dsh-tui session through the hyprial launcher so "
                     "the tool-only MCP child and launch-scoped injection plugin "

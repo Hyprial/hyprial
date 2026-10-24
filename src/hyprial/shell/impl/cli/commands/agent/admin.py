@@ -28,6 +28,11 @@ migration_app = typer.Typer(
     no_args_is_help=True,
 )
 
+home_app = typer.Typer(
+    help="Inspect and migrate the agent home directories on this machine.",
+    no_args_is_help=True,
+)
+
 config_app = typer.Typer(
     help="Validate, atomically replace, or roll back an existing P2 config root.",
     no_args_is_help=True,

@@ -149,7 +149,7 @@ def rerun_interactively_action(name: str) -> dict[str, Any]:
 
     return {
         "type": "rerun_interactively_or_set_environment",
-        "command": f"hyprial adapter onboard {name}",
+        "command": f"hyprial adapter add {name}",
         "environment": [APP_ID_ENV_VAR, APP_SECRET_ENV_VAR],
         "reason": (
             "Creating a Lark App uses the official device-authorization flow, "

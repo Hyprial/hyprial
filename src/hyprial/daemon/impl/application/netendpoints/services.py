@@ -131,6 +131,7 @@ class _ServiceConnectOpsMixin:
                     controller_factory=self._service_controller,
                     access_path=access_path,
                     scheduler=scheduler,
+                    service_discovery=self._service_discovery,
                 )
             except BaseException:
                 scheduler.shutdown(5.0)

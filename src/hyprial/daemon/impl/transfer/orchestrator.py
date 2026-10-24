@@ -91,17 +91,20 @@ def _discovered_node(host: str, response: Any) -> str:
         not isinstance(row, dict) or not isinstance(row.get("nodeId"), str)
         or not row["nodeId"] for row in rows
     ):
-        raise TransferError("TRANSFER_PROTOCOL", "local hyprial hosts must report nodeId rows")
+        raise TransferError(
+            "TRANSFER_PROTOCOL", "local hyprial host list must report nodeId rows"
+        )
     matches = [row for row in rows if row["nodeId"] == node]
     if not matches:
         raise TransferError(
             "TRANSFER_TARGET_UNDISCOVERED",
-            f"target {host!r} is not in this home's hyprial hosts; use "
+            f"target {host!r} is not in this home's hyprial host list; use "
             "--to [user@]<exact discovered nodeId> (SSH aliases are not inferred)",
         )
     if len(matches) != 1:
         raise TransferError(
-            "TRANSFER_TARGET_AMBIGUOUS", f"hyprial hosts has multiple rows for {node!r}"
+            "TRANSFER_TARGET_AMBIGUOUS",
+            f"hyprial host list has multiple rows for {node!r}",
         )
     return matches[0]["nodeId"]
 
@@ -261,7 +264,7 @@ def _refuse_target_conflicts(
     """
 
     precheck = remote.run_json(
-        ["transfer-precheck", "--harness", harness, "--name", name]
+        ["agent", "transfer", "precheck", "--harness", harness, "--name", name]
     )
     conflicts = precheck.get("conflicts") or []
     if conflicts:
@@ -332,7 +335,7 @@ def run_transfer(
         )
 
     # -- 2. fencing ----------------------------------------------------------
-    remote_ps = remote.run_json(["ps"])
+    remote_ps = remote.run_json(["daemon", "status"])
     remote_daemon = remote_ps.get("daemon")
     remote_node = remote_daemon.get("nodeId") if isinstance(remote_daemon, dict) else None
     # Narrow #417 ruling: discovery fences NODE only. This must precede
@@ -340,7 +343,7 @@ def run_transfer(
     if remote_node != expected_node:
         raise TransferError(
             "TRANSFER_TARGET_MISMATCH",
-            f"target {host!r} identity mismatch: hyprial hosts nodeId={expected_node!r}; "
+            f"target {host!r} identity mismatch: hyprial host list nodeId={expected_node!r}; "
             f"remote daemon.nodeId={remote_node!r}; refusing transfer",
             {"hostsNodeId": expected_node, "remoteNodeId": remote_node},
         )
@@ -515,7 +518,7 @@ def run_transfer(
         remote.sync_tree(Path(str(spec["cwd"])), destination_cwd)
         if containerized:
             staged = remote.run_json(
-                ["transfer-cred-stage", "--name", name, "--harness", harness]
+                ["agent", "transfer", "cred-stage", "--name", name, "--harness", harness]
             )
             staging_path = str(_required(staged.get("path"), "path"))
             if not target_has_image:
@@ -538,7 +541,9 @@ def run_transfer(
                 remote.upload(local_file, f"{staging_path}/{arcname}")
             remote.run_json(
                 [
-                    "transfer-cred-stage",
+                    "agent",
+                    "transfer",
+                    "cred-stage",
                     "--name",
                     name,
                     "--harness",
@@ -556,7 +561,9 @@ def run_transfer(
                 # user's real HOME.
                 container_home = remote.run_json(
                     [
-                        "transfer-container-home",
+                        "agent",
+                        "transfer",
+                        "container-home",
                         "--name",
                         name,
                         "--harness",
@@ -612,7 +619,7 @@ def run_transfer(
             "credentials": bool(with_credentials),
         }
         received = remote.run_json(
-            ["transfer-receive"], stdin=json.dumps(receive_payload).encode()
+            ["agent", "transfer", "receive"], stdin=json.dumps(receive_payload).encode()
         )
         new_actor = str(_required(received.get("actor"), "actor"))
         emit(f"received on {remote_node}: {new_actor} (resume verified)")
@@ -697,7 +704,9 @@ def _session_path_argv(
     """Argv for the remote path resolver; codex needs the relative layout."""
 
     argv = [
-        "transfer-session-path",
+        "agent",
+        "transfer",
+        "session-path",
         "--harness",
         harness,
         "--cwd",

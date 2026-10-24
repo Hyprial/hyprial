@@ -3,7 +3,7 @@
 `hyprial workflow overview show` prints the model; `publish` writes it into an
 orgfs space as ``<path>/nodes/<node>.js`` next to a static ``index.html`` that
 merges every node's file.  Members open ``index.html`` from their read-only
-checkout (``hyprial fs checkout``), so the page works before the orgfs web
+checkout (``hyprial fs space checkout``), so the page works before the orgfs web
 front is deployed.
 
 Task lines are inferred until PAC can declare them, and are named after their

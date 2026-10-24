@@ -29,7 +29,7 @@ needs BOTH spellings of "somebody took responsibility for this message":
 Keying on ``fetched_at_ms IS NULL`` alone would report every healthy
 streaming worker with a queued message as "not collecting its mail": the
 alarm would be loudest on the normal case.  And neither reading is the
-``consumed = 0`` depth ``hyprial top`` shows -- that counts messages already
+``consumed = 0`` depth ``hyprial agent top`` shows -- that counts messages already
 taken into a turn, which is what being busy looks like.
 """
 

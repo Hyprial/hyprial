@@ -58,7 +58,7 @@ def _read_public_key(value: str) -> bytes:
 
 
 def register_trust_commands(app, get_dependencies):
-    @app.command("transfer-trust-source-add")
+    @app.command("trust-source-add")
     def transfer_trust_source_add(
         actor: str = typer.Option(
             ...,
@@ -150,7 +150,7 @@ def register_trust_commands(app, get_dependencies):
 
         _execute(operation, json_output=json_output)
 
-    @app.command("transfer-trust-source-list")
+    @app.command("trust-source-list")
     def transfer_trust_source_list(
         json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
     ) -> None:
@@ -187,7 +187,7 @@ def register_trust_commands(app, get_dependencies):
 
         _execute(operation, json_output=json_output)
 
-    @app.command("transfer-trust-source-retire")
+    @app.command("trust-source-retire")
     def transfer_trust_source_retire(
         key_id: str = typer.Option(
             ...,

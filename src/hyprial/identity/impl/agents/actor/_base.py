@@ -173,6 +173,7 @@ class _PrepareRuntimeCommand:
     tool_profile: AgentToolProfile
     containerized: bool
     expected_entity_token: str | None = None
+    credential_preflight: bool = False
 @dataclass(frozen=True, slots=True)
 class _MaterialiseLandingHomeCommand:
     correlation_id: str

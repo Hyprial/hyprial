@@ -1,4 +1,4 @@
-"""The ``hyprial top`` agent-activity inspection command."""
+"""The ``hyprial agent top`` agent-activity inspection command."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import re
 import subprocess
 import typer
 
-from hyprial.shell.impl.cli.commands.common.root import app
+from hyprial.shell.impl.cli.commands.agent.admin import agent_app
 from hyprial.shell.impl.cli.commands.common.support import JsonObject
 _TOP_SEVERITY = {
     "stuck": 0,
@@ -179,7 +179,7 @@ def _top_state_label(row: JsonObject, now_ms: int) -> str:
             f" idle {_format_top_age(detail.get('idleMs'))}"
         )
     if state == "idle":
-        return "idle"
+        return "no recent output"
     if detail.get("busy") is True and isinstance(row.get("openTurnStartedAtMs"), int):
         open_ms = now_ms - int(row["openTurnStartedAtMs"])
         return f"ok (turn {_format_top_age(open_ms)})"
@@ -294,7 +294,7 @@ def _render_top(
         for index in range(len(headers))
     ]
     lines = [
-        f"hyprial top   daemon {daemon.get('pid', '?')}   node {daemon.get('nodeId', '?')}"
+        f"hyprial agent top   daemon {daemon.get('pid', '?')}   node {daemon.get('nodeId', '?')}"
     ]
     bypass = daemon.get("dispatchWithoutPacCount")
     if isinstance(bypass, int):
@@ -436,7 +436,7 @@ def _render_top_quota(quota: object, now_ms: int) -> list[str]:
     return lines
 
 
-@app.command("top")
+@agent_app.command("top")
 def top_status(
     wide: bool = typer.Option(
         False,

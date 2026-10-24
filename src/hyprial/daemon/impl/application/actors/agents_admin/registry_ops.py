@@ -15,7 +15,6 @@ from hyprial.identity import (
     AgentError,
     AgentHomeError,
     HandoverNotice,
-    RestorePolicyError,
     normalize_capabilities,
     normalize_harness_args,
 )
@@ -36,6 +35,10 @@ from hyprial.daemon.impl.ipc.params import (
     _optional_string_param,
     _required_string,
 )
+
+from .policies import handle_restore_policy
+
+
 
 _AGENT_OPERATION_NAMESPACE = "agent"
 _RESUME_COMMIT_GUARD_VERSION = 1
@@ -335,7 +338,7 @@ class _AgentRegistryOpsMixin:
             }
         if method == "agent.create":
             # Decision A5: the one creation path. `hyprial agent create` calls it
-            # directly; `hyprial start` calls it first and only then launches a
+            # directly; `hyprial agent start` calls it first and only then launches a
             # harness, so a connector can never exist without an identity.
             name = self.agents.native_actor(
                 _required_string(params.get("name"), "name")
@@ -468,7 +471,7 @@ class _AgentRegistryOpsMixin:
             # Same per-request snapshot as ps: agent.list is the same loop
             # over agents[], so without it the storm only moves house.
             inactive_since = params.get("inactiveSince")
-            cutoff_ms: int | None = None
+            inactivity_filter: tuple[int, int] | None = None
             if inactive_since is not None:
                 try:
                     seconds = parse_duration(inactive_since, "inactiveSince")
@@ -476,7 +479,10 @@ class _AgentRegistryOpsMixin:
                     raise DaemonRequestError(
                         ipc_errors.INVALID_ARGUMENT, str(error)
                     ) from error
-                cutoff_ms = self._agent_registry.now_ms() - int(seconds * 1_000)
+                inactivity_filter = (
+                    self._agent_registry.now_ms(),
+                    int(seconds * 1_000),
+                )
             with self._worker_status_snapshot():
                 agents = []
                 visible_actors: list[str] = []
@@ -486,8 +492,10 @@ class _AgentRegistryOpsMixin:
                     hints = self._agent_session_domains.agent.read_activity_hints(
                         agent.actor
                     ).to_payload()
-                    if cutoff_ms is not None and not self._agent_is_inactive(
-                        agent, hints, cutoff_ms=cutoff_ms
+                    if inactivity_filter is not None and not self._agent_is_inactive(
+                        agent,
+                        now_ms=inactivity_filter[0],
+                        threshold_ms=inactivity_filter[1],
                     ):
                         continue
                     agents.append(self._agent_status_json(agent, activity_hints=hints))
@@ -617,41 +625,14 @@ class _AgentRegistryOpsMixin:
             }
         if method == "agent.readiness":
             return self._agent_readiness(params)
-        if method == "agent.restore-policy":
-            name = self.agents.normalize_actor(
-                _required_string(params.get("name"), "name")
+        if method in {"agent.restore-policy", "agent.restore-threshold"}:
+            return handle_restore_policy(
+                method,
+                params,
+                authority=self._restore_policy,
+                normalize_actor=self.agents.normalize_actor,
+                submit_wake=self._submit_restore_wake,
             )
-            policy_name = _required_string(params.get("policy"), "policy")
-            try:
-                policy = self._restore_policy.set_agent(name, policy_name)
-            except RestorePolicyError as error:
-                raise DaemonRequestError(
-                    ipc_errors.INVALID_ARGUMENT, str(error)
-                ) from error
-            if policy_name == "always":
-                self._submit_restore_wake(name, reason="per-agent-always")
-            return {
-                "ok": True,
-                "actor": name,
-                "policy": policy.policy_for(name),
-                "restoreThresholdMs": policy.threshold_ms,
-            }
-        if method == "agent.restore-threshold":
-            threshold_ms = params.get("thresholdMs")
-            if (
-                not isinstance(threshold_ms, int)
-                or isinstance(threshold_ms, bool)
-                or threshold_ms < 0
-            ):
-                raise DaemonRequestError(
-                    ipc_errors.INVALID_ARGUMENT,
-                    "thresholdMs must be a non-negative integer",
-                )
-            policy = self._restore_policy.set_threshold(threshold_ms)
-            return {
-                "ok": True,
-                "restoreThresholdMs": policy.threshold_ms,
-            }
         if method == "agent.unblock":
             name = self.agents.normalize_actor(
                 _required_string(params.get("name"), "name")
@@ -670,6 +651,15 @@ class _AgentRegistryOpsMixin:
             )
             harness = _required_string(params.get("harness"), "harness")
             cwd = _optional_string_param(params.get("cwd"), "cwd")
+            model_vendor = _optional_string_param(
+                params.get("modelProvider"), "modelProvider"
+            )
+            credential_preflight = params.get("credentialPreflight", False)
+            if not isinstance(credential_preflight, bool):
+                raise DaemonRequestError(
+                    ipc_errors.INVALID_ARGUMENT,
+                    "credentialPreflight must be a boolean",
+                )
             from hyprial.identity import (
                 DEFAULT_AGENT_TOOL_PROFILE,
                 AgentRuntimeError,
@@ -683,6 +673,11 @@ class _AgentRegistryOpsMixin:
                     cwd,
                     DEFAULT_AGENT_TOOL_PROFILE,
                     containerized=False,
+                    credential_preflight=(
+                        credential_preflight
+                        and harness == "codex"
+                        and model_vendor in {None, "openai"}
+                    ),
                     legacy_reporter=self._report_legacy_agent_home,
                 )
             except (
@@ -694,6 +689,7 @@ class _AgentRegistryOpsMixin:
                 raise DaemonRequestError(
                     getattr(error, "code", None) or ipc_errors.INVALID_ARGUMENT,
                     str(error),
+                    getattr(error, "data", None),
                 ) from error
             if context is None:
                 return {"ok": True, "mode": "legacy", "environment": {}}

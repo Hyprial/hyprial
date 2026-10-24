@@ -1,4 +1,4 @@
-"""``hyprial lark-auth`` device authorization maintenance."""
+"""``hyprial adapter user-auth`` device authorization maintenance."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import os
 import typer
 
 from hyprial.shell.impl.cli.commands.common.support import JsonObject, _local_operator_identity
-lark_auth_app = typer.Typer(
+user_auth_app = typer.Typer(
     help=(
         "Watch the lark-cli USER credential: detect expiry, walk the device "
         "flow to 'one click away', and push the link to a human."
@@ -107,7 +107,7 @@ def _lark_auth_timer_check() -> JsonObject | None:
         return {"status": "error", "error": type(error).__name__}
 
 
-@lark_auth_app.command("check")
+@user_auth_app.command("check")
 def lark_auth_check(
     notify_route: str | None = typer.Option(
         None,
@@ -140,7 +140,7 @@ def lark_auth_check(
       unattended path and it never notifies);
     * missing/dead refresh -> `lark-cli auth login --no-wait` mints a
       verification link that is pushed to --notify-route, then
-      `hyprial lark-auth complete` finishes the flow after the human clicks.
+      `hyprial adapter user-auth complete` finishes the flow after the human clicks.
       Re-notification is cooled down per app (default 1h) and a still-valid
       pending link is never replaced by a newer one.
     """
@@ -175,7 +175,7 @@ def lark_auth_check(
             warn(
                 f"lark-cli 用户凭据需要重新授权,链接已生成({where}):\n"
                 f"{result.verification_url}\n"
-                "人点完后运行 `hyprial lark-auth complete` 收尾。",
+                "人点完后运行 `hyprial adapter user-auth complete` 收尾。",
                 json_output=json_output,
             )
         return result.to_json()
@@ -183,7 +183,7 @@ def lark_auth_check(
     services._execute(operation, json_output=json_output)
 
 
-@lark_auth_app.command("complete")
+@user_auth_app.command("complete")
 def lark_auth_complete(
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:

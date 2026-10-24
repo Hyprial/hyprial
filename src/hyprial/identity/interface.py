@@ -169,6 +169,7 @@ if TYPE_CHECKING:
     from hyprial.identity.impl.users.store._base import ResolvedUser as ResolvedUser
     from hyprial.identity.impl.agents.state.worker_state import RestorePolicyAuthority as RestorePolicyAuthority
     from hyprial.identity.impl.agents.state.worker_state import RestorePolicyError as RestorePolicyError
+    from hyprial.identity.impl.agents.state.worker_state import is_inactive as is_inactive
     from hyprial.identity.impl.agents.state.restore_migration import migrate_legacy_agent_keep_list as migrate_legacy_agent_keep_list
     from hyprial.identity.impl.agents.actor.ports import RetireAgentLifecycleReceiptCommand as RetireAgentLifecycleReceiptCommand
     from hyprial.identity.impl.agents.actor.ports import RetireAgentSessionRefsCommand as RetireAgentSessionRefsCommand
@@ -252,6 +253,7 @@ if TYPE_CHECKING:
     from hyprial.identity.impl.org_directory import org_from_space_name as org_from_space_name
     from hyprial.identity.impl.org_directory import org_space_name as org_space_name
     from hyprial.identity.impl.org_directory import parse_bootstrap_yaml as parse_bootstrap_yaml
+    from hyprial.identity.impl.agents.runtime.context import preflight_codex_credential as preflight_codex_credential
     from hyprial.identity.impl.org_directory import role_grants_from_document as role_grants_from_document
     from hyprial.identity.impl.principal import parse_principal as parse_principal
     from hyprial.identity.impl.principal import principal_kind as principal_kind
@@ -438,6 +440,7 @@ _FACADE_EXPORTS = {
     'ResolvedUser': ('hyprial.identity.impl.users.store._base', 'ResolvedUser'),
     'RestorePolicyAuthority': ('hyprial.identity.impl.agents.state.worker_state', 'RestorePolicyAuthority'),
     'RestorePolicyError': ('hyprial.identity.impl.agents.state.worker_state', 'RestorePolicyError'),
+    'is_inactive': ('hyprial.identity.impl.agents.state.worker_state', 'is_inactive'),
     'migrate_legacy_agent_keep_list': ('hyprial.identity.impl.agents.state.restore_migration', 'migrate_legacy_agent_keep_list'),
     'RetireAgentLifecycleReceiptCommand': ('hyprial.identity.impl.agents.actor.ports', 'RetireAgentLifecycleReceiptCommand'),
     'RetireAgentSessionRefsCommand': ('hyprial.identity.impl.agents.actor.ports', 'RetireAgentSessionRefsCommand'),
@@ -521,6 +524,7 @@ _FACADE_EXPORTS = {
     'org_from_space_name': ('hyprial.identity.impl.org_directory', 'org_from_space_name'),
     'org_space_name': ('hyprial.identity.impl.org_directory', 'org_space_name'),
     'parse_bootstrap_yaml': ('hyprial.identity.impl.org_directory', 'parse_bootstrap_yaml'),
+    'preflight_codex_credential': ('hyprial.identity.impl.agents.runtime.context', 'preflight_codex_credential'),
     'role_grants_from_document': ('hyprial.identity.impl.org_directory', 'role_grants_from_document'),
     'parse_principal': ('hyprial.identity.impl.principal', 'parse_principal'),
     'principal_kind': ('hyprial.identity.impl.principal', 'principal_kind'),
@@ -726,6 +730,7 @@ __all__ = [
     'ResolvedUser',
     'RestorePolicyAuthority',
     'RestorePolicyError',
+    'is_inactive',
     'migrate_legacy_agent_keep_list',
     'RetireAgentLifecycleReceiptCommand',
     'RetireAgentSessionRefsCommand',
@@ -809,6 +814,7 @@ __all__ = [
     'org_from_space_name',
     'org_space_name',
     'parse_bootstrap_yaml',
+    'preflight_codex_credential',
     'role_grants_from_document',
     'parse_principal',
     'principal_kind',

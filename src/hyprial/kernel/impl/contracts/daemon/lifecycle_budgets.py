@@ -1,7 +1,7 @@
 """Lifecycle operation timeouts, shared by the daemon and the CLI.
 
 These live in the contract layer, not in ``hyprial.daemon.impl.lifecycle_manager``,
-because the CLI needs them to size its ``hyprial down`` IPC wait and importing the
+because the CLI needs them to size its ``hyprial agent stop`` IPC wait and importing the
 daemon package from the CLI startup path adds ~1.2 s to every invocation
 (guarded by ``test_importing_the_cli_does_not_drag_in_the_daemon_package``).
 The composition rule is the point: the three waits are derived from one
@@ -17,7 +17,7 @@ from __future__ import annotations
 #: re-drive *count* cannot tell slow from stuck -- only this operation-level
 #: budget can.  On expiry the operation is put to the terminal ``FAILED`` state
 #: (never ``COMPENSATING``: compensating a stop that cannot complete just hangs
-#: the same way in reverse), which stops the re-drive and lets ``hyprial down``
+#: the same way in reverse), which stops the re-drive and lets ``hyprial agent stop``
 #: return a coded failure instead of an IPC timeout.
 LIFECYCLE_OPERATION_DEADLINE_SECONDS = 70.0
 

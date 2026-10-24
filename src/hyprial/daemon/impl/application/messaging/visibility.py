@@ -477,7 +477,7 @@ class _VisibilityMixin:
         """Canonicalize only actors carried by fenced MCP/session requests.
 
         The same message methods also back unfenced CLI operations such as
-        ``hyprial ack --from <node>``.  Those actors address durable inbox rows
+        ``hyprial message ack --from <node>``.  Those actors address durable inbox rows
         verbatim and must not be rewritten as interactive-agent URIs.
         """
 

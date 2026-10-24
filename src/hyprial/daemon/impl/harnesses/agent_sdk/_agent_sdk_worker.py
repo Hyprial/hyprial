@@ -39,7 +39,7 @@ except ModuleNotFoundError as error:
 # ``session_id`` carry the daemon's session persistence: a restarted daemon
 # resumes the worker's previous conversation instead of cold-starting it.
 # ``disallowed_tools`` carries the deny half of the CLI policy: an SDK that
-# silently drops it would allow ``hyprial restart`` on a broad CLI allow.
+# silently drops it would allow ``hyprial daemon restart`` on a broad CLI allow.
 _REQUIRED_OPTION_PARAMS = frozenset(
     {
         "setting_sources",

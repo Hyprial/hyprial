@@ -1,7 +1,7 @@
 """The typed result of a daemon launch — one shape, three readers (PR #332 F2).
 
 Before this type existed, ``_launch_daemon_process`` returned a flat dict
-(``{ok, started, alreadyRunning, **ping}``) while ``hyprial upgrade`` still dug
+(``{ok, started, alreadyRunning, **ping}``) while ``hyprial daemon upgrade`` still dug
 for the nested ps shape ``launched["daemon"]`` it used to return.  Every
 upgrade therefore ended in INVALID_RESPONSE ⇒ UPGRADE_RESTART_FAILED with a
 false owner alert — and the suite stayed green because the test stub
@@ -38,7 +38,7 @@ class DaemonLaunchResult:
 
     1. ``hyprial init`` — emits ``to_payload()`` (plus its warnings) as the
        command's JSON output, and re-wraps the already-running branch;
-    2. ``hyprial upgrade`` — reads ``running``/``pid`` for the fresh-pid check
+    2. ``hyprial daemon upgrade`` — reads ``running``/``pid`` for the fresh-pid check
        after the post-install restart;
     3. the e2e contract runner
        (``contract/e2e/_daemon_runner.py``) — parses ``hyprial init

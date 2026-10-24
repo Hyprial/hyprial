@@ -222,7 +222,7 @@ def upgrade_available(
     error at the time; it is the same log line as a normal upgrade.
 
     ⚠️ `operator_chose_the_tag` is what keeps this guard from eating the escape
-    hatch. `hyprial upgrade --tag v0.4.1` is a person deliberately going back, and
+    hatch. `hyprial daemon upgrade --tag v0.4.1` is a person deliberately going back, and
     it must keep working -- a "never downgrade" implementation would satisfy
     every test about rollbacks while breaking the one path that is supposed to
     downgrade. The default is False so a caller that forgets the flag gets the

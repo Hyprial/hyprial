@@ -166,7 +166,7 @@ class OperatorAlarmDelivery:
                 action = _restart_action(request.harness)
             else:
                 name = request.key
-                action = "用 hyprial ps 查看它的状态和最后的错误"
+                action = "用 hyprial daemon status 查看它的状态和最后的错误"
             return (
                 f"托管 worker {name} 已失败，重启预算已用完，不会再自动重启。"
                 f"节点：{request.node}。"
@@ -183,7 +183,7 @@ class OperatorAlarmDelivery:
                 "daemon 状态写入者饱和，会话注册、刷新和心跳会超时，唤醒可能中断。"
                 f"节点：{request.node}。"
                 f"读数：{numbers}。"
-                "处理：用 hyprial ps 查看 daemon.statePersistenceLatency，"
+                "处理：用 hyprial daemon status 查看 daemon.statePersistenceLatency，"
                 "找出占用最多的命令；持续超过 10 分钟请检查最近的部署。"
             )
         if alarm.text:
@@ -252,7 +252,7 @@ def _restart_action(spec: HarnessLaunchSpec) -> str:
         )
     command = _restart_command(spec)
     if command is None:
-        return f"运行 hyprial ps 查看并按原隔离方式重启 {spec.name}"
+        return f"运行 hyprial daemon status 查看并按原隔离方式重启 {spec.name}"
     return f"确认原因后执行 {command}"
 
 
@@ -278,7 +278,7 @@ def _restart_command(spec: HarnessLaunchSpec) -> str | None:
     ):
         return None
 
-    command = ["hyprial", "start", spec.harness, "--name", spec.name]
+    command = ["hyprial", "agent", "start", spec.harness, "--name", spec.name]
     if spec.nickname is not None:
         command.extend(("--nickname", spec.nickname))
     if spec.cwd is not None:

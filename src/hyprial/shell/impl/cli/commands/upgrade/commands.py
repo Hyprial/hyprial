@@ -1,4 +1,4 @@
-"""``hyprial upgrade`` - self-upgrade with restore follow-up."""
+"""``hyprial daemon upgrade`` - self-upgrade with restore follow-up."""
 
 from __future__ import annotations
 
@@ -17,8 +17,39 @@ from hyprial.shell.impl.cli.commands.common.pending_restart import (
     _restart_daemon_onto_install,
     _write_pending_restart,
 )
-from hyprial.shell.impl.cli.commands.common.root import app
 from hyprial.shell.impl.cli.commands.common.support import JsonObject, _RESTORE_FOLLOWUP_POLL_INTERVAL_SECONDS, _utc_now
+
+
+upgrade_app = typer.Typer(
+    help="Upgrade the whole installation and manage automatic upgrades.",
+    invoke_without_command=True,
+    no_args_is_help=False,
+)
+
+
+def _unpack_paired_gui(result: JsonObject) -> None:
+    """Install the GUI component paired with the version just installed.
+
+    ``uv tool install --force`` replaces this process's ``site-packages`` in
+    place, so ``product_bundle()`` now reads the new wheel's ``_gui`` payload.
+    The unpack must never fail an upgrade that already succeeded: a source
+    checkout or a wheel built without a GUI records the reason, and
+    ``hyprial gui upgrade --force`` stays the repair path.
+    """
+    services = get_services()
+
+    try:
+        from hyprial.shell.impl.gui.apps import upgrade as unpack_gui
+
+        result["gui"] = unpack_gui(services._hyprial_home())
+    except Exception as error:  # noqa: BLE001 - the install already succeeded
+        result["gui"] = {
+            "ok": False,
+            "code": getattr(error, "code", "GUI_UNPACK_FAILED"),
+            "error": str(error),
+        }
+
+
 def _perform_upgrade_and_report(*args: object, **kwargs: object) -> JsonObject:
     """Upgrade, then check what got installed, then tell the owner -- every time.
 
@@ -60,7 +91,7 @@ def _perform_upgrade_and_report(*args: object, **kwargs: object) -> JsonObject:
 
         ⚠️ This used to be a hardcoded `True` passed as `upgraded`. Reaching
         the success path and installing something are different facts, and
-        `hyprial upgrade` runs on a timer where the second is usually false.
+        `hyprial daemon upgrade` runs on a timer where the second is usually false.
         """
         from hyprial.daemon import UPGRADE_ALREADY_CURRENT, UPGRADE_AWAITING_RESTART, UPGRADE_DECLINED_DOWNGRADE, UPGRADE_INSTALLED, UPGRADE_UNCONFIRMED
 
@@ -189,7 +220,7 @@ def _perform_upgrade(
     """Install one exact tag and restart an existing daemon when it changes.
 
     ``awaiting_confirmation`` (the timer's mode): install, never restart, and
-    record a pending restart that ``hyprial autoupdate restart`` applies.
+    record a pending restart that ``hyprial daemon upgrade apply`` applies.
     """
     services = get_services()
 
@@ -251,6 +282,7 @@ def _perform_upgrade(
             "restart": {
                 "attempted": False,
                 "restarted": False,
+                "supervision": "unsupervised",
                 "reason": "upgrade was a no-op; restart not needed",
             },
         }
@@ -285,9 +317,8 @@ def _perform_upgrade(
         # Guard 3 (spec autoupdate-isolated-home-2026-09-15), the backstop:
         # ``uv tool install`` may run only when this process itself lives in
         # the tool directory uv is about to write.  Placement is the single
-        # install call site, so the manual ``hyprial upgrade``, the
-        # autoupdate child, and the legacy launchd/systemd timer (which
-        # shells out to the same child) all share it.  Fail-closed on an
+        # install call site, so the manual ``hyprial daemon upgrade`` and the
+        # daemon-owned autoupdate child share it.  Fail-closed on an
         # unresolvable tool directory: we cannot prove where uv would
         # write, so we cannot prove the write is ours.
         raise services.CliError(
@@ -312,6 +343,7 @@ def _perform_upgrade(
         **resolved,
         "output": completed.stdout.strip(),
     }
+    _unpack_paired_gui(result)
     if not ref_changed:
         result.update(
             {
@@ -319,6 +351,7 @@ def _perform_upgrade(
                 "restart": {
                     "attempted": False,
                     "restarted": False,
+                    "supervision": "unsupervised",
                     # The legacy string is byte-preserved; only track mode
                     # (which pins a commit, not a tag) uses the new wording.
                     "reason": (
@@ -337,6 +370,7 @@ def _perform_upgrade(
                 "restart": {
                     "attempted": False,
                     "restarted": False,
+                    "supervision": "unsupervised",
                     "reason": "daemon was not running; restart skipped",
                 },
             }
@@ -348,7 +382,7 @@ def _perform_upgrade(
         # receipt while the notice itself arrived, and a blocked restart was
         # then forgotten: the next run saw "already current" and never
         # restarted.  Now the install is recorded as a pending restart that
-        # survives until someone runs `hyprial autoupdate restart`.
+        # survives until someone runs `hyprial daemon upgrade apply`.
         pending = {
             "tag": resolution.tag,
             "commit": resolution.commit,
@@ -364,10 +398,11 @@ def _perform_upgrade(
                 "restart": {
                     "attempted": False,
                     "restarted": False,
+                    "supervision": "unsupervised",
                     "awaitingConfirmation": True,
                     "reason": (
                         "installed; restart waits for confirmation: "
-                        "hyprial autoupdate restart"
+                        "hyprial daemon upgrade apply"
                     ),
                     "before": before,
                 },
@@ -382,6 +417,7 @@ def _perform_upgrade(
                 "restart": {
                     "attempted": False,
                     "restarted": False,
+                    "supervision": "unsupervised",
                     "reason": "restart disabled by --no-restart",
                     "before": before,
                 },
@@ -415,6 +451,7 @@ def _perform_upgrade(
                 "restart": {
                     "attempted": False,
                     "restarted": False,
+                    "supervision": "unsupervised",
                     "reason": (
                         "restart blocked because the pre-restart notification "
                         "was not confirmed"
@@ -447,7 +484,7 @@ def _perform_upgrade(
         raise services.CliError(
             "UPGRADE_RESTART_FAILED",
             f"upgrade installed {installed_version}, but daemon restart failed: "
-            f"{error}. Run `hyprial restart` from a new shell command to restore service.",
+            f"{error}. Run `hyprial daemon restart` from a new shell command to restore service.",
             {
                 **resolved,
                 "upgradeCompleted": True,
@@ -456,6 +493,7 @@ def _perform_upgrade(
                 "restart": {
                     "attempted": True,
                     "restarted": False,
+                    "supervision": "unsupervised",
                     "reason": "post-install import failed",
                     "before": before,
                 },
@@ -644,8 +682,20 @@ def _follow_up_restore_confirmation(
     restart["followUp"] = follow_up
 
 
-@app.command()
+def _run_upgrade_steps(services: object) -> JsonObject:
+    """Run the daemon-domain step registry after a successful restart."""
+
+    from hyprial.daemon import run_upgrade_steps
+
+    return run_upgrade_steps(
+        services._state_dir(),  # type: ignore[attr-defined]
+        home=services._hyprial_home(),  # type: ignore[attr-defined]
+    )
+
+
+@upgrade_app.callback(invoke_without_command=True)
 def upgrade(
+    ctx: typer.Context,
     tag: str | None = typer.Option(
         None,
         "--tag",
@@ -654,11 +704,13 @@ def upgrade(
     source: str = typer.Option(
         "official",
         "--source",
+        hidden=True,
         help="Use the official release, or a one-shot Forgejo test source.",
     ),
     ref: str | None = typer.Option(
         None,
         "--ref",
+        hidden=True,
         help="One-shot Forgejo full commit or tag; requires --source forgejo.",
     ),
     force: bool = typer.Option(
@@ -673,17 +725,21 @@ def upgrade(
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
-    """Upgrade the uv-managed hyprial tool from the official release."""
+    """Upgrade the uv-managed hyprial tool and unpack its paired GUI."""
+    if ctx.invoked_subcommand is not None:
+        return
     services = get_services()
 
-    services._execute(
-        lambda: services._perform_upgrade_and_report(
+    def operation() -> JsonObject:
+        result = services._perform_upgrade_and_report(
             force,
             tag,
             source=source,
             ref=ref,
             restart=not no_restart,
-        ),
-        json_output=json_output,
-        allow_missing_home=True,
-    )
+        )
+        if not no_restart:
+            result["upgradeSteps"] = _run_upgrade_steps(services)
+        return result
+
+    services._execute(operation, json_output=json_output, allow_missing_home=True)

@@ -1,4 +1,4 @@
-"""The ``hyprial read`` message-body command."""
+"""The ``hyprial message read`` message-body command."""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ from typing import Any
 from collections.abc import Mapping
 import typer
 
-from hyprial.shell.impl.cli.commands.common.root import app
 from hyprial.shell.impl.cli.commands.common.support import _message_claim_params
+from hyprial.shell.impl.cli.commands.message import message_app
 from hyprial.shell.impl.cli.commands.message.send import _validate_from_identity
 
 
@@ -30,7 +30,7 @@ def _render_read(data: Mapping[str, Any]) -> str:
     return f"<body not text: {shown} bytes; use --json>"
 
 
-@app.command("read")
+@message_app.command("read")
 def read_body(
     message_id: str = typer.Argument(..., help="Message ID whose body to read."),
     source: str = typer.Option(
@@ -45,7 +45,7 @@ def read_body(
 
     A consuming action: the daemon records ``fetched`` for this actor.  The
     message stays pending until reply or ack, so ``read`` can be repeated;
-    ``hyprial query`` remains read-only and never fetches.
+    ``hyprial message inbox`` remains read-only and never fetches.
     """
     services = get_services()
 

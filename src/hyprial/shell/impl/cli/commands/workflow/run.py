@@ -41,11 +41,11 @@ overview_app = typer.Typer(
     no_args_is_help=True,
 )
 
-workflow_app.add_typer(history_app, name="history")
+workflow_app.add_typer(history_app, name="history", hidden=True)
 workflow_app.add_typer(overview_app, name="overview")
 workflow_app.add_typer(worker_app, name="worker")
 workflow_app.add_typer(notify_app, name="notify")
-workflow_app.add_typer(migration_app, name="migration")
+workflow_app.add_typer(migration_app, name="migration", hidden=True)
 
 
 def _plan_document(spec: WorkflowSpec) -> dict[str, Any]:

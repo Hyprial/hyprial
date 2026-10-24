@@ -11,6 +11,7 @@ from hyprial.identity.impl.agents.home.provisioner import AgentHomeError
 from hyprial.identity.impl.agents.registry._base import AgentHomeReservation
 from hyprial.identity.impl.agents.actor.ports import AgentLifecycleReceiptCompleted
 from hyprial.identity.impl.agents.runtime.context import AgentRuntimeContext
+from hyprial.identity.impl.agents.runtime.context import AgentRuntimeError
 from hyprial.identity.impl.agents.registry.config_binding import agent_config_digest
 from hyprial.identity.impl.agents.actor.ports import AgentSecretGrantCompleted
 from hyprial.identity.impl.agents.actor.ports import BindAgentCommand
@@ -664,6 +665,7 @@ class _GenerationDispatchMixin:
                     cwd=command.cwd,
                     tool_profile=command.tool_profile,
                     containerized=command.containerized,
+                    credential_preflight=command.credential_preflight,
                     expected_entity_token=command.expected_entity_token,
                     validate_home=False,
                 )
@@ -715,13 +717,16 @@ class _GenerationDispatchMixin:
                     )
                     return
                 if event.error_code is not None:
-                    complete(
-                        event.correlation_id,
-                        None,
-                        AgentHomeAccessError(
-                            event.error_detail or event.error_code
-                        ),
+                    error = (
+                        AgentRuntimeError(
+                            event.error_detail or event.error_code,
+                            code=event.error_code,
+                            data=event.error_data,
+                        )
+                        if event.error_code == ipc_errors.CODEX_CREDENTIAL_MISSING
+                        else AgentHomeAccessError(event.error_detail or event.error_code)
                     )
+                    complete(event.correlation_id, None, error)
                     return
                 if event.receipt != pending.receipt:
                     raise AgentHomeError(

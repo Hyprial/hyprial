@@ -15,8 +15,13 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.correlation.alarm import AlarmEmitter as AlarmEmitter
     from hyprial.daemon.impl.correlation.alarm import AlarmResult as AlarmResult
     from hyprial.daemon.impl.correlation.availability_loud import AttemptIdentity as AttemptIdentity
-    from hyprial.daemon.impl.autoupdate import AutoUpdateManager as AutoUpdateManager
     from hyprial.daemon.impl.transfer.archive.bundle import BundleError as BundleError
+    from hyprial.daemon.impl.service_connect.models import CatalogEntry as CatalogEntry
+    from hyprial.daemon.impl.service_connect.models import ServiceConnectError as ServiceConnectError
+    from hyprial.daemon.impl.operations.service import ServiceConfig as ServiceConfig
+    from hyprial.daemon.impl.operations.service import ServiceManager as ServiceManager
+    from hyprial.daemon.impl.operations.service import ServiceOwnershipError as ServiceOwnershipError
+    from hyprial.daemon.impl.operations.service import ServiceStatus as ServiceStatus
     from hyprial.daemon.impl.harnesses.claude.runtime import CLAUDE_RUNTIME_ENVIRONMENT as CLAUDE_RUNTIME_ENVIRONMENT
     from hyprial.daemon.impl.harnesses.claude.runtime import ClaudeRuntimeError as ClaudeRuntimeError
     from hyprial.daemon.impl.transfer.cleanup import CleanupError as CleanupError
@@ -101,7 +106,6 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.mcp.proxy import StatelessDaemonProxy as StatelessDaemonProxy
     from hyprial.daemon.impl.network.tailcat import TAILCAT_COMMIT as TAILCAT_COMMIT
     from hyprial.daemon.impl.network.tailcat import TailcatSidecarError as TailcatSidecarError
-    from hyprial.daemon.impl.autoupdate import TimerConfig as TimerConfig
     from hyprial.daemon.impl.transfer.orchestrator import TransferError as TransferError
     from hyprial.daemon.impl.transfer.archive.trust import TrustStore as TrustStore
     from hyprial.daemon.impl.transfer.archive.trust import TrustStoreError as TrustStoreError
@@ -153,7 +157,6 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.harnesses.capabilities import declare as declare
     from hyprial.daemon.impl.pac.storage.store import default_database_path as default_database_path
     from hyprial.daemon.impl.squire.setup import derive_setup_identity as derive_setup_identity
-    from hyprial.daemon.impl.autoupdate import detect_platform as detect_platform
     from hyprial.daemon.impl.owner_migration.apply import detect_previous_owner as detect_previous_owner
     from hyprial.daemon.impl.adapters.lark.credentials.scopes import developer_console_permission_url as developer_console_permission_url
     from hyprial.daemon.impl.adapters.lark.credentials.scopes import diagnose_scopes as diagnose_scopes
@@ -249,7 +252,11 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.correlation.readiness_budget import restore_followup_budget_seconds as restore_followup_budget_seconds
     from hyprial.daemon.impl.links.ports import SettleHint as SettleHint
     from hyprial.daemon.impl.autoupdate.alert import run_self_check as run_self_check
+    from hyprial.daemon.impl.mcp.entry import main as run_mcp_entry
     from hyprial.daemon.impl.transfer.orchestrator import run_transfer as run_transfer
+    from hyprial.daemon.impl.upgrade import run_upgrade_steps as run_upgrade_steps
+    from hyprial.daemon.impl.upgrade import upgrade_step_status as upgrade_step_status
+    from hyprial.daemon.impl.upgrade.steps.mcp_entry import legacy_processes as legacy_processes
     from hyprial.daemon.impl.adapters.lark.credentials.scopes import scope_apply_url as scope_apply_url
     from hyprial.daemon.impl.transfer.archive.envelope import seal_envelope as seal_envelope
     from hyprial.daemon.impl.org.document import serialize_document as serialize_document
@@ -321,8 +328,13 @@ _FACADE_EXPORTS = {
     'AlarmEmitter': ('hyprial.daemon.impl.correlation.alarm', 'AlarmEmitter'),
     'AlarmResult': ('hyprial.daemon.impl.correlation.alarm', 'AlarmResult'),
     'AttemptIdentity': ('hyprial.daemon.impl.correlation.availability_loud', 'AttemptIdentity'),
-    'AutoUpdateManager': ('hyprial.daemon.impl.autoupdate', 'AutoUpdateManager'),
     'BundleError': ('hyprial.daemon.impl.transfer.archive.bundle', 'BundleError'),
+    'CatalogEntry': ('hyprial.daemon.impl.service_connect.models', 'CatalogEntry'),
+    'ServiceConnectError': ('hyprial.daemon.impl.service_connect.models', 'ServiceConnectError'),
+    'ServiceConfig': ('hyprial.daemon.impl.operations.service', 'ServiceConfig'),
+    'ServiceManager': ('hyprial.daemon.impl.operations.service', 'ServiceManager'),
+    'ServiceOwnershipError': ('hyprial.daemon.impl.operations.service', 'ServiceOwnershipError'),
+    'ServiceStatus': ('hyprial.daemon.impl.operations.service', 'ServiceStatus'),
     'CLAUDE_RUNTIME_ENVIRONMENT': ('hyprial.daemon.impl.harnesses.claude.runtime', 'CLAUDE_RUNTIME_ENVIRONMENT'),
     'ClaudeRuntimeError': ('hyprial.daemon.impl.harnesses.claude.runtime', 'ClaudeRuntimeError'),
     'CleanupError': ('hyprial.daemon.impl.transfer.cleanup', 'CleanupError'),
@@ -407,7 +419,6 @@ _FACADE_EXPORTS = {
     'StatelessDaemonProxy': ('hyprial.daemon.impl.mcp.proxy', 'StatelessDaemonProxy'),
     'TAILCAT_COMMIT': ('hyprial.daemon.impl.network.tailcat', 'TAILCAT_COMMIT'),
     'TailcatSidecarError': ('hyprial.daemon.impl.network.tailcat', 'TailcatSidecarError'),
-    'TimerConfig': ('hyprial.daemon.impl.autoupdate', 'TimerConfig'),
     'TransferError': ('hyprial.daemon.impl.transfer.orchestrator', 'TransferError'),
     'TrustStore': ('hyprial.daemon.impl.transfer.archive.trust', 'TrustStore'),
     'TrustStoreError': ('hyprial.daemon.impl.transfer.archive.trust', 'TrustStoreError'),
@@ -455,7 +466,6 @@ _FACADE_EXPORTS = {
     'declare': ('hyprial.daemon.impl.harnesses.capabilities', 'declare'),
     'default_database_path': ('hyprial.daemon.impl.pac.storage.store', 'default_database_path'),
     'derive_setup_identity': ('hyprial.daemon.impl.squire.setup', 'derive_setup_identity'),
-    'detect_platform': ('hyprial.daemon.impl.autoupdate', 'detect_platform'),
     'detect_previous_owner': ('hyprial.daemon.impl.owner_migration.apply', 'detect_previous_owner'),
     'developer_console_permission_url': ('hyprial.daemon.impl.adapters.lark.credentials.scopes', 'developer_console_permission_url'),
     'diagnose_scopes': ('hyprial.daemon.impl.adapters.lark.credentials.scopes', 'diagnose_scopes'),
@@ -551,7 +561,11 @@ _FACADE_EXPORTS = {
     'restore_followup_budget_seconds': ('hyprial.daemon.impl.correlation.readiness_budget', 'restore_followup_budget_seconds'),
     'SettleHint': ('hyprial.daemon.impl.links.ports', 'SettleHint'),
     'run_self_check': ('hyprial.daemon.impl.autoupdate.alert', 'run_self_check'),
+    'run_mcp_entry': ('hyprial.daemon.impl.mcp.entry', 'main'),
     'run_transfer': ('hyprial.daemon.impl.transfer.orchestrator', 'run_transfer'),
+    'run_upgrade_steps': ('hyprial.daemon.impl.upgrade.runner', 'run_upgrade_steps'),
+    'upgrade_step_status': ('hyprial.daemon.impl.upgrade.runner', 'upgrade_step_status'),
+    'legacy_processes': ('hyprial.daemon.impl.upgrade.steps.mcp_entry', 'legacy_processes'),
     'run_dsh_carrier': ('hyprial.daemon.impl.harnesses.dsh_tui', 'run_dsh_carrier'),
     'write_dsh_tui_plugin': ('hyprial.daemon.impl.harnesses.dsh_tui', 'write_dsh_tui_plugin'),
     'scope_apply_url': ('hyprial.daemon.impl.adapters.lark.credentials.scopes', 'scope_apply_url'),
@@ -646,8 +660,13 @@ __all__ = [
     'AlarmEmitter',
     'AlarmResult',
     'AttemptIdentity',
-    'AutoUpdateManager',
     'BundleError',
+    'CatalogEntry',
+    'ServiceConnectError',
+    'ServiceConfig',
+    'ServiceManager',
+    'ServiceOwnershipError',
+    'ServiceStatus',
     'CLAUDE_RUNTIME_ENVIRONMENT',
     'ClaudeRuntimeError',
     'CleanupError',
@@ -732,7 +751,6 @@ __all__ = [
     'StatelessDaemonProxy',
     'TAILCAT_COMMIT',
     'TailcatSidecarError',
-    'TimerConfig',
     'TransferError',
     'TrustStore',
     'TrustStoreError',
@@ -780,7 +798,6 @@ __all__ = [
     'declare',
     'default_database_path',
     'derive_setup_identity',
-    'detect_platform',
     'detect_previous_owner',
     'developer_console_permission_url',
     'diagnose_scopes',
@@ -883,6 +900,10 @@ __all__ = [
     'dsh_mcp_client_row',
     'write_launch_state',
     'run_dsh_carrier',
+    'run_mcp_entry',
+    'run_upgrade_steps',
+    'upgrade_step_status',
+    'legacy_processes',
     'write_dsh_tui_plugin',
     'run_self_check',
     'run_transfer',

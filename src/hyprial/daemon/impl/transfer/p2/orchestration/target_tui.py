@@ -3,10 +3,10 @@
 S6 lands and activates a TUI without launching it; the daemon never starts the
 TUI.  S7 runs the *target machine's own* CLI over the move's SSH channel:
 
-    hyprial start <harness> --name <actor> --resume <sessionRef> --tmux
+    hyprial agent start <harness> --name <actor> --resume <sessionRef> --tmux
 
 The CLI's registration wait is the readiness gate; this module re-verifies the
-same predicate against the target's own ``ps`` snapshot so a build that returns
+same predicate against the target's own daemon-status snapshot so a build that returns
 early cannot pass it -- ``channelConfirmed`` for claude, ``session.register``
 with ``source=pi-extension`` for pi.  Attach hints come from
 ``tmux.attach_hints``; a WSL target gets only the plain terminal line.
@@ -80,7 +80,7 @@ def start_argv(request: TuiStartRequest) -> list[str]:
     """The target CLI command: the launcher rebuilds the full argv, not S2's.
 
     The session document stores the carrier command (pi: ``["pi"]``), which is
-    NOT a launch argv; driving ``hyprial start`` is what re-adds the extension
+    NOT a launch argv; driving ``hyprial agent start`` re-adds the extension
     and launch flags the fresh TUI needs.
     """
 
@@ -91,6 +91,7 @@ def start_argv(request: TuiStartRequest) -> list[str]:
             {"harness": request.harness},
         )
     argv = [
+        "agent",
         "start",
         request.harness,
         "--name",
@@ -107,7 +108,7 @@ def start_argv(request: TuiStartRequest) -> list[str]:
 def registration_confirmed(
     harness: str, actor: str, session_ref: str, status: Mapping[str, Any]
 ) -> bool:
-    """The CLI's own predicates, re-applied to the target's ``ps`` payload.
+    """The CLI's own predicates, re-applied to the target's daemon-status payload.
 
     The actor is compared by its LOCAL name (``agent_uri_actor``): the daemon
     registers the canonical ``agent:<owner>:<machine>:<name>`` URI while the
@@ -161,7 +162,7 @@ def drive_target_start(request: TuiStartRequest, *, remote: Any) -> TuiStartResu
             "the target start returned no tmuxSession to attach to",
             {"response": response},
         )
-    status = remote.run_json(["ps"])
+    status = remote.run_json(["daemon", "status"])
     if not registration_confirmed(request.harness, request.actor, request.session_ref, status):
         raise TuiStartError(
             "CHANNEL_REGISTRATION_FAILED",

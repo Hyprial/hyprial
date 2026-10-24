@@ -15,8 +15,16 @@ import typer
 
 from hyprial.shell.impl.cli.commands.common.root import app
 from hyprial.shell.impl.cli.commands.common.support import DAEMON_START_IDLE_BUDGET_SECONDS, JsonObject, _INIT_READY_TIMEOUT_ENV, _announce_setup_guidance, _fail
+from hyprial.shell.impl.cli.output import CliResult, confirm
+
+
 @app.command()
 def login(
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Re-authenticate even when this home already has a coherent user login.",
+    ),
     no_open: bool = typer.Option(
         False,
         "--no-open",
@@ -69,6 +77,15 @@ def login(
 ) -> None:
     """Log in this home's user identity and provision the device key.
 
+    A home is already logged in when it has a valid secrets/login.json
+    credential, settings.json has a Casdoor owner, the credential, settings,
+    and selected profile issuers match, and the device key stage is complete.
+    When only the device stage is incomplete, the default command resumes it
+    without authenticating again. Otherwise the default command reports
+    that local session (token expiry is
+    unknown because the stored refresh token has no expiry field) and changes
+    nothing. Use --force to authenticate again.
+
     Since the tailnet cutover there is no sidecar install step and no
     control-plane join: the identity stage (U2) lands the owner in
     settings.json and the refresh token in secrets/login.json (0600), and
@@ -98,8 +115,40 @@ def login(
             json_output=json_output,
         )
 
-    def operation() -> JsonObject:
+    def operation() -> CliResult:
         services = get_services()
+        if not force and not switch_account and not dry_run:
+            from hyprial.shell.impl.cli.commands.login.flow import (
+                _login_device_id,
+                _resume_login_cli_flow,
+            )
+            from hyprial.shell.impl.login.session import (
+                inspect_login_session,
+                login_device_stage_complete,
+            )
+
+            from hyprial.daemon import node_owner_or_none
+
+            profile, _source = services.resolve_profile()
+            home = services._hyprial_home()
+            existing = inspect_login_session(home, expected_issuer=profile.issuer)
+            try:
+                effective_owner = node_owner_or_none(hyprial_home=home)
+            except ValueError:
+                effective_owner = None
+            if existing is not None and existing["owner"] == effective_owner:
+                device_id = _login_device_id()
+                if login_device_stage_complete(
+                    home, owner=existing["owner"], device_id=device_id
+                ):
+                    return CliResult(existing)
+                return CliResult(
+                    _resume_login_cli_flow(
+                        existing,
+                        expected_issuer=profile.issuer,
+                        json_output=json_output,
+                    )
+                )
         if dry_run:
             # A preview writes nothing, so it must not create a missing home.
             try:
@@ -112,12 +161,14 @@ def login(
                     data=error.data,
                 ) from error
         if dry_run or not _login_route_is_first_time_setup():
-            return services._run_login_cli_flow(
-                no_open=no_open,
-                json_output=json_output,
-                switch_account=switch_account,
-                dry_run=dry_run,
-                no_daemon=no_daemon,
+            return CliResult(
+                services._run_login_cli_flow(
+                    no_open=no_open,
+                    json_output=json_output,
+                    switch_account=switch_account,
+                    dry_run=dry_run,
+                    no_daemon=no_daemon,
+                )
             )
 
         try:
@@ -179,13 +230,110 @@ def login(
             steps = _organization_next_steps(services)
             if steps is not None:
                 response["nextSteps"] = steps
-            return response
+            return CliResult(response)
         finally:
             for transaction in held_identity_transaction:
                 transaction.close()
 
     services._execute(operation, json_output=json_output, allow_missing_home=True)
 
+
+@app.command()
+def logout(
+    yes: bool = typer.Option(
+        False, "--yes", help="Confirm removal of this home's user login."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Remove this home's user login without removing machine or agent keys.
+
+    Logout removes secrets/login.json plus the Casdoor identity fields that
+    login wrote in settings.json. It never removes agent credentials, Tailcat
+    device keys, or unrelated settings. A running daemon is stopped and its
+    exit proved before its persisted identity is removed. When no user-login
+    artifacts exist, the command reports not-logged-in and succeeds without a
+    confirmation.
+
+    It does not revoke already-issued access tokens at the issuer.
+    Such tokens can remain valid until expiry.
+    """
+    services = get_services()
+
+    def operation() -> CliResult:
+        from hyprial.identity import IdentityTransactionBusy, IdentityTransactionLock
+        from hyprial.shell.impl.cli.commands.login.flow import _prove_daemon_absent
+        from hyprial.shell.impl.login.session import (
+            inspect_login_artifacts,
+            remove_login_artifacts,
+        )
+
+        services = get_services()
+        home = services._hyprial_home()
+        artifacts = inspect_login_artifacts(home)
+        if not artifacts.present:
+            return CliResult(
+                {
+                    "status": "not-logged-in",
+                    "home": str(home),
+                    "removed": [],
+                }
+            )
+        if not yes:
+            if json_output or not services._stdin_isatty():
+                raise services.CliError(
+                    "CONFIRMATION_REQUIRED",
+                    "logout from a non-interactive command requires --yes",
+                )
+            if not confirm(f"Remove the user login from {home}?"):
+                raise services.CliError("CANCELLED", "logout cancelled")
+
+        try:
+            transaction = IdentityTransactionLock.acquire(home)
+        except IdentityTransactionBusy as error:
+            raise services.CliError(error.code, str(error)) from error
+        try:
+            # Re-read under the identity fence so a concurrent login cannot
+            # land between the preview/confirmation and removal.
+            artifacts = inspect_login_artifacts(home)
+            if not artifacts.present:
+                return CliResult(
+                    {
+                        "status": "not-logged-in",
+                        "home": str(home),
+                        "removed": [],
+                    }
+                )
+            daemon: JsonObject = {"state": "not-affected"}
+            if artifacts.casdoor_identity_present:
+                try:
+                    probe = services._daemon_probe(timeout=0.5)
+                except ipc_errors.DaemonUnavailableError:
+                    daemon = _prove_daemon_absent(
+                        home,
+                        services._state_dir(),
+                        lambda phase, **details: {
+                            "failedPhase": phase,
+                            **details,
+                        },
+                    )
+                else:
+                    daemon = services._stop_daemon_for_identity_switch()
+                    daemon["state"] = "stopped"
+                    if isinstance(probe, dict):
+                        daemon.setdefault("previousEpoch", probe.get("epoch"))
+            removed = remove_login_artifacts(home)
+            return CliResult(
+                {
+                    "status": "logged-out" if removed else "not-logged-in",
+                    "home": str(home),
+                    "removed": removed,
+                    "daemon": daemon,
+                }
+            )
+        finally:
+            transaction.close()
+
+    services._execute(operation, json_output=json_output, allow_missing_home=True)
 
 
 _ORG_LIST_HINT_SECONDS = 2.0

@@ -1,4 +1,4 @@
-"""``hyprial restart`` and pending-restart receipt handling."""
+"""``hyprial daemon restart`` and pending-restart receipt handling."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from hyprial.shell.impl.cli.commands.common.pending_restart import (
     _read_pending_restart,
     restart_daemon,
 )
-from hyprial.shell.impl.cli.commands.common.root import app
+from hyprial.shell.impl.cli.commands.daemon.commands import daemon_app
 from hyprial.shell.impl.cli.commands.common.support import JsonObject, _announce_setup_guidance, _append_warning, _squire_setup_warning, _utc_now
 def _daemon_restart_identity(status: JsonObject) -> JsonObject:
     """Project the daemon identity fields used by restart reports."""
@@ -37,7 +37,7 @@ def _daemon_restart_identity(status: JsonObject) -> JsonObject:
 
 
 def _restart_status() -> JsonObject | None:
-    """Read the same full daemon status as ``hyprial ps`` for a restart gate."""
+    """Read the same full daemon status as ``hyprial daemon status`` for a restart gate."""
     services = get_services()
 
     try:
@@ -171,7 +171,7 @@ def _restart_is_interactive() -> bool:
     return sys.stdin.isatty()
 
 
-@app.command("restart")
+@daemon_app.command("restart")
 def restart_command(
     yes: bool = typer.Option(
         False, "--yes", help="Restart even when active worker turns will be interrupted."
@@ -234,7 +234,7 @@ def restart_command(
         result["elapsedSeconds"] = round(services.time.monotonic() - started_at, 3)
         if pending is not None:
             result["restartConfirmation"] = _record_autoupdate_restart_confirmation(
-                via="hyprial restart",
+                via="hyprial daemon restart",
                 after=after,
             )
             result["pendingRestart"] = pending

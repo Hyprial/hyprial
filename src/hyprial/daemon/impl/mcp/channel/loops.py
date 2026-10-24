@@ -332,8 +332,9 @@ async def _watch_parent(
     Managed launches pass the long-lived launcher PID plus its process-birth
     marker.  That owner exists for exactly the Claude wait and remains
     observable even if this child starts only after it has been reparented; the
-    marker fences PID reuse.  A direct ``hyprial mcp claude-channel`` launch remains
-    compatible by falling back to ``os.getppid()`` drift.  Both paths key on
+    marker fences PID reuse.  A direct ``python -m hyprial.daemon.impl.mcp.entry
+    claude-channel`` launch remains compatible by falling back to ``os.getppid()``
+    drift.  Both paths key on
     process liveness rather than registration recency, so supersede alone never
     tears down a child whose owner is still alive.
     """

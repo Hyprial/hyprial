@@ -82,7 +82,7 @@ class _SequentialTurnIoMixin:
                     return 0
                 repeats = self._repeated_failures.get(failure_id, 0) + 1
                 self._repeated_failures[failure_id] = repeats
-                # Published for `hyprial top`: this incident's tell was one delivery
+                # Published for `hyprial agent top`: this incident's tell was one delivery
                 # failing over and over, and no surface showed it for 45 hours.
                 # Detection, not diagnosis -- doctor only helps once suspicious.
                 self.repeated_failure_delivery_id = failure_id

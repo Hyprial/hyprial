@@ -21,6 +21,7 @@ from hyprial.kernel import (
     DEFAULT_GIT_URL,
     PrivateAccessUnsupported,
     harden_private_path,
+    ipc_errors,
     private_metadata_violation,
 )
 
@@ -35,6 +36,9 @@ from hyprial.identity.impl.agents.home.config  import (
     validate_agent_config_location,
 )
 from hyprial.identity.impl.agents.home.provisioner  import HomeReceipt
+from hyprial.identity.impl.agents.runtime.private_paths import (
+    ensure_private_directory,
+)
 
 __all__ = [
     "AgentRuntimeContext",
@@ -56,6 +60,7 @@ __all__ = [
     "resolve_agent_runtime_context",
     "build_agent_runtime_preparation",
     "materialize_agent_runtime_context",
+    "preflight_codex_credential",
     "shared_credential_status",
     "validate_shared_credential_binding",
     "validate_shared_credential_environment",
@@ -98,9 +103,16 @@ def agent_home_mode(agent: Any, harness: str | None) -> tuple[str, str | None]:
 class AgentRuntimeError(ValueError):
     """A P2 root/profile combination cannot be represented safely."""
 
-    def __init__(self, message: str, *, code: str | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        data: dict[str, object] | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
+        self.data = data
 
 
 def _default_git_endpoint() -> tuple[str, str]:
@@ -228,6 +240,117 @@ class SharedCredentialBinding:
     native_path: Path
     target_path: Path
     agent_cwd: Path | None
+
+
+def preflight_codex_credential(
+    *,
+    native_root: Path,
+    actor: str,
+    model_provider: str | None,
+    shared_credential: SharedCredentialBinding | None = None,
+) -> None:
+    if model_provider not in {None, "openai"}:
+        return
+    credential = (
+        shared_credential.target_path
+        if shared_credential is not None
+        else native_root / "auth.json"
+    )
+    is_shared = shared_credential is not None
+    try:
+        metadata = credential.lstat()
+    except FileNotFoundError:
+        metadata = None
+    except OSError as error:
+        reason = "shared-target" if is_shared else "inaccessible"
+        instruction = (
+            "No hyprial CLI command can repair the configured external target "
+            f"{credential}. Repair access and restore it as a non-empty 0600 regular "
+            "file, or remove/change config.sharedCredentials.codex."
+            if is_shared
+            else "No hyprial CLI command can safely repair an inaccessible credential "
+            f"path. Repair access to {credential} and make it a non-empty 0600 "
+            "regular file."
+        )
+        _raise_codex_credential_preflight(
+            reason=reason,
+            credential=credential,
+            message=f"cannot inspect it: {error.strerror or error}",
+            remediation={"kind": "manual", "instruction": instruction},
+        )
+    if (
+        metadata is not None
+        and stat.S_ISREG(metadata.st_mode)
+        and stat.S_IMODE(metadata.st_mode) == 0o600
+        and metadata.st_size > 0
+    ):
+        return
+    if is_shared:
+        _raise_codex_credential_preflight(
+            reason="shared-target",
+            credential=credential,
+            message="the configured shared credential target is missing or unusable",
+            remediation={
+                "kind": "manual",
+                "instruction": "No hyprial CLI command can repair the configured external "
+                f"target {credential}. Restore it as a non-empty 0600 regular file, or "
+                "remove/change config.sharedCredentials.codex to a usable credential path.",
+            },
+        )
+    login = f"hyprial agent provider login codex --actor {shlex.quote(actor)}"
+    if metadata is None:
+        reason = "missing"
+        detail = "the credential file does not exist"
+        remediation = {"kind": "command", "command": login}
+    elif not stat.S_ISREG(metadata.st_mode):
+        reason = "not-regular"
+        detail = "the credential path is not a regular file"
+        remediation = {
+            "kind": "manual",
+            "instruction": "No hyprial CLI command can safely replace a non-regular "
+            f"credential path. Remove or relocate {credential} manually, then install a "
+            "non-empty 0600 regular file there.",
+        }
+    elif metadata.st_size == 0:
+        reason = "empty"
+        detail = "the credential file is empty"
+        remediation = {"kind": "command", "command": login + " --force"}
+    else:
+        reason = "permissions"
+        detail = (
+            "the credential permissions are "
+            f"{stat.S_IMODE(metadata.st_mode):04o}, not 0600"
+        )
+        remediation = {
+            "kind": "command",
+            "command": f"chmod 600 {shlex.quote(str(credential))}",
+        }
+    _raise_codex_credential_preflight(
+        reason=reason,
+        credential=credential,
+        message=detail,
+        remediation=remediation,
+    )
+
+
+def _raise_codex_credential_preflight(
+    *,
+    reason: str,
+    credential: Path,
+    message: str,
+    remediation: dict[str, object],
+) -> None:
+    action = remediation.get("command") or remediation.get("instruction")
+    raise AgentRuntimeError(
+        f"Codex credential preflight failed ({reason}) at {credential}: {message}. "
+        f"Remediation: {action}",
+        code=ipc_errors.CODEX_CREDENTIAL_MISSING,
+        data={
+            "reason": reason,
+            "path": str(credential),
+            "remediation": remediation,
+        },
+    )
 
 
 def validate_shared_credential_binding(binding: SharedCredentialBinding) -> None:
@@ -492,6 +615,7 @@ class AgentRuntimePreparation:
     cwd: str | None
     tool_profile: AgentToolProfile
     containerized: bool = False
+    credential_preflight: bool = False
 
 
 def build_agent_runtime_preparation(
@@ -502,6 +626,7 @@ def build_agent_runtime_preparation(
     cwd: str | None,
     tool_profile: AgentToolProfile,
     containerized: bool = False,
+    credential_preflight: bool = False,
     validate_home: bool = True,
     legacy_reporter: Callable[[str, str], None] | None = None,
     expected_entity_token: str | None = None,
@@ -532,6 +657,7 @@ def build_agent_runtime_preparation(
         cwd=cwd,
         tool_profile=tool_profile,
         containerized=containerized,
+        credential_preflight=credential_preflight,
     )
 
 
@@ -543,6 +669,7 @@ def resolve_agent_runtime_context(
     cwd: str | None,
     tool_profile: AgentToolProfile,
     containerized: bool = False,
+    credential_preflight: bool = False,
     legacy_reporter: Callable[[str, str], None] | None = None,
 ) -> AgentRuntimeContext | None:
     """Resolve/materialize one P2 context, or return ``None`` for legacy mode.
@@ -559,6 +686,7 @@ def resolve_agent_runtime_context(
         cwd=cwd,
         tool_profile=tool_profile,
         containerized=containerized,
+        credential_preflight=credential_preflight,
         legacy_reporter=legacy_reporter,
     )
     if preparation is None:
@@ -675,6 +803,29 @@ def materialize_agent_runtime_context(
     )
     manifest = config.freeze_manifest()
     projection = build_native_projection(manifest, preparation.harness)
+    shared_target = config.shared_credential_path(preparation.harness)
+    shared_credential = (
+        None
+        if shared_target is None
+        else SharedCredentialBinding(
+            actor=preparation.actor_name,
+            harness=preparation.harness,
+            native_path=Path(receipt.path)
+            / "secrets"
+            / "native"
+            / preparation.harness
+            / _NATIVE_CREDENTIAL_NAME[preparation.harness],
+            target_path=Path(shared_target),
+            agent_cwd=None if preparation.cwd is None else Path(preparation.cwd),
+        )
+    )
+    if preparation.harness == "codex" and preparation.credential_preflight:
+        preflight_codex_credential(
+            native_root=Path(receipt.path) / "secrets" / "native" / "codex",
+            actor=preparation.actor_name,
+            model_provider=None,
+            shared_credential=shared_credential,
+        )
 
     roots = derive_runtime_roots(
         agent_home=agent_home,
@@ -734,18 +885,7 @@ def materialize_agent_runtime_context(
     environment = runtime_environment_for_roots(
         roots, preparation.harness, preparation.tool_profile
     )
-    shared_target = config.shared_credential_path(preparation.harness)
-    shared_credential = (
-        None
-        if shared_target is None
-        else SharedCredentialBinding(
-            actor=preparation.actor_name,
-            harness=preparation.harness,
-            native_path=native_root / _NATIVE_CREDENTIAL_NAME[preparation.harness],
-            target_path=Path(shared_target),
-            agent_cwd=None if preparation.cwd is None else Path(preparation.cwd),
-        )
-    )
+
     context = AgentRuntimeContext(
         actor=preparation.actor,
         entity_token=preparation.entity_token,
@@ -802,44 +942,7 @@ def _materialize_tool_profile(
 
 
 def _ensure_private_directory(root: Path, target: Path) -> None:
-    try:
-        relative = target.relative_to(root)
-    except ValueError as error:
-        raise AgentRuntimeError("runtime directory escaped the agent home") from error
-    current = root
-    for part in relative.parts:
-        current = current / part
-        created = False
-        try:
-            current.mkdir(mode=0o700)
-            created = True
-        except FileExistsError:
-            pass
-        except OSError as error:
-            raise AgentRuntimeError(
-                f"cannot create runtime directory {part}"
-            ) from error
-        try:
-            if created:
-                harden_private_path(current, mode=0o700)
-            metadata = current.lstat()
-        except PrivateAccessUnsupported as error:
-            raise AgentRuntimeError(
-                f"runtime directory {part} cannot be made private on this "
-                f"platform: {error}"
-            ) from error
-        except OSError as error:
-            raise AgentRuntimeError(f"cannot inspect runtime directory {part}") from error
-        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
-            raise AgentRuntimeError(f"runtime directory {part} is not private")
-        try:
-            violation = private_metadata_violation(current, metadata, mode=0o700)
-        except OSError as error:
-            raise AgentRuntimeError(f"cannot inspect runtime directory {part}") from error
-        if violation is not None:
-            raise AgentRuntimeError(
-                f"runtime directory {part} is not private ({violation})"
-            )
+    ensure_private_directory(root, target, error_type=AgentRuntimeError)
 
 
 def _write_or_verify_private_file(path: Path, body: bytes) -> None:

@@ -353,7 +353,7 @@ class SquireSetup:
                     f"--adapter {adapter!r} is not configured in "
                     f"{self.hyprial_home / 'channels.json'} (available: "
                     f"{', '.join(available_adapters) or 'none'}); run "
-                    f"'hyprial adapter onboard {adapter} --new' first"
+                    f"'hyprial adapter add {adapter} --new' first"
                 )
         return self._run(
             identity,
@@ -583,7 +583,7 @@ class SquireSetup:
                 deferred.status,
                 deferred.code,
                 (
-                    f"{deferred.detail} Next: run 'hyprial adapter onboard "
+                    f"{deferred.detail} Next: run 'hyprial adapter add "
                     f"{expected_adapter} --new', then rerun 'hyprial squire setup "
                     f"--adapter {expected_adapter}'."
                 ),
@@ -676,7 +676,7 @@ class SquireSetup:
 
         ⚠️ But staying silent is not the alternative. On 2026-08-31 a squire was
         asked for a screenshot, read its own skill, found only the text command,
-        and told the user hyprial could not send images -- while `hyprial send --image`
+        and told the user hyprial could not send images -- while `hyprial message send --image`
         had worked five days earlier. An install that quietly keeps the old file
         looks exactly like one that is up to date, so the difference has to be
         said out loud.
@@ -695,7 +695,7 @@ class SquireSetup:
             f"{skill_path} predates the image/file instructions and was left "
             "untouched (setup never rewrites an existing skill). Without them a "
             "squire may tell its owner that attachments are unsupported. Add "
-            "the `hyprial send --image/--file` section from "
+            "the `hyprial message send --image/--file` section from "
             "docs/domains/squire/SKILL-template.md, or move the file aside and re-run "
             "setup to regenerate it."
         )

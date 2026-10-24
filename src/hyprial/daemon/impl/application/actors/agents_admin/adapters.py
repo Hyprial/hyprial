@@ -57,10 +57,12 @@ class _AdapterAdminMixin:
 
     def _ipc_adapter_list(self) -> Any:
         assert self._lark_client is not None
+        pins = self.agents.pins()
         return {
             "ok": True,
             "adapters": [
-                item.to_payload() for item in self._lark_client.read_adapters()
+                {**item.to_payload(), "agent": pins.get(item.name)}
+                for item in self._lark_client.read_adapters()
             ],
         }
 
@@ -233,7 +235,7 @@ class _AdapterAdminMixin:
         agent" -- aiming it at a name nobody registered would send messages
         into a queue nobody can ever drain, so a nonexistent target is an
         error, not a deferred binding.  Creating the agent must come first
-        (``hyprial agent create`` / ``hyprial start``), then the pin.
+        (``hyprial agent create`` / ``hyprial agent start``), then the pin.
         """
 
         agent = self.agents.get(actor)
@@ -257,6 +259,6 @@ class _AdapterAdminMixin:
             ipc_errors.AGENT_NOT_FOUND,
             f"no agent named {actor!r} on this machine. A pin binds an "
             f"adapter to an existing agent: create it first with "
-            f"'hyprial agent create --name {actor}' (or 'hyprial start'), then pin.",
+            f"'hyprial agent create --name {actor}' (or 'hyprial agent start'), then pin.",
             {"actor": actor},
         )

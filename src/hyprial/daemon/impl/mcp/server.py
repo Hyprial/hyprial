@@ -39,7 +39,7 @@ def _plain_stderr_logging() -> None:
 
     The SDK's ``configure_logging`` calls ``logging.basicConfig`` with a
     ``RichHandler``.  Rich renders lazily, importing submodules on the first
-    record, and an in-place ``hyprial upgrade`` swaps the package files under
+    record, and an in-place ``hyprial daemon upgrade`` swaps the package files under
     a running channel: that first warning then raised ModuleNotFoundError out
     of ``logger.warning`` and killed the channel (E2E-010).  A plain stream
     handler imports nothing at log time; with a root handler present the
@@ -256,7 +256,7 @@ def create_mcp_server(
         # Only kinds the daemon can actually list are accepted.  targets is
         # the delivery-promise view: agents, users (squire DM with sender
         # attribution), and channel routes (configured outbound posts with
-        # the same attribution).  Nodes are observable via `hyprial hosts`.
+        # the same attribution).  Nodes are observable via `hyprial host list`.
         if kind not in {None, "agent", "user", "channel_route"}:
             raise ValueError(
                 "harness_targets kind must be agent, user, or channel_route"

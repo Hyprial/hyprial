@@ -124,7 +124,7 @@ def overview_publish(
 ):
     """Write this node's data (and the page) into an orgfs space, if it changed.
 
-    Open <checkout>/<path>/index.html from `hyprial fs checkout <space>` to view
+    Open <checkout>/<path>/index.html from `hyprial fs space checkout <space>` to view
     every publishing node together; the page reloads itself every minute.
     Graphs are only those the caller can see, with node output redacted and
     truncated.  The page also carries every work item of the org (status,
@@ -132,7 +132,7 @@ def overview_publish(
     opened/closed; log/acceptance/checklist text redacted and truncated), so
     publishing into a space shows them to that space's readers.
     Publishing enables this node's read-only checkout of the space and leaves
-    it on (`hyprial fs checkout <space> --disable` turns it off).  Every member
+    it on (`hyprial fs space checkout <space> --disable` turns it off).  Every member
     who can write the space can put scripts on the page: publish only into a
     space whose writers you trust.
     """

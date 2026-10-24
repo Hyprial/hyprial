@@ -366,7 +366,7 @@ def diagnose_scopes(
                 **({"missingGroups": missing_groups} if len(groups) > 1 else {}),
                 action={
                     "type": "request_admin_authorization",
-                    "command": f"hyprial adapter authorize {adapter}",
+                    "command": f"hyprial adapter scopes authorize {adapter}",
                 },
             )
         else:

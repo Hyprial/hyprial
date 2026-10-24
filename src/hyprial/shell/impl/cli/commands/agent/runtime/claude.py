@@ -40,7 +40,7 @@ def _reject_claude_session_identity_args(runtime_args: tuple[str, ...]) -> None:
             raise services.CliError(
                 ipc_errors.INVALID_ARGUMENT,
                 f"{flag} changes Claude session identity, which hyprial owns; "
-                "resume a session with `hyprial start claude --resume <session-id>`",
+                "resume a session with `hyprial agent start claude --resume <session-id>`",
             )
 
 
@@ -166,8 +166,7 @@ def _start_interactive_claude(
     turn_signal_dir = config_path.with_suffix(".turns")
     server_args = [
         "-m",
-        "hyprial.cli",
-        "mcp",
+        "hyprial.daemon.impl.mcp.entry",
         "claude-channel",
         "--actor",
         actor_name,
@@ -263,8 +262,7 @@ def _start_interactive_claude(
                             "command": sys.executable,
                             "args": [
                                 "-m",
-                                "hyprial.cli",
-                                "mcp",
+                                "hyprial.daemon.impl.mcp.entry",
                                 "claude-channel-recover",
                                 "--signal-path",
                                 str(recovery_path),
@@ -325,8 +323,7 @@ def _start_interactive_claude(
                             "command": sys.executable,
                             "args": [
                                 "-m",
-                                "hyprial.cli",
-                                "mcp",
+                                "hyprial.daemon.impl.mcp.entry",
                                 "claude-channel-recover",
                                 "--signal-path",
                                 str(recovery_path),

@@ -11,7 +11,7 @@ scheduled routine runs, in one ``work`` node:
    (``asked``/``declined``) from that round's ``outputText``, pick this node's
    new graphs, pre-filter at most :data:`TOP_CANDIDATES` missions for each,
    and build one jev payload per graph that has candidates;
-2. the squire sends each payload to the jev with ``hyprial send`` and reads
+2. the squire sends each payload to the jev with ``hyprial message send`` and reads
    the replies from its inbox;
 3. :func:`finish` - fold the replies into one result per graph and the state
    the squire completes the node with (``--output-text``).

@@ -1,4 +1,4 @@
-"""The ``hyprial send`` operator messaging command."""
+"""The ``hyprial message send`` operator messaging command."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from hyprial.kernel import ipc_errors
 import mimetypes
 import typer
 
-from hyprial.shell.impl.cli.commands.common.root import app
+from hyprial.shell.impl.cli.commands.message import message_app
 from hyprial.shell.impl.cli.commands.common.support import (
     CliError,
     JsonObject,
@@ -52,7 +52,7 @@ def _validate_from_identity(
         return value
     raise typer.BadParameter(
         f"unknown local actor {value!r}; use a registered alias "
-        "(see 'hyprial targets') or the canonical form "
+        "(see 'hyprial message targets') or the canonical form "
         "agent:<owner>:<node>:<actor>",
         ctx=ctx,
         param=param,
@@ -156,7 +156,7 @@ def _warn_open_requests(result: Mapping[str, Any], *, json_output: bool) -> None
         warn(
             f"hyprial: you have pending request(s) from {_target(row)}: "
             f"{', '.join(ids)}; if this is a reply, use "
-            "'hyprial reply <messageId>'",
+            "'hyprial message reply <messageId>'",
             json_output=json_output,
         )
     if warned:
@@ -168,7 +168,7 @@ def _warn_open_requests(result: Mapping[str, Any], *, json_output: bool) -> None
     who = targets[0] if len(targets) == 1 else "the target"
     warn(
         f"hyprial: you have pending request(s) from {who}: {', '.join(ids)}; "
-        "if this is a reply, use 'hyprial reply <messageId>'",
+        "if this is a reply, use 'hyprial message reply <messageId>'",
         json_output=json_output,
     )
 
@@ -209,7 +209,7 @@ def _render_send(data: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
-@app.command()
+@message_app.command("send")
 def send(
     message: list[str] = typer.Argument(..., help="Message text."),
     source: str = typer.Option(

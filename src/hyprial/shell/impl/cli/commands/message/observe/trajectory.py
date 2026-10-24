@@ -1,4 +1,4 @@
-"""The ``hyprial trajectory`` message-path trace command."""
+"""The ``hyprial message trajectory`` message-path trace command."""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ from datetime import UTC, datetime
 from hyprial.kernel import parse_agent_uri
 import typer
 
-from hyprial.shell.impl.cli.commands.common.root import app
 from hyprial.shell.impl.cli.commands.common.support import (
     JsonObject,
     _local_operator_identity,
@@ -21,6 +20,7 @@ from hyprial.shell.impl.cli.commands.log.history import (
     _entry_timestamp,
     _read_log_history,
 )
+from hyprial.shell.impl.cli.commands.message import message_app
 
 _AGENT_TIMELINE_EVENTS = frozenset(
     {
@@ -361,8 +361,8 @@ def _format_trajectory(result: JsonObject) -> str:
     return "\n".join(lines)
 
 
-@app.command("trajectory")
-def trajectory_command(
+@message_app.command("trajectory")
+def message_trajectory(
     message_id: str = typer.Argument(..., help="Message ID to trace."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:

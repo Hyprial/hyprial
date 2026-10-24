@@ -17,6 +17,7 @@ from hyprial.identity import (
 )
 from hyprial.identity import (
     desired_generation,
+    is_inactive,
 )
 from hyprial.kernel import ipc_errors
 from hyprial.kernel import DaemonRequestError
@@ -503,7 +504,7 @@ class _AgentsRegistryMixin:
     ) -> Agent | None:
         """Get-or-create this machine's record for ``actor`` (A5).
 
-        ``hyprial start`` (and PAC worker launch) reaches agent creation through
+        ``hyprial agent start`` (and PAC worker launch) reaches agent creation through
         here, so a connector can never come up without an identity behind it.
         ``hyprial agent create`` is NOT this path: its IPC handler
         (agents_admin/registry_ops.py) also gives a new agent the default
@@ -612,7 +613,7 @@ class _AgentsRegistryMixin:
 
         Starting a harness for an existing agent is **not** a name collision:
         an agent name is unique because only one Agent record may hold it, and
-        that is enforced at creation. ``hyprial start pi --name foo`` on an
+        that is enforced at creation. ``hyprial agent start pi --name foo`` on an
         existing ``foo`` is *that same agent* moving to pi -- one agent, one
         identity, a different runtime binding.
 
@@ -624,7 +625,7 @@ class _AgentsRegistryMixin:
         names the remedy -- stopping a headless worker out from under its
         in-flight work, or deregistering an interactive session whose window is
         still open, are both worse than an error the user can act on. The move
-        is then ``hyprial down`` followed by ``hyprial start``, and A9 reports the
+        is then ``hyprial agent stop`` followed by ``hyprial agent start``, and A9 reports the
         previous harness and session id on the way back up.
 
         ``refuse_runtimes`` narrows which incumbents object. ``lifecycle.start``
@@ -632,7 +633,7 @@ class _AgentsRegistryMixin:
         worker, because interactive-to-interactive is the existing
         supersede-by-actor handoff (last writer wins, loser fenced off with
         SESSION_SUPERSEDED) -- still one connector, and not a path a user's
-        ``hyprial start`` reaches without passing the check above first.
+        ``hyprial agent start`` reaches without passing the check above first.
         """
 
         name = self._agent_name_for(actor)
@@ -759,20 +760,23 @@ class _AgentsRegistryMixin:
     @staticmethod
     def _agent_is_inactive(
         agent: Agent,
-        hints: Mapping[str, int | bool | None],
         *,
-        cutoff_ms: int,
+        now_ms: int,
+        threshold_ms: int,
     ) -> bool:
-        if hints.get("hasLastSessionId") is True:
-            return False
-        timestamps = (
-            agent.last_active_at_ms,
-            hints.get("createdAtMs"),
-            hints.get("agentHomeMtimeMs"),
+        # The durable activity writer is the authority used by restore too.
+        # Creation is the fallback for a never-observed agent.  Home mtimes
+        # and the mere existence of an old session remain informational hints;
+        # neither is evidence that the agent performed recent work.
+        last_activity_at_ms = (
+            agent.last_active_at_ms
+            if agent.last_active_at_ms is not None
+            else agent.created_at_ms
         )
-        return not any(
-            isinstance(value, int) and not isinstance(value, bool) and value >= cutoff_ms
-            for value in timestamps
+        return is_inactive(
+            last_activity_at_ms,
+            now_ms=now_ms,
+            threshold_ms=threshold_ms,
         )
 
     def _agent_status_json(

@@ -1,4 +1,4 @@
-"""The ``hyprial autoupdate`` family (the ``hyprial config set`` group lives
+"""The ``hyprial daemon upgrade`` family (the ``hyprial config set`` group lives
 in ``commands/config/settings.py``)."""
 
 from __future__ import annotations
@@ -7,152 +7,22 @@ from hyprial.shell.impl.cli.output import CliResult
 
 from hyprial.shell.impl.cli.commands.common.services import get_services
 
-from typing import Any
-from pathlib import Path
 from datetime import datetime
 from hyprial.kernel import ipc_errors
 import os
-import shutil
 import sys
 import typer
 
 from hyprial.shell.impl.cli.commands.common.pending_restart import _clear_pending_restart, _read_pending_restart, _restart_daemon_onto_install
 from hyprial.shell.impl.cli.commands.daemon.restart import _daemon_restart_identity, _record_autoupdate_restart_confirmation, _record_autoupdate_restart_not_required
 from hyprial.shell.impl.cli.commands.common.support import JsonObject, _probe_reports_running, _utc_now
+from hyprial.shell.impl.cli.commands.upgrade.commands import upgrade_app
 autoupdate_app = typer.Typer(
-    help="Inspect daemon-owned autoupdate and manage its legacy timer unit."
+    help="Inspect daemon-owned automatic upgrades."
 )
 
 
-
-
-def _timer_config(*, require_executables: bool) -> Any:
-    """Build the timer unit config, resolving the executable paths at install
-    time so the rendered units stay valid even if the PATH changes later."""
-    services = get_services()
-
-    from hyprial.daemon import TimerConfig
-
-    executable = shutil.which("hyprial")
-    uv = shutil.which("uv")
-    if require_executables:
-        if executable is None:
-            raise services.CliError(
-                "INVALID_CONFIGURATION",
-                "hyprial executable not on PATH; install with 'uv tool install' first",
-            )
-        if uv is None:
-            raise services.CliError(
-                "INVALID_CONFIGURATION",
-                "uv not on PATH; 'hyprial upgrade' cannot reinstall without it",
-            )
-    path_entries: list[str] = []
-    for candidate in (uv, executable):
-        if candidate is None:
-            continue
-        parent = str(Path(candidate).resolve().parent)
-        if parent not in path_entries:
-            path_entries.append(parent)
-    # User-level installs (uv tools, pipx, the codex standalone shim) live in
-    # ~/.local/bin on both macOS and Linux; units rendered without it cannot
-    # find those binaries (2026-08-23 post-upgrade outage).
-    user_bin = str(Path.home() / ".local" / "bin")
-    if user_bin not in path_entries:
-        path_entries.append(user_bin)
-    path_entries.append(
-        "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-    )
-    return TimerConfig(
-        executable=(
-            Path(executable).resolve()
-            if executable is not None
-            else Path(sys.argv[0]).resolve()
-        ),
-        home=Path.home(),
-        hyprial_home=services._hyprial_home(),
-        state_dir=services._state_dir(),
-        path_env=":".join(path_entries),
-    )
-
-
-def _autoupdate_result(status: Any) -> JsonObject:
-    from hyprial.daemon import SCHEDULE
-
-    result: JsonObject = {
-        "ok": True,
-        "platform": status.platform,
-        "unit": status.unit,
-        "installed": status.installed,
-        "loaded": status.loaded,
-        "schedule": [{"hour": hour, "minute": minute} for hour, minute in SCHEDULE],
-        "lastRun": status.last_run,
-    }
-    if status.boot_persistent is not None:
-        result["bootPersistent"] = status.boot_persistent
-    if status.enabled is not None:
-        result["enabled"] = status.enabled
-    if status.changed is not None:
-        result["changed"] = status.changed
-    return result
-
-
-@autoupdate_app.command("install")
-def autoupdate_install(
-    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
-) -> None:
-    """Install the legacy cutover timer (the daemon now owns scheduling)."""
-    services = get_services()
-
-    def operation() -> JsonObject:
-        services = get_services()
-        from hyprial.daemon import AutoUpdateManager, detect_platform
-
-        platform = detect_platform()
-        if platform is None:
-            raise services.CliError(
-                "PLATFORM_UNSUPPORTED",
-                f"no update timer for platform {sys.platform!r}; "
-                "supported: macOS (launchd), Linux (systemd)",
-            )
-        manager = AutoUpdateManager(
-            services._timer_config(require_executables=True), platform=platform
-        )
-        try:
-            return _autoupdate_result(manager.install())
-        except (RuntimeError, OSError) as error:
-            raise services.CliError("AUTOUPDATE_INSTALL_FAILED", str(error)) from error
-
-    services._execute(operation, json_output=json_output)
-
-
-@autoupdate_app.command("uninstall")
-def autoupdate_uninstall(
-    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
-) -> None:
-    """Remove the legacy timer after daemon-owned upgrade proof."""
-    services = get_services()
-
-    def operation() -> JsonObject:
-        services = get_services()
-        from hyprial.daemon import AutoUpdateManager, detect_platform
-
-        platform = detect_platform()
-        if platform is None:
-            raise services.CliError(
-                "PLATFORM_UNSUPPORTED",
-                f"no update timer for platform {sys.platform!r}",
-            )
-        manager = AutoUpdateManager(
-            services._timer_config(require_executables=False), platform=platform
-        )
-        try:
-            return _autoupdate_result(manager.uninstall())
-        except (RuntimeError, OSError) as error:
-            raise services.CliError("AUTOUPDATE_UNINSTALL_FAILED", str(error)) from error
-
-    services._execute(operation, json_output=json_output)
-
-
+@upgrade_app.command("status")
 @autoupdate_app.command("status")
 def autoupdate_status(
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
@@ -165,8 +35,6 @@ def autoupdate_status(
         from hyprial.daemon import updates
         from hyprial.daemon import (
             SCHEDULE,
-            AutoUpdateManager,
-            detect_platform,
             read_last_run,
         )
 
@@ -189,7 +57,7 @@ def autoupdate_status(
                 "pending": False,
                 "nextRunAt": None,
                 "lastRun": read_last_run(services._state_dir()),
-                # Installed but not yet running; `hyprial autoupdate restart` applies it.
+                # Installed but not yet running; `hyprial daemon upgrade apply` applies it.
                 "pendingRestart": _read_pending_restart(),
             }
         else:
@@ -199,44 +67,29 @@ def autoupdate_status(
                 )
             scheduler = scheduler_result
 
-        platform = detect_platform()
+        from hyprial.daemon import upgrade_step_status
+
         auto_upgrade_enabled = updates.auto_upgrade_enabled(services._hyprial_home())
         pending = _read_pending_restart()
-        if platform is None:
-            return {
-                "ok": True,
-                "trigger": "daemon",
-                "autoUpgradeEnabled": auto_upgrade_enabled,
-                "platform": sys.platform,
-                "unit": None,
-                "installed": False,
-                "loaded": False,
-                "schedule": [
-                    {"hour": hour, "minute": minute} for hour, minute in SCHEDULE
-                ],
-                "lastRun": read_last_run(services._state_dir()),
-                # Installed but not yet running; `hyprial autoupdate restart` applies it.
-                "pendingRestart": pending,
-                "pendingRestartState": _pending_restart_state(pending),
-                "scheduler": scheduler,
-            }
-        manager = AutoUpdateManager(
-            services._timer_config(require_executables=False), platform=platform
-        )
-        result = _autoupdate_result(manager.status())
-        result["trigger"] = "daemon"
-        result["autoUpgradeEnabled"] = auto_upgrade_enabled
-        result["scheduler"] = scheduler
-        # #28: the platform path used to omit this, so on macOS/Linux with the
-        # daemon up the field hyprial-ops documents was simply absent.
-        result["pendingRestart"] = pending
-        result["pendingRestartState"] = _pending_restart_state(pending)
-        result["legacyUnit"] = {
-            "unit": result["unit"],
-            "installed": result["installed"],
-            "loaded": result["loaded"],
+        return {
+            "ok": True,
+            "trigger": "daemon",
+            "autoUpgradeEnabled": auto_upgrade_enabled,
+            "platform": sys.platform,
+            # Compatibility fields retained for the published status contract;
+            # there is no longer any installable external timer.
+            "unit": None,
+            "installed": False,
+            "loaded": False,
+            "schedule": [
+                {"hour": hour, "minute": minute} for hour, minute in SCHEDULE
+            ],
+            "lastRun": read_last_run(services._state_dir()),
+            "pendingRestart": pending,
+            "pendingRestartState": _pending_restart_state(pending),
+            "scheduler": scheduler,
+            "upgradeSteps": upgrade_step_status(services._state_dir()),
         }
-        return result
 
     def operation() -> CliResult:
         return CliResult(collect(), render=_render_autoupdate_status)
@@ -294,7 +147,7 @@ def _local_minute(value: object) -> str:
 
 
 def _render_autoupdate_status(status: JsonObject) -> str:
-    """``hyprial autoupdate status`` for a person: what is on, when it runs, what
+    """``hyprial daemon upgrade status`` for a person: what is on, when it runs, what
     it last did, and the one command that acts on it.
 
     #28: the old output was the raw dict, whose first lines read
@@ -307,9 +160,9 @@ def _render_autoupdate_status(status: JsonObject) -> str:
     lines: list[str] = []
     enabled = status.get("autoUpgradeEnabled") is True
     if enabled:
-        lines.append("hyprial autoupdate   automatic upgrade: on")
+        lines.append("hyprial daemon upgrade   automatic upgrade: on")
     else:
-        lines.append("hyprial autoupdate   automatic upgrade: off (scheduled runs are skipped)")
+        lines.append("hyprial daemon upgrade   automatic upgrade: off (scheduled runs are skipped)")
         lines.append("               turn on with: hyprial config set autoUpgrade true")
     times = " and ".join(
         f"{slot.get('hour', 0):02d}:{slot.get('minute', 0):02d}"
@@ -357,22 +210,15 @@ def _render_autoupdate_status(status: JsonObject) -> str:
             lines.append(f"  restart      done: the running daemon already has {installed}")
         elif state == "waiting":
             lines.append(f"  restart      waiting: {installed} installed; the daemon runs the old code")
-            lines.append("               apply it with: hyprial autoupdate restart")
+            lines.append("               apply it with: hyprial daemon upgrade apply")
         else:
             lines.append(f"  restart      {installed} was installed; could not check the daemon")
-            lines.append("               check and apply with: hyprial autoupdate restart")
+            lines.append("               check and apply with: hyprial daemon upgrade apply")
 
-    unit = status.get("unit")
-    if unit:
-        if status.get("installed"):
-            state = "installed" + (" and loaded" if status.get("loaded") else ", not loaded")
-            lines.append(f"  legacy unit  {unit}: {state}")
-            lines.append("               (from before the daemon scheduled upgrades)")
-        else:
-            lines.append(f"  legacy unit  {unit}: not installed (not needed)")
     return "\n".join(lines)
 
 
+@upgrade_app.command("apply")
 @autoupdate_app.command("restart")
 def autoupdate_restart(
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
@@ -390,10 +236,17 @@ def autoupdate_restart(
         from types import SimpleNamespace
 
         from hyprial.daemon import updates
+        from hyprial.shell.impl.cli.commands.upgrade.commands import _run_upgrade_steps
+
+        def with_steps(payload: JsonObject) -> JsonObject:
+            payload["upgradeSteps"] = _run_upgrade_steps(services)
+            return payload
 
         pending = _read_pending_restart()
         if pending is None:
-            return {"ok": True, "restarted": False, "reason": "no pending restart"}
+            return with_steps(
+                {"ok": True, "restarted": False, "reason": "no pending restart"}
+            )
         recorded = pending.get("before")
         before = services._running_daemon_before_upgrade(
             str(recorded.get("version") if isinstance(recorded, dict) else "unknown")
@@ -402,16 +255,16 @@ def autoupdate_restart(
             # No daemon: the next start runs the installed code anyway.
             reason = "daemon is not running; the next start uses the installed version"
             _record_autoupdate_restart_not_required(
-                via="hyprial autoupdate restart",
+                via="hyprial daemon upgrade apply",
                 reason=reason,
             )
             _clear_pending_restart()
-            return {
+            return with_steps({
                 "ok": True,
                 "restarted": False,
                 "reason": reason,
                 "pendingRestart": pending,
-            }
+            })
         if isinstance(recorded, dict) and recorded.get("pid") != before.get("pid"):
             # Something already restarted it after the install; that daemon
             # runs the installed code.
@@ -422,17 +275,17 @@ def autoupdate_restart(
                     installed.version or pending.get("version") or "unknown"
                 )
             _record_autoupdate_restart_confirmation(
-                via="hyprial autoupdate restart",
+                via="hyprial daemon upgrade apply",
                 after=current,
             )
             _clear_pending_restart()
-            return {
+            return with_steps({
                 "ok": True,
                 "restarted": False,
                 "reason": "daemon was already restarted after the install",
                 "before": before,
                 "pendingRestart": pending,
-            }
+            })
         installed = updates.read_installation()
         installed_version = str(installed.version or pending.get("version") or "unknown")
         resolved = pending.get("resolved") if isinstance(pending.get("resolved"), dict) else {}
@@ -444,14 +297,15 @@ def autoupdate_restart(
                 tag=str(pending.get("tag") or ""), commit=str(pending.get("commit") or "")
             ),
             resolved=resolved,
-            confirmation_via="hyprial autoupdate restart",
+            confirmation_via="hyprial daemon upgrade apply",
         )
         _clear_pending_restart()
-        return result
+        return with_steps(result)
 
     services._execute(operation, json_output=json_output)
 
 
+@upgrade_app.command("run", hidden=True)
 @autoupdate_app.command("run", hidden=True)
 def autoupdate_run(
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
@@ -464,31 +318,9 @@ def autoupdate_run(
         from hyprial.daemon import updates
         from hyprial.daemon import AUTOUPDATE_CHILD_ENV, write_last_run
 
-        services.require_initialized_hyprial_home()
-
-        # Guard 1 (spec autoupdate-isolated-home r1, Allen 2026-09-15):
-        # automatic upgrades are OFF unless settings.json explicitly opts in
-        # (``hyprial config set autoUpgrade true``).  The check sits at THIS
-        # entry point, not only in the daemon scheduler, because the legacy
-        # launchd/systemd timer runs ``autoupdate run`` directly and the
-        # daemon-trigger delegation below silently falls through to a local
-        # upgrade when the daemon is unreachable.  The manual
-        # ``hyprial upgrade`` is an operator's explicit act and is NOT gated
-        # by this switch.
-        if not updates.auto_upgrade_enabled(services._hyprial_home()):
-            skip_record: JsonObject = {
-                "ok": True,
-                "at": _utc_now(),
-                "skipped": True,
-                "skipReason": updates.AUTOUPGRADE_DISABLED_REASON,
-            }
-            write_last_run(services._state_dir(), skip_record)
-            return skip_record
-
-        # During the staged migration the old launchd/systemd unit remains in
-        # place until a daemon-owned update has succeeded.  Its invocation is
-        # converted into a scheduler signal, so the actual child always
-        # inherits the daemon environment and duplicate calendar fires dedup.
+        # Only the daemon-owned scheduler may create the in-process child.
+        # A manual invocation (or a surviving old timer) delegates to the live
+        # daemon and becomes a successful no-op when that owner is unavailable.
         if os.environ.get(AUTOUPDATE_CHILD_ENV) != "1":
             try:
                 scheduled = services._daemon_request(
@@ -499,7 +331,11 @@ def autoupdate_run(
                 ipc_errors.DaemonDisconnectedError,
                 ipc_errors.IpcTimeoutError,
             ):
-                pass
+                return {
+                    "ok": True,
+                    "skipped": True,
+                    "skipReason": "daemon unavailable",
+                }
             else:
                 if not isinstance(scheduled, dict):
                     raise services.CliError(
@@ -507,6 +343,22 @@ def autoupdate_run(
                         "daemon autoupdate trigger result must be an object",
                     )
                 return scheduled
+
+        services.require_initialized_hyprial_home()
+
+        # Guard 1 (spec autoupdate-isolated-home r1, Allen 2026-09-15):
+        # automatic upgrades are OFF unless settings.json explicitly opts in.
+        # The manual ``hyprial daemon upgrade`` is an operator's explicit act and is
+        # not gated by this switch.
+        if not updates.auto_upgrade_enabled(services._hyprial_home()):
+            skip_record: JsonObject = {
+                "ok": True,
+                "at": _utc_now(),
+                "skipped": True,
+                "skipReason": updates.AUTOUPGRADE_DISABLED_REASON,
+            }
+            write_last_run(services._state_dir(), skip_record)
+            return skip_record
 
         # The twice-daily timer is the already-happening heartbeat the
         # lark-cli user-credential watchdog hangs on (#142: a mechanism
@@ -573,6 +425,9 @@ def autoupdate_run(
             record["restart"] = result["restart"]
         if "notification" in result:
             record["notification"] = result["notification"]
+        from hyprial.shell.impl.cli.commands.upgrade.commands import _run_upgrade_steps
+
+        record["upgradeSteps"] = _run_upgrade_steps(services)
         write_last_run(services._state_dir(), record)
         return record
 

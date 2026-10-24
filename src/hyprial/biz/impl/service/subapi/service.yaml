@@ -1,0 +1,11 @@
+name: subapi
+deviceId: sub2api
+remotePort: 8080
+protocol: http
+localPort: 18080
+usage: claude-code-baseurl
+env:
+  ANTHROPIC_BASE_URL: http://127.0.0.1:{port}
+auth: sub2api API key; agents request grant sub2api-key through hq
+guide: |
+  Export the printed environment manually. Existing streams break on restart.

@@ -7,18 +7,19 @@ from hyprial.shell.impl.cli.output import warn
 from hyprial.shell.impl.cli.commands.common.services import get_services
 
 from typing import Any
-from hyprial.kernel import Logger, agent_uri_actor
+from hyprial.kernel import Logger, agent_uri_actor, redact
 from pathlib import Path
 from hyprial.kernel import child_state_environment
 from hyprial.kernel import ipc_errors
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
 
-from hyprial.shell.impl.cli.commands.agent.runtime.interactive import _announce_plugin_skips, _handover_prompt, _interactive_actor, _launch_detached_tui, _pi_attach_registration, _plugin_skip_warnings, _runtime_context_projection, _runtime_launch_custody, _terminate_process, _wait_foreground, _with_plugin_warnings
+from hyprial.shell.impl.cli.commands.agent.runtime.interactive import _announce_plugin_skips, _handover_prompt, _interactive_actor, _launch_detached_tui, _pi_attach_registration, _plugin_skip_warnings, _preflight_codex_credential, _runtime_context_projection, _runtime_launch_custody, _terminate_process, _wait_foreground, _with_plugin_warnings
 from hyprial.shell.impl.cli.commands.common.support import JsonObject
 _PI_SESSION_IDENTITY_FLAGS = frozenset(
     {
@@ -424,6 +425,31 @@ def _reject_codex_session_args(runtime_args: tuple[str, ...]) -> None:
 _CODEX_APPROVAL_OPTIONS = ("--ask-for-approval", "-a")
 _CODEX_NO_APPROVAL = "never"
 _CODEX_BYPASS_FLAGS = frozenset({"--dangerously-bypass-approvals-and-sandbox", "--yolo"})
+_CODEX_UPDATE_CONFIG = "check_for_update_on_startup=false"
+_CODEX_TMUX_WARNING: JsonObject = {
+    "code": "CODEX_TMUX_INBOX_UNAVAILABLE",
+    "message": "detached Codex cannot receive Harness Network messages; run foreground "
+    "`hyprial agent start codex ...` inside your own tmux window instead",
+}
+_ANSI_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
+
+
+def _codex_pane_failure_message(
+    tmux_module: Any, tmux_bin: str, session_name: str, base: str
+) -> str:
+    text = str(redact(_ANSI_ESCAPE.sub("", tmux_module.pane_text(tmux_bin, session_name))))
+    lines = [line.rstrip() for line in text.splitlines() if line.strip()][-20:]
+    tail = "\n".join(lines)[-4000:]
+    message = base
+    if tail:
+        message += f"\nLast Codex pane output:\n{tail}"
+    lowered = text.lower()
+    if "account/read failed" in lowered and "workspace routing discovery timed out" in lowered:
+        message += (
+            "\nHint: check the proxy/network environment (including HTTPS_PROXY) "
+            "and whether the runtime environment profile strips proxy variables."
+        )
+    return message
 
 
 def _interactive_codex_runtime_args(runtime_args: tuple[str, ...]) -> tuple[str, ...]:
@@ -561,12 +587,19 @@ def _start_interactive_codex(
                 "daemon does not confirm atomic interactive Codex resume support",
             )
     runtime_projection = _runtime_context_projection(
-        name=name, harness="codex", cwd=cwd
+        name=name,
+        harness="codex",
+        cwd=cwd,
+        model_provider=model_provider,
+        credential_preflight=True,
     )
     runtime_environment = (
         None
         if runtime_projection is None
         else dict(runtime_projection["environment"])
+    )
+    _preflight_codex_credential(
+        runtime_projection, name=name, model_provider=model_provider
     )
     from hyprial.identity import apply_runtime_environment_profile
 
@@ -692,6 +725,8 @@ def _start_interactive_codex(
             argv.extend(
                 [
                     "--no-alt-screen",
+                    "-c",
+                    _CODEX_UPDATE_CONFIG,
                     *model_args,
                     *launch_args,
                     "--remote",
@@ -709,7 +744,12 @@ def _start_interactive_codex(
             if tmux_module is not None:
                 assert session_name is not None and tmux_bin is not None
                 tmux_module.new_detached_session(
-                    tmux_bin, session_name, argv, cwd=cwd, env=environment
+                    tmux_bin,
+                    session_name,
+                    argv,
+                    cwd=cwd,
+                    env=environment,
+                    remain_on_exit=True,
                 )
                 process = None
             else:
@@ -724,6 +764,17 @@ def _start_interactive_codex(
                         "CODEX_ATTACH_REGISTRATION_FAILED",
                         "Codex tmux pane exited before interactive thread "
                         f"discovery for {actor}",
+                    )
+                if tmux_module.pane_dead(tmux_bin, session_name):
+                    raise services.CliError(
+                        "CODEX_ATTACH_REGISTRATION_FAILED",
+                        _codex_pane_failure_message(
+                            tmux_module,
+                            tmux_bin,
+                            session_name,
+                            "Codex tmux pane exited before interactive thread "
+                            f"discovery for {actor}",
+                        ),
                     )
             elif process is not None and process.poll() is not None:
                 if resume is not None:
@@ -817,13 +868,21 @@ def _start_interactive_codex(
                         "CODEX_ATTACH_REGISTRATION_FAILED",
                         f"daemon did not reflect the detached Codex session for {actor}",
                     )
+                if tmux_module.pane_dead(tmux_bin, session_name):
+                    raise services.CliError(
+                        "CODEX_ATTACH_REGISTRATION_FAILED",
+                        _codex_pane_failure_message(
+                            tmux_module,
+                            tmux_bin,
+                            session_name,
+                            f"Codex tmux pane exited while registering {actor}",
+                        ),
+                    )
+                tmux_module.set_remain_on_exit(tmux_bin, session_name, False)
                 detached_ready = True
                 if not json_output:
                     warn(
-                        f"Codex detached actor={actor} sessionRef={session_ref} "
-                        f"tmux={session_name}; the pane TUI drives the app-server, "
-                        "but the in-process inbox carrier is not started (transfer "
-                        "attach/continue only)",
+                        f"hyprial: warning: {_CODEX_TMUX_WARNING['message']}",
                         json_output=False,
                     )
                 return _with_plugin_warnings(
@@ -837,7 +896,7 @@ def _start_interactive_codex(
                         "tmuxSession": session_name,
                         "attach": tmux_module.attach_hints(session_name),
                     },
-                    plugin_warnings,
+                    [_CODEX_TMUX_WARNING, *plugin_warnings],
                 )
             carrier = CodexInteractiveCarrier(
                 server,
@@ -860,13 +919,21 @@ def _start_interactive_codex(
                 )
             break
         else:
+            timeout_message = (
+                f"timed out attaching Codex TUI to requested thread {resume!r}"
+                if resume is not None
+                else f"timed out discovering a Codex TUI thread for {actor}"
+            )
+            if tmux_module is not None:
+                assert session_name is not None and tmux_bin is not None
+                timeout_message = _codex_pane_failure_message(
+                    tmux_module, tmux_bin, session_name, timeout_message
+                )
             raise services.CliError(
                 "CODEX_RESUME_TUI_ATTACH_FAILED"
                 if resume is not None
                 else "CODEX_ATTACH_REGISTRATION_FAILED",
-                f"timed out attaching Codex TUI to requested thread {resume!r}"
-                if resume is not None
-                else f"timed out discovering a Codex TUI thread for {actor}",
+                timeout_message,
             )
         returncode = _wait_foreground(process)
     finally:

@@ -788,6 +788,7 @@ class AgentActor:
         tool_profile: AgentToolProfile,
         *,
         containerized: bool = False,
+        credential_preflight: bool = False,
         legacy_reporter: Callable[[str, str], None] | None = None,
         expected_entity_token: str | None = None,
         operation_id: str | None = None,
@@ -800,6 +801,7 @@ class AgentActor:
             tool_profile,
             containerized,
             expected_entity_token,
+            credential_preflight,
         ))
         if isinstance(result, _LegacyRuntimeResult):
             # Emit only after owner settlement, using its immutable decision;

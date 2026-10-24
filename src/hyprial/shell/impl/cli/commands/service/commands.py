@@ -21,7 +21,10 @@ from .presentation import (
 
 
 service_app = typer.Typer(
-    help="Connect to named TCP services through the daemon.",
+    help=(
+        "Publish local services on the org network and connect to named "
+        "services through the daemon."
+    ),
     no_args_is_help=False,
 )
 

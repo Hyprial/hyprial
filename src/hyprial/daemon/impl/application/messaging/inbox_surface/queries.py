@@ -904,10 +904,11 @@ class _MessageQueriesMixin:
             senders = set(keys)
             for item in self._inbox.outbox_items():
                 if item.message.sender in senders:
-                    entry = _query_entry(item.message, kind="outbox")
-                    entry["attempts"] = item.attempts
-                    entry["expiresAtMs"] = item.expires_at_ms
-                    entries.append(entry)
+                    # F7: one serializer for the outbox.  The query view used
+                    # to render its own row shape (kind/from/to/message);
+                    # every consumer now reads the `outbox list` schema --
+                    # same entry function, actor-filtered.
+                    entries.append(_outbox_entry_json(item))
         return {"ok": True, "actor": actor, "view": view, "entries": entries}
 
     def _message_consumer_actor(self, params: JsonObject) -> str:

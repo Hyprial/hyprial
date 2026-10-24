@@ -7,6 +7,7 @@ import logging
 import re
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
@@ -48,19 +49,9 @@ _METHOD_FIELDS = {
 }
 _MAPPING_FIELDS = frozenset(
     {
-        "name",
-        "deviceId",
-        "remotePort",
-        "recordGeneration",
-        "localPort",
-        "activeConnections",
-        "path",
-        "pathDetail",
-        "observedAtMs",
-        "lastDialState",
-        "lastDialMs",
-        "lastError",
-        "lastErrorAtMs",
+        "name", "deviceId", "remotePort", "recordGeneration", "localPort",
+        "activeConnections", "path", "pathDetail", "observedAtMs",
+        "lastDialState", "lastDialMs", "lastError", "lastErrorAtMs",
     }
 )
 _PRIVATE_ADDRESS_TEXT = re.compile(r"(?:^|[^A-Za-z0-9])tc[A-Za-z0-9_-]{8,}")
@@ -92,17 +83,15 @@ class _PersistenceWaiter:
 
 
 def _invalid_request() -> ServiceConnectError:
-    return ServiceConnectError(
-        ipc_errors.INVALID_ARGUMENT, "service request is invalid"
-    )
+    # One line: the arguments fit and this reads as the single verdict it is.
+    return ServiceConnectError(ipc_errors.INVALID_ARGUMENT, "service request is invalid")
 
 
 def _strict_int(value: object, *, minimum: int, maximum: int | None = None) -> int:
-    if (
-        type(value) is not int
-        or value < minimum
-        or (maximum is not None and value > maximum)
-    ):
+    ok = type(value) is int and value >= minimum and (
+        maximum is None or value <= maximum
+    )
+    if not ok:
         raise ServiceConnectError(
             ipc_errors.SERVICE_UNAVAILABLE,
             "forwarding service returned an invalid observation",
@@ -217,6 +206,7 @@ class ServiceManager:
         controller_factory,
         access_path: str | Path,
         scheduler,
+        service_discovery: Callable[[], tuple[CatalogEntry, ...]] | None = None,
     ) -> None:
         self._orgfs = orgfs
         self._state = state
@@ -224,6 +214,7 @@ class ServiceManager:
         self.access_path = Path(access_path)
         self._resolver = ProtectedResolver(self.access_path)
         self._scheduler = scheduler
+        self._service_discovery = service_discovery
         self._io = ServiceIo()
         self._lock = threading.RLock()
         self._catalog_lock = threading.Lock()
@@ -278,7 +269,8 @@ class ServiceManager:
                 if method == "service.connect":
                     raise
                 catalog = CatalogRegistry(
-                    None, space_id=None, owner=None, cached=None
+                    None, space_id=None, owner=None, cached=None,
+                    discovered=self._service_discovery,
                 ).load()
                 registry_error = str(error)
         with self._lock:
@@ -535,11 +527,16 @@ class ServiceManager:
                 space_id=None if trust is None else trust.space_id,
                 owner=None if trust is None else trust.owner,
                 cached=self._cached_registry,
+                discovered=self._service_discovery,
             )
             try:
                 snapshot = self._io.read_catalog(
                     registry, SERVICE_REGISTRY_READ_TIMEOUT_SECONDS
                 )
+            except ServiceConnectError:
+                # Already the operator-facing verdict (field-named); pass it
+                # through instead of the generic shape below (review ①).
+                raise
             except BaseException as error:
                 raise ServiceConnectError(
                     ipc_errors.SERVICE_REGISTRY_INVALID,
@@ -578,7 +575,22 @@ class ServiceManager:
             )
         else:
             self._clear_transition("registry-fallback")
+        self._report_conflicts(snapshot)
         return snapshot
+
+    def _report_conflicts(self, snapshot: RegistrySnapshot) -> None:
+        """② c: same-name shadowing must be observable without diffing values."""
+
+        if not snapshot.conflicts:
+            return
+        # The winner rule is fixed (OrgFS beats shipped); the log names the
+        # shadowed services so the situation reaches a human.
+        _emit(
+            logging.WARNING,
+            "service.connect.registry.conflict",
+            names=list(snapshot.conflicts),
+            winner="orgfs",
+        )
 
     def _guide(self, name: str, catalog: RegistrySnapshot) -> dict[str, object]:
         entry = catalog.entry(name)

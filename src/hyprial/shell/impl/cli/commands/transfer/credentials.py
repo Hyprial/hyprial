@@ -12,7 +12,7 @@ import typer
 
 def register_credential_commands(app, get_dependencies):
 
-    @app.command("transfer-credential-seal")
+    @app.command("credential-seal")
     def transfer_credential_seal(
         credentials_file: Path = typer.Option(
             ...,
@@ -127,7 +127,7 @@ def register_credential_commands(app, get_dependencies):
         _execute(operation, json_output=json_output)
 
 
-    @app.command("transfer-credential-open")
+    @app.command("credential-open")
     def transfer_credential_open(
         envelope_file: Path = typer.Argument(..., help="Sealed envelope to open."),
         key_file: Path = typer.Option(

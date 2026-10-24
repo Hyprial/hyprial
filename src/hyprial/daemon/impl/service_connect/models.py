@@ -191,6 +191,27 @@ class CatalogEntry:
             "guide": self.guide,
         }
 
+    @classmethod
+    def field_problems(cls, value: object) -> list[str]:
+        """Human-readable field-set problems, in stable order; empty when valid.
+
+        Companion to :meth:`from_json`: discovery surfaces these to the
+        operator with the offending names (the split spec's field-naming
+        requirement) instead of the generic ``invalid_registry()`` text,
+        without a second copy of the schema living outside this module.
+        """
+
+        if not isinstance(value, Mapping):
+            return ["declaration must be a mapping"]
+        problems: list[str] = []
+        missing = sorted(_ENTRY_FIELDS - set(value))
+        extra = sorted(set(value) - _ENTRY_FIELDS)
+        if missing:
+            problems.append("missing field(s): " + ", ".join(missing))
+        if extra:
+            problems.append("unknown field(s): " + ", ".join(extra))
+        return problems
+
 
 @dataclass(frozen=True, slots=True)
 class CatalogTrust:
@@ -293,6 +314,11 @@ class RegistrySnapshot:
     owner: str | None
     error: str | None
     cache: object | None = field(default=None, repr=False)
+    #: Service names that carried BOTH an OrgFS document and a shipped
+    #: declaration in the producing load.  The OrgFS entry wins (fixed rule,
+    #: see ``_merge_with_discovery``); this field is the observable signal
+    #: that a shadowing happened, so nobody has to diff values to infer it.
+    conflicts: tuple[str, ...] = ()
 
     def find(self, name: str) -> CatalogEntry | None:
         return next((entry for entry in self.entries if entry.name == name), None)

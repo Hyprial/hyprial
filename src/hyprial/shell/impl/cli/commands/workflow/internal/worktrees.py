@@ -1,12 +1,9 @@
-"""``hyprial worktrees`` git worktree inventory."""
+"""Read-only git-worktree inventory behind ``workflow gc --dry-run``."""
 
 from __future__ import annotations
 
-from hyprial.shell.impl.cli.output import CliResult
-
 from hyprial.shell.impl.cli.commands.common.services import get_services
 
-from typing import Any
 from pathlib import Path
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -14,9 +11,7 @@ from hyprial.kernel import ipc_errors
 import os
 import shlex
 import subprocess
-import typer
 
-from hyprial.shell.impl.cli.commands.common.root import app
 from hyprial.shell.impl.cli.commands.common.support import JsonObject, _overview_age, _overview_table
 _WORKTREE_GIT_TIMEOUT_SECONDS = 20
 
@@ -27,7 +22,7 @@ _WORKTREE_STATES = ("missing", "dirty", "unpushed", "merged", "pushed", "error")
 def _run_worktree_git(
     arguments: Sequence[str], *, cwd: Path
 ) -> subprocess.CompletedProcess[str]:
-    """Run one bounded, read-only git query for ``hyprial worktrees``.
+    """Run one bounded, read-only git query for worktree advice.
 
     Kept as a small seam so tests can prove that one worktree's git failure
     does not abort the remaining scan.
@@ -454,7 +449,7 @@ def _render_worktree_repository(
         else "none found"
     )
     title = (
-        f"hyprial worktrees   {result['repo']}   {leftovers} leftovers of "
+        f"hyprial workflow gc   {result['repo']}   {leftovers} leftovers of "
         f"{total} worktrees (base {base_text})"
     )
     if leftovers == 0 and not show_all:
@@ -544,42 +539,24 @@ def _render_worktree_repository(
     return "\n".join(lines)
 
 
-@app.command("worktrees")
-def worktrees_command(
-    repos: list[Path] | None = typer.Argument(
-        None, metavar="[REPO]...", help="Repository paths (default: current directory)."
-    ),
-    base: str | None = typer.Option(
-        None,
-        "--base",
-        help="Merged means reachable from this ref (default: any of origin/HEAD, origin/dev, origin/main that exist).",
-    ),
-    show_all: bool = typer.Option(
-        False, "--all", help="Show every worktree in human output."
-    ),
-    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
-) -> None:
-    """Inspect local git worktrees for read-only leftover-work signals."""
-    services = get_services()
+def collect_worktree_reports(
+    repositories: Sequence[Path] | None, *, base: str | None = None
+) -> list[JsonObject]:
+    """Resolve each repository once and scan it for leftover-work signals.
 
-    def operation() -> Any:
-        repositories: list[Path] = []
-        seen: set[Path] = set()
-        for value in repos or [Path.cwd()]:
-            repository, common_dir = _resolve_worktree_repository(value)
-            if common_dir in seen:
-                continue
-            seen.add(common_dir)
-            repositories.append(repository)
-        results = [
-            _scan_worktree_repository(repository, requested_base=base)
-            for repository in repositories
-        ]
-        return CliResult(
-            {"ok": True, "repos": results},
-            render=lambda data: "\n\n".join(
-                _render_worktree_repository(result, show_all=show_all) for result in data["repos"]
-            ),
-        )
-
-    services._execute(operation, json_output=json_output, allow_missing_home=True)
+    This is the read-only advice the former top-level ``worktrees`` command
+    produced; ``workflow gc --dry-run`` publishes it beside the daemon's
+    worker-GC preview.  No state outside the git worktrees is read or written.
+    """
+    resolved: list[Path] = []
+    seen: set[Path] = set()
+    for value in repositories or [Path.cwd()]:
+        repository, common_dir = _resolve_worktree_repository(value)
+        if common_dir in seen:
+            continue
+        seen.add(common_dir)
+        resolved.append(repository)
+    return [
+        _scan_worktree_repository(repository, requested_base=base)
+        for repository in resolved
+    ]

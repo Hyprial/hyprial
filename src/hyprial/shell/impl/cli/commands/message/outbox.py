@@ -1,4 +1,4 @@
-"""The ``hyprial outbox`` delivery-observation command group."""
+"""The ``hyprial message outbox`` delivery-observation command group."""
 
 from __future__ import annotations
 
@@ -94,14 +94,24 @@ def _format_wait(wait_ms: int) -> str:
 
 @outbox_app.command("list")
 def outbox_list(
+    actor: str | None = typer.Option(
+        None,
+        "--actor",
+        help="Filter to one local actor; omitted reads the whole outbox.",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
-    """List every queued outbox entry with its wait reason and wait duration."""
+    """List queued outbox entries with their wait reason and wait duration."""
     services = get_services()
 
     def operation() -> Any:
         services = get_services()
-        result = services._daemon_request("outbox.list")
+        if actor is None:
+            result = services._daemon_request("outbox.list")
+        else:
+            result = services._daemon_request(
+                "message.query", {"from": actor, "view": "outbox"}
+            )
         if isinstance(result, Mapping):
             return CliResult(result, render=_render_outbox_list)
         return result

@@ -1,6 +1,6 @@
 """HYPRIAL_HOME-provided plugin loading for harness launches.
 
-``hyprial start`` sessions must not depend on launch-directory-local harness
+``hyprial agent start`` sessions must not depend on launch-directory-local harness
 registration (for Claude: the per-project ``mcpServers`` section of
 ``~/.claude.json``).  Everything a session needs beyond the built-in
 harness-bridge channel is declared once in HYPRIAL_HOME and injected at launch

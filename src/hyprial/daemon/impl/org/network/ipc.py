@@ -57,7 +57,7 @@ from hyprial.identity import address_path
 from hyprial.identity import InviteError
 
 
-def _invalid_device_quarantine(app: Any) -> InvalidDeviceQuarantine:
+def _invalid_device_diagnostics(app: Any) -> InvalidDeviceQuarantine:
     quarantine = getattr(app, "_org_directory_quarantine", None)
     if quarantine is None:
         quarantine = InvalidDeviceQuarantine()
@@ -129,7 +129,7 @@ def _build_service(app: Any) -> OrgNetworkService:
         owner=str(app.owner),
         store=OrgFsDirectoryStore(
             fs,
-            invalid_devices=_invalid_device_quarantine(app),
+            invalid_devices=_invalid_device_diagnostics(app),
             logger=lambda level, domain, event, **fields: app._log(
                 level, domain, event, **fields
             ),

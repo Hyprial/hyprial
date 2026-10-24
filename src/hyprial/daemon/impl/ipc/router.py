@@ -1,7 +1,4 @@
 """The daemon IPC dispatch router: handle(), the restore gate and the generic method families."""
-
-from __future__ import annotations
-
 from __future__ import annotations
 import hashlib
 import os
@@ -33,7 +30,6 @@ from hyprial.daemon.impl.composition  import (
 )
 if TYPE_CHECKING:
     pass
-
 from hyprial.daemon.impl.links.ports import (
     IPC_LINK_ADD,
     IPC_LINK_DROP,
@@ -48,10 +44,7 @@ from hyprial.daemon.impl.links.ports import (
     IPC_MESSAGE_READ_BODY,
     IPC_MESSAGE_SETTLE_HINT,
 )
-
-
 _RESTORE_GATE_LIGHT_METHODS = frozenset({"ping", "shutdown"})
-
 _IPC_STATS_METHODS = frozenset(
     {
         "worker.channel.request",
@@ -223,8 +216,8 @@ _IPC_STATS_METHODS = frozenset(
         "transfer.receive",
         "transfer.recipientKey",
         "transfer.resume",
-        "workflow.cancel",
-        "workflow.complete",
+        "upgrade.steps.run", "upgrade.steps.status",
+        "workflow.cancel", "workflow.complete",
         "workflow.fail",
         "workflow.history.list",
         "workflow.history.status",
@@ -250,8 +243,6 @@ _IPC_STATS_METHODS = frozenset(
         "work.status",
     }
 )
-
-
 
 # Org network lifecycle (tailnet cutover §4.3/§5): IPC method -> handler name in
 # ``daemon.impl.org.network.ipc``. Imported lazily so the router stays cheap.
@@ -456,6 +447,22 @@ class _IpcDispatchMixin:
             return self._ipc_network_unexpose(params)
         if method == "network.peerKey":
             return self._ipc_network_peer_key(params)
+        if method == "upgrade.steps.status":
+            from hyprial.daemon.impl.upgrade import upgrade_step_status
+            from hyprial.daemon.impl.upgrade.steps.mcp_entry import legacy_processes
+
+            status = upgrade_step_status(self.state_dir)
+            status["legacyProcesses"] = legacy_processes()
+            return status
+        if method == "upgrade.steps.run":
+            from pathlib import Path as _Path
+
+            from hyprial.daemon.impl.upgrade import run_upgrade_steps
+
+            run = params.get("apply", True) if isinstance(params, dict) else True
+            if not run:
+                return {"ok": False, "code": ipc_errors.INVALID_ARGUMENT, "error": "apply required"}
+            return run_upgrade_steps(self.state_dir, home=_Path.home())
         if method == "autoupdate.status":
             return self._ipc_autoupdate_status()
         if method == "autoupdate.trigger":
@@ -532,9 +539,7 @@ class _IpcDispatchMixin:
         if method == "message.query":
             return self._ipc_message_query(params)
         if method == "message.history":
-            return self._ipc_message_history(
-                method, params, _trusted_message_origin=_trusted_message_origin
-            )
+            return self._ipc_message_history(method, params, _trusted_message_origin=_trusted_message_origin)
         if method == "message.pending.list":
             return self._ipc_message_pending_list(method, params, _trusted_message_origin=_trusted_message_origin)
         if method == "message.pending.batch":
@@ -676,9 +681,7 @@ class _IpcDispatchMixin:
                     return self._handle_agent_create_with_default(params)
                 return self._handle_agent(method, params)
             except (AgentError, DomainCommandError) as error:
-                raise DaemonRequestError(
-                    error.code, str(error), data=getattr(error, "data", None)
-                ) from error
+                raise DaemonRequestError(error.code, str(error), data=getattr(error, "data", None)) from error
             except RegistryHomeError as error:
                 raise DaemonRequestError(AgentError.code, str(error)) from error
         if method == "shutdown":
@@ -957,10 +960,7 @@ class _IpcDispatchMixin:
             "environmentPathDigest": hashlib.sha256(
                 os.environ.get("PATH", "").encode()
             ).hexdigest(),
-            "schedule": [
-                {"hour": hour, "minute": minute}
-                for hour, minute in SCHEDULE
-            ],
+            "schedule": [{"hour": hour, "minute": minute} for hour, minute in SCHEDULE],
             **self._autoupdate.status(),
         }
 

@@ -16,6 +16,14 @@ import typer
 from hyprial.shell.impl.cli.commands.common.support import JsonObject, _local_operator_identity, _message_claim_params
 from hyprial.shell.impl.cli.output import CliResult, confirm as ask, render_generic
 fs_app = typer.Typer(help="Share and synchronize organization folders.")
+space_app = typer.Typer(help="Organization folders: list, create, join, status, serve, web, checkout.")
+member_app = typer.Typer(help="Read and change organization folder membership.")
+trash_app = typer.Typer(help="List and restore deleted nodes.")
+purge_app = typer.Typer(help="Owner-reviewed permanent deletion.")
+fs_app.add_typer(space_app, name="space")
+fs_app.add_typer(member_app, name="member")
+fs_app.add_typer(trash_app, name="trash")
+fs_app.add_typer(purge_app, name="purge")
 
 
 def _fs_run(method: str, params: JsonObject, *, json_output: bool) -> None:
@@ -36,14 +44,14 @@ def _fs_run(method: str, params: JsonObject, *, json_output: bool) -> None:
     services._execute(operation, json_output=json_output)
 
 
-@fs_app.command("spaces")
+@space_app.command("list")
 def fs_spaces(json_output: bool = typer.Option(False, "--json", help="Emit JSON only.")) -> None:
     """List spaces joined on this node."""
 
     _fs_run("orgfs.spaces", {}, json_output=json_output)
 
 
-@fs_app.command("create")
+@space_app.command("create")
 def fs_create(
     name: str = typer.Argument(..., help="Space display name."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
@@ -246,7 +254,7 @@ def fs_export(
     )
 
 
-@fs_app.command("invite")
+@member_app.command("invite")
 def fs_invite(
     space_id: str = typer.Argument(..., help="Space UUID."),
     user: str = typer.Argument(..., help="Invited user URI."),
@@ -308,7 +316,7 @@ def fs_invite(
     services._execute(operation, json_output=json_output)
 
 
-@fs_app.command("remove-member")
+@member_app.command("remove")
 def fs_remove_member(
     space_id: str = typer.Argument(..., help="Space UUID."),
     user: str = typer.Argument(..., help="Member user URI."),
@@ -318,7 +326,7 @@ def fs_remove_member(
     _fs_run("orgfs.remove_member", {"spaceId": space_id, "user": user}, json_output=json_output)
 
 
-@fs_app.command("members")
+@member_app.command("list")
 def fs_members(
     space_id: str = typer.Argument(..., help="Space UUID."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
@@ -327,7 +335,7 @@ def fs_members(
     _fs_run("orgfs.members", {"spaceId": space_id}, json_output=json_output)
 
 
-@fs_app.command("join")
+@space_app.command("join")
 def fs_join(
     space_id: str = typer.Argument(..., help="Invited space UUID."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
@@ -336,7 +344,7 @@ def fs_join(
     _fs_run("orgfs.join", {"spaceId": space_id}, json_output=json_output)
 
 
-@fs_app.command("web")
+@space_app.command("web")
 def fs_web(
     listen: str = typer.Option(
         ...,
@@ -415,7 +423,7 @@ def fs_web(
     raise typer.Exit(serve(config, resolver=None))
 
 
-@fs_app.command("trash")
+@trash_app.command("list")
 def fs_trash(
     space_id: str = typer.Argument(..., help="Space UUID."),
     limit: int = typer.Option(100, "--limit", help="Maximum deleted nodes."),
@@ -425,7 +433,7 @@ def fs_trash(
     _fs_run("orgfs.trash", {"spaceId": space_id, "limit": limit}, json_output=json_output)
 
 
-@fs_app.command("restore")
+@trash_app.command("restore")
 def fs_restore(
     space_id: str = typer.Argument(..., help="Space UUID."),
     node: str = typer.Argument(..., help="Path, id:<nodeId>, or orgfs: URI."),
@@ -441,7 +449,7 @@ def fs_restore(
     )
 
 
-@fs_app.command("status")
+@space_app.command("status")
 def fs_status(
     space_id: str = typer.Argument(..., help="Space UUID."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
@@ -450,7 +458,7 @@ def fs_status(
     _fs_run("orgfs.status", {"spaceId": space_id}, json_output=json_output)
 
 
-@fs_app.command("serve")
+@space_app.command("serve")
 def fs_serve(
     space_id: str = typer.Argument(..., help="Space UUID."),
     backend: str = typer.Option("fs", "--backend", help="Replica backend: fs or memory."),
@@ -464,7 +472,7 @@ def fs_serve(
     )
 
 
-@fs_app.command("checkout")
+@space_app.command("checkout")
 def fs_checkout(
     space_id: str = typer.Argument(..., help="Space UUID."),
     enabled: bool = typer.Option(
@@ -482,7 +490,7 @@ def fs_checkout(
     )
 
 
-@fs_app.command("purge-plan")
+@purge_app.command("plan")
 def fs_purge_plan(
     space_id: str = typer.Argument(..., help="Space UUID."),
     targets_json: str = typer.Argument(
@@ -511,7 +519,7 @@ def fs_purge_plan(
     )
 
 
-@fs_app.command("purge")
+@purge_app.command("run")
 def fs_purge(
     space_id: str = typer.Argument(..., help="Space UUID."),
     plan_id: str | None = typer.Argument(
@@ -570,7 +578,7 @@ def fs_purge(
     services._execute(operation, json_output=json_output)
 
 
-@fs_app.command("purge-status")
+@purge_app.command("status")
 def fs_purge_status(
     space_id: str = typer.Argument(..., help="Space UUID."),
     plan_id: str = typer.Argument(..., help="Purge plan ID."),
@@ -584,7 +592,7 @@ def fs_purge_status(
     )
 
 
-@fs_app.command("unban")
+@purge_app.command("unban")
 def fs_unban(
     space_id: str = typer.Argument(..., help="Space UUID."),
     sha: str = typer.Argument(..., help="Lowercase SHA-256 digest."),

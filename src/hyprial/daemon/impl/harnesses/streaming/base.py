@@ -17,6 +17,16 @@ class BaseTurnProcess:
     marker while owning a correlated multi-in-flight adapter.
     """
 
+    @property
+    def dispatch_ready(self) -> bool:
+        """Whether dispatch may hand this process a turn without blocking."""
+
+        wait_ready = getattr(self, "wait_ready", None)
+        if callable(wait_ready):
+            return bool(wait_ready(timeout=0))
+        return bool(getattr(self, "running", False))
+
+
 class ConcurrentTurnProcess(BaseTurnProcess):
     """Bounded concurrent turn-process family seam.
 

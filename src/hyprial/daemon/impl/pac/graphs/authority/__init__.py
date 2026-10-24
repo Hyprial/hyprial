@@ -335,7 +335,7 @@ class PacGraphAuthority:
         """Run bounded policy/artifact/git preflight off the caller thread."""
 
         correlation = f"pac-expansion-preflight-{uuid4().hex}"
-        reserve = min(0.05, self._call_timeout / 2)
+        reserve = min(0.15, self._call_timeout * 0.75)
         caller_deadline = time.monotonic() + self._call_timeout
         facts = {
             **facts,

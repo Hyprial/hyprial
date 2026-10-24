@@ -15,7 +15,7 @@ Attach and detach never signal the pane process, so the TUI (and its channel
 carrier) survives both.  Cross-machine attach stays out of scope here; that is
 the transfer track (#104).
 
-Session names derive from the canonical actor URI so `hyprial ps` output and
+Session names derive from the canonical actor URI so `hyprial daemon status` output and
 `tmux ls` line up one-to-one.  tmux target syntax treats ``:`` and ``.`` as
 separators, so every disallowed character maps deterministically to ``-``;
 the raw actor stays the daemon identity key, exactly like the pi session-id
@@ -169,6 +169,7 @@ def new_detached_session(
     cwd: Path,
     env: Mapping[str, str],
     cleanup: LaunchCleanupResources | None = None,
+    remain_on_exit: bool = False,
 ) -> None:
     """Spawn ``argv`` inside a new detached tmux session.
 
@@ -206,6 +207,8 @@ def new_detached_session(
             tmux_bin,
             ["new-session", "-d", "-s", name, "-c", str(cwd), "--", command],
         )
+        if remain_on_exit:
+            set_remain_on_exit(tmux_bin, name, True)
         # Every created resource must have a release owner, including the
         # success path. The pane is still blocked on its private environment
         # socket here, so cleanup ownership exists before the TUI can exec or
@@ -250,6 +253,15 @@ def pane_pid(tmux_bin: str, name: str) -> int | None:
     return pid if pid > 0 else None
 
 
+def pane_dead(tmux_bin: str, name: str) -> bool:
+    """Whether the retained pane's command exited."""
+
+    result = _run(
+        tmux_bin, ["display-message", "-p", "-t", name, "#{pane_dead}"], check=False
+    )
+    return result.returncode == 0 and result.stdout.strip() == "1"
+
+
 def pane_text(tmux_bin: str, name: str) -> str:
     """The visible text of the session's pane; empty when it cannot be read."""
 
@@ -258,6 +270,21 @@ def pane_text(tmux_bin: str, name: str) -> str:
     except OSError:
         return ""
     return result.stdout if result.returncode == 0 else ""
+
+
+def set_remain_on_exit(tmux_bin: str, name: str, enabled: bool) -> None:
+    """Retain a dead pane for diagnostics, or restore normal session cleanup."""
+
+    _run(
+        tmux_bin,
+        [
+            "set-window-option",
+            "-t",
+            name,
+            "remain-on-exit",
+            "on" if enabled else "off",
+        ],
+    )
 
 
 #: Claude Code's own start-up confirmations.  Both are CC-owned on purpose and

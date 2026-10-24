@@ -611,9 +611,9 @@ class ClaudeChannelAdapter:
     ) -> None:
         """Complete members whose messages left the daemon queue out of band.
 
-        The inbox is daemon-authoritative: ``hyprial ack``, another session, or
-        a harness auto-ack may consume a pending message without this session's
-        harness_reply/harness_ack ever seeing it.  Only cursors tracked before
+        The inbox is daemon-authoritative: ``hyprial message ack``, another
+        session, or a harness auto-ack may consume a pending message without
+        this session's harness_reply/harness_ack ever seeing it.  Only cursors tracked before
         the daemon read are eligible, so a batch enqueued concurrently with the
         read can never be completed against a stale pending list.
         """

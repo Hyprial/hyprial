@@ -1,4 +1,4 @@
-"""The ``hyprial delivery`` delivery-observation command group."""
+"""Shared helpers for ``hyprial message status``."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from typing import Any
 import typer
 
 from hyprial.shell.impl.cli.commands.common.support import _message_claim_params
+
 delivery_app = typer.Typer(help="Ask what actually happened to messages you sent.")
 
 
