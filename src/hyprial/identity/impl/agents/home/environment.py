@@ -484,7 +484,12 @@ def compose_worker_child_launch(
         from hyprial.identity.impl.agents.runtime.context  import validate_shared_credential_environment
 
         validate_shared_credential_environment(
-            runtime_context, complete.for_exec()
+            runtime_context,
+            (
+                name
+                for secret in resolved
+                for name in secret.grant.environment_names
+            ),
         )
     return ChildEnvironmentLaunch(
         environment=complete,

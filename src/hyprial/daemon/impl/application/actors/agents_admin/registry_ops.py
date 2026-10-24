@@ -883,25 +883,13 @@ class _AgentRegistryOpsMixin:
             )
         if not resolve_secrets:
             return event, {}
-        from hyprial.identity import SecretResolutionError, resolve_agent_secrets
+        from .provider_credential import materialize_agent_secret_environment
 
         try:
-            resolved = resolve_agent_secrets(
+            environment = materialize_agent_secret_environment(
                 registry=self._agent_registry,
-                hyprial_home=self.hyprial_home,
-                agent_name=event.actor,
-                expected_grants=event.secret_grants,
+                actor=event.actor,
             )
-            environment: dict[str, str] = {}
-            for secret in resolved:
-                for name, value in secret.environment().items():
-                    if name in environment:
-                        raise SecretResolutionError(
-                            "environment-conflict",
-                            secret.grant.entry_id,
-                            "compose",
-                        )
-                    environment[name] = value
         except BaseException as error:
             # Any failure after acquire releases the lease first: a lease left
             # held has no expiry, blocks destroy and fills the launch capacity.
@@ -920,15 +908,11 @@ class _AgentRegistryOpsMixin:
                 )
             if not isinstance(error, Exception):
                 raise
-            # Only the resolver's own messages are sanitized; anything else is
-            # reported by type so no detail of a secret can leak into it.
-            detail = (
-                str(error)
-                if isinstance(error, SecretResolutionError)
-                else f"agent secret resolution failed: {type(error).__name__}"
-            )
+            # Error details could contain plaintext or a private path. Report
+            # only the type at this process boundary.
             raise DomainCommandError(
-                ipc_errors.AGENT_SECRET_RESOLUTION_FAILED, detail
+                ipc_errors.AGENT_SECRET_RESOLUTION_FAILED,
+                f"agent secret resolution failed: {type(error).__name__}",
             ) from error
         if environment:
             self._log(

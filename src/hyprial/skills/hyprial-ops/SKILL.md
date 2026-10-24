@@ -229,6 +229,12 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
   scope 闭集：agent-home=`self`（不可撤）、isolation=`directory|container`、org-context=`accepted`；
   see-actors/send-to 为 principal URI JSON 数组；tool-surface/channel 为名称 JSON 数组；shared-path 为 `{"path":"/absolute/path","mode":"ro|rw"}`。
   本片只记账与格式校验，不限制运行权限，不代替 secret grant，也不证明调用方身份；执行者记为本机 host owner。
+- **每个 agent 自己的非模型凭据**:`hyprial agent secret set/rotate/list/history/remove`
+  管理 `<agent home>/secrets.sqlite`;值只从非 TTY stdin 输入,list/history 不回显值。v1
+  不自动扫描或迁移旧文件,owner 核对归属后逐条导入;无 validator 的服务缺省拒绝,只有显式
+  `--no-validate` 才放行。远端撤销与本地删值是 `revoke_remote + remove` 两件事,只有两条
+  事件都在且值不在盘上才完成;同 uid 直接读取是已知边界。操作步骤、威胁模型与验收清单见
+  `docs/guides/agent-secrets.md`。
 - **给 agent 下发 provider 凭据**(凭据一律归 daemon 登录用户;不回显;每条都可撤)。设计:
   `docs/design/provider-login-2026-10-14.md`。
   - API key(默认):`printf %s "$KEY" | hyprial agent secret provider-write <entry> --field apiKey`

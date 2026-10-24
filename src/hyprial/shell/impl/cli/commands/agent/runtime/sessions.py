@@ -713,6 +713,7 @@ def _start_interactive_codex(
                     else Path(str(runtime_projection["sessionRoot"]))
                 ),
                 shared_credential=shared_credential,
+                secret_environment_names=tuple(secret_environment),
                 authority_prepared=(
                     runtime_projection is not None
                     and runtime_projection.get("authorityPrepared") is True

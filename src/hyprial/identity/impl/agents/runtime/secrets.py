@@ -30,42 +30,76 @@ __all__ = [
     "ResolvedSecret",
     "SecretCatalogEntry",
     "SecretCustody",
-    "SECRET_ENVIRONMENT_NAMES",
+    "SecretEnvironmentRejectionEvent",
+    "SecretEnvironmentNameRejected",
     "SecretGrant",
     "SecretResolver",
     "SecretResolutionError",
     "SecretSource",
+    "secret_environment_name_is_allowed",
+    "validate_secret_environment_name",
 ]
 
 _ENTRY_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _ENV_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]*$")
-SECRET_ENVIRONMENT_NAMES = frozenset(
-    {
-        "OPENAI_API_KEY",
-        "ANTHROPIC_API_KEY",
-        "ANTHROPIC_AUTH_TOKEN",
-        "CLAUDE_CODE_OAUTH_TOKEN",
-        # Endpoint selector, deliberately NOT a credential: Claude Code reads
-        # ``ANTHROPIC_BASE_URL`` beside ``ANTHROPIC_AUTH_TOKEN`` and a bundle
-        # that carried the token but not the endpoint would silently send it to
-        # the vendor's own origin.  The name rides the same explicit-approval
-        # vocabulary as the auth names because that vocabulary is exactly the
-        # set the target's secret registry can bind at launch -- putting it
-        # here is what lets a landed env credential reach the child.  The
-        # alternative (a second, non-secret carry channel threaded from the
-        # envelope through landing into the launch environment) would add a
-        # parallel binding table for one string; the cost is that this name is
-        # custody-classified as an agent-private secret at rest, which is a
-        # stricter box than the value needs, never a weaker one.  The landing
-        # approval check itself is unchanged: membership, never a wildcard.
-        "ANTHROPIC_BASE_URL",
-        "DEEPSEEK_API_KEY",
-        "TYPESAFE_API_KEY",
-        "ZAI_CODING_CN_API_KEY",
-    }
+_RESERVED_ENVIRONMENT_NAMES = frozenset(
+    {"PATH", "HOME", "CODEX_HOME", "LANG", "TMPDIR"}
 )
 _DEAD_CLAUDE_OAUTH_NAME = "ANTHROPIC_OAUTH_TOKEN"
 _CLAUDE_OAUTH_REPLACEMENT = "CLAUDE_CODE_OAUTH_TOKEN"
+
+
+def _is_reserved_environment_name(name: str) -> bool:
+    return name in _RESERVED_ENVIRONMENT_NAMES or name.startswith("HYPRIAL_")
+
+
+def validate_secret_environment_name(name: object) -> None:
+    """Validate one env field and expose a recordable reserved-name verdict."""
+
+    if not isinstance(name, str) or not _ENV_PATTERN.fullmatch(name):
+        raise ValueError("secret environment names must be valid env names")
+    if name == _DEAD_CLAUDE_OAUTH_NAME:
+        raise ValueError(
+            f"secret environment name {_DEAD_CLAUDE_OAUTH_NAME} is unsupported; "
+            f"use {_CLAUDE_OAUTH_REPLACEMENT}"
+        )
+    if _is_reserved_environment_name(name):
+        raise SecretEnvironmentNameRejected(name)
+
+
+def secret_environment_name_is_allowed(name: object) -> bool:
+    """Return whether ``name`` is a syntactically valid, non-reserved field.
+
+    This is a correctness policy, not an approval list.  Custody remains a
+    separate judgement made by :class:`SecretSource`.
+    """
+
+    try:
+        validate_secret_environment_name(name)
+    except ValueError:
+        return False
+    return True
+
+
+@dataclass(frozen=True, slots=True)
+class SecretEnvironmentRejectionEvent:
+    """Recordable identity verdict for a rejected secret field."""
+
+    action: str
+    field: str
+    result: str
+
+
+class SecretEnvironmentNameRejected(ValueError):
+    """A reserved-name rejection carrying the event fields storage must log."""
+
+    def __init__(self, field: str) -> None:
+        self.event = SecretEnvironmentRejectionEvent(
+            action="rejected",
+            field=field,
+            result="rejected:reserved-name",
+        )
+        super().__init__(f"secret environment name {field} is reserved")
 
 
 class SecretCustody(str, Enum):
@@ -130,16 +164,8 @@ class SecretGrant:
             raise ValueError("secret entry id is not a safe segment")
         if self.field_name is not None and not _ENTRY_PATTERN.fullmatch(self.field_name):
             raise ValueError("secret field name is not a safe key")
-        if _DEAD_CLAUDE_OAUTH_NAME in self.environment_names:
-            raise ValueError(
-                f"secret environment name {_DEAD_CLAUDE_OAUTH_NAME} is unsupported; "
-                f"use {_CLAUDE_OAUTH_REPLACEMENT}"
-            )
-        if any(
-            not _ENV_PATTERN.fullmatch(name) or name not in SECRET_ENVIRONMENT_NAMES
-            for name in self.environment_names
-        ):
-            raise ValueError("secret environment names must be explicitly approved")
+        for name in self.environment_names:
+            validate_secret_environment_name(name)
         if len(set(self.environment_names)) != len(self.environment_names):
             raise ValueError("secret environment names must be unique")
         if self.revision < 1:

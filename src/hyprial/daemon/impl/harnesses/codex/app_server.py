@@ -143,6 +143,7 @@ class CodexInteractiveAppServer:
         native_root: Path | None = None,
         session_root: Path | None = None,
         shared_credential: SharedCredentialBinding | None = None,
+        secret_environment_names: tuple[str, ...] = (),
         authority_prepared: bool = False,
     ) -> None:
         self.socket_path = Path(socket_path)
@@ -179,7 +180,7 @@ class CodexInteractiveAppServer:
             if shared_credential is not None:
                 validate_shared_credential_binding(shared_credential)
                 validate_shared_credential_environment(
-                    shared_credential, self.env or {}
+                    shared_credential, secret_environment_names
                 )
             launch_environment = whitelist_replacement_environment(os.environ, self.env)
             prepare_codex_runtime_roots(

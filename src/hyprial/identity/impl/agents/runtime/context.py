@@ -14,7 +14,7 @@ import shlex
 import stat
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable
 from urllib.parse import urlsplit, urlunsplit
 
 from hyprial.kernel import (
@@ -440,9 +440,14 @@ def validate_shared_credential_binding(binding: SharedCredentialBinding) -> None
 
 def validate_shared_credential_environment(
     subject: AgentRuntimeContext | SharedCredentialBinding,
-    environment: Mapping[str, str],
+    credential_environment_names: Iterable[str],
 ) -> None:
-    """Keep explicit environment credentials mutually exclusive with the link."""
+    """Keep grant-declared environment credentials exclusive with the link.
+
+    The caller supplies only credential fields declared by grants. Runtime and
+    generated child-environment fields are not credentials and must never be
+    classified by inspecting the complete environment.
+    """
 
     binding = (
         subject.shared_credential
@@ -451,11 +456,7 @@ def validate_shared_credential_environment(
     )
     if binding is None:
         return
-    from hyprial.identity.impl.agents.runtime.secrets  import SECRET_ENVIRONMENT_NAMES
-
-    conflicting = sorted(
-        name for name in SECRET_ENVIRONMENT_NAMES if environment.get(name)
-    )
+    conflicting = sorted(set(credential_environment_names))
     if conflicting:
         raise AgentRuntimeError(
             f"agent {binding.actor} native shared credential and explicit "

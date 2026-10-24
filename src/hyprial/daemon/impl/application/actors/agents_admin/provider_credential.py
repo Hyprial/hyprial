@@ -28,6 +28,10 @@ default as ``providerDefault`` (the router sends ``agent.create`` through
 :meth:`_AgentProviderMixin._handle_agent_create_with_default`), so the CLI
 learns it without a second round trip; an unreadable default is reported, never
 allowed to fail a create that already happened.
+
+This module also holds the bounded sqlite-to-environment launch helper. The
+adjacent ``registry_ops`` dispatch file is already at the structural line gate;
+the helper still runs inside its acquire/compensate boundary.
 """
 
 from __future__ import annotations
@@ -42,9 +46,12 @@ from typing import Any
 from hyprial.daemon.impl.ipc.params import JsonObject, _required_string
 from hyprial.identity import (
     NATIVE_CREDENTIAL_FILES,
+    AgentSecretStore,
+    FingerprintUnavailable,
     NativeCredentialError,
     install_native_credential_set,
     remove_native_credentials,
+    secret_environment_name_is_allowed,
 )
 from hyprial.kernel import DaemonRequestError, atomic_json_write, ipc_errors
 
@@ -79,6 +86,84 @@ class _AgentProviderMixin:
         except DaemonRequestError as error:
             return {**created, "providerDefault": None, "providerDefaultError": str(error)}
         return {**created, "providerDefault": default}
+
+
+def materialize_agent_secret_environment(*, registry: Any, actor: str) -> dict[str, str]:
+    """Read one agent's sqlite values and record the launch decision."""
+
+    agent = registry.require(actor)
+    receipt = registry.home_receipt(agent.actor)
+    store = AgentSecretStore(Path(receipt.path))
+    write_receipts: dict[tuple[str, str], tuple[str, int]] = {}
+    for event in store.history():
+        if event.field is None or event.result != "ok":
+            continue
+        key = (event.service, event.field)
+        if event.action in {"set", "rotate"} and event.fingerprint is not None:
+            write_receipts[key] = (event.fingerprint, event.at_ms)
+        elif event.action == "remove":
+            write_receipts.pop(key, None)
+
+    environment: dict[str, str] = {}
+    at_ms = registry.now_ms()
+    for secret in store.list():
+        result = None
+        recorded = write_receipts.get((secret.service, secret.field))
+        if not secret_environment_name_is_allowed(secret.field):
+            result = "rejected:reserved-name"
+        elif recorded != (secret.fingerprint, secret.updated_at_ms):
+            result = "rejected:no-write-event"
+        else:
+            try:
+                matches = store.fingerprint_matches(
+                    secret.field, secret.value, secret.fingerprint
+                )
+            except FingerprintUnavailable:
+                result = "rejected:fingerprint-unavailable"
+            else:
+                if not matches:
+                    result = "rejected:no-write-event"
+        if result is not None:
+            store.record_event(
+                action="rejected",
+                service=secret.service,
+                field=secret.field,
+                actor=agent.actor,
+                via="daemon",
+                at_ms=at_ms,
+                result=result,
+            )
+            continue
+        if secret.field in environment:
+            store.record_event(
+                action="rejected",
+                service=secret.service,
+                field=secret.field,
+                actor=agent.actor,
+                via="daemon",
+                at_ms=at_ms,
+                result="rejected:environment-conflict",
+            )
+            store.record_event(
+                action="materialize",
+                service="runtime-launch",
+                field=None,
+                actor=agent.actor,
+                via="daemon",
+                at_ms=at_ms,
+                result="rejected:environment-conflict",
+            )
+            raise ValueError(f"agent secret environment conflict for {secret.field}")
+        environment[secret.field] = secret.value
+    store.record_event(
+        action="materialize",
+        service="runtime-launch",
+        field=",".join(sorted(environment)) or None,
+        actor=agent.actor,
+        via="daemon",
+        at_ms=at_ms,
+    )
+    return environment
 
 
 def handle_provider_login(application: Any, params: JsonObject) -> dict[str, object]:

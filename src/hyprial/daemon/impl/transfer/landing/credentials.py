@@ -38,7 +38,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 
-from hyprial.identity import SECRET_ENVIRONMENT_NAMES
+from hyprial.identity import secret_environment_name_is_allowed
 
 from hyprial.daemon.impl.transfer.archive.bundle import (
     PAYLOAD_DIRNAME,
@@ -345,19 +345,15 @@ def _phase_two_records(
         if item.install is None:
             blockers.append("the envelope names no install target")
         if item.install is not None and item.install.kind == "env":
-            unapproved = [
+            rejected = [
                 name
                 for name in item.install.environment
-                if name not in SECRET_ENVIRONMENT_NAMES
+                if not secret_environment_name_is_allowed(name)
             ]
-            if unapproved:
-                # The target's secret registry only binds explicitly approved
-                # environment names; a credential bound to anything else would
-                # be written and never resolvable, so it never becomes
-                # restorable in the first place.
+            if rejected:
                 blockers.append(
                     "the environment name(s) "
-                    + ", ".join(unapproved)
+                    + ", ".join(rejected)
                     + " are not ones this target can bind"
                 )
         if item.machine_bound:

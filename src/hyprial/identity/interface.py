@@ -181,10 +181,16 @@ if TYPE_CHECKING:
     from hyprial.identity.impl.agents.home.effects import RuntimeHomePreparers as RuntimeHomePreparers
     from hyprial.identity.impl.agents.runtime.visibility import SEE_ACTORS as SEE_ACTORS
     from hyprial.identity.impl.agents.runtime.visibility import SEND_TO as SEND_TO
-    from hyprial.identity.impl.agents.runtime.secrets import SECRET_ENVIRONMENT_NAMES as SECRET_ENVIRONMENT_NAMES
     from hyprial.identity.impl.agents.runtime.secrets import SecretResolver as SecretResolver
     from hyprial.identity.impl.agents.runtime.secrets import SecretResolutionError as SecretResolutionError
     from hyprial.identity.impl.agents.runtime.secrets import SecretSource as SecretSource
+    from hyprial.identity.impl.agents.secret_store import AgentSecretStore as AgentSecretStore
+    from hyprial.identity.impl.agents.secret_store import FingerprintUnavailable as FingerprintUnavailable
+    from hyprial.identity.impl.agents.secret_store import SecretEvent as SecretEvent
+    from hyprial.identity.impl.agents.secret_store import StoredSecret as StoredSecret
+    from hyprial.identity.impl.agents.secret_store import agent_secret_store_exists as agent_secret_store_exists
+    from hyprial.identity.impl.agents.runtime.secrets import secret_environment_name_is_allowed as secret_environment_name_is_allowed
+    from hyprial.identity.impl.agents.secret_store import secret_fingerprint as secret_fingerprint
     from hyprial.identity.impl.agents.actor.ports import SetRestoreDispositionCommand as SetRestoreDispositionCommand
     from hyprial.identity.impl.agents.actor.ports import SettleAgentDestroyCommand as SettleAgentDestroyCommand
     from hyprial.identity.impl.agents.runtime.context import SharedCredentialBinding as SharedCredentialBinding
@@ -451,12 +457,18 @@ _FACADE_EXPORTS = {
     'RevokeAgentSecretCommand': ('hyprial.identity.impl.agents.actor.ports', 'RevokeAgentSecretCommand'),
     'RuntimeCapability': ('hyprial.identity.impl.users.profile', 'RuntimeCapability'),
     'RuntimeHomePreparers': ('hyprial.identity.impl.agents.home.effects', 'RuntimeHomePreparers'),
-    'SECRET_ENVIRONMENT_NAMES': ('hyprial.identity.impl.agents.runtime.secrets', 'SECRET_ENVIRONMENT_NAMES'),
     'SEE_ACTORS': ('hyprial.identity.impl.agents.runtime.visibility', 'SEE_ACTORS'),
     'SEND_TO': ('hyprial.identity.impl.agents.runtime.visibility', 'SEND_TO'),
     'SecretResolver': ('hyprial.identity.impl.agents.runtime.secrets', 'SecretResolver'),
     'SecretResolutionError': ('hyprial.identity.impl.agents.runtime.secrets', 'SecretResolutionError'),
     'SecretSource': ('hyprial.identity.impl.agents.runtime.secrets', 'SecretSource'),
+    'AgentSecretStore': ('hyprial.identity.impl.agents.secret_store', 'AgentSecretStore'),
+    'FingerprintUnavailable': ('hyprial.identity.impl.agents.secret_store', 'FingerprintUnavailable'),
+    'SecretEvent': ('hyprial.identity.impl.agents.secret_store', 'SecretEvent'),
+    'StoredSecret': ('hyprial.identity.impl.agents.secret_store', 'StoredSecret'),
+    'agent_secret_store_exists': ('hyprial.identity.impl.agents.secret_store', 'agent_secret_store_exists'),
+    'secret_environment_name_is_allowed': ('hyprial.identity.impl.agents.runtime.secrets', 'secret_environment_name_is_allowed'),
+    'secret_fingerprint': ('hyprial.identity.impl.agents.secret_store', 'secret_fingerprint'),
     'SetRestoreDispositionCommand': ('hyprial.identity.impl.agents.actor.ports', 'SetRestoreDispositionCommand'),
     'SettleAgentDestroyCommand': ('hyprial.identity.impl.agents.actor.ports', 'SettleAgentDestroyCommand'),
     'SharedCredentialBinding': ('hyprial.identity.impl.agents.runtime.context', 'SharedCredentialBinding'),
@@ -742,12 +754,18 @@ __all__ = [
     'RevokeAgentSecretCommand',
     'RuntimeCapability',
     'RuntimeHomePreparers',
-    'SECRET_ENVIRONMENT_NAMES',
     'SEE_ACTORS',
     'SEND_TO',
     'SecretResolver',
     'SecretResolutionError',
     'SecretSource',
+    'AgentSecretStore',
+    'FingerprintUnavailable',
+    'SecretEvent',
+    'StoredSecret',
+    'agent_secret_store_exists',
+    'secret_environment_name_is_allowed',
+    'secret_fingerprint',
     'SetRestoreDispositionCommand',
     'SettleAgentDestroyCommand',
     'SharedCredentialBinding',
