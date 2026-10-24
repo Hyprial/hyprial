@@ -75,6 +75,7 @@ _AGENT_COST_TYPES = (
     "BindAgentCommand",
     "ReleaseAgentCommand",
     "RecordAgentActivityCommand",
+    "RecordAgentActivityIfBindingCommand",
     "SetRestoreDispositionCommand",
     "ClearRestoreDispositionCommand",
     "BlockAgentCommand",
@@ -116,13 +117,15 @@ class _Version:
             self._value += 1
             return self._value
 class _AgentProjectionState:
-    """Atomically swapped immutable read face for the Agent authority."""
+    """Atomically swapped, keyed read face for the Agent authority."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._version = 0
-        self._agents: tuple[AgentProjection, ...] = ()
-        self._bindings: tuple[AgentBindingProjection, ...] = ()
+        self._agents: dict[str, AgentProjection] = {}
+        self._agent_uris: dict[str, str] = {}
+        self._bindings: dict[str, AgentBindingProjection] = {}
+        self._binding_revisions: dict[str, int] = {}
 
     def replace(
         self,
@@ -130,32 +133,59 @@ class _AgentProjectionState:
         version: int,
         agents: tuple[AgentProjection, ...],
         bindings: tuple[AgentBindingProjection, ...],
+        binding_revisions: dict[str, int],
     ) -> None:
+        keyed_agents = {agent.actor: agent for agent in agents}
+        agent_uris = {agent.uri: agent.actor for agent in agents}
+        keyed_bindings = {binding.actor: binding for binding in bindings}
         with self._lock:
             self._version = version
-            self._agents = agents
-            self._bindings = bindings
+            self._agents = keyed_agents
+            self._agent_uris = agent_uris
+            self._bindings = keyed_bindings
+            self._binding_revisions = binding_revisions
+
+    def upsert_agent(self, agent: AgentProjection, *, version: int) -> None:
+        """Patch one activity projection without rebuilding every Agent."""
+
+        with self._lock:
+            previous = self._agents.get(agent.actor)
+            if previous is not None and previous.uri != agent.uri:
+                self._agent_uris.pop(previous.uri, None)
+            self._agents[agent.actor] = agent
+            self._agent_uris[agent.uri] = agent.actor
+            self._version = version
 
     def read_agent(self, name: str) -> AgentProjection | None:
         with self._lock:
-            return next(
-                (
-                    agent
-                    for agent in self._agents
-                    if agent.actor == name or agent.uri == name
-                ),
-                None,
-            )
+            actor = name if name in self._agents else self._agent_uris.get(name)
+            agent = None if actor is None else self._agents.get(actor)
+            if agent is None or agent.version == self._version:
+                return agent
+            return replace(agent, version=self._version)
+
     def read_agents(self) -> tuple[AgentProjection, ...]:
         with self._lock:
-            return self._agents
+            return tuple(
+                agent
+                if agent.version == self._version
+                else replace(agent, version=self._version)
+                for agent in self._agents.values()
+            )
 
     def read_binding(self, actor: str) -> AgentBindingProjection | None:
         with self._lock:
-            return next(
-                (binding for binding in self._bindings if binding.actor == actor),
-                None,
-            )
+            return self._bindings.get(actor)
+
+    def read_binding_key(
+        self, actor: str
+    ) -> tuple[int, str | None, str | None, str | None]:
+        with self._lock:
+            binding = self._bindings.get(actor)
+            revision = self._binding_revisions.get(actor, 0)
+            if binding is None:
+                return revision, None, None, None
+            return revision, binding.harness, binding.runtime, binding.session_id
 @dataclass(frozen=True, slots=True)
 class _PendingHomeMutation:
     command: object
@@ -475,7 +505,19 @@ def _binding_projection(binding: AgentBinding) -> AgentBindingProjection:
         runtime=binding.runtime,
         session_id=binding.session_id,
         bound_at_ms=binding.bound_at_ms,
+        revision=binding.revision,
     )
+def _patch_agent_projection(
+    projection: _AgentProjectionState,
+    registry: AgentRegistry,
+    agent: Agent,
+    version: int,
+) -> None:
+    projection.upsert_agent(
+        _agent_projection(agent, version, registry), version=version
+    )
+
+
 def _refresh_projection(
     projection: _AgentProjectionState,
     registry: AgentRegistry,
@@ -490,6 +532,7 @@ def _refresh_projection(
         bindings=tuple(
             _binding_projection(binding) for binding in liveness.bindings()
         ),
+        binding_revisions=liveness.binding_revisions(),
     )
 def _publish(sink: object, event: object) -> None:
     publish = getattr(sink, "publish", None)

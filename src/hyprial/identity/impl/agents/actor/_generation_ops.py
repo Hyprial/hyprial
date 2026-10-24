@@ -22,6 +22,7 @@ from hyprial.identity.impl.agents.actor.ports import PinAgentAdapterCommand
 from hyprial.kernel import PortCommandRejected
 from hyprial.identity.impl.agents.state.liveness import RUNTIME_INTERACTIVE
 from hyprial.identity.impl.agents.actor.ports import RecordAgentActivityCommand
+from hyprial.identity.impl.agents.actor.ports import RecordAgentActivityIfBindingCommand
 from hyprial.identity.impl.agents.actor.ports import ReleaseAgentCommand
 from hyprial.identity.impl.agents.actor.ports import ReleaseAgentDestroyReservationCommand
 from hyprial.identity.impl.agents.actor.ports import ReleaseAgentRuntimeLaunchCommand
@@ -43,6 +44,7 @@ from ._base import (
     _PinStateRequest,
     _agent_projection,
     _binding_projection,
+    _patch_agent_projection,
     _publish,
     _refresh_projection,
 )
@@ -442,6 +444,11 @@ class _GenerationOpsMixin:
         version = (
             self.version.bump() if changed or activity_changed else self.version.read()
         )
+        if activity_changed and not changed:
+            _patch_agent_projection(
+                self.projection, self.registry, agent, version
+            )
+            refresh_projection = False
         self._completed(
             command,
             operation="bind",
@@ -451,17 +458,64 @@ class _GenerationOpsMixin:
             binding=binding,
             refresh_projection=refresh_projection,
         )
+
     def _record_activity(self, command: RecordAgentActivityCommand) -> None:
+        projected = self.projection.read_agent(command.actor)
+        if projected is not None:
+            self.liveness.touch(projected.uri)
+        self._complete_activity(command, operation="activity")
+
+    def _record_activity_if_binding(
+        self, command: RecordAgentActivityIfBindingCommand
+    ) -> None:
+        projected = self.projection.read_agent(command.actor)
+        actor = command.actor if projected is None else projected.uri
+        matched, committed = self.liveness.if_binding_current(
+            actor,
+            expected_revision=command.expected_binding_revision,
+            harness=command.harness,
+            runtime=command.runtime,
+            session_id=command.session_id,
+            effect=command.on_match,
+        )
+        if not matched or not committed:
+            self._completed(
+                command,
+                operation=(
+                    "activity-binding-mismatch"
+                    if not matched
+                    else "activity-binding-aborted"
+                ),
+                changed=False,
+                version=self.version.read(),
+                refresh_projection=False,
+            )
+            return
+        self.liveness.touch(actor)
+        self._complete_activity(
+            command, operation="activity-binding-matched"
+        )
+
+    def _complete_activity(
+        self,
+        command: RecordAgentActivityCommand | RecordAgentActivityIfBindingCommand,
+        *,
+        operation: str,
+    ) -> None:
         changed = self.registry.record_activity(command.actor)
-        agent = self.registry.get(command.actor)
+        agent = self.registry.get(command.actor) if changed else None
         version = self.version.bump() if changed else self.version.read()
+        if changed and agent is not None:
+            _patch_agent_projection(
+                self.projection, self.registry, agent, version
+            )
         self._completed(
             command,
-            operation="activity",
+            operation=operation,
             changed=changed,
             version=version,
             agent=agent,
-            refresh_projection=changed,
+            refresh_projection=False,
         )
     def _release(self, command: ReleaseAgentCommand) -> None:
         agent = self.registry.get(command.actor)

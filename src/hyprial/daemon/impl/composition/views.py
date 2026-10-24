@@ -5,6 +5,7 @@ from __future__ import annotations
 from __future__ import annotations
 from __future__ import annotations
 import uuid
+from collections.abc import Callable
 from dataclasses import replace
 from hyprial.identity import (
     Agent,
@@ -37,6 +38,7 @@ from hyprial.identity import (
     SettleAgentDestroyCommand,
     PinAgentAdapterCommand,
     RecordAgentActivityCommand,
+    RecordAgentActivityIfBindingCommand,
     RecordAgentSessionRefCommand,
     RetireAgentSessionRefsCommand,
     RollbackRetiredAgentSessionRefsCommand,
@@ -392,6 +394,33 @@ class AgentDirectoryFacade:
         )
         return event.changed
 
+    def record_activity_if_binding(
+        self,
+        actor: str,
+        *,
+        expected_revision: int,
+        harness: str,
+        runtime: str,
+        session_id: str | None,
+        on_match: Callable[[], bool],
+    ) -> bool:
+        event = self._domains.call_agent(
+            RecordAgentActivityIfBindingCommand(
+                correlation_id=(
+                    f"agent-command:activity-if-binding:{uuid.uuid4().hex}"
+                ),
+                actor=actor,
+                expected_binding_revision=expected_revision,
+                harness=harness,
+                runtime=runtime,
+                session_id=session_id,
+                on_match=on_match,
+            ),
+            AgentMutationCompleted,
+            timeout=65.0,
+        )
+        return event.operation == "activity-binding-matched"
+
     def suppress_restore(
         self,
         actor: str,
@@ -727,6 +756,11 @@ class AgentIdentityProjectionView(AgentIdentityProjectionPort):
         projection = self._agent.read_agent(actor)
         return None if projection is None else projection.entity_token
 
+    def binding_key(
+        self, actor: str
+    ) -> tuple[int, str | None, str | None, str | None]:
+        return self._agent.read_binding_key(actor)
+
 
 class AgentLivenessProjectionFacade:
     """Read projections plus typed bind/release mutations."""
@@ -854,6 +888,7 @@ def _binding(value: object) -> AgentBinding:
         runtime=str(getattr(value, "runtime")),
         session_id=getattr(value, "session_id"),
         bound_at_ms=int(getattr(value, "bound_at_ms")),
+        revision=int(getattr(value, "revision")),
     )
 
 

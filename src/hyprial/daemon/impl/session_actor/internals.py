@@ -9,6 +9,7 @@ import hmac
 import threading
 import uuid
 from dataclasses import dataclass
+from collections.abc import Callable
 from typing import Protocol
 from hyprial.identity import (
     AgentCommand,
@@ -98,21 +99,54 @@ class _Version:
 
 
 class _SessionProjectionState:
-    """One immutable committed session view for caller-side reads."""
+    """One immutable committed session view with keyed ownership reads."""
 
     def __init__(self, sessions: tuple[InteractiveSession, ...]) -> None:
         self._lock = threading.Lock()
         self._sessions = sessions
+        self._by_actor = {session.actor: session for session in sessions}
+        self._by_ref = {
+            session.session_ref: session
+            for session in sessions
+            if session.session_ref is not None
+        }
         self._version = 0
 
     def replace(self, sessions: tuple[InteractiveSession, ...], version: int) -> None:
+        by_actor = {session.actor: session for session in sessions}
+        by_ref = {
+            session.session_ref: session
+            for session in sessions
+            if session.session_ref is not None
+        }
         with self._lock:
             self._sessions = sessions
+            self._by_actor = by_actor
+            self._by_ref = by_ref
             self._version = version
 
     def read(self) -> tuple[tuple[InteractiveSession, ...], int]:
         with self._lock:
             return self._sessions, self._version
+
+    def ownership_candidates(
+        self, actor: str, session_ref: str
+    ) -> tuple[InteractiveSession | None, InteractiveSession | None]:
+        """Return exact-key candidates without copying or scanning the view."""
+
+        with self._lock:
+            return self._by_actor.get(actor), self._by_ref.get(session_ref)
+
+    def if_owned(
+        self, actor: str, session_ref: str, effect: Callable[[], bool]
+    ) -> tuple[bool, bool]:
+        """Run ``effect`` while the exact session ownership cannot change."""
+
+        with self._lock:
+            current = self._by_actor.get(actor)
+            if current is None or current.session_ref != session_ref:
+                return False, False
+            return True, effect()
 
 
 class _SessionRuntimeState:

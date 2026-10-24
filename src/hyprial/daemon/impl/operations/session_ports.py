@@ -35,6 +35,7 @@ class RefreshSessionCommand:
     session_ref: str
     channel_lease_token: str | None = None
     manage_agent: bool = True
+    force_bind: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +45,7 @@ class HeartbeatSessionCommand:
     session_ref: str
     channel_lease_token: str | None = None
     manage_agent: bool = True
+    force_bind: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +168,7 @@ class SessionMutationProjection:
     channel_current_epoch: str | None = None
     harness_handover: HarnessHandoverProjection | None = None
     superseded_actors: tuple[str, ...] = ()
+    binding_revision: int | None = None
 
     def to_payload(self) -> dict[str, object]:
         return {

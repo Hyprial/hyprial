@@ -34,6 +34,7 @@ from hyprial.identity.impl.agents.actor.ports import PinAgentAdapterCommand
 from hyprial.identity.impl.agents.home.effects import PrepareRuntimeHome
 from hyprial.identity.impl.agents.home.effects import PrepareWorkspaceHome
 from hyprial.identity.impl.agents.actor.ports import RecordAgentActivityCommand
+from hyprial.identity.impl.agents.actor.ports import RecordAgentActivityIfBindingCommand
 from hyprial.identity.impl.agents.actor.ports import ReleaseAgentCommand
 from hyprial.identity.impl.agents.actor.ports import ReleaseAgentDestroyReservationCommand
 from hyprial.identity.impl.agents.actor.ports import ReleaseAgentRuntimeLaunchCommand
@@ -175,6 +176,7 @@ class _GenerationDispatchMixin:
                 BindAgentCommand,
                 ReleaseAgentCommand,
                 RecordAgentActivityCommand,
+                RecordAgentActivityIfBindingCommand,
                 SetRestoreDispositionCommand,
                 ClearRestoreDispositionCommand,
                 BlockAgentCommand,
@@ -262,6 +264,8 @@ class _GenerationDispatchMixin:
                 self._release(command)
             elif isinstance(command, RecordAgentActivityCommand):
                 self._record_activity(command)
+            elif isinstance(command, RecordAgentActivityIfBindingCommand):
+                self._record_activity_if_binding(command)
             elif isinstance(command, RecordAgentSessionRefCommand):
                 self.registry.record_session_ref(
                     command.actor, command.entity_token, command.session_ref

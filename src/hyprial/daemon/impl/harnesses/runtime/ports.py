@@ -261,9 +261,13 @@ class RestoreEligibilityProjection:
 
 
 class AgentIdentityProjectionPort(Protocol):
-    """Cache-only Agent incarnation view consumed by the Harness owner."""
+    """Cache-only Agent incarnation and binding authority view."""
 
     def entity_token(self, actor: str) -> str | None: ...
+
+    def binding_key(
+        self, actor: str
+    ) -> tuple[int, str | None, str | None, str | None]: ...
 
 
 @dataclass(frozen=True, slots=True)

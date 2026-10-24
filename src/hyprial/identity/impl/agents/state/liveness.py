@@ -28,6 +28,7 @@ process.
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -63,6 +64,7 @@ class AgentBinding:
     runtime: str
     session_id: str | None
     bound_at_ms: int
+    revision: int
 
     @property
     def key(self) -> tuple[str, str]:
@@ -144,17 +146,21 @@ class AgentLiveness:
             lambda _actor: None
         )
         self._bindings: dict[str, AgentBinding] = {}
+        self._binding_revisions: dict[str, int] = {}
         self._heartbeats: dict[str, float] = {}
+        self._binding_lock = threading.RLock()
 
     # -- signals ----------------------------------------------------------
 
     def touch(self, actor: str) -> None:
         """Record confirmed daemon contact from the connector speaking for ``actor``."""
 
-        self._heartbeats[actor] = self._clock()
+        with self._binding_lock:
+            self._heartbeats[actor] = self._clock()
 
     def heartbeat_fresh(self, actor: str) -> bool:
-        last_seen = self._heartbeats.get(actor)
+        with self._binding_lock:
+            last_seen = self._heartbeats.get(actor)
         if last_seen is None:
             return False
         return (self._clock() - last_seen) <= self.ttl_seconds
@@ -162,10 +168,38 @@ class AgentLiveness:
     # -- bindings ---------------------------------------------------------
 
     def binding(self, actor: str) -> AgentBinding | None:
-        return self._bindings.get(actor)
+        with self._binding_lock:
+            return self._bindings.get(actor)
 
     def bindings(self) -> tuple[AgentBinding, ...]:
-        return tuple(self._bindings[actor] for actor in sorted(self._bindings))
+        with self._binding_lock:
+            return tuple(self._bindings[actor] for actor in sorted(self._bindings))
+
+    def binding_revisions(self) -> dict[str, int]:
+        with self._binding_lock:
+            return dict(self._binding_revisions)
+
+    def if_binding_current(
+        self,
+        actor: str,
+        *,
+        expected_revision: int,
+        harness: str,
+        runtime: str,
+        session_id: str | None,
+        effect: Callable[[], bool],
+    ) -> tuple[bool, bool]:
+        """Run ``effect`` while the exact versioned binding cannot change."""
+
+        with self._binding_lock:
+            binding = self._bindings.get(actor)
+            matched = bool(
+                binding is not None
+                and binding.revision == expected_revision
+                and (binding.harness, binding.runtime, binding.session_id)
+                == (harness, runtime, session_id)
+            )
+            return (False, False) if not matched else (True, effect())
 
     def live_binding(self, actor: str) -> AgentBinding | None:
         """The connector currently speaking for ``actor``, if one is alive.
@@ -219,19 +253,27 @@ class AgentLiveness:
     ) -> AgentBinding:
         """Record which harness/session now speaks for ``actor``."""
 
-        binding = AgentBinding(
-            actor=actor,
-            harness=harness,
-            runtime=runtime,
-            session_id=session_id,
-            bound_at_ms=time.time_ns() // 1_000_000,
-        )
-        self._bindings[actor] = binding
-        return binding
+        with self._binding_lock:
+            revision = self._binding_revisions.get(actor, 0) + 1
+            binding = AgentBinding(
+                actor=actor,
+                harness=harness,
+                runtime=runtime,
+                session_id=session_id,
+                bound_at_ms=time.time_ns() // 1_000_000,
+                revision=revision,
+            )
+            self._binding_revisions[actor] = revision
+            self._bindings[actor] = binding
+            return binding
 
     def release(self, actor: str) -> AgentBinding | None:
-        self._heartbeats.pop(actor, None)
-        return self._bindings.pop(actor, None)
+        with self._binding_lock:
+            self._heartbeats.pop(actor, None)
+            binding = self._bindings.pop(actor, None)
+            if binding is not None:
+                self._binding_revisions[actor] = binding.revision + 1
+            return binding
 
     # -- verdict ----------------------------------------------------------
 

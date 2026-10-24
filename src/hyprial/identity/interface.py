@@ -161,6 +161,7 @@ if TYPE_CHECKING:
     from hyprial.identity.impl.agents.state.liveness import RUNTIME_HEADLESS as RUNTIME_HEADLESS
     from hyprial.identity.impl.agents.state.liveness import RUNTIME_INTERACTIVE as RUNTIME_INTERACTIVE
     from hyprial.identity.impl.agents.actor.ports import RecordAgentActivityCommand as RecordAgentActivityCommand
+    from hyprial.identity.impl.agents.actor.ports import RecordAgentActivityIfBindingCommand as RecordAgentActivityIfBindingCommand
     from hyprial.identity.impl.agents.actor.ports import RecordAgentSessionRefCommand as RecordAgentSessionRefCommand
     from hyprial.identity.impl.agents.actor.ports import ReleaseAgentCommand as ReleaseAgentCommand
     from hyprial.identity.impl.agents.actor.ports import ReleaseAgentDestroyReservationCommand as ReleaseAgentDestroyReservationCommand
@@ -432,6 +433,7 @@ _FACADE_EXPORTS = {
     'RUNTIME_HEADLESS': ('hyprial.identity.impl.agents.state.liveness', 'RUNTIME_HEADLESS'),
     'RUNTIME_INTERACTIVE': ('hyprial.identity.impl.agents.state.liveness', 'RUNTIME_INTERACTIVE'),
     'RecordAgentActivityCommand': ('hyprial.identity.impl.agents.actor.ports', 'RecordAgentActivityCommand'),
+    'RecordAgentActivityIfBindingCommand': ('hyprial.identity.impl.agents.actor.ports', 'RecordAgentActivityIfBindingCommand'),
     'RecordAgentSessionRefCommand': ('hyprial.identity.impl.agents.actor.ports', 'RecordAgentSessionRefCommand'),
     'ReleaseAgentCommand': ('hyprial.identity.impl.agents.actor.ports', 'ReleaseAgentCommand'),
     'ReleaseAgentDestroyReservationCommand': ('hyprial.identity.impl.agents.actor.ports', 'ReleaseAgentDestroyReservationCommand'),
@@ -722,6 +724,7 @@ __all__ = [
     'RUNTIME_HEADLESS',
     'RUNTIME_INTERACTIVE',
     'RecordAgentActivityCommand',
+    'RecordAgentActivityIfBindingCommand',
     'RecordAgentSessionRefCommand',
     'ReleaseAgentCommand',
     'ReleaseAgentDestroyReservationCommand',

@@ -53,6 +53,7 @@ from .internals import (
     _publish,
     _release_effect,
     _required,
+    _session_harness,
     _verify_lease,
     owner_only_relocation,
 )
@@ -83,9 +84,8 @@ class _SessionGeneration(_SessionLifecycle):
     command_costs: CallCostCounters | None = None
     _mutations: dict[str, _PendingMutation] = field(default_factory=dict)
     _effect_owners: dict[str, str] = field(default_factory=dict)
-    # Durably bound (actor, session_ref) pairs; their heartbeats bind lightly.
-    _bound_sessions: set[tuple[str, str]] = field(default_factory=set)
-    _volatile_effects: dict[str, PendingSessionAgentEffect] = field(default_factory=dict)
+    # Settled binding keyed by (actor, session_ref), with Agent incarnation.
+    _bound_sessions: dict[tuple[str, str], str | None] = field(default_factory=dict)
 
     def __call__(self, command: object) -> None:
         """Dispatch one command, charging this actor thread's CPU to its type.
@@ -249,19 +249,18 @@ class _SessionGeneration(_SessionLifecycle):
             )
         if current.channel_lease_digest is not None:
             _verify_lease(current, command.channel_lease_token)
+        binding_revision = (
+            self._binding_revision_if_current(current)
+            if command.manage_agent
+            else 0
+        )
         effects = (
             (_bind_effect(command.correlation_id, current),)
             if command.manage_agent
+            and (command.force_bind or binding_revision is None)
             else ()
         )
-        if effects and (current.actor, command.session_ref) in self._bound_sessions:
-            # The heartbeat's light path: once this generation bound the
-            # session durably, a repeated refresh (a channel retrying after a
-            # slow answer) must not rewrite desired state again (2026-10-06).
-            for effect in effects:
-                self._volatile_effects[effect.effect_id] = effect
-            self._finish_refresh(command, current, effects, StateCostOrigin.IPC)
-        elif effects:
+        if effects:
             self._persist(
                 DesiredStateOperation.RECORD_SESSION_AGENT_EFFECTS,
                 command,
@@ -270,7 +269,13 @@ class _SessionGeneration(_SessionLifecycle):
                 cost_origin=StateCostOrigin.IPC,
             )
         else:
-            self._finish_refresh(command, current, effects, StateCostOrigin.IPC)
+            self._finish_refresh(
+                command,
+                current,
+                effects,
+                StateCostOrigin.IPC,
+                binding_revision=binding_revision,
+            )
 
     def _heartbeat(self, command: HeartbeatSessionCommand) -> None:
         current = self._owned_session(command.actor, command.session_ref)
@@ -289,18 +294,18 @@ class _SessionGeneration(_SessionLifecycle):
                 ipc_errors.STALE_DAEMON_GENERATION,
                 "channel must refresh this daemon generation before heartbeat",
             )
+        binding_revision = (
+            self._binding_revision_if_current(current)
+            if command.manage_agent
+            else 0
+        )
         effects = (
             (_bind_effect(command.correlation_id, current),)
             if command.manage_agent
+            and (command.force_bind or binding_revision is None)
             else ()
         )
-        if effects and (current.actor, command.session_ref) in self._bound_sessions:
-            # Once durably bound, a 1 Hz heartbeat's bind is only a liveness
-            # touch: no custody, no desired-state rewrite (#1143, 2026-10-05).
-            for effect in effects:
-                self._volatile_effects[effect.effect_id] = effect
-            self._finish_heartbeat(command, current, effects, StateCostOrigin.IPC)
-        elif effects:
+        if effects:
             self._persist(
                 DesiredStateOperation.RECORD_SESSION_AGENT_EFFECTS,
                 command,
@@ -310,13 +315,19 @@ class _SessionGeneration(_SessionLifecycle):
             )
         else:
             self._finish_heartbeat(
-                command, current, effects, StateCostOrigin.IPC
+                command,
+                current,
+                effects,
+                StateCostOrigin.IPC,
+                binding_revision=binding_revision,
             )
 
     def _unregister(self, command: UnregisterSessionCommand) -> None:
-        # Ending a session leaves the light path (bounded cache; #1144).
+        # Ending a session clears the generation-local bound cache (#1144).
         self._bound_sessions = {
-            pair for pair in self._bound_sessions if pair[1] != command.session_ref
+            pair: token
+            for pair, token in self._bound_sessions.items()
+            if pair[1] != command.session_ref
         }
         effects = (
             (_release_effect(command.correlation_id, command.actor),)
@@ -581,10 +592,16 @@ class _SessionGeneration(_SessionLifecycle):
         current: InteractiveSession,
         effects: tuple[PendingSessionAgentEffect, ...],
         cost_origin: StateCostOrigin,
+        *,
+        binding_revision: int | None = None,
     ) -> None:
-        self.runtime_projection.register(
-            current.actor, command.session_ref, self.clock_ms(), confirmed=True
-        )
+        if self.agent_identity is None:
+            self.runtime_projection.register(
+                current.actor,
+                command.session_ref,
+                self.clock_ms(),
+                confirmed=True,
+            )
         version = self.version.bump()
         self._stage(
             command.correlation_id,
@@ -600,6 +617,7 @@ class _SessionGeneration(_SessionLifecycle):
                         refreshed=True,
                         daemon_epoch=self.daemon_epoch,
                         channel_current_epoch=self.daemon_epoch,
+                        binding_revision=binding_revision,
                     ),
                 ),
             ),
@@ -612,10 +630,16 @@ class _SessionGeneration(_SessionLifecycle):
         current: InteractiveSession,
         effects: tuple[PendingSessionAgentEffect, ...],
         cost_origin: StateCostOrigin,
+        *,
+        binding_revision: int | None = None,
     ) -> None:
-        self.runtime_projection.register(
-            current.actor, command.session_ref, self.clock_ms(), confirmed=True
-        )
+        if self.agent_identity is None:
+            self.runtime_projection.register(
+                current.actor,
+                command.session_ref,
+                self.clock_ms(),
+                confirmed=True,
+            )
         version = self.version.bump()
         self._stage(
             command.correlation_id,
@@ -630,6 +654,7 @@ class _SessionGeneration(_SessionLifecycle):
                         session_ref=command.session_ref,
                         alive=True,
                         daemon_epoch=self.daemon_epoch,
+                        binding_revision=binding_revision,
                     ),
                 ),
             ),
@@ -681,7 +706,7 @@ class _SessionGeneration(_SessionLifecycle):
         for final in finals:
             assert isinstance(final, SessionLeaseExpired)
             self.runtime_projection.drop(final.actor)
-            self._bound_sessions.discard((final.actor, final.session_ref))
+            self._bound_sessions.pop((final.actor, final.session_ref), None)
             completed.append(replace(final, version=self.version.bump()))
         completed.append(
             SessionLeaseSweepCompleted(
@@ -712,29 +737,26 @@ class _SessionGeneration(_SessionLifecycle):
         self._mutations[correlation_id] = mutation
         for effect in effects:
             self._effect_owners[effect.effect_id] = correlation_id
-            accepted = self.request_effect(
+            self.request_effect(
                 effect,
                 self.generation,
                 cost_origin,
             )
-            if not accepted and effect.effect_id in self._volatile_effects:
-                # No durable row will be recovered for it: settle now and
-                # make the next heartbeat take the durable path.
-                self._volatile_effects.pop(effect.effect_id, None)
-                self._bound_sessions.discard((effect.actor, effect.session_id))
-                self._settle_effect(effect.effect_id)
 
     def _effect_result(self, result: _AgentEffectResult) -> None:
-        volatile = self._volatile_effects.pop(result.effect_id, None)
-        effect = volatile if volatile is not None else self._pending_effect(result.effect_id)
+        effect = self._pending_effect(result.effect_id)
         if effect is None:
             self.retire_effect(result.effect_id, result.custody_token)
             if result.effect_id in self._effect_owners:
-                # Orphaned light bind of a replaced generation: still answer it.
+                # A replaced generation still owns the correlated answer.
                 if isinstance(result.event, PortCommandRejected):
                     self._reject_owner(
                         result.effect_id,
-                        "AGENT_EFFECT_REJECTED",
+                        (
+                            result.event.code
+                            if result.event.code == "AGENT_ALREADY_RUNNING"
+                            else "AGENT_EFFECT_REJECTED"
+                        ),
                         f"Agent rejected bind: {result.event.code}: {result.event.detail}",
                     )
                 elif result.event.operation != "bind":  # only binds go light
@@ -751,7 +773,11 @@ class _SessionGeneration(_SessionLifecycle):
             self._fail_effect(
                 effect,
                 result.custody_token,
-                "AGENT_EFFECT_REJECTED",
+                (
+                    event.code
+                    if event.code == "AGENT_ALREADY_RUNNING"
+                    else "AGENT_EFFECT_REJECTED"
+                ),
                 f"Agent rejected {effect.operation}: {event.code}: {event.detail}",
             )
             return
@@ -763,13 +789,11 @@ class _SessionGeneration(_SessionLifecycle):
                 f"expected {effect.operation} result, received {event.operation}",
             )
             return
-        if volatile is not None:
-            self._finish_effect_result(result)  # no durable row to complete
-            return
         if effect.operation == "bind" and effect.session_id is not None:
-            # Only a durable bind arms the light path; a late light result
-            # never re-arms it.
-            self._bound_sessions.add((effect.actor, effect.session_id))
+            # A settled durable bind arms the constant-cost steady path.
+            self._bound_sessions[(effect.actor, effect.session_id)] = (
+                self._agent_entity_token(effect.actor)
+            )
         self._persist(
             DesiredStateOperation.COMPLETE_SESSION_AGENT_EFFECT,
             result,
@@ -801,8 +825,7 @@ class _SessionGeneration(_SessionLifecycle):
             self._publish(final)
 
     def _effect_unavailable(self, failure: _AgentEffectUnavailable) -> None:
-        volatile = self._volatile_effects.pop(failure.effect_id, None)
-        effect = volatile if volatile is not None else self._pending_effect(failure.effect_id)
+        effect = self._pending_effect(failure.effect_id)
         if effect is not None:
             self._fail_effect(
                 effect,
@@ -813,7 +836,7 @@ class _SessionGeneration(_SessionLifecycle):
         else:
             self.retire_effect(failure.effect_id, failure.custody_token)
             if failure.effect_id in self._effect_owners:
-                # Orphaned light bind (see _effect_result): answer it.
+                # A replaced generation still owns the correlated answer.
                 self._reject_owner(failure.effect_id, failure.code, failure.detail)
 
     def _fail_effect(
@@ -827,7 +850,7 @@ class _SessionGeneration(_SessionLifecycle):
         # worker custody.  The durable effect intentionally remains, but a
         # newer Session generation may now take it over.
         self.retire_effect(effect.effect_id, custody_token)
-        self._bound_sessions.discard((effect.actor, effect.session_id))
+        self._bound_sessions.pop((effect.actor, effect.session_id), None)
         self._reject_owner(effect.effect_id, code, detail, effect.correlation_id)
 
     def _reject_owner(
@@ -856,6 +879,42 @@ class _SessionGeneration(_SessionLifecycle):
             )
         )
 
+    def _agent_entity_token(self, actor: str) -> str | None:
+        if self.agent_identity is None:
+            return None
+        try:
+            return self.agent_identity.entity_token(actor)
+        except Exception:
+            return None
+
+    def _binding_revision_if_current(
+        self, session: InteractiveSession
+    ) -> int | None:
+        session_ref = session.session_ref
+        if session_ref is None:
+            return None
+        key = (session.actor, session_ref)
+        if key not in self._bound_sessions:
+            return None
+        if self.agent_identity is None:
+            return 0
+        current = self._agent_entity_token(session.actor)
+        if current is None or self._bound_sessions[key] != current:
+            return None
+        try:
+            revision, harness, runtime, bound_session = (
+                self.agent_identity.binding_key(session.actor)
+            )
+        except Exception:
+            return None
+        if (harness, runtime, bound_session) != (
+            _session_harness(session),
+            "interactive",
+            session_ref,
+        ):
+            return None
+        return revision
+
     def _pending_effect(self, effect_id: str) -> PendingSessionAgentEffect | None:
         return next(
             (
@@ -867,8 +926,9 @@ class _SessionGeneration(_SessionLifecycle):
         )
 
     def _owned_session(self, actor: str, session_ref: str) -> InteractiveSession:
-        sessions = self.store.load().interactive_sessions
-        current = next((item for item in sessions if item.actor == actor), None)
+        current, relocated = self.session_projection.ownership_candidates(
+            actor, session_ref
+        )
         if current is not None and current.session_ref == session_ref:
             return current
         if current is not None:
@@ -877,9 +937,6 @@ class _SessionGeneration(_SessionLifecycle):
                 # Never name the current owner's session_ref (a credential).
                 f"actor {actor} is now owned by another interactive session",
             )
-        relocated = next(
-            (item for item in sessions if item.session_ref == session_ref), None
-        )
         if relocated is not None:
             if owner_only_relocation(actor, relocated.actor):
                 # An owner migration rewrote this session's stored address; the

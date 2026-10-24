@@ -713,6 +713,14 @@ class AgentActor:
         agent = self._projection.read_agent(actor)
         return self._projection.read_binding(actor if agent is None else agent.uri)
 
+    def read_binding_key(
+        self, actor: str
+    ) -> tuple[int, str | None, str | None, str | None]:
+        agent = self._projection.read_agent(actor)
+        return self._projection.read_binding_key(
+            actor if agent is None else agent.uri
+        )
+
     def read_local_actor(self, value: str) -> str | None:
         parsed = parse_agent_uri(value)
         if parsed is not None:

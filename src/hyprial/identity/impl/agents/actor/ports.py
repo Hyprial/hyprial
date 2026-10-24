@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Literal, Protocol, TypeAlias
 
 from hyprial.kernel import CommandSink, EventSink, PortCommandRejected
@@ -190,6 +190,17 @@ class RecordAgentActivityCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class RecordAgentActivityIfBindingCommand:
+    correlation_id: str
+    actor: str
+    expected_binding_revision: int
+    harness: str
+    runtime: str
+    session_id: str | None
+    on_match: Callable[[], bool]
+
+
+@dataclass(frozen=True, slots=True)
 class SetRestoreDispositionCommand:
     correlation_id: str
     actor: str
@@ -357,6 +368,7 @@ AgentCommand: TypeAlias = (
     | BindAgentCommand
     | ReleaseAgentCommand
     | RecordAgentActivityCommand
+    | RecordAgentActivityIfBindingCommand
     | SetRestoreDispositionCommand
     | ClearRestoreDispositionCommand
     | BlockAgentCommand
@@ -471,6 +483,7 @@ class AgentBindingProjection:
     runtime: str
     session_id: str | None
     bound_at_ms: int
+    revision: int
 
     def to_payload(self) -> dict[str, object]:
         return {

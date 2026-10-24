@@ -516,6 +516,31 @@ class SessionActor:
             for session in sessions
         )
 
+    def commit_liveness_if_owned(
+        self,
+        actor: str,
+        session_ref: str,
+        effect: Callable[[Callable[[], None]], bool],
+    ) -> tuple[bool, bool]:
+        """Fence heartbeat effects by current session ownership.
+
+        ``effect`` receives a confirmation callback. Callers invoke it inside
+        the Agent binding fence after route effects have succeeded.
+        """
+
+        def while_owned() -> bool:
+            def confirm() -> None:
+                self._runtime_projection.register(
+                    actor,
+                    session_ref,
+                    self._clock_ms(),
+                    confirmed=True,
+                )
+
+            return effect(confirm)
+
+        return self._session_projection.if_owned(actor, session_ref, while_owned)
+
     def read_runtime(self, actor: str) -> SessionRuntimeProjection | None:
         sessions, _version = self._session_projection.read()
         session = next(

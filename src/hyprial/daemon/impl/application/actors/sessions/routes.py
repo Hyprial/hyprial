@@ -6,7 +6,8 @@ from __future__ import annotations
 import contextlib
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from dataclasses import replace
 from typing import Any, TYPE_CHECKING
 from uuid import uuid4
 from hyprial.kernel import AdmissionResult
@@ -34,7 +35,10 @@ from hyprial.daemon.impl.route_registration  import (
     RouteRegistrationClient,
 )
 from hyprial.daemon.impl.operations.session_ports  import (
+    HeartbeatSessionCommand,
+    RefreshSessionCommand,
     RegisterSessionCommand,
+    SessionMutationCompleted,
     SessionProjection,
     UnregisterSessionCommand,
 )
@@ -131,6 +135,113 @@ class _SessionRoutesMixin:
             )
         except SessionRouteOverloaded as error:
             raise ipc_errors.DaemonUnavailableError(str(error)) from error
+
+    def _settle_versioned_session_liveness(
+        self,
+        command: RefreshSessionCommand | HeartbeatSessionCommand,
+        completed: SessionMutationCompleted,
+        *,
+        kind: SessionRouteKind,
+        request: SessionRouteRequest,
+        session_ref: str,
+    ) -> SessionMutationCompleted:
+        """Commit every heartbeat effect behind one versioned binding fence."""
+
+        current = completed
+        for attempt in range(3):
+            actor = current.result.actor
+            agent = self.agents.get(actor)
+            revision = current.result.binding_revision
+            session = self._agent_session_domains.session.read_session(actor)
+            harness = "claude" if session is None else _session_harness(session)
+            if agent is not None and revision is None:
+                current = self._call_session(
+                    replace(
+                        command,
+                        correlation_id=(
+                            f"session:{kind.value}:observe:{uuid4().hex}"
+                        ),
+                        actor=actor,
+                        force_bind=False,
+                    )
+                )
+                continue
+
+            callback_error: list[BaseException] = []
+
+            def route_and_confirm(confirm: Callable[[], None]) -> bool:
+                def commit() -> bool:
+                    try:
+                        with self._interactive_route_lock:
+                            accepted = (
+                                self._accept_interactive_route_observation_locked(
+                                    actor, session_ref, current.version
+                                )
+                            )
+                        if accepted and self._interactive_route_needs_ensure(
+                            actor, session_ref
+                        ):
+                            self._ensure_interactive_route_effect(
+                                actor,
+                                session_ref,
+                                operation_id=(
+                                    f"{request.operation_id}:{kind.value}"
+                                ),
+                                generation=request.epoch,
+                                version=current.version,
+                            )
+                        confirm()
+                        return True
+                    except BaseException as error:
+                        callback_error.append(error)
+                        return False
+
+                if agent is None:
+                    return commit()
+                assert revision is not None
+                return self.agents.record_activity_if_binding(
+                    actor,
+                    expected_revision=revision,
+                    harness=harness,
+                    runtime="interactive",
+                    session_id=session_ref,
+                    on_match=commit,
+                )
+
+            owned, matched = (
+                self._agent_session_domains.session.commit_liveness_if_owned(
+                    actor, session_ref, route_and_confirm
+                )
+            )
+            if callback_error:
+                raise callback_error[0]
+            if not owned:
+                self._agent_session_domains.session.assert_owner(actor, session_ref)
+                raise RuntimeError("session ownership fence rejected current session")
+            if matched:
+                return current
+
+            # The keyed read raced a binding change. Force the authoritative
+            # BindAgentCommand slow path: release rebinds; takeover rejects.
+            self._call_session(
+                replace(
+                    command,
+                    correlation_id=f"session:{kind.value}:rebind:{uuid4().hex}",
+                    actor=actor,
+                    force_bind=True,
+                )
+            )
+            current = self._call_session(
+                replace(
+                    command,
+                    correlation_id=f"session:{kind.value}:retry:{uuid4().hex}",
+                    actor=actor,
+                    force_bind=False,
+                )
+            )
+        raise ipc_errors.DaemonUnavailableError(
+            f"session {session_ref} binding changed repeatedly during {kind.value}"
+        )
 
     def _apply_session_route_request(self, request: SessionRouteRequest) -> object:
         kind = request.kind
@@ -281,20 +392,17 @@ class _SessionRoutesMixin:
             return completed, handover
         completed = self._call_session(command)
         if kind in {SessionRouteKind.REFRESH, SessionRouteKind.HEARTBEAT}:
-            result_actor = completed.result.actor
-            with self._interactive_route_effect(result_actor):
-                with self._interactive_route_lock:
-                    accepted = self._accept_interactive_route_observation_locked(
-                        result_actor, session_ref, completed.version
-                    )
-                if accepted:
-                    self._ensure_interactive_route_effect(
-                        result_actor,
-                        session_ref,
-                        operation_id=f"{request.operation_id}:{kind.value}",
-                        generation=request.epoch,
-                        version=completed.version,
-                    )
+            if not isinstance(command, (RefreshSessionCommand, HeartbeatSessionCommand)):
+                raise TypeError("session liveness requires a refresh or heartbeat command")
+            assert session_ref is not None
+            with self._interactive_route_effect(completed.result.actor):
+                completed = self._settle_versioned_session_liveness(
+                    command,
+                    completed,
+                    kind=kind,
+                    request=request,
+                    session_ref=session_ref,
+                )
         elif kind is SessionRouteKind.UNREGISTER:
             result_actor = completed.result.actor
             with self._interactive_route_effect(result_actor):
@@ -455,6 +563,15 @@ class _SessionRoutesMixin:
                     and self._interactive_route_effect_gates.get(actor) is gate
                 ):
                     del self._interactive_route_effect_gates[actor]
+
+    def _interactive_route_needs_ensure(
+        self, actor: str, session_ref: str | None
+    ) -> bool:
+        routes = self._routes
+        if routes is None or actor == self.node_id:
+            return False
+        lease = self._interactive_route_lease(actor, session_ref)
+        return lease not in routes.owners(actor)
 
     def _ensure_interactive_route_effect(
         self,
