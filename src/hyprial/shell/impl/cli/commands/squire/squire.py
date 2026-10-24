@@ -396,7 +396,11 @@ def squire_setup(
         None,
         "--home",
         "--cwd",
-        help="Squire home (default: ~/squire); --cwd is a compatibility alias.",
+        help=(
+            "Legacy Squire directory to copy from (default: ~/squire); "
+            "the agent home is always HYPRIAL_HOME/agents/squire. "
+            "--cwd is a compatibility alias."
+        ),
     ),
     display_name: str | None = typer.Option(None, "--display-name"),
     adapter: str | None = typer.Option(None, "--adapter"),

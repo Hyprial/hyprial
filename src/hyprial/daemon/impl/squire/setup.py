@@ -11,7 +11,7 @@ import shutil
 import threading
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib.resources import files
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -21,6 +21,14 @@ from hyprial.daemon.impl.operations.management import (
     EnsureSquireRegistryCommand,
     RegistryManagementHandler,
     SquireRegistryResult)
+from hyprial.daemon.impl.squire.home_layout import (
+    SquireHomeLayout,
+    copy_legacy_files,
+    create_private_file,
+    legacy_import_marker,
+    plan_legacy_copy,
+    record_legacy_import,
+)
 
 from hyprial.identity  import UserProfileStore
 # The one string that tells a rendered skill whether it knows about
@@ -301,8 +309,10 @@ class SquireSetup:
         configured_adapters: Callable[[], tuple[str, ...]] | None = None,
         skill_template: str | None = None,
     ) -> None:
-        self.hyprial_home = Path(hyprial_home)
-        self.state_dir = Path(state_dir)
+        self.hyprial_home = Path(hyprial_home).resolve()
+        self.state_dir = Path(state_dir).resolve()
+        if not self.state_dir.is_relative_to(self.hyprial_home):
+            raise ValueError("squire state directory must be inside HYPRIAL_HOME")
         self.profiles = UserProfileStore(self.state_dir / "users.json")
         self.setup_state = SetupStateStore(self.state_dir / "squire-setup.json")
         self.app_onboarding = app_onboarding or DeferredAppOnboarding()
@@ -405,8 +415,19 @@ class SquireSetup:
         warnings = self._cross_checks(identity, channel)
         selected = set(SETUP_STEPS) if step is None else {step}
         changed: list[str] = []
-        squire_cwd = (squire_home or Path.home() / "squire").expanduser().resolve()
-        skill_dir = squire_cwd / "skills" / "squire"
+        layout = SquireHomeLayout.within(self.hyprial_home)
+        if "create-squire" in selected:
+            layout.validate_write_targets()
+        legacy_home = squire_home if squire_home is not None else Path.home() / "squire"
+        migration_marker = legacy_import_marker(self.state_dir, legacy_home)
+        if migration_marker.is_symlink():
+            raise ValueError(f"squire legacy import marker is a symlink: {migration_marker}")
+        legacy_plan = (
+            plan_legacy_copy(legacy_home, layout)
+            if "create-squire" in selected and not migration_marker.exists()
+            else ()
+        )
+        skill_dir = layout.skill_dir
         resolved_display_name = display_name or identity.owner
         expected_adapter = f"{identity.owner}-squire"
         scaffold_adapter = adapter or expected_adapter
@@ -423,7 +444,7 @@ class SquireSetup:
             headless=True,
             args=runtime_args,
             nickname="Squire",
-            cwd=str(squire_cwd),
+            cwd=str(layout.workspace),
             session_ref=session_ref,
         )
         adapter_pinned = False
@@ -451,11 +472,29 @@ class SquireSetup:
         # skill carries the instructions, so checking afterwards would never
         # report anything -- and the case worth reporting is precisely the one
         # where an older file was left in place untouched.
-        stale_skill = self._stale_skill_warning(squire_cwd)
         if "create-squire" in selected:
+            assert self.management_port is not None
+            command = EnsureSquireRegistryCommand(
+                identity.owner,
+                identity.machine,
+                spec,
+                str(layout.workspace),
+                provider,
+                model,
+                preferred_harness,
+                adapter,
+                False,
+            )
+            managed = self.management_port.ensure_squire(command)
+            changed.extend(managed.changed)
+            worker_result = managed.worker
+            adapter_pinned = adapter is not None
+            layout.validate_write_targets()
+            changed.extend(copy_legacy_files(legacy_plan, layout))
+            stale_skill = self._stale_skill_warning(layout.home)
             changed.extend(
                 self._ensure_scaffold(
-                    squire_cwd,
+                    layout.home,
                     display_name=resolved_display_name,
                     login_name=identity.login_name,
                     owner=identity.owner,
@@ -463,23 +502,13 @@ class SquireSetup:
                     dm_route=dm_route,
                 )
             )
-            assert self.management_port is not None
-            managed = self.management_port.ensure_squire(
-                EnsureSquireRegistryCommand(
-                    identity.owner,
-                    identity.machine,
-                    spec,
-                    str(squire_cwd),
-                    provider,
-                    model,
-                    preferred_harness,
-                    adapter,
-                    start,
-                )
-            )
-            changed.extend(managed.changed)
-            worker_result = managed.worker
-            adapter_pinned = adapter is not None
+            if (
+                not migration_marker.exists()
+                and Path(legacy_home).expanduser().exists()
+                and Path(legacy_home).expanduser().resolve(strict=False) != layout.home
+            ):
+                record_legacy_import(layout, migration_marker)
+                changed.append("legacy.import")
             profile, fields = self.profiles.ensure(
                 owner=identity.owner,
                 owner_key=identity.owner_key,
@@ -492,6 +521,12 @@ class SquireSetup:
                 identity.owner_key, identity.actor
             )
             changed.extend(fields)
+            if start:
+                started = self.management_port.ensure_squire(replace(command, start=True))
+                changed.extend(item for item in started.changed if item not in changed)
+                worker_result = started.worker
+        else:
+            stale_skill = self._stale_skill_warning(layout.home)
 
         binding_step: dict[str, object] = {
             "id": "owner-open-id",
@@ -650,8 +685,8 @@ class SquireSetup:
                 "preferredHarness": preferred_harness,
                 "name": "squire",
                 "actor": identity.actor,
-                "cwd": str(squire_cwd),
-                "home": str(squire_cwd),
+                "cwd": str(layout.workspace),
+                "home": str(layout.home),
                 "model": model,
                 "skill": str(skill_dir),
                 "sessionRef": session_ref,
@@ -682,7 +717,7 @@ class SquireSetup:
         said out loud.
         """
 
-        skill_path = home / "skills" / "squire" / "SKILL.md"
+        skill_path = home / "config" / "shared" / "skills" / "squire" / "SKILL.md"
         if not skill_path.is_file():
             return None
         try:
@@ -712,7 +747,7 @@ class SquireSetup:
     ) -> list[str]:
         """Create missing user-owned files and never rewrite an existing byte."""
 
-        skill_path = home / "skills" / "squire" / "SKILL.md"
+        skill_path = home / "config" / "shared" / "skills" / "squire" / "SKILL.md"
         template = self.skill_template
         if template is None:
             template = (
@@ -735,20 +770,15 @@ class SquireSetup:
         changed: list[str] = []
         for path, content, field in (
             (skill_path, rendered.encode("utf-8"), "scaffold.skill"),
-            (home / "backlog.md", b"", "scaffold.backlog"),
-            (home / "profile.md", b"", "scaffold.profile"),
+            (home / "workspace" / "backlog.md", b"", "scaffold.backlog"),
+            (home / "workspace" / "profile.md", b"", "scaffold.profile"),
         ):
             if path.is_file():
                 continue
             if path.exists():
                 raise ValueError(f"Squire scaffold path is not a file: {path}")
-            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            with os.fdopen(descriptor, "wb") as stream:
-                stream.write(content)
-                stream.flush()
-                os.fsync(stream.fileno())
-            changed.append(field)
+            if create_private_file(SquireHomeLayout(home), path, content, keep_existing=True):
+                changed.append(field)
         return changed
 
     def _configured_adapters(self) -> tuple[str, ...]:

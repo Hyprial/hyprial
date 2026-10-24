@@ -147,6 +147,9 @@ class AgentDirectoryFacade:
         projection = self._domains.agent.read_agent(local)
         return None if projection is None else _agent(projection)
 
+    def resolve_workspace_path(self, actor: str) -> str:
+        return self._domains.agent.resolve_workspace_path(actor)
+
     def projection(self, actor: str) -> AgentProjection | None:
         local = self.local_actor(actor)
         return None if local is None else self._domains.agent.read_agent(local)

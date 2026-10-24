@@ -6,7 +6,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol
 from uuid import uuid4
@@ -16,6 +16,7 @@ from hyprial.daemon.impl.desired_state import DesiredStateStore
 from hyprial.kernel import HarnessLaunchSpec
 from hyprial.daemon.impl.harnesses.runtime.ports import HarnessAdapterRegistrationProjection
 from hyprial.daemon.impl.configuration.ownership import DaemonStateOwnershipFence
+from hyprial.identity import AgentConfig
 
 
 class ManagementError(RuntimeError):
@@ -123,9 +124,13 @@ class AgentManagementPort(Protocol):
     owner: str
     machine: str
 
+    def resolve_workspace_path(self, actor: str) -> str: ...
+
     def get(self, actor: str) -> Any | None: ...
 
     def create(self, actor: str, **configuration: object) -> Any: ...
+
+    def save(self, agent: Any) -> Any: ...
 
     def pins(self) -> dict[str, str]: ...
 
@@ -259,21 +264,46 @@ class RegistryManagementHandler:
                     f"authority owner={self._agents.owner!r} "
                     f"machine={self._agents.machine!r}"
                 )
-            changed: list[str] = []
-            if not command.start and self._harnesses.stage_harness_desired(
-                command.spec
+            workspace = Path(self._agents.resolve_workspace_path("squire"))
+            home = workspace.parent
+            if (
+                Path(command.cwd).resolve() != workspace.resolve()
+                or command.spec.cwd is None
+                or Path(command.spec.cwd).resolve() != workspace.resolve()
+                or command.spec.name != "squire"
             ):
-                changed.append("desiredState.providers")
+                raise ManagementError(
+                    "Squire must use its ordinary agent home workspace inside "
+                    "HYPRIAL_HOME/agents/squire"
+                )
+            changed: list[str] = []
             agent = self._agents.get("squire")
+            config = AgentConfig(str(home / "config"))
             if agent is None:
                 agent = self._agents.create(
                     "squire",
                     cwd=command.cwd,
+                    config=config.to_json(),
                     provider=command.model_provider,
                     model=command.model,
                     preferred_harness=command.preferred_harness,
                 )
                 changed.append("agent")
+            else:
+                if agent.config not in (None, config):
+                    raise ManagementError(
+                        "existing Squire uses a different agent config; "
+                        "review it before rebinding to HYPRIAL_HOME/agents/squire/config"
+                    )
+                if agent.cwd != command.cwd or agent.config is None:
+                    agent = self._agents.save(
+                        replace(agent, cwd=command.cwd, config=config)
+                    )
+                    changed.append("agent")
+            if not command.start and self._harnesses.stage_harness_desired(
+                command.spec
+            ):
+                changed.append("desiredState.providers")
             worker: dict[str, object] = {"started": False}
             if command.start:
                 if self._start_harness is None:
