@@ -246,6 +246,35 @@ function skillScope(path, options, approvedSkillRoots) {
   fail(`Pi SDK returned a skill outside approved roots: ${path}`);
 }
 
+function controlledSettings(sdk, options) {
+  // C and trusted project settings are inputs, never Pi's persistence targets.
+  // Pi setters remain effective in memory until reload or session replacement.
+  // In particular, an absent C/settings.json must not become a new 0644 file
+  // in the frozen projection when Pi selects a model or thinking level.
+  const values = new Map();
+  const reloadInputs = () => {
+    for (const [scope, path, root] of [
+      ["global", join(options.projectionRoot, "settings.json"), options.projectionRoot],
+      ["project", join(options.cwd, ".pi", "settings.json"), options.repositoryRoot],
+    ]) {
+      try {
+        values.set(scope, strictRead(path, root).toString("utf8"));
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+        values.delete(scope);
+      }
+    }
+  };
+  reloadInputs();
+  const manager = sdk.SettingsManager.fromStorage({
+    withLock(scope, update) {
+      const next = update(values.get(scope));
+      if (next !== undefined) values.set(scope, next);
+    },
+  }, { projectTrusted: true });
+  return { manager, reloadInputs };
+}
+
 export async function createControlledPiResourceLoader(rawOptions) {
   const options = validateOptions(rawOptions);
   // The native loader's independent ~/.agents/skills source must resolve
@@ -254,7 +283,8 @@ export async function createControlledPiResourceLoader(rawOptions) {
   const manifest = JSON.parse(readFileSync(join(options.piPackageRoot, "package.json"), "utf8"));
   if (manifest.name !== "@earendil-works/pi-coding-agent") fail("piPackageRoot names a different package");
   const sdk = await import(pathToFileURL(join(options.piPackageRoot, "dist", "index.js")).href);
-  const settingsManager = sdk.SettingsManager.create(options.cwd, options.projectionRoot, { projectTrusted: true });
+  const settings = controlledSettings(sdk, options);
+  const settingsManager = settings.manager;
   assertStaticResourceSettings(settingsManager);
   const approvedSkillRoots = absoluteDirectoryArray(rawOptions.additionalSkillPaths, "additionalSkillPaths");
   const delegate = new sdk.DefaultResourceLoader({
@@ -280,6 +310,8 @@ export async function createControlledPiResourceLoader(rawOptions) {
     getAppendSystemPromptSources: () => delegate.getAppendSystemPromptSources(),
     extendResources: (paths) => delegate.extendResources(paths),
     reload: async (reloadOptions) => {
+      await settingsManager.flush();
+      settings.reloadInputs();
       await delegate.reload(reloadOptions);
       contexts = controlledContexts(options);
     },

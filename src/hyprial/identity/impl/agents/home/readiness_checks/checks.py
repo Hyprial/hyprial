@@ -7,7 +7,13 @@ from pathlib import Path
 
 from hyprial.kernel import private_metadata_violation
 
-from hyprial.identity.impl.agents.home.config import AgentConfig, AgentConfigError
+from hyprial.identity.impl.agents.home.config import (
+    AgentConfig,
+    AgentConfigError,
+    _validate_no_symlink_components,
+    build_native_projection,
+    verify_native_projection,
+)
 from hyprial.identity.impl.agents.home.readiness_checks.model import (
     BLOCKED,
     PASS,
@@ -160,7 +166,8 @@ def _config_check(
             None,
         )
     try:
-        revision = config.freeze_manifest().revision
+        manifest = config.freeze_manifest()
+        revision = manifest.revision
     except AgentConfigError as error:
         return (
             ReadinessCheck(
@@ -194,6 +201,26 @@ def _config_check(
         else None
     )
     projection_exists = projection is not None and projection.is_dir()
+    if projection is not None and (projection.exists() or projection.is_symlink()):
+        try:
+            _validate_no_symlink_components(agent_home, projection.parent)
+            verify_native_projection(build_native_projection(manifest, harness), projection)
+        except (AgentConfigError, OSError) as error:
+            return (
+                ReadinessCheck(
+                    name="config",
+                    status=BLOCKED,
+                    detail=f"published native projection cannot be reused: {error}",
+                    action=(
+                        "inspect the published projection and explicit config source; "
+                        "preserve drift evidence before an authorized repair"
+                    ),
+                ),
+                revision,
+                published,
+                None,
+                None,
+            )
     if not running:
         return (
             ReadinessCheck(

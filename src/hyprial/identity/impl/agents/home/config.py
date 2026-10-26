@@ -41,6 +41,7 @@ __all__ = [
 NATIVE_CONFIG_MAPPING_VERSION = "agent-home-p2-native-v1"
 _SUPPORTED_HARNESSES = frozenset({"claude", "codex", "pi"})
 _PROJECTION_RECEIPT_SCHEMA = 1
+_PROJECTION_FILE_MODE = 0o600
 _DIGEST_LENGTH = hashlib.sha256().digest_size * 2
 _KNOWN_NATIVE_CREDENTIAL_PATHS = {
     "claude": frozenset({".credentials.json"}),
@@ -649,7 +650,7 @@ def materialize_native_projection(
             descriptor = os.open(
                 destination,
                 os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-                0o600,
+                _PROJECTION_FILE_MODE,
             )
             try:
                 with os.fdopen(descriptor, "wb", closefd=False) as stream:
@@ -762,7 +763,7 @@ def _scan_projection_tree(
             is_directory = stat.S_ISDIR(metadata.st_mode)
             if not is_directory and not stat.S_ISREG(metadata.st_mode):
                 raise AgentConfigError(f"native projection item {relative} must be a regular file")
-            _require_projection_private(candidate, metadata, mode=0o700 if is_directory else 0o600, inspect=f"native projection item {relative}", label=f"native projection {'directory' if is_directory else 'item'} {relative}")
+            _require_projection_private(candidate, metadata, mode=0o700 if is_directory else _PROJECTION_FILE_MODE, inspect=f"native projection item {relative}", label=f"native projection {'directory' if is_directory else 'item'} {relative}")
             if is_directory:
                 items.extend(_scan_projection_tree(root, candidate))
                 continue

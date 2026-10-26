@@ -17,6 +17,7 @@ from hyprial.identity.impl.agents.registry._base import Agent
 from hyprial.identity.impl.agents.registry.config_binding import agent_config_digest
 from hyprial.kernel import ipc_errors
 
+from .projection_diff import projection_changes
 from .tree import (
     ConfigRebindError,
     copy_tree_exact,
@@ -179,6 +180,7 @@ def _forward(
         "afterConfigDigest": agent_config_digest(after_config),
         "beforeTree": before_tree,
         "afterTree": after_tree,
+        "projectionChanges": projection_changes(agent, Path(home_receipt.path), source),
         "quiescence": proof,
         "createdAtMs": time.time_ns() // 1_000_000,
     }
@@ -774,6 +776,7 @@ def _result(
         "afterConfigDigest": receipt.get("afterConfigDigest"),
         "source": receipt.get("source"),
         "target": receipt.get("target"),
+        "projectionChanges": receipt.get("projectionChanges", []),
         "receipt": public_receipt,
     }
     if validation is not None:
