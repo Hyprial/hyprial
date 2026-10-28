@@ -17,7 +17,7 @@ uv run ruff check .
 以根 `gui/` 为唯一主线，由 UI 任务独立 PR 提供。CLI 只公开裸 `hyprial gui`
 （`npm start`）和 `hyprial gui dev`（Vite 热更新），需要 `--gui-home` 或
 `HYPRIAL_GUI_HOME` 指向包含 `gui/package.json` 的 Git 工作树。它启动独立 Node
-占位服务，业务明确返回 `not implemented: hyyprial backend not wired`，不接真实
+占位服务，业务明确返回 `not implemented: hyprial backend not wired`，不接真实
 daemon，也不恢复旧 Python Web/backend。操作契约见
 [docs/guides/gui-dev-mode.md](docs/guides/gui-dev-mode.md)，退场与恢复范围见
 [docs/design/gui-retirement-restore-ledger-2026-10-27.md](docs/design/gui-retirement-restore-ledger-2026-10-27.md)。

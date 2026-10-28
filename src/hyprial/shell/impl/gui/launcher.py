@@ -59,7 +59,7 @@ STUB_READY_POLL_SECONDS = 0.1
 STUB_EXIT_FLUSH_SECONDS = 1.0
 PROCESS_STOP_TIMEOUT_SECONDS = 5.0
 PROCESS_KILL_TIMEOUT_SECONDS = 2.0
-NOT_IMPLEMENTED_TEXT = "not implemented: hyyprial backend not wired"
+NOT_IMPLEMENTED_TEXT = "not implemented: hyprial backend not wired"
 
 _LOOPBACK_NAMES = frozenset({"localhost", "127.0.0.1", "::1"})
 _STUB_EOF = object()

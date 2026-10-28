@@ -159,7 +159,7 @@ hyprial <域> <子命令> --help   # 参数面
 - CLI 启动独立 Node 占位服务（`npm run stub -- --host 127.0.0.1 --port 0`），
   解析 `HYPRIAL_STUB_READY`，把 loopback endpoint 作为
   `HYPRIAL_BACKEND_ENDPOINT` 交给前端；普通和 dev 使用同一 GUI。业务请求统一返回
-  HTTP 501 / `not implemented: hyyprial backend not wired`，不得把 fixture、mock、
+  HTTP 501 / `not implemented: hyprial backend not wired`，不得把 fixture、mock、
   空白页或 HTTP 200 当作真实登录/会话验收。
 - Ctrl-C/正常退出只回收本次启动的 npm/Node 进程组，不按名称或端口清理其他实例。
   Git worktree 只是工作树隔离，不是安全沙箱。

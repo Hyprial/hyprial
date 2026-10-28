@@ -152,7 +152,7 @@ uv run ruff check .
 `<repo>/.worktrees/gui-dev-auto` 的独立稀疏工作树（分支 `work/gui-dev-auto`，
 只物化 `gui/`），保留已有 dirty/untracked 文件；显式入口保持原有语义且不创建。
 它启动独立 Node 占位服务，业务请求明确返回
-`not implemented: hyyprial backend not wired`，本批不接真实 daemon，也不恢复旧 Python
+`not implemented: hyprial backend not wired`，本批不接真实 daemon，也不恢复旧 Python
 Web/backend。`start|status|stop|upgrade` 已退役并返回 `INVALID_ARGUMENT`。
 操作与环境接线见 [GUI source mode](docs/guides/gui-dev-mode.md)；历史入口和恢复责任见
 [GUI 退场恢复台账](docs/design/gui-retirement-restore-ledger-2026-10-27.md)。
