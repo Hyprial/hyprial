@@ -19,12 +19,13 @@ with a JSON config shaped like::
      "sessionRef": "<optional managed-worker fence>",
      "sessions": {"<id>": {"targets": ["agent:..."], "conversationId": "..."}}}
 
-Who starts and owns this process belongs to the desktop runtime
-(``app/src-tauri/src/runtime/app_core``): it spawns the host as a supervised
-child, completes the bounded readiness handshake and publishes the endpoint as
-process-local managed state. This host only answers on the address it is
-given, and it holds no authority of its own: every answer is the adapter's,
-and the adapter's answers are the daemon's.
+Who starts and owns this process belongs to the desktop runtime. The old
+Tauri shell (``app/src-tauri``) was retired on 2026-10-27; the replacement
+native shell will live under ``clients/native`` and spawn this host as a
+supervised child, complete the bounded readiness handshake and publish the
+endpoint as process-local managed state. This host only answers on the
+address it is given, and it holds no authority of its own: every answer is
+the adapter's, and the adapter's answers are the daemon's.
 
 Remote-facade usage (loopback bind; the tailnet exposure is composed in
 here through the daemon's own ``network.expose`` route)::

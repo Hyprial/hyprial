@@ -5,15 +5,22 @@
 
 ## 开发环境
 
-项目要求 Python 3.12+，依赖和命令由 uv 管理。
-全套测试包含独立 GUI 的真实 Node fixture，还需要 Node 24 与 GUI 的锁定依赖：
+项目要求 Python 3.12+，依赖和命令由 uv 管理：
 
 ```sh
 uv sync --extra test
-npm --prefix src/gui ci --ignore-scripts
 uv run --with libcst==1.9.0 pytest tests/
 uv run ruff check .
 ```
+
+旧独立 GUI（`src/gui`）与 Tauri 外壳（`app`）在退场批次中移出运行路径；共享网页 UI
+以根 `gui/` 为唯一主线，由 UI 任务独立 PR 提供。CLI 只公开裸 `hyprial gui`
+（`npm start`）和 `hyprial gui dev`（Vite 热更新），需要 `--gui-home` 或
+`HYPRIAL_GUI_HOME` 指向包含 `gui/package.json` 的 Git 工作树。它启动独立 Node
+占位服务，业务明确返回 `not implemented: hyyprial backend not wired`，不接真实
+daemon，也不恢复旧 Python Web/backend。操作契约见
+[docs/guides/gui-dev-mode.md](docs/guides/gui-dev-mode.md)，退场与恢复范围见
+[docs/design/gui-retirement-restore-ledger-2026-10-27.md](docs/design/gui-retirement-restore-ledger-2026-10-27.md)。
 
 仓库提供的 [uv 命令 hook](.agents/hooks/README.md) 会避免 agent harness 误用
 系统 Python。Claude Code 的项目级配置已经在 [.claude/settings.json](.claude/settings.json)

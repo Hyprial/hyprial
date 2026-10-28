@@ -98,14 +98,32 @@ hyprial <域> <子命令> --help   # 参数面
   统一返回错误码 `COMING_SOON`、消息 "hyprial socialware install is coming soon"、退出码 1；**不会静默成功**。
 - 不要把退役的一级 `hyprial install <app>` 当作别名；安装能力会在未来版本重新加入。
 
-### GUI 工作空间（独立 product server）
-- `hyprial gui` / `hyprial gui start` — 启动捆绑的 `@hyprial/gui` product server（Node 24）；首次 start 会把 wheel 内的 GUI 捆绑物原子解包到 `$HYPRIAL_HOME/apps/gui/`（同版本跳过），无需安装命令。
-- 启动须显式配置 transport driver 与可信 principal（`HYPRIAL_GUI_TRANSPORT_DRIVER`、`HYPRIAL_GUI_PRINCIPAL_ID`）；缺失即拒绝，不默认连接 mock 或生产 daemon。真实 backend 的功能验收仍须独立证据。
-- `hyprial gui status --json` — 查询独立 GUI 状态；`hyprial gui stop` — 停止归属已核实的 GUI 进程。
-- `hyprial gui upgrade [--check|--force]` — 重新解包当前 Hyprial 版本 wheel 附带的 GUI 捆绑物，校验 sha256；若 GUI 在运行，先 stop、解包后按原状态 start；同版本跳过（`--force` 强制重解包）。
-- `hyprial daemon upgrade` 获取配套 GUI 组件，但不自动切换或重启已运行的 GUI；随后用 `hyprial gui upgrade --check` 查看待更新组件。
-- 先更新 Hyprial CLI 再更新 GUI 包。身份未知时停止操作，禁止直接杀 PID。
-- 桌面端是包装同一 server 的 Tauri v2 外壳，不拥有第二份会话、inbox 或 ACK 权威。
+### GUI 工作空间（源码模式）
+- 旧独立 GUI（`src/gui`）与 Tauri 外壳（`app`）已退场；组件化 UI 以仓库根 `gui/` 为唯一主线。
+- 当前公开入口只有 `hyprial gui`（前端 `npm start`）和 `hyprial gui dev`
+  （`npm run dev`，Vite 热更新）。`start|status|stop|upgrade` 已退役并返回
+  `INVALID_ARGUMENT`，没有兼容 shim，也不创建 `$HYPRIAL_HOME/apps/gui/`。
+- `--ip`、`--port` 控制前端；默认 `127.0.0.1:4173`，端口冲突明确失败。GUI 必须来自
+  独立 Git 工作树中的 `gui/package.json` 项目：可用 `--gui-home` 或
+  `HYPRIAL_GUI_HOME` 显式指定；显式入口保持原有语义且不创建任何工作树。
+  `hyprial gui dev` 在两者都未给出时，从可验证的源 Git 仓库 HEAD 创建或恢复
+  `<repo>/.worktrees/gui-dev-auto`（分支 `work/gui-dev-auto`，cone sparse 只物化
+  `gui/`）；仅当 `gui/node_modules` 缺失时执行 `npm ci --ignore-scripts`，已有
+  `node_modules` 不重装/更新。恢复/复用不 reset/clean/checkout -f/rebase/stash，
+  保留 auto 工作树的 dirty/untracked 文件，也不自动 commit/push。路径/分支被占用、
+  是 symlink、或不是同一仓库的工作树时明确冲突，不删除/搬移/复用他人工作树。启动输出中的
+  `gui_home`、`git_worktree`、`git_branch` 必须是 auto 工作树的真实值。
+- `gui dev` 服务就绪后默认只打开一次浏览器，`--no-open` 抑制；opener 抛错不另启服务。
+  SIGTERM/SIGINT 在 discovery/自动工作树/npm 安装、阻塞 opener、启动 JSON 前后和运行中
+  均按 143/130 退出，只回收本次已记录的 frontend/backend 进程组与端口。
+- CLI 启动独立 Node 占位服务（`npm run stub -- --host 127.0.0.1 --port 0`），
+  解析 `HYPRIAL_STUB_READY`，把 loopback endpoint 作为
+  `HYPRIAL_BACKEND_ENDPOINT` 交给前端；普通和 dev 使用同一 GUI。业务请求统一返回
+  HTTP 501 / `not implemented: hyyprial backend not wired`，不得把 fixture、mock、
+  空白页或 HTTP 200 当作真实登录/会话验收。
+- Ctrl-C/正常退出只回收本次启动的 npm/Node 进程组，不按名称或端口清理其他实例。
+  Git worktree 只是工作树隔离，不是安全沙箱。
+- 操作、参数、环境接线和当前 NOT_RUN 项见 `docs/guides/gui-dev-mode.md`。
 
 ### adapter(飞书网关)生命周期 —— 全部自动化,无需人工建应用
 - `hyprial adapter add <name> [--new]` — **自动创建或收养飞书 App**

@@ -28,13 +28,14 @@ upgrade_app = typer.Typer(
 
 
 def _unpack_paired_gui(result: JsonObject) -> None:
-    """Install the GUI component paired with the version just installed.
+    """Record the retired GUI component without failing a successful upgrade.
 
-    ``uv tool install --force`` replaces this process's ``site-packages`` in
-    place, so ``product_bundle()`` now reads the new wheel's ``_gui`` payload.
-    The unpack must never fail an upgrade that already succeeded: a source
-    checkout or a wheel built without a GUI records the reason, and
-    ``hyprial gui upgrade --force`` stays the repair path.
+    The old paired GUI payload was removed with ``src/gui`` and ``app``.  The
+    public ``hyprial gui`` entry now runs the source-worktree UI and its
+    placeholder backend, so there is no managed GUI component to unpack.  This
+    legacy hook still records ``GUI_UNAVAILABLE`` for that retired payload; a
+    future desktop package update path is separate.  This follow-up must never
+    fail an upgrade that already succeeded.
     """
     services = get_services()
 
@@ -725,7 +726,7 @@ def upgrade(
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
-    """Upgrade the uv-managed hyprial tool and unpack its paired GUI."""
+    """Upgrade the uv-managed hyprial tool and record the retired GUI status."""
     if ctx.invoked_subcommand is not None:
         return
     services = get_services()

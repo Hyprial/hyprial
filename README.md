@@ -127,7 +127,6 @@ uv tool install --force git+ssh://git@git.internal.hyprial.com/HyprialOS/harness
 git clone ssh://git@git.internal.hyprial.com/HyprialOS/harness-bridge.git
 cd harness-bridge
 uv sync --extra test
-npm --prefix src/gui ci --ignore-scripts # Node 24; Python tests include native GUI fixtures.
 uv run --with libcst==1.9.0 pytest tests/
 uv run ruff check .
 ```
@@ -145,22 +144,20 @@ uv run ruff check .
 
 ## Contributing
 
-[`src/gui`](src/gui) 是独立的 `@hyprial/gui` Node 工程；
-[`app`](app) 是 Tauri v2 外壳：默认 Core 加载静态页面，不启动本机 runtime；
-`--features power-pack` 保留包装 GUI product server 的 legacy 路径。使用 Node 24，
-在仓库根执行 `npm --prefix src/gui ci --ignore-scripts`、`npm --prefix src/gui run check`、
-`npm --prefix src/gui test` 和 `npm --prefix src/gui run build`；app 单独执行
-`npm --prefix app ci --ignore-scripts`、`npm --prefix app test`。
-先运行 `npm --prefix app run build:core` 生成静态资产；`npm --prefix app run dev:core` 启动 Core。
-Rust 外壳执行 `cargo fmt --manifest-path app/src-tauri/Cargo.toml -- --check`、
-`cargo clippy --locked --manifest-path app/src-tauri/Cargo.toml --all-targets -- -D warnings`、
-`cargo test --locked --manifest-path app/src-tauri/Cargo.toml`（GUI 依赖已安装，PATH 有 Node ≥24）。
-另须对 clippy/test 添加 `--features power-pack` 验证 legacy 层，不能因默认 feature 为空而省略旧 runtime 回归。
-启动 GUI 必须显式配置 transport driver 与可信 principal，缺失时 fail closed，不默认接入
-mock 或生产 daemon。Python 使用 uv；先运行结构和公共边界门，再跑焦点测试。
-具体命令、模块职责与隔离要求见 [GUI workflow](.agents/skills/gui-workflow/SKILL.md)。
-GUI 与 app 分别由 `.forgejo/workflows/gui.yml` 和 `desktop-check.yml` 检查；
-unit/build 通过不代表浏览器、真实 backend、完整功能等价或已发布安装切换完成，这些仍须独立证据。
+本批退场计划将旧独立 GUI（`src/gui`）与 Tauri 外壳（`app`）移出运行路径；组件化
+网页 UI 以根目录 `gui/` 为唯一主线，由 UI 任务按独立 PR 提供。CLI 入口为裸
+`hyprial gui`（`npm start`）和
+`hyprial gui dev`（Vite 热更新）。`gui dev` 在未显式给出 `--gui-home`/
+`HYPRIAL_GUI_HOME` 时，从当前仓库 HEAD 创建或恢复
+`<repo>/.worktrees/gui-dev-auto` 的独立稀疏工作树（分支 `work/gui-dev-auto`，
+只物化 `gui/`），保留已有 dirty/untracked 文件；显式入口保持原有语义且不创建。
+它启动独立 Node 占位服务，业务请求明确返回
+`not implemented: hyyprial backend not wired`，本批不接真实 daemon，也不恢复旧 Python
+Web/backend。`start|status|stop|upgrade` 已退役并返回 `INVALID_ARGUMENT`。
+操作与环境接线见 [GUI source mode](docs/guides/gui-dev-mode.md)；历史入口和恢复责任见
+[GUI 退场恢复台账](docs/design/gui-retirement-restore-ledger-2026-10-27.md)。
+`.agents/skills/gui-workflow/SKILL.md` 只保留历史实现记录，不描述本版可用能力。
+Python 使用 uv；先运行结构和公共边界门，再跑焦点测试。
 
 欢迎提交问题和补丁。**补丁需要开发内网访问权限** —— 请先联系 maintainer 申请加入，
 流程见上面的 [Development](#development)；在此之前可以在

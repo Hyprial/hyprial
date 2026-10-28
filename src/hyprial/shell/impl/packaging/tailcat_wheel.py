@@ -1,8 +1,8 @@
 """Wheel packaging of the ``hyprial-tailcat`` sidecar binary.
 
 Deliberately import-pure (no ``hyprial`` imports) so the hatch custom build
-hook can load this module with ``runpy`` straight from the source tree -- the
-same stance as ``shell/impl/gui/bundle.py``.  Everything here answers one of
+hook can load this module with ``runpy`` straight from the source tree.
+Everything here answers one of
 three questions: which Go target a build is for, which wheel platform tag
 that target maps to, and where an executable binary for that target comes
 from (a prebuilt copy, or a fresh ``go build`` of ``sidecar/hyprial-tailcat``).

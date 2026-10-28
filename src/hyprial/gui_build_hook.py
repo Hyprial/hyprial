@@ -1,9 +1,10 @@
-"""Hatch adapter for the first-party GUI bundle and the tailcat sidecar binary.
+"""Hatch adapter for the tailcat sidecar payload.
 
-Wheels carry both payloads: the GUI under ``hyprial/_gui`` and the Go sidecar
-under ``hyprial/_bin/hyprial-tailcat[.exe]``.  sdists carry the GUI bundle plus
-the sidecar *sources* (``sidecar/hyprial-tailcat``) -- building a wheel from an
-sdist then needs a local Go toolchain, never a download.
+The legacy GUI bundle staging was retired with ``src/gui`` and the ``app``
+shell.  Wheels still carry the Go sidecar under
+``hyprial/_bin/hyprial-tailcat[.exe]``; sdists carry the sidecar *sources*
+(``sidecar/hyprial-tailcat``), so a wheel built from an sdist needs a local Go
+toolchain rather than a download.
 """
 from pathlib import Path
 import os
@@ -11,9 +12,6 @@ import runpy
 import tempfile
 
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
-
-bundle_tools = runpy.run_path(str(Path(__file__).parent / "shell/impl/gui/bundle.py"))
-build_gui = bundle_tools["build_gui"]
 
 tailcat_tools = runpy.run_path(
     str(Path(__file__).parent / "shell/impl/packaging/tailcat_wheel.py")
@@ -33,33 +31,12 @@ class CustomBuildHook(BuildHookInterface):
         root = Path(self.root)
         self._stages: list[tempfile.TemporaryDirectory] = []
         if os.environ.get(WORKER_WHEEL_ENV) == "1":
-            # Thin worker wheel (containerized-transfer image): no GUI bundle
-            # and no tailcat sidecar.  The image's builder stage compiles the
-            # sidecar once and COPY --from=builder into /opt/hyprial/_bin, so
-            # the wheel needs neither a .git context nor a Go toolchain --
-            # the two things the product-wheel stages demand.
+            # Thin worker wheel (containerized-transfer image): no tailcat
+            # sidecar.  The image's builder stage compiles the sidecar once
+            # and COPY --from=builder into /opt/hyprial/_bin, so the wheel
+            # needs neither a .git context nor a Go toolchain.
             return
-        self._stage_gui(root, build_data)
         self._stage_tailcat(root, build_data)
-
-    def _stage_gui(self, root: Path, build_data: dict) -> None:
-        existing = root / "src/hyprial/_gui"
-        if not (root / ".git").exists() and (existing / "release.json").is_file():
-            import json
-            if json.loads((existing / "release.json").read_text())["productVersion"] != self.metadata.version:
-                raise ValueError("Bundled GUI belongs to another product version")
-            # Already under the normal package tree in an sdist. Force-including
-            # it again would add duplicate ZIP members to the wheel.
-            return
-        stage = tempfile.TemporaryDirectory(prefix="hyprial-product-gui-")
-        self._stages.append(stage)
-        bundle = Path(stage.name)
-        commit, timestamp = bundle_tools["source_revision"](root)
-        separator = "." if "+" in self.metadata.version else "+"
-        component_version = f"{self.metadata.version}{separator}gui.{timestamp}.{commit[:12]}"
-        build_gui(root, bundle, component_version, product_version=self.metadata.version)
-        destination = "hyprial/_gui" if self.target_name == "wheel" else "src/hyprial/_gui"
-        build_data["force_include"][str(bundle)] = destination
 
     def _stage_tailcat(self, root: Path, build_data: dict) -> None:
         tools = tailcat_tools

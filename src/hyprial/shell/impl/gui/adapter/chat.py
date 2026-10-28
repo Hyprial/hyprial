@@ -1,7 +1,9 @@
 """App-facing chat adapter v0: the node side of the browser Core chat port.
 
-The browser Core (``src/gui/core``) projects sessions, replies and terminal
-state from ONE injected connection port.  This module is the node-side
+The shared browser Core projects sessions, replies and terminal state from
+ONE injected connection port. The old ``src/gui`` tree was retired on
+2026-10-27; the replacement UI will live under ``gui/``.  This module is the
+node-side
 facade for that port on this machine: it binds ``sessions.send`` onto the
 daemon's existing ``message.send`` surface (``conversationId`` +
 ``idempotencyKey`` pass through unchanged), ``sessions.events`` onto the
