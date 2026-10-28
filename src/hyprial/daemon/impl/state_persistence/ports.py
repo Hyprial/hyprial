@@ -6,6 +6,7 @@ from __future__ import annotations
 from __future__ import annotations
 import threading
 import time
+from hyprial.daemon.impl.adapters.spec import AdapterSpec
 from collections.abc import Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
@@ -64,7 +65,7 @@ from .commands import (
     RecordHarnessLifecycleFailure,
     RecordHarnessRestoreSettlement,
     RecordSessionAgentEffects,
-    RemoveAdapterRegistration,
+    RemoveAdapterRegistration, SetAdapterIntent,
     RemoveChannelPin,
     RemoveHarness,
     RemoveMigratedChannelPins,
@@ -145,7 +146,7 @@ class _Projection:
     def harness_spec(
         self, name: str, *, excluding: str | None = None
     ) -> HarnessLaunchSpec | None:
-        """Copy one published harness row without copying the document.
+        """Copy one unambiguous worker row; adapters never match.
 
         ``HarnessLaunchSpec`` and its optional ``SmolvmRuntimeSpec`` are
         frozen and contain only scalars or tuples.  A shallow dataclass copy
@@ -153,17 +154,11 @@ class _Projection:
         ``object.__setattr__``) without serializing unrelated desired state.
         """
 
+        from hyprial.daemon.impl.harnesses.capabilities import worker_spec
+
         with self._lock:
-            return next(
-                (
-                    replace(spec)
-                    for spec in self._snapshot.desired.harnesses
-                    # Unique only on (harness, name): skip while searching,
-                    # so an excluded row sorted first never hides the match.
-                    if spec.name == name and spec.harness != excluding
-                ),
-                None,
-            )
+            spec = worker_spec(self._snapshot.desired.harnesses, name, excluding=excluding)
+            return replace(spec) if spec is not None else None
 
     def publish(self, desired: DesiredState) -> None:
         with self._lock:
@@ -364,6 +359,9 @@ class _Generation:
             elif isinstance(command, ExpireInterruptedReceipts):
                 result = self.desired.expire_interrupted_lifecycle_receipts()
                 self.projection.publish(self.desired.published_state())
+            elif isinstance(command, SetAdapterIntent):
+                result = self.desired.set_adapter(command.name, command.active)
+                self.projection.publish(self.desired.published_state())
             elif isinstance(command, RemoveAdapterRegistration):
                 result = self.desired.remove_adapter_registration(
                     command.name, expected_spec=command.expected_spec,
@@ -494,7 +492,7 @@ class _Generation:
                                     RollbackHarnessLifecycle, FailHarnessRemoval,
                                     MarkHarnessFailed, UpsertHarness, RemoveHarness,
                                     ExpireInterruptedReceipts, RemoveAdapterRegistration,
-                                    RestoreAdapterRegistration, SyncHarnessSessionRefs,
+                                    RestoreAdapterRegistration, SetAdapterIntent, SyncHarnessSessionRefs,
                                     SetMailboxRole, UpdateZenohEndpoints,
                                     SetServiceConnection, RemoveServiceConnection,
                                     SetServiceRegistry)) and not isinstance(
@@ -844,8 +842,11 @@ class _DesiredPort(ServiceDesiredPortMixin):
             ExpireInterruptedReceipts(f"state-expire-{uuid4().hex}")
         )
 
+    def set_adapter(self, name: str, active: bool) -> DesiredState:
+        return self._owner._call(SetAdapterIntent(f"adapter-intent-{uuid4().hex}", name, active))
+
     def remove_adapter_registration(
-        self, name: str, *, expected_spec: HarnessLaunchSpec | None,
+        self, name: str, *, expected_spec: AdapterSpec | None,
         expected_legacy_pin: str | None,
     ) -> DesiredState:
         return self._owner._call(
@@ -857,7 +858,7 @@ class _DesiredPort(ServiceDesiredPortMixin):
         )
 
     def restore_adapter_registration(
-        self, name: str, *, spec: HarnessLaunchSpec | None,
+        self, name: str, *, spec: AdapterSpec | None,
         legacy_pin: str | None,
     ) -> DesiredState:
         return self._owner._call(

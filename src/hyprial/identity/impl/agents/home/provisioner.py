@@ -39,9 +39,14 @@ __all__ = [
 
 _RECEIPT_SCHEMA = 1
 _RECEIPT_RELATIVE = Path("state") / "home-receipt.json"
-_AGENT_SUBDIRECTORIES = (Path("state"), Path("config"), Path("secrets"))
+_AGENT_SUBDIRECTORIES = (Path("state"), Path("config"))
 _WORKSPACE_RELATIVE = Path("workspace")
-_CLEANUP_DIRECTORIES = (*_AGENT_SUBDIRECTORIES, _WORKSPACE_RELATIVE)
+# Old secret files and harness-native credentials still require safe cleanup.
+_CLEANUP_DIRECTORIES = (*_AGENT_SUBDIRECTORIES, Path("secrets"), _WORKSPACE_RELATIVE)
+_SECRET_FILES = {
+    "secrets.sqlite", "secrets.sqlite-journal", "secrets.sqlite-wal", "secrets.sqlite-shm",
+    ".secret-hmac-key", "secret-metrics.jsonl",
+}
 
 
 class AgentHomeError(RuntimeError):
@@ -717,6 +722,8 @@ class AgentHomeProvisioner:
                         if child == receipt_path:
                             continue
                         self._remove_tree_entry(child)
+                for name in _SECRET_FILES:
+                    (root / name).unlink(missing_ok=True)
                 receipt_path.unlink()
             except OSError as error:
                 raise AgentHomeError(
@@ -737,23 +744,17 @@ class AgentHomeProvisioner:
         try:
             names = {item.name for item in root.iterdir()}
             required = {item.name for item in _AGENT_SUBDIRECTORIES}
-            allowed = {item.name for item in _CLEANUP_DIRECTORIES}
+            allowed = {item.name for item in _CLEANUP_DIRECTORIES} | _SECRET_FILES
             if not required.issubset(names) or not names.issubset(allowed):
                 raise AgentHomeError("cleanup-fenced", actor, "cleanup-topology")
-            for relative in _AGENT_SUBDIRECTORIES:
-                self.safe_directory(
-                    root / relative,
-                    actor,
-                    f"cleanup-{relative.name}",
-                    mode=0o700,
-                )
-            if _WORKSPACE_RELATIVE.name in names:
-                self.safe_directory(
-                    root / _WORKSPACE_RELATIVE,
-                    actor,
-                    "cleanup-workspace",
-                    mode=0o700,
-                )
+            for relative in _CLEANUP_DIRECTORIES:
+                if relative.name in names:
+                    self.safe_directory(root / relative, actor, f"cleanup-{relative.name}", mode=0o700)
+            for name in names & _SECRET_FILES:
+                path = root / name
+                metadata = path.lstat()
+                if not stat.S_ISREG(metadata.st_mode) or private_metadata_violation(path, metadata, mode=0o600):
+                    raise AgentHomeError("cleanup-fenced", actor, "cleanup-secret-store")
         except OSError as error:
             raise AgentHomeError("cleanup-fenced", actor, "cleanup-topology") from error
 
@@ -794,7 +795,7 @@ class AgentHomeProvisioner:
                 return False
             for relative in _CLEANUP_DIRECTORIES:
                 path = root / relative
-                if relative == _WORKSPACE_RELATIVE and relative.name not in root_names:
+                if relative.name not in root_names:
                     continue
                 metadata = path.lstat()
                 if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):

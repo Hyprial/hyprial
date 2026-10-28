@@ -373,6 +373,10 @@ class CasdoorMembershipSync:
         entry.last_sync_at = now
         if outcome.action == "held":
             return False
+        if outcome.action in ('pending-confirmation', 'pending-authority', 'tailnet-pending'):
+            entry.last_error = {'code': outcome.action, 'message': 'Explicit tailnet removal is pending.',
+                                'user': outcome.user, 'at': now}
+            return False
         if outcome.state == "member":
             confirmed.add(outcome.user)
         if outcome.action == "casdoor-only":
@@ -515,7 +519,10 @@ class CasdoorMembershipSync:
                     outcomes.append(Outcome(org, user, "held", state))
                     continue
                 try:
-                    service._remove_orgfs_member(org, space_id, user)
+                    removal = service.remove_from_casdoor(org, user)
+                    if removal['phase'] != 'complete':
+                        outcomes.append(Outcome(org, user, removal['phase'], state))
+                        continue
                 except Exception as error:  # an OrgFS failure is this user's error, not the pass's
                     outcomes.append(Outcome(org, user, "error", state, ("ORGFS_REMOVE_FAILED", type(error).__name__)))
                     continue

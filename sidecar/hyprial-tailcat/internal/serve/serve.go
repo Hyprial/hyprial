@@ -1,4 +1,4 @@
-// Package serve implements the protocol-v5 stdio lifecycle of
+// Package serve implements the protocol-v6 stdio lifecycle of
 // `hyprial-tailcat forward` (design doc §3.3): emit hello, consume
 // newline-delimited JSON commands, emit events, and on stdin EOF or down
 // shut everything down, emit exited, and return.
@@ -22,6 +22,7 @@ import (
 	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tailcat/internal/buildinfo"
 	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tailcat/internal/engine"
 	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tailcat/internal/keys"
+	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tailcat/internal/membership"
 	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tailcat/internal/proto"
 )
 
@@ -35,6 +36,11 @@ func Run(ctx context.Context, input io.Reader, output io.Writer, diag io.Writer)
 		return err
 	}
 	eng := &engine.Engine{}
+	eng.MembershipChanged = func(id string, revision uint64, code string) {
+		_ = writer.Write(proto.Event{V: proto.Version, Event: "membership-changed", TailnetID: id, Revision: &revision, Code: code})
+		ready := eng.Readiness()
+		_ = writer.Write(proto.Event{V: proto.Version, Event: "readiness", Readiness: &ready})
+	}
 	logf := func(format string, args ...any) {
 		if diag != nil {
 			fmt.Fprintf(diag, "hyprial-tailcat: "+format+"\n", args...)
@@ -67,8 +73,18 @@ func Run(ctx context.Context, input io.Reader, output io.Writer, diag io.Writer)
 			command, err := proto.ParseCommand(line)
 			if err != nil {
 				logf("rejected malformed request")
-				event := proto.Error(proto.CodeBadRequest, "invalid protocol-v5 request")
+				event := proto.Error(proto.CodeBadRequest, "Invalid protocol-v6 request.")
 				event.RequestID = parseErrorRequestID(line)
+				var raw struct {
+					V  int    `json:"v"`
+					Op string `json:"op"`
+				}
+				if json.Unmarshal(line, &raw) == nil {
+					event.Op = raw.Op
+					if raw.V != proto.Version {
+						event.Code = "SIDECAR_PROTOCOL_MISMATCH"
+					}
+				}
 				if err := writer.Write(event); err != nil {
 					eng.Down()
 					return err
@@ -102,6 +118,17 @@ func parseErrorRequestID(line []byte) string {
 // handle executes one parsed command and writes its success or error
 // event. A nil return means the loop continues.
 func handle(ctx context.Context, eng *engine.Engine, command proto.Command, writer *proto.Writer) error {
+	if command.Membership != nil {
+		data, err := eng.Membership(ctx, *command.Membership)
+		event := proto.Event{V: proto.Version, Event: "membership-result", RequestID: command.RequestID, Op: command.Op, Data: data}
+		if err != nil {
+			event.Event = "error"
+			event.Data = nil
+			event.Code = codeFor(err, proto.CodeInternal)
+			event.Message = "Membership operation failed."
+		}
+		return writer.Write(event)
+	}
 	switch command.Op {
 	case "up":
 		if err := writer.Write(proto.State("Starting")); err != nil {
@@ -113,7 +140,9 @@ func handle(ctx context.Context, eng *engine.Engine, command proto.Command, writ
 		}
 		event := proto.RunningState(serverPublic, clientPublic, nil, eng.SlotIDs())
 		event.DERPMapURL, event.DERPMapSource = eng.DERPMap()
-		return writer.Write(event)
+		ready := eng.Readiness()
+		event.Readiness = &ready
+		return writeResponse(writer, event, command.RequestID)
 	case "status":
 		state, serverPublic, clientPublic, peers, telemetry := eng.Status()
 		if state != "Running" {
@@ -139,12 +168,6 @@ func handle(ctx context.Context, eng *engine.Engine, command proto.Command, writ
 			return writeError(writer, err, proto.CodeInternal, command.RequestID)
 		}
 		return writeResponse(writer, proto.PeerUnmapped(command.Peer), command.RequestID)
-	case "allow":
-		count, err := eng.Allow(command.Keys, command.AllowAny)
-		if err != nil {
-			return writeError(writer, err, proto.CodeInternal, command.RequestID)
-		}
-		return writeResponse(writer, proto.Allowed(count, command.AllowAny), command.RequestID)
 	case "derive-client-key":
 		clientPublic, err := eng.DeriveClientPublic(command.ServerPublic)
 		if err != nil {
@@ -183,8 +206,10 @@ func handle(ctx context.Context, eng *engine.Engine, command proto.Command, writ
 func upConfig(up *proto.UpRequest) engine.UpConfig {
 	cfg := engine.UpConfig{
 		KeyFile:         up.KeyFile,
-		Allow:           up.Allow,
-		AllowAny:        up.AllowAny,
+		MembershipStore: up.MembershipStore,
+		Owner:           up.Owner,
+		DeviceID:        up.DeviceID,
+		ControlPort:     up.ControlPort,
 		InboundTarget:   up.InboundTarget,
 		PeerPort:        up.PeerPort,
 		AddressFile:     up.AddressFile,
@@ -243,6 +268,10 @@ func toPeerMappings(mappings []engine.Mapping) []proto.PeerMapping {
 // applies to uncoded runtime failures (START_FAILED for up, INTERNAL for
 // the other ops).
 func codeFor(err error, fallback string) string {
+	var coded *membership.Error
+	if errors.As(err, &coded) {
+		return coded.Value
+	}
 	switch {
 	case errors.Is(err, engine.ErrBadInput):
 		return proto.CodeBadRequest
@@ -287,7 +316,7 @@ func scanLines(input io.Reader, lines chan<- []byte, scanErr chan<- error) {
 		if len(line) == 0 {
 			continue
 		}
-		lines <- line
+		lines <- append([]byte(nil), line...)
 	}
 	if err := scanner.Err(); err != nil {
 		scanErr <- err

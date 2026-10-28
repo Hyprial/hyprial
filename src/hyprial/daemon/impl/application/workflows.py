@@ -24,6 +24,15 @@ from hyprial.daemon.impl.ipc.params import (
 )
 
 
+def _with_acting_principal(result: Any, principal: str) -> JsonObject:
+    if not isinstance(result, dict):
+        raise DaemonRequestError(
+            ipc_errors.INVALID_RESPONSE,
+            "workflow operation returned a non-object",
+        )
+    return {**result, "actingPrincipal": principal}
+
+
 class _WorkflowSurfaceMixin:
     """Application cluster mixin; the state owner is DaemonApplication."""
 
@@ -77,10 +86,11 @@ class _WorkflowSurfaceMixin:
         yaml_text = _required_string(params.get("yaml"), "yaml")
         source = self._workflow_caller(params)
         try:
-            return self._workflow_service.start(
+            result = self._workflow_service.start(
                 yaml_text=yaml_text, sender=source,
                 operation_key=params.get("operationKey"),
             )
+            return _with_acting_principal(result, source)
         except WorkflowServiceError as error:
             raise DaemonRequestError(error.code, str(error)) from error
 
@@ -218,7 +228,7 @@ class _WorkflowSurfaceMixin:
             if self._remote_workflow is not None:
                 forwarded = self._remote_workflow.forward(method, params, source)
                 if forwarded is not None:
-                    return forwarded
+                    return _with_acting_principal(forwarded, source)
             if method == "workflow.fail":
                 if expansion is not None:
                     raise PacError(
@@ -226,9 +236,15 @@ class _WorkflowSurfaceMixin:
                         "workflow.fail cannot carry expansion",
                         {"field": "expansion", "reason": "unexpected"},
                     )
-                return self._workflow_service.fail(graph_id=graph_id, node_id=node_id,
-                                                   actor=source, request_id=request, reason_ref=reason,
-                                                   output_text=output_text)
+                result = self._workflow_service.fail(
+                    graph_id=graph_id,
+                    node_id=node_id,
+                    actor=source,
+                    request_id=request,
+                    reason_ref=reason,
+                    output_text=output_text,
+                )
+                return _with_acting_principal(result, source)
             authority = self._pac_graph_authority
             context = None
             if expansion is not None:
@@ -262,7 +278,7 @@ class _WorkflowSurfaceMixin:
                 finally:
                     read.close()
                 if replay is not None:
-                    return replay
+                    return _with_acting_principal(replay, source)
                 prepare = (
                     authority.prepare_expansion
                     if authority is not None
@@ -290,7 +306,7 @@ class _WorkflowSurfaceMixin:
                     expansion_context=context,
                 )
                 self._workflow_service.submit_timer(time.time_ns() // 1_000_000)
-                return result
+                return _with_acting_principal(result, source)
             if self._transport is not None:
                 raise DaemonRequestError(
                     ipc_errors.WORKFLOW_UNAVAILABLE,
@@ -307,7 +323,11 @@ class _WorkflowSurfaceMixin:
             finally:
                 store.close()
             self._workflow_service.submit_timer(time.time_ns() // 1_000_000)
-            return {"ok": True, "event": outcome.event}
+            return {
+                "ok": True,
+                "event": outcome.event,
+                "actingPrincipal": source,
+            }
         except (WorkflowServiceError, PacError) as error:
             raise DaemonRequestError(
                 error.code, str(error), getattr(error, "data", None)
@@ -442,7 +462,16 @@ class _WorkflowSurfaceMixin:
         if actor == canonical_user_uri(self.owner) and "sessionRef" not in params:
             # The private local control socket is the trusted human boundary.
             return str(actor)
-        return self._pac_bound_caller(params)
+        try:
+            return self._pac_bound_caller(params)
+        except DaemonRequestError as error:
+            from hyprial.identity import PAC_PRINCIPAL_UNVERIFIED
+
+            raise DaemonRequestError(
+                PAC_PRINCIPAL_UNVERIFIED,
+                "workflow actor claim has no matching live daemon session",
+                {"cause": error.code},
+            ) from error
 
     @property
     def _dispatch_service_actor(self) -> str:
@@ -483,7 +512,7 @@ class _WorkflowSurfaceMixin:
             )
         actor = self._mcp_actor(params)
         try:
-            actor = self._fence_interactive_session(actor, params)
+            actor = self._fence_live_principal_session(actor, params)
         except DaemonRequestError as error:
             raise DaemonRequestError(
                 ipc_errors.CALLER_NOT_AUTHORIZED,

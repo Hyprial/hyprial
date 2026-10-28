@@ -19,6 +19,23 @@ adapter_app = typer.Typer(help="Manage external-platform adapters.")
 scopes_app = typer.Typer(help="Inspect and authorize Lark App tenant scopes.")
 
 
+@adapter_app.command("downgrade-state")
+def adapter_downgrade_state(
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Offline: restore pre-migration schema 2 before installing an older binary."""
+    from hyprial.daemon import downgrade_adapter_state, DaemonOwnershipBusy
+    from hyprial.kernel import DesiredStateError
+
+    services = get_services()
+    def operation():
+        try:
+            return downgrade_adapter_state(services._state_dir())
+        except (DesiredStateError, DaemonOwnershipBusy) as error:
+            raise services.CliError("ADAPTER_DOWNGRADE_REFUSED", str(error)) from error
+    services._execute(operation, json_output=json_output)
+
+
 def _parse_adapter_routes(raw_routes: list[str]) -> tuple[Any, ...]:
     services = get_services()
     from hyprial.daemon import RouteInput
@@ -151,6 +168,7 @@ def _adapter_add_existing(
         try:
             result = add_lark_gateway(
                 hyprial_home=services._hyprial_home(),
+                state_dir=services._state_dir(),
                 name=name,
                 app_id=app_id,
                 app_secret=secret,
@@ -167,17 +185,22 @@ def _adapter_add_existing(
                 else ipc_errors.INVALID_ARGUMENT
             )
             raise services.CliError(code, str(error)) from error
-        # Best-effort hot reload: a reachable daemon picks the new adapter up
-        # now; an unreachable one reads the same config at its next start.
-        try:
-            result["daemonReload"] = services._daemon_request(
-                "adapter.reload", {}, timeout=5.0, restore_wait=0.0
-            )
-        except (services.CliError, ipc_errors.TransientDaemonError):
-            result["daemonReload"] = None
+        result["daemonReload"] = _best_effort_adapter_reload()
         return result
 
     services._execute(operation, json_output=json_output)
+
+
+def _best_effort_adapter_reload() -> Any:
+    """Refresh a reachable daemon after durable adapter configuration changes."""
+
+    services = get_services()
+    try:
+        return services._daemon_request(
+            "adapter.reload", {}, timeout=5.0, restore_wait=0.0
+        )
+    except (services.CliError, ipc_errors.TransientDaemonError):
+        return None
 
 
 def _verification_expiry(prompt: Any) -> str:
@@ -276,7 +299,8 @@ def _adapter_onboard(
         # creation of a real App: that approval cannot be taken back, and a
         # credential we then refuse to store is an App stranded on the tenant.
         try:
-            ensure_lark_gateway_addable(hyprial_home=services._hyprial_home(), name=name, force=force)
+            ensure_lark_gateway_addable(hyprial_home=services._hyprial_home(), name=name,
+                                        force=force, state_dir=services._state_dir())
         except PersistentConfigError as error:
             code = (
                 "ADAPTER_EXISTS"
@@ -314,6 +338,7 @@ def _adapter_onboard(
         try:
             registered = add_lark_gateway(
                 hyprial_home=services._hyprial_home(),
+                state_dir=services._state_dir(),
                 name=name,
                 app_id=credential.app_id,
                 app_secret=credential.app_secret,
@@ -330,6 +355,7 @@ def _adapter_onboard(
             )
             raise services.CliError(code, str(error)) from error
 
+        registered["daemonReload"] = _best_effort_adapter_reload()
         # The secret is already persisted at 0600 by add_lark_gateway and is
         # deliberately absent from this summary.
         return {
@@ -348,11 +374,8 @@ def _adapter_onboard(
             },
             "nextStep": (
                 f"Run 'hyprial adapter scopes authorize {name}' to request "
-                "tenant-admin "
-                "approval for the declared scopes, then 'hyprial adapter reload' "
-                "so a running daemon picks the adapter up without a daemon "
-                "restart; afterwards 'hyprial adapter pin' and 'hyprial adapter "
-                "start'."
+                "tenant-admin approval for the declared scopes; afterwards "
+                "'hyprial adapter pin' and 'hyprial adapter start'."
             ),
         }
 
@@ -517,9 +540,12 @@ def adapter_remove(
 
         _confirm_adapter_stopped(name, force=force)
         try:
-            return services._daemon_request("management.adapter.remove", {"name": name})
+            removed = services._daemon_request("management.adapter.remove", {"name": name})
         except ipc_errors.DaemonUnavailableError:
             pass
+        else:
+            removed["daemonReload"] = _best_effort_adapter_reload()
+            return removed
         try:
             return remove_lark_gateway(
                 hyprial_home=services._hyprial_home(), state_dir=services._state_dir(), name=name
@@ -577,7 +603,7 @@ def adapter_status(
     name: str = typer.Argument(...),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
-    """Show one external-platform adapter."""
+    """Show one adapter; nextRetryAt is a daemon-monotonic deadline, not Unix time."""
     services = get_services()
 
     services._execute(

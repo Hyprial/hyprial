@@ -224,6 +224,13 @@ func (e *Engine) dropHeld(slot *slotPort, conn net.Conn) {
 // already incremented e.wg.
 func (e *Engine) forwardSlotConn(mapped *mappedPeer, local net.Conn) {
 	defer e.wg.Done()
+	e.mu.Lock()
+	allowed := e.permitsAddressLocked(mapped.address)
+	e.mu.Unlock()
+	if !allowed {
+		_ = local.Close()
+		return
+	}
 	dialCtx, cancel := context.WithTimeout(mapped.ctx, dialTimeout)
 	remote, err := e.dialTCPPort(dialCtx, mapped.lease, mapped.port)
 	cancel()
@@ -236,7 +243,7 @@ func (e *Engine) forwardSlotConn(mapped *mappedPeer, local net.Conn) {
 	}
 	pair := &connPair{left: local, right: remote}
 	e.mu.Lock()
-	if !e.up || e.mapped[mapped.mapping.Peer] != mapped {
+	if !e.up || e.mapped[mapped.mapping.Peer] != mapped || !e.permitsAddressLocked(mapped.address) {
 		e.mu.Unlock()
 		pair.close()
 		return
@@ -275,6 +282,10 @@ func (e *Engine) bindSlotLocked(slot *slotPort, mapped *mappedPeer) []net.Conn {
 // that is what lets the daemon grow the pool without a sidecar restart.
 func (e *Engine) mapPeerSlot(peer, address string, port int, slotSpec string) (Mapping, error) {
 	e.mu.Lock()
+	if !e.permitsAddressLocked(address) {
+		e.mu.Unlock()
+		return Mapping{}, ErrPeerUnknown
+	}
 	slot := e.slots[slotSpec]
 	if slot == nil {
 		grow := e.growSlotLocked(slotSpec)

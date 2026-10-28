@@ -7,7 +7,7 @@ import signal
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from pathlib import Path
 from uuid import uuid4
 
@@ -26,32 +26,24 @@ from hyprial.kernel  import (
 
 from hyprial.kernel import ProcessLiveness, ProcessLivenessState
 
+from .orphan.models import (
+    ProcessCustodyCommand as ProcessCustodyCommand,
+    ProcessCustodyCompleted as ProcessCustodyCompleted,
+    ProcessCustodyProjection as ProcessCustodyProjection,
+    _OrphanEntry as _OrphanEntry,
+)
+from .orphan.recovery import eviction_key, load_entries
 from .process_owner import ProcessOwner
 from .storage.journal import CustodyJournal
 _DEFAULT_UNKNOWN_THRESHOLD_SECONDS = 60.0
+_DEFAULT_MAX_ENTRIES = 4096
+_DEFAULT_PROBE_BACKOFF_BASE_MS = 1_000
+_DEFAULT_PROBE_BACKOFF_CAP_MS = 15 * 60 * 1_000
 
 #: Detail stamped on a custody record retired because the pid it names now
 #: belongs to a different process. Kept as one literal so the retirement log
 #: and the probe share the same wording instead of drifting apart.
 _IDENTITY_REPLACED_DETAIL = "process identity replaced (pid reused)"
-
-
-@dataclass(slots=True)
-class _OrphanEntry:
-    orphan_id: str
-    harness_id: str
-    pid: int | None
-    marker: str | None
-    observed: bool
-    first_seen_ms: int
-    owner_id: str | None
-    orphan_since_ms: int | None = None
-    last_probe_ms: int | None = None
-    gc_attempts: int = 0
-    state: str = ProcessLivenessState.UNKNOWN.value
-    detail: str | None = None
-    unknown_since_ms: int | None = None
-    last_probe_error: str | None = None
 
 
 def _process_error(process: ManagedHarnessProcess | None) -> str | None:
@@ -85,11 +77,22 @@ class OrphanProcessRegistry:
         logger: Callable[..., None] | None = None,
         cleanup_async: bool = True,
         collect_batch_size: int = 64,
+        max_entries: int = _DEFAULT_MAX_ENTRIES,
+        probe_backoff_base_ms: int = _DEFAULT_PROBE_BACKOFF_BASE_MS,
+        probe_backoff_cap_ms: int = _DEFAULT_PROBE_BACKOFF_CAP_MS,
     ) -> None:
+        if max_entries < 1:
+            raise ValueError("max_entries must be positive")
+        if probe_backoff_base_ms < 1 or probe_backoff_cap_ms < probe_backoff_base_ms:
+            raise ValueError("probe backoff must satisfy 0 < base <= cap")
         self._path = path
         self._journal = CustodyJournal(path, atomic_json_write)
         self._collect_batch_size = max(1, collect_batch_size)
         self._collect_cursor = 0
+        self._max_entries = max_entries
+        self._probe_backoff_base_ms = probe_backoff_base_ms
+        self._probe_backoff_cap_ms = probe_backoff_cap_ms
+        self._retired_harnesses: dict[str, None] = {}
         self._identity_reader = identity_reader
         self._clock_ms = clock_ms or (lambda: time.time_ns() // 1_000_000)
         self._unknown_threshold_ms = max(0, int(unknown_threshold_seconds * 1000))
@@ -98,7 +101,7 @@ class OrphanProcessRegistry:
         self._lock = threading.Lock()
         self._collect_lock = threading.Lock()
         self._owner_id = uuid4().hex
-        self._entries = self._load()
+        self._entries, self._pending_evictions = load_entries(self._journal.rows)
         self._processes: dict[str, ManagedHarnessProcess] = {}
         self._process_keys: dict[int, str] = {}
         self._entry_keys: dict[str, set[int]] = {}
@@ -109,7 +112,8 @@ class OrphanProcessRegistry:
                 entry.owner_id = None
                 entry.orphan_since_ms = entry.orphan_since_ms or now_ms
             with self._lock:
-                self._save_locked()
+                self._evict_to_capacity_locked()
+                self._save_locked(*self._entries)
 
     def observe_start(
         self,
@@ -119,16 +123,18 @@ class OrphanProcessRegistry:
         pid: int | None,
         marker: str | None,
     ) -> str:
-        """Persist a live generation so a later daemon can inherit custody."""
+        """Persist live custody; return an empty ID if capacity rejects it."""
 
         with self._lock:
+            self._retired_harnesses.pop(harness_id, None)
             orphan_id, entry = self._ensure_entry_locked(
                 harness_id, process, pid=pid, marker=marker
             )
-            entry.owner_id = self._owner_id
-            entry.orphan_since_ms = None
+            if entry is not None:
+                entry.owner_id = self._owner_id
+                entry.orphan_since_ms = None
             self._save_locked(orphan_id)
-            return orphan_id
+            return orphan_id if entry is not None else ""
 
     def refresh_pid(
         self,
@@ -167,16 +173,17 @@ class OrphanProcessRegistry:
         pid: int | None,
         marker: str | None,
     ) -> str:
-        """Take orphan cleanup custody before a stop can block or fail."""
+        """Take stop custody; return an empty ID if capacity rejects it."""
 
         with self._lock:
             orphan_id, entry = self._ensure_entry_locked(
                 harness_id, process, pid=pid, marker=marker
             )
-            entry.owner_id = None
-            entry.orphan_since_ms = entry.orphan_since_ms or self._clock_ms()
+            if entry is not None:
+                entry.owner_id = None
+                entry.orphan_since_ms = entry.orphan_since_ms or self._clock_ms()
             self._save_locked(orphan_id)
-            return orphan_id
+            return orphan_id if entry is not None else ""
 
     def _ensure_entry_locked(
         self,
@@ -185,7 +192,7 @@ class OrphanProcessRegistry:
         *,
         pid: int | None,
         marker: str | None,
-    ) -> tuple[str, _OrphanEntry]:
+    ) -> tuple[str, _OrphanEntry | None]:
         process_key = id(self._source(process))
         existing = self._process_keys.get(process_key)
         if existing is not None:
@@ -196,9 +203,15 @@ class OrphanProcessRegistry:
         orphan_id = (
             f"{harness_id}:{pid}:{marker}"
             if pid is not None and marker is not None
-            else f"{harness_id}:unidentified:{self._owner_id}:{process_key}"
+            else f"{harness_id}:unidentified"
         )
         entry = self._entries.get(orphan_id)
+        if entry is None and pid is not None and marker is not None:
+            # Recovery/backfill may retain this identity under the harness key.
+            canonical = f"{harness_id}:unidentified"
+            retained = self._entries.get(canonical)
+            if retained is not None and (retained.pid, retained.marker) == (pid, marker):
+                orphan_id, entry = canonical, retained
         if entry is None:
             entry = _OrphanEntry(
                 orphan_id=orphan_id,
@@ -210,6 +223,15 @@ class OrphanProcessRegistry:
                 owner_id=self._owner_id,
             )
             self._entries[orphan_id] = entry
+            self._evict_to_capacity_locked()
+            if orphan_id not in self._entries:
+                return orphan_id, None
+        else:
+            # One harness-level unidentified record: a later observation
+            # merges into it instead of minting another random key.
+            entry.pid = pid if pid is not None else entry.pid
+            entry.marker = marker if marker is not None else entry.marker
+            entry.observed = entry.observed or pid is not None
         self._processes[orphan_id] = process
         self._process_keys[process_key] = orphan_id
         self._entry_keys.setdefault(orphan_id, set()).add(process_key)
@@ -226,6 +248,50 @@ class OrphanProcessRegistry:
             self._process_keys.pop(key, None)
         self._cleanup_in_flight.discard(orphan_id)
 
+    def _evict_to_capacity_locked(self) -> None:
+        overflow = len(self._entries) - self._max_entries
+        if overflow <= 0:
+            return
+        ordered = sorted(self._entries.values(), key=eviction_key)
+        for entry in ordered[:overflow]:
+            self._retire_locked(entry.orphan_id)
+            self._pending_evictions.append(entry.orphan_id)
+            self._log(
+                "warn",
+                "harness.orphan.capacity_evicted",
+                entry,
+                f"registry over capacity {self._max_entries}",
+            )
+
+    def retire_harness(self, harness_id: str) -> int:
+        """Drop a destroyed harness's custody and remember it is gone.
+
+        A later observation for the same harness is removed by the next
+        collection pass instead of resurrecting an entry nobody owns. Only
+        the most recent ``max_entries`` retired harness IDs are remembered.
+        """
+
+        with self._lock:
+            self._retired_harnesses.pop(harness_id, None)
+            self._retired_harnesses[harness_id] = None
+            if len(self._retired_harnesses) > self._max_entries:
+                self._retired_harnesses.pop(next(iter(self._retired_harnesses)))
+            doomed = [
+                orphan_id
+                for orphan_id, entry in self._entries.items()
+                if entry.harness_id == harness_id
+            ]
+            for orphan_id in doomed:
+                entry = self._entries.get(orphan_id)
+                if entry is not None:
+                    self._retire_locked(orphan_id)
+                    self._log(
+                        "warn", "harness.orphan.harness_retired", entry, None
+                    )
+            if doomed:
+                self._save_locked(*doomed)
+            return len(doomed)
+
     def persistence_stats(self) -> dict[str, int]:
         with self._lock:
             return dict(self._journal.stats)
@@ -238,6 +304,20 @@ class OrphanProcessRegistry:
 
     def _collect_once(self) -> int:
         with self._lock:
+            vanished = [
+                orphan_id
+                for orphan_id, entry in self._entries.items()
+                if entry.harness_id in self._retired_harnesses
+            ]
+            for orphan_id in vanished:
+                entry = self._entries.get(orphan_id)
+                if entry is not None:
+                    self._retire_locked(orphan_id)
+                    self._log(
+                        "warn", "harness.orphan.harness_gone_retired", entry, None
+                    )
+            if vanished:
+                self._save_locked(*vanished)
             # Current-daemon entries are live-process custody records, not
             # orphans.  Their owning harness actor observes exit and calls
             # ``observe_stop`` before cleanup; a daemon restart clears the old
@@ -255,7 +335,7 @@ class OrphanProcessRegistry:
                 start = self._collect_cursor % len(orphan_ids)
                 orphan_ids = (orphan_ids[start:] + orphan_ids[:start])[:self._collect_batch_size]
                 self._collect_cursor = start + len(orphan_ids)
-        retired = 0
+        retired = len(vanished)
         # One durable delta per bounded pass. A retirement not yet committed
         # after a crash is simply observed and retired again.
         dirty: set[str] = set()
@@ -291,6 +371,8 @@ class OrphanProcessRegistry:
                 )
                 continue
             now_ms = self._clock_ms()
+            if entry.next_probe_ms is not None and now_ms < entry.next_probe_ms:
+                continue
             try:
                 observation = self._observe(entry, process)
             except ProcessLivenessProbeError as error:
@@ -300,7 +382,14 @@ class OrphanProcessRegistry:
                         continue
                     if not owned_by_current_daemon:
                         current.gc_attempts += 1
+                    current.probe_failures += 1
                     current.last_probe_ms = now_ms
+                    exponent = min(current.probe_failures - 1, 32)
+                    delay = min(
+                        self._probe_backoff_base_ms << exponent,
+                        self._probe_backoff_cap_ms,
+                    )
+                    current.next_probe_ms = now_ms + delay
                     current.state = "probe-failed"
                     current.last_probe_error = str(error)
                     current.detail = str(error)
@@ -313,6 +402,8 @@ class OrphanProcessRegistry:
                     continue
                 if not owned_by_current_daemon:
                     current.gc_attempts += 1
+                current.probe_failures = 0
+                current.next_probe_ms = None
                 current.last_probe_ms = now_ms
                 current.state = observation.state.value
                 current.observed = observation.observed
@@ -596,16 +687,13 @@ class OrphanProcessRegistry:
         else:
             cleanup()
 
-    def _load(self) -> dict[str, _OrphanEntry]:
-        try:
-            return {key: _OrphanEntry(**item) for key, item in self._journal.rows.items()}
-        except (TypeError, ValueError) as error:
-            raise ProcessLivenessProbeError(
-                f"orphan process registry contains invalid input: {error}"
-            ) from error
-
     def _save_locked(self, *orphan_ids: str) -> None:
-        keys = orphan_ids or tuple(self._entries)
+        evicted = self._pending_evictions
+        self._pending_evictions = []
+        if orphan_ids or evicted:
+            keys = tuple(orphan_ids) + tuple(evicted)
+        else:
+            keys = tuple(self._entries)
         self._journal.commit({
             key: asdict(self._entries[key]) if key in self._entries else None
             for key in keys
@@ -630,36 +718,6 @@ class OrphanProcessRegistry:
                 detail=detail,
                 **fields,
             )
-
-
-@dataclass(frozen=True, slots=True)
-class ProcessCustodyCommand:
-    operation_id: str
-    generation: int
-    kind: str
-    harness_id: str = ""
-    pid: int | None = None
-    marker: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ProcessCustodyCompleted:
-    operation_id: str
-    generation: int
-    orphan_id: str | None
-    retired: int
-    rows: tuple[tuple[tuple[str, object], ...], ...]
-    error: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ProcessCustodyProjection:
-    generation: int
-    version: int
-    pending: int
-    rejected: int
-    failed: int
-    rows: tuple[tuple[tuple[str, object], ...], ...]
 
 
 class ProcessCustodyOverloaded(RuntimeError):
@@ -757,6 +815,9 @@ class OrphanProcessAuthority:
 
     def collect_once(self) -> int:
         return self._call("collect").retired
+
+    def retire_harness(self, harness_id: str) -> int:
+        return self._call("retire-harness", harness_id).retired
 
     def status(self) -> tuple[dict[str, object], ...]:
         with self._guard:
@@ -885,6 +946,9 @@ class OrphanProcessAuthority:
             elif command.kind == "collect":
                 orphan_id = None
                 retired = self._registry.collect_once()
+            elif command.kind == "retire-harness":
+                orphan_id = None
+                retired = self._registry.retire_harness(command.harness_id)
             else:
                 raise TypeError("unsupported custody effect")
             return ProcessCustodyCompleted(

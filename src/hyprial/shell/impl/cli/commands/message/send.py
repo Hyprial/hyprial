@@ -24,8 +24,8 @@ DASH = "\u2014"
 
 
 def _validate_from_identity(
-    ctx: typer.Context, param: typer.CallbackParam, value: str
-) -> str:
+    ctx: typer.Context, param: typer.CallbackParam, value: str | None
+) -> str | None:
     """Reject an unresolvable bare ``--from`` before anything is sent.
 
     The daemon is the single source of resolution truth: ``agent.resolve``
@@ -212,10 +212,10 @@ def _render_send(data: Mapping[str, Any]) -> str:
 @message_app.command("send")
 def send(
     message: list[str] = typer.Argument(..., help="Message text."),
-    source: str = typer.Option(
-        ...,
+    source: str | None = typer.Option(
+        None,
         "--from",
-        help="Local sending actor.",
+        help="Local sending actor; defaults to the verified interactive agent.",
         callback=_validate_from_identity,
     ),
     to: list[str] = typer.Option(..., "--to", help="Target; repeat for fan-out."),
@@ -241,6 +241,18 @@ def send(
 
     def operation() -> Any:
         services = get_services()
+        from hyprial.biz import worker_binding
+
+        binding = worker_binding()
+        if source is None:
+            if binding is None:
+                raise services.CliError(
+                    ipc_errors.INVALID_ARGUMENT,
+                    "--from is required outside a verified agent session",
+                )
+            source_value = binding[0]
+        else:
+            source_value = source
         summary_value = _require_summary(summary)
         text = " ".join(message).strip()
         if not text:
@@ -257,7 +269,7 @@ def send(
                     }
                 )
         params: JsonObject = {
-            **_message_claim_params(source, on_behalf_of=on_behalf_of),
+            **_message_claim_params(source_value, on_behalf_of=on_behalf_of),
             "to": to,
             "message": text,
             "summary": summary_value,
@@ -281,7 +293,7 @@ def send(
             # Facts only (#67): what is true about this sender's reply path.
             # No instructions.
             warn(
-                f"hyprial: sender {source!r} has no reply path: "
+                f"hyprial: sender {source_value!r} has no reply path: "
                 "replies to it cannot be delivered",
                 json_output=json_output,
             )

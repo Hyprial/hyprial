@@ -103,7 +103,7 @@ class VisibleMention:
 @dataclass(frozen=True, slots=True)
 class VisibleAttachmentLabel:
     label: str
-    #: A stable ``<message_id>/<key>`` reference the agent can hand to
+    #: A stable direct or shell-aware reference the agent can hand to
     #: ``hyprial adapter media get`` for a directed pull of the media bytes.
     #: 2026-08-14 ruling: dropping the retrieval id made every media message
     #: a dead end that only a human with API credentials could follow up.
@@ -131,22 +131,36 @@ class VisibleMessage:
     nodes: tuple[VisibleNode, ...]
 
 
-def media_ref(message_id: object, key: object) -> str | None:
-    """Build the ``<message_id>/<key>`` reference printed inside stand-ins.
+def media_ref(
+    message_id: object,
+    key: object,
+    *,
+    container_message_id: object | None = None,
+) -> str | None:
+    """Build a safe direct or merge-forward media reference.
 
-    Returns ``None`` unless both parts are conservative identifier material:
-    a malformed or adversarial value degrades to the bare label rather than
-    letting platform data forge stand-in text or filesystem paths.
+    Direct media uses ``<message_id>/<key>``. A forwarded child uses
+    ``<container_message_id>/<message_id>/<key>`` because Lark downloads the
+    child's resource through the top-level merge-forward shell. Every part
+    must be conservative identifier material; unsafe platform data degrades
+    to a bare label instead of forging text or a filesystem path.
     """
 
-    if (
+    if not (
         isinstance(message_id, str)
         and _SAFE_MEDIA_REF_PART.fullmatch(message_id)
         and isinstance(key, str)
         and _SAFE_MEDIA_REF_PART.fullmatch(key)
     ):
+        return None
+    if container_message_id is None:
         return f"{message_id}/{key}"
-    return None
+    if not (
+        isinstance(container_message_id, str)
+        and _SAFE_MEDIA_REF_PART.fullmatch(container_message_id)
+    ):
+        return None
+    return f"{container_message_id}/{message_id}/{key}"
 
 
 def canonical_lark_message_type(value: object) -> str:
@@ -316,6 +330,7 @@ def _post_message(
     value: object,
     *,
     message_id: str | None = None,
+    container_message_id: str | None = None,
     unparsed: list[PostUnparsedShape] | None = None,
 ) -> VisibleMessage:
     if not isinstance(value, Mapping):
@@ -342,7 +357,10 @@ def _post_message(
             if "files" in value and "files" not in selected:
                 selected["files"] = value["files"]
             message = _post_message(
-                selected, message_id=message_id, unparsed=unparsed
+                selected,
+                message_id=message_id,
+                container_message_id=container_message_id,
+                unparsed=unparsed,
             )
             locale_keys = {name for name, _item in locales}
             outside = {
@@ -411,9 +429,17 @@ def _post_message(
                     elif tag in {"img", "emotion", "emoji", "media", "file"}:
                         label = {"img": "image", "emotion": "emoji"}.get(tag, tag)
                         ref = (
-                            media_ref(message_id, item.get("image_key"))
+                            media_ref(
+                                message_id,
+                                item.get("image_key"),
+                                container_message_id=container_message_id,
+                            )
                             if tag == "img"
-                            else media_ref(message_id, item.get("file_key"))
+                            else media_ref(
+                                message_id,
+                                item.get("file_key"),
+                                container_message_id=container_message_id,
+                            )
                             if tag in {"file", "media"}
                             else None
                         )
@@ -439,7 +465,11 @@ def _post_message(
                     VisibleAttachmentLabel(f"folder: {name}" if name else "folder")
                 )
                 continue
-            ref = media_ref(message_id, item.get("file_key"))
+            ref = media_ref(
+                message_id,
+                item.get("file_key"),
+                container_message_id=container_message_id,
+            )
             nodes.append(
                 VisibleAttachmentLabel(
                     f"Lark file: {name}" if name else "Lark file", ref
@@ -578,13 +608,15 @@ def _visible_message_for_content(
     content: Mapping[str, Any],
     *,
     message_id: str | None = None,
+    container_message_id: str | None = None,
 ) -> VisibleMessage:
     """Convert one closed-set Lark type from explicitly visible fields only.
 
-    ``message_id`` is the id of the message *carrying* this content.  When
-    known, image/file stand-ins embed a ``ref:<message_id>/<key>`` reference
-    (2026-08-14 ruling) so the agent can pull the bytes on demand through
-    ``hyprial adapter media get`` instead of a human replaying platform APIs.
+    ``message_id`` identifies the message whose content carries the resource.
+    When known, image/file stand-ins embed a direct ref. Forwarded callers also
+    pass the top-level ``container_message_id``, producing a shell-aware ref
+    that Lark's resource endpoint can resolve. The agent pulls bytes on demand
+    through ``hyprial adapter media get`` instead of replaying platform APIs.
     Media resource keys are the only ids that gained this exemption; URLs,
     tokens and action payloads still never reach Harness text.
     """
@@ -599,7 +631,11 @@ def _visible_message_for_content(
             else VisibleMessage(())
         )
     if message_type == "post":
-        return _post_message(content, message_id=message_id)
+        return _post_message(
+            content,
+            message_id=message_id,
+            container_message_id=container_message_id,
+        )
     if message_type == "merge_forward":
         # Neither the websocket event nor the shell's own REST body carries the
         # forwarded conversation; only ``im.v1.message.get`` returns the child
@@ -612,7 +648,12 @@ def _visible_message_for_content(
         return VisibleMessage(
             (
                 VisibleAttachmentLabel(
-                    label, media_ref(message_id, content.get("file_key"))
+                    label,
+                    media_ref(
+                        message_id,
+                        content.get("file_key"),
+                        container_message_id=container_message_id,
+                    ),
                 ),
             )
         )
@@ -643,7 +684,11 @@ def _visible_message_for_content(
         # Only an image message is a retrievable media resource among these;
         # the rest keep their bare labels.
         ref = (
-            media_ref(message_id, content.get("image_key"))
+            media_ref(
+                message_id,
+                content.get("image_key"),
+                container_message_id=container_message_id,
+            )
             if message_type == "image"
             else None
         )
@@ -658,6 +703,7 @@ def normalize_lark_message_content(
     raw_content: object,
     *,
     message_id: str | None = None,
+    container_message_id: str | None = None,
 ) -> NormalizedLarkContent:
     """Convert Lark's JSON-string body to bounded, non-opaque readable text.
 
@@ -665,10 +711,10 @@ def normalize_lark_message_content(
     Harness text. Unknown types are explicit audit outcomes, not an empty
     value that history reconciliation silently filters out.
 
-    Exception by ruling (2026-08-14): when ``message_id`` names the carrying
-    message, image/file stand-ins embed ``ref:<message_id>/<key>`` so media
-    is retrievable via ``hyprial adapter media get`` — a directed pull by the
-    agent, never an automatic inline of the bytes.
+    Exception by ruling (2026-08-14): image/file stand-ins embed a media ref.
+    A direct ref names its carrying message; a merge-forward ref additionally
+    names the received top-level shell. Media remains a directed pull through
+    ``hyprial adapter media get``, never an automatic inline of the bytes.
     """
 
     safe_type = canonical_lark_message_type(message_type)
@@ -698,9 +744,19 @@ def normalize_lark_message_content(
         )
     unparsed: list[PostUnparsedShape] = []
     message = (
-        _post_message(content, message_id=message_id, unparsed=unparsed)
+        _post_message(
+            content,
+            message_id=message_id,
+            container_message_id=container_message_id,
+            unparsed=unparsed,
+        )
         if safe_type == "post"
-        else _visible_message_for_content(safe_type, content, message_id=message_id)
+        else _visible_message_for_content(
+            safe_type,
+            content,
+            message_id=message_id,
+            container_message_id=container_message_id,
+        )
     )
     text = _render_message(message)
     if not text:
@@ -788,8 +844,8 @@ def normalize_merge_forward(
     ``text`` behave identically inside a forward and outside one.  Each child
     line is annotated with its sender — a recorded display name when
     ``resolve_sender`` knows one, the raw platform id otherwise — and media
-    stand-ins carry ``ref:<child_message_id>/<key>`` so any depth of nesting
-    stays retrievable.
+    stand-ins carry ``ref:<shell_id>/<child_message_id>/<key>`` so any depth
+    of nesting downloads through the top-level shell visible to the App.
 
     Bounds are explicit, never silent: a forward wider than
     :data:`MAX_MERGE_FORWARD_ITEMS` or deeper than
@@ -848,9 +904,10 @@ def normalize_merge_forward(
             child_text = normalize_lark_message_content(
                 child.message_type,
                 child.content,
-                # The child's own id: media refs stay valid at any nesting
-                # depth because each ref names its carrying message directly.
+                # Preserve the leaf's identity while routing the platform
+                # download through the top-level shell received by this App.
                 message_id=child.message_id,
+                container_message_id=shell_message_id,
             ).text
             lines.extend(
                 _forward_child_lines(

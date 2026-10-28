@@ -10,6 +10,9 @@ import typer
 
 from hyprial.shell.impl.cli.commands.common.root import app
 from hyprial.shell.impl.cli.commands.common.support import JsonObject
+from hyprial.shell.impl.cli.commands.doctor.credential_backups import (
+    codex_credential_backup_doctor_check,
+)
 from hyprial.shell.impl.cli.commands.doctor.dsh_tui import (
     _dsh_tui_doctor_check,
 )
@@ -60,7 +63,7 @@ def _tailcat_sidecar_doctor_check() -> JsonObject:
         "status": "ok",
         "detail": (
             f"tailcat sidecar verified (sidecar {record.get('sidecar')}, "
-            "protocol v5)"
+            "protocol v6)"
         ),
     }
 
@@ -138,6 +141,15 @@ def _doctor_result(*, fix: bool = False) -> JsonObject:
     # and the on-disk device key/record are host facts, not IPC facts.
     checks.append(_tailcat_sidecar_doctor_check())
     checks.append(_device_key_doctor_check())
+    from .checks.names import name_collision_check
+    collision = name_collision_check()
+    if collision is not None:
+        checks.append(collision)
+    credential_backups = codex_credential_backup_doctor_check(
+        services._hyprial_home()
+    )
+    if credential_backups is not None:
+        checks.append(credential_backups)
     try:
         result = services._daemon_request(
             "ps",

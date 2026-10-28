@@ -425,7 +425,7 @@ class _MaintenanceMixin:
             event = str(fields.pop("event", "lark.inbound.health"))
             level = (
                 "error"
-                if event in {"lark.inbound.stale", "lark.adapter.lifecycle.timeout"}
+                if event in {"lark.inbound.stale", "lark.adapter.lifecycle.timeout", "lark.adapter.quarantined"}
                 else "warn"
                 if event
                 in {"lark.pin.query_failed", "lark.identity.lookup_failed"}

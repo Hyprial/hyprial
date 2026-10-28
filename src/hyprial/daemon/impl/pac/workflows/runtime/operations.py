@@ -10,24 +10,26 @@ from typing import Any
 
 from hyprial.identity import PacError
 from hyprial.daemon.impl.pac.graphs.reactor  import PacReactor, permanent_delivery_failure
-from hyprial.daemon.impl.pac.storage.store  import PacGraphStore
+from hyprial.daemon.impl.pac.storage.store import (
+    PacGraphStore, pending_notification, projection_revision, record_projection,
+)
 from hyprial.daemon.impl.pac.workflows.graphs  import input_token
 from hyprial.daemon.impl.pac.workflows.outputs  import validate_workflow_output_text
 from hyprial.daemon.impl.pac.workflows.runtime.types import WorkflowServiceError, _changed, close_workflow
 from hyprial.kernel import canonical_user_uri
 from hyprial.daemon import summary_from_text
 
-# Graphs one workflow tick projects: open ones, unfinished workflows, and closed
-# ones still holding an undelivered actor alert.  The alert test is an
-# uncorrelated IN list, evaluated once per tick.  A correlated EXISTS re-scanned
-# every notification (json_extract per row) for every graph: about 0.65 s of CPU
-# per tick on production's 709 graphs x 1922 notifications (0.5.0, 2026-10-05).
+# Preserve the existing candidate set and open-before-closed ordering. Each
+# arm has a matching partial index; historical delivered alerts are not scanned.
+# Candidates whose projection inputs and deadlines are unchanged skip only
+# projection, while their existing notification delivery path stays active.
 TICK_GRAPH_SELECT = (
     "SELECT w.graph_id FROM workflow_graphs w JOIN graphs g USING(graph_id) "
-    "WHERE g.closed_at IS NULL OR w.state NOT IN ('completed','failed','cancelled') "
-    "OR g.graph_id IN (SELECT json_extract(n.plan_json,'$.graphId') FROM notifications n "
+    "WHERE w.graph_id IN (SELECT graph_id FROM graphs WHERE closed_at IS NULL "
+    "UNION SELECT graph_id FROM workflow_graphs WHERE state NOT IN ('completed','failed','cancelled') "
+    "UNION SELECT json_extract(n.plan_json,'$.graphId') FROM notifications n "
     "WHERE n.message_id IS NULL AND n.failed_at IS NULL AND n.kind='actor_alert') "
-    "ORDER BY (g.closed_at IS NOT NULL), g.created_at"
+    "ORDER BY (g.closed_at IS NOT NULL), g.created_at, w.rowid"
 )
 
 
@@ -110,17 +112,23 @@ class _GraphWorkflowServiceOps:
             for graph_id in ids:
                 try:
                     dirty: set[tuple[str, str]] = set()
-                    self._project(store, graph_id, at, dirty)
+                    revision = projection_revision(store, graph_id, at)
+                    if revision is not None:
+                        self._project(store, graph_id, at, dirty)
+                        record_projection(store, graph_id, revision, at)
                     wake = getattr(self._graph_authority, "wake_actor", None)
                     if dirty and callable(wake):
                         # The project transaction committed above; only now can
                         # a targeted reconcile observe the requested node.
                         for actor_graph, actor_node in dirty:
                             wake(actor_graph, actor_node)
+                    closed = store.graph(graph_id)["closed_at"] is not None
+                    if not pending_notification(store, graph_id, closed=closed):
+                        continue
                     if self._asynchronous:
                         self._queue_delivery(
                             graph_id,
-                            closed=store.graph(graph_id)["closed_at"] is not None,
+                            closed=closed,
                         )
                     else:
                         self._drain(store, graph_id)

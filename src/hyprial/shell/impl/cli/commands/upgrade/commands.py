@@ -309,8 +309,6 @@ def _perform_upgrade(
         if ref_changed
         else None
     )
-    if before is not None and restart:
-        services._prime_post_install_restart_imports()
     requirement = f"git+{url}@{requested}"
     resolved_suffix = f"resolvedTag={resolution.tag} resolvedCommit={resolution.commit}"
     tool_guard = updates.uv_tool_dir_guard()
@@ -330,6 +328,11 @@ def _perform_upgrade(
             "is part of may be upgraded in place",
             {**resolved, **tool_guard},
         )
+    # Prime the whole post-install path before uv replaces the distribution
+    # under this still-running interpreter. GUI retirement reporting, result
+    # reporting and upgrade steps also run after the destructive boundary
+    # when no daemon restart is requested.
+    services._prime_post_install_restart_imports()
     completed, installed = _install_locked_requirement(
         url=url,
         requirement=requirement,
@@ -470,36 +473,13 @@ def _perform_upgrade(
             ) from error
         result["notification"] = notification
 
-    try:
-        return _restart_daemon_onto_install(
-            result,
-            before=before,
-            installed_version=installed_version,
-            resolution=resolution,
-            resolved=resolved,
-        )
-    except ImportError as error:
-        # The old process may have lost an import path after replacement,
-        # including after it stopped the daemon. A fresh CLI can use the new
-        # installation; do not leave the operator with only a raw import error.
-        raise services.CliError(
-            "UPGRADE_RESTART_FAILED",
-            f"upgrade installed {installed_version}, but daemon restart failed: "
-            f"{error}. Run `hyprial daemon restart` from a new shell command to restore service.",
-            {
-                **resolved,
-                "upgradeCompleted": True,
-                "upgraded": True,
-                "restartRequired": True,
-                "restart": {
-                    "attempted": True,
-                    "restarted": False,
-                    "supervision": "unsupervised",
-                    "reason": "post-install import failed",
-                    "before": before,
-                },
-            },
-        ) from error
+    return _restart_daemon_onto_install(
+        result,
+        before=before,
+        installed_version=installed_version,
+        resolution=resolution,
+        resolved=resolved,
+    )
 
 
 def _read_restore_phase() -> str | None:
@@ -579,7 +559,8 @@ def _desired_connector_rows() -> int:
     from hyprial.daemon import DesiredStateStore
 
     document = services._state_dir() / "desired-state.json"
-    return len(DesiredStateStore(document).load().harnesses)
+    state = DesiredStateStore(document).load()
+    return len(state.harnesses) + len(state.adapters)
 
 
 def _expected_interruption_seconds() -> int:

@@ -34,6 +34,12 @@ def downgrade_state(state_dir: Path, output: Path) -> dict[str, object]:
             )
         store = DesiredStateStore(state_dir / "desired-state.json")
         state = store.load()
+        if state.schema_version >= 3:
+            raise RuntimeDowngradeError(
+                "Adapter schema 3 cannot be lowered by runtime-only downgrade; "
+                "use adapter downgrade-state offline, install a schema 2 binary, "
+                "then use that binary's runtime downgrade command"
+            )
         if state.schema_version != 2:
             raise RuntimeDowngradeError("No schema 2 runtime state to downgrade")
         removed = tuple(s for s in state.harnesses if s.execution_runtime is not None)

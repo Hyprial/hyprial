@@ -7,7 +7,9 @@ exactly the same lock as the pre-split ``InboxService``.
 """
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from functools import wraps
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -15,6 +17,35 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.inbox.service import InboxService
 
 _R = TypeVar("_R")
+
+
+@dataclass
+class _CommittedChanges:
+    """Facts from successful commits within one actor-owned operation."""
+
+    changed: bool = False
+
+
+@contextmanager
+def _observe_committed_changes(service: InboxService) -> Iterator[_CommittedChanges]:
+    with service._lock:
+        previous = service._observed_commits
+        changes = _CommittedChanges()
+        service._observed_commits = changes
+        try:
+            yield changes
+        finally:
+            service._observed_commits = previous
+            if previous is not None and changes.changed:
+                previous.changed = True
+
+
+def _record_committed_change(service: InboxService, changed: bool = True) -> None:
+    """Called after a transaction commits, including before later I/O can fail."""
+
+    observer = service._observed_commits
+    if observer is not None and changed:
+        observer.changed = True
 
 
 class _ActorMutationContext:

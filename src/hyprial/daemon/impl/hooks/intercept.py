@@ -60,7 +60,7 @@ def harness_supports_delivery_intercept(harness: str) -> bool:
         headless=True,
         capability=Capability.HEADLESS_EXEC,
     )
-    return declared.mechanism != "python_worker"
+    return declared is None or declared.mechanism != "python_worker"
 
 
 @dataclass(slots=True)

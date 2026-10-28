@@ -5,12 +5,13 @@ from __future__ import annotations
 import hashlib
 import secrets
 import time
+import uuid
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from hyprial.daemon.impl.orgfs.api import OrgFs, OrgFsError, require_space_owner
+from hyprial.daemon.impl.orgfs.api import OrgFs, OrgFsError
 from hyprial.daemon.impl.org.network.casdoor import CasdoorGroups, CasdoorMembershipMixin
 from hyprial.daemon.impl.org.network.binding import resolve_org_acl_space
 from hyprial.daemon.impl.org.network.create import (
@@ -30,14 +31,11 @@ from hyprial.daemon.impl.org.network.directory import (
 )
 from hyprial.daemon.impl.org.network.policy import OrgFsDerivedPolicy
 from hyprial.daemon.impl.org.network.state import (
-    add_bootstrap_peer,
     add_left_org,
     clear_left_org,
     finish_org_create,
     org_create_intent,
-    read_bootstrap_peers,
     read_left_orgs,
-    remove_bootstrap_peers,
     update_org_create,
 )
 from hyprial.daemon.impl.org.network.status.view import network_view
@@ -68,12 +66,11 @@ from hyprial.identity import (
     parse_bootstrap_yaml,
 )
 
+from .tailnet import TailnetLifecycle
+
 JOIN_RETRY_SECONDS = 0.5
 DEFAULT_JOIN_TIMEOUT_SECONDS = 30.0
-DEFAULT_INVITE_TTL_SECONDS = 24 * 3600.0
-_UNBOUND_DELETE_FALLBACK_REASONS = frozenset(
-    {"missing-acl-binding", "unknown-acl-space-id", "acl-owner-mismatch"}
-)
+DEFAULT_INVITE_TTL_SECONDS = 3600.0
 
 _Logger = Callable[..., None]
 
@@ -96,7 +93,7 @@ def _canonical_member_uri(user: str) -> str:
     return canonical_user_uri(user)
 
 
-class OrgNetworkService(CasdoorMembershipMixin):
+class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
     """Organization lifecycle on top of the OrgFS directory (§4.3)."""
 
     def __init__(
@@ -117,6 +114,7 @@ class OrgNetworkService(CasdoorMembershipMixin):
         read_own_address: Callable[[], str | None] | None = None,
         casdoor: CasdoorGroups | None = None,
         forwarding_status: Callable[[], Mapping[str, Any] | None] | None = None,
+        membership_request: Callable[[str, dict], dict] | None = None,
         logger: _Logger | None = None,
         invite_ttl_seconds: float = DEFAULT_INVITE_TTL_SECONDS,
         join_timeout_seconds: float = DEFAULT_JOIN_TIMEOUT_SECONDS,
@@ -155,6 +153,7 @@ class OrgNetworkService(CasdoorMembershipMixin):
         self._read_own_address = read_own_address
         self._casdoor = casdoor
         self._forwarding_status = forwarding_status
+        self._membership_request = membership_request
         self._invite_ttl_seconds = invite_ttl_seconds
         self._join_timeout_seconds = join_timeout_seconds
         self._sleep = sleep
@@ -221,6 +220,7 @@ class OrgNetworkService(CasdoorMembershipMixin):
                 write_default_acl_policy(self._fs, acl_info.space_id)
             self._fs.update_space_meta(info.space_id, {"aclSpaceId": acl_info.space_id})
         self._store.ensure_org_directory_roots(org)
+        self._ensure_new_tailnet(info)
         finish_org_create(self._home, org)
         try:
             published = self._publish_into(org)
@@ -275,6 +275,11 @@ class OrgNetworkService(CasdoorMembershipMixin):
         # joining daemon presents as its OrgFS author; a bare name would be a
         # member nobody can ever act as (E2E-025: "not-a-member").
         acl_space = self._require_acl_space(org)
+        tailnet_invite = self._tailnet_call('invite-create', {
+            'operationId': uuid.uuid4().hex, 'tailnetId': space.space_id,
+            'owner': member_uri.removeprefix('user:'),
+            'expiresAtMs': int((self._now().timestamp() + min(3600, self._invite_ttl_seconds)) * 1000),
+        })['invite']
         # The authority first (design §2); a failed OrgFS write undoes the add.
         member, acl_member = self._invite_casdoor_first(
             org, space.space_id, acl_space.space_id, member_uri
@@ -298,6 +303,7 @@ class OrgNetworkService(CasdoorMembershipMixin):
             workflow_yaml=workflow_yaml,
             workflow_sha256=hashlib.sha256(workflow_yaml.encode("utf-8")).hexdigest(),
             expires_at=expires_at,
+            tailnet=tailnet_invite,
         )
         # The raw token never lands in the directory — only its digest, so
         # the pending-invite document cannot leak the bearer secret.
@@ -349,12 +355,10 @@ class OrgNetworkService(CasdoorMembershipMixin):
     def execute(self, link: str) -> dict[str, Any]:
         """Decode a link and run its declarative join workflow (§2.5)."""
 
-        # LAX(tailnet-cutover): the bearer link itself is the join
-        # credential (digest-verified, unexpired); the OrgPolicy check W-D
-        # sketched here can never pass for a genuine invitee — they hold a
-        # member row but no grant matching "join" — so the proper shape is
-        # a signed, exactly-once invite plus a dedicated join permission.
         parsed = decode_invite(link)
+        # Tailnet redemption is first: no live OrgFS holder or directory row.
+        self._redeem_tailnet(parsed)
+        self._announce_tailnet(parsed.space_id)
         steps = parse_bootstrap_yaml(parsed.workflow_yaml)
         executed: list[dict[str, Any]] = []
         for step in steps:
@@ -375,7 +379,8 @@ class OrgNetworkService(CasdoorMembershipMixin):
 
         return self.execute(link)
 
-    def leave(self, org: str) -> dict[str, Any]:
+    def leave(self, org: str, *, confirmed: bool = False,
+              operation_id: str | None = None, device_ids: list[str] | None = None) -> dict[str, Any]:
         """Leave ``org``: remove this device, file a leave request, unmap.
 
         Three halves of leaving: the directory row goes now, the
@@ -386,47 +391,14 @@ class OrgNetworkService(CasdoorMembershipMixin):
 
         self._require_allows(org=org, action=ACTION_LEAVE, resource=RESOURCE_ORG_SELF)
         space = self._require_space(org)
-        peers = self._directory_peers_of(org)
-        device_removed = self._store.remove_device(
-            org, self._node_id, owner=self._owner
-        )
-        self._store.put_leave_request(
-            org,
-            self._owner,
-            {
-                "org": org,
-                "user": self._owner,
-                "deviceId": self._node_id,
-                "requestedAt": self._now().isoformat(),
-            },
-        )
-        left = add_left_org(self._home, org)
-        unmapped: list[str] = []
-        if self._unmap_peer is not None:
-            for peer in sorted(peers):
-                self._unmap_peer(peer)
-                unmapped.append(peer)
-        remove_bootstrap_peers(
-            self._home,
-            [
-                device_id
-                for device_id, entry in read_bootstrap_peers(self._home).items()
-                if entry.get("org") == org
-            ],
-        )
-        # The next forwarding reconcile replaces the inbound allow-set from
-        # current org membership; this left org no longer contributes keys.
-        self._log("info", "org", "org.leave", org=org, spaceId=space.space_id)
-        return {
-            "org": org,
-            "spaceId": space.space_id,
-            "deviceRemoved": device_removed,
-            "leaveRequestFiled": True,
-            "leftOrgs": left,
-            "unmappedPeers": unmapped,
-        }
+        operation = self._removal(org, self._owner, confirmed=confirmed, self_leave=True,
+                                  operation_id=operation_id, device_ids=device_ids)
+        if operation['phase'] == 'complete':
+            add_left_org(self._home, org)
+        return {'org': org, 'spaceId': space.space_id, **operation}
 
-    def remove(self, org: str, user: str) -> dict[str, Any]:
+    def remove(self, org: str, user: str, *, confirmed: bool = False,
+               operation_id: str | None = None, device_ids: list[str] | None = None) -> dict[str, Any]:
         """Remove ``user``; their protected rows remain as inert history."""
 
         _canonical_member_uri(user)
@@ -434,65 +406,18 @@ class OrgNetworkService(CasdoorMembershipMixin):
             org=org, action=ACTION_REMOVE, resource=RESOURCE_ORG_MEMBERS
         )
         space = self._require_space(org)
-        removed_devices = self._remove_member_and_devices(org, space.space_id, user)
-        # The next forwarding reconcile removes this user's keys from the
-        # derived allow-set; sidecar Allow disconnects revoked clients.
-        self._log("info", "org", "org.remove", org=org, user=user)
-        return {
-            "org": org,
-            "spaceId": space.space_id,
-            "user": user,
-            "removedDevices": removed_devices,
-            "casdoorGroup": self._casdoor_removal_note(org),
-        }
+        operation = self._removal(org, user, confirmed=confirmed,
+                                  operation_id=operation_id, device_ids=device_ids)
+        result = {'org': org, 'spaceId': space.space_id, 'user': user, **operation}
+        if operation['phase'] == 'complete':
+            result['casdoorGroup'] = self._casdoor_removal_note(org)
+        return result
 
     def delete(self, org: str) -> dict[str, Any]:
         """Mark ``org`` deleted and drop every non-owner member (owner only)."""
 
-        acl_space, binding_reason = resolve_org_acl_space(self._fs, org)
-        # An unbound org has no trustworthy ACL space to keep in sync.
-        unbound = (
-            acl_space is None and binding_reason in _UNBOUND_DELETE_FALLBACK_REASONS
-        )
-        if unbound:
-            space = self._require_space(org)
-            require_space_owner(canonical_user_uri(self._owner), space)
-            self._log(
-                "warn",
-                "org",
-                "org.delete.unbound-owner-fallback",
-                org=org,
-                spaceId=space.space_id,
-                reason=binding_reason,
-            )
-        else:
-            self._require_allows(org=org, action="delete", resource="org")
-            space = self._require_space(org)
-        deleted_at = self._now().isoformat()
-        self._store.put_org_meta(
-            org, {"state": "deleted", "deletedAt": deleted_at}
-        )
-        removed: list[str] = []
-        for member in self._fs.members(space.space_id):
-            if member.user == space.owner:
-                continue
-            try:
-                self._fs.remove_member(space.space_id, member.user)
-            except OrgFsError as error:
-                if error.code != "invalid-argument":
-                    raise
-                continue  # already gone
-            removed.append(member.user)
-            if not unbound:
-                self._remove_acl_member(org, member.user)
-        self._log("info", "org", "org.delete", org=org, spaceId=space.space_id)
-        return {
-            "org": org,
-            "spaceId": space.space_id,
-            "state": "deleted",
-            "deletedAt": deleted_at,
-            "removedMembers": removed,
-        }
+        self._require_allows(org=org, action="delete", resource="org")
+        raise OrgNetworkError("LAST_AUTHORITY_REFUSED", "Tailnet deletion requires a separate confirmed shutdown maintenance procedure.")
 
     def list(self) -> dict[str, Any]:
         """This node's orgs ({org, spaceId, role, devices, state} each) and left orgs."""
@@ -545,13 +470,16 @@ class OrgNetworkService(CasdoorMembershipMixin):
                 )
                 skipped.append(org)
                 continue
-            space = self._require_space(org)
             for user, record in sorted(requests.items()):
                 if not leave_request_admitted(self._store, self._log, org, user):
                     continue
                 try:
-                    removed_devices = self._remove_member_and_devices(org, space.space_id, user)
-                except OrgNetworkError as error:  # Casdoor first: retried next pass
+                    operation = self._removal(org, user, confirmed=False)
+                    if operation['phase'] != 'complete':
+                        skipped.append(org)
+                        continue
+                    removed_devices = operation['deviceIds']
+                except OrgNetworkError as error:
                     self._log("warn", "org", "org.leaves.casdoor-failed", org=org, user=user, code=error.code)
                     continue
                 processed.append(
@@ -589,44 +517,33 @@ class OrgNetworkService(CasdoorMembershipMixin):
 
         published: list[str] = []
         skipped: list[dict[str, str]] = []
+        errors: list[dict[str, str]] = []
         for org in self._orgs():
             try:
                 if self._publish_into(org):
                     published.append(org)
             except OrgNetworkError as error:
                 skipped.append({"org": org, "reason": error.code})
-        if published or skipped:
+            except Exception as error:
+                errors.append({'org': org, 'code': getattr(error, 'code', 'PUBLISH_FAILED'),
+                               'errorType': type(error).__name__})
+        if published or skipped or errors:
             self._log(
                 "info", "org", "org.publish_self", published=published, skipped=skipped
             )
-        return {"published": published, "skipped": skipped}
+        return {"published": published, "skipped": skipped, "errors": errors}
 
     def directory_peers(self) -> dict[str, str]:
-        """Return other current member devices from one access snapshot."""
-
-        from hyprial.daemon.impl.org.network.access.snapshot import directory_peers
-
-        return directory_peers(self)
+        """Compatibility name: sidecar roster candidates only."""
+        return self._tailnet_candidates()
 
     def _execute_step(self, link: InviteLink, kind: str) -> str:
         if kind == "connect-inviter":
-            peer = self._peer_label(link.inviter, link.inviter_device)
-            slot = self._require_map_peer()(peer, link.inviter_address)
-            # Authorize this one peer for the directory-driven reconcile
-            # before triggering it: the invite link is the credential, and
-            # the directory row only exists after join + sync.
-            add_bootstrap_peer(
-                self._home,
-                inviter=link.inviter,
-                device_id=link.inviter_device,
-                address=link.inviter_address,
-                org=link.org,
-                added_at=self._now().isoformat(),
-            )
+            for peer, address in sorted(self._tailnet_candidates(link.space_id).items()):
+                self._require_map_peer()(peer, address)
             if self._request_redial is not None:
                 self._request_redial()
-            where = f"slot {slot}" if slot is not None else "a fixed slot"
-            return f"mapped inviter on {where}"
+            return "tailnet redeemed; selected roster candidates mapped"
         if kind == "join-org":
             self._join_with_retry(link.space_id)
             self._join_with_retry(link.acl_space_id)
@@ -706,36 +623,8 @@ class OrgNetworkService(CasdoorMembershipMixin):
             ),
             None,
         )
-        previous_mapping = (
-            dict(current.client_public_by_server)
-            if current is not None
-            and current.key_generation == record.key_generation
-            and current.client_public == record.client_public
-            else {}
-        )
-        target_servers = {
-            device.server_public
-            for device in directory_devices
-            if (device.owner.removeprefix("user:"), device.device_id) != own_identity
-        }
-        if len(target_servers) > 1024:
-            raise OrgNetworkError(
-                "CLIENT_KEY_DERIVATION_LIMIT",
-                "the directory has too many target server keys",
-            )
-        if target_servers and self._derive_client_key is None:
-            raise OrgNetworkError(
-                "CLIENT_KEY_DERIVATION_UNAVAILABLE",
-                "the forwarding sidecar cannot derive per-server client keys",
-            )
+        # Directory publication is business metadata, never transport admission.
         client_public_by_server: dict[str, str] = {}
-        for server_public in sorted(target_servers):
-            cached = previous_mapping.get(server_public)
-            if cached is not None:
-                client_public_by_server[server_public] = cached
-                continue
-            assert self._derive_client_key is not None
-            client_public_by_server[server_public] = self._derive_client_key(server_public)
         device = DirectoryDevice(
             device_id=record.device_id,
             owner=record.owner,
@@ -775,20 +664,7 @@ class OrgNetworkService(CasdoorMembershipMixin):
         return True
 
     def _directory_peers_of(self, org: str) -> dict[str, str]:
-        rows: dict[tuple[str, str], str] = {}
-        for device in self._store.list_devices(org):
-            self._add_directory_peer(rows, device)
-        peers = self._render_directory_peers(rows)
-        directory_peers = {
-            self._peer_label(owner, device_id) for owner, device_id in rows
-        }
-        for peer, entry in read_bootstrap_peers(self._home).items():
-            identity = (entry["inviter"], entry["deviceId"])
-            if entry.get("org") != org or identity == (self._owner, self._node_id):
-                continue
-            if peer not in directory_peers:
-                peers.setdefault(peer, entry["address"])
-        return peers
+        return self._tailnet_candidates(self._require_space(org).space_id)
 
     def _add_directory_peer(
         self,
@@ -867,9 +743,8 @@ class OrgNetworkService(CasdoorMembershipMixin):
         readers make the retained protected rows inert.
         """
 
-        self._casdoor_remove(org, user)  # the authority first (design §2)
-        self._remove_orgfs_member(org, space_id, user)
-        return []
+        operation = self._removal(org, user, confirmed=False)
+        return operation['deviceIds'] if operation['phase'] == 'complete' else []
 
     def _require_map_peer(self) -> Callable[[str, str], int | None]:
         if self._map_peer is None:

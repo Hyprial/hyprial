@@ -14,6 +14,7 @@ transaction commits and change memory only.
 from __future__ import annotations
 
 import json
+from dataclasses import fields
 from typing import Any
 
 from hyprial.kernel import ipc_errors
@@ -26,12 +27,30 @@ from hyprial.daemon.impl.inbox.contracts.ports import (
     LinkLedgerSink,
     UpdateLinkLedgerCommand,
 )
-from hyprial.daemon.impl.inbox.service.synchronization import _synchronized
+from hyprial.daemon.impl.inbox.service.synchronization import (
+    _record_committed_change,
+    _synchronized,
+)
 
 #: Durable states a row never leaves (§3.9).  Purge only touches these.
 _TERMINAL_STATES = ("closed", "acked", "expired", "drained", "released")
 #: Inbound rows a reply may still close.
 _LIVE_INBOUND_STATES = ("open", "censored")
+_UPDATE_OPERANDS = frozenset({
+    "release", "reasons", "fail", "drain", "cancel_outbound", "release_outbound",
+    "censor", "sampled", "open_outbound", "close_inbound", "bind_tasks", "unbind_tasks",
+})
+
+
+def _retention_only_update(command: UpdateLinkLedgerCommand) -> bool:
+    """Recognize the audited maintenance shape; new operands stay conservative."""
+
+    operands = {item.name for item in fields(command)} - {
+        "correlation_id", "now_ms", "purge_before_ms",
+    }
+    return operands == _UPDATE_OPERANDS and not any(
+        getattr(command, name) for name in operands
+    )
 
 
 def _link_reply_to(message: InboxMessage) -> str | None:
@@ -271,6 +290,7 @@ class InboxServiceLinkLedgerMixin:
         failed: list[str] = []
         drained: list[tuple[str, str]] = []
         cancelled: list[str] = []
+        purged = False
         with self._db:
             for message_id in command.release:
                 outcome = self._release_one_locked(message_id, now, ttl)
@@ -336,12 +356,13 @@ class InboxServiceLinkLedgerMixin:
                     (actor, peer, task_id),
                 )
             if command.purge_before_ms is not None:
-                self._db.execute(
+                purged = self._db.execute(
                     f"""DELETE FROM link_ledger
                          WHERE expires_at_ms < ?
                            AND state IN ({_placeholders(_TERMINAL_STATES)})""",
                     (command.purge_before_ms, *_TERMINAL_STATES),
-                )
+                ).rowcount > 0
+        _record_committed_change(self, purged)
         return LinkLedgerResult(
             released=tuple(released),
             expired=tuple(expired),

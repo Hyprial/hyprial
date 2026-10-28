@@ -97,6 +97,7 @@ class OrgFsMesh(SupplierSyncMixin, MeshRecovery, MeshIngress, MeshQueries, MeshS
         blob_store: BlobStore | None = None,
         supplier_online: SupplierGate | None = None,
         supplier_owner: SupplierOwner | None = None,
+        trust_tailnet_members: bool = False,
         on_applied: AppliedHook | None = None,
         on_replacement: ReplacementHook | None = None,
         announcement_source: AnnouncementSource | None = None,
@@ -121,6 +122,7 @@ class OrgFsMesh(SupplierSyncMixin, MeshRecovery, MeshIngress, MeshQueries, MeshS
         self.durable = bool(durable)
         self._supplier_online = supplier_online or (lambda _supplier: True)
         self._supplier_owner = supplier_owner
+        self._trust_tailnet_members = trust_tailnet_members
         self._on_applied = on_applied
         self._on_replacement = on_replacement
         self._announcement_source = announcement_source
@@ -281,29 +283,29 @@ class OrgFsMesh(SupplierSyncMixin, MeshRecovery, MeshIngress, MeshQueries, MeshS
         """R1 supplier gate: import only from a current member's device.
 
         The resolver maps a supplier node to the principal owning its device
-        row; ``None`` means no member-device evidence exists for that node
-        (never seen here), which stays open so join enrollment is not
-        blocked.  A resolved principal that is no longer an active member of
-        this space refuses the supplier outright.
+        row. With transitional trust disabled, absent/unresolved evidence
+        refuses the supplier. Managed private-tailnet trust explicitly bypasses
+        this check; it does not relax envelope authorship or document validation.
         """
 
+        if getattr(self, "_trust_tailnet_members", False):
+            return True
         resolver = self._supplier_owner
         if resolver is None:
-            return True
+            return False
         try:
             principal = resolver(supplier)
         except Exception:
-            # A broken resolver must not partition working members; R2 still
-            # judges every envelope's author on its own.
+            # Disabled trust must fail closed when the resolver is broken.
             self._log(
                 "warn",
                 "orgfs.update.rejected",
                 reason="supplier-owner-unresolved",
                 supplier=supplier,
             )
-            return True
+            return False
         if principal is None:
-            return True
+            return False
         return self._member_mode(principal) is not None
 
 

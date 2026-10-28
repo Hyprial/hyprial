@@ -18,7 +18,7 @@ from hyprial.daemon.impl.pac.storage.journal  import JOURNAL_SCHEMA, append_even
 from hyprial.identity import principal_kind
 from hyprial.kernel import legacy_user_uri
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 
 def _create_v1(db: sqlite3.Connection, schema: str) -> None:

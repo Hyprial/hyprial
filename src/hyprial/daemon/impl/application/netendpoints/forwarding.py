@@ -85,8 +85,6 @@ class _ForwardingOpsMixin:
             slot_transport=slot_transport(),
             on_slots_reported=lambda ids: record_tcp_slot_ports(self, ids),
             up_slots=lambda: slot_store_for_app(self).specs(),
-            desired_allow=self._peer_access_desired_allow,
-            on_installed=self._peer_access_sidecar_installed,
         )
         self._forwarding_supervisor = supervisor
         supervisor.ensure_started()
@@ -221,12 +219,16 @@ class _ForwardingOpsMixin:
             }
             if self._forwarding_unavailable is not None:
                 off["unavailable"] = self._forwarding_unavailable
+            from hyprial.daemon.impl.forwarding.membership.projection import readiness_for_app
+            off['readiness'] = readiness_for_app(self)
             off["exposures"] = exposures
             off["connectionTelemetry"] = {
                 "state": "unavailable",
                 "reason": "capability-absent",
             }
             return off
+        from hyprial.daemon.impl.forwarding.membership.projection import readiness_for_app
+        status['readiness'] = readiness_for_app(self)
         status["policy"] = policy
         status["counters"] = self._forwarding_diagnostic_counters()
         effective = self._forwarding_effective
@@ -313,41 +315,9 @@ class _ForwardingOpsMixin:
             }
         return status
 
-    def _start_peer_access_safely(self) -> None:
-        """Start directory-driven peer access once OrgFS is available."""
-
-        if getattr(self, "_peer_access_actor", None) is not None:
-            return
-        try:
-            from hyprial.daemon.impl.org.network import start_peer_access_for_app
-
-            start_peer_access_for_app(self)
-        except Exception as error:  # noqa: BLE001 - deny-all is the safe fallback
-            self._log(
-                "warn",
-                "org",
-                "org.access.start-failed",
-                errorType=type(error).__name__,
-                detail=str(error)[:300],
-            )
-
-    def _peer_access_sidecar_installed(self) -> None:
-        actor = getattr(self, "_peer_access_actor", None)
-        if actor is not None:
-            actor.request("sidecar-launch", force=True)
-
-    def _peer_access_desired_allow(self) -> tuple[tuple[str, ...], bool]:
-        actor = getattr(self, "_peer_access_actor", None)
-        return actor.desired_allow() if actor is not None else ((), False)
-
     def _reconcile_forwarding_endpoints(self) -> None:
         self._publish_org_directory_if_address_changed()
         self._process_org_leave_requests_throttled()
-        from hyprial.daemon.impl.org.network.admission import (
-            sync_directory_admission_for_app,
-        )
-
-        sync_directory_admission_for_app(self)
         backend = self._forwarding_backend()
         if backend is None:
             return
@@ -355,9 +325,8 @@ class _ForwardingOpsMixin:
             # Slot binding runs BEFORE the endpoint read: membership
             # changes only rebind slots (never touching the set), and a
             # pool growth must be visible in this very read so the one
-            # remaining rebuild below dials it.  The S2b peer-access
-            # actor will drive the same pass event-wise; this tick stays
-            # as the time-driven floor (liveness fallback, retries).
+            # remaining rebuild below dials it. Only the leased sidecar
+            # projection selects candidates; this tick retries those candidates.
             reconcile_slot_bindings(self, reason="tick")
         previous = self._forwarding_effective
         current = backend.list_reachable_endpoints()
@@ -430,7 +399,7 @@ class _ForwardingOpsMixin:
 
         outcome = publish_self_for_app(self)
         self._org_directory_keys_checked_at = now
-        if not outcome.get("skipped"):
+        if not outcome.get("skipped") and not outcome.get("errors"):
             self._org_directory_address_digest = digest
 
     def _redial_forwarding(self, current: tuple[str, ...]) -> None:

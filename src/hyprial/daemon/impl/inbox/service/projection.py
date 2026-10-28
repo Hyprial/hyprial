@@ -25,7 +25,10 @@ from hyprial.daemon.impl.inbox.links.pull  import (
     DeliveryStatusStore,
 )
 from hyprial.daemon.impl.inbox.service.delivery.notices import _ExpiredSenderNotice
-from hyprial.daemon.impl.inbox.service.synchronization import _synchronized
+from hyprial.daemon.impl.inbox.service.synchronization import (
+    _record_committed_change,
+    _synchronized,
+)
 
 """SQLite-backed outbox, inbox, deduplication, FIFO, DLQ and custody state."""
 
@@ -170,13 +173,14 @@ class InboxServiceProjectionMixin:
                 self._ledger_expire_inbound_locked(
                     str(row["recipient"]), str(row["message_id"])
                 )
-            self._db.execute(
+            removed = self._db.execute(
                 """DELETE FROM inbox
                    WHERE consumed = 0
                      AND expires_at_ms IS NOT NULL
                      AND expires_at_ms <= ?""",
                 (now_ms,),
-            )
+            ).rowcount > 0
+        _record_committed_change(self, removed)
         for row in rows:
             self._forget_admission(str(row["message_id"]))
         items = tuple(
@@ -431,30 +435,7 @@ class InboxServiceProjectionMixin:
         messages = tuple(self._row_message(row) for row in rows)
         if only is not None:
             messages = tuple(m for m in messages if m.message_id in only)
-        if not messages:
-            return ()
-        meta = self._inbound_ledger_meta(messages)
-        with self._db:
-            self._db.executemany(
-                """UPDATE inbox SET fetched_at_ms = COALESCE(fetched_at_ms, ?)
-                    WHERE message_id = ?""",
-                ((now, message.message_id) for message in messages),
-            )
-            fresh = [
-                message
-                for message in messages
-                if self._write_inbound_ledger_locked(
-                    actor=recipient,
-                    message=message,
-                    received_at_ms=meta[message.message_id][0],
-                    expires_at_ms=meta[message.message_id][1],
-                )
-            ]
-            self._clear_nonterminal_failures(messages, completed_turn)
-        for message in fresh:
-            self._sink_injected(recipient, message, meta[message.message_id][0])
-        for message in messages:
-            self.retire_outbox_receipt(message.sender, message.message_id, now_ms=now)
+        self._stamp_inbox_fetch(messages, now, completed_turn=completed_turn)
         return messages
 
     @_synchronized
@@ -521,30 +502,7 @@ class InboxServiceProjectionMixin:
         if only is not None:
             candidates = tuple(m for m in candidates if m.message_id in only)
         admitted = self._admit_dispatch(candidates, now, frozenset())
-        if not admitted:
-            return ()
-        meta = self._inbound_ledger_meta(admitted)
-        with self._db:
-            self._db.executemany(
-                """UPDATE inbox SET fetched_at_ms = COALESCE(fetched_at_ms, ?)
-                    WHERE message_id = ?""",
-                ((now, message.message_id) for message in admitted),
-            )
-            fresh = [
-                message
-                for message in admitted
-                if self._write_inbound_ledger_locked(
-                    actor=recipient,
-                    message=message,
-                    received_at_ms=meta[message.message_id][0],
-                    expires_at_ms=meta[message.message_id][1],
-                )
-            ]
-            self._clear_nonterminal_failures(admitted, completed_turn)
-        for message in fresh:
-            self._sink_injected(recipient, message, meta[message.message_id][0])
-        for message in admitted:
-            self.retire_outbox_receipt(message.sender, message.message_id, now_ms=now)
+        self._stamp_inbox_fetch(admitted, now, completed_turn=completed_turn)
         return admitted
 
     # -- inbox batch selection (read-only projection over live rows) --------
@@ -691,22 +649,23 @@ class InboxServiceProjectionMixin:
             recipient, bounds, tuple(rows), tuple(merged), predecessor_digest
         )
 
-    def _batch_stamp(
+    def _stamp_inbox_fetch(
         self,
         inbox_rows: tuple[InboxMessage, ...],
-        notice_rows: tuple[InboxMessage, ...],
         now: int,
+        *,
+        completed_turn: bool = False,
     ) -> None:
-        """One-way fetched stamp and its receipts; never an acknowledgement."""
+        """Commit actual fetch changes before publishing their external effects."""
 
         if inbox_rows:
             meta = self._inbound_ledger_meta(inbox_rows)
             with self._db:
-                self._db.executemany(
-                    """UPDATE inbox SET fetched_at_ms = COALESCE(fetched_at_ms, ?)
-                        WHERE message_id = ?""",
+                stamped = self._db.executemany(
+                    """UPDATE inbox SET fetched_at_ms = ?
+                        WHERE message_id = ? AND fetched_at_ms IS NULL""",
                     ((now, message.message_id) for message in inbox_rows),
-                )
+                ).rowcount > 0
                 fresh = [
                     message
                     for message in inbox_rows
@@ -717,6 +676,8 @@ class InboxServiceProjectionMixin:
                         expires_at_ms=meta[message.message_id][1],
                     )
                 ]
+                cleared = self._clear_nonterminal_failures(inbox_rows, completed_turn)
+            _record_committed_change(self, stamped or bool(fresh) or cleared)
             for message in fresh:
                 self._sink_injected(
                     message.recipient, message, meta[message.message_id][0]
@@ -725,14 +686,25 @@ class InboxServiceProjectionMixin:
                 self.retire_outbox_receipt(
                     message.sender, message.message_id, now_ms=now
                 )
+
+    def _batch_stamp(
+        self,
+        inbox_rows: tuple[InboxMessage, ...],
+        notice_rows: tuple[InboxMessage, ...],
+        now: int,
+    ) -> None:
+        """One-way fetched stamp and its receipts; never an acknowledgement."""
+
+        self._stamp_inbox_fetch(inbox_rows, now)
         if notice_rows:
             with self._db:
-                self._db.executemany(
+                stamped = self._db.executemany(
                     """UPDATE system_notices
-                          SET fetched_at_ms = COALESCE(fetched_at_ms, ?)
-                        WHERE message_id = ?""",
+                          SET fetched_at_ms = ?
+                        WHERE message_id = ? AND fetched_at_ms IS NULL""",
                     ((now, message.message_id) for message in notice_rows),
-                )
+                ).rowcount > 0
+            _record_committed_change(self, stamped)
 
     @_synchronized
     def batch_snapshot(
@@ -855,7 +827,7 @@ class InboxServiceProjectionMixin:
 
     def _clear_nonterminal_failures(
         self, messages: tuple[InboxMessage, ...], completed_turn: bool
-    ) -> None:
+    ) -> bool:
         """Drop retry eligibility for a successfully completed turn only.
 
         The append-only attempt log and any terminal tombstone stay; a FAILED
@@ -863,12 +835,12 @@ class InboxServiceProjectionMixin:
         """
 
         if not completed_turn:
-            return
-        self._db.executemany(
+            return False
+        return self._db.executemany(
             """DELETE FROM harness_failure_settlements
                 WHERE message_id = ? AND terminal = 0""",
             ((message.message_id,) for message in messages),
-        )
+        ).rowcount > 0
 
     def _inbound_ledger_meta(
         self, messages: tuple[InboxMessage, ...]

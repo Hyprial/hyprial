@@ -79,6 +79,9 @@ class _AdapterAdminMixin:
     def _ipc_adapter_start(self, params) -> Any:
         assert self._lark_client is not None
         name = _required_string(params.get("name"), "name")
+        from hyprial.daemon.impl.bootstrap.names import require_adapter_name_available
+
+        require_adapter_name_available(self, name)
         try:
             event = self._lark_client.start(name)
         except (AdapterStartError, DomainCommandError) as error:

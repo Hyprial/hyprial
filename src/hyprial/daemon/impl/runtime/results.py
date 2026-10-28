@@ -18,7 +18,7 @@ from hyprial.daemon.impl.harnesses.turn_delivery.protocol import (
     is_mechanism_hook_request,
     mechanism_of,
 )
-from hyprial.kernel import parse_agent_uri
+from hyprial.kernel import DECLARED_HARNESSES, parse_agent_uri
 from hyprial.daemon.impl.api  import (
     HarnessResult,
     HarnessResultStatus,
@@ -587,7 +587,8 @@ class _BridgeResultsMixin:
             return 0  # a narrow inbox port has no stamp evidence to sweep
         actors = {self.harness_actor_uri(n) for n in self.harnesses.streaming_actors()}
         actors |= {
-            self.harness_actor_uri(spec.name) for spec in harnesses if spec.headless
+            self.harness_actor_uri(spec.name) for spec in harnesses
+            if spec.headless and spec.harness in DECLARED_HARNESSES
         }
         budget = _STRANDED_SWEEP_LIMIT
         settled = 0

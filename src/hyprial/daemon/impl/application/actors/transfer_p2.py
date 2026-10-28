@@ -533,11 +533,9 @@ class _TransferP2Mixin:
         )
 
     def _transfer_desired_spec_for(self, actor):
-        desired = self.desired_state.load()
-        for spec in desired.harnesses:
-            if self.agents.native_actor(spec.name) == actor:
-                return spec
-        return None
+        from hyprial.daemon.impl.harnesses.capabilities import worker_spec
+
+        return worker_spec(self.desired_state.load().harnesses, self.agents.native_actor(actor))
 
     def _reconcile_transfer_quiesce(self):
         """Certify durable quiesce intents left unresolved by a crashed effect.

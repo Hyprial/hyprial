@@ -84,10 +84,13 @@ def resolve_transfer_target(
     remove or rename one, never have one silently chosen.
     """
 
+    from hyprial.daemon.impl.harnesses.capabilities import DECLARED_HARNESSES
+
     harness_matches = [
         spec
         for spec in state.harnesses
-        if spec.name == name and (harness is None or spec.harness == harness)
+        if spec.name == name and spec.harness in DECLARED_HARNESSES
+        and (harness is None or spec.harness == harness)
     ]
     session_matches = [
         session

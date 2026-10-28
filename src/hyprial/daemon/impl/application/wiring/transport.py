@@ -97,7 +97,6 @@ from hyprial.daemon.impl.application.messaging.status.views import (
 )
 from hyprial.daemon.impl.application.netendpoints.endpoints import (
     _open_transport,
-    _reserve_loopback_endpoint,
     _zenoh_endpoints,
     compose_daemon_worker_launch,
 )
@@ -382,8 +381,18 @@ class _WiringTransportMixin:
         # derivation and cost the official listener (plan §A).
         forwarding_listen: tuple[str, ...] = ()
         if self._forwarding_automatic is not None:
-            forwarding_listen = (_reserve_loopback_endpoint(),)
-            listen = merge_endpoints(listen, forwarding_listen)
+            from hyprial.daemon.impl.forwarding.membership.settings import private_inbound
+            target = private_inbound(self.hyprial_home)
+            forwarding_listen = ("unixsock-stream/" + target.removeprefix("unix:"),)
+            # Sidecar control does not wait for the backend socket to exist.
+            self._forwarding_environment = self._forwarding_automatic.environment(target)
+            listen = forwarding_listen
+        if self._forwarding_environment:
+            from hyprial.daemon.impl.forwarding.membership.migration import start_before_transport
+            self._startup_step(
+                lambda: start_before_transport(self, listen=listen, connect=connect),
+                DaemonStartupPhase.ACTOR_RUNTIME_FORWARDING_RECONFIGURE,
+            )
         configured_count = len(connect)
         self._connect_configured = connect
         discovered: tuple[str, ...] = ()
@@ -526,10 +535,6 @@ class _WiringTransportMixin:
         self._startup_step(
             lambda: start_casdoor_membership_sync(self),
             DaemonStartupPhase.ACTOR_RUNTIME_CASDOOR_SYNC,
-        )
-        self._startup_step(
-            self._start_peer_access_safely,
-            DaemonStartupPhase.ACTOR_RUNTIME_FORWARDING_RECONFIGURE,
         )
         network_delivery = ZenohDeliveryTransport(
             transport, presence, origin_node=self.node_id
@@ -960,15 +965,6 @@ class _WiringTransportMixin:
         assert stop_recipient_wake_observer is not None
         self._transport = graph.transport
         self._fetch_receipt_publisher = FetchReceiptPublisher(graph.transport, logger=self._log)
-        if self._forwarding_automatic is not None and graph.forwarding_listen:
-            # Only now is the inbound port certainly this daemon's: the
-            # session bound it.  The first dial rides the reconciler's redial
-            # on the next maintenance tick (~1 s).
-            target = graph.forwarding_listen[0].removeprefix("tcp/")
-            self._forwarding_environment = self._forwarding_automatic.environment(
-                target
-            )
-            self._start_forwarding_supervisor()
         self._directory = graph.directory
         self._presence = graph.presence
         self._inbox = graph.inbox

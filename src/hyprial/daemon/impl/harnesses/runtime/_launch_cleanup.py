@@ -16,6 +16,7 @@ def cleanup_launch_resources(
     """Idempotently remove files materialized for one interactive launch."""
 
     config_path.unlink(missing_ok=True)
+    config_path.with_suffix(".session-ref").unlink(missing_ok=True)
     if recovery_path is not None:
         recovery_path.unlink(missing_ok=True)
     shutil.rmtree(config_path.with_suffix(".turns"), ignore_errors=True)

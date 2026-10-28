@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -66,10 +66,10 @@ class _PeerKeySidecar:
 
 
 @dataclass(frozen=True, slots=True)
-class _AllowSidecar:
+class _MembershipSidecar:
     operation_id: str
-    keys: tuple[str, ...]
-    allow_any: bool
+    op: str
+    params: Mapping[str, Any]
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,6 +144,10 @@ class ForwardingControllerAuthority:
         return None
 
     @property
+    def server_public(self) -> str | None:
+        return getattr(self._controller, "server_public", None)
+
+    @property
     def supports_service_connect(self) -> bool:
         return getattr(self._controller, "supports_service_connect", False) is True
 
@@ -178,6 +182,8 @@ class ForwardingControllerAuthority:
                     f"forwarding sidecar I/O admission {admitted.value}"
                 )
         wait_timeout = min(self._timeout, SERVICE_CONTROL_TIMEOUT_SECONDS) if service else self._timeout
+        if isinstance(command, _MembershipSidecar):
+            wait_timeout = max(wait_timeout, 35.0)
         if not reply.ready.wait(wait_timeout):
             raise TimeoutError(
                 f"forwarding sidecar command {operation_id} remains accepted"
@@ -207,8 +213,8 @@ class ForwardingControllerAuthority:
                 value = self._controller.unexpose(command.port)
             elif isinstance(command, _PeerKeySidecar):
                 value = self._controller.peer_key(command.address)
-            elif isinstance(command, _AllowSidecar):
-                value = self._controller.allow(command.keys, command.allow_any)
+            elif isinstance(command, _MembershipSidecar):
+                value = self._controller.membership_request(command.op, command.params)
             elif isinstance(command, _DeriveClientKeySidecar):
                 value = self._controller.derive_client_key(command.server_public)
             elif isinstance(command, _MapServiceSidecar):
@@ -246,7 +252,7 @@ class ForwardingControllerAuthority:
         return result
 
     def map_peer(self, peer: str, address: str, slot: str) -> str:
-        """Bind ``peer`` onto the fixed ``slot`` (protocol v5).
+        """Bind ``peer`` onto the fixed ``slot`` (protocol v6).
 
         Returns the bound slot wire id (the resolved id on a tcp growth
         bind); the fixed slot pool is the only mapping shape.
@@ -271,10 +277,8 @@ class ForwardingControllerAuthority:
         assert isinstance(result, dict)
         return result
 
-    def allow(self, keys: Sequence[str], allow_any: bool) -> dict[str, object]:
-        result = self._call(
-            _AllowSidecar(uuid.uuid4().hex, tuple(keys), bool(allow_any))
-        )
+    def membership_request(self, op: str, params: Mapping[str, Any]) -> dict[str, Any]:
+        result = self._call(_MembershipSidecar(uuid.uuid4().hex, op, dict(params)))
         assert isinstance(result, dict)
         return result
 

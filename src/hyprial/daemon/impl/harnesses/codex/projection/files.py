@@ -12,7 +12,10 @@ from hyprial.kernel import (
     private_metadata_violation,
 )
 
-from .config import codex_projection_item_matches
+from .config import (
+    codex_projection_item_matches,
+    codex_projection_item_reconcilable,
+)
 from .errors import CodexAgentHomeError
 
 
@@ -51,11 +54,16 @@ def private_directory(path: Path, label: str) -> None:
 
 
 def write_or_verify_projection_file(
-    source: Path, destination: Path, *, native_root: Path, read_only: bool = False
+    source: Path,
+    destination: Path,
+    *,
+    native_root: Path,
+    desired_body: bytes | None = None,
+    read_only: bool = False,
 ) -> None:
     try:
         source_metadata = source.lstat()
-        body = source.read_bytes()
+        source_body = source.read_bytes()
     except OSError as error:
         raise CodexAgentHomeError(
             f"cannot read Codex projection item {source.name}"
@@ -71,6 +79,7 @@ def write_or_verify_projection_file(
         raise CodexAgentHomeError(
             f"Codex projection item {source.name} is not a private regular file"
         )
+    body = source_body if desired_body is None else desired_body
     try:
         relative_parent = destination.parent.relative_to(native_root)
     except ValueError as error:
@@ -123,16 +132,54 @@ def write_or_verify_projection_file(
         mode=0o600,
         label=f"Codex native item {destination.name}",
     )
-    if (
+    native_path = destination.relative_to(native_root).as_posix()
+    try:
+        current_body = destination.read_bytes()
+    except OSError as error:
+        raise CodexAgentHomeError(
+            f"cannot read Codex native item {destination.name}"
+        ) from error
+    invalid_shape = (
         stat.S_ISLNK(destination_metadata.st_mode)
         or not stat.S_ISREG(destination_metadata.st_mode)
         or destination_violation is not None
-        or not codex_projection_item_matches(
-            destination.relative_to(native_root).as_posix(),
-            body,
-            destination.read_bytes(),
-        )
+    )
+    if not invalid_shape and codex_projection_item_matches(
+        native_path, body, current_body
     ):
-        raise CodexAgentHomeError(
-            f"Codex native projection item {destination.name} drifted"
+        return
+    if (
+        not read_only
+        and not invalid_shape
+        and codex_projection_item_reconcilable(native_path, body, current_body)
+    ):
+        temporary = destination.with_name(
+            f".{destination.name}.hyprial-policy-{os.getpid()}"
         )
+        try:
+            descriptor = os.open(
+                temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
+            )
+            try:
+                with os.fdopen(descriptor, "wb", closefd=False) as stream:
+                    stream.write(body)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            finally:
+                os.close(descriptor)
+            _harden(
+                temporary,
+                mode=0o600,
+                label=f"Codex native item {destination.name} policy repair",
+            )
+            os.replace(temporary, destination)
+        except OSError as error:
+            raise CodexAgentHomeError(
+                f"cannot repair Codex native item {destination.name} auth policy"
+            ) from error
+        finally:
+            temporary.unlink(missing_ok=True)
+        return
+    raise CodexAgentHomeError(
+        f"Codex native projection item {destination.name} drifted"
+    )

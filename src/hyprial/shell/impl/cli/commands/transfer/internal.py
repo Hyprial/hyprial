@@ -21,7 +21,7 @@ def register_hidden_session_commands(app, get_dependencies):
         name: str = typer.Option(..., "--name"),
         json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
     ) -> None:
-        """Target-side admission check (driven by 'hyprial transfer' over SSH)."""
+        """Target-side admission check (driven by 'hyprial agent transfer' over SSH)."""
 
         dependencies = get_dependencies()
         _execute = dependencies.execute

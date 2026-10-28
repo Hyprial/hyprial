@@ -43,12 +43,23 @@ class _AgentMigrationMixin:
         )
 
         harnesses = tuple(dict.fromkeys(key.harness for key in support))
+        from hyprial.daemon.impl.harnesses.claude.runtime import (
+            prepare_claude_runtime_context,
+        )
+        from hyprial.daemon.impl.harnesses.codex import (
+            prepare_codex_runtime_context,
+        )
+
         return AgentRuntimeMigrationBindings(
             self._agent_registry,
             harnesses=harnesses,
             tool_profile=DEFAULT_AGENT_TOOL_PROFILE,
             base_environment=os.environ,
             containerized=False,
+            runtime_preparers={
+                "claude": prepare_claude_runtime_context,
+                "codex": prepare_codex_runtime_context,
+            },
         )
 
     def _agent_migration_coordinator(self) -> Any:

@@ -477,6 +477,7 @@ class _TransferOpsMixin:
         for spec in state.harnesses:
             if spec.name == name:
                 conflicts.append(f"managed harness {spec.harness}:{spec.name}")
+        conflicts.extend(f"adapter {a.provider}:{a.name}" for a in state.adapters if a.name == name)
         if self.agents.exists(name):
             conflicts.append(f"registered agent {name!r}")
         for session in self._agent_session_domains.session.read_sessions():
@@ -525,7 +526,7 @@ class _TransferOpsMixin:
                 f"{spec.harness}:{spec.name} is not a streaming headless worker",
             )
         state = self.desired_state.load()
-        if any(existing.name == spec.name for existing in state.harnesses):
+        if any(existing.name == spec.name for existing in (*state.harnesses, *state.adapters)):
             raise DaemonRequestError(
                 ipc_errors.TRANSFER_CONFLICT,
                 f"a managed harness named {spec.name!r} already exists on "

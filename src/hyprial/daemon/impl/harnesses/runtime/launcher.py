@@ -26,7 +26,10 @@ from hyprial.daemon.impl.harnesses.codex.process  import (
 from hyprial.daemon.impl.harnesses.protocol.common  import ConnectorOptions, HarnessStartError
 from hyprial.daemon.impl.harnesses.dsh.process  import DSH_STARTUP_TIMEOUT_SECONDS_DEFAULT, DshHarnessProcess
 from hyprial.daemon.impl.harnesses.pi  import PiConnector
-from hyprial.daemon.impl.harnesses.pi.rpc_process import PiRpcProcess
+from hyprial.daemon.impl.harnesses.pi.rpc_process import (
+    PI_RPC_STARTUP_TIMEOUT_SECONDS_DEFAULT,
+    PiRpcProcess,
+)
 from hyprial.daemon.impl.harnesses.streaming.protocol import TurnFailureSpecObserver
 from hyprial.daemon.impl.harnesses.python_worker  import (
     PYTHON_WORKER_STARTUP_TIMEOUT_SECONDS_DEFAULT,
@@ -285,7 +288,29 @@ class HarnessLauncher:
                 if declared.mechanism == "agent_sdk":
                     return self._agent_sdk_factory(spec)
                 if declared.mechanism == "rpc":
-                    return self._pi_rpc_factory(spec)
+                    process = self._pi_rpc_factory(spec)
+                    # Same readiness gate the codex/dsh/python-worker branches
+                    # apply: a pi RPC worker is not "started" until its ready
+                    # probe answered.  Without this, the actor recorded
+                    # success for a worker still in its reconnect loop and
+                    # ``hyprial start`` returned ok while no child existed.
+                    wait_ready = getattr(process, "wait_ready", None)
+                    if not getattr(process, "p2_managed", False):
+                        # Legacy (non-P2) pi processes keep the pre-fix return
+                        # contract; only the P2 SDK bridge added a validation
+                        # step whose failure used to be swallowed.
+                        return process
+                    if not callable(wait_ready) or not wait_ready(
+                        timeout=PI_RPC_STARTUP_TIMEOUT_SECONDS_DEFAULT
+                    ):
+                        process.stop()
+                        detail = getattr(process, "last_error", None)
+                        raise HarnessStartError(
+                            "pi",
+                            spec.command,
+                            str(detail or "pi RPC worker did not become ready"),
+                        )
+                    return process
                 if declared.mechanism == "app_server":
                     process = self._codex_app_server_factory(spec)
                     wait_ready = getattr(process, "wait_ready", None)

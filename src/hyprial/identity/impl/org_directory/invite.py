@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from hyprial.identity.impl.org_directory.models import org_space_name
+from .tailnet_invite import validate_tailnet_invite
 
 __all__ = [
     "INVITE_MALFORMED",
@@ -35,12 +36,12 @@ __all__ = [
     "invite_https_url",
 ]
 
-INVITE_SCHEME = "hyprial-invite:v1:"
+INVITE_SCHEME = "hyprial-invite:v2:"
 
-#: The deep-link form's fixed authority (§5.1): ``hyprial://join#v1.<p>``.
+#: The deep-link form's fixed authority (§5.1): ``hyprial://join#v2.<p>``.
 DEEP_LINK_BASE = "hyprial://join"
 #: The fragment marker every URL form carries: ``#v1.<payload>``.
-FRAGMENT_PREFIX = "v1."
+FRAGMENT_PREFIX = "v2."
 
 INVITE_MALFORMED = "INVITE_MALFORMED"
 INVITE_EXPIRED = "INVITE_EXPIRED"
@@ -64,6 +65,7 @@ _RECORD_KEYS = frozenset(
         "workflowYaml",
         "workflowSha256",
         "expiresAt",
+        "tailnet",
     }
 )
 
@@ -94,6 +96,7 @@ class InviteLink:
     workflow_yaml: str
     workflow_sha256: str
     expires_at: str
+    tailnet: dict | None = None
 
 
 def encode_invite(link: InviteLink) -> str:
@@ -107,7 +110,7 @@ def encode_invite(link: InviteLink) -> str:
 
 
 def invite_https_url(link: InviteLink, base_url: str) -> str:
-    """The clickable https form: ``<base_url>/join#v1.<payload>`` (§5.1).
+    """The clickable https form: ``<base_url>/join#v2.<payload>`` (§5.1).
 
     ``base_url`` is the profile's ``inviteBaseUrl``; the payload rides in
     the fragment so a statically hosted landing page never sees it.
@@ -121,7 +124,7 @@ def invite_https_url(link: InviteLink, base_url: str) -> str:
 
 
 def invite_deep_link(link: InviteLink) -> str:
-    """The deep-link form: ``hyprial://join#v1.<payload>`` (§5.1)."""
+    """The deep-link form: ``hyprial://join#v2.<payload>`` (§5.1)."""
 
     return f"{DEEP_LINK_BASE}#{FRAGMENT_PREFIX}{_payload(link)}"
 
@@ -147,16 +150,14 @@ def decode_invite(text: str) -> InviteLink:
     (``INVITE_EXPIRED``).
 
     Accepts every form of the same payload (§5.1): the bare-token form
-    ``hyprial-invite:v1:<p>``, the https form ``https://<host>/join#v1.<p>``,
-    the deep link ``hyprial://join#v1.<p>``, and the bare ``v1.<p>``.
+    ``hyprial-invite:v2:<p>``, the https form ``https://<host>/join#v2.<p>``,
+    the deep link ``hyprial://join#v2.<p>``, and the bare ``v2.<p>``.
     Surrounding whitespace and one pair of matching quotes are stripped
     first — the link travels through chat clients and shell quoting.
     Anything else is ``INVITE_MALFORMED``.
 
-    # LAX(tailnet-cutover): no administrator device signature, no atomic
-    # one-time consumption, and no host whitelist on the https form; the
-    # proper link is signed by an admin device key, redeemed exactly once,
-    # and pinned to the operator's invite host (§3.4, §5.1).
+    Sidecar redemption, not URL decoding, checks authority pin, authenticated
+    device identity and one-time consumption. URLs have no host whitelist.
     """
     body = _extract_payload(text)
     try:
@@ -174,7 +175,8 @@ def decode_invite(text: str) -> InviteLink:
             INVITE_DIGEST_MISMATCH,
             "workflow_sha256 does not match workflow_yaml",
         )
-    if datetime.now(UTC) >= _parse_utc(link.expires_at):
+    if (datetime.now(UTC) >= _parse_utc(link.expires_at)
+            or int(datetime.now(UTC).timestamp() * 1000) >= link.tailnet['expiresAtMs']):
         raise InviteError(INVITE_EXPIRED, f"invite expired at {link.expires_at}")
     return link
 
@@ -200,6 +202,9 @@ def _extract_payload(text: object) -> str:
         and candidate[0] in ("'", '"')
     ):
         candidate = candidate[1:-1].strip()
+    if (candidate.startswith("hyprial-invite:") and not candidate.startswith(INVITE_SCHEME)
+            or candidate.startswith("v1.") or "#v1." in candidate):
+        raise InviteError("INVITE_VERSION_UNSUPPORTED", "Old invitation rejected; ask the authority for a v2 invitation.")
     if candidate.startswith(INVITE_SCHEME):
         return candidate[len(INVITE_SCHEME) :]
     if candidate.startswith(FRAGMENT_PREFIX):
@@ -251,6 +256,7 @@ def _link_record(link: InviteLink) -> dict[str, object]:
         "workflowYaml": _field(link.workflow_yaml, "workflowYaml"),
         "workflowSha256": _digest(link.workflow_sha256),
         "expiresAt": _canonical_timestamp(link.expires_at),
+        "tailnet": validate_tailnet_invite(link.tailnet, space_id=link.space_id),
     }
 
 
@@ -260,6 +266,8 @@ def _link_from_record(value: object) -> InviteLink:
             INVITE_MALFORMED,
             f"invite payload must be a JSON object, got {type(value).__name__}",
         )
+    if set(value) == _RECORD_KEYS - {'tailnet'}:
+        raise InviteError('INVITE_VERSION_UNSUPPORTED', 'Old invitation rejected; ask the authority for a v2 invitation.')
     unknown = sorted(set(value) - _RECORD_KEYS)
     if unknown:
         raise InviteError(INVITE_MALFORMED, f"invite payload has unknown keys: {unknown}")
@@ -278,6 +286,7 @@ def _link_from_record(value: object) -> InviteLink:
             workflow_yaml=_field(value["workflowYaml"], "workflowYaml"),
             workflow_sha256=_digest(value["workflowSha256"]),
             expires_at=_timestamp(value["expiresAt"]),
+            tailnet=validate_tailnet_invite(value['tailnet'], space_id=value['spaceId']),
         )
     except ValueError as error:
         raise InviteError(INVITE_MALFORMED, str(error)) from error

@@ -15,6 +15,7 @@ from hyprial.daemon.impl.desired_state  import (
     ServiceRegistry,
 )
 from hyprial.kernel import HarnessLaunchSpec
+from hyprial.daemon.impl.adapters.spec import AdapterSpec
 from hyprial.daemon.impl.lifecycle_manager  import (
     LifecycleOperation,
     LifecycleState,
@@ -253,10 +254,17 @@ class ExpireInterruptedReceipts:
 
 
 @dataclass(frozen=True, slots=True)
+class SetAdapterIntent:
+    correlation_id: str
+    name: str
+    active: bool
+
+
+@dataclass(frozen=True, slots=True)
 class RemoveAdapterRegistration:
     correlation_id: str
     name: str
-    expected_spec: HarnessLaunchSpec | None
+    expected_spec: AdapterSpec | None
     expected_legacy_pin: str | None
 
 
@@ -264,7 +272,7 @@ class RemoveAdapterRegistration:
 class RestoreAdapterRegistration:
     correlation_id: str
     name: str
-    spec: HarnessLaunchSpec | None
+    spec: AdapterSpec | None
     legacy_pin: str | None
 
 
@@ -414,6 +422,7 @@ StateCommand = (
     | UpsertHarness
     | RemoveHarness
     | ExpireInterruptedReceipts
+    | SetAdapterIntent
     | RemoveAdapterRegistration
     | RestoreAdapterRegistration
     | SyncHarnessSessionRefs

@@ -104,6 +104,10 @@ func (e *Engine) MapService(request ServiceRequest) (ServiceMapping, error) {
 		e.mu.Unlock()
 		return ServiceMapping{}, ErrNotUp
 	}
+	if !e.permitsAddressLocked(request.Address) {
+		e.mu.Unlock()
+		return ServiceMapping{}, ErrPeerUnknown
+	}
 	if existing := e.services[request.Name]; existing != nil {
 		if sameServiceRequest(existing.request, request, existing.mapping.LocalPort) {
 			result := cloneServiceMapping(existing.mapping)
@@ -250,7 +254,7 @@ func (e *Engine) acceptService(ctx context.Context, service *mappedService) {
 		}
 		backoff = serviceAcceptBackoffMin
 		e.mu.Lock()
-		if !e.up || e.services[service.request.Name] != service {
+		if !e.up || e.services[service.request.Name] != service || !e.permitsAddressLocked(service.request.Address) {
 			e.mu.Unlock()
 			_ = local.Close()
 			return
@@ -271,6 +275,16 @@ func (e *Engine) acceptService(ctx context.Context, service *mappedService) {
 }
 
 func (e *Engine) handleServiceConnection(ctx context.Context, service *mappedService, local net.Conn) {
+	e.mu.Lock()
+	allowed := e.permitsAddressLocked(service.request.Address)
+	if !allowed && service.pending > 0 {
+		service.pending--
+	}
+	e.mu.Unlock()
+	if !allowed {
+		local.Close()
+		return
+	}
 	started := time.Now()
 	if hook := e.serviceDialStartedForTest; hook != nil {
 		hook(service.request.Name)
@@ -284,7 +298,7 @@ func (e *Engine) handleServiceConnection(ctx context.Context, service *mappedSer
 	if service.pending > 0 {
 		service.pending--
 	}
-	if !e.up || e.services[service.request.Name] != service {
+	if !e.up || e.services[service.request.Name] != service || !e.permitsAddressLocked(service.request.Address) {
 		e.mu.Unlock()
 		_ = local.Close()
 		if remote != nil {

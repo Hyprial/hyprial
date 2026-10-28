@@ -310,6 +310,9 @@ class HarnessRuntimeActor(
     def collect_orphans(self) -> int:
         return self._orphan_processes.collect_once()
 
+    def retire_orphan_harness(self, harness_id: str) -> int:
+        return self._orphan_processes.retire_harness(harness_id)
+
 
     def orphan_status(self) -> tuple[dict[str, object], ...]:
         return self._orphan_processes.status()

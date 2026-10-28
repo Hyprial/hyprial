@@ -10,13 +10,16 @@ import re
 import stat
 import subprocess
 import sys as sys
+from dataclasses import replace
 from collections.abc import Mapping
 from collections.abc import Callable
 from pathlib import Path
 
 from hyprial.identity import (
+    AgentRuntimeNotice,
     whitelist_replacement_environment,
 )
+from hyprial.kernel import PrivateAccessUnsupported, harden_private_path
 from hyprial.identity import ConfigProjectionReceipt, verify_native_projection
 from hyprial.identity import (
     AgentRuntimeContext,
@@ -38,6 +41,7 @@ from hyprial.daemon.impl.harnesses.codex.launch.validation import (
 )
 from hyprial.daemon.impl.harnesses.codex.projection import (
     CodexAgentHomeError,
+    codex_projection_body_for_model_vendor,
     codex_projection_item_matches,
     private_directory as _private_directory,
     write_or_verify_projection_file as _write_or_verify_projection_file,
@@ -54,6 +58,9 @@ _CODEX_MUTABLE_ROOT_FILE = re.compile(
 _CODEX_ARG0_ENTRY = re.compile(r"tmp/arg0/codex-arg0[A-Za-z0-9]+/(?P<name>[^/]+)\Z")
 _CODEX_ARG0_ALIASES = frozenset(
     {"apply_patch", "applypatch", "codex-execve-wrapper", "codex-linux-sandbox"}
+)
+_CODEX_MACOS_ARG0_LOCK = re.compile(
+    r"tmp/arg0-macos/codex-arg0[A-Za-z0-9]{6}/\.lock\Z"
 )
 _CODEX_MUTABLE_FILES = frozenset(
     {
@@ -89,6 +96,7 @@ def _allowed_codex_mutable_file(relative: str) -> bool:
     return (
         relative in _CODEX_MUTABLE_FILES
         or _CODEX_MUTABLE_ROOT_FILE.fullmatch(relative) is not None
+        or _CODEX_MACOS_ARG0_LOCK.fullmatch(relative) is not None
         or relative.startswith(_CODEX_MUTABLE_PREFIXES)
     )
 
@@ -185,6 +193,7 @@ def prepare_codex_runtime_roots(
     session_root: Path,
     codex_executable: Path | Callable[[], Path],
     receipt: ConfigProjectionReceipt | None = None,
+    model_provider: str | None = None,
     read_only: bool = False,
     shared_credential: SharedCredentialBinding | None = None,
 ) -> None:
@@ -221,10 +230,20 @@ def prepare_codex_runtime_roots(
     for relative in sorted(expected):
         source = projection_root.joinpath(*Path(relative).parts)
         destination = native_root.joinpath(*Path(relative).parts)
+        try:
+            projected_body = source.read_bytes()
+        except OSError as error:
+            raise CodexAgentHomeError(
+                f"cannot read Codex projection item {relative}"
+            ) from error
+        desired_body = codex_projection_body_for_model_vendor(
+            relative, projected_body, model_provider
+        )
         _write_or_verify_projection_file(
             source,
             destination,
             native_root=native_root,
+            desired_body=desired_body,
             read_only=read_only,
         )
     sessions = native_root / "sessions"
@@ -245,11 +264,115 @@ def prepare_codex_runtime_roots(
         shared_credential=shared_credential,
     )
 
+def _next_codex_auth_backup(context: AgentRuntimeContext) -> Path:
+    root = context.roots.agent_home / "state" / "credential-backups" / "codex"
+    current = context.roots.agent_home
+    for part in Path("state/credential-backups/codex").parts:
+        current = current / part
+        try:
+            current.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        except OSError as error:
+            raise CodexAgentHomeError(
+                "cannot create private Codex credential backup directory"
+            ) from error
+        try:
+            harden_private_path(current, mode=0o700)
+        except (OSError, PrivateAccessUnsupported) as error:
+            raise CodexAgentHomeError(
+                "cannot secure private Codex credential backup directory"
+            ) from error
+        _private_directory(current, "Codex credential backup directory")
+    candidate = root / "auth.json"
+    suffix = 0
+    while candidate.exists() or candidate.is_symlink():
+        suffix += 1
+        candidate = root / f"auth.json.{suffix}"
+    return candidate
+
+
+def _backup_custom_provider_auth(
+    context: AgentRuntimeContext,
+) -> AgentRuntimeNotice | None:
+    if context.model_provider in {None, "openai"}:
+        return None
+    auth = context.roots.native_root / "auth.json"
+    try:
+        metadata = auth.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise CodexAgentHomeError("cannot inspect Codex auth.json") from error
+    backup = _next_codex_auth_backup(context)
+    if stat.S_ISREG(metadata.st_mode):
+        try:
+            harden_private_path(auth, mode=0o600)
+            os.replace(auth, backup)
+        except (OSError, PrivateAccessUnsupported) as error:
+            raise CodexAgentHomeError(
+                "cannot move custom-provider Codex auth.json to private backup"
+            ) from error
+    elif stat.S_ISLNK(metadata.st_mode):
+        target = context.designated_shared_credential_target
+        if target is None:
+            raise CodexAgentHomeError(
+                "custom-provider Codex auth.json link has no designated shared credential"
+            )
+        validate_shared_credential_binding(
+            SharedCredentialBinding(
+                actor=context.actor,
+                harness="codex",
+                native_path=auth,
+                target_path=target,
+                agent_cwd=None,
+            )
+        )
+        try:
+            body = auth.read_bytes()
+            descriptor = os.open(
+                backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
+            )
+            try:
+                with os.fdopen(descriptor, "wb", closefd=False) as stream:
+                    stream.write(body)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            finally:
+                os.close(descriptor)
+            auth.unlink()
+        except OSError as error:
+            backup.unlink(missing_ok=True)
+            raise CodexAgentHomeError(
+                "cannot preserve linked Codex auth.json as a private backup"
+            ) from error
+    else:
+        raise CodexAgentHomeError(
+            "custom-provider Codex auth.json is not a regular file or credential link"
+        )
+    try:
+        harden_private_path(backup, mode=0o600)
+    except (OSError, PrivateAccessUnsupported) as error:
+        raise CodexAgentHomeError(
+            "Codex auth.json backup cannot be made account-private"
+        ) from error
+    message = (
+        f"agent {context.actor} selected custom Codex provider "
+        f"{context.model_provider}; moved inactive auth.json to {backup}"
+    )
+    return AgentRuntimeNotice(
+        code="CODEX_CUSTOM_PROVIDER_AUTH_BACKUP",
+        actor=context.actor,
+        message=message,
+        path=str(backup),
+    )
+
+
 def prepare_codex_runtime_context(
     context: AgentRuntimeContext,
     *,
     codex_executable: Path | Callable[[], Path] | None = None,
-) -> None:
+) -> AgentRuntimeContext:
     """Consume P22's authoritative roots without deriving a replacement set."""
 
     if context.harness != "codex":
@@ -260,8 +383,16 @@ def prepare_codex_runtime_context(
         raise CodexAgentHomeError(
             "Codex runtime context environment disagrees with its native root"
         )
+    custom_provider = context.model_provider not in {None, "openai"}
+    if custom_provider and context.shared_credential is not None:
+        raise CodexAgentHomeError(
+            "custom-provider Codex runtime cannot retain a shared auth.json binding"
+        )
     if context.shared_credential is not None:
         validate_shared_credential_binding(context.shared_credential)
+    notice = _backup_custom_provider_auth(context)
+    if notice is not None:
+        context = replace(context, notices=(*context.notices, notice))
     executable = codex_executable or (lambda: resolve_codex_executable(context.environment()))
     verify_native_projection(context.projection, context.roots.projection_root)
     prepare_codex_runtime_roots(
@@ -270,12 +401,18 @@ def prepare_codex_runtime_context(
         session_root=context.roots.session_root,
         codex_executable=executable,
         receipt=context.projection_receipt,
+        model_provider=context.model_provider,
         read_only=context.authority_prepared,
         shared_credential=context.shared_credential,
     )
+    return context
+
 
 def verify_codex_native_projection(
-    receipt: ConfigProjectionReceipt, native_root: Path
+    receipt: ConfigProjectionReceipt,
+    native_root: Path,
+    *,
+    model_provider: str | None = None,
 ) -> None:
     """Verify P21's Codex projection bytes at the P22-resolved mutable root."""
 
@@ -318,9 +455,12 @@ def verify_codex_native_projection(
             raise CodexAgentHomeError(
                 f"Codex projection source item {item.native_path} drifted"
             )
+        desired_body = codex_projection_body_for_model_vendor(
+            item.native_path, projected_body, model_provider
+        )
         body = candidate.read_bytes()
         if not codex_projection_item_matches(
-            item.native_path, projected_body, body
+            item.native_path, desired_body, body
         ):
             raise CodexAgentHomeError(
                 f"Codex native projection item {item.native_path} drifted"
@@ -482,7 +622,7 @@ def _thread_config(
     caller so threads without either stay byte-identical on the wire.
     """
 
-    config: dict[str, object] = {}
+    config: dict[str, object] = dict(execution.get("config", {}))
     if worker_channel is not None:
         config.update(_worker_channel_config(worker_channel))
     if managed_environment:

@@ -13,7 +13,7 @@ import os
 import subprocess
 import sys
 
-from hyprial.shell.impl.cli.commands.agent.runtime.interactive import _announce_plugin_skips, _channel_registration_confirmed, _handover_prompt, _interactive_actor, _interactive_actor_name, _launch_detached_tui, _plugin_skip_warnings, _runtime_launch_custody, _terminate_process, _wait_foreground, _with_plugin_warnings, _write_launch_config
+from hyprial.shell.impl.cli.commands.agent.runtime.interactive import _announce_plugin_skips, _channel_registration_confirmed, _handover_prompt, _interactive_actor, _interactive_actor_name, _interactive_cli_identity, _launch_detached_tui, _plugin_skip_warnings, _publish_session_ref, _runtime_launch_custody, _terminate_process, _wait_foreground, _with_plugin_warnings, _write_launch_config
 from hyprial.shell.impl.cli.commands.common.support import JsonObject
 _CLAUDE_HARNESS_TOOLS = (
     "harness_ack",
@@ -162,6 +162,7 @@ def _start_interactive_claude(
     # The config file belongs to this launch, not to the session: a resumed
     # session may still have a stale file from a crashed earlier launch.
     config_path = state_dir / f"claude-channel-{session_ref}-{services.uuid4().hex[:8]}.json"
+    session_ref_file = config_path.with_suffix(".session-ref")
     recovery_path = config_path.with_suffix(".recover")
     turn_signal_dir = config_path.with_suffix(".turns")
     server_args = [
@@ -408,12 +409,9 @@ def _start_interactive_claude(
                 ) from error
         # M2: the attached TUI (and every shell it runs) carries the carrier's
         # daemon-bound identity. Build a child-only map; never mutate os.environ.
+        _publish_session_ref(session_ref_file, session_ref)
         launch_environment.update(
-            {
-                "HYPRIAL_WORKER_ACTOR": actor,
-                "HYPRIAL_WORKER_SESSION_REF": session_ref,
-                "HYPRIAL_MANAGED_WORKER": "1",
-            }
+            _interactive_cli_identity(actor, session_ref_file)
         )
         if tmux_session_name is not None:
             return _launch_detached_tui(
@@ -450,6 +448,7 @@ def _start_interactive_claude(
             from hyprial.daemon import cleanup_launch_resources
 
             cleanup_launch_resources(config_path, recovery_path)
+            session_ref_file.unlink(missing_ok=True)
             raise
     try:
         registered = False
@@ -483,6 +482,7 @@ def _start_interactive_claude(
         from hyprial.daemon import cleanup_launch_resources
 
         cleanup_launch_resources(config_path, recovery_path)
+        session_ref_file.unlink(missing_ok=True)
     return _with_plugin_warnings(
         {
             "ok": returncode == 0,

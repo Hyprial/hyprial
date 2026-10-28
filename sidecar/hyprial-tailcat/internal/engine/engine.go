@@ -17,6 +17,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,6 +32,8 @@ import (
 	"tailscale.com/types/logger"
 
 	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tailcat/internal/keys"
+	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tailcat/internal/membership"
+	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tailcat/internal/privatefs"
 )
 
 const dialTimeout = 5 * time.Second
@@ -51,6 +54,10 @@ type DERPOverride struct {
 // UpConfig carries the validated fields of an up command.
 type UpConfig struct {
 	KeyFile         string
+	MembershipStore string
+	Owner           string
+	DeviceID        string
+	ControlPort     int
 	Allow           []string
 	AllowAny        bool
 	InboundTarget   string // "tcp:127.0.0.1:N" or empty
@@ -158,6 +165,11 @@ type Engine struct {
 	disconnected atomic.Int64
 	wg           sync.WaitGroup
 
+	membership        *membership.Manager
+	control           net.Listener
+	controlPairs      map[net.Conn]struct{}
+	MembershipChanged membership.Changed
+
 	serviceDialStartedForTest func(string)
 }
 
@@ -195,6 +207,14 @@ func (e *Engine) Up(ctx context.Context, cfg UpConfig) (serverPublic, clientPubl
 	}
 	e.mu.Unlock()
 
+	if cfg.MembershipStore != "" {
+		if len(cfg.Allow) > 0 || cfg.AllowAny || !strings.HasPrefix(cfg.InboundTarget, "unix:") {
+			return "", "", ErrBadInput
+		}
+		if err := privatefs.Directory(filepath.Dir(strings.TrimPrefix(cfg.InboundTarget, "unix:"))); err != nil {
+			return "", "", ErrBadInput
+		}
+	}
 	material, err := keys.Load(cfg.KeyFile)
 	if err != nil {
 		return "", "", err
@@ -289,6 +309,12 @@ func (e *Engine) Up(ctx context.Context, cfg UpConfig) (serverPublic, clientPubl
 		return "", "", err
 	}
 
+	if cfg.MembershipStore != "" {
+		if err := e.startMembership(cfg); err != nil {
+			e.Down()
+			return "", "", err
+		}
+	}
 	if cfg.InboundTarget != "" {
 		listenCtx, listenCancel := context.WithTimeout(ctx, 30*time.Second)
 		listener, err := server.Listen(listenCtx, "tcp", ":"+strconv.Itoa(cfg.PeerPort))
@@ -369,6 +395,9 @@ func (e *Engine) Allow(list []string, allowAny bool) (int, error) {
 	defer e.mu.Unlock()
 	if !e.up {
 		return 0, ErrNotUp
+	}
+	if e.membership != nil {
+		return 0, ErrBadInput
 	}
 	e.allowKeys = set
 	e.allowAny.Store(allowAny)
@@ -459,6 +488,10 @@ func (e *Engine) Expose(ctx context.Context, exposure Exposure) (Exposure, error
 	if !e.up {
 		e.mu.Unlock()
 		return Exposure{}, ErrNotUp
+	}
+	if e.membership != nil && exposure.Admission == AdmissionAny {
+		e.mu.Unlock()
+		return Exposure{}, ErrBadInput
 	}
 	if existing := e.exposed[exposure.Port]; existing != nil {
 		current := existing.exposure
@@ -639,6 +672,13 @@ func (e *Engine) Down() {
 	}
 	e.up = false
 	e.cancel()
+	if e.control != nil {
+		_ = e.control.Close()
+	}
+	for conn := range e.controlPairs {
+		_ = conn.Close()
+	}
+	member := e.membership
 	if e.inbound != nil {
 		_ = e.inbound.Close()
 	}
@@ -665,6 +705,9 @@ func (e *Engine) Down() {
 	e.mu.Unlock()
 	_ = server.Close()
 	e.wg.Wait()
+	if member != nil {
+		member.Close()
+	}
 }
 
 // admits reports whether the allow set admits pub.
@@ -674,7 +717,11 @@ func (e *Engine) admits(pub key.NodePublic) bool {
 	}
 	e.mu.Lock()
 	set := e.allowKeys
+	member := e.membership
 	e.mu.Unlock()
+	if member != nil {
+		return member.Admits(pub.String())
+	}
 	return set != nil && set.Contains(pub)
 }
 
@@ -692,7 +739,7 @@ func (e *Engine) inboundPeerKey(conn net.Conn) (key.NodePublic, bool) {
 
 func (e *Engine) acceptInbound(listener net.Listener, inboundTarget string) {
 	defer e.wg.Done()
-	address := strings.TrimPrefix(inboundTarget, "tcp:")
+	network, address := splitTarget(inboundTarget)
 	for {
 		remote, err := listener.Accept()
 		if err != nil {
@@ -707,17 +754,21 @@ func (e *Engine) acceptInbound(listener net.Listener, inboundTarget string) {
 			continue
 		}
 		dialer := net.Dialer{Timeout: dialTimeout}
-		local, err := dialer.DialContext(e.ctx, "tcp", address)
+		if network == "unix" && privatefs.Directory(filepath.Dir(address)) != nil {
+			_ = remote.Close()
+			continue
+		}
+		local, err := dialer.DialContext(e.ctx, network, address)
 		if err != nil {
 			_ = remote.Close()
 			continue
 		}
 		pair := &connPair{left: remote, right: local, peerKey: pub}
 		e.mu.Lock()
-		if !e.up {
+		if !e.up || (e.membership != nil && !e.membership.Admits(pub.String())) {
 			e.mu.Unlock()
 			pair.close()
-			return
+			continue
 		}
 		e.inboundPairs[pair] = struct{}{}
 		e.mu.Unlock()
@@ -793,7 +844,7 @@ func (e *Engine) handleExposure(ctx context.Context, exposed *exposedPort, remot
 	}
 	pair := &connPair{left: remote, right: local, peerKey: pub}
 	e.mu.Lock()
-	if !e.up || e.exposed[exposure.Port] != exposed {
+	if !e.up || e.exposed[exposure.Port] != exposed || (e.membership != nil && !e.membership.Admits(pub.String())) {
 		e.mu.Unlock()
 		pair.close()
 		return

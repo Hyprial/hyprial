@@ -9,6 +9,8 @@
  *
  *   HYPRIAL_WORKER_ACTOR        the session's canonical agent URI
  *   HYPRIAL_WORKER_SESSION_REF  the session ref the daemon's fence accepts
+ *   HYPRIAL_WORKER_SESSION_REF_FILE  secure interactive binding file when the
+ *                           ref cannot be published before the TUI starts
  *   HYPRIAL_WORKER_TMUX_SESSION detached-tmux session name when the TUI runs
  *                           under `hyprial agent start --tmux` (optional; recorded on
  *                           the interactive registration so `hyprial daemon status` shows
@@ -22,7 +24,7 @@
 
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
 import * as net from "node:net";
 
 // Mirror hyprial.daemon.application._serve_connection / hyprial.cli._daemon_request.
@@ -104,9 +106,33 @@ export function processBirthIdentity(
   return null;
 }
 
+function sessionRefFromFile(path: string): string | null {
+  let descriptor: number | null = null;
+  try {
+    descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const metadata = fstatSync(descriptor);
+    const effectiveUid = process.geteuid?.();
+    if (
+      !metadata.isFile() ||
+      metadata.size > 4096 ||
+      (effectiveUid !== undefined && metadata.uid !== effectiveUid) ||
+      (metadata.mode & 0o077) !== 0
+    ) return null;
+    const value = readFileSync(descriptor, "utf8").trim();
+    return value && !/\s/.test(value) ? value : null;
+  } catch {
+    return null;
+  } finally {
+    if (descriptor !== null) closeSync(descriptor);
+  }
+}
+
 export function identityFromEnv(): WorkerIdentity | null {
   const actor = process.env.HYPRIAL_WORKER_ACTOR?.trim();
-  const sessionRef = process.env.HYPRIAL_WORKER_SESSION_REF?.trim();
+  const directRef = process.env.HYPRIAL_WORKER_SESSION_REF?.trim();
+  const refFile = process.env.HYPRIAL_WORKER_SESSION_REF_FILE?.trim();
+  if (directRef && refFile) return null;
+  const sessionRef = directRef || (refFile ? sessionRefFromFile(refFile) : null);
   if (!actor || !sessionRef) return null;
   const tmuxSession = process.env.HYPRIAL_WORKER_TMUX_SESSION?.trim();
   return { actor, sessionRef, ...(tmuxSession ? { tmuxSession } : {}) };

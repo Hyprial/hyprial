@@ -266,7 +266,7 @@ class _VisibilityMixin:
             actor = self._canonical_interactive_actor(raw)
             self._refuse_reserved_interactive_actor(actor)
             try:
-                actor = self._fence_interactive_session(actor, params)
+                actor = self._fence_live_principal_session(actor, params)
             except DaemonRequestError:
                 # The fence's own code is the answer: SESSION_SUPERSEDED and
                 # STALE_SESSION tell a Channel child whether to go quiet or

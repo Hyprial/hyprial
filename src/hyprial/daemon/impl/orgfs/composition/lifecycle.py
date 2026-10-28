@@ -425,7 +425,8 @@ class RuntimeLifecycle:
             author=self.author,
             blob_store=self.blobs,
             supplier_online=self._supplier_online,
-            supplier_owner=self._supplier_owner_for_space(space_id),
+            supplier_owner=(None if self._trust_tailnet_members else self._supplier_owner_for_space(space_id)),
+            trust_tailnet_members=self._trust_tailnet_members,
             announcement_source=self._announcement_spaces,
             holder_discovery=lambda: self._holder_snapshot(space_id),
             recovery_candidates=lambda: (

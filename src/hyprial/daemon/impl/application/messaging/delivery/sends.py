@@ -370,7 +370,7 @@ class _UserDeliveryMixin:
             (
                 item
                 for item in self.desired_state.load().harnesses
-                if item.name == blocked.actor and item.harness != "lark"
+                if item.name == blocked.actor
             ),
             None,
         )

@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from hyprial.identity.impl.agents.home.provisioner import AgentHomeError
 from hyprial.identity.impl.agents.home.provisioner import AgentHomeProvisioner
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import TYPE_CHECKING
 import json
 from hyprial.identity.impl.agents.home.config import normalize_agent_config
 from hyprial.kernel import RESERVED_AGENT_ACTOR_NAMES
@@ -29,6 +30,9 @@ from ._home_destroy import _RegistryHomeDestroyMixin
 from ._records import _RegistryRecordsMixin
 from .config_binding import _RegistryConfigBindingMixin
 
+if TYPE_CHECKING:
+    from hyprial.identity.impl.agents.runtime.secrets import SecretGrant
+
 class AgentRegistry(_RegistryConfigBindingMixin, _RegistryLifecycleMixin, _RegistryHomeCreateMixin, _RegistryHomeDestroyMixin, _RegistryRecordsMixin):
     """Every agent on this machine, in one real SQLite database.
 
@@ -42,6 +46,19 @@ class AgentRegistry(_RegistryConfigBindingMixin, _RegistryLifecycleMixin, _Regis
     once and the files renamed to ``*.json.imported`` — kept, not deleted,
     so a rollback to a file-reading build still finds its data.
     """
+    @staticmethod
+    def local_names(database: Path) -> frozenset[str]:
+        """Read local names without creating, migrating, or writing a registry."""
+        try:
+            database.stat()
+        except FileNotFoundError:
+            return frozenset()
+        connection = sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)
+        try:
+            return frozenset(row[0] for row in connection.execute("SELECT actor FROM agents"))
+        finally:
+            connection.close()
+
     def __init__(
         self,
         database: Path,
@@ -87,6 +104,35 @@ class AgentRegistry(_RegistryConfigBindingMixin, _RegistryLifecycleMixin, _Regis
             if legacy_directory is None
             else Path(legacy_directory)
         )
+
+    def repoint_legacy_secret_grants(
+        self, grant: SecretGrant, values: Mapping[str, str], raw_field: str,
+    ) -> None:
+        """Commit all bindings for one imported source before its file is removed.
+
+        Structured grants already select their SQLite field. Fieldless grants
+        need an explicit binding because the source may itself contain VALUE.
+        The source-derived field makes retries independent of grant ordering.
+        """
+        with self._lock, self._db:
+            self._db.execute("BEGIN IMMEDIATE")
+            if (
+                self.require(grant.actor).entity_token != grant.entity_token
+                or self.home_receipt(grant.actor).entity_token != grant.entity_token
+            ):
+                raise ValueError("legacy migration incarnation changed")
+            parameters = (grant.actor, grant.entity_token, grant.source.value, grant.entry_id)
+            rows = self._db.execute(
+                "SELECT field_name FROM agent_secret_grants WHERE agent=? "
+                "AND entity_token=? AND source=? AND entry_id=?", parameters,
+            ).fetchall()
+            if any(not values.get(row["field_name"] or raw_field) for row in rows):
+                raise ValueError("legacy grant selects an invalid field")
+            self._db.execute(
+                "UPDATE agent_secret_grants SET field_name=?, revision=revision+1 "
+                "WHERE agent=? AND entity_token=? AND source=? AND entry_id=? "
+                "AND field_name IS NULL", (raw_field, *parameters),
+            )
 
     def _refresh_retired_session_refs_locked(self) -> None:
         self._retired_session_refs = {

@@ -210,6 +210,7 @@ class _OrgFsBridgeMixin(_IdentityBindingMixin):
 
     def _require_orgfs_runtime(self) -> OrgFsRuntime:
         if self._orgfs_runtime is None:
+            from hyprial.daemon.impl.forwarding.membership.settings import trust_upper_layers
             self._orgfs_runtime = OrgFsRuntime(
                 self.state_dir,
                 node_id=self.node_id,
@@ -222,6 +223,7 @@ class _OrgFsBridgeMixin(_IdentityBindingMixin):
                     level, "orgfs", event, **fields
                 ),
                 owner_notifier=self._notify_orgfs_owner,
+                trust_tailnet_members=trust_upper_layers(self),
                 excluded_orgs=lambda: frozenset(read_left_orgs(self.hyprial_home)),
                 space_binding_state=self._orgfs_space_binding_state,
                 announce_instrumentation_enabled=getattr(

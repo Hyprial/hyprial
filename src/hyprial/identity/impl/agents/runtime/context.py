@@ -1,8 +1,6 @@
 """Resolved agent-home P2 roots and non-secret tool environment profiles.
 
-This module is the shared boundary consumed by provider adapters.  It resolves
-one durable Agent identity into one immutable launch context; provider modules
-do not derive roots from ``HOME``, cwd, or an actor URI themselves.
+This shared boundary resolves one durable Agent identity into immutable launch roots.
 """
 
 from __future__ import annotations
@@ -36,33 +34,22 @@ from hyprial.identity.impl.agents.home.config  import (
     validate_agent_config_location,
 )
 from hyprial.identity.impl.agents.home.provisioner  import HomeReceipt
+from hyprial.identity.impl.agents.runtime.notices import AgentRuntimeNotice
 from hyprial.identity.impl.agents.runtime.private_paths import (
     ensure_private_directory,
 )
 
 __all__ = [
-    "AgentRuntimeContext",
-    "AgentRuntimeError",
-    "AgentRuntimeRoots",
-    "AgentRuntimePreparation",
-    "AgentToolProfile",
-    "DEFAULT_AGENT_TOOL_PROFILE",
-    "SHARED_CREDENTIAL_DIVERGED",
-    "SHARED_CREDENTIAL_CONFLICT",
-    "SHARED_CREDENTIAL_INVALID",
-    "SHARED_CREDENTIAL_UNSUPPORTED",
-    "SharedCredentialBinding",
-    "SshToolAuthorization",
-    "agent_home_mode",
-    "derive_runtime_roots",
-    "runtime_environment_for_roots",
-    "tool_profile_environment",
-    "resolve_agent_runtime_context",
-    "build_agent_runtime_preparation",
-    "materialize_agent_runtime_context",
-    "preflight_codex_credential",
-    "shared_credential_status",
-    "validate_shared_credential_binding",
+    "AgentRuntimeContext", "AgentRuntimeError", "AgentRuntimeNotice",
+    "AgentRuntimeRoots", "AgentRuntimePreparation", "AgentToolProfile",
+    "DEFAULT_AGENT_TOOL_PROFILE", "SHARED_CREDENTIAL_DIVERGED",
+    "SHARED_CREDENTIAL_CONFLICT", "SHARED_CREDENTIAL_INVALID",
+    "SHARED_CREDENTIAL_UNSUPPORTED", "SharedCredentialBinding",
+    "SshToolAuthorization", "agent_home_mode", "derive_runtime_roots",
+    "runtime_environment_for_roots", "tool_profile_environment",
+    "resolve_agent_runtime_context", "build_agent_runtime_preparation",
+    "materialize_agent_runtime_context", "preflight_codex_credential",
+    "shared_credential_status", "validate_shared_credential_binding",
     "validate_shared_credential_environment",
 ]
 
@@ -229,6 +216,12 @@ class AgentRuntimeRoots:
         ):
             if not value.is_absolute():
                 raise AgentRuntimeError("runtime roots must be absolute")
+
+    @property
+    def workspace_root(self) -> Path:
+        """The agent's private default workspace, sibling of its home state."""
+
+        return self.agent_home / "workspace"
 
 
 @dataclass(frozen=True, slots=True)
@@ -539,14 +532,19 @@ class AgentRuntimeContext:
     roots: AgentRuntimeRoots
     tool_profile_id: str
     environment_items: tuple[tuple[str, str], ...] = field(repr=False)
+    model_provider: str | None = None
     auth_method: str | None = None
     auth_revision: str | None = None
     shared_credential: SharedCredentialBinding | None = field(
         default=None, repr=False
     )
+    designated_shared_credential_target: Path | None = field(
+        default=None, repr=False
+    )
     authority_prepared: bool = False
     home_resource_token: str | None = field(default=None, repr=False)
     launch_token: str | None = field(default=None, repr=False)
+    notices: tuple[AgentRuntimeNotice, ...] = ()
 
     def __post_init__(self) -> None:
         if self.harness not in _P2_HARNESSES:
@@ -586,6 +584,7 @@ class AgentRuntimeContext:
             "sessionRoot": str(self.roots.session_root),
             "toolProfileId": self.tool_profile_id,
             "environment": self.environment(),
+            "notices": [notice.to_json() for notice in self.notices],
             "auth": (
                 {"method": self.auth_method, "revision": self.auth_revision}
                 if self.auth_method is not None and self.auth_revision is not None
@@ -615,6 +614,7 @@ class AgentRuntimePreparation:
     harness: str
     cwd: str | None
     tool_profile: AgentToolProfile
+    model_provider: str | None = None
     containerized: bool = False
     credential_preflight: bool = False
 
@@ -657,6 +657,7 @@ def build_agent_runtime_preparation(
         harness=harness,
         cwd=cwd,
         tool_profile=tool_profile,
+        model_provider=agent.provider,
         containerized=containerized,
         credential_preflight=credential_preflight,
     )
@@ -805,9 +806,13 @@ def materialize_agent_runtime_context(
     manifest = config.freeze_manifest()
     projection = build_native_projection(manifest, preparation.harness)
     shared_target = config.shared_credential_path(preparation.harness)
+    custom_codex_provider = (
+        preparation.harness == "codex"
+        and preparation.model_provider not in {None, "openai"}
+    )
     shared_credential = (
         None
-        if shared_target is None
+        if shared_target is None or custom_codex_provider
         else SharedCredentialBinding(
             actor=preparation.actor_name,
             harness=preparation.harness,
@@ -824,7 +829,7 @@ def materialize_agent_runtime_context(
         preflight_codex_credential(
             native_root=Path(receipt.path) / "secrets" / "native" / "codex",
             actor=preparation.actor_name,
-            model_provider=None,
+            model_provider=preparation.model_provider,
             shared_credential=shared_credential,
         )
 
@@ -886,7 +891,6 @@ def materialize_agent_runtime_context(
     environment = runtime_environment_for_roots(
         roots, preparation.harness, preparation.tool_profile
     )
-
     context = AgentRuntimeContext(
         actor=preparation.actor,
         entity_token=preparation.entity_token,
@@ -897,9 +901,13 @@ def materialize_agent_runtime_context(
         roots=roots,
         tool_profile_id=preparation.tool_profile.profile_id,
         environment_items=tuple(sorted(environment.items())),
+        model_provider=preparation.model_provider,
         auth_method="native-shared-link" if shared_credential is not None else None,
         auth_revision="designated-v1" if shared_credential is not None else None,
         shared_credential=shared_credential,
+        designated_shared_credential_target=(
+            None if shared_target is None else Path(shared_target)
+        ),
         home_resource_token=receipt.resource_token,
     )
     if shared_credential is not None:

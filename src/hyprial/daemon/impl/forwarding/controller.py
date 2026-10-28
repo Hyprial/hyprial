@@ -22,7 +22,6 @@ from hyprial.kernel import (
 
 from .authority import (  # noqa: F401  (re-exported; the authority moved out)
     ForwardingControllerAuthority,
-    _AllowSidecar,
     _CloseSidecar,
     _DeriveClientKeySidecar,
     _ExposeSidecar,
@@ -33,6 +32,8 @@ from .authority import (  # noqa: F401  (re-exported; the authority moved out)
     _UnexposeSidecar,
     _UnmapSidecarPeer,
 )
+from .membership import MembershipWireMixin
+from .membership.wire import CAPABILITIES, unique_object
 from .policy import (
     FORWARD_PROTOCOL_VERSION,
     ForwardingSidecarError,
@@ -57,8 +58,8 @@ _RESPONSE_BUFFER_CAPACITY = 128
 _RESPONSE_BUFFER_MAX_AGE_SECONDS = 60.0
 
 
-class ForwardingSidecarController:
-    """Own one candidate sidecar process and its closed v5 JSON-lines wire."""
+class ForwardingSidecarController(MembershipWireMixin):
+    """Own one candidate sidecar process and its closed v6 JSON-lines wire."""
 
     def __init__(
         self,
@@ -73,15 +74,15 @@ class ForwardingSidecarController:
             raise ValueError("forwarding sidecar command must not be empty")
         self._up = dict(up)
         if self._up.get("v") != FORWARD_PROTOCOL_VERSION or self._up.get("op") != "up":
-            raise ValueError("forwarding sidecar up request must be protocol v5")
+            raise ValueError("forwarding sidecar up request must be protocol v6")
         if not isinstance(self._up.get("keyFile"), str) or not self._up["keyFile"]:
             raise ValueError("forwarding sidecar up request must name a keyFile")
-        if not isinstance(self._up.get("allow"), list) or not all(
-            isinstance(item, str) for item in self._up["allow"]
-        ):
-            raise ValueError("forwarding sidecar up request must carry an allow list")
-        if not isinstance(self._up.get("allowAny"), bool):
-            raise ValueError("forwarding sidecar up request must carry allowAny")
+        if "allow" in self._up or "allowAny" in self._up:
+            raise ValueError("v6 rejects directory admission fields")
+        for field in ("membershipStore", "owner", "deviceId"):
+            if not isinstance(self._up.get(field), str) or not self._up[field]:
+                raise ValueError(f"forwarding up requires {field}")
+        self._up.setdefault("requestId", uuid.uuid4().hex)
         if (
             not isinstance(self._up.get("addressFile"), str)
             or not self._up["addressFile"]
@@ -235,9 +236,9 @@ class ForwardingSidecarController:
         except (BrokenPipeError, OSError) as error:
             raise ForwardingSidecarError("forwarding sidecar stdin closed") from error
 
-    def _record_reader_fatal(self, message: str) -> ForwardingSidecarError:
+    def _record_reader_fatal(self, message: str, *, code='BAD_REQUEST') -> ForwardingSidecarError:
         with self._response_condition:
-            self._reader_fatal = self._reader_fatal or ForwardingSidecarError(message)
+            self._reader_fatal = self._reader_fatal or ForwardingSidecarError(message, code=code)
             self._response_condition.notify_all()
             return self._reader_fatal
 
@@ -257,7 +258,9 @@ class ForwardingSidecarController:
                 f"forwarding sidecar closed stdout with status {code}"
             )
         try:
-            event = json.loads(raw)
+            if len(raw) > 1024 * 1024:
+                raise ValueError("frame exceeds 1 MiB")
+            event = json.loads(raw, object_pairs_hook=unique_object)
         except (UnicodeDecodeError, ValueError) as error:
             raise self._record_reader_fatal(
                 "forwarding sidecar emitted invalid JSON"
@@ -266,7 +269,7 @@ class ForwardingSidecarController:
             observed = event.get("v") if isinstance(event, dict) else None
             raise self._record_reader_fatal(
                 "forwarding sidecar protocol mismatch: "
-                f"expected v{FORWARD_PROTOCOL_VERSION}, saw v{observed}"
+                f"expected v{FORWARD_PROTOCOL_VERSION}, saw v{observed}", code='SIDECAR_PROTOCOL_MISMATCH'
             )
         return event
 
@@ -274,7 +277,7 @@ class ForwardingSidecarController:
     def _forwarding_error(event: Mapping[str, object]) -> ForwardingSidecarError:
         code = str(event.get("code") or "FORWARD_PROTOCOL")
         message = str(event.get("message") or "forwarding sidecar error")
-        return ForwardingSidecarError(f"{code}: {message}")
+        return ForwardingSidecarError(f"{code}: {message}", code=code)
 
     def _ensure_response_state(self) -> None:
         if not hasattr(self, "_response_condition"):
@@ -301,7 +304,7 @@ class ForwardingSidecarController:
             with condition:
                 fatal = self._reader_fatal
                 if fatal is not None:
-                    raise ForwardingSidecarError(str(fatal)) from fatal
+                    raise ForwardingSidecarError(str(fatal), code=fatal.code) from fatal
                 stale = getattr(self, "_stale_service_requests", {})
                 now = time.monotonic()
                 if isinstance(stale, set):
@@ -366,7 +369,7 @@ class ForwardingSidecarController:
         deadline = time.monotonic() + self._timeout
         hello = self._next(deadline=deadline)
         if hello.get("event") != "hello" or not hello.get("sidecar"):
-            raise ForwardingSidecarError("forwarding sidecar v5 hello mismatch")
+            raise ForwardingSidecarError("forwarding sidecar v6 hello mismatch", code='SIDECAR_PROTOCOL_MISMATCH')
         capabilities = hello.get("capabilities")
         capability_set = (
             set(capabilities)
@@ -374,6 +377,8 @@ class ForwardingSidecarController:
             and all(isinstance(item, str) for item in capabilities)
             else set()
         )
+        if not CAPABILITIES <= capability_set or "allow" in capability_set:
+            raise ForwardingSidecarError("Sidecar v6 membership capabilities required.", code="SIDECAR_PROTOCOL_MISMATCH")
         self._expose_capable = {"expose", "unexpose", "peer-key"} <= capability_set
         self._service_capable = "service-connect-v1" in capability_set
         self._forwarding_request_ids = "forwarding-request-id-v1" in capability_set
@@ -386,12 +391,14 @@ class ForwardingSidecarController:
             event = self._next(deadline=deadline)
             if event.get("event") == "error":
                 raise self._forwarding_error(event)
+            if event.get('event') in ('membership-changed', 'readiness'):
+                continue
             if event.get("event") != "state":
                 raise ForwardingSidecarError(
                     f"unexpected forwarding startup event {event.get('event')!r}"
                 )
             if event.get("state") == "Running":
-                # Protocol v5: the Running state must carry serverPublic,
+                # Protocol v6: the Running state must carry serverPublic,
                 # clientPublic and a ``peers`` key (possibly empty).
                 if not isinstance(event.get("serverPublic"), str) or not isinstance(
                     event.get("clientPublic"), str
@@ -400,6 +407,8 @@ class ForwardingSidecarController:
                         "forwarding sidecar Running state lacks its public keys"
                     )
                 self.server_public = event["serverPublic"]
+                self.client_public = event["clientPublic"]
+                self._validate_running_membership(event)
                 if not isinstance(event.get("peers"), list):
                     raise ForwardingSidecarError(
                         "forwarding sidecar Running state lacks a peers list"
@@ -536,7 +545,7 @@ class ForwardingSidecarController:
     def expose(self, exposure: Mapping[str, object]) -> dict[str, object]:
         self._require_expose_capability()
         normalized = _normalize_exposure(exposure)
-        # Protocol v5 writes the Python-side "none" as "" on the wire.
+        # Protocol v6 writes the Python-side "none" as "" on the wire.
         wire = dict(normalized)
         if wire["proxyProtocol"] == "none":
             wire["proxyProtocol"] = ""
@@ -597,30 +606,6 @@ class ForwardingSidecarController:
                 "client-key-derived event does not match request"
             )
         return str(event["clientPublic"])
-
-    def allow(self, keys: Sequence[str], allow_any: bool) -> dict[str, object]:
-        """Replace the admission set; the sidecar drops clients not in it."""
-
-        if any(
-            not isinstance(key, str) or not key.startswith("nodekey:") for key in keys
-        ):
-            raise ForwardingSidecarError(
-                "BAD_REQUEST: keys entries must be nodekey strings"
-            )
-        event = self._request(
-            {
-                "v": FORWARD_PROTOCOL_VERSION,
-                "op": "allow",
-                "keys": [str(key) for key in keys],
-                "allowAny": bool(allow_any),
-            },
-            "allowed",
-        )
-        if not isinstance(event.get("count"), int) or not isinstance(
-            event.get("allowAny"), bool
-        ):
-            raise ForwardingSidecarError("allowed event does not match request")
-        return {"count": int(event["count"]), "allowAny": bool(event["allowAny"])}
 
     def _require_service_capability(self) -> None:
         if not self._service_capable:

@@ -199,7 +199,22 @@ class ManagedHarnessRuntime:
         return self._facade.start(spec)
 
     def remove(self, harness: str, name: str) -> bool:
-        return self._facade.remove(harness, name)
+        removed = self._facade.remove(harness, name)
+        if removed:
+            # A destroyed harness keeps no custody; a later observation that
+            # mints an entry for it is pruned by the next collection pass.
+            # Best-effort: a custody bookkeeping fault must not undo a
+            # confirmed removal.
+            try:
+                self._actor.retire_orphan_harness(f"{harness}:{name}")
+            except Exception as error:  # noqa: BLE001 - removal already succeeded
+                logger = getattr(self._actor, "_logger", None)
+                if logger is not None:
+                    logger(
+                        "warn", "daemon", "harness.orphan.harness_retire_failed",
+                        harness_id=f"{harness}:{name}", error=str(error),
+                    )
+        return removed
 
     def drain_failed_events(self) -> tuple[str, ...]:
         return self._facade.drain_failed_events()

@@ -144,8 +144,6 @@ class _AgentDestroyMixin:
         state = self.desired_state.load()
         stopped: list[str] = []
         for spec in state.harnesses:
-            if spec.harness == "lark":
-                continue
             if self._canonical_harness_uri(spec.name, spec) != actor:
                 continue
             if keep == (spec.harness, RUNTIME_HEADLESS):

@@ -429,6 +429,7 @@ class HarnessProjection:
                     ),
                     in_flight=in_flight if isinstance(in_flight, int) else None,
                     queue_depth=queue_depth if isinstance(queue_depth, int) else None,
+                    startup_warnings=tuple(getattr(process, "startup_warnings", ())),
                 )
             )
             if error is not None:

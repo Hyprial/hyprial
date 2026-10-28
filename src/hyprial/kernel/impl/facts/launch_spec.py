@@ -18,13 +18,138 @@ from hyprial.kernel.impl.contracts.execution.execution_runtime import (
 )
 
 
-_HARNESSES = frozenset(
-    {"codex", "claude", "pi", "dsh", "lark", "jev", "user-proxy"}
-)
+# Worker kinds are shared vocabulary, independent of daemon capabilities.
+# Adapter migration belongs to the adapter package, not this vocabulary.
+DECLARED_HARNESSES = frozenset({"codex", "claude", "pi", "dsh", "jev", "user-proxy"})
+_HARNESSES = DECLARED_HARNESSES
+
+
+# Known argument spellings per harness. Each entry maps a spelling to
+# ``(canonical option key, takes_value)`` so an alias pair (codex ``-a`` and
+# ``--ask-for-approval``) is one option, and a known flag never swallows the
+# positional argument that follows it. Options not listed here fall back to
+# the generic rule: a following non-option token is the option's value.
+_HARNESS_ARG_OPTIONS: dict[str, dict[str, tuple[str, bool]]] = {
+    "codex": {
+        "--model": ("--model", True),
+        "-m": ("--model", True),
+        "--ask-for-approval": ("--ask-for-approval", True),
+        "-a": ("--ask-for-approval", True),
+        "--sandbox": ("--sandbox", True),
+        "-s": ("--sandbox", True),
+        "--approve-for-me": ("--approve-for-me", False),
+        "--dangerously-bypass-approvals-and-sandbox": (
+            "--dangerously-bypass-approvals-and-sandbox",
+            False,
+        ),
+    },
+    "pi": {
+        "--provider": ("--provider", True),
+        "--model": ("--model", True),
+        "--mode": ("--mode", True),
+        "--session-id": ("--session-id", True),
+        "--session": ("--session", True),
+        "--fork": ("--fork", True),
+        "--print": ("--print", False),
+        "-p": ("--print", False),
+        "--continue": ("--continue", False),
+        "-c": ("--continue", False),
+        "--resume": ("--resume", False),
+        "-r": ("--resume", False),
+        "--approve": ("--approve", False),
+        "--offline": ("--offline", False),
+    },
+}
 
 
 class DesiredStateError(ValueError):
     pass
+
+
+def merge_harness_launch_args(
+    stored: "tuple[str, ...] | list[str]",
+    explicit: "tuple[str, ...] | list[str]",
+    *,
+    harness: str | None = None,
+) -> tuple[str, ...]:
+    """Merge an agent's stored harnessArgs with this launch's explicit args.
+
+    The stored value is durable intent (``Agent.harness_args``); the explicit
+    value is what this particular start/restore/wake asked for.  The explicit
+    value wins per option group: an option the caller names explicitly
+    suppresses the stored spelling of the same option (``--name value``,
+    ``--name=value`` and, for a known harness, an alias such as codex ``-a``),
+    and every remaining stored group is appended unless the identical group is
+    already present.  Tokens that belong to different options are never
+    dropped merely because they share a value.  ``harness`` selects the known
+    option table; unknown options use the generic option/value rule.
+    """
+
+    stored_args = tuple(stored)
+    explicit_args = tuple(explicit)
+    if not stored_args:
+        return explicit_args
+    if not explicit_args:
+        return stored_args
+    stored_groups = _launch_arg_groups(stored_args, harness)
+    explicit_groups = _launch_arg_groups(explicit_args, harness)
+    explicit_keys = {key for key, _tokens in explicit_groups if key is not None}
+    merged = list(explicit_groups)
+    seen = {tokens for _key, tokens in explicit_groups}
+    for key, tokens in stored_groups:
+        if key is not None and key in explicit_keys:
+            continue
+        if tokens in seen:
+            continue
+        merged.append((key, tokens))
+        seen.add(tokens)
+    return tuple(token for _key, tokens in merged for token in tokens)
+
+
+def _launch_option_key(token: str) -> str | None:
+    """The option spelling of ``token``, long or short, or None."""
+
+    if token == "--" or not token.startswith("-") or token == "-":
+        return None
+    return token.split("=", 1)[0]
+
+
+def _launch_arg_groups(
+    args: tuple[str, ...], harness: str | None
+) -> list[tuple[str | None, tuple[str, ...]]]:
+    """Group tokens: an option that is followed by a value owns that value."""
+
+    table = _HARNESS_ARG_OPTIONS.get(harness or "", {})
+    groups: list[tuple[str | None, tuple[str, ...]]] = []
+    index = 0
+    while index < len(args):
+        token = args[index]
+        key = _launch_option_key(token)
+        if key is None:
+            groups.append((None, (token,)))
+            index += 1
+            continue
+        known = table.get(key)
+        canonical = known[0] if known is not None else key
+        if "=" in token:
+            groups.append((canonical, (token,)))
+            index += 1
+            continue
+        has_next = index + 1 < len(args)
+        next_is_value = has_next and _launch_option_key(args[index + 1]) is None
+        if known is not None and known[1]:
+            consumes = has_next
+        elif known is not None:
+            consumes = False
+        else:
+            consumes = next_is_value
+        if consumes:
+            groups.append((canonical, (token, args[index + 1])))
+            index += 2
+        else:
+            groups.append((canonical, (token,)))
+            index += 1
+    return groups
 
 
 def _record(value: object, label: str) -> dict[str, Any]:
@@ -118,7 +243,7 @@ class HarnessLaunchSpec:
         harness = "claude" if raw_harness == "cc" else raw_harness
         if harness not in _HARNESSES:
             raise DesiredStateError(
-                f"{label} has an invalid harness; expected codex, claude, pi, dsh, lark, jev, or user-proxy"
+                f"{label} has an invalid harness; expected codex, claude, pi, dsh, jev, or user-proxy"
             )
         name = _string(record.get("name"), f"{label}.name")
         raw_args = record.get("args", [])
@@ -144,7 +269,7 @@ class HarnessLaunchSpec:
             raise DesiredStateError(
                 f"{label}.ownership must be managed in desired state"
             )
-        headless = bool(record.get("headless")) or harness == "lark"
+        headless = bool(record.get("headless"))
         if not headless:
             raise DesiredStateError(
                 f"{label} must be headless; interactive sessions use interactiveSessions"

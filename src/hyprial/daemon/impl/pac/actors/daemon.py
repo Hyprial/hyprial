@@ -10,7 +10,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
-from hyprial.kernel import HarnessLaunchSpec, HookEventPublisher
+from hyprial.kernel import HarnessLaunchSpec, HookEventPublisher, DECLARED_HARNESSES, DaemonRequestError, ipc_errors
 from hyprial.daemon.impl.lifecycle_manager import LifecycleOperation
 from hyprial.daemon.impl.pac.actors.coordinator import (
     ActorCoordinator,
@@ -79,10 +79,9 @@ class DaemonActorRuntime:
         self.application = application
 
     def _spec(self, actor_name: str) -> HarnessLaunchSpec | None:
-        # A lark adapter and a worker may share a name; skip lark while
-        # searching (review 930), not after taking the first row.
+        # Resolve only the worker collection, including migrated name collisions.
         return self.application.desired_state.harness_spec(
-            actor_name, excluding="lark"
+            actor_name
         )
 
     def observe(self, actor_name: str) -> RuntimeObservation:
@@ -144,6 +143,11 @@ class DaemonActorRuntime:
     def _launch_spec(
         actor_name: str, launch: LaunchSpec, marker: str
     ) -> HarnessLaunchSpec:
+        if launch.harness not in DECLARED_HARNESSES:
+            raise DaemonRequestError(
+                ipc_errors.INVALID_ARGUMENT,
+                f"{actor_name} has an invalid harness; lifecycle requires a declared worker harness",
+            )
         candidate = HarnessLaunchSpec(
             harness=launch.harness,
             name=actor_name,

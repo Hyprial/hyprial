@@ -9,7 +9,7 @@ from pathlib import Path
 from hyprial.kernel import private_metadata_violation
 
 
-FORWARD_PROTOCOL_VERSION = 5
+FORWARD_PROTOCOL_VERSION = 6
 
 
 _PROXY_KEYS = frozenset(
@@ -42,7 +42,7 @@ def _normalize_exposure(exposure: Mapping[str, object]) -> dict[str, object]:
         raise ForwardingSidecarError("exposure port must be between 1 and 65535")
     if not isinstance(target, str) or not target:
         raise ForwardingSidecarError("exposure target must be a non-empty string")
-    # Python-side canonical value is "none"; protocol v5 writes "" on the
+    # Python-side canonical value is "none"; protocol v6 writes "" on the
     # wire (see controller.expose).  Both are accepted here so a persisted
     # entry and a raw wire event normalize to the same record.
     if proxy_protocol not in {"v2", "none", ""}:
@@ -163,4 +163,6 @@ def parse_derp_map(event: dict[str, object]) -> tuple[str | None, str | None]:
 
 
 class ForwardingSidecarError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, code: str = "FORWARD_PROTOCOL") -> None:
+        self.code = code
+        super().__init__(message)

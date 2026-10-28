@@ -461,7 +461,7 @@ class PacLifecyclePort:
         if parsed is None:
             return False
         try:
-            spec = desired.harness_spec(parsed[2], excluding="lark")
+            spec = desired.harness_spec(parsed[2])
         except Exception:  # noqa: BLE001 - unreadable desired state publishes
             return False
         return spec is not None and pac_worker_marker(spec.nickname) is not None

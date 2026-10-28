@@ -154,7 +154,8 @@ media_app = typer.Typer(
     help=(
         "Retrieve platform media referenced by inbound stand-ins. Image and "
         "file messages reach agents as labels carrying a "
-        "ref:<message_id>/<key> handle; 'media get' turns that handle into "
+        "ref:<message_id>/<key> handle (shell-aware for forwards); 'media "
+        "get' turns that handle into "
         "a local file on demand (directed pull — nothing is auto-inlined)."
     )
 )
@@ -166,8 +167,9 @@ def adapter_media_get(
     ref: str = typer.Argument(
         ...,
         help=(
-            "Media reference as printed in the stand-in label: "
-            "<message_id>/<key>, optionally prefixed with 'ref:'."
+            "Media reference exactly as printed in the stand-in label: "
+            "<message_id>/<key> or <shell_id>/<child_id>/<key>, optionally "
+            "prefixed with 'ref:'."
         ),
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
@@ -175,8 +177,9 @@ def adapter_media_get(
     """Download one referenced image/file via the adapter's own credential.
 
     Works for refs harvested anywhere a stand-in appears — direct messages,
-    rich-text posts, and merge-forward children at any nesting depth (the
-    ref names its carrying message directly). The payload is stored under
+    rich-text posts, and merge-forward children at any nesting depth. A
+    forwarded ref retains the child id and names the top-level shell required
+    by Lark's resource endpoint. The payload is stored under
     <hyprial-home>/media/<adapter>/ (0700) and the local path is printed.
     """
     services = get_services()
@@ -208,7 +211,7 @@ def adapter_media_get(
             )
         except MediaFetchError as error:
             # Already sanitized: summaries only, never SDK error text.
-            raise services.CliError("MEDIA_FETCH_FAILED", str(error)) from error
+            raise services.CliError(error.code, str(error)) from error
         return CliResult({
             "adapter": result.adapter,
             "messageId": result.message_id,

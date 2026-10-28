@@ -45,6 +45,12 @@ from hyprial.daemon.impl.adapters.lark.outbound.reactions import ACK_EMOJI
 DEFAULT_TRANSIENT_RETRY_BUDGET_SECONDS = 120.0
 DEFAULT_TRANSIENT_RETRY_BACKOFF_INITIAL_SECONDS = 0.5
 DEFAULT_TRANSIENT_RETRY_BACKOFF_MAX_SECONDS = 5.0
+_MEDIA_REF_LABEL = re.compile(
+    r"\bref:(?=[^\]\s]{1,363}\])"
+    r"(?=[^.])[A-Za-z0-9._=-]{1,120}/"
+    r"(?:(?=[^.])[A-Za-z0-9._=-]{1,120}/)?"
+    r"(?=[^.])[A-Za-z0-9._=-]{1,120}(?=\])"
+)
 # These IPC checks reject before the single Lark target can be submitted.
 _SUBMISSION_PRE_ADMISSION_CODES = frozenset({
     ipc_errors.INVALID_REQUEST, ipc_errors.INVALID_ARGUMENT,
@@ -415,6 +421,11 @@ class _InboundPipelineMixin:
             )
 
         text = self._fallback_quote_context(message, route_status)
+        if _MEDIA_REF_LABEL.search(text):
+            text = (
+                f"{text}\n\n[Fetch media: hyprial adapter media get "
+                f"{self._adapter_name} <ref>]"
+            )
         request = HarnessRequest(
             message_id=message.message_id,
             from_actor_id=self._channel_actor_id,

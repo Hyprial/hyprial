@@ -15,6 +15,7 @@ The helpers in this module never return a secret in argv or desired state.
 from __future__ import annotations
 
 import json
+import tomllib
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -102,6 +103,74 @@ def anthropic_base_url(
 
 class ModelProviderError(ValueError):
     """A harness/provider/model combination cannot be launched safely."""
+
+
+# Codex advertises levels per model; this is the known client vocabulary, not
+# a promise that every provider/model supports every level.
+CODEX_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+CLAUDE_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
+
+def _validate_effort(harness: str, effort: object) -> str:
+    levels = CODEX_EFFORTS if harness == "codex" else CLAUDE_EFFORTS
+    if harness not in {"codex", "claude"}:
+        raise ModelProviderError("--effort is supported only for codex and claude")
+    if not isinstance(effort, str) or effort not in levels:
+        raise ModelProviderError(f"{harness} effort must be one of: {', '.join(levels)}")
+    return effort
+
+
+def split_effort_args(harness: str, args: tuple[str, ...]) -> tuple[tuple[str, ...], str | None]:
+    """Extract only native effort options; leave other config overrides alone.
+
+    Native last-option-wins semantics remain available for legacy saved args.
+    The public flag rejects a second source rather than silently picking one.
+    """
+    remaining: list[str] = []
+    effort = None
+    index = 0
+    options = ("-c", "--config") if harness == "codex" else ("--effort",)
+    while index < len(args):
+        argument = args[index]
+        width = 1
+        value = None
+        if argument in options and index + 1 < len(args):
+            value = args[index + 1]
+            width = 2
+        else:
+            for option in options:
+                if argument.startswith(option + "="):
+                    value = argument[len(option) + 1:]
+                    break
+            if harness == "codex" and value is None and argument.startswith("-c") and not argument.startswith("--"):
+                value = argument[2:]
+        if value is not None and harness == "codex":
+            key, separator, raw = value.partition("=")
+            if separator and key.strip() == "model_reasoning_effort":
+                try:
+                    value = tomllib.loads("effort=" + raw)["effort"]
+                except tomllib.TOMLDecodeError:
+                    value = raw.strip()  # Codex accepts bare string config values.
+            else:
+                value = None
+        if value is not None:
+            effort = _validate_effort(harness, value)
+        else:
+            remaining.extend(args[index:index + width])
+        index += width
+    return tuple(remaining), effort
+
+
+def with_reasoning_effort(harness: str, args: tuple[str, ...], effort: str | None) -> tuple[str, ...]:
+    """Encode the official --effort flag in the existing durable native args."""
+    if effort is None:
+        return args
+    _validate_effort(harness, effort)
+    _, existing = split_effort_args(harness, args)
+    if existing is not None:
+        raise ModelProviderError("--effort was supplied both as a hyprial option and after '--'")
+    native = ("-c", f'model_reasoning_effort="{effort}"') if harness == "codex" else ("--effort", effort)
+    return (*args, *native)
 
 
 class AgentProviderCredentialMissing(ModelProviderError):
@@ -359,7 +428,11 @@ def pi_provider_environment(
             "--environment-name DEEPSEEK_API_KEY' before starting pi, then "
             "restart and unblock the agent"
         )
-    return {DEEPSEEK_API_KEY_ENV: key}
+    result = {DEEPSEEK_API_KEY_ENV: key}
+    base_url = environment.get(OPENAI_BASE_URL_ENV, "").strip()
+    if base_url:
+        result[OPENAI_BASE_URL_ENV] = base_url
+    return result
 
 
 def require_hyprial_key(environment: Mapping[str, str]) -> str:
@@ -456,8 +529,9 @@ def claude_provider_environment(
     """Return the per-process Claude environment delta for ``spec``."""
 
     validate_model_selection(spec.harness, spec.model_provider, spec.model)
+    _, effort = split_effort_args("claude", spec.args)
     if spec.model_provider in {None, "anthropic"}:
-        return {}
+        return {"CLAUDE_CODE_EFFORT_LEVEL": effort} if effort is not None else {}
     if spec.model_provider == HYPRIAL_PROVIDER:
         # The model is already known to be vendor-qualified (validate above),
         # so it is passed through unchanged: the gateway is what owns the
@@ -470,7 +544,7 @@ def claude_provider_environment(
             "ANTHROPIC_DEFAULT_SONNET_MODEL": spec.model or "",
             "ANTHROPIC_DEFAULT_HAIKU_MODEL": spec.model or "",
             "CLAUDE_CODE_SUBAGENT_MODEL": spec.model or "",
-            "CLAUDE_CODE_EFFORT_LEVEL": "max",
+            "CLAUDE_CODE_EFFORT_LEVEL": effort or "max",
         }
     key = require_deepseek_key(
         environment,
@@ -485,7 +559,7 @@ def claude_provider_environment(
         "ANTHROPIC_DEFAULT_SONNET_MODEL": model,
         "ANTHROPIC_DEFAULT_HAIKU_MODEL": model,
         "CLAUDE_CODE_SUBAGENT_MODEL": model,
-        "CLAUDE_CODE_EFFORT_LEVEL": "max",
+        "CLAUDE_CODE_EFFORT_LEVEL": effort or "max",
         **claude_context_defaults(spec.model_provider, spec.model, environment),
     }
 
@@ -499,8 +573,9 @@ def codex_provider_configuration(
     """Return Codex global config argv and environment delta for ``spec``."""
 
     validate_model_selection(spec.harness, spec.model_provider, spec.model)
+    _, effort = split_effort_args("codex", spec.args)
     if spec.model_provider in {None, "openai"}:
-        return (), {}
+        return (("-c", f'model_reasoning_effort="{effort}"') if effort is not None else ()), {}
     if spec.model_provider == HYPRIAL_PROVIDER:
         # ⚠️ wire_api="chat", NOT the "responses" the DeepSeek block below uses:
         # the gateway serves the chat-completions surface, and a copied
@@ -508,11 +583,13 @@ def codex_provider_configuration(
         return (
             (
                 "-c",
+                'cli_auth_credentials_store="ephemeral"',
+                "-c",
                 'model_provider="hyprial"',
                 "-c",
                 f'model="{spec.model or ""}"',
                 "-c",
-                'model_reasoning_effort="high"',
+                f'model_reasoning_effort="{effort or "high"}"',
                 "-c",
                 'model_providers.hyprial.name="hyprial"',
                 "-c",
@@ -538,11 +615,13 @@ def codex_provider_configuration(
     return (
         (
             "-c",
+            'cli_auth_credentials_store="ephemeral"',
+            "-c",
             'model_provider="deepseek"',
             "-c",
             f'model="{model}"',
             "-c",
-            'model_reasoning_effort="high"',
+            f'model_reasoning_effort="{effort or "high"}"',
             "-c",
             'model_providers.deepseek.name="deepseek"',
             "-c",

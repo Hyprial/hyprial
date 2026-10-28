@@ -288,7 +288,6 @@ class ForwardingSidecarSupervisor:
         slot_transport: str = "unix",
         on_slots_reported: Callable[[tuple[str, ...]], None] | None = None,
         up_slots: Callable[[], tuple[str, ...]] | None = None,
-        desired_allow: Callable[[], tuple[Sequence[str], bool]] | None = None,
         on_installed: Callable[[], object] | None = None,
     ) -> None:
         self._environ = environ
@@ -311,9 +310,6 @@ class ForwardingSidecarSupervisor:
         self._slot_transport = slot_transport
         self._on_slots_reported = on_slots_reported
         self._up_slots = up_slots
-        # Every incarnation is born deny-all and receives the current
-        # directory-derived allow set before it becomes the live backend.
-        self._desired_allow = desired_allow
         self._on_installed = on_installed
         self._lock = threading.Lock()
         self._endpoints: ForwardingEndpoints | None = None
@@ -415,11 +411,21 @@ class ForwardingSidecarSupervisor:
             raise ForwardingSidecarError("forwarding sidecar is not running")
         return backend.controller.peer_key(address)
 
-    def allow(self, keys: Sequence[str], allow_any: bool) -> dict[str, object]:
+    def membership_request(self, op: str, params: Mapping[str, Any]) -> dict[str, Any]:
         backend = self.endpoints()
         if backend is None:
-            raise ForwardingSidecarError("forwarding sidecar is not running")
-        return backend.controller.allow(keys, allow_any)
+            raise ForwardingSidecarError("forwarding sidecar is not running", code="AUTHORITY_UNREACHABLE")
+        try:
+            result = backend.controller.membership_request(op, params)
+        except ForwardingSidecarError as error:
+            self.last_membership_observation = {'code': error.code, 'observedAtMs': int(time.time() * 1000)}
+            raise
+        if op == 'membership-status' and not params.get('tailnetId'):
+            from .membership.projection import public_observation
+            self.last_membership_observation = public_observation(result) | {
+                'observedAtMs': int(time.time() * 1000), 'observedMonotonic': time.monotonic(),
+                'sidecarPid': self.current_pid}
+        return result
 
     def derive_client_key(self, server_public: str) -> str:
         backend = self.endpoints()
@@ -761,18 +767,6 @@ class ForwardingSidecarSupervisor:
                         "error",
                         "network.exposure.rejected",
                         port=exposure.get("port"),
-                        detail=str(error)[:500],
-                    )
-            if self._desired_allow is not None:
-                # A refused allow leaves the sidecar deny-all. The forced
-                # post-install rebuild retries without weakening access.
-                try:
-                    keys, allow_any = self._desired_allow()
-                    controller.allow(list(keys), allow_any)
-                except ForwardingSidecarError as error:
-                    self._event_log(
-                        "error",
-                        "zenoh.forwarding.allow_failed",
                         detail=str(error)[:500],
                     )
         except Exception as error:  # noqa: BLE001 - visible no-fallback path

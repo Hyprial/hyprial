@@ -4,17 +4,14 @@ Discovery answers one question and returns one kind of thing:
 
     "what endpoints can I try to connect to right now?"
 
-**Endpoints, deliberately -- not addresses, and not peers.** The hyprial-tailcat
-sidecar sits between hyprial and the network: hyprial keeps connecting to
-``tcp/127.0.0.1:<port>`` while the sidecar forwards over Tailcat. A node never
-sees a Tailcat address at all -- what it dials is a local forwarding port. The
-sidecar learns *which* peers to map from the organization directory (identity
-domain): ``ForwardingEndpoints`` asks its ``directory`` callback for
-``deviceId -> Tailcat address``, maps what is missing and unmaps what is gone.
+**Endpoints, deliberately -- not addresses, and not peers.** Managed Tailcat
+uses a fixed private Unix slot pool between Zenoh and the sidecar. Membership
+reconciliation chooses peers from the sidecar's leased roster, not the org
+directory. This backend maps those peers and reports the fixed local endpoints.
 
-Discovery does NOT decide who may talk to whom. It reports what is reachable;
-whether a connection is permitted is the sidecar's business (the ``allow`` set
-it was brought up with).
+Discovery does NOT decide who may talk to whom. The sidecar owns admission and
+can withdraw mappings independently on lease expiry or revocation. Successful
+status polls invalidate stale mapping memos without rebuilding the session.
 
 ⚠️ Note on gossip: zenoh can also discover peers by having connected peers
 introduce each other, and that is deliberately NOT used here. It only works
@@ -73,7 +70,7 @@ class EndpointDiscovery(Protocol):
 
 @runtime_checkable
 class ForwardingController(Protocol):
-    """The daemon-owned protocol-v5 sidecar control surface."""
+    """The daemon-owned protocol-v6 sidecar control surface."""
 
     def status(self) -> tuple[tuple[str, ...], dict[str, str]]: ...
 
@@ -98,7 +95,7 @@ class ForwardingEndpoints:
     per-peer loopback ports). Mapping is not discovery's job: the slot
     reconcile (and the S2b peer-access actor) calls :meth:`bind` /
     :meth:`unbind`, and the poll here only keeps the health hooks and
-    ``last_poll`` fed.
+    ``last_poll`` fed and invalidates mappings withdrawn by the sidecar.
     """
 
     def __init__(
@@ -148,7 +145,7 @@ class ForwardingEndpoints:
         return self._slot_endpoints()
 
     def _slot_endpoints(self) -> tuple[str, ...]:
-        """The fixed slot set, with the status poll kept for health only.
+        """The fixed slot set, with authoritative mapping and health polling.
 
         Unix transport: the endpoints are returned even when the poll
         fails -- a slot's socket path outlives any sidecar incarnation,
@@ -161,7 +158,7 @@ class ForwardingEndpoints:
 
         endpoints = tuple(self.slot_locators().values())
         try:
-            self._controller.status()
+            _peers, mappings = self._controller.status()
         except Exception as error:  # noqa: BLE001 - health stays best effort
             self._last_poll = {
                 "atMs": time.time_ns() // 1_000_000,
@@ -172,6 +169,15 @@ class ForwardingEndpoints:
             if self._on_failure is not None:
                 self._on_failure(str(error))
             return endpoints
+        # The sidecar can withdraw mappings on lease expiry independently of
+        # this daemon. A successful status is authoritative, including an
+        # empty peer set; failed polls above must retain the previous memo.
+        # Keep the fixed connect set and assignment store, but force a fresh
+        # map-peer on the next reconcile if membership becomes valid again.
+        self._bound = {
+            peer: assignment for peer, assignment in self._bound.items()
+            if peer in mappings
+        }
         by_index = self.slot_locators()
         self._last_poll = {
             "atMs": time.time_ns() // 1_000_000,
@@ -252,7 +258,8 @@ class ForwardingEndpoints:
         ``(address, slot)`` is free, a changed address on the same slot is
         the §2 rebind (the sidecar drops the old splice and the dial
         reaches the new peer), and a relaunched sidecar starts with an
-        empty memo so everything is re-told.
+        empty memo so everything is re-told. A status-confirmed withdrawal
+        also invalidates the memo without changing the sidecar incarnation.
         """
 
         if self._bound.get(peer) == (address, slot):
@@ -273,7 +280,16 @@ class ForwardingEndpoints:
     def unbind(self, peer: str) -> None:
         """``unmap-peer`` and forget; the slot returns to hold mode."""
 
-        self._controller.unmap_peer(peer)
+        from ..forwarding.policy import ForwardingSidecarError
+
+        try:
+            self._controller.unmap_peer(peer)
+        except ForwardingSidecarError as error:
+            # Lease expiry/revocation may already have removed the mapping.
+            # Only that explicit absence is success; other failures retain
+            # the memo and slot so a possibly live splice cannot be reused.
+            if error.code != "PEER_UNKNOWN":
+                raise
         self._bound.pop(peer, None)
 
     @property

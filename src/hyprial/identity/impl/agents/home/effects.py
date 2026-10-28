@@ -27,7 +27,9 @@ from hyprial.identity.impl.agents.runtime.context  import (
 #: ``...harnesses.codex``); identity owns the home effect lane that must run
 #: them before an authority-prepared launch.  Keeping this an injected port
 #: removes the previous identity -> daemon lazy import (no upward edge).
-HomeRuntimePreparer = Callable[[AgentRuntimeContext], None]
+HomeRuntimePreparer = Callable[
+    [AgentRuntimeContext], AgentRuntimeContext | None
+]
 
 
 class RuntimeHomePreparers(Mapping[str, HomeRuntimePreparer]):
@@ -59,7 +61,7 @@ class RuntimeHomePreparers(Mapping[str, HomeRuntimePreparer]):
     def __len__(self) -> int:
         return len(self._preparers)
 
-    def prepare(self, context: AgentRuntimeContext) -> None:
+    def prepare(self, context: AgentRuntimeContext) -> AgentRuntimeContext:
         preparer = self._preparers.get(context.harness)
         if preparer is None:
             if context.harness in {"claude", "codex"}:
@@ -67,8 +69,9 @@ class RuntimeHomePreparers(Mapping[str, HomeRuntimePreparer]):
                     "runtime-preparer-missing", context.actor,
                     f"prepare-{context.harness}",
                 )
-            return
-        preparer(context)
+            return context
+        prepared = preparer(context)
+        return context if prepared is None else prepared
 
 
 @dataclass(frozen=True, slots=True)
@@ -309,7 +312,7 @@ class AgentHomeEffectLane:
                 context = materialize_agent_runtime_context(plan.preparation)
                 # The harness-specific preparer is injected by the daemon
                 # composition; identity never imports a harness implementation.
-                self._runtime_preparers.prepare(context)
+                context = self._runtime_preparers.prepare(context)
                 return AgentHomeEffectCompleted(
                     effect.correlation_id,
                     effect.generation,

@@ -18,7 +18,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 TAILCAT_COMMIT = "b4dc28e8aa8936f0a90a41ad8293a64e3d6b645f"
-"""The Tailcat engine commit this daemon's protocol v5 client is built for."""
+"""The Tailcat engine commit this daemon's protocol v6 client is built for."""
 
 SIDECAR_BINARY_NAME = "hyprial-tailcat"
 """Platform-neutral basename; use :func:`sidecar_binary_name` for a path."""
@@ -134,8 +134,8 @@ def verify_tailcat_sidecar(
 ) -> dict[str, object]:
     """Run ``<sidecar> version`` and pin the engine commit; return the record.
 
-    The sidecar prints one JSON line ``{"v":5,"sidecar":...,"tailcat":...}``;
-    anything else -- unparseable output, a protocol version that is not 5, a
+    The sidecar prints one JSON line ``{"v":6,"sidecar":...,"tailcat":...}``;
+    anything else -- unparseable output, a protocol version that is not 6, a
     tailcat commit other than :data:`TAILCAT_COMMIT` -- is ``SIDECAR_INVALID``.
     """
 
@@ -163,9 +163,9 @@ def verify_tailcat_sidecar(
         raise TailcatSidecarError(
             "SIDECAR_INVALID", f"{binary} version did not print JSON: {error}"
         ) from error
-    if not isinstance(record, dict) or record.get("v") != 5:
+    if not isinstance(record, dict) or type(record.get("v")) is not int or record.get("v") != 6:
         raise TailcatSidecarError(
-            "SIDECAR_INVALID", f"{binary} version is not a protocol-v5 record"
+            "SIDECAR_INVALID", f"{binary} version is not a protocol-v6 record"
         )
     if record.get("tailcat") != TAILCAT_COMMIT:
         raise TailcatSidecarError(

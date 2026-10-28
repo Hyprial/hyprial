@@ -21,7 +21,10 @@ from hyprial.daemon.impl.inbox.service.policy import (
     OFFLINE_RECHECK_INTERVAL_MS,
     online_retry_next_attempt_ms,
 )
-from hyprial.daemon.impl.inbox.service.synchronization import _synchronized
+from hyprial.daemon.impl.inbox.service.synchronization import (
+    _record_committed_change,
+    _synchronized,
+)
 
 """SQLite-backed outbox, inbox, deduplication, FIFO, DLQ and custody state."""
 
@@ -729,6 +732,7 @@ class InboxServiceRetryMixin:
                 "DELETE FROM outbox WHERE message_id = ? AND sender = ?",
                 (message_id, sender),
             )
+        _record_committed_change(self)
         return True
     def _outbox_to_dlq(
         self,

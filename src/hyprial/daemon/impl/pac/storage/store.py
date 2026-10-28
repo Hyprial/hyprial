@@ -761,3 +761,61 @@ def default_database_path(state_dir: Path) -> Path:
     """Where the pac-graph database lives under a state root."""
 
     return Path(state_dir) / DATABASE_NAME
+
+
+def pending_notification(store: PacGraphStore, graph_id: str, *, closed: bool) -> bool:
+    """The existing drain's exact membership, filtered before decoding history."""
+
+    kind = " AND n.kind='actor_alert'" if closed else ''
+    pending = 'n.message_id IS NULL AND n.failed_at IS NULL' + kind
+    return store._db.execute(
+        'SELECT 1 FROM notifications n JOIN flag_events e ON e.event_id=n.event_id '
+        f'WHERE e.graph_id=? AND {pending} '
+        'UNION ALL SELECT 1 FROM notifications n '
+        f"WHERE json_extract(n.plan_json,'$.graphId')=? AND {pending} "
+        'AND n.event_id NOT IN (SELECT event_id FROM flag_events) '
+        'UNION ALL SELECT 1 FROM notifications n '
+        f'WHERE n.plan_json IS NULL AND n.event_id>=? AND n.event_id<? AND {pending} '
+        'AND n.event_id NOT IN (SELECT event_id FROM flag_events) LIMIT 1',
+        (graph_id, graph_id, f'overdue:{graph_id}:', f'overdue:{graph_id};'),
+    ).fetchone() is not None
+
+
+def projection_revision(store: PacGraphStore, graph_id: str, at: int) -> int | None:
+    row = store._db.execute(
+        'SELECT revision,projected_revision,next_due_ms FROM workflow_tick_projection WHERE graph_id=?',
+        (graph_id,),
+    ).fetchone()
+    if row is None:
+        return -1  # Missing derived data can only cause extra work, never skip it.
+    if row['revision'] != row['projected_revision'] or (
+        row['next_due_ms'] is not None and at > row['next_due_ms']
+    ):
+        return int(row['revision'])
+    return None
+
+
+def record_projection(store: PacGraphStore, graph_id: str, revision: int, at: int) -> None:
+    # Keep the revision captured BEFORE projection. Its own writes, another
+    # writer's commit or a child change must not be cleared by this bookmark.
+    with store.write() as db:
+        current = db.execute(
+            'SELECT revision FROM workflow_tick_projection WHERE graph_id=?', (graph_id,),
+        ).fetchone()
+        if current is None or current[0] != revision:
+            return
+        due = db.execute("""
+            SELECT MIN(deadline) FROM (
+                SELECT deadline_ms AS deadline FROM workflow_nodes
+                WHERE graph_id=? AND state NOT IN ('failed','blocked','cancelled')
+                UNION ALL
+                SELECT expansion_deadline_ms FROM workflow_graphs
+                WHERE graph_id=? AND state NOT IN ('completed','failed','cancelled')
+                UNION ALL
+                SELECT deadline_ms FROM workflow_expansions WHERE parent_graph_id=?
+            ) WHERE deadline >= ?
+        """, (graph_id, graph_id, graph_id, at)).fetchone()[0]
+        db.execute(
+            'UPDATE workflow_tick_projection SET projected_revision=?,next_due_ms=? '
+            'WHERE graph_id=? AND revision=?', (revision, due, graph_id, revision),
+        )

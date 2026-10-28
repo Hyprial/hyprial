@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.harnesses.capabilities import DECLARED_HARNESSES as DECLARED_HARNESSES
     from hyprial.daemon.impl.configuration.network_profile import DEFAULT_PROFILE as DEFAULT_PROFILE
     from hyprial.daemon.impl.application import DaemonApplication as DaemonApplication
+    from hyprial.daemon.impl.forwarding.membership.maintenance import TailnetMaintenance as TailnetMaintenance
     from hyprial.daemon.impl.configuration.ownership import DaemonOwnershipBusy as DaemonOwnershipBusy
     from hyprial.daemon.impl.configuration.ownership import DaemonStateOwnershipFence as DaemonStateOwnershipFence
     from hyprial.daemon.impl.desired_state.store import DesiredStateStore as DesiredStateStore
@@ -148,6 +149,7 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.transfer.archive.session_files import claude_session_file_in_session_root as claude_session_file_in_session_root
     from hyprial.daemon.impl.harnesses.runtime._launch_cleanup import cleanup_launch_resources as cleanup_launch_resources
     from hyprial.daemon.impl.pac.graphs.edits import close_graph as close_graph
+    from hyprial.daemon.impl.harnesses.model_provider import with_reasoning_effort as with_reasoning_effort
     from hyprial.daemon.impl.harnesses.model_provider import codex_provider_configuration as codex_provider_configuration
     from hyprial.daemon.impl.adapters.lark.credentials.scopes import configured_app_id as configured_app_id
     from hyprial.daemon.impl.adapters.lark.credentials.identities import configured_identity_gateway as configured_identity_gateway
@@ -165,6 +167,7 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.dispatch.matrix import dispatch_reminders as dispatch_reminders
     from hyprial.daemon.impl.org.document import document_summary as document_summary
     from hyprial.daemon.impl.transfer.landing.runtime import downgrade_state as downgrade_state
+    from hyprial.daemon.impl.adapters.rollback import downgrade_adapter_state as downgrade_adapter_state
     from hyprial.daemon.impl.network.tailcat import ensure_device_key as ensure_device_key
     from hyprial.daemon.impl.links.ports import HOLD_REASON_KEY as HOLD_REASON_KEY
     from hyprial.daemon.impl.dispatch.matrix import ensure_dispatch_policy as ensure_dispatch_policy
@@ -189,6 +192,7 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.links.ports import LinkSendObserver as LinkSendObserver
     from hyprial.daemon.impl.harnesses.pi.loader import find_pi_package_root as find_pi_package_root
     from hyprial.daemon.impl.pac.graphs.events import follow_lifetime as follow_lifetime
+    from hyprial.daemon.impl.harnesses.runtime.ports import harness_desired_generation as harness_desired_generation
     import hyprial.daemon.impl.harnesses.runtime.tmux as harnesses_tmux
     from hyprial.daemon.impl.correlation.availability_loud import is_human_facing_requester as is_human_facing_requester
     import hyprial.daemon.impl.adapters.lark.contracts.lifecycle as lark_lifecycle
@@ -235,6 +239,7 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.configuration.identity import read_settings_identity as read_settings_identity
     from hyprial.daemon.impl.adapters.lark.credentials.onboarding import reauthorize_lark_app as reauthorize_lark_app
     from hyprial.daemon.impl.transfer.landing.receive import receive_bundle as receive_bundle
+    from hyprial.daemon.impl.autoupdate.alert import prime_upgrade_alert_imports as prime_upgrade_alert_imports
     from hyprial.daemon.impl.autoupdate.alert import record_alert_outcome as record_alert_outcome
     from hyprial.daemon.impl.bootstrap.adapter_registration import remove_gateway_route as remove_gateway_route
     from hyprial.daemon.impl.bootstrap.adapter_registration import remove_lark_gateway as remove_lark_gateway
@@ -360,6 +365,7 @@ _FACADE_EXPORTS = {
     'DECLARED_HARNESSES': ('hyprial.daemon.impl.harnesses.capabilities', 'DECLARED_HARNESSES'),
     'DEFAULT_PROFILE': ('hyprial.daemon.impl.configuration.network_profile', 'DEFAULT_PROFILE'),
     'DaemonApplication': ('hyprial.daemon.impl.application', 'DaemonApplication'),
+    'TailnetMaintenance': ('hyprial.daemon.impl.forwarding.membership.maintenance', 'TailnetMaintenance'),
     'DaemonOwnershipBusy': ('hyprial.daemon.impl.configuration.ownership', 'DaemonOwnershipBusy'),
     'DaemonStateOwnershipFence': ('hyprial.daemon.impl.configuration.ownership', 'DaemonStateOwnershipFence'),
     'DesiredStateStore': ('hyprial.daemon.impl.desired_state.store', 'DesiredStateStore'),
@@ -459,6 +465,7 @@ _FACADE_EXPORTS = {
     'claude_session_target': ('hyprial.daemon.impl.transfer.archive.session_files', 'claude_session_target'),
     'cleanup_launch_resources': ('hyprial.daemon.impl.harnesses.runtime._launch_cleanup', 'cleanup_launch_resources'),
     'close_graph': ('hyprial.daemon.impl.pac.graphs.edits', 'close_graph'),
+    'with_reasoning_effort': ('hyprial.daemon.impl.harnesses.model_provider', 'with_reasoning_effort'),
     'codex_provider_configuration': ('hyprial.daemon.impl.harnesses.model_provider', 'codex_provider_configuration'),
     'configured_app_id': ('hyprial.daemon.impl.adapters.lark.credentials.scopes', 'configured_app_id'),
     'configured_identity_gateway': ('hyprial.daemon.impl.adapters.lark.credentials.identities', 'configured_identity_gateway'),
@@ -476,6 +483,7 @@ _FACADE_EXPORTS = {
     'dispatch_reminders': ('hyprial.daemon.impl.dispatch.matrix', 'dispatch_reminders'),
     'document_summary': ('hyprial.daemon.impl.org.document', 'document_summary'),
     'downgrade_state': ('hyprial.daemon.impl.transfer.landing.runtime', 'downgrade_state'),
+    'downgrade_adapter_state': ('hyprial.daemon.impl.adapters.rollback', 'downgrade_adapter_state'),
     'ensure_device_key': ('hyprial.daemon.impl.network.tailcat', 'ensure_device_key'),
     'ensure_dispatch_policy': ('hyprial.daemon.impl.dispatch.matrix', 'ensure_dispatch_policy'),
     'ensure_lark_gateway_addable': ('hyprial.daemon.impl.bootstrap.adapter_registration', 'ensure_lark_gateway_addable'),
@@ -500,6 +508,7 @@ _FACADE_EXPORTS = {
     'LinkSendObserver': ('hyprial.daemon.impl.links.ports', 'LinkSendObserver'),
     'find_pi_package_root': ('hyprial.daemon.impl.harnesses.pi.loader', 'find_pi_package_root'),
     'follow_lifetime': ('hyprial.daemon.impl.pac.graphs.events', 'follow_lifetime'),
+    'harness_desired_generation': ('hyprial.daemon.impl.harnesses.runtime.ports', 'harness_desired_generation'),
     'harnesses_tmux': ('hyprial.daemon.impl.harnesses.runtime.tmux', None),
     'is_human_facing_requester': ('hyprial.daemon.impl.correlation.availability_loud', 'is_human_facing_requester'),
     'lark_lifecycle': ('hyprial.daemon.impl.adapters.lark.contracts.lifecycle', None),
@@ -546,6 +555,7 @@ _FACADE_EXPORTS = {
     'read_settings_identity': ('hyprial.daemon.impl.configuration.identity', 'read_settings_identity'),
     'reauthorize_lark_app': ('hyprial.daemon.impl.adapters.lark.credentials.onboarding', 'reauthorize_lark_app'),
     'receive_bundle': ('hyprial.daemon.impl.transfer.landing.receive', 'receive_bundle'),
+    'prime_upgrade_alert_imports': ('hyprial.daemon.impl.autoupdate.alert', 'prime_upgrade_alert_imports'),
     'record_alert_outcome': ('hyprial.daemon.impl.autoupdate.alert', 'record_alert_outcome'),
     'remove_gateway_route': ('hyprial.daemon.impl.bootstrap.adapter_registration', 'remove_gateway_route'),
     'remove_lark_gateway': ('hyprial.daemon.impl.bootstrap.adapter_registration', 'remove_lark_gateway'),
@@ -693,6 +703,7 @@ __all__ = [
     'DECLARED_HARNESSES',
     'DEFAULT_PROFILE',
     'DaemonApplication',
+    'TailnetMaintenance',
     'DaemonOwnershipBusy',
     'DaemonStateOwnershipFence',
     'DesiredStateStore',
@@ -793,6 +804,7 @@ __all__ = [
     'claude_session_target',
     'cleanup_launch_resources',
     'close_graph',
+    'with_reasoning_effort',
     'codex_provider_configuration',
     'configured_app_id',
     'configured_identity_gateway',
@@ -810,6 +822,7 @@ __all__ = [
     'dispatch_reminders',
     'document_summary',
     'downgrade_state',
+    'downgrade_adapter_state',
     'ensure_device_key',
     'ensure_dispatch_policy',
     'ensure_lark_gateway_addable',
@@ -821,6 +834,7 @@ __all__ = [
     'find_lark_cli',
     'find_pi_package_root',
     'follow_lifetime',
+    'harness_desired_generation',
     'harnesses_tmux',
     'HOLD_REASON_KEY',
     'HOLD_REASONS',
@@ -880,6 +894,7 @@ __all__ = [
     'read_settings_identity',
     'reauthorize_lark_app',
     'receive_bundle',
+    'prime_upgrade_alert_imports',
     'record_alert_outcome',
     'remove_gateway_route',
     'remove_lark_gateway',

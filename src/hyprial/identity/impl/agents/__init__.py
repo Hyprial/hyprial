@@ -43,6 +43,7 @@ from hyprial.identity.impl.agents.home.environment import (
 from hyprial.identity.impl.agents.runtime.context import (
     AgentRuntimeContext,
     AgentRuntimeError,
+    AgentRuntimeNotice,
     AgentRuntimeRoots,
     AgentToolProfile,
     DEFAULT_AGENT_TOOL_PROFILE,
@@ -140,6 +141,7 @@ __all__ = [
     "AgentRegistryActor",
     "AgentRuntimeContext",
     "AgentRuntimeError",
+    "AgentRuntimeNotice",
     "AgentRuntimeRoots",
     "AgentSecretStore",
     "AgentToolProfile",

@@ -20,18 +20,19 @@ from hyprial.kernel import has_execution_runtime
 from .services import ServiceConnection, ServiceRegistry
 
 
-SCHEMA_VERSION = 1
+from hyprial.daemon.impl.adapters.spec import AdapterSpec, split_legacy_launch_rows
+from hyprial.kernel import DECLARED_HARNESSES
+
+SCHEMA_VERSION = 3
 
 
-SUPPORTED_SCHEMA_VERSIONS = (1, 2)
+SUPPORTED_SCHEMA_VERSIONS = (1, 2, 3)
 
 
 ROLLBACK_GUARD_PROVIDER = "__hyprial_desired_state_schema_v1__"
 
 
-_HARNESSES = frozenset(
-    {"codex", "claude", "pi", "dsh", "lark", "jev", "user-proxy"}
-)
+_HARNESSES = DECLARED_HARNESSES
 
 
 _SHA256_HEX = re.compile(r"[0-9a-f]{64}\Z")
@@ -253,6 +254,7 @@ class DesiredState:
     schema_version: int = SCHEMA_VERSION
     as_mailbox: bool = False
     harnesses: tuple[HarnessLaunchSpec, ...] = ()
+    adapters: tuple[AdapterSpec, ...] = ()
     interactive_sessions: tuple[InteractiveSession, ...] = ()
     pending_session_agent_effects: tuple[PendingSessionAgentEffect, ...] = ()
     lifecycle_resources: tuple[StoredLifecycleResource, ...] = ()
@@ -262,6 +264,12 @@ class DesiredState:
     zenoh: ZenohEndpoints = ZenohEndpoints()
     service_connections: tuple[ServiceConnection, ...] = ()
     service_registry: ServiceRegistry | None = None
+
+    def __post_init__(self) -> None:
+        if any(spec.harness not in DECLARED_HARNESSES for spec in self.harnesses):
+            raise DesiredStateError("desired harnesses must contain declared worker kinds only")
+        if any(not isinstance(spec, AdapterSpec) for spec in self.adapters):
+            raise DesiredStateError("desired adapters must contain AdapterSpec records")
 
     @classmethod
     def from_json(cls, value: object) -> Self:
@@ -282,6 +290,15 @@ class DesiredState:
         as_mailbox = record.get("asMailbox", False)
         if not isinstance(as_mailbox, bool):
             raise DesiredStateError("desired state asMailbox must be a boolean")
+        raw_adapters = record.get("adapters", [])
+        if not isinstance(raw_adapters, list):
+            raise DesiredStateError("desired state adapters must be an array")
+        if version < SCHEMA_VERSION:
+            harnesses, migrated = split_legacy_launch_rows(harnesses)
+            raw_adapters = [*raw_adapters, *migrated]
+        parsed_adapters = tuple(AdapterSpec.from_json(item) for item in raw_adapters)
+        if len({item.name for item in parsed_adapters}) != len(parsed_adapters):
+            raise DesiredStateError("desired state contains duplicate adapters")
         parsed_harnesses = tuple(
             HarnessLaunchSpec.from_json(item, f"providers[{index}]")
             for index, item in enumerate(harnesses)
@@ -372,9 +389,10 @@ class DesiredState:
         raw_registry = record.get("serviceRegistry")
         service_registry = None if raw_registry is None else ServiceRegistry.from_json(raw_registry)
         return cls(
-            schema_version=version,
+            schema_version=SCHEMA_VERSION,
             as_mailbox=as_mailbox,
             harnesses=parsed_harnesses,
+            adapters=parsed_adapters,
             interactive_sessions=parsed_sessions,
             pending_session_agent_effects=pending_effects,
             lifecycle_resources=lifecycle_resources,
@@ -388,9 +406,10 @@ class DesiredState:
 
     def to_json(self) -> dict[str, object]:
         return {
-            "schemaVersion": self.schema_version,
+            "schemaVersion": SCHEMA_VERSION,
             "asMailbox": self.as_mailbox,
             "providers": [item.to_json() for item in self.harnesses],
+            "adapters": [item.to_json() for item in self.adapters],
             "interactiveSessions": [
                 item.to_json() for item in self.interactive_sessions
             ],

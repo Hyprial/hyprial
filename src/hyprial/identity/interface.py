@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from hyprial.identity.impl.agents.actor.ports import AgentProjection as AgentProjection
     from hyprial.identity.impl.agents.registry._core import AgentRegistry as AgentRegistry
     from hyprial.identity.impl.agents.runtime.context import AgentRuntimeContext as AgentRuntimeContext
+    from hyprial.identity.impl.agents.runtime.context import AgentRuntimeNotice as AgentRuntimeNotice
     from hyprial.identity.impl.agents.runtime.context import AgentRuntimeError as AgentRuntimeError
     from hyprial.identity.impl.agents.actor.ports import AgentRuntimeLaunchLeaseCompleted as AgentRuntimeLaunchLeaseCompleted
     from hyprial.identity.impl.agents.migration._bindings import AgentRuntimeMigrationBindings as AgentRuntimeMigrationBindings
@@ -314,6 +315,7 @@ _FACADE_EXPORTS = {
     'AgentProjection': ('hyprial.identity.impl.agents.actor.ports', 'AgentProjection'),
     'AgentRegistry': ('hyprial.identity.impl.agents.registry._core', 'AgentRegistry'),
     'AgentRuntimeContext': ('hyprial.identity.impl.agents.runtime.context', 'AgentRuntimeContext'),
+    'AgentRuntimeNotice': ('hyprial.identity.impl.agents.runtime.context', 'AgentRuntimeNotice'),
     'AgentRuntimeError': ('hyprial.identity.impl.agents.runtime.context', 'AgentRuntimeError'),
     'AgentRuntimeLaunchLeaseCompleted': ('hyprial.identity.impl.agents.actor.ports', 'AgentRuntimeLaunchLeaseCompleted'),
     'AgentRuntimeMigrationBindings': ('hyprial.identity.impl.agents.migration._bindings', 'AgentRuntimeMigrationBindings'),
@@ -611,6 +613,7 @@ __all__ = [
     'AgentProjection',
     'AgentRegistry',
     'AgentRuntimeContext',
+    'AgentRuntimeNotice',
     'AgentRuntimeError',
     'AgentRuntimeLaunchLeaseCompleted',
     'AgentRuntimeMigrationBindings',

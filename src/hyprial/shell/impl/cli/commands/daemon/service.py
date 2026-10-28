@@ -42,10 +42,10 @@ def _service_is_interactive() -> bool:
     return sys.stdin.isatty()
 
 
-def _serving_daemon_pid() -> int | None:
+def _serving_daemon_pid(timeout_seconds: float = 1.0) -> int | None:
     services = get_services()
     try:
-        value = services._daemon_probe(timeout=1.0)
+        value = services._daemon_probe(timeout=min(1.0, max(0.0, timeout_seconds)))
     except (services.CliError, ipc_errors.TransientDaemonError, OSError):
         return None
     daemon = value.get("daemon") if isinstance(value, dict) else None
@@ -234,8 +234,16 @@ def _lost_restart_data(status: Any, reason: str) -> JsonObject:
     }
 
 
-def restart_supervised_daemon(before_pid: int | None):
-    """Restart through an attributable supervisor, or return None when unmanaged."""
+def restart_supervised_daemon(
+    before_pid: int | None,
+    *,
+    timeout_seconds: float | None = None,
+):
+    """Restart through an attributable supervisor, or return None when unmanaged.
+
+    Upgrade passes the shared startup hard cap explicitly. Other service
+    callers retain the manager's ordinary custody-poll default.
+    """
 
     services = get_services()
     try:
@@ -280,10 +288,29 @@ def restart_supervised_daemon(before_pid: int | None):
             "the serving daemon pid is outside supervisor custody",
             _lost_restart_data(before, "supervisor-custody-mismatch"),
         )
+    restart_deadline = (
+        services.time.monotonic() + max(0.0, timeout_seconds)
+        if timeout_seconds is not None
+        else None
+    )
     try:
-        after = manager.restart(_serving_daemon_pid)
+        after = (
+            manager.restart(_serving_daemon_pid)
+            if timeout_seconds is None
+            else manager.restart(
+                _serving_daemon_pid,
+                timeout_seconds=timeout_seconds,
+            )
+        )
     except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
         reason = _manager_failure_reason(error)
+        if timeout_seconds is not None and reason == "supervisor-start-hard-cap":
+            raise services.CliError(
+                ipc_errors.DAEMON_START_TIMEOUT,
+                "supervised daemon did not become ready within the hard cap of "
+                f"{timeout_seconds:g}s",
+                _lost_restart_data(before, reason),
+            ) from error
         raise services.CliError(
             "SERVICE_SUPERVISION_LOST",
             f"daemon supervisor restart failed: {error}",
@@ -292,6 +319,47 @@ def restart_supervised_daemon(before_pid: int | None):
                 **_status_payload(before),
             },
         ) from error
+    if after.running is False:
+        status = after.last_exit_code
+        suffix = f" with status {status}" if isinstance(status, int) else ""
+        raise services.CliError(
+            ipc_errors.DAEMON_START_FAILED,
+            f"supervised daemon exited during startup{suffix}",
+            _lost_restart_data(after, "supervisor-child-exited"),
+        )
+    probe_timeout = 2.0
+    if restart_deadline is not None:
+        probe_timeout = min(2.0, max(0.0, restart_deadline - services.time.monotonic()))
+        if probe_timeout <= 0:
+            raise services.CliError(
+                ipc_errors.DAEMON_START_TIMEOUT,
+                "supervised daemon did not become ready within the hard cap of "
+                f"{timeout_seconds:g}s",
+                _lost_restart_data(after, "supervisor-start-hard-cap"),
+            )
+    try:
+        probe = services._daemon_probe(timeout=probe_timeout)
+    except (services.CliError, ipc_errors.TransientDaemonError, OSError) as error:
+        if timeout_seconds is None:
+            raise services.CliError(
+                "SERVICE_SUPERVISION_LOST",
+                f"could not verify the restarted daemon: {error}",
+                _lost_restart_data(after, "daemon-probe-failed"),
+            ) from error
+        raise services.CliError(
+            ipc_errors.DAEMON_START_TIMEOUT,
+            "supervised daemon did not become ready within the hard cap of "
+            f"{timeout_seconds:g}s",
+            _lost_restart_data(after, "supervisor-start-hard-cap"),
+        ) from error
+    from hyprial.kernel import DaemonLaunchResult
+
+    launched = DaemonLaunchResult.existing(probe)
+    # Let the one restart-verdict function diagnose an answering old daemon.
+    # Turning this into generic custody loss here would hide the decisive
+    # unchanged pid/epoch facts from the upgrade result and owner alert.
+    if before_pid is not None and launched.pid == before_pid:
+        return launched
     fresh_job = (
         isinstance(after.pid, int)
         and after.pid > 0
@@ -305,17 +373,6 @@ def restart_supervised_daemon(before_pid: int | None):
             "supervisor did not produce a fresh job pid matching the serving daemon",
             _lost_restart_data(after, "supervisor-restart-custody-mismatch"),
         )
-    try:
-        probe = services._daemon_probe(timeout=2.0)
-    except (services.CliError, ipc_errors.TransientDaemonError, OSError) as error:
-        raise services.CliError(
-            "SERVICE_SUPERVISION_LOST",
-            f"could not verify the restarted daemon: {error}",
-            _lost_restart_data(after, "daemon-probe-failed"),
-        ) from error
-    from hyprial.kernel import DaemonLaunchResult
-
-    launched = DaemonLaunchResult.existing(probe)
     if launched.pid != after.pid:
         raise services.CliError(
             "SERVICE_SUPERVISION_LOST",

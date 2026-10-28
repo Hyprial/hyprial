@@ -372,21 +372,34 @@ def seed_new_agent(
     *,
     json_output: bool,
     preferred_harness: str | None = None,
+    model_provider: str | None = None,
 ) -> dict[str, Any]:
     """Seed a just-created agent from the machine default, or say how to.
 
     A default for one harness is not copied into an agent whose preferred
-    harness is another: that would hand the agent a credential it does not
-    use.  The result is ``skipped`` with the command for its own harness.
+    harness is another. A renewable Codex/OpenAI login is also not copied into
+    a custom-provider agent. The result is ``skipped`` with the safe next step.
     """
 
-    if (
+    if default == "codex" and model_provider not in {None, "openai"}:
+        seed: dict[str, Any] = {
+            "state": "skipped",
+            "provider": default,
+            "modelProvider": model_provider,
+            "hint": [
+                f"the agent selects custom Codex provider {model_provider}; "
+                "the machine's renewable OpenAI auth.json is not projected",
+                f"grant its API key: hyprial agent secret grant {actor} "
+                "--source user-provider ...",
+            ],
+        }
+    elif (
         isinstance(default, str)
         and default
         and preferred_harness is not None
         and preferred_harness != default
     ):
-        seed: dict[str, Any] = {
+        seed = {
             "state": "skipped",
             "provider": default,
             "preferredHarness": preferred_harness,

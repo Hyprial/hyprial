@@ -97,7 +97,7 @@ class NetworkProfile:
     built-in default carries app-hyprial's real id below.
 
     ``invite_base_url`` is the https host of the invite landing page used
-    to render ``https://<host>/join#v1.<payload>`` invite links (tailnet
+    to render ``https://<host>/join#v2.<payload>`` invite links (tailnet
     cutover §5.1).  The default is a placeholder — 待运维交付 INVITE_HOST
     后替换 — and the payload never leaves the fragment, so the host only
     ever serves static pages.

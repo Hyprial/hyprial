@@ -145,13 +145,13 @@ def daemon_request(
 
 
 class DirectoryNodeKeyResolver:
-    """nodekey → owner through the daemon's org directory (``org.network``).
+    """Derived peer key → owner through daemon ``org.network {peerKey}``.
 
-    The standalone web process holds no directory of its own — the daemon
-    is the authority — so the PROXY v2 TLV ``0xE0`` nodekey is mapped to an
-    owner by asking the daemon for the orgs' device directories and matching
-    the recorded public keys.  Fail closed on every failure: a daemon that
-    cannot answer yields no identities, never open access.
+    The standalone web process keeps no membership copy. The daemon resolves
+    the PROXY v2 TLV ``0xE0`` key from its sidecar's active leased roster and
+    per-server derived keys, not directory rows or master/server keys.
+    Fail closed on every failure: no resolved identity means no access.
+    The class name is retained for the existing web-process integration.
     """
 
     def __init__(
@@ -168,49 +168,12 @@ class DirectoryNodeKeyResolver:
             result = daemon_request(
                 self._socket_path or default_daemon_socket(),
                 "org.network",
-                {},
+                {"peerKey": nodekey},
                 timeout=self._timeout,
             )
         except OrgfsIpcError:
             return None
         if not isinstance(result, dict):
             return None
-        directory = result.get("directory")
-        self_record = result.get("self")
-        if not isinstance(directory, dict) or not isinstance(self_record, dict):
-            return None
-        local_server = self_record.get("serverPublic")
-        if not isinstance(local_server, str) or not local_server:
-            return None
-        identities: set[tuple[str, str]] = set()
-        for devices in directory.values():
-            if not isinstance(devices, list):
-                continue
-            for device in devices:
-                if not isinstance(device, dict):
-                    continue
-                derived = device.get("clientPublicByServer")
-                master = device.get("clientPublic")
-                if not isinstance(derived, dict) or not isinstance(master, str):
-                    continue
-                values = tuple(derived.values())
-                if (
-                    any(not isinstance(value, str) for value in values)
-                    or len(set(values)) != len(values)
-                    or master in values
-                    or derived.get(local_server) != nodekey
-                ):
-                    continue
-                owner = device.get("owner")
-                device_id = device.get("deviceId")
-                if (
-                    isinstance(owner, str)
-                    and owner.strip()
-                    and isinstance(device_id, str)
-                    and device_id.strip()
-                ):
-                    identities.add((owner.strip(), device_id.strip()))
-        if len(identities) != 1:
-            return None
-        owner, _device_id = identities.pop()
-        return owner
+        owner = result.get('owner')
+        return owner if isinstance(owner, str) and owner else None

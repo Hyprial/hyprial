@@ -34,7 +34,8 @@ from hyprial.identity.impl.agents.config_rebind import (
     ConfigRebindError,
     run_config_rebind,
 )
-from hyprial.kernel import ipc_errors
+from hyprial.identity.impl.agents.home.effects import HomeRuntimePreparer
+from hyprial.kernel import DECLARED_HARNESSES, ipc_errors
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +58,7 @@ class MigrationEffect:
     receipt: HomeReceipt
     state_dir: Path
     hyprial_home: Path
+    runtime_preparers: tuple[tuple[str, HomeRuntimePreparer], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,7 +181,7 @@ def config_rebind_quiescence(
     desired_rows: list[dict[str, object]] = [
         {"kind": "headless", "harness": spec.harness, "name": spec.name}
         for spec in getattr(state, "harnesses", ())
-        if spec.name in {agent.actor, agent.uri}
+        if spec.harness in DECLARED_HARNESSES and spec.name in {agent.actor, agent.uri}
     ]
     desired_rows.extend(
         {"kind": "interactive", "actor": session.actor}
@@ -414,6 +416,7 @@ def run_migration_effect(effect: MigrationEffect, owner: MigrationOwnerPort) -> 
                 tool_profile=DEFAULT_AGENT_TOOL_PROFILE,
                 base_environment=os.environ,
                 containerized=False,
+                runtime_preparers=dict(effect.runtime_preparers),
             )
             plan = coordinator.preflight(
                 authorization, manifest.entries, required_support=keys,
@@ -437,6 +440,7 @@ def run_migration_effect(effect: MigrationEffect, owner: MigrationOwnerPort) -> 
             tool_profile=DEFAULT_AGENT_TOOL_PROFILE,
             base_environment=os.environ,
             containerized=False,
+            runtime_preparers=dict(effect.runtime_preparers),
         )
         if request.method == "agent.migrate.execute":
             record = coordinator.execute(plan, bindings=bindings)

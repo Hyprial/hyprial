@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import ipaddress
 import json
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from hyprial.kernel import (
     DEFAULT_PEER_PORT,
@@ -79,32 +77,13 @@ def _stored_derp_map_url(hyprial_home: Path) -> str | None:
     return raw
 
 
-def _loopback_target(raw: str) -> str:
-    parsed = urlsplit(f"//{raw}")
-    try:
-        host = parsed.hostname
-        port = parsed.port
-        address = ipaddress.ip_address(host or "")
-    except ValueError as error:
-        raise ForwardingConfigurationError(
-            "FORWARDING_TARGET_INVALID",
-            f"forwarding inbound target must be an explicit loopback host:port; got {raw!r}",
-        ) from error
-    if not address.is_loopback or port is None or port <= 0:
-        raise ForwardingConfigurationError(
-            "FORWARDING_TARGET_INVALID",
-            f"forwarding inbound target must be an explicit loopback host:port; got {raw!r}",
-        )
-    return raw
-
-
 def daemon_forwarding_environment(
     hyprial_home: Path,
     environ: Mapping[str, str],
     *,
     node_id: str,
 ) -> dict[str, str]:
-    """Return v3 sidecar launch variables, or none when not configured.
+    """Return managed v6 sidecar launch variables, or none when not configured.
 
     The sidecar binary is the installed ``hyprial-tailcat`` (located via
     ``HYPRIAL_TAILCAT_BINARY`` or ``$HYPRIAL_HOME/bin``); the device key and
@@ -115,19 +94,13 @@ def daemon_forwarding_environment(
     raw_target = environ.get(FORWARDING_TARGET_ENV, "").strip()
     if not raw_target:
         return {}
-    target = _loopback_target(raw_target)
-    expected_listen = f"tcp/{target}"
-    configured_listen = {
-        item.strip()
-        for item in environ.get("HYPRIAL_ZENOH_LISTEN", "").split(",")
-        if item.strip()
-    }
-    if expected_listen not in configured_listen:
-        raise ForwardingConfigurationError(
-            "FORWARDING_LISTEN_MISSING",
-            f"forwarding inbound target {target} has no matching explicit "
-            "HYPRIAL_ZENOH_LISTEN endpoint",
-        )
+    from .forwarding.policy import validate_unix_exposure_target
+    from .forwarding.membership.settings import tailnet_settings
+
+    if not raw_target.startswith('unix:'):
+        raise ForwardingConfigurationError('FORWARDING_TARGET_INVALID', 'Sidecar-managed networking requires a private Unix target.')
+    target = validate_unix_exposure_target(raw_target)
+    settings = tailnet_settings(hyprial_home)
 
     home = Path(hyprial_home)
     try:
@@ -148,15 +121,12 @@ def daemon_forwarding_environment(
         "v": FORWARD_PROTOCOL_VERSION,
         "op": "up",
         "keyFile": str(key_file),
-        # Every sidecar is born deny-all. The peer-access actor replaces this
-        # from authenticated OrgFS member/device records, and the supervisor
-        # replays it on each launch. Bootstrap addresses, mesh presence and org
-        # ownership confer no inbound authority; protocol v5 admits only the
-        # derived client keys published for this server.
-        "allow": [],
-        "allowAny": False,
+        "membershipStore": settings["membershipStore"],
+        "owner": read_device_record(home).owner,
+        "deviceId": read_device_record(home).device_id,
+        "controlPort": settings["controlPort"],
         "addressFile": str(address_path(home)),
-        "inboundTarget": f"tcp:{target}",
+        "inboundTarget": target,
         "peerPort": DEFAULT_PEER_PORT,
     }
     # Slot wire (stable-zenoh-session-slots §4): the sidecar listens on
@@ -258,6 +228,8 @@ def _stored_mode(path: Path) -> str | None:
     if section is None:
         return None
     mode = section.get("mode") if isinstance(section, dict) else None
+    if isinstance(section, dict) and mode is None:
+        return None
     if not isinstance(mode, str):
         raise ForwardingConfigurationError(
             "FORWARDING_SETTINGS_INVALID",
@@ -311,7 +283,6 @@ class AutomaticForwarding:
             {
                 BINARY_ENV: str(self.binary),
                 FORWARDING_TARGET_ENV: target,
-                "HYPRIAL_ZENOH_LISTEN": f"tcp/{target}",
             },
             node_id=self.node_id,
         )

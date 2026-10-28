@@ -94,6 +94,7 @@ class OrgFsRuntime(
         excluded_orgs: Callable[[], frozenset[str]] | None = None,
         space_binding_state: Callable[[str], Mapping[str, object] | None] | None = None,
         announce_instrumentation_enabled: bool = False,
+        trust_tailnet_members: bool = False,
     ) -> None:
         self.state_dir = Path(state_dir)
         self.node_id = node_id
@@ -102,6 +103,7 @@ class OrgFsRuntime(
         self.logger = logger
         self._announce_instrumentation_enabled = announce_instrumentation_enabled
         self.owner_notifier = owner_notifier
+        self._trust_tailnet_members = trust_tailnet_members
         self._excluded_orgs = excluded_orgs or (lambda: frozenset())
         self._space_binding_state = space_binding_state or (lambda _space_id: None)
         self.blobs = BlobAuthority(self.state_dir)

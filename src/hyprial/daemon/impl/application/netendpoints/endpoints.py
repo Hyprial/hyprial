@@ -160,21 +160,11 @@ def _resolve_forwarding(
         hyprial_home, os.environ, node_id=node_id
     )
     if automatic is not None and zenoh_listen:
-        # An explicit listen list stays a complete override: reuse a bound
-        # loopback entry in it, never append a hidden one.
-        target = next(
-            (
-                endpoint.removeprefix("tcp/")
-                for endpoint in zenoh_listen
-                if _endpoint_host(endpoint) == "127.0.0.1"
-                and not endpoint.endswith(":0")
-            ),
-            None,
-        )
-        if target is None:
-            automatic, reason = None, "LISTEN_CONFLICT"
-        else:
-            return policy, automatic.environment(target), None, None
+        if any(not endpoint.startswith('unixsock-stream/') for endpoint in zenoh_listen):
+            raise ForwardingConfigurationError('FORWARDING_TARGET_INVALID',
+                'Managed networking requires private Unix listeners; use forwarding=off for an isolated TCP lab.')
+        target = 'unix:' + zenoh_listen[0].removeprefix('unixsock-stream/')
+        return policy, automatic.environment(target), None, None
     if automatic is None and policy.mode == "on":
         raise ValueError(
             f"FORWARDING_UNAVAILABLE: {FORWARDING_MODE_ENV}=on but {reason}"
@@ -215,6 +205,7 @@ def _open_transport(
             error_text = str(error)
             if (
                 forwarding_listen
+                and forwarding_listen[0].startswith("tcp/")
                 and rebinds > 0
                 and forwarding_listen[0] in error_text
             ):

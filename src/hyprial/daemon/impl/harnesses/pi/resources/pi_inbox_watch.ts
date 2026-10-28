@@ -238,7 +238,14 @@ export class InboxWatch {
     nowMs: number,
   ): InboxChange | null {
     this.settle(this.poll, action);
-    if (this.terminal(outcome)) return null;
+    // A restart keeps the registration but needs refresh to restore liveness.
+    // Only refresh may decide to re-register while that handshake is owed.
+    const refreshingStaleRead =
+      (action instanceof ListInbox || action instanceof Wait) &&
+      outcome instanceof Rejected &&
+      outcome.code === "STALE_SESSION" &&
+      this.refreshOwedState;
+    if (!refreshingStaleRead && this.terminal(outcome)) return null;
     if (action instanceof Register) {
       this.registerDone(outcome, nowMs);
     } else if (action instanceof Refresh) {

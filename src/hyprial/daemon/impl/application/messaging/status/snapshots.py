@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from __future__ import annotations
 import contextlib
+from hyprial.daemon.impl.adapters.spec import is_adapter_provider
+from collections import defaultdict
 from collections.abc import Iterator
+from hyprial.daemon.impl.harnesses.capabilities import worker_spec
 from typing import TYPE_CHECKING
 from hyprial.daemon.impl.desired_state  import (
     DesiredState,
@@ -71,9 +74,9 @@ class _WorkerSnapshotMixin:
     def _build_worker_status_snapshot(self) -> _WorkerStatusSnapshot:
         """One supervisor round trip + one desired-state load, as two tables.
 
-        Both lookups reproduce their per-call predecessors exactly, including
-        first-match-wins ordering: ``running_by_actor`` scans statuses in
-        order and claims both the canonical URI and the bare name;
+        Kind lookup uses the same unambiguous worker resolver as individual
+        reads. ``running_by_actor`` scans statuses in order and claims both
+        the canonical URI and the bare name;
         ``session_ref_by_actor`` scans harness specs in order and keeps the
         first spec's ref even when that ref is absent (None).
         """
@@ -88,11 +91,14 @@ class _WorkerSnapshotMixin:
         except Exception:  # noqa: BLE001 - mirrors _canonical_harness_uri
             desired_loaded = None
             specs = ()
-        # First-by-name, the same lookup _canonical_harness_uri's fallback
-        # performs when no spec is passed.
-        specs_by_name: dict[str, HarnessLaunchSpec] = {}
+        # Group once to keep snapshot construction linear in fleet size.
+        # Adapter metadata must not supply an agent's pinned owner.
+        grouped: dict[str, list[HarnessLaunchSpec]] = defaultdict(list)
         for spec in specs:
-            specs_by_name.setdefault(spec.name, spec)
+            grouped[spec.name].append(spec)
+        specs_by_name = {
+            name: worker_spec(candidates, name) for name, candidates in grouped.items()
+        }
         running_by_actor: dict[str, bool] = {}
         for status in statuses:
             if not isinstance(status, dict):
@@ -100,7 +106,7 @@ class _WorkerSnapshotMixin:
             name = status.get("name")
             if not isinstance(name, str) or not name:
                 continue
-            if status.get("runtime") == "lark":
+            if status.get("adapter") is not None or is_adapter_provider(status.get("runtime")):
                 continue
             running = bool(status.get("running"))
             running_by_actor.setdefault(
@@ -111,8 +117,6 @@ class _WorkerSnapshotMixin:
         refs = read_refs() if callable(read_refs) else {}
         session_ref_by_actor: dict[str, str | None] = {}
         for spec in specs:
-            if spec.harness == "lark":
-                continue
             session_ref_by_actor.setdefault(
                 self._canonical_harness_uri(spec.name, spec),
                 refs.get((spec.harness, spec.name)),

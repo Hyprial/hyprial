@@ -42,6 +42,9 @@ from typing import Any
 
 from hyprial.daemon.impl.state_db  import StateDatabase
 from .settlements import HARNESS_SETTLEMENT_SCHEMA
+from hyprial.kernel import DECLARED_HARNESSES
+from hyprial.daemon.impl.adapters.rollback import backup_document
+from hyprial.daemon.impl.adapters.storage import ADAPTER_SCHEMA, read_adapters, insert_adapters, migrate_adapters
 from .services import (
     _SERVICE_SCHEMA,
     delete_service_state,
@@ -147,7 +150,7 @@ CREATE TABLE IF NOT EXISTS zenoh_endpoints (
     endpoint TEXT NOT NULL,
     PRIMARY KEY (direction, ordinal)
 );
-""" + _SERVICE_SCHEMA
+""" + _SERVICE_SCHEMA + ADAPTER_SCHEMA
 
 
 def _journal_proved_running(db: sqlite3.Connection) -> set[tuple[str, str]]:
@@ -222,7 +225,7 @@ class DesiredStateSqliteShadow:
             state_db if isinstance(state_db, StateDatabase) else StateDatabase(state_db)
         )
 
-    def write_document(self, document: Mapping[str, Any]) -> None:
+    def write_document(self, document: Mapping[str, Any], *, migration_backup=None) -> None:
         """Replace the whole content with ``document`` in ONE transaction.
 
         This is the commit point of every desired-state mutation (U0a-2):
@@ -238,10 +241,14 @@ class DesiredStateSqliteShadow:
             if "execution_runtime_json" not in columns:
                 db.execute("ALTER TABLE harnesses ADD COLUMN execution_runtime_json TEXT")
             previous = db.execute("SELECT schema_version FROM root_state WHERE id=1").fetchone()
-            if previous is not None and previous[0] == 2:
-                document = {**document, "schemaVersion": 2}
+            if previous is not None:
+                document = {**document, "schemaVersion": max(previous[0], document["schemaVersion"])}
+            backup_document(db, migration_backup)
             self._delete_all(db)
             self._insert_all(db, document)
+
+    def migrate_adapters(self) -> None:
+        migrate_adapters(self, _SCHEMA)
 
     def has_document(self) -> bool:
         """Whether a document was ever written (row writes need its root)."""
@@ -423,6 +430,8 @@ class DesiredStateSqliteShadow:
                     )
                 ],
             }
+            if int(root["schema_version"]) >= 3:
+                document["adapters"] = read_adapters(db)
             effects = [
                 {
                     "effectId": row["effect_id"],
@@ -602,7 +611,7 @@ class DesiredStateSqliteShadow:
             ghosts = [
                 (harness, name)
                 for harness, name in candidates
-                if str(harness) != "lark"
+                if str(harness) in DECLARED_HARNESSES
                 and (str(harness), str(name)) not in proved_running
             ]
             db.executemany(
@@ -804,6 +813,7 @@ class DesiredStateSqliteShadow:
             "desired_state_meta",
             "root_state",
             "harnesses",
+            "adapters",
             "interactive_sessions",
             "pending_session_agent_effects",
             "lifecycle_resources",
@@ -818,6 +828,7 @@ class DesiredStateSqliteShadow:
     def _insert_all(
         self, db: sqlite3.Connection, document: Mapping[str, Any]
     ) -> None:
+        insert_adapters(db, document)
         zenoh = document.get("zenoh")
         zenoh_record = zenoh if isinstance(zenoh, dict) else {}
         db.execute(

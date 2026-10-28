@@ -20,7 +20,7 @@ from hyprial.shell.impl.cli.commands.common.daemon_stop import (
 )
 from hyprial.shell.impl.cli.commands.common.services import get_services
 from hyprial.shell.impl.cli.commands.common.support import (
-    DAEMON_START_IDLE_BUDGET_SECONDS,
+    DAEMON_START_HARD_CAP_SECONDS,
     JsonObject,
 )
 from hyprial.shell.impl.cli.commands.socialware.commands import _require_installed_commit
@@ -137,10 +137,67 @@ def _install_locked_requirement(
             ) from error
     return completed, installed
 
+def _verify_restart_verdict(
+    launched: object,
+    *,
+    before_pid: int | None,
+    before_epoch: str | None,
+    installed_version: str | None,
+) -> DaemonLaunchResult:
+    """Judge direct and supervised restarts from the same daemon facts."""
+
+    services = get_services()
+    if not isinstance(launched, DaemonLaunchResult):
+        raise services.CliError(
+            "INVALID_RESPONSE",
+            "daemon launch returned an unexpected result shape",
+        )
+    if launched.running is not True:
+        raise services.CliError(
+            "INVALID_RESPONSE", "restarted daemon did not report running"
+        )
+    after_pid = launched.pid
+    if not isinstance(after_pid, int) or after_pid <= 0:
+        raise services.CliError(
+            "INVALID_RESPONSE", "restarted daemon did not report a valid pid"
+        )
+    after_epoch = launched.epoch
+    after_version = launched.status.get("version")
+    if not isinstance(after_epoch, str) or not after_epoch:
+        raise services.CliError(
+            "INVALID_RESPONSE", "restarted daemon did not report a valid epoch"
+        )
+    if not isinstance(after_version, str) or not after_version:
+        raise services.CliError(
+            "INVALID_RESPONSE", "restarted daemon did not report its version"
+        )
+    unchanged_identity: list[str] = []
+    if before_pid is not None and after_pid == before_pid:
+        unchanged_identity.append("pid")
+    if before_epoch is not None and after_epoch == before_epoch:
+        unchanged_identity.append("epoch")
+    if unchanged_identity:
+        raise services.CliError(
+            "INVALID_RESPONSE",
+            "old daemon is still answering after restart; unchanged "
+            f"{' and '.join(unchanged_identity)} "
+            f"(pid={after_pid}, epoch={after_epoch})",
+        )
+    if installed_version is not None and after_version != installed_version:
+        raise services.CliError(
+            "INVALID_RESPONSE",
+            "answering daemon reports version "
+            f"{after_version}, expected installed version {installed_version}",
+        )
+    return launched
+
+
 def restart_daemon(
     result: JsonObject,
     *,
     before_pid: int | None,
+    before_epoch: str | None = None,
+    installed_version: str | None = None,
     survivor_idempotency_scope: str,
     stop: bool = True,
 ) -> DaemonLaunchResult:
@@ -174,7 +231,10 @@ def restart_daemon(
     )
 
     try:
-        supervised = restart_supervised_daemon(before_pid)
+        supervised = restart_supervised_daemon(
+            before_pid,
+            timeout_seconds=DAEMON_START_HARD_CAP_SECONDS,
+        )
     except services.CliError as error:
         if error.code in {"SERVICE_SUPERVISION_LOST", "SERVICE_OWNERSHIP_REFUSED"}:
             result["supervision"] = "lost"
@@ -193,10 +253,12 @@ def restart_daemon(
         raise
     if supervised is not None:
         result["supervision"] = "supervised"
-        return supervised
-    result["supervision"] = "unsupervised"
+        launched = supervised
+    else:
+        result["supervision"] = "unsupervised"
+        launched = None
 
-    if stop:
+    if launched is None and stop:
         try:
             services._stop_daemon_gracefully()
         except (services.CliError, ipc_errors.TransientDaemonError) as stop_error:
@@ -263,44 +325,25 @@ def restart_daemon(
                 result["survivorAlert"] = survivor_alert.to_json()
                 if marker_path is not None:
                     services.record_alert_outcome(marker_path, survivor_alert)
-    # The restart wait covers only the serving boundary, so it uses init's
-    # progress-idle budget and hard cap -- not a fleet-scaled one.  The 2026-08-31
-    # measurement that justified 90s here (a six-adapter machine needing
-    # 161s) was adapter restore time, and restore is no longer inside this
-    # wait: it runs on the daemon's own thread and reports through ping's
-    # phase.  A timeout therefore means the new daemon never came up, which
-    # `_launch_daemon_process` raises and the caller's restart-failed path
-    # reports -- the "still starting" third verdict this replaces existed
-    # only because restore used to sit inside the readiness budget.
-    launched = services._launch_daemon_process(
-        ready_timeout=DAEMON_START_IDLE_BUDGET_SECONDS
+    # Upgrade adjudication uses the existing 120 second startup hard cap as
+    # one bounded observation window.  The ordinary 30 second value is an
+    # idle-progress budget for interactive start feedback, not evidence that
+    # a live replacement failed.  Production 0.5.5 reached serving at 2m28s
+    # after that idle window had already raised a false failure; the hard cap
+    # is the repository's named absolute startup bound and is deliberately not
+    # extended here.
+    if launched is None:
+        launched = services._launch_daemon_process(
+            ready_timeout=DAEMON_START_HARD_CAP_SECONDS
+        )
+    # F2 (2026-09-04): direct launch and supervisor custody must not grow
+    # separate verdicts. Both feed this one typed fact check.
+    return _verify_restart_verdict(
+        launched,
+        before_pid=before_pid,
+        before_epoch=before_epoch,
+        installed_version=installed_version,
     )
-    # F2 (2026-09-04): this used to dig for the nested ps shape
-    # ``launched["daemon"]`` against the flat launch answer, so every
-    # upgrade ended in UPGRADE_RESTART_FAILED with a false alert, and a
-    # hand-written stub returning the nested shape kept the tests green.
-    # The launch answer is the typed ``DaemonLaunchResult`` now; anything
-    # that is not the type is a contract break and takes the loud path
-    # below, never a silent misread.
-    if not isinstance(launched, DaemonLaunchResult):
-        raise services.CliError(
-            "INVALID_RESPONSE",
-            "daemon launch returned an unexpected result shape",
-        )
-    if launched.running is not True:
-        raise services.CliError(
-            "INVALID_RESPONSE", "restarted daemon did not report running"
-        )
-    after_pid = launched.pid
-    if not isinstance(after_pid, int) or after_pid <= 0:
-        raise services.CliError(
-            "INVALID_RESPONSE", "restarted daemon did not report a valid pid"
-        )
-    if before_pid is not None and after_pid == before_pid:
-        raise services.CliError(
-            "INVALID_RESPONSE", "daemon restart did not yield a fresh pid"
-        )
-    return launched
 
 
 def _restart_daemon_onto_install(
@@ -342,6 +385,8 @@ def _restart_daemon_onto_install(
         launched = restart_daemon(
             restart_result,
             before_pid=before["pid"],
+            before_epoch=before["epoch"],
+            installed_version=installed_version,
             survivor_idempotency_scope=str(resolution.commit),
         )
         after_pid = launched.pid
@@ -437,7 +482,11 @@ def _restart_daemon_onto_install(
         {
             "restarted": True,
             "reason": "resolved tag changed; running daemon restarted",
-            "after": {"pid": after_pid, "version": installed_version},
+            "after": {
+                "pid": after_pid,
+                "epoch": launched.epoch,
+                "version": installed_version,
+            },
         }
     )
     # 3c116ad2 (P1): the launch answer proves only the serving boundary.

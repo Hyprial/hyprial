@@ -10,6 +10,8 @@ actor; no actor handler waits for a process, socket, or network call.
 
 from __future__ import annotations
 
+from hyprial.daemon.impl.adapters.spec import AdapterSpec
+
 import json
 import queue
 import threading
@@ -582,6 +584,8 @@ class AdapterRuntime:
             process_running=bool(value["processRunning"]),
             pid=(int(value["pid"]) if "pid" in value else None),
             error=(str(value["error"]) if "error" in value else None),
+            next_retry_at=(float(value["nextRetryAt"]) if "nextRetryAt" in value else None),
+            retry_attempt=(int(value["retryAttempt"]) if "retryAttempt" in value else None),
             lifecycle_correlation_id=(
                 str(value["lifecycleCorrelationId"])
                 if "lifecycleCorrelationId" in value
@@ -605,8 +609,8 @@ class AdapterRuntime:
         result: Future[dict[str, list[str]]] = Future()
         return self._submit(_Reload(channels, result), result, 5.0)
 
-    def restore(self, specs: tuple[Any, ...]) -> AdapterRestoreSummary:
-        names = tuple(sorted(spec.name for spec in specs if spec.harness == "lark"))
+    def restore(self, specs: tuple[AdapterSpec, ...]) -> AdapterRestoreSummary:
+        names = tuple(sorted(spec.name for spec in specs if spec.provider == "lark"))
         result: Future[AdapterRestoreSummary] = Future()
         timeout = max(5.0, len(names) * 0.5 + 5.0)
         return self._submit(_Restore(names, result), result, timeout)

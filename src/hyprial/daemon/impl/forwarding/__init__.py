@@ -17,7 +17,6 @@ from .services import (  # noqa: F401
 from .controller import (  # noqa: F401
     ForwardingControllerAuthority,
     ForwardingSidecarController,
-    _AllowSidecar,
     _CloseSidecar,
     _DEFAULT_TIMEOUT,
     _ExposeSidecar,

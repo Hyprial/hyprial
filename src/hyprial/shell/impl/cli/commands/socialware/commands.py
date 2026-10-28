@@ -6,6 +6,7 @@ from hyprial.shell.impl.cli.commands.common.services import get_services
 
 from typing import Any
 from hyprial.kernel import ipc_errors
+import sys
 import typer
 
 from hyprial.shell.impl.cli.commands.common.support import JsonObject, _probe_reports_running
@@ -64,12 +65,22 @@ def _running_daemon_before_upgrade(version: str) -> JsonObject | None:
         return None
     daemon = status.get("daemon") if isinstance(status.get("daemon"), dict) else status
     pid = daemon.get("pid")
+    epoch = daemon.get("epoch")
+    reported_version = daemon.get("version")
     if not isinstance(pid, int) or pid <= 0:
         raise services.CliError("INVALID_RESPONSE", "running daemon did not report a valid pid")
-    return {"pid": pid, "version": version}
+    if not isinstance(epoch, str) or not epoch:
+        raise services.CliError(
+            "INVALID_RESPONSE", "running daemon did not report a valid epoch"
+        )
+    if not isinstance(reported_version, str) or not reported_version:
+        raise services.CliError(
+            "INVALID_RESPONSE", "running daemon did not report its version"
+        )
+    return {"pid": pid, "epoch": epoch, "version": reported_version}
 
 
-def _prime_post_install_restart_imports() -> None:
+def _prime_post_install_restart_imports() -> frozenset[str]:
     """Load restart-only modules before ``uv tool install`` replaces us.
 
     A uv tool upgrade atomically removes the distribution backing this still
@@ -81,19 +92,102 @@ def _prime_post_install_restart_imports() -> None:
     destructive install boundary.
     """
 
-    # Resolve the real public APIs while this installed distribution still
-    # exists. Explicit imports retain lazy loading without runtime path strings.
+    # Resolve every lazy dependency used after installation while this exact
+    # distribution still backs the process.  ``uv tool install --force`` may
+    # replace package files in place; importing even one new module afterwards
+    # can combine an old package object in ``sys.modules`` with new module code.
     from hyprial.daemon import (
+        AUTOUPDATE_CHILD_ENV,
+        AUTOUPDATE_TRIGGER_ENV,
+        DesiredStateStore,
+        ForwardingConfigurationError,
+        OwnerMigrationHostedConflict,
+        RestartProcessObservation,
+        RestartProcessState,
+        ServiceConfig,
+        ServiceManager,
+        ServiceOwnershipError,
+        ensure_dispatch_policy,
+        harness_desired_generation,
+        latest_start_failure,
+        notify_restore_followup,
         notify_upgrade_outcome,
         owner_process_status,
+        prime_upgrade_alert_imports,
+        process_cpu_seconds,
+        read_last_run,
+        read_process_identity,
+        resolve_profile,
+        restart_failure_detail,
         restore_followup_budget_seconds,
+        run_mcp_entry,
         run_self_check,
+        run_upgrade_steps,
+        start_failure_line,
+        tcp_probe,
+        write_last_run,
     )
-    from hyprial.kernel import HarnessLaunchSpec, parse_channel_uri
+    from hyprial.identity import (
+        IDENTITY_TRANSACTION_FD_ENV,
+        IdentityTransactionBusy,
+        IdentityTransactionLock,
+        UserProfileError,
+        UserProfileStore,
+    )
+    from hyprial.kernel import DaemonLaunchResult, HarnessLaunchSpec, parse_channel_uri
+    from hyprial.shell.impl.cli.commands.daemon.restart import (
+        _record_autoupdate_restart_confirmation,
+    )
+    from hyprial.shell.impl.cli.commands.daemon.service import (
+        restart_supervised_daemon,
+    )
+    from hyprial.shell.impl.gui.apps import upgrade as unpack_gui
 
     _ = (
-        owner_process_status, restore_followup_budget_seconds,
-        HarnessLaunchSpec, parse_channel_uri, notify_upgrade_outcome, run_self_check,
+        AUTOUPDATE_CHILD_ENV,
+        AUTOUPDATE_TRIGGER_ENV,
+        DesiredStateStore,
+        ForwardingConfigurationError,
+        OwnerMigrationHostedConflict,
+        RestartProcessObservation,
+        RestartProcessState,
+        ServiceConfig,
+        ServiceManager,
+        ServiceOwnershipError,
+        ensure_dispatch_policy,
+        harness_desired_generation,
+        latest_start_failure,
+        notify_restore_followup,
+        notify_upgrade_outcome,
+        owner_process_status,
+        prime_upgrade_alert_imports,
+        process_cpu_seconds,
+        read_last_run,
+        read_process_identity,
+        resolve_profile,
+        restart_failure_detail,
+        restore_followup_budget_seconds,
+        run_mcp_entry,
+        run_self_check,
+        run_upgrade_steps,
+        start_failure_line,
+        tcp_probe,
+        write_last_run,
+        IDENTITY_TRANSACTION_FD_ENV,
+        IdentityTransactionBusy,
+        IdentityTransactionLock,
+        UserProfileError,
+        UserProfileStore,
+        DaemonLaunchResult,
+        HarnessLaunchSpec,
+        parse_channel_uri,
+        _record_autoupdate_restart_confirmation,
+        restart_supervised_daemon,
+        unpack_gui,
+    )
+    prime_upgrade_alert_imports()
+    return frozenset(
+        name for name in sys.modules if name == "hyprial" or name.startswith("hyprial.")
     )
 
 

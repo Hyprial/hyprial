@@ -32,6 +32,7 @@ import typer
 from hyprial.identity import ORG_SPACE_PREFIX
 from hyprial.shell.impl.cli.commands.common.support import JsonObject
 from hyprial.shell.impl.cli.commands.org.acl import acl_app
+from .maintenance import org_repin
 
 org_app = typer.Typer(
     help=(
@@ -44,6 +45,7 @@ org_app = typer.Typer(
     )
 )
 org_app.add_typer(acl_app, name="acl")
+org_app.command('repin')(org_repin)
 
 context_app = typer.Typer(
     help=(
@@ -521,6 +523,7 @@ def org_join(
 @org_app.command("leave")
 def org_leave(
     org: str = typer.Argument(..., help="Organization name."),
+    yes: bool = typer.Option(False, '--yes', help='Confirm device cutoff.'),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
     """Leave an org: remove this device and file a leave request."""
@@ -528,7 +531,8 @@ def org_leave(
 
     def operation() -> JsonObject:
         services = get_services()
-        result = services._daemon_request("org.leave", {"org": _validated_org(org)})
+        from .removal import confirmed_removal
+        result = confirmed_removal(services, 'org.leave', {'org': _validated_org(org)}, yes=yes)
         if not isinstance(result, dict):
             raise services.CliError("INVALID_RESPONSE", "org.leave must return an object")
         return {"ok": True, **result}
@@ -540,9 +544,10 @@ def org_leave(
 def org_remove(
     org: str = typer.Argument(..., help="Organization name."),
     user: str = typer.Argument(..., help="Username to remove from the org."),
+    yes: bool = typer.Option(False, '--yes', help='Confirm cutoff of all user devices.'),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
-    """Remove a user from an org and delete their device rows (owner/admin).
+    """Remove OrgFS membership, then revoke fixed sidecar devices (owner/admin).
 
     Removing someone from the org also removes them from the org's Casdoor
     group, and with it from anything else that relies on that group.
@@ -551,9 +556,9 @@ def org_remove(
 
     def operation() -> JsonObject:
         services = get_services()
-        result = services._daemon_request(
-            "org.remove", {"org": _validated_org(org), "user": user}
-        )
+        from .removal import confirmed_removal
+        result = confirmed_removal(services, 'org.remove',
+                                   {'org': _validated_org(org), 'user': user}, yes=yes)
         if not isinstance(result, dict):
             raise services.CliError("INVALID_RESPONSE", "org.remove must return an object")
         group = result.get("casdoorGroup")

@@ -40,7 +40,7 @@ def _is_online(authority: "_Authority", name: str) -> bool:
 
 
 def _build_statuses(
-    authority: "_Authority", generation: int
+    authority: "_Authority", generation: int, *, now: float | None = None
 ) -> dict[str, dict[str, object]]:
     """The one status builder.
 
@@ -51,6 +51,8 @@ def _build_statuses(
     module exists to prevent, reintroduced by the code meant to clear it.
     """
 
+    if now is None:
+        now = time.monotonic()
     known = set(authority.gateways) | set(authority.observations)
     statuses: dict[str, dict[str, object]] = {}
     for name in known:
@@ -108,6 +110,10 @@ def _build_statuses(
                 else {}
             ),
         }
+        if name in authority.quarantined and name in authority.desired:
+            statuses[name]["retryAttempt"] = authority.quarantine_attempts.get(name, 0)
+            if name in authority.retry_after:
+                statuses[name]["nextRetryAt"] = authority.retry_after[name]
         # G3 (v2): while a lifecycle transition is in flight, say who holds
         # the lock and for how long -- "谁锁的、锁了多久" -- so a wedged
         # adapter is visible in `hyprial adapter status` instead of only as
@@ -118,7 +124,7 @@ def _build_statuses(
             written = authority.transition_since.get(name)
             if written is not None:
                 statuses[name]["lifecycleAgeSeconds"] = max(
-                    0, int(time.monotonic() - written)
+                    0, int(now - written)
                 )
     return statuses
 
@@ -192,7 +198,11 @@ class _Authority:
         self.failures: dict[str, deque[float]] = {}
         self.failed_attempts: set[tuple[str, str]] = set()
         self.quarantined: set[str] = set()
+        self.quarantine_attempts: dict[str, int] = {}
         self.transitions: dict[str, str] = {}
+        #: Per-member retry identity outlives failure of the shared caller/aggregate.
+        #: Values fence cleanup against a newer transition for the same adapter.
+        self.background_spawns: dict[str, str] = {}
         #: name -> monotonic timestamp of the currently held lifecycle
         #: transition (G2: the deadline object is this write-to-pop age).
         self.transition_since: dict[str, float] = {}

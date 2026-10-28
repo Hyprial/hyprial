@@ -37,14 +37,9 @@ def wire_delivery_hooks(
         parsed = parse_agent_uri(actor)
         if parsed is None or parsed[1] != node_id:
             return True
-        spec = next(
-            (
-                item
-                for item in desired_state.load().harnesses
-                if item.name == parsed[2]
-            ),
-            None,
-        )
+        from hyprial.daemon.impl.harnesses.capabilities import worker_spec
+
+        spec = worker_spec(desired_state.load().harnesses, parsed[2])
         if spec is None:
             return True
         return harness_supports_delivery_intercept(spec.harness)

@@ -1,4 +1,4 @@
-"""PAC schema migrations 14 through 18 and the :func:`migrate` entry.
+"""PAC schema migrations 14 through 19 and the :func:`migrate` entry.
 
 The v1-v13 upgrade catalogue lives in ``_upgrades``; this module owns the
 latest steps and the version walk.  Keep the transaction atomic.
@@ -320,6 +320,88 @@ def _upgrade_v16_to_v17(db: sqlite3.Connection) -> None:
     )
 
 
+
+def _invalidate(targets: tuple[str, ...]) -> str:
+    values = ','.join(targets)
+    return f"""
+        INSERT INTO workflow_tick_projection(graph_id,revision)
+        SELECT graph_id,1 FROM workflow_graphs
+        WHERE graph_id IN ({values}) OR graph_id IN (
+            SELECT parent_graph_id FROM workflow_expansions
+            WHERE child_graph_id IN ({values})
+        )
+        ON CONFLICT(graph_id) DO UPDATE SET revision=revision+1;
+    """
+
+
+def _track(db: sqlite3.Connection, table: str, keys: tuple[str, ...]) -> None:
+    # The table/column names come only from this migration's schema. Tracking
+    # every column also covers journal-less writes such as worker restart.
+    # Later migrations adding projector inputs must rebuild the matching
+    # tracking triggers together with their new schema.
+    columns = [row[1] for row in db.execute(f'PRAGMA table_info("{table}")')]
+    changed = ' OR '.join(f'OLD."{name}" IS NOT NEW."{name}"' for name in columns)
+    for operation, sources in (
+        ('INSERT', ('NEW',)), ('DELETE', ('OLD',)), ('UPDATE', ('OLD', 'NEW')),
+    ):
+        targets = tuple(f'{source}."{key}"' for source in sources for key in keys)
+        guard = f'WHEN {changed}' if operation == 'UPDATE' else ''
+        db.execute(f"""
+            CREATE TRIGGER workflow_tick_{table}_{operation.lower()}
+            AFTER {operation} ON "{table}" {guard}
+            BEGIN {_invalidate(targets)} END
+        """)
+
+
+def upgrade_v18_to_v19(db: sqlite3.Connection) -> None:
+    """Add a derived revision/deadline index; business facts stay authoritative."""
+
+    db.execute("""
+        CREATE TABLE workflow_tick_projection (
+            graph_id TEXT PRIMARY KEY REFERENCES workflow_graphs(graph_id) ON DELETE CASCADE,
+            revision INTEGER NOT NULL DEFAULT 0,
+            projected_revision INTEGER NOT NULL DEFAULT -1,
+            next_due_ms INTEGER
+        )
+    """)
+    db.execute('INSERT INTO workflow_tick_projection(graph_id,revision) SELECT graph_id,1 FROM workflow_graphs')
+    for table in (
+        'graphs', 'nodes', 'edges', 'workflow_graphs', 'workflow_nodes',
+        'flag_events', 'workflow_worktrees', 'workflow_worker_receipts',
+    ):
+        _track(db, table, ('graph_id',))
+    _track(db, 'workflow_expansions', ('parent_graph_id', 'child_graph_id'))
+    # These envelopes describe facts already tracked in their business tables.
+    # The projector reads actor_lost/actor_unowned/launch_failed from the
+    # append-only journal itself; unknown future kinds also invalidate safely.
+    db.execute(f"""
+        CREATE TRIGGER workflow_tick_journal_insert AFTER INSERT ON journal
+        WHEN NEW.type NOT IN (
+            'flag_set','flag_reset','notification_planned','delivery_changed',
+            'structure_changed','graph_activated','graph_closed','actor_up',
+            'actor_down','actor_restored','migration_baseline','workflow_changed'
+        )
+        BEGIN {_invalidate(('NEW.graph_id',))} END
+    """)
+    db.execute("""
+        CREATE INDEX graphs_workflow_tick_open
+        ON graphs(created_at,graph_id) WHERE closed_at IS NULL
+    """)
+    db.execute("""
+        CREATE INDEX workflow_tick_unfinished ON workflow_graphs(graph_id)
+        WHERE state NOT IN ('completed','failed','cancelled')
+    """)
+    db.execute("""
+        CREATE INDEX notifications_tick_alert
+        ON notifications(json_extract(plan_json,'$.graphId'))
+        WHERE message_id IS NULL AND failed_at IS NULL AND kind='actor_alert'
+    """)
+    db.execute("""
+        CREATE INDEX notifications_tick_pending ON notifications(event_id,edge)
+        WHERE message_id IS NULL AND failed_at IS NULL
+    """)
+
+
 def migrate(db: sqlite3.Connection, legacy_schema: str, state_dir: Path | None = None) -> None:
     db.execute("BEGIN IMMEDIATE")
     try:
@@ -398,6 +480,10 @@ def migrate(db: sqlite3.Connection, legacy_schema: str, state_dir: Path | None =
         if version == 17:
             _upgrade_v17_to_v18(db)
             db.execute("PRAGMA user_version = 18")
+            version = 18
+        if version == 18:
+            upgrade_v18_to_v19(db)
+            db.execute("PRAGMA user_version = 19")
         db.commit()
     except BaseException:
         db.rollback()

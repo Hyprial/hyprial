@@ -7,6 +7,7 @@ import time
 from dataclasses import replace
 from typing import Any, TYPE_CHECKING
 from uuid import uuid4
+from hyprial.daemon.impl.adapters.spec import is_adapter_provider
 from hyprial.identity import (
     RUNTIME_INTERACTIVE,
     AgentError,
@@ -24,7 +25,7 @@ from hyprial.daemon.impl.transport import (
     KeySpace,
 )
 from hyprial.daemon.impl.transport.session_actor import TransportSessionAuthority
-from hyprial.kernel import HarnessLaunchSpec
+from hyprial.kernel import DECLARED_HARNESSES, HarnessLaunchSpec
 from hyprial.daemon.impl.composition  import (
     AgentIdentityProjectionView,
     HarnessPortClient,
@@ -38,6 +39,7 @@ from hyprial.daemon.impl.correlation.correlation  import CorrelationEventRouter
 from hyprial.kernel import (
     LIFECYCLE_OPERATION_DEADLINE_SECONDS,
     LIFECYCLE_WAIT_MARGIN_SECONDS,
+    merge_harness_launch_args,
 )
 from hyprial.daemon.impl.lifecycle_manager  import (
     LifecycleKind,
@@ -203,6 +205,12 @@ class _LifecycleOpsMixin:
         self._start_transfer_source(harnesses, manager)
 
     def _lifecycle_spec(self, spec: HarnessLaunchSpec) -> LifecycleSpec:
+        if spec.harness not in DECLARED_HARNESSES:
+            raise DaemonRequestError(
+                ipc_errors.INVALID_ARGUMENT,
+                "agent lifecycle requires a declared worker harness; "
+                "use adapter commands for external-platform adapters",
+            )
         actor = self._canonical_harness_uri(spec.name, spec)
         keys = KeySpace()
         return LifecycleSpec(
@@ -324,7 +332,7 @@ class _LifecycleOpsMixin:
         )
         if operation.kind in {LifecycleKind.CREATE, LifecycleKind.TRANSFER}:
             launch = operation.target.harness
-            if launch.harness != "lark":
+            if launch.harness in DECLARED_HARNESSES:
                 self._ensure_agent(
                     operation.target.actor,
                     harness=launch.harness,
@@ -478,7 +486,7 @@ class _LifecycleOpsMixin:
         # The IPC key stays "provider" so new CLIs and old daemons can
         # mix in either direction; locally it names a harness.
         harness = _required_string(params.get("provider"), "provider")
-        if harness == "lark":
+        if is_adapter_provider(harness):
             raise DaemonRequestError(
                 ipc_errors.USE_ADAPTER_COMMAND,
                 "Lark is an external-platform adapter; use 'hyprial adapter start <name>'",
@@ -489,9 +497,26 @@ class _LifecycleOpsMixin:
             )
         except AgentError as error:
             raise DaemonRequestError(error.code, str(error)) from error
+        from hyprial.daemon.impl.bootstrap.names import require_agent_name_available
+
+        require_agent_name_available(self, name)
         spec = HarnessLaunchSpec.from_json(
             {**params, "provider": harness, "name": name}, "provider"
         )
+        # The agent record is durable launch intent: an explicit request is
+        # merged with (and wins over) the harnessArgs stored by an earlier
+        # ``agent create``/registration, so a resident pi agent that was once
+        # started with ``-- --approve`` starts the same way again.  This is the
+        # single funnel for ``hyprial start``, daemon restore re-submission and
+        # the routine coordinator's wake, which is why the merge lives here.
+        registered_agent = self.agents.get(name)
+        if registered_agent is not None:
+            spec = replace(
+                spec,
+                args=merge_harness_launch_args(
+                    registered_agent.args_for(harness), spec.args, harness=harness
+                ),
+            )
         if resume_preflight:
             resume_ref = _required_string(params.get("sessionRef"), "sessionRef")
             self._require_resumable_session(spec, resume_ref)
@@ -656,8 +681,15 @@ class _LifecycleOpsMixin:
             and prior_agent.last_harness != harness
             else None
         )
+        warnings = [
+            warning
+            for row in (self._harnesses.status() if self._harnesses is not None else ())
+            if row.get("runtime") == spec.harness and row.get("name") == spec.name
+            for warning in row.get("warnings", ())
+        ]
         return {
             "ok": True,
+            **({"warnings": warnings} if warnings else {}),
             "id": f"{harness}:{name}",
             "operationId": operation_id,
             "changed": bool(result.completed_effects),
@@ -679,21 +711,15 @@ class _LifecycleOpsMixin:
         agents_only = params.get("agentsOnly") is True
         removed: list[str] = []
         if params.get("all") is True:
+            if not agents_only and self._lark_client is not None:
+                for adapter in state.adapters:
+                    self._lark_client.stop(adapter.name)
+                    removed.append(f"{adapter.provider}:{adapter.name}")
             for spec in state.harnesses:
-                if spec.harness == "lark":
-                    # Adapters are never agents: `agent stop` is agents-only and
-                    # leaves adapter lifecycle to `adapter stop`.
-                    if agents_only or self._lark_client is None:
-                        continue
-                    self._lark_client.stop(spec.name)
-                else:
-                    operation_id = f"lifecycle-down:{uuid4().hex}"
-                    self._run_lifecycle_operation(
-                        LifecycleOperation.deactivate(
-                            operation_id,
-                            self._lifecycle_spec(spec),
-                        )
-                    )
+                operation_id = f"lifecycle-down:{uuid4().hex}"
+                self._run_lifecycle_operation(
+                    LifecycleOperation.deactivate(operation_id, self._lifecycle_spec(spec))
+                )
                 if spec.containerized:
                     self._retire_container_artifacts(
                         spec.harness, spec.name
@@ -702,29 +728,30 @@ class _LifecycleOpsMixin:
         else:
             target = _required_string(params.get("target"), "target")
             harness = params.get("provider")
+            matched_adapter = False
+            if not agents_only:
+                for adapter in state.adapters:
+                    if ((harness is None and target in {adapter.name, f"{adapter.provider}:{adapter.name}"})
+                            or (harness == adapter.provider and target == adapter.name)):
+                        matched_adapter = True
+                        if self._lark_client is not None:
+                            self._lark_client.stop(adapter.name)
+                            removed.append(f"{adapter.provider}:{adapter.name}")
             for spec in state.harnesses:
-                if agents_only and spec.harness == "lark":
-                    continue
                 if (
                     harness is None
                     and target in {spec.name, f"{spec.harness}:{spec.name}"}
                 ) or (harness == spec.harness and target == spec.name):
-                    if spec.harness == "lark" and self._lark_client is not None:
-                        self._lark_client.stop(spec.name)
-                    else:
-                        operation_id = f"lifecycle-down:{uuid4().hex}"
-                        self._run_lifecycle_operation(
-                            LifecycleOperation.deactivate(
-                                operation_id,
-                                self._lifecycle_spec(spec),
-                            )
-                        )
+                    operation_id = f"lifecycle-down:{uuid4().hex}"
+                    self._run_lifecycle_operation(
+                        LifecycleOperation.deactivate(operation_id, self._lifecycle_spec(spec))
+                    )
                     if spec.containerized:
                         self._retire_container_artifacts(
                             spec.harness, spec.name
                         )
                     removed.append(f"{spec.harness}:{spec.name}")
-            if not removed:
+            if not removed and not matched_adapter and not is_adapter_provider(harness):
                 # Nothing in desired state matched, but `down` is also the
                 # documented remedy when a start is refused. Release the
                 # binding anyway so a connector whose spec vanished

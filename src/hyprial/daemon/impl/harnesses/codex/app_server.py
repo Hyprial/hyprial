@@ -191,6 +191,7 @@ class CodexInteractiveAppServer:
                 codex_executable=lambda: resolve_codex_executable(
                     launch_environment, command[0]
                 ),
+                model_provider=model_provider,
                 read_only=authority_prepared,
                 shared_credential=shared_credential,
             )
@@ -748,6 +749,9 @@ def _option_values(args: tuple[str, ...], *options: str) -> list[str]:
 def _thread_execution_params(args: tuple[str, ...]) -> dict[str, object]:
     """Translate Codex CLI execution-policy flags to app-server fields."""
 
+    from hyprial.daemon.impl.harnesses.model_provider import split_effort_args
+
+    args, effort = split_effort_args("codex", args)
     value_options = {
         "--model": ("--model", "-m"),
         "--ask-for-approval": ("--ask-for-approval", "-a"),
@@ -808,6 +812,8 @@ def _thread_execution_params(args: tuple[str, ...]) -> dict[str, object]:
         )
 
     params: dict[str, object] = {}
+    if effort is not None:
+        params["config"] = {"model_reasoning_effort": effort}
     model = parsed.get("--model")
     if model is not None:
         params["model"] = model

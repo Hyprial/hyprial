@@ -29,7 +29,7 @@ from hyprial.daemon.impl.harnesses.runtime.ports  import (
     harness_desired_generation,
 )
 
-from ..contracts import ProcessIdentity, _SessionRefObservation, _launch_projection, _launch_spec
+from ..contracts import ProcessIdentity, _SessionRefObservation, _launch_spec
 
 class _ReconcileBehavior:
     """Reconcile / desired-state / readiness behaviour for the actor."""
@@ -445,15 +445,15 @@ class _ReconcileBehavior:
                 spec = next(
                     (
                         item
-                        for item in state.harnesses
-                        if (item.harness, item.name) == ("lark", command.name)
+                        for item in state.adapters
+                        if item.name == command.name
                     ),
                     None,
                 )
                 legacy_pin = dict(state.channel_pins).get(command.name)
                 adapter = HarnessAdapterRegistrationProjection(
                     command.name,
-                    None if spec is None else _launch_projection(spec),
+                    spec,
                     legacy_pin,
                 )
                 error = None
@@ -486,11 +486,7 @@ class _ReconcileBehavior:
             )
             return
         if isinstance(command, RemoveAdapterRegistrationCommand):
-            expected = (
-                None
-                if command.expected_spec is None
-                else _launch_spec(command.expected_spec)
-            )
+            expected = command.expected_spec
             adapter = HarnessAdapterRegistrationProjection(
                 command.name,
                 command.expected_spec,
@@ -514,7 +510,7 @@ class _ReconcileBehavior:
             )
             return
         assert isinstance(command, RestoreAdapterRegistrationCommand)
-        restored = None if command.spec is None else _launch_spec(command.spec)
+        restored = command.spec
         adapter = HarnessAdapterRegistrationProjection(
             command.name, command.spec, command.legacy_pin
         )

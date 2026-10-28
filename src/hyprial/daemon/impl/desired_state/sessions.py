@@ -24,7 +24,8 @@ from hyprial.kernel  import (
     MutationProvenance,
 )
 from hyprial.kernel import LifecycleMutationRequest
-from hyprial.kernel import DesiredStateError, HarnessLaunchSpec  # canonical defs (MP-1)
+from hyprial.kernel import DesiredStateError, HarnessLaunchSpec
+from hyprial.daemon.impl.adapters.spec import AdapterSpec, DEFAULT_ADAPTER_PROVIDER
 
 class _DesiredStateSessionsMixin:
     """DesiredStateStore cluster; the composing class owns the state."""
@@ -115,42 +116,40 @@ class _DesiredStateSessionsMixin:
             self.save(updated)
             return provenance, superseded
 
+    def set_adapter(self, name: str, active: bool) -> DesiredState:
+        with self._lock:
+            state = self.load()
+            adapters = {item.name: item for item in state.adapters}
+            if active:
+                adapters.setdefault(name, AdapterSpec(DEFAULT_ADAPTER_PROVIDER, name))
+            else:
+                adapters.pop(name, None)
+            updated = replace(state, adapters=tuple(adapters.values()))
+            self.save(updated)
+            return updated
+
     def adapter_registration(
         self, name: str
-    ) -> tuple[HarnessLaunchSpec | None, str | None]:
-        """Read the desired Lark harness and staged legacy pin atomically."""
+    ) -> tuple[AdapterSpec | None, str | None]:
+        """Read adapter intent and staged legacy pin atomically."""
 
         with self._lock:
             state = self.load()
-            spec = next(
-                (
-                    item
-                    for item in state.harnesses
-                    if (item.harness, item.name) == ("lark", name)
-                ),
-                None,
-            )
+            spec = next((item for item in state.adapters if item.name == name), None)
             return spec, dict(state.channel_pins).get(name)
 
     def remove_adapter_registration(
         self,
         name: str,
         *,
-        expected_spec: HarnessLaunchSpec | None,
+        expected_spec: AdapterSpec | None,
         expected_legacy_pin: str | None,
     ) -> DesiredState:
         """Remove one adapter's desired rows behind an exact compare fence."""
 
         with self._lock:
             state = self.load()
-            current_spec = next(
-                (
-                    item
-                    for item in state.harnesses
-                    if (item.harness, item.name) == ("lark", name)
-                ),
-                None,
-            )
+            current_spec = next((item for item in state.adapters if item.name == name), None)
             pins = dict(state.channel_pins)
             current_pin = pins.get(name)
             if current_spec != expected_spec or current_pin != expected_legacy_pin:
@@ -158,16 +157,12 @@ class _DesiredStateSessionsMixin:
                     f"adapter {name!r} registry changed during removal"
                 )
             pins.pop(name, None)
-            harnesses = tuple(
-                item
-                for item in state.harnesses
-                if (item.harness, item.name) != ("lark", name)
-            )
-            if harnesses == state.harnesses and current_pin is None:
+            adapters = tuple(item for item in state.adapters if item.name != name)
+            if adapters == state.adapters and current_pin is None:
                 return state
             updated = replace(
                 state,
-                harnesses=harnesses,
+                adapters=adapters,
                 channel_pins=tuple(sorted(pins.items())),
             )
             self.save(updated)
@@ -177,21 +172,14 @@ class _DesiredStateSessionsMixin:
         self,
         name: str,
         *,
-        spec: HarnessLaunchSpec | None,
+        spec: AdapterSpec | None,
         legacy_pin: str | None,
     ) -> DesiredState:
         """Rollback one removal without overwriting a concurrent replacement."""
 
         with self._lock:
             state = self.load()
-            current_spec = next(
-                (
-                    item
-                    for item in state.harnesses
-                    if (item.harness, item.name) == ("lark", name)
-                ),
-                None,
-            )
+            current_spec = next((item for item in state.adapters if item.name == name), None)
             pins = dict(state.channel_pins)
             current_pin = pins.get(name)
             if current_spec == spec and current_pin == legacy_pin:
@@ -200,16 +188,16 @@ class _DesiredStateSessionsMixin:
                 raise DesiredStateError(
                     f"adapter {name!r} registry replacement blocks rollback"
                 )
-            harnesses = list(state.harnesses)
+            adapters = list(state.adapters)
             if spec is not None:
-                harnesses.append(spec)
+                if spec.name != name:
+                    raise DesiredStateError("adapter registration name mismatch")
+                adapters.append(spec)
             if legacy_pin is not None:
                 pins[name] = legacy_pin
             updated = replace(
                 state,
-                harnesses=tuple(
-                    sorted(harnesses, key=lambda item: (item.harness, item.name))
-                ),
+                adapters=tuple(sorted(adapters, key=lambda item: item.name)),
                 channel_pins=tuple(sorted(pins.items())),
             )
             self.save(updated)

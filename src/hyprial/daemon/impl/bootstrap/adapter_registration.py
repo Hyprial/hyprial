@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
 import tempfile
 import threading
 from collections.abc import Iterator, Sequence
@@ -186,7 +187,7 @@ def _load_existing(channels_path: Path) -> ChannelConfiguration:
 
 
 def ensure_lark_gateway_addable(
-    *, hyprial_home: Path, name: str, force: bool = False
+    *, hyprial_home: Path, name: str, force: bool = False, state_dir: Path | None = None
 ) -> None:
     """Reject a doomed registration *before* the caller pays for a credential.
 
@@ -198,6 +199,16 @@ def ensure_lark_gateway_addable(
     """
 
     _validate_name(name)
+    from hyprial.identity import AgentRegistry
+    from .names import collision_message
+
+    database = (state_dir if state_dir is not None else Path(hyprial_home) / "state") / "agents.sqlite3"
+    try:
+        names = AgentRegistry.local_names(database)
+    except (OSError, sqlite3.Error) as error:
+        raise PersistentConfigError("cannot check local agent names. Adapter registration refused.") from error
+    if name in names:
+        raise PersistentConfigError(collision_message(name))
     existing = _load_existing(Path(hyprial_home) / "channels.json")
     if not force and any(item.name == name for item in existing.gateways):
         raise AdapterExistsError(
@@ -215,10 +226,13 @@ def add_lark_gateway(
     default_route: str | None = None,
     force: bool = False,
     allow_no_routes: bool = False,
+    state_dir: Path | None = None,
 ) -> dict[str, object]:
     """Register one gateway under the shared config-mutation lease."""
 
     with _adapter_config_mutation(Path(hyprial_home)):
+        ensure_lark_gateway_addable(hyprial_home=hyprial_home, name=name, force=force,
+                                   state_dir=state_dir)
         return _add_lark_gateway_unlocked(
             hyprial_home=hyprial_home,
             name=name,
@@ -454,9 +468,10 @@ def _remove_lark_gateway_unlocked(
     """
 
     from hyprial.daemon.impl.operations.management import RegistryManagementHandler
+    from hyprial.daemon.impl.operations.management_actor import RegistryManagementAuthority
 
-    if not isinstance(management, RegistryManagementHandler):
-        raise TypeError("management must be RegistryManagementHandler")
+    if not isinstance(management, (RegistryManagementHandler, RegistryManagementAuthority)):
+        raise TypeError("management must be a registry management authority")
 
     _validate_name(name)
     hyprial_home = Path(hyprial_home)
@@ -557,9 +572,7 @@ def _remove_lark_gateway_unlocked(
         "removed": removed,
         "channelsPath": str(channels_path),
         "note": (
-            "Run 'hyprial adapter reload' so a running daemon refreshes its "
-            "snapshot of the gateway list and 'hyprial adapter list' forgets "
-            "this adapter without a daemon restart."
+            "Run 'hyprial adapter reload' if a running daemon still lists this adapter."
         ),
     }
     if delete_secret:

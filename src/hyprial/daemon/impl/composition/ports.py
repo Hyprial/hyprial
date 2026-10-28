@@ -26,7 +26,6 @@ from hyprial.daemon.impl.adapters.lark.ports.ports import (
     StopAdapterCommand,
 )
 from hyprial.daemon.impl.desired_state  import DesiredStateStore
-from hyprial.kernel import HarnessLaunchSpec
 
 from .events import (
     CorrelatedDomainEvents,
@@ -47,24 +46,16 @@ class LarkDesiredStatePort:
 
     def activate(self, name: str) -> bool:
         state = self._store.load()
-        if any(
-            spec.harness == "lark" and spec.name == name
-            for spec in state.harnesses
-        ):
+        if any(spec.name == name for spec in state.adapters):
             return False
-        self._store.upsert_harness(
-            HarnessLaunchSpec(harness="lark", name=name, headless=True)
-        )
+        self._store.set_adapter(name, True)
         return True
 
     def deactivate(self, name: str) -> bool:
         state = self._store.load()
-        existed = any(
-            spec.harness == "lark" and spec.name == name
-            for spec in state.harnesses
-        )
+        existed = any(spec.name == name for spec in state.adapters)
         if existed:
-            self._store.remove_harness("lark", name)
+            self._store.set_adapter(name, False)
         return existed
 
 

@@ -70,7 +70,12 @@ target-version = "py312"
 # findings were re-read on f6598d1 with exactly these files).  Linting them
 # invites "fixing" a script whose shape is the evidence -- so they are out
 # of lint scope, not out of the tree.
-extend-exclude = ["docs/notes/repro"]
+# The same holds for a reviewer's checker committed beside its report, whose
+# SHA256 the report cites.
+extend-exclude = [
+    "docs/notes/repro",
+    "docs/notes/load-0551-review-2026-10-26/independent-audit.py",
+]
 
 [tool.ruff.lint]
 # Mandatory Pyflakes plus structural pycodestyle hygiene.  F821 catches

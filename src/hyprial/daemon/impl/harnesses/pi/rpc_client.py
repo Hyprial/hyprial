@@ -1,4 +1,14 @@
-"""PiRpcClient: the JSONL RPC client over managed pi pipes."""
+"""PiRpcClient: the JSONL RPC client over managed pi pipes.
+
+Startup decision (shard3 triage, 2026-10-17): every failure from spawn through
+its ready probe runs inside ``__aenter__``'s cleanup boundary and reports the
+child's unexpected exit with its stderr tail. ``_close`` closes stdin first,
+then drains all pipes and the protocol within the bounded close budget.
+
+The completion receipt (design §3.1.5) is written only after the spawned
+process exists with the frozen environment mapping; it names the bound
+identity and grant revisions and never carries values.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -28,9 +38,11 @@ from hyprial.identity import ChildEnvironmentLaunch
 from hyprial.identity import AgentRuntimeContext
 from hyprial.daemon.impl.harnesses.model_provider  import pi_model_args
 from hyprial.daemon.impl.harnesses.pi.loader  import (
+    PiProjectTrustReceipt,
     find_pi_package_root,
     pi_sdk_launch_from_runtime_context,
     resolve_approved_pi_project,
+    without_pi_reserved_arguments,
 )
 from hyprial.daemon.impl.harnesses.pi.messages import (
     _PiTurnOutcome,
@@ -51,7 +63,6 @@ from hyprial.daemon.impl.harnesses.pi.messages import (
 # with the worker's own canonical actor, read from the injected environment.
 PI_HARNESS_BRIDGE_EXTENSION = Path(__file__).parent / "resources" / "pi_harness_bridge.ts"
 
-
 class PiRpcClient:
         def __init__(
             self,
@@ -68,6 +79,7 @@ class PiRpcClient:
             runtime_launch_custody: (
                 Callable[[AgentRuntimeContext], AbstractContextManager[None]] | None
             ) = None,
+            trust_receipt: PiProjectTrustReceipt | None = None,
             provider_environment: Mapping[str, str] | None = None,
         ) -> None:
             self.spec = spec
@@ -86,9 +98,7 @@ class PiRpcClient:
                 if self._complete_launch is None
                 else self._complete_launch.environment.for_exec()
             )
-            # The credential the child is spawned with, resolved by the
-            # process driver (PiRpcProcess) from the launch environment first,
-            # then the agent's own Pi native root, then the operator Pi root.
+            # The process driver resolves the child's provider credential once.
             self._provider_environment = dict(provider_environment or {})
             if runtime_context is not None:
                 if self._complete_launch is None or complete_environment is None:
@@ -97,9 +107,16 @@ class PiRpcClient:
                     raise ValueError("Pi P2 channel and environment contexts differ")
                 if spec.containerized:
                     raise ValueError("Pi P2 SDK bridge is not supported in containers")
-                trust = resolve_approved_pi_project(
-                    cwd=spec.cwd, runtime_args=spec.args, command_name=spec.name,
-                    command_model_provider=spec.model_provider, command_model=spec.model,
+                trust = trust_receipt or resolve_approved_pi_project(
+                    cwd=spec.cwd,
+                    runtime_args=spec.args,
+                    # The P2 default cwd is this agent's own workspace, which is
+                    # deliberately not a Git repository; it is the only non-Git
+                    # root this launch may trust.
+                    own_workspace=runtime_context.roots.workspace_root,
+                    command_name=spec.name,
+                    command_model_provider=spec.model_provider,
+                    command_model=spec.model,
                     command_session_ref=spec.session_ref,
                 )
                 sdk_launch = pi_sdk_launch_from_runtime_context(
@@ -109,7 +126,7 @@ class PiRpcClient:
                     session_id=_pi_session_id(session_ref),
                     pi_package_root=find_pi_package_root(command, complete_environment),
                     model_provider=spec.model_provider,
-                    model=spec.model,
+                    model=spec.model, model_environment={**complete_environment, **self._provider_environment},
                     additional_extension_paths=(PI_HARNESS_BRIDGE_EXTENSION,),
                 )
                 self.command = sdk_launch.argv
@@ -257,34 +274,30 @@ class PiRpcClient:
                 if self._runtime_context is None or self._runtime_launch_custody is None
                 else self._runtime_launch_custody(self._runtime_context)
             )
-            with custody:
-                transport, protocol = await loop.subprocess_exec(
-                    lambda: _PiSubprocessProtocol(STREAM_LIMIT_BYTES, loop),
-                    *self.command,
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=self.spec.cwd,
-                    env=environment,
-                )
-            assert isinstance(protocol, _PiSubprocessProtocol)
-            self._process_protocol = protocol
-            self._process = asyncio.subprocess.Process(transport, protocol, loop)
-            self._spawned.set()
-            if self._complete_launch is not None:
-                # Completion receipt (design §3.1.5): only NOW — the process
-                # exists with the frozen mapping — is the launch complete.  The
-                # receipt names the bound identity and every grant revision;
-                # values never appear.
-                self._write_log(
-                    "worker.environment.receipt",
-                    actor=self._complete_launch.actor,
-                    grants=[
-                        {"grantId": grant_id, "revision": revision}
-                        for grant_id, revision in self._complete_launch.grants
-                    ],
-                )
             try:
+                with custody:
+                    transport, protocol = await loop.subprocess_exec(
+                        lambda: _PiSubprocessProtocol(STREAM_LIMIT_BYTES, loop),
+                        *self.command,
+                        stdin=asyncio.subprocess.PIPE,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        cwd=self.spec.cwd,
+                        env=environment,
+                    )
+                assert isinstance(protocol, _PiSubprocessProtocol)
+                self._process_protocol = protocol
+                self._process = asyncio.subprocess.Process(transport, protocol, loop)
+                self._spawned.set()
+                if self._complete_launch is not None:
+                    self._write_log(
+                        "worker.environment.receipt",
+                        actor=self._complete_launch.actor,
+                        grants=[
+                            {"grantId": grant_id, "revision": revision}
+                            for grant_id, revision in self._complete_launch.grants
+                        ],
+                    )
                 self._expected_stop = False
                 self._write_log("worker.started", pid=self._process.pid)
                 assert self._process.stderr is not None
@@ -292,6 +305,8 @@ class PiRpcClient:
                     self._drain_stderr(self._process)
                 )
                 self._exit_task = asyncio.create_task(self._watch_process_exit())
+                if self._process.returncode is not None:
+                    raise self._exited_error()
                 # Pi prints no ready marker in RPC mode; a get_state round trip
                 # proves both that the process is up and that it speaks the protocol.
                 probe = f"hyprial-ready-{uuid4().hex}"
@@ -380,9 +395,10 @@ class PiRpcClient:
             stdout_task = self._stdout_task
             if self._stderr_task is None:
                 self._stderr_task = asyncio.create_task(self._drain_stderr(process))
+            if process.stdin is not None:
+                process.stdin.close()
             if process.returncode is None:
                 if process.stdin is not None:
-                    process.stdin.close()
                     # Bounded: a child that never drains its stdin leaves
                     # wait_closed() pending forever, and this runs BEFORE the
                     # terminate/kill escalation -- so an unbounded await here
@@ -811,10 +827,19 @@ class PiRpcClient:
                 if message.get("type") == "extension_ui_request":
                     await self._cancel_ui_dialog(message)
 
+        def _exited_error(self) -> ConnectionError:
+            detail = self._stderr_tail.decode("utf-8", errors="replace")[-4096:]
+            return ConnectionError(
+                "pi RPC session exited unexpectedly"
+                + (f": {detail}" if detail else "")
+            )
+
         async def _write(self, message: dict[str, object]) -> None:
             process = self._process
-            if process is None or process.stdin is None or process.returncode is not None:
+            if process is None or process.stdin is None:
                 raise ConnectionError("pi RPC session is not running")
+            if process.returncode is not None:
+                raise self._exited_error()
             process.stdin.write(
                 json.dumps(message, separators=(",", ":")).encode("utf-8") + b"\n"
             )
@@ -921,27 +946,8 @@ class _PiSubprocessProtocol(asyncio.subprocess.SubprocessStreamProtocol):
         if pipe is not None:
             pipe.close()
 
-def without_pi_reserved_arguments(args: tuple[str, ...]) -> tuple[str, ...]:
-    result: list[str] = []
-    index = 0
-    while index < len(args):
-        value = args[index]
-        if value in _RESERVED_VALUE_OPTIONS:
-            index += 2
-            continue
-        if value in _RESERVED_FLAG_OPTIONS:
-            index += 1
-            continue
-        if any(value.startswith(f"{option}=") for option in _RESERVED_VALUE_OPTIONS):
-            index += 1
-            continue
-        result.append(value)
-        index += 1
-    return tuple(result)
-
 #: Observer seam for turn failures with spec context lives in
 #: ``streaming.py`` (TurnFailureSpecObserver); PiRpcProcess adapts it below.
-
 # RPC lines carry whole assistant messages; the asyncio default of 64 KiB
 # would sever the session mid-turn on a long answer.
 STREAM_LIMIT_BYTES = 8 * 1024 * 1024
@@ -976,12 +982,6 @@ _CLOSE_TOTAL_SECONDS = 1.2
 
 #: Slack that must remain for the caller's join plus scheduling jitter.
 _CLOSE_CALLER_MARGIN_SECONDS = 0.8
-
-# The connector owns the output mode and the session identity; strip the
-# caller's session controls while preserving unrelated passthrough flags.
-_RESERVED_VALUE_OPTIONS = {"--mode", "--session-id", "--session", "--fork"}
-
-_RESERVED_FLAG_OPTIONS = {"--print", "-p", "--continue", "-c", "--resume", "-r"}
 
 # Native continuation invalidates any in-flight idle probe after agent_end.
 _CONTINUATION_EVENTS = {

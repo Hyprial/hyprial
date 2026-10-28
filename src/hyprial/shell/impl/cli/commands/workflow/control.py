@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any
 
@@ -36,11 +35,10 @@ class _WorkflowNotificationSender:
     ) -> str:
         services = get_services()
 
-        worker_actor = os.environ.get("HYPRIAL_WORKER_ACTOR")
-        worker_session = os.environ.get("HYPRIAL_WORKER_SESSION_REF")
+        binding = worker_binding()
         identity = (
-            {"from": sender, "sessionRef": worker_session}
-            if sender == worker_actor and worker_session
+            {"from": sender, "sessionRef": binding[1]}
+            if binding is not None and sender == binding[0]
             else {"from": actor_owner(), "onBehalfOf": sender}
         )
 

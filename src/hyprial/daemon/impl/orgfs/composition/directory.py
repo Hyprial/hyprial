@@ -638,10 +638,10 @@ class RuntimeDirectory:
 
         A mesh imports only from devices whose directory device row belongs to
         a current member.  The resolver answers ``supplier node -> owning
-        member principal`` from the org's directory space; ``None`` (no device
-        evidence at all) keeps the supplier open so a joining device that has
-        not enrolled yet is not refused — its envelopes still face the
-        removal-wins author judgment.
+        member principal`` from the org's directory space. With transitional
+        tailnet trust disabled, ``None`` refuses the unresolved supplier.
+        The explicit private-tailnet policy bypasses this membership lookup,
+        but retains the removal-wins author judgment and document validation.
         """
 
         directory_space = _supplier_directory_space(space_id)

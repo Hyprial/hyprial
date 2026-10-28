@@ -95,6 +95,8 @@ class AdapterProjection:
     # locking correlation and its age -- "谁锁的、锁了多久".
     lifecycle_correlation_id: str | None = None
     lifecycle_age_seconds: int | None = None
+    next_retry_at: float | None = None
+    retry_attempt: int | None = None
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -106,6 +108,8 @@ class AdapterProjection:
             "configured": self.configured,
             "desired": self.desired,
             "processRunning": self.process_running,
+            **({"nextRetryAt": self.next_retry_at} if self.next_retry_at is not None else {}),
+            **({"retryAttempt": self.retry_attempt} if self.retry_attempt is not None else {}),
             **({"pid": self.pid} if self.pid is not None else {}),
             **({"error": self.error} if self.error is not None else {}),
             **(

@@ -543,7 +543,7 @@ class _SessionRegistryMixin:
         return completed.result.to_payload()
 
     def _ipc_session_heartbeat(self, params) -> Any:
-        actor = self._mcp_actor(params)
+        actor = self._fence_interactive_session(self._mcp_actor(params), params)
         session_ref = _required_string(params.get("sessionRef"), "sessionRef")
         completed = self._call_session_route(
             SessionRouteKind.HEARTBEAT,
@@ -825,6 +825,34 @@ class _SessionRegistryMixin:
         # renew a carrier; ordinary identity/inbox traffic cannot keep a dead
         # channel online accidentally.
         return actor
+
+    def _fence_live_principal_session(
+        self, actor: str, params: JsonObject
+    ) -> str:
+        """Authenticate a live message/PAC principal without renewing it.
+
+        Managed workers expose their current session through the harness
+        authority. Interactive carriers must still own the persisted session
+        *and* have a live Agent binding; a registration row alone survives a
+        released or dead carrier and is not an authentication credential.
+        """
+
+        session_ref = _required_string(params.get("sessionRef"), "sessionRef")
+        canonical = self._fence_interactive_session(actor, params)
+        if self._worker_session_ref(canonical) == session_ref:
+            return canonical
+        binding = self._agent_liveness.binding(canonical)
+        if (
+            binding is None
+            or binding.runtime != RUNTIME_INTERACTIVE
+            or binding.session_id != session_ref
+            or self._agent_liveness.verdict(canonical) is not True
+        ):
+            raise DaemonRequestError(
+                ipc_errors.STALE_SESSION,
+                f"interactive session {session_ref} is not live for actor {canonical}",
+            )
+        return canonical
 
     def _interactive_actor_liveness(self, actor: str) -> bool | None:
         """Liveness verdict for an actor this daemon speaks for, or None.

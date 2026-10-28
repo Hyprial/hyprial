@@ -528,8 +528,14 @@ def _wait_for_daemon(
             # One probe path (E2E-010 on intg, "unknown daemon method ping"):
             # `_daemon_probe` answers for every daemon generation -- ping, or
             # ps for a peer older than the ping contract -- and this wait must
-            # not be the one place that forgets the fallback.
-            result = services._daemon_probe(timeout=0.5)
+            # not be the one place that forgets the fallback. Bound the probe
+            # itself, not only the poll count, by the remaining wall time.
+            remaining = (
+                min(idle_deadline, hard_deadline) - services.time.monotonic()
+            )
+            if remaining <= 0:
+                continue
+            result = services._daemon_probe(timeout=min(0.5, remaining))
         # PR #332 F4②: the boot-wait retry set is spelled as the registered
         # classes -- the same three transport codes the old literal set held;
         # DAEMON_RESTORING deliberately stays out (ping is in the restore
@@ -593,15 +599,27 @@ def _daemon_probe(timeout: float = 0.5) -> JsonObject:
     heavy, but the only readiness answer it has.  The fallback keeps `hyprial
     init`/`service` truthful during a rolling upgrade instead of failing
     against a daemon that is merely old.
+
+    ``timeout`` is one wall-clock budget for the complete probe, not a budget
+    per request.  In particular, a pre-ping peer cannot consume it once for
+    ``ping`` and then again for the legacy ``ps`` fallback.
     """
     services = get_services()
+    budget = max(0.0, timeout)
+    deadline = services.time.monotonic() + budget
 
     try:
-        result = services._daemon_request("ping", timeout=timeout)
+        result = services._daemon_request("ping", timeout=budget)
     except services.CliError as error:
         if error.code != ipc_errors.METHOD_NOT_FOUND:
             raise
-        result = services._daemon_request("ps", timeout=timeout)
+        remaining = deadline - services.time.monotonic()
+        if remaining <= 0:
+            raise ipc_errors.IpcTimeoutError(
+                f"daemon probe exhausted its {budget:g}s timeout before "
+                "the legacy ps fallback"
+            ) from error
+        result = services._daemon_request("ps", timeout=remaining)
     if not isinstance(result, dict):
         raise services.CliError("INVALID_RESPONSE", "daemon probe result must be an object")
     return result
@@ -813,17 +831,28 @@ def _overview_table(
 def _message_claim_params(
     source: str, *, on_behalf_of: str | None = None
 ) -> JsonObject:
-    """Attach a managed worker's opaque fence only to its own actor claim."""
+    """Attach an agent session's opaque fence only to its own actor claim."""
+
+    from hyprial.biz import worker_binding
 
     params: JsonObject = {"from": source}
-    worker_actor = os.environ.get("HYPRIAL_WORKER_ACTOR")
-    worker_session = os.environ.get("HYPRIAL_WORKER_SESSION_REF")
+    binding = worker_binding()
+    worker_actor, worker_session = binding if binding is not None else (None, None)
     parsed = parse_agent_uri(worker_actor) if worker_actor else None
     same_actor = bool(
         worker_actor
         and worker_session
         and (source == worker_actor or (parsed is not None and source == parsed[2]))
     )
+    if binding is not None and not same_actor:
+        from hyprial.identity import PAC_PRINCIPAL_UNVERIFIED, PacError
+
+        raise PacError(
+            PAC_PRINCIPAL_UNVERIFIED,
+            f"--from {source!r} disagrees with the verified acting principal "
+            f"{worker_actor!r}",
+            {"claimed": source, "verified": worker_actor},
+        )
     if same_actor:
         params["sessionRef"] = worker_session
     if on_behalf_of is not None:

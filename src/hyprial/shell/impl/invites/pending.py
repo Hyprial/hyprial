@@ -21,7 +21,7 @@ The flow, in order:
    an explicit ``hyprial org join``;
 5. every remaining invite the caller accepts (``--accept-all``, or a
    per-invite ``confirm(org, inviter)``) is joined through the daemon
-   with the bare ``v1.<payload>`` form;
+   with the bare ``v2.<payload>`` form;
 6. the result carries no payload and no token, only org/inviter/code rows.
 """
 
@@ -112,7 +112,7 @@ def run_pending(
     """Pick up this account's invites and join each accepted one (§5.3).
 
     ``ipc_join`` and ``ipc_list`` are the daemon seams: ``ipc_join``
-    receives the bare ``v1.<payload>`` form and returns on a completed
+    receives the bare ``v2.<payload>`` form and returns on a completed
     join (any exception it raises is a per-invite failure whose string
     ``code`` is passed through); ``ipc_list`` returns the ``org.list``
     result.  ``confirm``/``accept_all`` decide acceptance: with neither,
@@ -170,7 +170,7 @@ def run_pending(
             )
             continue
         try:
-            ipc_join(f"v1.{payload}")
+            ipc_join(f"v2.{payload}")
         except Exception as error:  # noqa: BLE001 - one bad invite stops nothing
             code = getattr(error, "code", None)
             failed.append(

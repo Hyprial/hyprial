@@ -46,7 +46,12 @@ class ServiceCommandError(RuntimeError):
 
 
 class ServiceCommandRunner(Protocol):
-    def __call__(self, command: Sequence[str]) -> subprocess.CompletedProcess[str]: ...
+    def __call__(
+        self,
+        command: Sequence[str],
+        *,
+        timeout: float | None = None,
+    ) -> subprocess.CompletedProcess[str]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,11 +210,11 @@ class ServiceManager:
             )
         return self.service_home / ".config" / "systemd" / "user" / "hyprial.service"
 
-    def status(self) -> ServiceStatus:
+    def status(self, *, deadline: float | None = None) -> ServiceStatus:
         installed = self.unit_path.is_file()
         if self.platform == "launchd":
             target = f"gui/{self.uid}/{LAUNCHD_LABEL}"
-            result = self._invoke(("launchctl", "print", target))
+            result = self._invoke(("launchctl", "print", target), deadline=deadline)
             if result.returncode != 0:
                 if not self._reports_not_loaded(result):
                     self._raise_command(("launchctl", "print", target), result)
@@ -247,7 +252,8 @@ class ServiceManager:
                 "--property=MainPID",
                 "--property=NRestarts",
                 "--property=ExecMainStatus",
-            )
+            ),
+            deadline=deadline,
         )
         if result.returncode != 0 and not self._reports_not_loaded(result):
             self._raise_command(
@@ -266,7 +272,8 @@ class ServiceManager:
                 result,
             )
         linger = self._invoke(
-            ("loginctl", "show-user", self.username, "--property=Linger", "--value")
+            ("loginctl", "show-user", self.username, "--property=Linger", "--value"),
+            deadline=deadline,
         )
         boot_persistent = linger.returncode == 0 and linger.stdout.strip() == "yes"
         if result.returncode != 0:
@@ -304,10 +311,15 @@ class ServiceManager:
             last_exit_code=(int(raw_exit) if raw_exit.lstrip("-").isdigit() else None),
         )
 
-    def inspect(self, *, serving_pid: int | None = None) -> ServiceStatus:
+    def inspect(
+        self,
+        *,
+        serving_pid: int | None = None,
+        deadline: float | None = None,
+    ) -> ServiceStatus:
         """Combine supervisor, ownership, template, and serving-process facts."""
 
-        base = self.status()
+        base = self.status(deadline=deadline)
         existing = self._existing_text()
         ownership_reason = self._ownership_reason(existing, loaded=base.loaded)
         attributed = (
@@ -341,13 +353,31 @@ class ServiceManager:
 
     def restart(
         self,
-        serving_pid: Callable[[], int | None],
+        serving_pid: Callable[..., int | None],
         *,
         attempts: int = 40,
+        timeout_seconds: float | None = None,
     ) -> ServiceStatus:
-        """Restart an owned service through its supervisor and verify custody."""
+        """Restart an owned service through its supervisor and verify custody.
 
-        before = self.inspect(serving_pid=serving_pid())
+        ``attempts`` preserves the ordinary service-command contract. Upgrade
+        verification supplies ``timeout_seconds`` as one absolute wall-clock
+        budget. Every probe, supervisor command, and sleep receives only the
+        remaining part of that budget.
+        """
+
+        deadline = (
+            time.monotonic() + max(0.0, timeout_seconds)
+            if timeout_seconds is not None
+            else None
+        )
+        if timeout_seconds is not None:
+            attempts = max(1, int(timeout_seconds / 0.25))
+        if deadline is None:
+            observed_pid = serving_pid()
+        else:
+            observed_pid = serving_pid(max(0.0, min(1.0, deadline - time.monotonic())))
+        before = self.inspect(serving_pid=observed_pid, deadline=deadline)
         if not before.installed or not before.attributed:
             return before
         if self.platform == "launchd":
@@ -357,33 +387,65 @@ class ServiceManager:
                     "kickstart",
                     "-k",
                     f"gui/{self.uid}/{LAUNCHD_LABEL}",
-                )
+                ),
+                deadline=deadline,
             )
         else:
-            self._require(("systemctl", "--user", "restart", "hyprial.service"))
+            self._require(
+                ("systemctl", "--user", "restart", "hyprial.service"),
+                deadline=deadline,
+            )
         return self.wait_for_custody(
             serving_pid,
             attempts=attempts,
             previous_job_pid=before.pid,
+            deadline=deadline,
+            initial_status=before,
         )
 
     def wait_for_custody(
         self,
-        serving_pid: Callable[[], int | None],
+        serving_pid: Callable[..., int | None],
         *,
         attempts: int = 40,
         previous_job_pid: int | None = None,
+        deadline: float | None = None,
+        initial_status: ServiceStatus | None = None,
     ) -> ServiceStatus:
         """Wait until the serving socket and supervisor agree on process custody."""
 
-        latest = self.inspect(serving_pid=serving_pid())
+        latest = initial_status
         for _attempt in range(attempts):
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                observed_pid = serving_pid(min(1.0, remaining))
+                if time.monotonic() >= deadline:
+                    break
+            else:
+                observed_pid = serving_pid()
+            try:
+                latest = self.inspect(serving_pid=observed_pid, deadline=deadline)
+            except ServiceCommandError:
+                if deadline is None or time.monotonic() < deadline:
+                    raise
+                break
             fresh_job = previous_job_pid is None or latest.pid != previous_job_pid
             exact_job = latest.pid is not None and latest.serving_pid == latest.pid
             if latest.supervision == "supervised" and fresh_job and exact_job:
                 return latest
-            self.sleep(0.25)
-            latest = self.inspect(serving_pid=serving_pid())
+            delay = 0.25
+            if deadline is not None:
+                delay = min(delay, max(0.0, deadline - time.monotonic()))
+                if delay <= 0:
+                    break
+            self.sleep(delay)
+        if latest is None:
+            raise ServiceCommandError(
+                "service custody wait reached its wall-clock deadline",
+                reason="supervisor-start-hard-cap",
+            )
         return self._copy_status(latest, supervision="lost")
 
     def reconcile(
@@ -674,15 +736,38 @@ class ServiceManager:
         os.chmod(temporary, 0o644)
         os.replace(temporary, self.unit_path)
 
-    def _invoke(self, command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+    def _invoke(
+        self,
+        command: Sequence[str],
+        *,
+        deadline: float | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        timeout: float | None = None
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ServiceCommandError(
+                    f"service command exceeded restart deadline: {' '.join(command)}",
+                    reason="supervisor-start-hard-cap",
+                )
+            timeout = min(15.0, remaining)
         try:
-            return self.runner(command)
+            return (
+                self.runner(command)
+                if timeout is None
+                else self.runner(command, timeout=timeout)
+            )
         except ServiceCommandError:
             raise
         except subprocess.TimeoutExpired as error:
+            reason = (
+                "supervisor-start-hard-cap"
+                if deadline is not None and time.monotonic() >= deadline
+                else "manager-command-timeout"
+            )
             raise ServiceCommandError(
                 f"service command timed out: {' '.join(command)}",
-                reason="manager-command-timeout",
+                reason=reason,
             ) from error
         except FileNotFoundError as error:
             raise ServiceCommandError(
@@ -695,8 +780,13 @@ class ServiceManager:
                 reason="manager-command-failed",
             ) from error
 
-    def _require(self, command: Sequence[str]) -> None:
-        result = self._invoke(command)
+    def _require(
+        self,
+        command: Sequence[str],
+        *,
+        deadline: float | None = None,
+    ) -> None:
+        result = self._invoke(command, deadline=deadline)
         if result.returncode != 0:
             self._raise_command(command, result)
 
@@ -711,11 +801,15 @@ class ServiceManager:
         )
 
     @staticmethod
-    def _run(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+    def _run(
+        command: Sequence[str],
+        *,
+        timeout: float | None = None,
+    ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             command,
             text=True,
             capture_output=True,
             check=False,
-            timeout=15.0,
+            timeout=15.0 if timeout is None else timeout,
         )

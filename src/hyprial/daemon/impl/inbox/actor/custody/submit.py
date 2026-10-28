@@ -108,12 +108,11 @@ class DeliveryCustodySubmitMixin:
         operation: str,
         result: bool,
     ) -> None:
-        version = self._committed_version()
         self._publish(
             BoolMutationCompleted(
                 correlation_id,
                 self._generation,
-                version,
+                self._version,
                 operation,
                 result,
             )
@@ -124,12 +123,11 @@ class DeliveryCustodySubmitMixin:
         operation: str,
         messages: tuple[InboxMessage, ...],
     ) -> None:
-        version = self._committed_version()
         self._publish(
             MessagesMutationCompleted(
                 correlation_id,
                 self._generation,
-                version,
+                self._version,
                 operation,
                 messages,
             )

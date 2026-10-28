@@ -562,6 +562,7 @@ class _MessageSendMixin(_LinkSendMixin, AgentBotSendSupport):
                     merged_requests.append(message_id)
         return {
             "ok": all(item["accepted"] for item in deliveries),
+            "actingPrincipal": source,
             "operationId": operation_id,
             "conversationId": conversation,
             "deliveries": deliveries,
@@ -637,8 +638,6 @@ class _MessageSendMixin(_LinkSendMixin, AgentBotSendSupport):
             if session.actor == actor:
                 return session.cwd
         for spec in self.desired_state.load().harnesses:
-            if spec.harness == "lark":
-                continue
             if self._canonical_harness_uri(spec.name, spec) == actor:
                 return spec.cwd
         return None

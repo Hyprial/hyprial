@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from __future__ import annotations
 import hashlib
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, TYPE_CHECKING
 from uuid import uuid4
 from hyprial.identity import (
@@ -12,7 +12,7 @@ from hyprial.identity import (
 )
 from hyprial.kernel import ipc_errors
 from hyprial.kernel import DaemonRequestError
-from hyprial.kernel import PortAdmission
+from hyprial.kernel import HarnessLaunchSpec, PortAdmission
 from hyprial.daemon.impl.pac.actors.reconcile import AssignReconcileReport
 from hyprial.daemon.impl.application.ports import (
     RoutinePortError,
@@ -359,6 +359,8 @@ class _RoutinesMixin:
         assert self._routine_service is not None
         try:
             routines = self._routine_service.list()["routines"]
+            state = self.desired_state.load()
+            specs, adapters = state.harnesses, state.adapters
         except Exception as error:  # noqa: BLE001 - corrupt rows must not brick daemon
             self._log(
                 "error",
@@ -371,8 +373,8 @@ class _RoutinesMixin:
         for routine in routines:
             assert isinstance(routine, dict)
             try:
-                coordinator = self._ensure_routine_coordinator(
-                    routine, recovering=True
+                coordinator = self._ensure_routine_coordinator_from_specs(
+                    routine, recovering=True, specs=specs, adapters=adapters
                 )
             except Exception as error:  # noqa: BLE001 - isolate one bad routine row
                 self._log(
@@ -394,6 +396,17 @@ class _RoutinesMixin:
                 )
 
     def _ensure_routine_coordinator(self, routine: dict[str, object], *, recovering: bool) -> dict[str, object] | None:
+        state = self.desired_state.load()
+        return self._ensure_routine_coordinator_from_specs(
+            routine, recovering=recovering, specs=state.harnesses, adapters=state.adapters
+        )
+
+    def _ensure_routine_coordinator_from_specs(
+        self, routine: dict[str, object], *, recovering: bool,
+        specs: Sequence[HarnessLaunchSpec],
+        adapters: Sequence[object],
+    ) -> dict[str, object] | None:
+        """Reconcile one row against the pass snapshot; lifecycle owns admission."""
         schema_error = routine.get("schemaError")
         if isinstance(schema_error, str):
             raise DaemonRequestError("ROUTINE_SCHEMA_ERROR", schema_error)
@@ -408,9 +421,11 @@ class _RoutinesMixin:
                                      f"coordinator {produced} must belong to agent:{self.owner}:{self.node_id}:*")
         name, actor_name = str(routine["name"]), parsed[2]
         marker = self._routine_coordinator_marker(name, routine.get("registrationId"))
-        existing = [item for item in self.desired_state.load().harnesses if item.name == actor_name]
-        if existing:
-            if existing[0].nickname != marker:
+        from hyprial.daemon.impl.harnesses.capabilities import worker_spec
+
+        existing = worker_spec(specs, actor_name)
+        if any(item.name == actor_name for item in (*specs, *adapters)):
+            if existing is None or existing.nickname != marker:
                 raise DaemonRequestError("ROUTINE_COORDINATOR_CONFLICT",
                                          f"actor {produced} is not owned by routine {name}")
             return {"actor": produced, "restored": recovering, "changed": False}
@@ -441,12 +456,14 @@ class _RoutinesMixin:
         name = str(routine["name"])
         marker = self._routine_coordinator_marker(name, routine.get("registrationId"))
         if isinstance(routine.get("schemaError"), str):
+            from hyprial.kernel import DECLARED_HARNESSES
+
             # The schema is unreadable, so its raw ``produces`` value cannot
             # authorize a stop. The durable ownership marker still can.
             matches = [
                 item
                 for item in self.desired_state.load().harnesses
-                if item.nickname == marker
+                if item.nickname == marker and item.harness in DECLARED_HARNESSES
             ]
             if not matches:
                 return None
@@ -466,10 +483,11 @@ class _RoutinesMixin:
         if parsed is None:
             raise DaemonRequestError("ROUTINE_COORDINATOR_INVALID", "produces must be a canonical agent URI")
         actor_name = parsed[2]
-        matches = [item for item in self.desired_state.load().harnesses if item.name == actor_name]
-        if not matches:
+        from hyprial.daemon.impl.harnesses.capabilities import worker_spec
+
+        item = worker_spec(self.desired_state.load().harnesses, actor_name)
+        if item is None:
             return {"actor": produced, "retired": False, "changed": False}
-        item = matches[0]
         if item.nickname != self._routine_coordinator_marker(name, routine.get("registrationId")):
             raise DaemonRequestError("ROUTINE_COORDINATOR_CONFLICT",
                                      f"actor {produced} is not owned by routine {name}")

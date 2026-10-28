@@ -20,11 +20,22 @@ from hyprial.daemon.impl.harnesses.streaming.protocol  import (
 from hyprial.daemon.impl.harnesses.worker_channel  import WorkerChannel
 from hyprial.identity import ChildEnvironmentLaunch
 from hyprial.identity import AgentRuntimeContext
+from hyprial.daemon.impl.harnesses.pi.loader import (
+    PiProjectTrustReceipt,
+    resolve_approved_pi_project,
+)
 from hyprial.daemon.impl.harnesses.pi.rpc_client import (
     PiRpcClient,
 )
 from hyprial.daemon.impl.harnesses.model_provider import pi_provider_environment
 
+
+#: How long a managed pi RPC worker has to answer its ready probe.  The
+#: launcher waits this long at start admission, exactly like the codex, dsh
+#: and python-worker branches, so a worker that never comes up fails the
+#: start instead of being reported ready and only showing ``last_error``
+#: later (2026-10-16 defect C).
+PI_RPC_STARTUP_TIMEOUT_SECONDS_DEFAULT = 30.0
 
 class PiRpcProcess(StreamingTurnProcess):
     """Serialize daemon deliveries through one persistent pi RPC session."""
@@ -66,15 +77,25 @@ class PiRpcProcess(StreamingTurnProcess):
         self._last_client: PiRpcClient | None = None
         self._command = command
         self._env = env
+        runtime_context = (
+            None if worker_channel is None else worker_channel.runtime_context
+        )
+        # P2 launch trust is validated HERE, synchronously, before credential
+        # resolution or the pump thread: an untrusted cwd (or missing --approve)
+        # must fail the start attempt itself, not be masked by a later preflight.
+        self._p2_trust: PiProjectTrustReceipt | None = None
+        if runtime_context is not None:
+            self._p2_trust = resolve_approved_pi_project(
+                cwd=spec.cwd,
+                runtime_args=spec.args,
+                own_workspace=runtime_context.roots.workspace_root,
+            )
         # Resolve the provider credential ONCE per process, exactly where the
         # daemon worker is composed.  The only source is the per-agent
         # authorization (a granted DEEPSEEK_API_KEY), or -- on a legacy launch
         # -- the operator's Pi root, which is what legacy pi always used.  A P2
         # launch with no grant refuses here instead of running secretless and
         # being blocked credential-invalid after its first failed turns.
-        runtime_context = (
-            None if worker_channel is None else worker_channel.runtime_context
-        )
         self._provider_environment = pi_provider_environment(
             spec,
             (
@@ -96,7 +117,6 @@ class PiRpcProcess(StreamingTurnProcess):
         # time) and re-bound verbatim into every reconnected RPC client: a
         # reconnect must not re-resolve grants behind a rotating credential
         # revision, and must not drift back toward the ambient environment.
-        
         # One stable worker identity across client reconnects: every
         # reconnected RPC client re-injects the same canonical actor and
         # harness-bridge extension (same contract as ClaudeAgentSdkProcess).
@@ -145,6 +165,12 @@ class PiRpcProcess(StreamingTurnProcess):
         """The session id the current (or next) client launches with."""
         return self._session_ref
 
+    @property
+    def p2_managed(self) -> bool:
+        """True when this worker runs through the P2 SDK bridge."""
+
+        return self._p2_trust is not None
+
     def _force_stop_client(self) -> None:
         with self._lock:
             client = self._client or self._connecting_client
@@ -188,6 +214,7 @@ class PiRpcProcess(StreamingTurnProcess):
             worker_channel=self.worker_channel,
             complete_launch=self._complete_launch,
             runtime_launch_custody=self._runtime_launch_custody,
+            trust_receipt=self._p2_trust,
             provider_environment=self._provider_environment,
         )
         self._last_client = client

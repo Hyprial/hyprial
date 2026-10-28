@@ -11,6 +11,10 @@ from pathlib import Path
 from typing import Protocol
 from hyprial.identity.impl.agents.home.environment import apply_runtime_environment_profile
 from hyprial.identity.impl.agents.runtime.context import resolve_agent_runtime_context
+from hyprial.identity.impl.agents.home.effects import (
+    HomeRuntimePreparer,
+    RuntimeHomePreparers,
+)
 
 from ._base import (
     AgentHomeMigrationError,
@@ -51,6 +55,7 @@ class AgentRuntimeMigrationBindings:
         base_environment: Mapping[str, str],
         cwd: str | None = None,
         containerized: bool = False,
+        runtime_preparers: Mapping[str, HomeRuntimePreparer | None] | None = None,
     ) -> None:
         selected = tuple(harnesses)
         if not selected or len(selected) != len(set(selected)):
@@ -63,6 +68,7 @@ class AgentRuntimeMigrationBindings:
         self.base_environment = dict(base_environment)
         self.cwd = cwd
         self.containerized = containerized
+        self._runtime_preparers = RuntimeHomePreparers(runtime_preparers)
         self._contexts: tuple[AgentRuntimeContext, ...] = ()
         self._environments: dict[str, dict[str, str]] = {}
 
@@ -117,6 +123,8 @@ class AgentRuntimeMigrationBindings:
                     "activate-bindings",
                     actor=agent.actor,
                 )
+            if harness in self._runtime_preparers:
+                context = self._runtime_preparers.prepare(context)
             self._validate_context(context, agent, Path(receipt.path))
             environment = apply_runtime_environment_profile(
                 self.base_environment,

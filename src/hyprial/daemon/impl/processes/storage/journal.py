@@ -92,7 +92,11 @@ class CustodyJournal:
         if not self._snapshot_exists:
             # Keep memory unchanged if the initial snapshot write fails.
             rows = dict(self.rows)
-            rows.update({k: v for k, v in changed.items() if v is not None})
+            for key, value in changed.items():
+                if value is None:
+                    rows.pop(key, None)
+                else:
+                    rows[key] = value
             self._snapshot(rows)
             self.rows = rows
             return

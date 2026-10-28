@@ -98,6 +98,12 @@ BASE_CHILD_ENVIRONMENT_NAMES = frozenset(
         # leaves a stated value alone.
         "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
         "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
+        # Deployment-selected model endpoints are non-secret routing config.
+        # They must survive P2 replacement so each real harness can reach the
+        # same self-hosted (or loopback E2E) provider selected by the daemon.
+        # Provider API keys remain default-denied and arrive only via grants.
+        "HYPRIAL_OPENAI_BASE_URL",
+        "HYPRIAL_ANTHROPIC_BASE_URL",
         "TERM",
         "COLORTERM",
         "TERM_PROGRAM",
@@ -144,6 +150,8 @@ GENERATED_CHILD_ENVIRONMENT_NAMES = frozenset(
         "HYPRIAL_AGENT_DIR",
         "HYPRIAL_WORKER_ACTOR",
         "HYPRIAL_WORKER_SESSION_REF",
+        "HYPRIAL_WORKER_SESSION_REF_FILE",
+        "HYPRIAL_AGENT_SESSION",
         # P1b B1 (L3): the three daemon-authority variables.  All three are
         # minted by the daemon (owner/node resolution in
         # DaemonApplication.__init__), never passed through from a parent

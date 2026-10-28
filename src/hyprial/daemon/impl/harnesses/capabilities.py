@@ -16,6 +16,8 @@ from hyprial.kernel import Capability, SupportLevel  # MP-3 import-back (symbols
 
 from dataclasses import dataclass
 from typing import Literal
+from collections.abc import Iterable
+from hyprial.kernel import DECLARED_HARNESSES as DECLARED_HARNESSES, HarnessLaunchSpec
 
 
 PLUGIN_KINDS = frozenset({"mcp", "skill", "pi-extension", "claude-plugin"})
@@ -292,7 +294,13 @@ _CONCURRENCY: dict[tuple[str, bool], HarnessConcurrency] = {
     ("user-proxy", False): HarnessConcurrency("sequential", 1),
 }
 
-DECLARED_HARNESSES = frozenset({harness for harness, _ in _DECLARATIONS})
+def worker_spec(
+    specs: Iterable[HarnessLaunchSpec], name: str, *, excluding: str | None = None
+) -> HarnessLaunchSpec | None:
+    """Resolve one worker, never an adapter or an ambiguous legacy name."""
+    matches = [spec for spec in specs if spec.name == name
+               and spec.harness in DECLARED_HARNESSES and spec.harness != excluding]
+    return matches[0] if len(matches) == 1 else None
 
 
 def declare(harness: str, *, headless: bool) -> dict[Capability, CapabilitySupport]:
@@ -308,9 +316,9 @@ def declare(harness: str, *, headless: bool) -> dict[Capability, CapabilitySuppo
 def support(
     harness: str, *, headless: bool, capability: Capability
 ) -> CapabilitySupport | None:
-    """One capability's support, or None when the mode does not apply."""
+    """One capability's support, or None for an unknown kind/mode/capability."""
 
-    return _DECLARATIONS[(harness, headless)].get(capability)
+    return _DECLARATIONS.get((harness, headless), {}).get(capability)
 
 
 def concurrency(harness: str, *, headless: bool) -> HarnessConcurrency:

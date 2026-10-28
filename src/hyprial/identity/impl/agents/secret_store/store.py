@@ -15,6 +15,7 @@ import secrets
 import sqlite3
 import stat
 from collections import Counter
+from contextlib import closing
 from dataclasses import dataclass, field as dataclass_field
 from math import log2
 from pathlib import Path
@@ -221,14 +222,19 @@ def agent_secret_store_exists(hyprial_home: Path, agent: str) -> bool:
 class AgentSecretStore:
     """Own one ``secrets.sqlite`` under an already provisioned agent home."""
 
-    def __init__(self, agent_home: Path) -> None:
+    def __init__(self, agent_home: Path, *, read_only: bool = False) -> None:
         home = Path(agent_home)
         if not home.is_absolute():
             raise ValueError("agent home must be absolute")
         self.agent_home = home
         self.path = home / "secrets.sqlite"
         self.key_path = home / _HMAC_KEY_FILE
-        self._initialize()
+        self._read_only = read_only
+        if read_only:
+            self._require_private_home()
+            self._require_private_database()
+        else:
+            self._initialize()
 
     @property
     def fingerprint_available(self) -> bool:
@@ -452,7 +458,7 @@ class AgentSecretStore:
     def get(self, service: str, field: str) -> StoredSecret | None:
         """Read one current table row; event history never hides it."""
 
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             row = connection.execute(
                 """
                 SELECT service, field, value, fingerprint, updated_at_ms
@@ -700,6 +706,8 @@ class AgentSecretStore:
         if initialize:
             self._require_private_home()
             self._require_private_database()
+        if self._read_only:
+            return sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True, timeout=5.0)
         connection = sqlite3.connect(self.path, timeout=5.0)
         connection.execute("PRAGMA secure_delete = ON")
         return connection

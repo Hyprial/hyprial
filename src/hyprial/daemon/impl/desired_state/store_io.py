@@ -41,8 +41,9 @@ class _DesiredStateStoreIoMixin:
 
         if not self.versioned_path.exists():
             return
-        document = self._read_import_document()
-        self._sqlite_shadow.write_document(document)
+        original = self._read_import_document()
+        document = DesiredState.from_json(original).to_json()
+        self._sqlite_shadow.write_document(document, migration_backup=original)
         self.versioned_path.rename(self._archive_path(self.versioned_path))
 
     def _read_import_document(self) -> dict[str, object]:
@@ -54,7 +55,8 @@ class _DesiredStateStoreIoMixin:
 
         raw = self._read_json(self.versioned_path)
         try:
-            return DesiredState.from_json(raw).to_json()
+            DesiredState.from_json(raw)
+            return raw
         except DesiredStateError as error:
             raise DesiredStateError(
                 f"cannot import desired state from {self.versioned_path}: {error}"

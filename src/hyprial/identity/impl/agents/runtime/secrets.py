@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
+import sqlite3
 import stat
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -184,16 +186,19 @@ class ResolvedSecret:
 
 
 class SecretResolutionError(RuntimeError):
-    """Sanitized resolver failure: category, public entry id, and phase only."""
+    """Sanitized failure with public metadata and optional operator guidance."""
 
     code = ipc_errors.AGENT_SECRET_RESOLUTION_FAILED
 
-    def __init__(self, category: str, entry_id: str, phase: str) -> None:
+    def __init__(
+        self, category: str, entry_id: str, phase: str, *, guidance: str = ""
+    ) -> None:
         self.category = category
         self.entry_id = entry_id
         self.phase = phase
+        suffix = f"; {guidance}" if guidance else ""
         super().__init__(
-            f"secret resolution {category}: entry={entry_id!r} phase={phase!r}"
+            f"secret resolution {category}: entry={entry_id!r} phase={phase!r}{suffix}"
         )
 
 
@@ -203,6 +208,12 @@ class _SecretRegistry(Protocol):
     def secret_grant(self, actor: str, grant_id: str) -> SecretGrant | None: ...
 
     def home_receipt(self, actor: str, *, require_ready: bool = True) -> HomeReceipt: ...
+
+    def secret_inventory(self, actor: str | None = None) -> tuple[SecretGrant, ...]: ...
+
+    def repoint_legacy_secret_grants(
+        self, grant: SecretGrant, values: Mapping[str, str], raw_field: str,
+    ) -> None: ...
 
 
 class SecretResolver:
@@ -236,7 +247,7 @@ class SecretResolver:
         else:
             if actor is None:
                 raise ValueError("agent-private catalog entries require an actor")
-            path = Path(self.registry.home_receipt(actor).path) / "secrets" / entry_id
+            path = Path(self.registry.home_receipt(actor).path) / "secrets.sqlite"
         return SecretCatalogEntry(
             custody=custody,
             entry_id=entry_id,
@@ -261,8 +272,49 @@ class SecretResolver:
         if grant.entity_token != entity_token:
             raise SecretResolutionError("grant-stale", grant.entry_id, "authorize")
         path = self._entry_path(actor, grant)
-        value = self._read_value(path, grant)
+        try:
+            if grant.source is SecretSource.AGENT_PRIVATE:
+                grant, value = self._read_agent_value(path, grant)
+            else:
+                value = self._read_value(path, grant)
+        except SecretResolutionError as error:
+            if (
+                error.category != "missing"
+                or grant.source is not SecretSource.AGENT_PRIVATE
+            ):
+                raise
+            raise SecretResolutionError(
+                error.category, error.entry_id, error.phase,
+                guidance=self._agent_recovery_guidance(actor, grant),
+            ) from None
         return ResolvedSecret(grant, value)
+
+    @staticmethod
+    def _agent_recovery_guidance(actor: str, grant: SecretGrant) -> str:
+        field_name = (
+            grant.field_name
+            if secret_environment_name_is_allowed(grant.field_name)
+            else next(iter(grant.environment_names), "VALUE")
+        )
+        command = shlex.join([
+            "hyprial", "agent", "secret", "set", "--agent", actor,
+            "--service", grant.entry_id, "--field", field_name,
+        ])
+        guidance = (
+            f"For an unvalidated service, pipe the value on stdin to: {command} --no-validate. "
+            f"For a validated service, use: {command} (supply all required fields)."
+        )
+        if field_name != grant.field_name:
+            regrant = [
+                "hyprial", "agent", "secret", "grant", actor,
+                "--grant-id", grant.grant_id, "--source", "agent-private",
+                "--entry-id", grant.entry_id, "--field-name", field_name,
+                "--revision", str(grant.revision + 1),
+            ]
+            for name in grant.environment_names:
+                regrant.extend(["--environment-name", name])
+            guidance += f" Then update the legacy field binding: {shlex.join(regrant)}."
+        return guidance
 
     def write_user_provider(
         self, entry_id: str, values: Mapping[str, str]
@@ -281,31 +333,59 @@ class SecretResolver:
         self._atomic_secret_write(path, json.dumps(dict(values), sort_keys=True) + "\n")
         return path
 
-    def write_agent_secret(
-        self,
-        actor: str,
-        entry_id: str,
-        value: str | Mapping[str, str],
-    ) -> Path:
-        """Operator-side writer for one current, provisioned agent home."""
+    def _read_agent_value(self, legacy_path: Path, grant: SecretGrant) -> tuple[SecretGrant, str]:
+        # Import lazily: the store also uses this module's environment policy.
+        from hyprial.identity.impl.agents.secret_store.legacy import migrate_entry
+        from hyprial.identity.impl.agents.secret_store.store import AgentSecretStore
 
-        _validate_entry(entry_id)
-        receipt = self.registry.home_receipt(actor)
-        directory = Path(receipt.path) / "secrets"
-        self._require_private_directory(directory, entry_id, "write-parent")
-        path = directory / entry_id
-        if isinstance(value, Mapping) and any(
-            not isinstance(name, str) or not isinstance(item, str)
-            for name, item in value.items()
-        ):
-            raise TypeError("agent secret fields and values must be strings")
-        encoded = (
-            json.dumps(dict(value), sort_keys=True) + "\n"
-            if isinstance(value, Mapping)
-            else value
-        )
-        self._atomic_secret_write(path, encoded)
-        return path
+        home = legacy_path.parent.parent
+        database = home / "secrets.sqlite"
+        self._validate_ancestors(database, grant.entry_id)
+        try:
+            # Migration commits and verifies SQLite before deleting the source.
+            # Values returned below always come from SQLite, never from a file.
+            try:
+                metadata = legacy_path.lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                if not (grant.entry_id == "native" and stat.S_ISDIR(metadata.st_mode)):
+                    store = AgentSecretStore(home)
+                    fields = [
+                        item.field_name for item in self.registry.secret_inventory(grant.actor)
+                        if item.source is grant.source and item.entry_id == grant.entry_id
+                        and item.entity_token == grant.entity_token and item.field_name is not None
+                    ]
+                    migrate_entry(
+                        store, grant.entry_id, required_fields=fields,
+                        repoint=lambda values, field: self.registry.repoint_legacy_secret_grants(
+                            grant, values, field,
+                        ),
+                    )
+            # Another resolver may have migrated and removed the file since our
+            # first grant read. Never use a stale fieldless binding in that case.
+            current = self.registry.secret_grant(grant.actor, grant.grant_id)
+            if current is None or (
+                current.entity_token, current.source, current.entry_id
+            ) != (grant.entity_token, grant.source, grant.entry_id):
+                raise SecretResolutionError("grant-stale", grant.entry_id, "authorize")
+            grant = current
+            try:
+                database.lstat()
+            except FileNotFoundError:
+                raise SecretResolutionError("missing", grant.entry_id, "store-open") from None
+            store = AgentSecretStore(home, read_only=True)
+            secret = store.get(grant.entry_id, grant.field_name or "VALUE")
+        except (OSError, ValueError, sqlite3.Error):
+            # An unsafe, conflicting or unreadable store never enables fallback.
+            raise SecretResolutionError(
+                "store-unavailable", grant.entry_id, "store-read"
+            ) from None
+        if secret is None:
+            raise SecretResolutionError("missing", grant.entry_id, "select")
+        if not secret.value:
+            raise SecretResolutionError("invalid", grant.entry_id, "select")
+        return grant, secret.value
 
     def _entry_path(self, actor: str, grant: SecretGrant) -> Path:
         if grant.source is SecretSource.USER_PROVIDER:

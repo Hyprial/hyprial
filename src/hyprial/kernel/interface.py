@@ -178,8 +178,10 @@ from hyprial.kernel.impl.facts.cost_counters import (
     runtime_cpu_counters,
 )
 from hyprial.kernel.impl.facts.launch_spec import (
+    DECLARED_HARNESSES,
     DesiredStateError,
     HarnessLaunchSpec,
+    merge_harness_launch_args,
 )
 from hyprial.kernel.impl.facts.lifecycle_vocab import (
     DomainEffectClaim,
@@ -393,9 +395,11 @@ __all__ = [
     "InterceptDecision",
     "InterceptRequest",
     "GUEST_WORKER_STATE",
+    "DECLARED_HARNESSES",
     "HarnessLaunchSpec",
     "harden_private_path",
     "has_execution_runtime",
+    "merge_harness_launch_args",
     "IDENTITY_BINDING_JWKS_TTL_SECONDS",
     "IDENTITY_BINDING_PUBLISH_RETRY_MAX_SECONDS",
     "IDENTITY_BINDING_PUBLISH_RETRY_SECONDS",

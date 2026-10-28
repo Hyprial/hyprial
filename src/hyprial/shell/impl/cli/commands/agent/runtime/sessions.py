@@ -19,7 +19,7 @@ import sys
 import tempfile
 import time
 
-from hyprial.shell.impl.cli.commands.agent.runtime.interactive import _announce_plugin_skips, _handover_prompt, _interactive_actor, _launch_detached_tui, _pi_attach_registration, _plugin_skip_warnings, _preflight_codex_credential, _runtime_context_projection, _runtime_launch_custody, _terminate_process, _wait_foreground, _with_plugin_warnings
+from hyprial.shell.impl.cli.commands.agent.runtime.interactive import _announce_plugin_skips, _handover_prompt, _interactive_actor, _interactive_cli_identity, _launch_detached_tui, _pi_attach_registration, _plugin_skip_warnings, _preflight_codex_credential, _publish_session_ref, _runtime_context_projection, _runtime_launch_custody, _terminate_process, _wait_foreground, _with_plugin_warnings
 from hyprial.shell.impl.cli.commands.common.support import JsonObject
 _PI_SESSION_IDENTITY_FLAGS = frozenset(
     {
@@ -229,6 +229,8 @@ def _start_interactive_pi(
             argv.extend(["--extension", str(extension)])
     from hyprial.identity import apply_runtime_environment_profile
 
+    session_ref_file = state_dir / f"interactive-binding-{services.uuid4().hex}.ref"
+    _publish_session_ref(session_ref_file, session_ref)
     process: subprocess.Popen[Any] | None = None
     with _runtime_launch_custody(runtime_projection) as secret_environment:
         environment = apply_runtime_environment_profile(
@@ -238,9 +240,7 @@ def _start_interactive_pi(
             {
                 # The carrier's canonical identity is child-only and pinned
                 # to this daemon's socket (never an ambient production daemon).
-                "HYPRIAL_WORKER_ACTOR": actor,
-                "HYPRIAL_WORKER_SESSION_REF": session_ref,
-                "HYPRIAL_MANAGED_WORKER": "1",
+                **_interactive_cli_identity(actor, session_ref_file),
                 **(
                     {"HYPRIAL_RESUME_GUARDED": "1"}
                     if resume is not None
@@ -303,6 +303,7 @@ def _start_interactive_pi(
                     pi_package_root=find_pi_package_root(pi_command, environment),
                     model_provider=model_provider,
                     model=model,
+                    model_environment=environment,
                     additional_extension_paths=(
                         PI_HARNESS_ATTACH_EXTENSION,
                         *plugin_plan.extensions,
@@ -394,6 +395,7 @@ def _start_interactive_pi(
     finally:
         if process is not None and process.poll() is None:
             _terminate_process(process)
+        session_ref_file.unlink(missing_ok=True)
     return _with_plugin_warnings(
         {
             "ok": returncode == 0,
@@ -687,6 +689,7 @@ def _start_interactive_codex(
                 ),
                 launch_inputs.environment,
             )
+            environment.update(_interactive_cli_identity(actor, session_ref_file))
             server = CodexInteractiveAppServer(
                 socket_path,
                 cwd=cwd,
@@ -734,6 +737,14 @@ def _start_interactive_codex(
                 ]
             )
             server.start()
+            evidence = getattr(server, "native_load_evidence", None)
+            for message in getattr(evidence, "warnings", ()):
+                warning = {"code": "CODEX_SKILL_LOAD_WARNING", "message": message}
+                plugin_warnings.append(warning)
+                _announce_plugin_skips([warning])
+                Logger.daemon(services._state_dir(), name=actor).warn(
+                    "codex.skills.load_warning", error=message,
+                )
             if resume is not None:
                 try:
                     server.resume_thread(
@@ -853,9 +864,7 @@ def _start_interactive_codex(
                     "CODEX_RESUME_GUARD_UNCONFIRMED",
                     "daemon did not confirm that the live-incumbent guard was applied",
                 )
-            pending_ref = session_ref_file.with_name("session-ref.tmp")
-            pending_ref.write_text(session_ref, encoding="utf-8")
-            pending_ref.replace(session_ref_file)
+            _publish_session_ref(session_ref_file, session_ref)
             if tmux_module is not None:
                 assert session_name is not None
                 # Re-verify the CLI's own predicate against the daemon's live

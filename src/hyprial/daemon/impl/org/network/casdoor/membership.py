@@ -208,12 +208,11 @@ class CasdoorMembershipMixin:
         for candidate in candidates:
             try:
                 self._fs.remove_member(space_id, candidate)
-                self._remove_acl_member(org, candidate)
-                break
             except OrgFsError as error:
-                # "invalid-argument" means that form was not a member.
+                # Absence in one space says nothing about the other space.
                 if error.code != "invalid-argument":
                     raise
+            self._remove_acl_member(org, candidate)
 
     def _remove_acl_member(self, org: str, user: str) -> None:
         acl_space = self._require_acl_space(org)

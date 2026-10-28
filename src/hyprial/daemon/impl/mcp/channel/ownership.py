@@ -7,7 +7,10 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
+from collections import OrderedDict
 from collections.abc import Callable
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
@@ -18,6 +21,31 @@ from hyprial.daemon.impl.mcp.api  import DaemonDisconnected
 _logger = logging.getLogger(__name__)
 
 _PROCESS_POPEN = subprocess.Popen
+
+
+@dataclass(frozen=True, slots=True)
+class _DarwinIdentityProbe:
+    owner_thread: int
+    done: threading.Event
+
+
+_DARWIN_IDENTITY_CACHE_LIMIT = 512
+_DARWIN_IDENTITY_CACHE: OrderedDict[int, tuple[tuple[int, int], str]] = OrderedDict()
+_DARWIN_IDENTITY_CACHE_LOCK = threading.RLock()
+_DARWIN_IDENTITY_INFLIGHT: dict[int, _DarwinIdentityProbe] = {}
+
+
+def _reset_darwin_identity_cache() -> None:
+    """A forked child must not inherit locks held by vanished parent threads."""
+
+    global _DARWIN_IDENTITY_CACHE, _DARWIN_IDENTITY_CACHE_LOCK, _DARWIN_IDENTITY_INFLIGHT
+    _DARWIN_IDENTITY_CACHE = OrderedDict()
+    _DARWIN_IDENTITY_CACHE_LOCK = threading.RLock()
+    _DARWIN_IDENTITY_INFLIGHT = {}
+
+
+if sys.platform == "darwin" and hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_darwin_identity_cache)
 
 _PROC_ROOT = Path("/proc")
 
@@ -194,19 +222,24 @@ def _identity_components(marker: str) -> dict[str, str]:
 
 
 def _process_identities_match(expected: str, observed: str) -> bool:
-    """Require at least one matching process-birth component.
+    """Match birth evidence, prioritizing a shared precise Darwin component.
 
     Node's Darwin uptime clock can straddle the kernel's whole-second birth
     boundary. Only that explicitly coarse component gets a one-second
-    tolerance, and only when it is the ONLY shared component: when a finer
-    component (native microseconds, proc start ticks, ps lstart) is shared and
-    differs, that is PID reuse, and a coarse-second near-miss must not
-    override it. Opaque legacy markers remain exact.
+    tolerance, and only when it is the ONLY shared component. A common
+    native microsecond marker must agree even if coarser fields are equal.
+    Other legacy component matching remains unchanged; opaque markers stay
+    exact, and a coarse-second near-miss never overrides another shared
+    component's disagreement.
     """
 
     expected_components = _identity_components(expected)
     observed_components = _identity_components(observed)
     shared = expected_components.keys() & observed_components.keys()
+    if "darwin-starttime" in shared:
+        # A precise birth conflict is PID reuse even within the same second;
+        # equal ps-lstart/coarse-second components cannot overrule it.
+        return expected_components["darwin-starttime"] == observed_components["darwin-starttime"]
     for scheme in shared:
         if expected_components[scheme] == observed_components[scheme]:
             return True
@@ -279,6 +312,81 @@ def _read_ps_process_identity(pid: int) -> str | None:
         return None
     identity = stdout.strip()
     return f"ps-lstart:{identity}" if identity else None
+
+
+def _cached_darwin_identity(pid: int, start: tuple[int, int]) -> str | None:
+    with _DARWIN_IDENTITY_CACHE_LOCK:
+        entry = _DARWIN_IDENTITY_CACHE.get(pid)
+        if entry is not None and entry[0] == start:
+            _DARWIN_IDENTITY_CACHE.move_to_end(pid)
+            return entry[1]
+    return None
+
+
+def _darwin_birth_marker(start: tuple[int, int], ps_identity: str | None = None) -> str:
+    # Preserve native microseconds, the Node-compatible coarse component,
+    # and the historical ps component whenever it was successfully observed.
+    components = [f"darwin-starttime:{start[0]}:{start[1]}", f"darwin-startsec:{start[0]}"]
+    if ps_identity is not None:
+        components.append(ps_identity)
+    return ";".join(components)
+
+
+def _probe_darwin_identity(pid: int) -> str | None:
+    for _ in range(2):
+        current = _read_darwin_process_start(pid)
+        if current is None:
+            return _read_ps_process_identity(pid)
+        cached = _cached_darwin_identity(pid, current)
+        if cached is not None:
+            return cached
+        ps_identity = _read_ps_process_identity(pid)
+        confirmed = _read_darwin_process_start(pid)
+        if confirmed is None:
+            return ps_identity
+        if confirmed != current:
+            continue
+        identity = _darwin_birth_marker(current, ps_identity)
+        # Missing ps must remain retryable for legacy ps-only owners.
+        if ps_identity is not None:
+            with _DARWIN_IDENTITY_CACHE_LOCK:
+                _DARWIN_IDENTITY_CACHE[pid] = current, identity
+                _DARWIN_IDENTITY_CACHE.move_to_end(pid)
+                while len(_DARWIN_IDENTITY_CACHE) > _DARWIN_IDENTITY_CACHE_LIMIT:
+                    _DARWIN_IDENTITY_CACHE.popitem(last=False)
+        return identity
+    return None  # Birth stayed unstable; do not manufacture a hybrid marker.
+
+
+def _read_darwin_identity(pid: int, start: tuple[int, int]) -> str | None:
+    cached = _cached_darwin_identity(pid, start)
+    if cached is not None:
+        return cached
+    with _DARWIN_IDENTITY_CACHE_LOCK:
+        probe = _DARWIN_IDENTITY_INFLIGHT.get(pid)
+        owner = probe is None and len(_DARWIN_IDENTITY_INFLIGHT) < _DARWIN_IDENTITY_CACHE_LIMIT
+        if owner:
+            probe = _DarwinIdentityProbe(threading.get_ident(), threading.Event())
+            _DARWIN_IDENTITY_INFLIGHT[pid] = probe
+    if probe is None:
+        # Capacity overflow keeps the original uncached probing behavior.
+        return _probe_darwin_identity(pid)
+    if not owner:
+        if probe.owner_thread != threading.get_ident():
+            probe.done.wait(2.0)
+        current = _read_darwin_process_start(pid)
+        if current is None:
+            return None
+        # A waiting cohort shares a failed attempt without permanently caching
+        # its failure. Later callers retry ps. Native evidence is read afresh.
+        return _cached_darwin_identity(pid, current) or _darwin_birth_marker(current)
+    try:
+        return _probe_darwin_identity(pid)
+    finally:
+        with _DARWIN_IDENTITY_CACHE_LOCK:
+            if _DARWIN_IDENTITY_INFLIGHT.get(pid) is probe:
+                _DARWIN_IDENTITY_INFLIGHT.pop(pid)
+        probe.done.set()
 
 def _resolve_tmux_pane_owner(
     tmux_session: str,
@@ -358,14 +466,7 @@ def _read_process_identity(pid: int) -> str | None:
     if sys.platform == "darwin":
         native_start = _read_darwin_process_start(pid)
         if native_start is not None:
-            start_sec, start_usec = native_start
-            components.append(f"darwin-starttime:{start_sec}:{start_usec}")
-            # Node exposes its own monotonic uptime but cannot call libproc
-            # without an addon. The independently readable whole-second
-            # component lets an in-process carrier report the same birth
-            # fact while the microsecond marker remains the stronger
-            # native fence for Python-owned processes.
-            components.append(f"darwin-startsec:{start_sec}")
+            return _read_darwin_identity(pid, native_start)
     ps_identity = _read_ps_process_identity(pid)
     if ps_identity is not None:
         components.append(ps_identity)
@@ -380,11 +481,10 @@ def _owner_process_status(
 ) -> _OwnerProcessStatus:
     """Classify a safe owner-fence observation without exposing its marker.
 
-    Comparison is component-wise so markers can cross formats (an older
-    launcher wrote a single-scheme string; a newer child may read several
-    components). Any shared component with an equal value proves the same
-    process. A shared component whose values ALL differ is positive PID-reuse
-    evidence (IDENTITY_MISMATCH). No shared component -- like an unreadable
+    Comparison supports old single-scheme markers and newer multi-component
+    markers. Shared precise Darwin births must agree; otherwise compatible
+    shared components retain the legacy matching rules. Comparable but
+    conflicting evidence is IDENTITY_MISMATCH. No shared component -- like an unreadable
     marker -- is NO evidence: UNKNOWN, fail-safe, and never on the reaping
     path. "cannot read" and "read and it differs" must stay distinct
     verdicts; confusing them is what both killed live owners (format skew

@@ -239,7 +239,8 @@ def _run_genkey(
     if (
         not isinstance(public, dict)
         or set(public) != {"v", "serverPublic", "clientPublic"}
-        or public.get("v") != 5
+        or type(public.get("v")) is not int
+        or public.get("v") != 6
         or not isinstance(public.get("serverPublic"), str)
         or not public["serverPublic"]
         or not isinstance(public.get("clientPublic"), str)

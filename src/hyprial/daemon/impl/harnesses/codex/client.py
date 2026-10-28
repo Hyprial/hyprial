@@ -195,11 +195,7 @@ class CodexAppServerClient(
             self.command = (*launch_command, *provider_args, "app-server", "--stdio")
             self._session = session or _CodexSession(session_ref)
             self._worker_channel = worker_channel
-            # Same daemon-bound identity the pi and claude carriers inject
-            # (WorkerChannel.identity_environment): a codex worker's shell-outs to
-            # ``hyprial`` must present the session binding to the fenced PAC write
-            # methods, and the exec runtime's own subprocesses inherit the same
-            # env -- the three harnesses stay isomorphic on this surface.
+            # Shell-outs inherit the same fenced identity as the other carriers.
             identity_environment = (
                 worker_channel.identity_environment() if worker_channel is not None else {}
             )
@@ -279,6 +275,10 @@ class CodexAppServerClient(
         @property
         def native_load_evidence(self) -> CodexNativeLoadEvidence | None:
             return self._native_load_evidence
+
+        @property
+        def startup_warnings(self) -> tuple[str, ...]:
+            return self._native_load_evidence.warnings if self._native_load_evidence else ()
 
         @property
         def running(self) -> bool:
@@ -401,7 +401,7 @@ class CodexAppServerClient(
                         native_root=self._native_root,
                         cwd=working_directory,
                         model_provider=self.spec.model_provider,
-                        shared_credential=self._shared_credential,
+                        shared_credential=self._shared_credential, logger=self._logger,
                     )
                     if self._logger is not None:
                         evidence = self._native_load_evidence

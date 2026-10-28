@@ -23,7 +23,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 const RECEIPT_SCHEMA = "hyprial-pi-loader-v1";
@@ -154,6 +154,10 @@ function contextFileFromDirectory(directory, allowedRoot, scope) {
 function validateOptions(input) {
   if (!input || typeof input !== "object" || Array.isArray(input)) fail("options must be an object");
   if (input.projectTrusted !== true) fail("projectTrusted must be explicitly true");
+  const trustScope = input.trustScope === undefined ? "repository" : input.trustScope;
+  if (trustScope !== "repository" && trustScope !== "workspace") {
+    fail("trustScope must be repository or workspace");
+  }
   const piPackageRoot = canonicalDirectory(input.piPackageRoot, "piPackageRoot");
   const cwd = canonicalDirectory(input.cwd, "cwd");
   const repositoryRoot = canonicalDirectory(input.repositoryRoot, "repositoryRoot");
@@ -161,6 +165,13 @@ function validateOptions(input) {
   const nativeRoot = canonicalDirectory(input.nativeRoot, "nativeRoot");
   const homeRoot = canonicalDirectory(input.homeRoot, "homeRoot");
   if (!isWithin(cwd, repositoryRoot)) fail("cwd is outside repositoryRoot");
+  if (trustScope === "workspace") {
+    // The one non-Git trust root: the agent's own private P2 workspace, which
+    // Python already bounded (0700, non-Git, this agent's home only).  The
+    // root must be exactly the cwd; a wider workspace root is refused.
+    if (cwd !== repositoryRoot) fail("workspace trust root must equal cwd");
+    return { piPackageRoot, cwd, repositoryRoot, projectionRoot, nativeRoot, homeRoot, projectTrusted: true };
+  }
   let gitMarker;
   try {
     gitMarker = lstatSync(join(repositoryRoot, ".git"));
@@ -583,7 +594,19 @@ async function main() {
   await runControlledMode(command, options);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+function isMainModule() {
+  // SDK consumers may use node -e and a non-path argv[1]. Only an actual
+  // entry file can select CLI mode; retain canonical paths for symlink launches.
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(resolve(process.argv[1]));
+  } catch (error) {
+    if (error.code === "ENOENT" || error.code === "ENOTDIR") return false;
+    throw error;
+  }
+}
+
+if (isMainModule()) {
   main().catch((error) => {
     process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
     process.exitCode = 1;

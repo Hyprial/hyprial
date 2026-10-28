@@ -296,7 +296,17 @@ class InboxWatch:
 
     def poll_done(self, action: Request, outcome: Outcome, now_ms: int) -> InboxChange | None:
         self._settle(self._poll, action)
-        if self._terminal(outcome):
+        # A restarted daemon can retain the registration but lack its live
+        # binding until refresh succeeds. A list/wait refusal must not cancel
+        # that refresh and register over the surviving carrier. Let refresh
+        # itself decide whether the registration is gone or superseded.
+        refreshing_stale_read = (
+            isinstance(action, (ListInbox, Wait))
+            and isinstance(outcome, Rejected)
+            and outcome.code == ipc_errors.STALE_SESSION
+            and self._refresh_owed
+        )
+        if not refreshing_stale_read and self._terminal(outcome):
             return None
         if isinstance(action, Register):
             self._register_done(outcome, now_ms)

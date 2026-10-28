@@ -662,15 +662,6 @@ class _ShutdownMixin:
             from hyprial.daemon.impl.org.network import stop_casdoor_membership_sync
 
             attempt(lambda: stop_casdoor_membership_sync(self), "org-casdoor-sync")
-        peer_access = getattr(self, "_peer_access_actor", None)
-        if peer_access is not None:
-            self._peer_access_actor = None
-
-            def stop_peer_access() -> None:
-                if not peer_access.stop():
-                    raise RuntimeError("peer-access actor did not drain")
-
-            attempt(stop_peer_access, "org-peer-access")
         if self._orgfs_runtime is not None:
             orgfs_runtime = self._orgfs_runtime
             self._orgfs_runtime = None

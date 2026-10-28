@@ -1,7 +1,8 @@
 """Directed media retrieval for Lark adapters (2026-08-14 ruling).
 
-Inbound stand-ins print a ``ref:<message_id>/<key>`` handle for every image
-and file.  This module turns that handle back into local bytes *on demand*:
+Inbound stand-ins print a ``ref:<message_id>/<key>`` handle for direct media
+and a ``ref:<shell_id>/<child_id>/<key>`` handle for forwarded media.  This
+module turns either handle back into local bytes *on demand*:
 the agent (or an operator) asks, the adapter's own App credential fetches
 through ``im/v1`` message resources, and the payload lands under
 ``<hyprial-home>/media/<adapter>/``.  Nothing is ever inlined automatically —
@@ -42,11 +43,45 @@ _GENERIC_CONTENT_TYPES = frozenset(
 
 
 class MediaFetchError(RuntimeError):
-    """A loud, secret-free media retrieval failure.
+    """A loud, stable, secret-free media retrieval failure."""
 
-    The message is always a summary this module composed itself; platform
-    error text (which can carry URLs or tokens) never reaches it.
-    """
+    def __init__(
+        self, message: str, *, code: str = "MEDIA_FETCH_FAILED"
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+_RESOURCE_ERROR_SUMMARIES: dict[int, tuple[str, str]] = {
+    234003: (
+        "MEDIA_NOT_ACCESSIBLE",
+        "the resource is not attached to the referenced message; for a "
+        "forwarded file, use its shell-aware ref or ask the sender to send "
+        "the file directly to the bot",
+    ),
+    234004: (
+        "MEDIA_APP_NOT_IN_CHAT",
+        "this App is not in the chat that carries the resource; add the bot "
+        "to that chat or ask the sender to send the file directly",
+    ),
+    234009: (
+        "MEDIA_EXTERNAL_CHAT_UNSUPPORTED",
+        "the platform does not allow this resource download in an external chat",
+    ),
+    234038: (
+        "MEDIA_RESTRICTED",
+        "restricted-message mode prevents this resource download",
+    ),
+    234040: (
+        "MEDIA_MESSAGE_NOT_VISIBLE",
+        "the carrying message is not visible to this App; ask a group "
+        "administrator to check history visibility",
+    ),
+    234043: (
+        "MEDIA_UNSUPPORTED_MESSAGE_TYPE",
+        "the platform does not support resource downloads for this message type",
+    ),
+}
 
 
 @runtime_checkable
@@ -60,15 +95,23 @@ class MediaDownloadPort(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class MediaRef:
-    """One parsed ``<message_id>/<key>`` media reference.
+    """One parsed direct or shell-aware media reference.
 
-    Self-contained by design: the message id names the carrying message
-    directly, so a ref harvested from any nesting depth of an expanded
-    forward resolves without knowing the hierarchy it came from.
+    ``message_id`` identifies the message whose content exposed the key.
+    Forwarded children additionally carry ``container_message_id`` because
+    Lark's resource endpoint addresses their bytes through the top-level
+    merge-forward shell received by the App.
     """
 
     message_id: str
     key: str
+    container_message_id: str | None = None
+
+    @property
+    def download_message_id(self) -> str:
+        """Message id required by the platform resource endpoint."""
+
+        return self.container_message_id or self.message_id
 
     @property
     def resource_type(self) -> str:
@@ -85,21 +128,38 @@ class MediaRef:
 def parse_media_ref(raw: object) -> MediaRef:
     """Parse a reference exactly as printed inside a stand-in label.
 
-    Accepts ``om_xxx/<key>`` and tolerates a leading ``ref:`` so the label
-    text can be copied verbatim.  Anything else — missing separator, empty
-    or non-identifier parts, path tricks — fails loudly.
+    Accepts legacy ``om_xxx/<key>`` and forwarded
+    ``om_shell/om_child/<key>`` forms. A leading ``ref:`` is tolerated so the
+    label can be copied verbatim. Empty/non-identifier parts and path tricks
+    fail loudly.
     """
 
     if not isinstance(raw, str):
         raise ValueError("media ref must be a string")
     value = raw.strip().removeprefix("ref:")
-    message_id, separator, key = value.partition("/")
-    if not separator or media_ref(message_id, key) is None:
+    parts = value.split("/")
+    if len(parts) == 2:
+        message_id, key = parts
+        container_message_id = None
+    elif len(parts) == 3:
+        container_message_id, message_id, key = parts
+    else:
+        container_message_id = message_id = key = ""
+    if media_ref(
+        message_id,
+        key,
+        container_message_id=container_message_id,
+    ) != value:
         raise ValueError(
-            "media ref must be <message_id>/<key> as printed in the message "
-            "label (e.g. om_xxx/img_v2_xxx, optionally prefixed with 'ref:')"
+            "media ref must be <message_id>/<key> or "
+            "<shell_id>/<child_id>/<key> as printed in the message label "
+            "(optionally prefixed with 'ref:')"
         )
-    return MediaRef(message_id=message_id, key=key)
+    return MediaRef(
+        message_id=message_id,
+        key=key,
+        container_message_id=container_message_id,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,12 +218,16 @@ def fetch_media(
     resource_type = ref.resource_type
     try:
         payload, file_name, content_type = gateway.download_message_resource(
-            ref.message_id, ref.key, resource_type=resource_type
+            ref.download_message_id, ref.key, resource_type=resource_type
         )
     except LarkApiError as error:
         # ``from None`` on purpose: the platform's own message may carry
         # URLs/tokens and must not survive into any later rendering of the
         # exception chain.  The summary keeps what an operator can act on.
+        mapped = _RESOURCE_ERROR_SUMMARIES.get(error.code)
+        if mapped is not None:
+            code, summary = mapped
+            raise MediaFetchError(summary, code=code) from None
         scopes = (
             f"; missing scopes: {', '.join(error.missing_scopes)}"
             if error.missing_scopes

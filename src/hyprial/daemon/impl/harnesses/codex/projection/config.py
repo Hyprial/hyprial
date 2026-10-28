@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import tomllib
 from pathlib import Path
 
@@ -10,6 +11,9 @@ from .errors import CodexAgentHomeError
 
 # Allen's 2026-10-08 ruling permits only Codex's exact top-level UI-state table.
 CODEX_MUTABLE_CONFIG_TABLES = frozenset({"tui"})
+_CODEX_AUTH_STORE_LINE = re.compile(
+    rb"(?m)^[ \t]*cli_auth_credentials_store[ \t]*=[^\r\n]*(?:\r?\n|$)"
+)
 
 
 def _comparable_config(body: bytes) -> dict[str, object] | None:
@@ -20,6 +24,59 @@ def _comparable_config(body: bytes) -> dict[str, object] | None:
     for table in CODEX_MUTABLE_CONFIG_TABLES:
         parsed.pop(table, None)
     return parsed
+
+
+def codex_projection_body_for_model_vendor(
+    native_path: str, projected: bytes, model_provider: str | None
+) -> bytes:
+    """Return the native bytes required by one model-vendor auth policy."""
+
+    if native_path != "config.toml" or model_provider in {None, "openai"}:
+        return projected
+    parsed = _comparable_config(projected)
+    if parsed is None:
+        raise CodexAgentHomeError(
+            "Codex projected config.toml is invalid and cannot select an "
+            "ephemeral non-OpenAI credential store"
+        )
+    replacement = b'cli_auth_credentials_store = "ephemeral"\n'
+    if "cli_auth_credentials_store" in parsed:
+        matches = tuple(_CODEX_AUTH_STORE_LINE.finditer(projected))
+        if len(matches) != 1:
+            raise CodexAgentHomeError(
+                "Codex projected cli_auth_credentials_store cannot be reconciled"
+            )
+        start, end = matches[0].span()
+        body = projected[:start] + replacement + projected[end:]
+    else:
+        body = replacement + projected
+    try:
+        effective = tomllib.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise CodexAgentHomeError(
+            "Codex projected config.toml cannot enable ephemeral credentials"
+        ) from error
+    if effective.get("cli_auth_credentials_store") != "ephemeral":
+        raise CodexAgentHomeError(
+            "Codex projected config.toml did not enable ephemeral credentials"
+        )
+    return body
+
+
+def codex_projection_item_reconcilable(
+    native_path: str, desired: bytes, current: bytes
+) -> bool:
+    """Allow repair only when config differs by auth policy and mutable TUI."""
+
+    if native_path != "config.toml":
+        return False
+    desired_config = _comparable_config(desired)
+    current_config = _comparable_config(current)
+    if desired_config is None or current_config is None:
+        return False
+    desired_config.pop("cli_auth_credentials_store", None)
+    current_config.pop("cli_auth_credentials_store", None)
+    return current_config == desired_config
 
 
 def codex_projection_item_matches(

@@ -99,16 +99,15 @@ class _BridgeForwardsMixin(_NoticeRecoveryMixin):
         thread.join(timeout=5.0)
 
     def _harness_kind(self, actor: str) -> str | None:
-        """Connector kind for a supervised worker, used only for its budget."""
+        """Unambiguous worker kind; adapter names never identify workers."""
+        from hyprial.daemon.impl.harnesses.capabilities import worker_spec
 
         try:
             state = self.desired_state.load()
         except Exception:  # noqa: BLE001 - a reporting path never breaks a tick
             return None
-        for spec in state.harnesses:
-            if spec.name == actor:
-                return spec.harness
-        return None
+        spec = worker_spec(state.harnesses, actor)
+        return spec.harness if spec is not None else None
 
     def _is_user_proxy(self, recipient: str) -> bool:
         """True when ``recipient`` is a local user-proxy, i.e. a person's chat."""

@@ -10,6 +10,7 @@ actor; no actor handler waits for a process, socket, or network call.
 
 from __future__ import annotations
 
+import random
 import time
 import uuid
 from collections import deque
@@ -80,7 +81,9 @@ class _AdapterHandler:
         self._failures = authority.failures
         self._failed_attempts = authority.failed_attempts
         self._quarantined = authority.quarantined
+        self._quarantine_attempts = authority.quarantine_attempts
         self._transitions = authority.transitions
+        self._background_spawns = authority.background_spawns
         self._transition_since = authority.transition_since
         self._start_deadline = start_deadline
         self._health_events = authority.health_events
@@ -169,11 +172,9 @@ class _AdapterHandler:
         already_desired = command.name in self._desired
         self._desired.add(command.name)
         self._transitions[command.name] = command.correlation_id
-        self._transition_since[command.name] = time.monotonic()
+        self._transition_since[command.name] = self._clock()
         if command.explicit:
-            self._quarantined.discard(command.name)
-            self._failures.pop(command.name, None)
-            self._retry_after.pop(command.name, None)
+            self._clear_failures(command.name)
         version = self._next_version(command.name)
         self._authority.put_pending(command.correlation_id, command.result)
         self._observations[command.name] = _Observation(
@@ -193,17 +194,21 @@ class _AdapterHandler:
         )
 
     def _remove(self, command: _Remove) -> None:
-        if command.name in self._transitions:
+        held = self._transitions.get(command.name)
+        # Retry identity belongs to each adapter, not to the shared caller:
+        # another member's late completion may already have failed that caller.
+        # The new version and effect attempt token fence/release any late spawn.
+        # Explicit lifecycle commands retain their existing mutual exclusion.
+        if held is not None and self._background_spawns.get(command.name) != held:
             command.result.set_exception(
                 RuntimeError(f"adapter lifecycle is already in progress: {command.name}")
             )
             return
         existed = command.name in self._desired or command.name in self._observations
+        self._background_spawns.pop(command.name, None)
         self._transitions[command.name] = command.correlation_id
-        self._transition_since[command.name] = time.monotonic()
-        self._retry_after.pop(command.name, None)
-        self._failures.pop(command.name, None)
-        self._quarantined.discard(command.name)
+        self._transition_since[command.name] = self._clock()
+        self._clear_failures(command.name)
         self._errors.pop(command.name, None)
         version = self._next_version(command.name)
         self._authority.put_pending(command.correlation_id, command.result)
@@ -238,9 +243,10 @@ class _AdapterHandler:
         )
         for name in removed:
             self._desired.discard(name)
+            self._background_spawns.pop(name, None)
             self._transitions.pop(name, None)
             self._transition_since.pop(name, None)
-            self._retry_after.pop(name, None)
+            self._clear_failures(name)
             self._next_version(name)
         self._gateways.clear()
         self._gateways.update(fresh)
@@ -258,6 +264,7 @@ class _AdapterHandler:
         self._authority.stopping = False
         self._desired.clear()
         self._desired.update(command.names)
+        self._background_spawns.clear()
         self._transitions.clear()
         self._retry_after.clear()
         correlation = f"restore:{uuid.uuid4().hex}"
@@ -371,6 +378,7 @@ class _AdapterHandler:
     def _shutdown(self, command: _Shutdown) -> None:
         self._authority.stopping = True
         self._desired.clear()
+        self._background_spawns.clear()
         self._transitions.clear()
         self._transition_since.clear()
         for name in tuple(self._versions):
@@ -401,7 +409,7 @@ class _AdapterHandler:
         :data:`hyprial.daemon.impl.adapters.lark.contracts.lifecycle.START_DEADLINE_SECONDS`.
         """
 
-        now = time.monotonic()
+        now = self._clock()
         for name in tuple(self._transitions):
             correlation = self._transitions.get(name)
             if correlation is None:
@@ -451,11 +459,14 @@ class _AdapterHandler:
                     AdapterStartError(detail, code=ADAPTER_START_TIMEOUT)
                 )
             self._transitions.pop(name, None)
+            self._background_spawns.pop(name, None)
             self._transition_since.pop(name, None)
             self._errors[name] = detail
             self._publish()
 
     def _complete(self, result: _IoResult) -> None:
+        if self._background_spawns.get(result.name) == result.correlation_id:
+            self._background_spawns.pop(result.name, None)
         # G0 (fd73140a v2): a completion that settles as failure -- stale
         # generation below, stale version after it -- still releases the
         # lifecycle transition its correlation owns.  Both early returns used
@@ -514,6 +525,14 @@ class _AdapterHandler:
                 self._errors[result.name] = result.observation.error
             elif result.succeeded and result.name not in self._unsettled:
                 self._errors.pop(result.name, None)
+        if result.succeeded and self._is_online(result.name):
+            if result.name in self._quarantined:
+                self._health_events.append({
+                    "event": "lark.adapter.recovered",
+                    "adapter": result.name,
+                    "retryAttempt": self._quarantine_attempts.get(result.name, 0),
+                })
+            self._clear_failures(result.name)
         aggregate = self._authority.get_aggregate(result.correlation_id)
         if aggregate is not None:
             self._complete_aggregate(result, aggregate)
@@ -593,7 +612,14 @@ class _AdapterHandler:
                 and observation.running
                 and observation.readiness in {ONLINE, STARTING}
             )
-            if not healthy:
+            # Absence is not a new process attempt. Failed spawn completions
+            # already consumed their budget; repeated probes must not consume
+            # it again or move a quarantine deadline on every timer tick.
+            if (
+                not healthy
+                and observation is not None
+                and observation.attempt_token is not None
+            ):
                 self._record_failure(
                     result.name,
                     (observation.error if observation else None)
@@ -628,7 +654,7 @@ class _AdapterHandler:
                 and observation.running
                 and observation.readiness in {ONLINE, STARTING}
             )
-            if healthy or name in self._quarantined:
+            if healthy:
                 continue
             # Review round 4 (fd73140a): possession alone holds here.  The
             # tick-start expiry owns ALL age arithmetic -- by the time this
@@ -654,7 +680,14 @@ class _AdapterHandler:
                 if self._retry_delay_override is not None
                 else self._policy.delay(attempt, 0.5)
             )
-            self._retry_after[name] = now + delay
+            if name not in self._quarantined:
+                self._retry_after[name] = now + delay
+            else:
+                # No retry is scheduled while this attempt is in flight.
+                self._retry_after.pop(name, None)
+            self._transitions[name] = correlation_id
+            self._background_spawns[name] = correlation_id
+            self._transition_since[name] = now
             version = self._next_version(name)
             self._effects.submit(
                 correlation_id=correlation_id,
@@ -701,14 +734,37 @@ class _AdapterHandler:
                 self._errors[name] = detail
                 return
             self._failed_attempts.add(key)
-        now = time.monotonic()
+        now = self._clock()
         failures = self._failures.setdefault(name, deque())
         while failures and now - failures[0] > self._policy.restart_window:
             failures.popleft()
         failures.append(now)
         self._errors[name] = detail
-        if len(failures) > self._policy.max_restarts:
+        if name in self._quarantined or len(failures) > self._policy.max_restarts:
+            entering = name not in self._quarantined
             self._quarantined.add(name)
+            attempt = self._quarantine_attempts.get(name, 0) + 1
+            self._quarantine_attempts[name] = attempt
+            # Separate slow budget: never change PROCESS_LIFECYCLE's fast path.
+            # Bound the exponent before evaluating it, even after a long outage.
+            delay = min(600.0, 30.0 * 2 ** min(attempt - 1, 5) * random.uniform(1, 1.2))
+            self._retry_after[name] = now + delay
+            if entering:
+                self._health_events.append({
+                    "event": "lark.adapter.quarantined",
+                    "adapter": name,
+                    "nextRetryAt": self._retry_after[name],
+                    "retryAttempt": attempt,
+                })
+
+    def _clear_failures(self, name: str) -> None:
+        self._quarantined.discard(name)
+        self._quarantine_attempts.pop(name, None)
+        self._failures.pop(name, None)
+        self._retry_after.pop(name, None)
+        self._failed_attempts.difference_update(
+            key for key in tuple(self._failed_attempts) if key[0] == name
+        )
 
     def _is_online(self, name: str) -> bool:
         observation = self._observations.get(name)
@@ -721,7 +777,7 @@ class _AdapterHandler:
         )
 
     def _publish(self) -> None:
-        statuses = _build_statuses(self._authority, self.generation)
+        statuses = _build_statuses(self._authority, self.generation, now=self._clock())
         self._projections.publish(
             gateways=self._gateways,
             desired=self._desired,

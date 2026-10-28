@@ -1,4 +1,4 @@
-// Package proto implements the hyprial-tailcat stdio protocol v5:
+// Package proto implements the hyprial-tailcat stdio protocol v6:
 // newline-delimited JSON commands and events. It is a closed wire
 // contract: unknown ops, unknown fields, and any version other than 5
 // are rejected. See docs/design/tailnet-cutover-architecture-2026-10-03.md
@@ -20,11 +20,13 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tailcat/internal/membership"
 )
 
 // Version is the only accepted protocol version. v5 adds deterministic
 // per-server client-key derivation without exposing private material.
-const Version = 5
+const Version = 6
 
 // MaxRequestIDLength bounds correlation data accepted or echoed by v5.
 const MaxRequestIDLength = 128
@@ -68,8 +70,10 @@ type DERPConfig struct {
 // zenoh's open timeout).
 type UpRequest struct {
 	KeyFile         string
-	Allow           []string
-	AllowAny        bool
+	MembershipStore string
+	Owner           string
+	DeviceID        string
+	ControlPort     int
 	InboundTarget   string
 	PeerPort        int
 	AddressFile     string
@@ -80,11 +84,12 @@ type UpRequest struct {
 	SlotHoldMs      int
 }
 
-// Command is a parsed protocol-v5 command. Which fields are populated
+// Command is a parsed protocol-v6 command. Which fields are populated
 // depends on Op. Address is secret (it embeds the peer pre-shared key)
 // and must never be logged or echoed back.
 type Command struct {
 	Op               string
+	Membership       *membership.Request
 	RequestID        string
 	Name             string
 	DeviceID         string
@@ -93,11 +98,9 @@ type Command struct {
 	Address          string // map-peer only; secret
 	Slot             string // map-peer only; one of the up slots
 	Port             int    // map-peer, expose, unexpose
-	Keys             []string
-	AllowAny         bool
 	Target           string
 	ProxyProtocol    string
-	Admission        string // expose only; "any" or "allow"
+	Admission        string // managed expose only; "allow"
 	Addr             string
 	ServerPublic     string
 	RemotePort       int
@@ -157,43 +160,46 @@ type ConnectionTelemetry struct {
 // Event is the common response envelope. Peers is a pointer so the key
 // is always serialized on state events, even when empty.
 type Event struct {
-	V                   int                  `json:"v"`
-	Event               string               `json:"event"`
-	Sidecar             string               `json:"sidecar,omitempty"`
-	Tailcat             string               `json:"tailcat,omitempty"`
-	Capabilities        []string             `json:"capabilities,omitempty"`
-	State               string               `json:"state,omitempty"`
-	ServerPublic        string               `json:"serverPublic,omitempty"`
-	ClientPublic        string               `json:"clientPublic,omitempty"`
-	Peers               *[]PeerMapping       `json:"peers,omitempty"`
-	Slots               []string             `json:"slots,omitempty"`
-	ConnectionTelemetry *ConnectionTelemetry `json:"connectionTelemetry,omitempty"`
-	DERPMapURL          string               `json:"derpMapURL,omitempty"`
-	DERPMapSource       string               `json:"derpMapSource,omitempty"`
-	Code                string               `json:"code,omitempty"`
-	Message             string               `json:"message,omitempty"`
-	Peer                string               `json:"peer,omitempty"`
-	Slot                string               `json:"slot,omitempty"`
-	Count               *int                 `json:"count,omitempty"`
-	AllowAny            *bool                `json:"allowAny,omitempty"`
-	Port                int                  `json:"port,omitempty"`
-	Target              string               `json:"target,omitempty"`
-	ProxyProtocol       *string              `json:"proxyProtocol,omitempty"`
-	Admission           *string              `json:"admission,omitempty"`
-	Addr                string               `json:"addr,omitempty"`
-	Found               *bool                `json:"found,omitempty"`
-	Key                 *string              `json:"key,omitempty"`
-	RequestID           string               `json:"requestId,omitempty"`
-	Service             *ServiceMapping      `json:"service,omitempty"`
-	Services            *[]ServiceMapping    `json:"services,omitempty"`
-	Name                any                  `json:"name,omitempty"`
-	Removed             *bool                `json:"removed,omitempty"`
-	Op                  string               `json:"op,omitempty"`
+	V                   int                   `json:"v"`
+	Event               string                `json:"event"`
+	Sidecar             string                `json:"sidecar,omitempty"`
+	Tailcat             string                `json:"tailcat,omitempty"`
+	Capabilities        []string              `json:"capabilities,omitempty"`
+	State               string                `json:"state,omitempty"`
+	ServerPublic        string                `json:"serverPublic,omitempty"`
+	ClientPublic        string                `json:"clientPublic,omitempty"`
+	Peers               *[]PeerMapping        `json:"peers,omitempty"`
+	Slots               []string              `json:"slots,omitempty"`
+	ConnectionTelemetry *ConnectionTelemetry  `json:"connectionTelemetry,omitempty"`
+	DERPMapURL          string                `json:"derpMapURL,omitempty"`
+	DERPMapSource       string                `json:"derpMapSource,omitempty"`
+	Code                string                `json:"code,omitempty"`
+	Message             string                `json:"message,omitempty"`
+	Peer                string                `json:"peer,omitempty"`
+	Slot                string                `json:"slot,omitempty"`
+	Port                int                   `json:"port,omitempty"`
+	Target              string                `json:"target,omitempty"`
+	ProxyProtocol       *string               `json:"proxyProtocol,omitempty"`
+	Admission           *string               `json:"admission,omitempty"`
+	Addr                string                `json:"addr,omitempty"`
+	Found               *bool                 `json:"found,omitempty"`
+	Key                 *string               `json:"key,omitempty"`
+	RequestID           string                `json:"requestId,omitempty"`
+	Service             *ServiceMapping       `json:"service,omitempty"`
+	Services            *[]ServiceMapping     `json:"services,omitempty"`
+	Name                any                   `json:"name,omitempty"`
+	Removed             *bool                 `json:"removed,omitempty"`
+	Op                  string                `json:"op,omitempty"`
+	Data                json.RawMessage       `json:"data,omitempty"`
+	Readiness           *membership.Readiness `json:"readiness,omitempty"`
+	TailnetID           string                `json:"tailnetId,omitempty"`
+	Revision            *uint64               `json:"revision,omitempty"`
 }
 
 // Capabilities is the fixed capability list announced on hello.
 var Capabilities = []string{
-	"map-peer", "unmap-peer", "allow", "expose", "unexpose", "peer-key",
+	"map-peer", "unmap-peer", "expose", "unexpose", "peer-key",
+	"tailnet-membership-v1", "tailnet-control-v1", "unix-inbound-v1",
 	"service-connect-v1", "forwarding-request-id-v1", "peer-slots-v1",
 	"connection-telemetry-v1", "derp-map-v1", "client-key-derivation-v1",
 }
@@ -234,10 +240,6 @@ func SlotMapped(peer, slot string) Event {
 
 func PeerUnmapped(peer string) Event {
 	return Event{V: Version, Event: "peer-unmapped", Peer: peer}
-}
-
-func Allowed(count int, allowAny bool) Event {
-	return Event{V: Version, Event: "allowed", Count: &count, AllowAny: &allowAny}
 }
 
 func ClientKeyDerived(serverPublic, clientPublic string) Event {
@@ -282,6 +284,13 @@ func NewWriter(w io.Writer) *Writer { return &Writer{enc: json.NewEncoder(w)} }
 func (w *Writer) Write(event Event) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if event.Event == "membership-changed" {
+		var code any
+		if event.Code != "" {
+			code = event.Code
+		}
+		return w.enc.Encode(map[string]any{"v": event.V, "event": event.Event, "tailnetId": event.TailnetID, "revision": event.Revision, "code": code})
+	}
 	return w.enc.Encode(event)
 }
 
@@ -313,6 +322,10 @@ func ParseCommand(line []byte) (Command, error) {
 	if err := json.Unmarshal(opRaw, &op); err != nil {
 		return Command{}, ProtocolError("op must be a string")
 	}
+	if membership.IsOp(op) {
+		r, err := membership.Parse(line, false)
+		return Command{Op: op, RequestID: r.RequestID, Membership: &r}, err
+	}
 	switch op {
 	case "up":
 		return parseUp(line, raw)
@@ -340,7 +353,7 @@ func ParseCommand(line []byte) (Command, error) {
 		requestID, err := optionalRequestID(raw)
 		return Command{Op: op, RequestID: requestID, Peer: wire.Peer}, err
 	case "allow":
-		return parseAllow(line, raw)
+		return Command{}, ProtocolError("allow is retired")
 	case "derive-client-key":
 		if err := onlyKeys(raw, "v", "op", "requestId", "serverPublic"); err != nil {
 			return Command{}, err
@@ -438,9 +451,12 @@ func ValidateSlotSpec(spec string) error {
 type upWire struct {
 	V               int             `json:"v"`
 	Op              string          `json:"op"`
+	RequestID       string          `json:"requestId"`
+	MembershipStore string          `json:"membershipStore"`
+	Owner           string          `json:"owner"`
+	DeviceID        string          `json:"deviceId"`
+	ControlPort     int             `json:"controlPort,omitempty"`
 	KeyFile         string          `json:"keyFile"`
-	Allow           []string        `json:"allow"`
-	AllowAny        bool            `json:"allowAny"`
 	InboundTarget   string          `json:"inboundTarget,omitempty"`
 	PeerPort        int             `json:"peerPort,omitempty"`
 	AddressFile     string          `json:"addressFile"`
@@ -453,13 +469,13 @@ type upWire struct {
 
 func parseUp(line []byte, raw map[string]json.RawMessage) (Command, error) {
 	if err := onlyKeys(
-		raw, "v", "op", "keyFile", "allow", "allowAny",
+		raw, "v", "op", "requestId", "keyFile", "membershipStore", "owner", "deviceId", "controlPort",
 		"inboundTarget", "peerPort", "addressFile", "derp",
 		"derpMapURL", "derpMapCacheDir", "slots", "slotHoldMs",
 	); err != nil {
 		return Command{}, err
 	}
-	for _, key := range []string{"keyFile", "allow", "allowAny", "addressFile"} {
+	for _, key := range []string{"requestId", "keyFile", "membershipStore", "owner", "deviceId", "addressFile", "inboundTarget"} {
 		if _, ok := raw[key]; !ok {
 			return Command{}, ProtocolError("missing " + key)
 		}
@@ -474,10 +490,14 @@ func parseUp(line []byte, raw map[string]json.RawMessage) (Command, error) {
 	if !filepath.IsAbs(wire.AddressFile) {
 		return Command{}, ProtocolError("addressFile must be an absolute path")
 	}
-	for _, entry := range wire.Allow {
-		if !strings.HasPrefix(entry, "nodekey:") {
-			return Command{}, ProtocolError("allow entries must be nodekey strings")
-		}
+	if !membership.ID(wire.RequestID, 128) || !membership.ID(wire.Owner, 1024) || !membership.ID(wire.DeviceID, 1024) || !filepath.IsAbs(wire.MembershipStore) {
+		return Command{}, ProtocolError("invalid membership configuration")
+	}
+	if wire.ControlPort == 0 {
+		wire.ControlPort = 7448
+	}
+	if wire.ControlPort < 1 || wire.ControlPort > 65535 {
+		return Command{}, ProtocolError("invalid controlPort")
 	}
 	if wire.PeerPort < 0 || wire.PeerPort > 65535 {
 		return Command{}, ProtocolError("peerPort must be a valid TCP port")
@@ -485,10 +505,8 @@ func parseUp(line []byte, raw map[string]json.RawMessage) (Command, error) {
 	if wire.PeerPort == 0 {
 		wire.PeerPort = DefaultPeerPort
 	}
-	if wire.InboundTarget != "" {
-		if err := validateTCPTarget(wire.InboundTarget); err != nil {
-			return Command{}, err
-		}
+	if !strings.HasPrefix(wire.InboundTarget, "unix:") || !filepath.IsAbs(strings.TrimPrefix(wire.InboundTarget, "unix:")) || wire.ControlPort == wire.PeerPort {
+		return Command{}, ProtocolError("private Unix inboundTarget and separate control port required")
 	}
 	if wire.DERPMapURL != "" && !strings.HasPrefix(wire.DERPMapURL, "https://") {
 		return Command{}, ProtocolError("derpMapURL must be https")
@@ -532,8 +550,8 @@ func parseUp(line []byte, raw map[string]json.RawMessage) (Command, error) {
 		}
 		derp = &value
 	}
-	return Command{Op: "up", Up: &UpRequest{
-		KeyFile: wire.KeyFile, Allow: wire.Allow, AllowAny: wire.AllowAny,
+	return Command{Op: "up", RequestID: wire.RequestID, Up: &UpRequest{
+		KeyFile: wire.KeyFile, MembershipStore: wire.MembershipStore, Owner: wire.Owner, DeviceID: wire.DeviceID, ControlPort: wire.ControlPort,
 		InboundTarget: wire.InboundTarget, PeerPort: wire.PeerPort,
 		AddressFile: wire.AddressFile, DERP: derp,
 		DERPMapURL: wire.DERPMapURL, DERPMapCacheDir: wire.DERPMapCacheDir,
@@ -585,34 +603,6 @@ func parseMapPeer(line []byte, raw map[string]json.RawMessage) (Command, error) 
 	}, err
 }
 
-func parseAllow(line []byte, raw map[string]json.RawMessage) (Command, error) {
-	if err := onlyKeys(raw, "v", "op", "requestId", "keys", "allowAny"); err != nil {
-		return Command{}, err
-	}
-	for _, key := range []string{"keys", "allowAny"} {
-		if _, ok := raw[key]; !ok {
-			return Command{}, ProtocolError("missing " + key)
-		}
-	}
-	var wire struct {
-		V         int      `json:"v"`
-		Op        string   `json:"op"`
-		RequestID string   `json:"requestId,omitempty"`
-		Keys      []string `json:"keys"`
-		AllowAny  bool     `json:"allowAny"`
-	}
-	if err := decodeExact(line, &wire); err != nil {
-		return Command{}, ProtocolError("invalid allow fields")
-	}
-	for _, entry := range wire.Keys {
-		if !strings.HasPrefix(entry, "nodekey:") {
-			return Command{}, ProtocolError("keys entries must be nodekey strings")
-		}
-	}
-	requestID, err := optionalRequestID(raw)
-	return Command{Op: "allow", RequestID: requestID, Keys: wire.Keys, AllowAny: wire.AllowAny}, err
-}
-
 func parseExpose(line []byte, raw map[string]json.RawMessage) (Command, error) {
 	if err := onlyKeys(raw, "v", "op", "requestId", "port", "target", "proxyProtocol", "admission"); err != nil {
 		return Command{}, err
@@ -634,8 +624,8 @@ func parseExpose(line []byte, raw map[string]json.RawMessage) (Command, error) {
 	if err := decodeExact(line, &wire); err != nil {
 		return Command{}, ProtocolError("invalid expose fields")
 	}
-	// Admission defaults closed: an exposure is restricted to the allow
-	// set unless the daemon asks for "any" explicitly.
+	// Managed exposures always use membership admission; the wire spelling
+	// remains "allow". Public "any" admission is rejected.
 	if _, ok := raw["admission"]; !ok {
 		wire.Admission = AdmissionAllow
 	}
@@ -669,8 +659,8 @@ func ValidateExposure(port int, target, proxyProtocol, admission string) error {
 	if proxyProtocol != "" && proxyProtocol != "v2" {
 		return ProtocolError("proxyProtocol must be empty or v2")
 	}
-	if admission != AdmissionAny && admission != AdmissionAllow {
-		return ProtocolError("admission must be any or allow")
+	if admission != AdmissionAllow {
+		return ProtocolError("admission must be allow")
 	}
 	switch {
 	case strings.HasPrefix(target, "unix:"):
@@ -696,7 +686,7 @@ func validateTCPTarget(target string) error {
 // eventFields is the closed per-event key set used by ParseEvent.
 var eventFields = map[string][]string{
 	"hello":              {"sidecar", "tailcat", "capabilities"},
-	"state":              {"state", "serverPublic", "clientPublic", "peers", "slots", "connectionTelemetry", "derpMapURL", "derpMapSource", "requestId"},
+	"state":              {"state", "serverPublic", "clientPublic", "peers", "slots", "connectionTelemetry", "derpMapURL", "derpMapSource", "requestId", "readiness"},
 	"peer-mapped":        {"peer", "slot", "requestId"},
 	"peer-unmapped":      {"peer", "requestId"},
 	"allowed":            {"count", "allowAny", "requestId"},
@@ -708,11 +698,14 @@ var eventFields = map[string][]string{
 	"service-unmapped":   {"requestId", "name", "removed"},
 	"service-status":     {"requestId", "services"},
 	"service-failed":     {"requestId", "op", "name", "code", "message"},
-	"error":              {"code", "message", "requestId"},
+	"error":              {"code", "message", "requestId", "op"},
+	"membership-result":  {"requestId", "op", "data"},
+	"membership-changed": {"tailnetId", "revision", "code"},
+	"readiness":          {"readiness"},
 	"exited":             {},
 }
 
-// ParseEvent validates one protocol-v5 event line: version 5, a known
+// ParseEvent validates one protocol-v6 event line: version 6, a known
 // event name, and only the fields defined for that event. Tests and
 // contract golden checkers use it to exercise the same closed contract
 // on the event side.
@@ -751,6 +744,22 @@ func ParseEvent(line []byte) (Event, error) {
 	} else if _, err := optionalRequestID(raw); err != nil {
 		return Event{}, err
 	}
+	if name == "membership-result" {
+		if event.RequestID == "" || membership.ValidateResult(event.Op, event.Data) != nil {
+			return Event{}, ProtocolError("invalid membership result")
+		}
+	}
+	if name == "readiness" || (name == "state" && event.Readiness != nil) {
+		var r membership.Readiness
+		if membership.DecodeFields(raw["readiness"], &r) != nil {
+			return Event{}, ProtocolError("invalid readiness")
+		}
+	}
+	if name == "membership-changed" {
+		if !membership.ID(event.TailnetID, 1024) || event.Revision == nil || *event.Revision > membership.MaxNumber || raw["code"] == nil {
+			return Event{}, ProtocolError("invalid membership change")
+		}
+	}
 	invalidDerived := event.RequestID == "" ||
 		!strings.HasPrefix(event.ServerPublic, "nodekey:") ||
 		!strings.HasPrefix(event.ClientPublic, "nodekey:")
@@ -774,6 +783,9 @@ func onlyKeys(raw map[string]json.RawMessage, allowed ...string) error {
 }
 
 func decodeExact(data []byte, target any) error {
+	if err := membership.Decode(data, new(any)); err != nil {
+		return err
+	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(target); err != nil {

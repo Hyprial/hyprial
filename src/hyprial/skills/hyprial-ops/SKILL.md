@@ -50,6 +50,10 @@ hyprial <域> <子命令> --help   # 参数面
   `hyprial daemon upgrade --source forgejo --ref <完整提交或标签>`；该选择不持久化，下一次
   普通升级和自动升级仍回公网。若已装的早期测试版本高于公网版本，普通/自动升级
   都返回 `declinedDowngrade` 并跳过；确需回退时由操作员显式指定公网 `--tag`。
+  重启成功只由新 daemon 的 ping 事实裁定：结果中的 `restart.before/after` 都带
+  `{pid, epoch, version}`，PID 与 epoch 必须同时变化，after.version 必须等于已安装版本。
+  直接启动或 supervisor 托管的替代进程都使用同一 120s 硬上限，不把 30s 无阶段进展
+  误报为失败；只有替代进程退出、硬上限耗尽或旧 pid/epoch/version 仍在回答才发失败告警。
 - `hyprial version --json` — 除版本外分别报告 `persistentUpdateSource`（固定公网）、
   `installOrigin`（PEP 610 当前安装来源）和 `dependencyLock`（`match`、带逐包差异的
   `mismatch`，或旧安装/回执不匹配时的 `unknown`）。
@@ -63,7 +67,7 @@ hyprial <域> <子命令> --help   # 参数面
 - 楔死排障(doctor 超时但进程活着):看 daemon.jsonl 的 `reconcile_overrun`
 - `hyprial service expose <port> --target unix:/绝对路径|tcp:127.0.0.1:<port> [--proxy-protocol v2|none]`
   —— 通过 hyprial-tailcat 边车（Tailcat，随 wheel 分发）把本机服务暴露给组织内的设备；默认 PROXY v2，
-  首帧带来源地址和对端设备的 nodekey（TLV 0xE0），服务端再经组织目录把 nodekey 映射为用户。
+  首帧带来源地址和对端设备的 nodekey（TLV 0xE0），服务端再经边车的有效成员表把 nodekey 映射为用户，不读组织目录做准入。
   v2 只允许 unix target（本机任何进程都能连 tcp 回环端口并伪造头）；查不到来访者身份时直接断开，
   不会转给后端。tcp target 必须显式 `--proxy-protocol none`，此时不带任何身份。
   `service unexpose <port>` 删除；`service exposures [--json]` 查看 daemon 持久 desired set；
@@ -79,8 +83,44 @@ hyprial <域> <子命令> --help   # 参数面
   `org pending` 只读 Casdoor，不写 `consumedBy`；本机 `org.list` 的 `spaceId` 和
   `leftOrgs` 决定是否已处理。同一 space 不重复加入，主动退出的组织不被旧邀请拉回；
   要重新加入须显式 `org join`，成功后清除本机退出记录。不要为拾取配置 Casdoor 写权限。
-  `org leave/remove/delete` 管理成员与组织。设备 key 在 `hyprial login` 时生成；
+  `org leave <org> --yes` / `org remove <org> <u> --yes` 显式确认退出或移除；
+  不带 `--yes` 时交互确认，非交互调用拒绝。预览列出设备、tailnet、authority 和断连影响。
+  确认绑定预览的 operationId 和原始 deviceIds，CLI 自动携带这两个字段；直接 IPC 不能只传 confirmed=true。
+  `REMOVAL_CONFIRMATION_STALE` 表示确认缺失或预览已变，须重新预览；旧确认不会移除重新入网的设备。
+  已完成操作的旧确认也被拒绝，不重复退出副作用。重新预览且没有新目标时，CLI 直接返回原回执。
+  目录与 ACL 分别幂等移除，任何一步失败都不提交上层回执。
+  先改 OrgFS，再撤销 tailnet；待确认/待 authority/网络失败均不等于已移除。
+  `REVISION_CONFLICT` 后重跑同一命令：先看新 revision、仍待移除/已移除/新增但未选中的设备，
+  再显式确认。操作 ID 和原始目标不变，不重做 OrgFS；新增设备不会自动纳入。
+  已被其他操作移除的目标跳过；目标换了身份 incarnation 时拒绝，须独立新操作。
+  未知结果/丢回包仍精确重放原请求，禁止改回执或删 journal 强制重做。
+  Casdoor 自动发现只登记待办，不代替操作员确认。`org delete` 拒绝隐式删除最后 authority。
+  设备 key 在 `hyprial login` 时生成；
   `hyprial doctor` 的 `tailcat-sidecar`、`device-key` 两项缺失时为 warn，存在但无效时为 fail。
+- Tailnet 升级：daemon 与边车须同时升级到 stdio v6，维护窗口先升级固定 authority；
+  不支持混合版本或自动选举。旧邀请返回 `INVITE_VERSION_UNSUPPORTED`，须重新签发 v2。
+  成员表只由边车维护；Directory 是发布副本，不是准入来源。一次性离线迁移遇到
+  `MIGRATION_AUTHORITY_MISSING` 时补齐明确的 owner 设备 pin/address，禁止任意选择设备。
+  已完成迁移后丢失成员文件须人工恢复备份；不要删迁移回执来触发重新导入。
+  authority 失联时有效 roster 租约最多 300 秒；到期关闭现有业务连接，只保留控制通道，恢复后刷新。
+  重启普通成员不能续用磁盘中的旧租约。分别检查 sidecar/control/member/zenoh/orgfs readiness；
+  恢复 authority 时 member 可以立即为 true，普通成员须重新获取租约。就绪字段不等于消息已送达。
+  首次 create/join 探测空成员表使用不带 tailnetId 的 status；未知 tailnet 的定向 status
+  返回 `MEMBERSHIP_NOT_INITIALIZED`，不要把任意成员表错误当作空表。
+  `forwarding.tailnet.trustMembersForUpperLayers` 默认 true，仅作用于边车管理的私有 Unix
+  transport；它同时绕过 OrgFS supplier/requester 的目录成员检查，不绕过文档校验或管理权限。
+  0.5.5.1 未实现 Zenoh ACL，共用 session 不保证跨组织完全隔离；不要宣称设置 false 已补齐 ACL。
+  re-pin 使用 `hyprial org repin <tailnetId> --authority <deviceId> [--control-port 7448] --yes`。
+  先停止所有节点的写入与 daemon；命令持有本地 daemon ownership fence，运行中拒绝
+  `NETWORK_NOT_QUIESCENT`。这里“离线”只指各节点业务停用，不是零网络：边车仍开 control/peer
+  listener 并 refresh/announce；本地 fence 不是全网写锁。预览列出旧/新 authority 和受影响设备；
+  不带 `--yes` 须交互确认。
+  命令由边车保存变更前备份，然后更新 pin；不删除旧 authority 的成员身份。结束必须重启，
+  先启新 authority，再启其它节点。命令不复制跨机表；转移前须把完整 authority 表及操作回执
+  通过备份恢复到新节点，不能用普通成员的部分状态替代，也不能手改 JSON 重建。
+  lost response/中断后以相同 tailnet/device/port 重跑；待决操作不能换目标，禁止删回执强行重做。
+  这不是在线转移、自动选举或自动回滚。维护协议与验收见仓库
+  `docs/design/tailcat-cycle-fix-contract-2026-10-27.md`。
 - `hyprial config set workerProxy.url <url|"">` / `workerProxy.vendors openai,anthropic` / `workerProxy.noProxy <list>`
   —— hyprial 自己的 worker 代理(Allen 2026-09-25 定):列出的模型厂商(默认 openai、anthropic)的 worker 走代理,
   其它厂商(deepseek、智谱、kimi)的 worker **去掉**代理直连;下一个 worker 启动即生效,不用重启 daemon;
@@ -126,8 +166,22 @@ hyprial <域> <子命令> --help   # 参数面
 - 操作、参数、环境接线和当前 NOT_RUN 项见 `docs/guides/gui-dev-mode.md`。
 
 ### adapter(飞书网关)生命周期 —— 全部自动化,无需人工建应用
+
+- 0.5.5.1 起，adapter 使用独立 desired-state 集合（schema 3），不再是 harness。
+  旧状态中的同名 agent/adapter 会迁入各自集合；新建仍拒绝同名。pins 不迁移、不改名。
+- **降级先恢复状态，再装旧版本**：先停止 daemon，用新版执行
+  `hyprial adapter downgrade-state --json`，成功恢复 schema 2 后再安装、启动旧版。
+  此命令持 daemon 独占锁并校验首份迁移前备份的 SHA256；备份不存在、摘要不符或
+  迁移后 desired intent 已变更时拒绝。失败时保留新版、状态和备份，请运维核对；
+  不手改 schemaVersion，不删除状态。恢复后不要先启动新版，否则会再次迁移。
+  备份在状态 SQLite 的 `adapter_model_backup` 表中，重复迁移不覆盖；pins 和 inbox 不回退。
+  新建 home 没有旧备份，不能用此命令降级。旧版直接读取 schema 3 会明确拒绝。
+- schema 3 下 runtime-only downgrade 不会降低状态版本。若要降到更早的 schema 1
+  版本，先按上一步恢复并安装支持 schema 2 的版本，再用该版的 runtime downgrade
+  入口清理 smolvm intent；不要直接改 schema 3。
 - `hyprial adapter add <name> [--new]` — **自动创建或收养飞书 App**
-  并注册为 adapter。设备授权流,需 TTY:无人值守时用 tmux 伪终端代跑
+  并注册为 adapter；成功后自动尝试热加载到运行中的 daemon，结果见
+  `daemonReload`。设备授权流,需 TTY:无人值守时用 tmux 伪终端代跑
   (`tmux new-session -d -s x '<cmd>'` → capture-pane 取 URL → 发给人点批准)。
   人只需点一次授权链接。
 - `hyprial adapter add <name> --app-id ... --secret-file ...` — 只注册已有凭据的 App;
@@ -142,11 +196,15 @@ hyprial <域> <子命令> --help   # 参数面
   运行时配置为 Larksuite 且权限错误未带官方链接时,不生成 Feishu 预选页;
   输出 `authorizationUrlReason=larksuite_console_url_missing` 说明原因。
 - `hyprial adapter reload` — **增量热加载**新/改 adapter 进运行中 daemon
-- `hyprial adapter start/stop/status/list/remove`;`list` 的 `agent` 列显示当前绑定
+- `hyprial adapter start/stop/status/list/remove`;`remove` 成功后也会自动尝试热加载，
+  `list` 的 `agent` 列显示当前绑定
 - `hyprial adapter pin <adapter> <canonical-actor-uri>` — 入站绑定到 agent;
   `hyprial adapter unpin <adapter>` 解绑
 - `hyprial adapter user-auth check|complete` — lark-cli 用户凭据检查与设备流收尾
 - `hyprial adapter identities` — 平台身份 ↔ hyprial owner 映射(白名单校验源)
+- 本机 agent 与 adapter 不得同名。adapter create/add/onboard/start 与 agent create/start
+  会拒绝冲突；例如 agent 用 `worker`，adapter 用 `worker-feishu`。`--force` 不绕过此检查。
+  旧配置中的冲突由 `hyprial doctor` 报 warn；`doctor --fix` 不改名，需人工重建 adapter。
 - 路由前提:机器人必须先被发过消息才有 chat id;新 App 让对方先 DM 一句
 
 ### PAC workflow 与 routine
@@ -221,7 +279,12 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
   stderr-only stream errors retain the public contract in the contract documents.
 
 ### agent / worker / 消息
-- **smolvm 回滚先降状态、后换二进制**：保存过 `executionRuntime` 的机器保持 schema 2；旧版会拒绝整个 daemon restore，连普通 host/Docker 都不会恢复。先用新版停止并清理 smolvm workers，停 daemon 后执行 `hyprial agent transfer runtime downgrade-state --output /absolute/new-export --json`；独占锁/残留资源/未完生命周期操作会拒绝。成功导出且降为 schema 1 后才能换旧版，不同时换 owner；agent 身份、home、session、grants 不删除。
+- Codex `skills/list` 的技能加载错误只产生提醒，不阻止 agent 启动；有错误的技能不会加载。
+  查看启动结果的 `warnings` 或 daemon 日志的 `codex.skills.load_warning`，按脱敏后的错误原因修复。
+  Squire 缺少 YAML frontmatter 时，运行 `hyprial squire setup --step create-squire`。
+  setup 只自动更新逐字节匹配旧模板渲染结果的技能；自定义技能须手工补齐 frontmatter，或移到备份路径后重跑 setup。
+- `hyprial agent start codex|claude --name <name> --effort <level>` 在 `--` 前设置推理强度；支持交互、headless 与 resume。Codex 接受 `none|minimal|low|medium|high|xhigh|max|ultra`，Claude 接受 `low|medium|high|xhigh|max`；模型支持集由原生 harness 决定。不传时，DeepSeek/hyprial 模型厂商显式注入 Codex `high`、Claude `max`；原生 OpenAI/Anthropic 不注入值。不与尾随原生 effort 参数混用。详见 `docs/reference/harness-model-providers.md`。
+- **smolvm 回滚先降状态、后换二进制**：0.5.5.1 之前，保存过 `executionRuntime` 的机器保持 schema 2；schema 3 先走上面的 adapter 两步回滚路径。更旧的二进制会拒绝整个 daemon restore，连普通 host/Docker 都不会恢复。先用新版停止并清理 smolvm workers，停 daemon 后执行 `hyprial agent transfer runtime downgrade-state --output /absolute/new-export --json`；独占锁/残留资源/未完生命周期操作会拒绝。成功导出且降为 schema 1 后才能换旧版，不同时换 owner；agent 身份、home、session、grants 不删除。
 - `hyprial agent start codex --headless --name <name> --smolvm-spec /absolute/runtime.json`
   显式实验运行形态，仅 Darwin arm64 + smolvm 1.19.0 + Codex；只挂选定 P2 home/config/workspace 与绑定 IPC socket。输入 JSON 内容和物料摘要持久化，每次恢复重核；失败不转成 host/Docker。物料由操作者提供，不自动安装。
   崩溃恢复只复用 actor/state/spec 相符且已独占的私有目录，engine 与环境目录须本 uid、0700、非链接；旧实验目录权限不符先保留现场交运维核查。engine 未清完时 owner marker/状态指针必须保留，不能据空的环境对象认定清理完成；禁止全局 stop/prune/kill。
@@ -249,10 +312,14 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
   本片只记账与格式校验，不限制运行权限，不代替 secret grant，也不证明调用方身份；执行者记为本机 host owner。
 - **每个 agent 自己的非模型凭据**:`hyprial agent secret set/rotate/list/history/remove`
   管理 `<agent home>/secrets.sqlite`;值只从非 TTY stdin 输入,list/history 不回显值。v1
-  不自动扫描或迁移旧文件,owner 核对归属后逐条导入;无 validator 的服务缺省拒绝,只有显式
+  不自动扫描或迁移未授权的外部旧文件,owner 核对归属后逐条导入;无 validator 的服务缺省拒绝,只有显式
   `--no-validate` 才放行。远端撤销与本地删值是 `revoke_remote + remove` 两件事,只有两条
   事件都在且值不在盘上才完成;同 uid 直接读取是已知边界。操作步骤、威胁模型与验收清单见
   `docs/guides/agent-secrets.md`。
+  `agent-private` grant 的 `entry-id/field-name` 必须对应 SQLite 的 `service/field`。
+  已有 grant 指向的直接旧文件会在首次解析时迁入 SQLite，核对后删除；不保留文件回退或明文备份。
+  冲突时拒绝解析并保留源文件，不覆盖 SQLite。新建 agent 不生成空 `secrets/`；
+  `secrets/native/` 的第三方 harness 登录态原样保留，只有空目录才删除。
 - **给 agent 下发 provider 凭据**(凭据一律归 daemon 登录用户;不回显;每条都可撤)。设计:
   `docs/design/provider-login-2026-10-14.md`。
   - API key(默认):`printf %s "$KEY" | hyprial agent secret provider-write <entry> --field apiKey`
@@ -270,6 +337,18 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
     一次性:过期/坏了 ⇒ 厂商 CLI 重新登录后 `--force` 重跑;不做刷新。只报 "seeded",⛔ 不声称有效。
     撤:`hyprial agent provider logout <p> --actor <name>`(运行中的 agent 重启后生效;作废 token 本身
     还需厂商 CLI 登出)。
+  - Codex 的 native home 按模型厂商投影凭据策略:`openai` 使用 `cli_auth_credentials_store = "file"`
+    并保留/链接 agent 自己的 `auth.json`;DeepSeek、Hyprial 等非 OpenAI 模型厂商使用
+    `cli_auth_credentials_store = "ephemeral"`,只接收本次进程的 secret grant,active native home 中不得
+    留 `auth.json`。创建、修复、升级迁移和交互启动都执行同一规则。
+    旧的非 OpenAI home 若已有 `auth.json`,系统不会删除:它会移到该 agent 的私有 state 路径
+    `<HYPRIAL_HOME>/agents/<name>/state/credential-backups/codex/auth.json`(重名加 `.1`、`.2` 等,普通文件且 0600),并发出
+    `CODEX_CUSTOM_PROVIDER_AUTH_BACKUP` notice;`hyprial doctor` 的 `codex-credential-backups` 项也会列出
+    agent 与绝对 backup path,不含 secret 内容。要把该 agent 切回 OpenAI:先停止/替换非 OpenAI
+    启动规格并明确选 `--provider openai`,再执行
+    `hyprial agent provider login codex --actor <name> --force --source <doctor 给出的绝对 backup path>`,
+    然后重启 agent;不要直接把文件复制回 projection/native home。确认新 OpenAI 启动正常后,可把旧
+    backup 移到同权限的批准归档位置;只要文件仍在上述目录,doctor 会继续提示。
   - 新建默认:`hyprial agent provider login <p> --default` 记机器默认(回执带 previous);之后
     `hyprial agent create` 自动从本机登录种入新 agent,结果 `providerSeed.state` = seeded/refused/
     not-configured,后两者在 stderr 给出两条修法。`hyprial agent provider default [--clear]` 查/清。

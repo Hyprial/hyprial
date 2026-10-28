@@ -180,6 +180,7 @@ class SequentialTurnProcess(
             self._abort_timers: dict[int, threading.Timer] = {}
             self._stop_interrupt_pending = False
             self.last_error: str | None = None
+            self.startup_warnings: tuple[str, ...] = ()
             # Preserve async start classification beside display-safe text.
             self.last_failure: BaseException | None = None
             self._repeated_failures: dict[str, int] = {}
@@ -482,6 +483,7 @@ class SequentialTurnProcess(
                             self._client = client
                             self._connecting_client = None
                         self.last_error = None
+                        self.startup_warnings = tuple(getattr(client, "startup_warnings", ()))
                         self.last_failure = None
                         self._ready.set()
                         self._startup_settled.set()

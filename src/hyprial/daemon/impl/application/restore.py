@@ -22,6 +22,7 @@ from hyprial.identity import (
 from hyprial.kernel import DaemonStartupPhase
 from hyprial.kernel import PortAdmission
 from hyprial.kernel import HarnessLaunchSpec
+from hyprial.kernel import merge_harness_launch_args
 from hyprial.daemon.impl.composition  import (
     DomainCommandError,
 )
@@ -50,7 +51,7 @@ class _RestoreMixin:
         assert self._lark_client is not None
         state = self.desired_state.load()
         names = tuple(
-            sorted(spec.name for spec in state.harnesses if spec.harness == "lark")
+            sorted(spec.name for spec in state.adapters)
         )
         attempted = 0
         restored = 0
@@ -212,7 +213,7 @@ class _RestoreMixin:
             (
                 item
                 for item in self.desired_state.load().harnesses
-                if item.name == eligibility.actor and item.harness != "lark"
+                if item.name == eligibility.actor
             ),
             None,
         )
@@ -270,9 +271,36 @@ class _RestoreMixin:
     def _classify_restore_specs(
         self, specs: tuple[HarnessLaunchSpec, ...]
     ) -> tuple[HarnessLaunchSpec, ...]:
+        specs = self._merge_stored_harness_args(specs)
         if getattr(self, "_transfer_p2", None) is not None:
             specs = self._filter_transfer_restore_specs(specs)
         return self._classify_activity_restore_specs(specs)
+
+    def _merge_stored_harness_args(
+        self, specs: tuple[HarnessLaunchSpec, ...]
+    ) -> tuple[HarnessLaunchSpec, ...]:
+        """Re-apply each agent's stored harnessArgs to the desired-state row.
+
+        Desired state is the row that was written by an earlier start; the
+        agent record is the same intent's durable home.  A ``hyprial start``
+        whose explicit args were merged at admission already wrote the merged
+        value here, but a row persisted before that merge (or edited out of
+        band) must still restore with the stored flags -- otherwise a resident
+        pi agent loses its ``--approve`` on the next daemon restart.
+        """
+
+        merged: list[HarnessLaunchSpec] = []
+        for spec in specs:
+            agent = self.agents.get(spec.name)
+            args = (
+                spec.args
+                if agent is None
+                else merge_harness_launch_args(
+                    agent.args_for(spec.harness), spec.args, harness=spec.harness
+                )
+            )
+            merged.append(spec if args == spec.args else replace(spec, args=args))
+        return tuple(merged)
 
     def _classify_activity_restore_specs(self, specs):
         self._restore_policy_or_degraded()
@@ -441,7 +469,7 @@ class _RestoreMixin:
             (
                 item
                 for item in self.desired_state.load().harnesses
-                if item.harness != "lark" and item.name == agent.actor
+                if item.name == agent.actor
             ),
             None,
         )
@@ -609,14 +637,9 @@ class _RestoreMixin:
         ``contract/daemon-lifecycle`` caught it and sat red for 38 hours,
         because that contract is not in anybody's routine gate.
 
-        Lark is excluded because :meth:`_restore_adapters` owns exactly those
-        specs (``spec.harness == "lark"``).  The two halves partition the
-        declaration between them; restoring Lark here would make a second
-        owner for adapter routes and liveliness, which is the thing the
-        original ``harness_selector=lambda spec: spec.harness != "lark"``
-        existed to prevent.  ⚠️ Nothing in the type system keeps these two
-        filters complementary -- ``test_daemon_restores_declared_harnesses``
-        asserts it instead.
+        Adapter restore owns the separate adapters collection. This worker
+        collection contains only declared harness kinds; no kind-string
+        exclusion is needed to partition restore ownership.
 
         U0BRACE (hq-adjutant 2026-09-04): this method is also the ONLY
         restart-time starter of non-Lark harness processes.  Construction
@@ -660,7 +683,7 @@ class _RestoreMixin:
         candidates = tuple(
             spec
             for spec in state.harnesses
-            if spec.harness != "lark" and spec.status == "running"
+            if spec.status == "running"
         )
         self._restore_classifying = True
         try:

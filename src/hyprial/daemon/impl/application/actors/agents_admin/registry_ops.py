@@ -58,6 +58,11 @@ class _AgentRegistryOpsMixin:
     """Application cluster mixin; the state owner is DaemonApplication."""
 
     def _handle_agent(self, method: str, params: JsonObject) -> Any:
+        if method in {"agent.create", "agent.start.preflight", "agent.host-invite"}:
+            from hyprial.daemon.impl.bootstrap.names import require_agent_name_available
+
+            require_agent_name_available(self, self.agents.native_actor(
+                _required_string(params.get("name"), "name")))
         if method == "agent.resume.restore":
             name = self.agents.native_actor(
                 _required_string(params.get("name"), "name")

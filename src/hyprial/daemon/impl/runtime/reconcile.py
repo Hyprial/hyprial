@@ -50,6 +50,7 @@ class _BridgeReconcileMixin:
         self._retry_pump_kick.set()
 
     def _retry_pump_run(self) -> None:
+        stale_streak = 0
         floor_next_round = False
         while not self._retry_pump_halt.is_set():
             wait_seconds = _retry_pump_wait_seconds(
@@ -88,6 +89,12 @@ class _BridgeReconcileMixin:
                 results = self.inbox.retry_due()
             except Exception as error:  # noqa: BLE001 - pump isolation boundary
                 if _stale_fence_rejection(error):
+                    stale_streak += 1
+                    if stale_streak == 20 and self._logger is not None:
+                        self._logger(
+                            "warn", "daemon", "inbox.retry_pump.starved",
+                            consecutiveYields=stale_streak,
+                        )
                     # Lost a fence race to the tick thread: yield this round
                     # at info, not error -- the pump and the tick are meant
                     # to run concurrently now, and a stale round per kick
@@ -102,6 +109,7 @@ class _BridgeReconcileMixin:
                         )
                     floor_next_round = True
                     continue
+                stale_streak = 0
                 # The pump is the only thing allowed to block on delivery;
                 # its failures are logged and retried on the next kick, never
                 # propagated into the reconcile tick -- and never allowed to
@@ -117,6 +125,7 @@ class _BridgeReconcileMixin:
                     )
                 floor_next_round = True
                 continue
+            stale_streak = 0
             floor_next_round = not results
             duration_ms = int((time.monotonic() - started_at) * 1000)
             if self._logger is not None and (
@@ -187,46 +196,43 @@ class _BridgeReconcileMixin:
         if self.harness_actor_registrar is None:
             return
         for name in sorted(active):
-            registration = self._actor_registrations.get(name)
-            generation = generations.get(name)
-            if (
-                registration is not None
-                and generation is not None
-                and self._actor_registration_generations.get(name) != generation
-            ):
-                # The original token belongs to a different process. Close
-                # it now and declare the replacement only on a later tick so
-                # the network observes an offline gap even for a fast restart.
-                self._actor_registrations.pop(name)
-                self._actor_registration_generations.pop(name, None)
-                registration.close(
-                    reason="actor-inactive", initiator="daemon-runtime"
-                )
-                continue
-            if registration is not None and registration.healthy:
-                continue
-            if registration is not None:
-                # Remove the stale key before closing/redeclaring.  If either
-                # operation fails, the next reconcile sees a missing key and
-                # retries instead of preserving a permanently deaf entry.
-                self._actor_registrations.pop(name)
-                self._actor_registration_generations.pop(name, None)
-                registration.close(
-                    reason="reconcile-unhealthy",
-                    initiator="daemon-runtime",
-                )
-            self._actor_registrations[name] = self.harness_actor_registrar(
-                self.harness_actor_uri(name)
-            )
-            if generation is not None:
-                self._actor_registration_generations[name] = generation
+            try:
+                self._reconcile_active_actor(name, generations.get(name))
+            except Exception as error:  # noqa: BLE001 - per-actor tick isolation
+                self._log_actor_failure(name, "registration", error)
         for name in tuple(self._actor_registrations.keys() - active):
             registration = self._actor_registrations.pop(name)
             self._actor_registration_generations.pop(name, None)
-            registration.close(
-                reason="actor-inactive",
-                initiator="daemon-runtime",
-            )
+            try:
+                registration.close(reason="actor-inactive", initiator="daemon-runtime")
+            except Exception as error:  # noqa: BLE001 - per-actor close isolation
+                self._log_actor_failure(name, "registration.close", error)
+
+    def _reconcile_active_actor(self, name: str, generation: int | None) -> None:
+        registration = self._actor_registrations.get(name)
+        if (
+            registration is not None
+            and generation is not None
+            and self._actor_registration_generations.get(name) != generation
+        ):
+            # Close the old process token now; declare its replacement on a
+            # later tick so the network observes an offline gap.
+            self._actor_registrations.pop(name)
+            self._actor_registration_generations.pop(name, None)
+            registration.close(reason="actor-inactive", initiator="daemon-runtime")
+            return
+        if registration is not None and registration.healthy:
+            return
+        if registration is not None:
+            # Remove before closing so failure cannot preserve a deaf entry.
+            self._actor_registrations.pop(name)
+            self._actor_registration_generations.pop(name, None)
+            registration.close(reason="reconcile-unhealthy", initiator="daemon-runtime")
+        self._actor_registrations[name] = self.harness_actor_registrar(
+            self.harness_actor_uri(name)
+        )
+        if generation is not None:
+            self._actor_registration_generations[name] = generation
 
     def _injection_message_text(self, message: InboxMessage) -> str:
         """What a model carrier injects (WP5-A §3.5).
@@ -236,11 +242,11 @@ class _BridgeReconcileMixin:
         an ordinary request cannot smuggle the body in.
         """
 
-        if is_mechanism_hook_request(message):
-            return self._message_text(message)
         parsed = parse_agent_uri(message.recipient)
-        harness = self._harness_kind(parsed[2]) if parsed is not None else None
-        if harness is not None and mechanism_of(harness) == "python_worker":
+        harness = self._delivery_harness_kind(parsed[2]) if parsed is not None else None
+        if harness is not None and (
+            is_mechanism_hook_request(message) or mechanism_of(harness) == "python_worker"
+        ):
             return self._message_text(message)
         return render_scalar_summary(
             message_id=message.message_id,
@@ -256,175 +262,203 @@ class _BridgeReconcileMixin:
         pending_result_ids = getattr(
             self.harnesses, "pending_result_delivery_ids", lambda: frozenset()
         )()
+        for actor in self.harnesses.streaming_actors():
+            try:
+                accepted += self._dispatch_actor_deliveries(actor, pending_result_ids)
+            except Exception as error:  # noqa: BLE001 - per-actor tick isolation
+                self._log_actor_failure(actor, "dispatch", error)
+        return accepted
+
+    def _log_actor_failure(self, actor: str, phase: str, error: Exception) -> None:
+        if self._logger is not None:
+            self._logger(
+                "error", "daemon", "harness.actor.failed",
+                actor=actor, phase=phase, errorType=type(error).__name__,
+            )
+
+    def _delivery_harness_kind(self, actor: str) -> str | None:
+        from hyprial.daemon.impl.harnesses.capabilities import DECLARED_HARNESSES
+
+        kind = self._harness_kind(actor)
+        if kind not in DECLARED_HARNESSES:
+            warned = getattr(self, "_unknown_harness_actors", None)
+            if warned is None:
+                warned = self._unknown_harness_actors = set()
+            if actor not in warned:
+                warned.add(actor)
+                if self._logger is not None:
+                    self._logger("warn", "daemon", "harness.kind.unknown",
+                                 actor=actor, harness=kind)
+            return None
+        return kind
+
+    def _dispatch_actor_deliveries(self, actor: str, pending_result_ids: frozenset[str]) -> int:
+        """Dispatch one actor inside the caller's fault boundary."""
+        accepted = 0
         admission_reader = getattr(self.inbox, "admitted_dispatchable", None)
         notice_reader = getattr(self.inbox, "system_notices", None)
         dismiss_notice = getattr(self.inbox, "dismiss_system_notice", None)
-        for actor in self.harnesses.streaming_actors():
-            actor_held = False
-            # The inbox is keyed by the canonical network identity — the
-            # exact key the registrar advertised for this connector.
-            recipient = self.harness_actor_uri(actor)
-            if self._blocked_actor is not None and self._blocked_actor(recipient):
+        actor_held = False
+        # The inbox is keyed by the canonical network identity — the
+        # exact key the registrar advertised for this connector.
+        recipient = self.harness_actor_uri(actor)
+        if self._blocked_actor is not None and self._blocked_actor(recipient):
+            return accepted
+        pending_messages = self.inbox.pending_messages(recipient)
+        # The link gate runs on the inbox actor thread (review B3); the
+        # runtime only names rows it has already answered or is settling so
+        # those never newly occupy W.
+        exclude = frozenset(
+            message.message_id
+            for message in pending_messages
+            if message.message_id in pending_result_ids
+            or message.message_id in self._pending_settle_results
+        )
+        messages = (
+            admission_reader(
+                recipient, now_ms=self._clock_ms(), exclude=exclude
+            )
+            if callable(admission_reader)
+            else pending_messages
+        )
+        notices = (
+            tuple(notice_reader(recipient))
+            if callable(notice_reader) and callable(dismiss_notice)
+            else ()
+        )
+        if self._delivery_hooks is not None:
+            self._delivery_hooks.forget_missing_deliveries(
+                recipient,
+                {message.message_id for message in (*pending_messages, *notices)},
+            )
+        # One daemon-rendered batch per idle actor, plus the retained
+        # scalar path for mechanism hook requests (never model text).
+        batch_members, batch_dispatched = self._dispatch_batch(
+            actor,
+            recipient,
+            messages=messages,
+            pending_result_ids=pending_result_ids,
+        )
+        if batch_dispatched:
+            accepted += 1
+        for message in messages:
+            if message.message_id in batch_members:
+                # Already claimed by the accepted batch delivery.
                 continue
-            pending_messages = self.inbox.pending_messages(recipient)
-            # The link gate runs on the inbox actor thread (review B3); the
-            # runtime only names rows it has already answered or is settling so
-            # those never newly occupy W.
-            exclude = frozenset(
-                message.message_id
-                for message in pending_messages
-                if message.message_id in pending_result_ids
-                or message.message_id in self._pending_settle_results
-            )
-            messages = (
-                admission_reader(
-                    recipient, now_ms=self._clock_ms(), exclude=exclude
-                )
-                if callable(admission_reader)
-                else pending_messages
-            )
-            notices = (
-                tuple(notice_reader(recipient))
-                if callable(notice_reader) and callable(dismiss_notice)
-                else ()
+            hook_request = is_mechanism_hook_request(message)
+            if actor_held and not hook_request:
+                # Keep scanning only for mechanism-owned hook requests.
+                # They must be able to reach a dedicated handler even
+                # when an older ordinary row is waiting on its own hook.
+                continue
+            if message.message_id in pending_result_ids:
+                # The Harness authority owns a native result claim or an
+                # accepted enqueue, even if TurnRuntime already released
+                # its own admission during drain_results().
+                continue
+            if message.message_id in self._pending_settle_results:
+                # Already answered; only its reply is still settling.
+                # drain_results() released the worker's dedup, so a
+                # dispatch here would run the whole turn again.
+                continue
+            # The first attempt starts when a live worker is first offered
+            # the delivery, even if enqueue never succeeds: "queued but
+            # never picked up" is one of the silent shapes this reports.
+            # A retry is different: its prior terminal result finished the
+            # old clock, so its new generation starts only after enqueue
+            # actually accepts it.
+            is_retry = message.message_id in self._attempt_generation
+            if not is_retry:
+                self._note_delivery_seen(actor, message)
+            delivery = HarnessDelivery(
+                delivery_id=message.message_id,
+                conversation_id=message.conversation_id,
+                sender=message.sender,
+                recipient=message.recipient,
+                message=self._injection_message_text(message),
+                origin=self._message_origin(message),
+                hook_request=hook_request,
             )
             if self._delivery_hooks is not None:
-                self._delivery_hooks.forget_missing_deliveries(
-                    recipient,
-                    {message.message_id for message in (*pending_messages, *notices)},
-                )
-            # One daemon-rendered batch per idle actor, plus the retained
-            # scalar path for mechanism hook requests (never model text).
-            batch_members, batch_dispatched = (
-                ((), False)
-                if actor_held
-                else self._dispatch_batch(
-                    actor,
-                    recipient,
-                    messages=messages,
-                    pending_result_ids=pending_result_ids,
-                )
-            )
-            if batch_dispatched:
-                accepted += 1
-            for message in messages:
-                if message.message_id in batch_members:
-                    # Already claimed by the accepted batch delivery.
-                    continue
-                hook_request = is_mechanism_hook_request(message)
-                if actor_held and not hook_request:
-                    # Keep scanning only for mechanism-owned hook requests.
-                    # They must be able to reach a dedicated handler even
-                    # when an older ordinary row is waiting on its own hook.
-                    continue
-                if message.message_id in pending_result_ids:
-                    # The Harness authority owns a native result claim or an
-                    # accepted enqueue, even if TurnRuntime already released
-                    # its own admission during drain_results().
-                    continue
-                if message.message_id in self._pending_settle_results:
-                    # Already answered; only its reply is still settling.
-                    # drain_results() released the worker's dedup, so a
-                    # dispatch here would run the whole turn again.
-                    continue
-                # The first attempt starts when a live worker is first offered
-                # the delivery, even if enqueue never succeeds: "queued but
-                # never picked up" is one of the silent shapes this reports.
-                # A retry is different: its prior terminal result finished the
-                # old clock, so its new generation starts only after enqueue
-                # actually accepts it.
-                is_retry = message.message_id in self._attempt_generation
-                if not is_retry:
+                if not delivery.hook_request:
+                    prepared = self._delivery_hooks.prepare_delivery(delivery)
+                    if prepared is None:
+                        # Inbox order is the actor's delivery order.  A
+                        # bounded hook may hold the head, but no younger
+                        # ordinary message may pass it during this tick.
+                        # Hook requests are the one mechanism exception.
+                        actor_held = True
+                        continue
+                    delivery = prepared
+            offers = self._dispatch_offers
+            if offers is not None:
+                if offers.offer(
+                    actor, delivery, original=message,
+                    retry=is_retry, notice=False,
+                ):
+                    # One in-flight offer per worker keeps that worker's
+                    # ordinary inbox order while other workers continue.
+                    break
+                continue
+            if self.harnesses.dispatch(actor, delivery):
+                if self._delivery_hooks is not None:
+                    self._delivery_hooks.mark_dispatched(message.message_id)
+                if is_retry:
                     self._note_delivery_seen(actor, message)
+                accepted += 1
+                # #276: a worker just genuinely accepted this delivery
+                # into its queue (StreamingHarnessProcess.enqueue dedups
+                # by delivery id, so `dispatch` only returns True once
+                # per delivery) — in-flight is not "nobody picked this
+                # up", so the hold TTL restarts from here instead of
+                # counting down from receipt while the turn runs.
+                self._refresh_queued_hold(
+                    message.message_id,
+                    worker=recipient,
+                    now_ms=self._clock_ms(),
+                    force=True,
+                )
+        if actor_held:
+            return accepted
+        if callable(notice_reader) and callable(dismiss_notice):
+            for notice in notices:
                 delivery = HarnessDelivery(
-                    delivery_id=message.message_id,
-                    conversation_id=message.conversation_id,
-                    sender=message.sender,
-                    recipient=message.recipient,
-                    message=self._injection_message_text(message),
-                    origin=self._message_origin(message),
-                    hook_request=hook_request,
+                    delivery_id=notice.message_id,
+                    conversation_id=notice.conversation_id,
+                    sender=notice.sender,
+                    recipient=notice.recipient,
+                    message=render_scalar_notice(
+                        sender=notice.sender,
+                        recipient=notice.recipient,
+                        text=notice.summary or "",
+                        created_at_ms=notice.created_at_ms,
+                    ),
+                    origin=self._message_origin(notice),
+                    hook_request=is_mechanism_hook_request(notice),
+                    notice=True,
                 )
                 if self._delivery_hooks is not None:
                     if not delivery.hook_request:
                         prepared = self._delivery_hooks.prepare_delivery(delivery)
                         if prepared is None:
-                            # Inbox order is the actor's delivery order.  A
-                            # bounded hook may hold the head, but no younger
-                            # ordinary message may pass it during this tick.
-                            # Hook requests are the one mechanism exception.
-                            actor_held = True
-                            continue
+                            break
                         delivery = prepared
                 offers = self._dispatch_offers
                 if offers is not None:
                     if offers.offer(
-                        actor, delivery, original=message,
-                        retry=is_retry, notice=False,
+                        actor, delivery, original=notice,
+                        retry=False, notice=True,
                     ):
-                        # One in-flight offer per worker keeps that worker's
-                        # ordinary inbox order while other workers continue.
                         break
                     continue
                 if self.harnesses.dispatch(actor, delivery):
                     if self._delivery_hooks is not None:
-                        self._delivery_hooks.mark_dispatched(message.message_id)
-                    if is_retry:
-                        self._note_delivery_seen(actor, message)
+                        self._delivery_hooks.mark_dispatched(notice.message_id)
+                        self._delivery_hooks.forget_delivery(notice.message_id)
+                    # System notices are offered once.  They have no result,
+                    # acknowledgement, receipt, or FIFO settlement duty.
+                    dismiss_notice(notice.message_id)
                     accepted += 1
-                    # #276: a worker just genuinely accepted this delivery
-                    # into its queue (StreamingHarnessProcess.enqueue dedups
-                    # by delivery id, so `dispatch` only returns True once
-                    # per delivery) — in-flight is not "nobody picked this
-                    # up", so the hold TTL restarts from here instead of
-                    # counting down from receipt while the turn runs.
-                    self._refresh_queued_hold(
-                        message.message_id,
-                        worker=recipient,
-                        now_ms=self._clock_ms(),
-                        force=True,
-                    )
-            if actor_held:
-                continue
-            if callable(notice_reader) and callable(dismiss_notice):
-                for notice in notices:
-                    delivery = HarnessDelivery(
-                        delivery_id=notice.message_id,
-                        conversation_id=notice.conversation_id,
-                        sender=notice.sender,
-                        recipient=notice.recipient,
-                        message=render_scalar_notice(
-                            sender=notice.sender,
-                            recipient=notice.recipient,
-                            text=notice.summary or "",
-                            created_at_ms=notice.created_at_ms,
-                        ),
-                        origin=self._message_origin(notice),
-                        hook_request=is_mechanism_hook_request(notice),
-                        notice=True,
-                    )
-                    if self._delivery_hooks is not None:
-                        if not delivery.hook_request:
-                            prepared = self._delivery_hooks.prepare_delivery(delivery)
-                            if prepared is None:
-                                break
-                            delivery = prepared
-                    offers = self._dispatch_offers
-                    if offers is not None:
-                        if offers.offer(
-                            actor, delivery, original=notice,
-                            retry=False, notice=True,
-                        ):
-                            break
-                        continue
-                    if self.harnesses.dispatch(actor, delivery):
-                        if self._delivery_hooks is not None:
-                            self._delivery_hooks.mark_dispatched(notice.message_id)
-                            self._delivery_hooks.forget_delivery(notice.message_id)
-                        # System notices are offered once.  They have no result,
-                        # acknowledgement, receipt, or FIFO settlement duty.
-                        dismiss_notice(notice.message_id)
-                        accepted += 1
         return accepted
 
     def _model_eligible(self, message: InboxMessage) -> bool:
@@ -438,8 +472,9 @@ class _BridgeReconcileMixin:
         if is_mechanism_hook_request(message):
             return False
         parsed = parse_agent_uri(message.recipient)
-        harness = self._harness_kind(parsed[2]) if parsed is not None else None
-        return not (harness is not None and mechanism_of(harness) == "python_worker")
+        harness = self._delivery_harness_kind(parsed[2]) if parsed is not None else None
+        # Unknown kinds use scalar summaries, not full-body model batches.
+        return harness is not None and mechanism_of(harness) != "python_worker"
 
     def _dispatch_batch(
         self,
@@ -469,18 +504,21 @@ class _BridgeReconcileMixin:
             # One accepted, unconsumed batch edge per actor: no successor while
             # a batch turn still owns its members.
             return claimed, False
-        try:
-            view = capture_batch(
-                self.inbox,
-                recipient,
-                keys=(recipient,),
-                limit_bytes=self._inbox_batch_inline_bytes(),
-                epoch="",
-                include_notices=False,
-                only=tuple(message.message_id for message in candidates),
-            )
-        except Exception:  # noqa: BLE001 - one actor's capture may not stop the tick
+        # The caller's per-actor boundary logs failures and retries next tick;
+        # do not turn a failed capture into an unlogged scalar fallback.
+        if not callable(getattr(self.inbox, "batch_snapshot", None)):
+            # Minimal inbox ports retain their scalar-summary delivery path.
+            # A supported batch port that raises still fails this actor only.
             return claimed, False
+        view = capture_batch(
+            self.inbox,
+            recipient,
+            keys=(recipient,),
+            limit_bytes=self._inbox_batch_inline_bytes(),
+            epoch="",
+            include_notices=False,
+            only=tuple(message.message_id for message in candidates),
+        )
         if not view.text or not view.cursor:
             return claimed, False
         members = view.message_ids

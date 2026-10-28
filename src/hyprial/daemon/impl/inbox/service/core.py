@@ -32,6 +32,7 @@ from hyprial.daemon.impl.inbox.service.policy import (
 )
 from hyprial.daemon.impl.inbox.service.synchronization import (
     _ActorMutationContext,
+    _CommittedChanges,
     _synchronized,
 )
 from hyprial.daemon.impl.inbox.service.link_ledger import _link_reply_to
@@ -63,6 +64,7 @@ class InboxServiceCoreMixin:
         self._lock = (
             _ActorMutationContext() if _serialized_by_actor else threading.RLock()
         )
+        self._observed_commits: _CommittedChanges | None = None
         self._db = sqlite3.connect(database, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")

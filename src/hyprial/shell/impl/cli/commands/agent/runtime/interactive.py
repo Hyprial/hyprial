@@ -16,6 +16,7 @@ import os
 import re
 import signal
 import subprocess
+import tempfile
 
 
 from hyprial.shell.impl.cli.commands.common.support import JsonObject, _append_warning
@@ -82,6 +83,38 @@ def _with_plugin_warnings(
     for warning in warnings:
         _append_warning(result, warning)
     return result
+
+
+def _publish_session_ref(path: Path, session_ref: str) -> None:
+    """Atomically publish one owner-only session ref for child CLI calls."""
+
+    if not session_ref or any(character.isspace() for character in session_ref):
+        raise ValueError("session ref must be one non-empty token")
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(session_ref)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.chmod(0o600)
+        temporary.replace(path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def _interactive_cli_identity(actor: str, session_ref_file: Path) -> dict[str, str]:
+    """Child-only environment that lets CLI calls present a daemon fence."""
+
+    return {
+        "HYPRIAL_AGENT_SESSION": "1",
+        "HYPRIAL_WORKER_ACTOR": actor,
+        "HYPRIAL_WORKER_SESSION_REF_FILE": str(session_ref_file.absolute()),
+    }
 
 
 def _wait_foreground(process: subprocess.Popen[Any]) -> int:
@@ -264,6 +297,26 @@ def _runtime_context_projection(
                 ipc_errors.INVALID_ARGUMENT,
                 f"daemon returned an invalid agent runtime {field}",
             )
+    notices = result.get("notices", [])
+    if not isinstance(notices, list):
+        raise services.CliError(
+            ipc_errors.INVALID_ARGUMENT,
+            "daemon returned invalid Agent runtime notices",
+        )
+    for notice in notices:
+        if (
+            not isinstance(notice, dict)
+            or not isinstance(notice.get("code"), str)
+            or not isinstance(notice.get("actor"), str)
+            or not isinstance(notice.get("message"), str)
+            or not isinstance(notice.get("path"), str)
+            or not Path(notice["path"]).is_absolute()
+        ):
+            raise services.CliError(
+                ipc_errors.INVALID_ARGUMENT,
+                "daemon returned an invalid Agent runtime notice",
+            )
+        warn(notice["message"])
     shared_credential = result.get("sharedCredential")
     if shared_credential is not None:
         if not isinstance(shared_credential, dict) or shared_credential.get(

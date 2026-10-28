@@ -262,6 +262,15 @@ def restart_failure_detail(
     return f"daemon restart failed: {error}\n{failure_line}\n{process_line}"
 
 
+def prime_upgrade_alert_imports() -> None:
+    """Load alert-only dependencies before an in-place package replacement."""
+
+    from hyprial.daemon.impl.adapters.lark.outbound.sdk import LarkSdkGateway
+    from hyprial.kernel import parse_channel_uri
+
+    _ = (LarkSdkGateway, parse_channel_uri)
+
+
 def _gateway_for_channel(store: PersistentConfigStore, channel: str):
     """Find the gateway a binding names -- by URI or by bare name.
 

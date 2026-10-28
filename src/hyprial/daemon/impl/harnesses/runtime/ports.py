@@ -8,6 +8,7 @@ from .observation import RuntimeFactsGrant
 from hyprial.kernel import SmolvmRuntimeSpec
 
 from dataclasses import dataclass
+from hyprial.daemon.impl.adapters.spec import AdapterSpec
 import hashlib
 import json
 from typing import Protocol, TypeAlias
@@ -238,7 +239,7 @@ class SnapshotAdapterRegistrationCommand:
 class RemoveAdapterRegistrationCommand:
     correlation_id: str
     name: str
-    expected_spec: HarnessLaunchProjection | None
+    expected_spec: AdapterSpec | None
     expected_legacy_pin: str | None
 
 
@@ -246,7 +247,7 @@ class RemoveAdapterRegistrationCommand:
 class RestoreAdapterRegistrationCommand:
     correlation_id: str
     name: str
-    spec: HarnessLaunchProjection | None
+    spec: AdapterSpec | None
     legacy_pin: str | None
 
 
@@ -341,6 +342,7 @@ class HarnessStatusProjection:
     max_in_flight: int | None = None
     in_flight: int | None = None
     queue_depth: int | None = None
+    startup_warnings: tuple[str, ...] = ()
 
     @property
     def quarantined(self) -> bool:
@@ -368,6 +370,7 @@ class HarnessStatusProjection:
             **({"maxInFlight": self.max_in_flight} if self.max_in_flight is not None else {}),
             **({"inFlight": self.in_flight} if self.in_flight is not None else {}),
             **({"queueDepth": self.queue_depth} if self.queue_depth is not None else {}),
+            **({"warnings": list(self.startup_warnings)} if self.startup_warnings else {}),
         }
 
 
@@ -544,7 +547,7 @@ class HarnessSessionRefsReconciled:
 @dataclass(frozen=True, slots=True)
 class HarnessAdapterRegistrationProjection:
     name: str
-    spec: HarnessLaunchProjection | None
+    spec: AdapterSpec | None
     legacy_pin: str | None
 
 

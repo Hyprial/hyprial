@@ -98,6 +98,7 @@ def agent_create(
             created.get("providerDefault"),
             json_output=json_output,
             preferred_harness=preferred_harness,
+            model_provider=provider,
         )
         return {**created, "providerSeed": seed}
 

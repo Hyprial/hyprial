@@ -95,6 +95,7 @@ class ProcessFacts:
     in_flight: int | None
     queue_depth: int | None
     liveness: ProcessLiveness | None
+    startup_warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,6 +210,7 @@ class ProcessOwner:
             integer("in_flight"),
             integer("queue_depth"),
             liveness() if callable(liveness) else None,
+            tuple(getattr(process, "startup_warnings", ())),
         )
 
     def _execute(self, operation):
@@ -415,6 +417,10 @@ class ProcessOwner:
     @property
     def last_error(self):
         return self.facts().last_error
+
+    @property
+    def startup_warnings(self):
+        return self.facts().startup_warnings
 
     @property
     def permanent_start_failure(self):

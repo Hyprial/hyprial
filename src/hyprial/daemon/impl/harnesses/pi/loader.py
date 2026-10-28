@@ -12,6 +12,7 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 from hashlib import sha256
 from dataclasses import dataclass
@@ -274,6 +275,7 @@ def pi_loader_probe_argv(
     projection_root: Path,
     native_root: Path,
     home_root: Path,
+    trust_scope: str = "repository",
 ) -> tuple[str, ...]:
     """Build the model-free SDK probe command with every authority explicit."""
 
@@ -281,6 +283,7 @@ def pi_loader_probe_argv(
         "piPackageRoot": str(pi_package_root),
         "cwd": str(cwd),
         "repositoryRoot": str(repository_root),
+        "trustScope": trust_scope,
         "projectionRoot": str(projection_root),
         "nativeRoot": str(native_root),
         "homeRoot": str(home_root),
@@ -294,17 +297,82 @@ def pi_loader_probe_argv(
     )
 
 
+class PiStartPreconditionError(ValueError):
+    """A deterministic P2 configuration refusal that retry cannot heal."""
+
+    code = "HARNESS_START_FAILED"
+    permanent_start_failure = True
+    start_precondition_failure = True
+
+
+class PiProjectTrustError(PiStartPreconditionError):
+    """Pi P2 launch trust could not be signed for this cwd.
+
+    A launch-validation refusal, not a transient harness failure: the code
+    travels into the daemon's start-rejection path, and the streaming pump
+    must stop retrying it.
+    """
+
+    code = "PI_P2_LAUNCH_UNTRUSTED"
+
+
+def _lexical_path(path: Path) -> Path:
+    """Normalize without resolving symlinks (resolve would erase the link)."""
+
+    return Path(os.path.normpath(os.fspath(path)))
+
+
+def _reject_workspace_symlink_chain(workspace: Path) -> None:
+    """Refuse a workspace whose root or agent-home ancestors are symlinks.
+
+    Anchored at the agent collection (``workspace.parent.parent``) so that
+    system-level ancestors such as macOS ``/var`` are outside the check; the
+    components the runtime context owns must be real directories.
+    """
+
+    if not workspace.is_absolute():
+        raise ValueError("Pi workspace trust paths must be absolute")
+    for directory in (workspace.parent.parent, workspace.parent, workspace):
+        try:
+            metadata = directory.lstat()
+        except OSError as error:
+            raise ValueError(
+                f"Pi workspace trust path {directory} cannot be inspected: {error}"
+            ) from error
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise ValueError(
+                "Pi workspace trust root must be a real directory, not a symlink"
+            )
+
+
 @dataclass(frozen=True, slots=True)
 class PiProjectTrustReceipt:
-    """Explicit approved project boundary; never discovered from cwd here."""
+    """Explicit approved project boundary; never discovered from cwd here.
+
+    ``scope`` distinguishes the two sanctioned roots: a Git worktree
+    (``repository``) or the agent's own private P2 home workspace
+    (``workspace``), which is a valid pi project even though it is not a
+    repository.  Nothing else qualifies -- see ``resolve_approved_pi_project``.
+    """
 
     cwd: Path
     repository_root: Path
     trusted: bool
+    scope: str = "repository"
 
     def __post_init__(self) -> None:
         if self.trusted is not True:
             raise ValueError("Pi P2 launch requires explicit project trust")
+        if self.scope not in {"repository", "workspace"}:
+            raise ValueError("Pi project trust scope must be repository or workspace")
+        if self.scope == "workspace":
+            # Compare and inspect BEFORE resolving: resolve() erases exactly
+            # the symlink this check exists to reject.
+            if not self.cwd.is_absolute() or not self.repository_root.is_absolute():
+                raise ValueError("Pi workspace trust paths must be absolute")
+            if _lexical_path(self.cwd) != _lexical_path(self.repository_root):
+                raise ValueError("Pi workspace trust root must equal cwd")
+            _reject_workspace_symlink_chain(self.repository_root)
         cwd = self.cwd.resolve(strict=True)
         root = self.repository_root.resolve(strict=True)
         if not cwd.is_dir() or not root.is_dir():
@@ -313,6 +381,18 @@ class PiProjectTrustReceipt:
             cwd.relative_to(root)
         except ValueError as error:
             raise ValueError("Pi project cwd is outside the approved root") from error
+        if self.scope == "workspace":
+            # The workspace root is the cwd itself and must stay private and
+            # non-Git: a wider or repository-backed root is out of contract.
+            if cwd != root:
+                raise ValueError("Pi workspace trust root must equal cwd")
+            if root.stat().st_mode & 0o077:
+                raise ValueError("Pi workspace trust root must be private to its owner")
+            if (root / ".git").exists():
+                raise ValueError("Pi workspace trust root must not be a Git worktree")
+            object.__setattr__(self, "cwd", cwd)
+            object.__setattr__(self, "repository_root", root)
+            return
         marker = root / ".git"
         if not marker.exists() or marker.is_symlink():
             raise ValueError("Pi approved repository root has no .git boundary")
@@ -367,15 +447,39 @@ def find_pi_package_root(
             continue
         if body.get("name") == "@earendil-works/pi-coding-agent":
             return parent
-    raise ValueError(f"Pi SDK package root not found beside {resolved}")
+    raise ValueError(
+        f"Pi SDK package root not found beside {resolved}; a pi installation "
+        "with the @earendil-works/pi-coding-agent SDK is required for P2 launches"
+    )
 
 
-class PiStartPreconditionError(ValueError):
-    """A deterministic P2 configuration refusal that retry cannot heal."""
+# The connector owns the output mode and the session identity; strip the
+# caller's session controls while preserving unrelated passthrough flags.
+_RESERVED_PI_VALUE_OPTIONS = frozenset(
+    {"--mode", "--session-id", "--session", "--fork"}
+)
+_RESERVED_PI_FLAG_OPTIONS = frozenset(
+    {"--print", "-p", "--continue", "-c", "--resume", "-r"}
+)
 
-    code = "HARNESS_START_FAILED"
-    permanent_start_failure = True
-    start_precondition_failure = True
+
+def without_pi_reserved_arguments(args: tuple[str, ...]) -> tuple[str, ...]:
+    result: list[str] = []
+    index = 0
+    while index < len(args):
+        value = args[index]
+        if value in _RESERVED_PI_VALUE_OPTIONS:
+            index += 2
+            continue
+        if value in _RESERVED_PI_FLAG_OPTIONS:
+            index += 1
+            continue
+        if any(value.startswith(f"{option}=") for option in _RESERVED_PI_VALUE_OPTIONS):
+            index += 1
+            continue
+        result.append(value)
+        index += 1
+    return tuple(result)
 
 
 def _pi_recovery_command(
@@ -390,7 +494,7 @@ def _pi_recovery_command(
     session_ref: str | None,
     json_output: bool,
 ) -> str:
-    argv = ["hyprial", "start", "pi", "--name", name or "<agent-name>"]
+    argv = ["hyprial", "agent", "start", "pi", "--name", name or "<agent-name>"]
     if headless:
         argv.append("--headless")
     elif tmux:
@@ -430,6 +534,7 @@ def resolve_approved_pi_project(
     *,
     cwd: str | None,
     runtime_args: tuple[str, ...],
+    own_workspace: Path | None = None,
     command_name: str | None = None,
     command_headless: bool = True,
     command_tmux: bool = False,
@@ -438,10 +543,17 @@ def resolve_approved_pi_project(
     command_session_ref: str | None = None,
     command_json_output: bool = False,
 ) -> PiProjectTrustReceipt:
-    """Turn Pi's explicit per-launch approval into a bounded Git trust receipt."""
+    """Turn Pi's explicit per-launch approval into a bounded trust receipt.
+
+    Two roots are sanctioned.  A cwd inside a Git worktree is trusted up to
+    that worktree's top level.  Otherwise -- and only when ``own_workspace``
+    is supplied -- the cwd is trusted if it IS this agent's own private P2
+    home workspace (0700, non-Git, no symlink).  Neither rule widens to an
+    arbitrary directory, and another agent's workspace never qualifies.
+    """
 
     if cwd is None:
-        raise ValueError("Pi P2 launch requires an explicit cwd")
+        raise PiProjectTrustError("Pi P2 launch requires an explicit cwd")
 
     def recovery_command(*, git_cwd: bool = False) -> str:
         return _pi_recovery_command(
@@ -481,7 +593,7 @@ def resolve_approved_pi_project(
             f"belong before '--'. Run: `{recovery_command()}`."
         )
     if not approved:
-        raise PiStartPreconditionError(
+        raise PiProjectTrustError(
             "Pi P2 headless launch requires explicit --approve trust. "
             "--headless and --tmux share this P2 precondition. "
             f"Run: `{recovery_command()}`."
@@ -497,16 +609,36 @@ def resolve_approved_pi_project(
         timeout=10,
         env=git_subprocess_environment(),
     )
-    if completed.returncode != 0:
-        raise PiStartPreconditionError(
-            "Pi P2 cwd is not inside an approved Git repository. A qualifying "
-            "cwd is a directory inside a Git working tree. "
-            f"Run: `{recovery_command(git_cwd=True)}`."
-        )
-    line = completed.stdout.strip()
-    if not line or "\n" in line:
-        raise ValueError("Pi P2 Git root discovery returned an invalid path")
-    return PiProjectTrustReceipt(resolved_cwd, Path(line), True)
+    if completed.returncode == 0:
+        line = completed.stdout.strip()
+        if not line or "\n" in line:
+            raise ValueError("Pi P2 Git root discovery returned an invalid path")
+        try:
+            return PiProjectTrustReceipt(resolved_cwd, Path(line), True)
+        except ValueError as error:
+            raise PiProjectTrustError(str(error)) from error
+    if own_workspace is not None:
+        own = Path(own_workspace)
+        lexical_cwd = Path(cwd)
+        if own.is_absolute() and lexical_cwd.is_absolute():
+            try:
+                own.resolve(strict=True)
+            except OSError:
+                exists = False
+            else:
+                exists = True
+            # Match the supplied paths without resolving: a workspace symlink
+            # would otherwise canonicalize onto another agent's workspace.
+            if exists and _lexical_path(lexical_cwd) == _lexical_path(own):
+                try:
+                    return PiProjectTrustReceipt(lexical_cwd, own, True, "workspace")
+                except ValueError as error:
+                    raise PiProjectTrustError(str(error)) from error
+    raise PiProjectTrustError(
+        "Pi P2 cwd is not inside an approved Git repository. A qualifying "
+        "cwd is a directory inside a Git working tree. "
+        f"Run: `{recovery_command(git_cwd=True)}`."
+    )
 
 
 def pi_sdk_launch_from_runtime_context(
@@ -520,6 +652,7 @@ def pi_sdk_launch_from_runtime_context(
     node: str = "node",
     model_provider: str | None = None,
     model: str | None = None,
+    model_environment: Mapping[str, str] | None = None,
     additional_extension_paths: tuple[Path, ...] = (),
     additional_skill_paths: tuple[Path, ...] = (),
     append_system_prompt: tuple[str, ...] = (),
@@ -542,6 +675,7 @@ def pi_sdk_launch_from_runtime_context(
         node=node,
         model_provider=model_provider,
         model=model,
+        model_environment=model_environment,
         additional_extension_paths=additional_extension_paths,
         additional_skill_paths=additional_skill_paths,
         append_system_prompt=append_system_prompt,
@@ -562,6 +696,7 @@ def pi_sdk_launch_from_public_projection(
     node: str = "node",
     model_provider: str | None = None,
     model: str | None = None,
+    model_environment: Mapping[str, str] | None = None,
     additional_extension_paths: tuple[Path, ...] = (),
     additional_skill_paths: tuple[Path, ...] = (),
     append_system_prompt: tuple[str, ...] = (),
@@ -591,6 +726,7 @@ def pi_sdk_launch_from_public_projection(
         node=node,
         model_provider=model_provider,
         model=model,
+        model_environment=model_environment,
         additional_extension_paths=additional_extension_paths,
         additional_skill_paths=additional_skill_paths,
         append_system_prompt=append_system_prompt,
@@ -614,6 +750,7 @@ def _pi_sdk_launch(
     node: str,
     model_provider: str | None,
     model: str | None,
+    model_environment: Mapping[str, str] | None,
     additional_extension_paths: tuple[Path, ...],
     additional_skill_paths: tuple[Path, ...],
     append_system_prompt: tuple[str, ...],
@@ -654,6 +791,7 @@ def _pi_sdk_launch(
         "piPackageRoot": str(package_root),
         "cwd": str(trust.cwd),
         "repositoryRoot": str(trust.repository_root),
+        "trustScope": trust.scope,
         "projectionRoot": str(projection_root),
         "nativeRoot": str(native_root),
         "homeRoot": str(home_root),
@@ -667,7 +805,7 @@ def _pi_sdk_launch(
         "appendSystemPrompt": list(append_system_prompt),
         # The agent's native root has no models config under P2, so hyprial's
         # canonical model definitions travel with every launch.
-        "modelDefinitions": pi_model_definitions(environment),
+        "modelDefinitions": pi_model_definitions(model_environment or environment),
     }
     if model_provider is not None:
         payload["modelProvider"] = model_provider

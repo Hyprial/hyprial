@@ -22,8 +22,7 @@ from hyprial.daemon.impl.ipc.params import (
     _required_string,
 )
 from hyprial.daemon.impl.orgfs.api import OrgFsError
-from hyprial.daemon.impl.org.network.access import PeerAccessActor
-from hyprial.daemon.impl.org.network.access.snapshot import with_bootstrap
+from hyprial.daemon.impl.forwarding.policy import ForwardingSidecarError
 from hyprial.daemon.impl.org.network.casdoor import casdoor_groups_for_home
 from hyprial.daemon.impl.org.network.casdoor.client import CasdoorGroupError
 from hyprial.daemon.impl.org.network.casdoor.membership import (
@@ -39,7 +38,6 @@ from hyprial.daemon.impl.org.network.casdoor.webhook import (
     Trigger,
     webhook_settings,
 )
-from hyprial.daemon.impl.org.network.dialing import DialState, dial_peers
 from hyprial.daemon.impl.org.network.directory import (
     InvalidDeviceQuarantine,
     OrgFsDirectoryStore,
@@ -67,6 +65,13 @@ def _invalid_device_diagnostics(app: Any) -> InvalidDeviceQuarantine:
 
 def _build_service(app: Any) -> OrgNetworkService:
     fs = app._require_orgfs_runtime().facade
+
+    def membership_request(op: str, params: dict) -> dict:
+        app._start_forwarding_supervisor()
+        supervisor = getattr(app, '_forwarding_supervisor', None)
+        if supervisor is None:
+            raise ForwardingSidecarError('Tailnet sidecar unavailable.', code='MEMBERSHIP_NOT_INITIALIZED')
+        return supervisor.membership_request(op, params)
 
     def map_peer(peer: str, address: str) -> int | None:
         # The invite/join bootstrap connects a peer by assigning it a
@@ -141,6 +146,7 @@ def _build_service(app: Any) -> OrgNetworkService:
         request_redial=lambda: app._reconcile_forwarding_endpoints(),
         read_own_address=read_own_address,
         forwarding_status=lambda: app._forwarding_status_json(),
+        membership_request=membership_request,
         # Casdoor group membership is the authority (design §2): owner-side
         # commands write it first; absent config = not this node's job.
         casdoor=casdoor_groups_for_home(Path(app.hyprial_home)),
@@ -155,7 +161,7 @@ def _translate(error: BaseException) -> DaemonRequestError:
         return DaemonRequestError(error.code, str(error), error.details)
     if isinstance(error, InviteError):
         return DaemonRequestError(error.code, str(error))
-    if isinstance(error, OrgNetworkError):
+    if isinstance(error, (OrgNetworkError, ForwardingSidecarError)):
         return DaemonRequestError(error.code, str(error))
     if isinstance(error, ValueError):
         return DaemonRequestError(ipc_errors.INVALID_ARGUMENT, str(error))
@@ -240,7 +246,9 @@ def ipc_org_join(app: Any, params: JsonObject) -> dict:
 def ipc_org_leave(app: Any, params: JsonObject) -> dict:
     org = _required_string(params.get("org"), "org")
     try:
-        return _access_changed(app, "org-leave", _build_service(app).leave(org))
+        return _access_changed(app, "org-leave", _build_service(app).leave(
+            org, confirmed=_optional_boolean(params.get('confirmed'), 'confirmed') or False,
+            operation_id=params.get('operationId'), device_ids=params.get('deviceIds')))
     except OrgFsError as error:
         raise _translate(error) from error
     except (InviteError, OrgNetworkError, ValueError) as error:
@@ -251,7 +259,9 @@ def ipc_org_remove(app: Any, params: JsonObject) -> dict:
     org = _required_string(params.get("org"), "org")
     user = _required_string(params.get("user"), "user")
     try:
-        result = _build_service(app).remove(org, user)
+        result = _build_service(app).remove(
+            org, user, confirmed=_optional_boolean(params.get('confirmed'), 'confirmed') or False,
+            operation_id=params.get('operationId'), device_ids=params.get('deviceIds'))
         _membership_changed(app, org, user)
         return _access_changed(app, "org-remove", result)
     except OrgFsError as error:
@@ -280,6 +290,12 @@ def ipc_org_list(app: Any, params: JsonObject) -> dict:
 
 
 def ipc_org_network(app: Any, params: JsonObject) -> dict:
+    if 'peerKey' in params:
+        from hyprial.daemon.impl.forwarding.membership.projection import owner_for_key, status_for_app
+        from hyprial.identity import read_device_record
+        key = _required_string(params['peerKey'], 'peerKey')
+        record = read_device_record(app.hyprial_home)
+        return {'owner': owner_for_key(status_for_app(app), key, record.server_public) if record else None}
     org = params.get("org")
     if org is not None and not isinstance(org, str):
         raise DaemonRequestError(
@@ -462,7 +478,7 @@ def publish_self_for_app(app: Any) -> dict:
             app._log("warn", "org", "org.publish_self.failed", detail=str(error))
         except Exception:  # noqa: BLE001 - logging must never mask the tick
             pass
-        return {"published": [], "skipped": []}
+        return {"published": [], "skipped": [], 'errors': [{'code': getattr(error, 'code', 'PUBLISH_FAILED'), 'errorType': type(error).__name__}]}
 
 
 def process_leave_requests_for_app(app: Any) -> dict:
@@ -485,48 +501,10 @@ def process_leave_requests_for_app(app: Any) -> dict:
 
 
 def directory_peers_for_app(app: Any) -> dict[str, str]:
-    """Return the snapshot-derived dial set without a per-tick OrgFS read."""
+    """Compatibility call name; candidates come exclusively from the sidecar."""
+    from hyprial.daemon.impl.forwarding.membership.projection import candidates_for_app
 
-    actor = getattr(app, "_peer_access_actor", None)
-    snapshot = actor.snapshot() if actor is not None else None
-    if snapshot is not None:
-        # Join writes its invite-authorized bootstrap peer after a snapshot
-        # can already exist. Merge that small local file on every tick.
-        snapshot = with_bootstrap(snapshot, Path(app.hyprial_home))
-    state = getattr(app, "_org_dial_state", None)
-    if state is None:
-        state = DialState()
-        app._org_dial_state = state
-    service: Any | None = None
-    try:
-        if snapshot is None:
-            service = _build_service(app)
-    except Exception:  # noqa: BLE001 - discovery must never raise
-        return {}
-    try:
-        return dial_peers(
-            service,
-            snapshot=snapshot,
-            state=state,
-            log=getattr(app, "_log", None),
-            is_live=_host_liveliness(app),
-        )
-    except Exception as error:  # noqa: BLE001 - degrade to mutual, never to none
-        log = getattr(app, "_log", None)
-        if log is not None:
-            log(
-                "warn",
-                "org",
-                "org.dial_direction.failed",
-                errorType=type(error).__name__,
-                detail=str(error)[:200],
-            )
-        if snapshot is not None:
-            return dict(snapshot.peers)
-        try:
-            return service.directory_peers() if service is not None else {}
-        except Exception:  # noqa: BLE001 - discovery must never raise
-            return {}
+    return candidates_for_app(app)
 
 
 def _membership_changed(app: Any, org: str, user: str) -> None:
@@ -602,62 +580,12 @@ def stop_casdoor_membership_sync(app: Any) -> None:
         raise RuntimeError(f"org Casdoor sync did not stop: {', '.join(failures)}")
 
 
-def _host_liveliness(app: Any):  # type: ignore[no-untyped-def]
-    """``device id -> currently live?`` from OrgFS host liveliness, if running."""
-
-    runtime = getattr(app, "_orgfs_runtime", None)
-    if runtime is None:
-        return lambda _device: False
-    return lambda device: device in getattr(runtime, "_lively_peers", ())
-
-
 def _access_changed(app: Any, reason: str, result: Any) -> Any:
-    """Ask the peer-access actor to rebuild after a local org mutation."""
+    """Refresh slot bindings after explicit membership operations."""
 
-    actor = getattr(app, "_peer_access_actor", None)
-    if actor is not None:
-        actor.request(reason)
+    if getattr(app, '_forwarding_supervisor', None) is not None:
+        app._reconcile_forwarding_endpoints()
     return result
-
-
-def _reissue_conflicting_identity(app: Any, reason: str, token: str) -> None:
-    from hyprial.daemon.impl.network.tailcat import reissue_device_key
-    from hyprial.identity import consume_rotation_event
-
-    record = reissue_device_key(app.hyprial_home, reason=reason, conflict_token=token)
-    if record is None:
-        return
-    event = consume_rotation_event(app.hyprial_home)
-    app._log(
-        "error",
-        "org",
-        "org.access.identity-reissued",
-        **(event or {"deviceId": record.device_id, "reason": reason}),
-    )
-    supervisor = getattr(app, "_forwarding_supervisor", None)
-    if supervisor is not None:
-        supervisor.restart(reason=reason)
-
-
-def start_peer_access_for_app(app: Any) -> PeerAccessActor:
-    """Start this daemon's directory-driven allow/dial/leave actor."""
-
-    actor = PeerAccessActor(
-        service_factory=lambda: _build_service(app),
-        facade=app._require_orgfs_runtime().facade,
-        supervisor=lambda: getattr(app, "_forwarding_supervisor", None),
-        log=lambda level, domain, event, **fields: app._log(
-            level, domain, event, **fields
-        ),
-        request_redial=lambda: app._reconcile_forwarding_endpoints(),
-        process_leaves=lambda: _build_service(app).process_leave_requests(),
-        reissue_identity=lambda reason, token: _reissue_conflicting_identity(
-            app, reason, token
-        ),
-    )
-    app._peer_access_actor = actor
-    actor.start()
-    return actor
 
 
 __all__ = [
@@ -677,6 +605,5 @@ __all__ = [
     "ipc_org_repair",
     "publish_self_for_app",
     "start_casdoor_membership_sync",
-    "start_peer_access_for_app",
     "stop_casdoor_membership_sync",
 ]

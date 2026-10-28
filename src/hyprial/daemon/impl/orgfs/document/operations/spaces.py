@@ -178,9 +178,9 @@ class FacadeSpaces:
         require_space_owner(self.author, space.info)
         if mode not in ("ro", "rw") or not isinstance(user, str) or not user:
             raise OrgFsError("invalid-argument")
-        # A re-invite of a current member changes its mode only: added_at
-        # orders who dials whom between org devices (org.network.dialing), so
-        # it must not move.  The owner's own row keeps the space's birth.
+        # A re-invite changes mode only and preserves membership provenance.
+        # added_at is metadata, never tailnet dial ordering or admission.
+        # The owner's own row keeps the space's birth.
         current = space.members.get(user)
         if user == space.info.owner:
             member = MemberInfo(space_id, user, mode, self.author, space.info.created_at)

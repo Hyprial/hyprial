@@ -291,5 +291,7 @@ class MeshIngress:
         return (
             isinstance(requester, dict)
             and isinstance(requester.get("author"), str)
-            and self._member_mode(str(requester["author"])) is not None
+            and bool(requester["author"])
+            and (getattr(self, "_trust_tailnet_members", False)
+                 or self._member_mode(str(requester["author"])) is not None)
         )

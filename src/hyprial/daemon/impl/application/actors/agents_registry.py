@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from __future__ import annotations
 import time
+from hyprial.daemon.impl.adapters.spec import is_adapter_provider
 from collections.abc import Mapping
 from dataclasses import replace
 from typing import Any, TYPE_CHECKING
@@ -85,10 +86,9 @@ class _AgentsRegistryMixin:
                 if desired is None:
                     spec = self.desired_state.harness_spec(name)
                 else:
-                    spec = next(
-                        (item for item in desired.harnesses if item.name == name),
-                        None,
-                    )
+                    from hyprial.daemon.impl.harnesses.capabilities import worker_spec
+
+                    spec = worker_spec(desired.harnesses, name)
             except Exception:  # noqa: BLE001 - identity must never crash
                 spec = None
         if spec is not None and spec.pinned_owner:
@@ -344,7 +344,7 @@ class _AgentsRegistryMixin:
             name = status.get("name")
             if not isinstance(name, str) or not name:
                 continue
-            if status.get("runtime") == "lark":
+            if status.get("adapter") is not None or is_adapter_provider(status.get("runtime")):
                 continue
             if name == actor:
                 return bool(status.get("running"))
@@ -374,8 +374,6 @@ class _AgentsRegistryMixin:
             return None
         refs = read_refs()
         for spec in self.desired_state.load().harnesses:
-            if spec.harness == "lark":
-                continue
             if self._canonical_harness_uri(spec.name, spec) == actor:
                 return refs.get((spec.harness, spec.name))
         return None
@@ -393,8 +391,6 @@ class _AgentsRegistryMixin:
         state = self.desired_state.load()
         self._agent_recovery_failures.clear()
         for spec in state.harnesses:
-            if spec.harness == "lark":
-                continue
             self._ensure_agent(
                 self._canonical_harness_uri(spec.name, spec),
                 harness=spec.harness, interactive=False, cwd=spec.cwd,
@@ -575,8 +571,10 @@ class _AgentsRegistryMixin:
         }
         if cwd is not None and agent.cwd != cwd:
             changes["cwd"] = cwd
-        if args and agent.args_for(harness) != args:
-            changes["harness_args"] = {**agent.harness_args, harness: args}
+        # ``harness_args`` is durable default configuration (agent create /
+        # --harness-args), not a scratchpad for the last launch. Rewriting it
+        # made prior launch flags into defaults and revived them after A -> B -> A;
+        # the last launch's args already live in the desired-state row.
         if changes:
             agent = self.agents.save(replace(agent, **changes))
         self._publish_agent_restore_allow(agent)
@@ -587,7 +585,7 @@ class _AgentsRegistryMixin:
             (
                 item
                 for item in self.desired_state.load().harnesses
-                if item.name == agent.actor and item.harness != "lark"
+                if item.name == agent.actor
             ),
             None,
         )

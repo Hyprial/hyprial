@@ -36,10 +36,12 @@ class DeliveryCustodyProgressMixin:
         )
         target_node = self._service._agent_node(command.recipient)
         if target_node is None or target_node == self._service.node_id:
+            received = self._service.receive_progress_event(message)
+            self._committed_version()
             self._publish_bool(
                 command.correlation_id,
                 "submit_progress_event",
-                self._service.receive_progress_event(message),
+                received,
             )
             return
         request = DispatchIoRequested(

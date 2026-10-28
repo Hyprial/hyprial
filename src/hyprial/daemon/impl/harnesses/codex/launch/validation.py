@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 from collections.abc import Mapping
@@ -12,7 +13,7 @@ from hyprial.identity import (
     SharedCredentialBinding,
     validate_shared_credential_binding,
 )
-from hyprial.kernel import private_metadata_violation
+from hyprial.kernel import Logger, private_metadata_violation, redact
 
 from hyprial.daemon.impl.harnesses.codex.projection import CodexAgentHomeError
 
@@ -62,6 +63,7 @@ class CodexNativeLoadEvidence:
     requires_openai_auth: bool
     user_skills: tuple[str, ...]
     project_skills: tuple[str, ...]
+    warnings: tuple[str, ...] = ()
 
 
 def _inside(path: Path, root: Path) -> bool:
@@ -111,6 +113,7 @@ def _validate_codex_native_load(
     expected_session_flags: Mapping[str, object] | None = None,
     require_tool_profile: bool = False,
     shared_credential: SharedCredentialBinding | None = None,
+    logger: Logger | None = None,
 ) -> CodexNativeLoadEvidence:
     """Validate real app-server receipts before a P2 thread starts or resumes."""
 
@@ -222,11 +225,12 @@ def _validate_codex_native_load(
     expected_flags = dict(expected_session_flags or {})
     observed_flags = {} if session_flags is None else session_flags
     if legacy_session_contract:
+        # Reasoning effort is also a launch choice for native OpenAI; it does
+        # not imply a custom provider or a provider-authentication override.
         provider_keys = {
             "model",
             "model_provider",
             "model_providers",
-            "model_reasoning_effort",
         }
         observed_provider_keys = provider_keys.intersection(observed_flags)
         if bool(observed_provider_keys) != custom_provider:
@@ -453,8 +457,26 @@ def _validate_codex_native_load(
     if row is None:
         raise CodexAgentHomeError("Codex skills/list omitted the requested cwd")
     errors = row.get("errors")
+    warnings: tuple[str, ...] = ()
     if errors not in (None, []):
-        raise CodexAgentHomeError("Codex skills/list reported loader errors")
+        if not isinstance(errors, list) or any(
+            not isinstance(item, dict)
+            or not isinstance(item.get("path"), str)
+            or not isinstance(item.get("message"), str)
+            for item in errors
+        ):
+            raise CodexAgentHomeError("Codex skills/list returned malformed loader errors")
+        # Redact before encoding/truncation: cutting first can expose partial
+        # credentials. Keep the original vendor cause and path, not just a label.
+        detail = json.dumps(redact(errors), ensure_ascii=False)
+        message = "Codex skills/list reported loader errors: " + detail
+        if len(message.encode("utf-8")) > 4096:
+            message = message.encode("utf-8")[:4093].decode("utf-8", errors="ignore") + "..."
+        if logger is not None:
+            Logger.daemon(logger.state_dir, name=logger.name).warn(
+                "codex.skills.load_warning", error=message,
+            )
+        warnings = (message,)
     raw_skills = row.get("skills")
     if not isinstance(raw_skills, list):
         raise CodexAgentHomeError("Codex skills/list omitted skills")
@@ -501,4 +523,5 @@ def _validate_codex_native_load(
         requires_openai_auth=requires_openai_auth,
         user_skills=tuple(sorted(user_skills)),
         project_skills=tuple(sorted(project_skills)),
+        warnings=warnings,
     )

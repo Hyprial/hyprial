@@ -308,6 +308,7 @@ class DeliveryCustodyRetryMixin:
         if pending.completion_kind == "progress":
             delivered = bool(event.outcomes and event.outcomes[0].recipient_online)
             self._publish(event)
+            self._committed_version()
             self._publish_bool(
                 pending.request.correlation_id,
                 "submit_progress_event",
@@ -396,6 +397,7 @@ class DeliveryCustodyRetryMixin:
             return True
         now = self._service._now_ms()
         if pending.completion_kind == "progress":
+            self._committed_version()
             self._publish_bool(
                 pending.request.correlation_id,
                 "submit_progress_event",

@@ -30,7 +30,6 @@ from hyprial.daemon.impl.lifecycle.lifecycle_receipts  import (
 from hyprial.kernel import DomainEffectClaim
 from hyprial.kernel import LifecycleMutationRequest
 from hyprial.kernel import DesiredStateError, HarnessLaunchSpec  # canonical defs (MP-1)
-from hyprial.kernel import has_execution_runtime
 
 from .documents import (
     DesiredState,
@@ -130,24 +129,20 @@ class DesiredStateStore(
             if self.state_db.exists():
                 self._sqlite_shadow.migrate_harness_status()
                 self._sqlite_shadow.migrate_interactive_process_identity()
+                self._sqlite_shadow.migrate_adapters()
 
     def harness_spec(
         self, name: str, *, excluding: str | None = None
     ) -> HarnessLaunchSpec | None:
-        """One harness row by name (the port's single-row read, same contract).
+        """One unambiguous worker row by name; adapters never match.
 
         The file store has no published projection to read from, so this
         reads the document once; the daemon's port serves it from memory.
         """
 
-        return next(
-            (
-                item
-                for item in self.load().harnesses
-                if item.name == name and item.harness != excluding
-            ),
-            None,
-        )
+        from hyprial.daemon.impl.harnesses.capabilities import worker_spec
+
+        return worker_spec(self.load().harnesses, name, excluding=excluding)
 
     def load(self) -> DesiredState:
         """Read the desired state from SQLite (the only storage).
@@ -183,8 +178,6 @@ class DesiredStateStore(
             )
         with self._lock:
             payload = state.to_json()
-            if has_execution_runtime(payload):
-                payload["schemaVersion"] = 2
             validated = DesiredState.from_json(payload)
             document = validated.to_json()
             # The SQLite transaction is the only write and the only commit
@@ -264,7 +257,7 @@ class DesiredStateStore(
 
     def require_runtime_schema(self) -> None:
         with self._lock:
-            self.save(replace(self.load(), schema_version=2))
+            self.save(self.load())
 
     def apply_harness_lifecycle(
         self,

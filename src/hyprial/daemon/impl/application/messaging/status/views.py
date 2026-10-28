@@ -199,8 +199,6 @@ class _StatusViewsMixin:
                 )
             restore_rows: list[JsonObject] = []
             for spec in desired_by_key.values():
-                if spec.harness == "lark":
-                    continue
                 agent = self.agents.get(spec.name)
                 if agent is None:
                     continue

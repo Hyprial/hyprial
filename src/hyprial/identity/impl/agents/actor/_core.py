@@ -2,7 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from hyprial.identity.impl.agents.actor.ports import AcquireAgentRuntimeLaunchCommand
-from hyprial.kernel import ActorRuntime
+from hyprial.kernel import ActorRuntime, DECLARED_HARNESSES
 from hyprial.kernel import ActorSpec
 from hyprial.kernel import AdmissionResult
 from hyprial.identity.impl.agents.registry._base import Agent
@@ -402,6 +402,7 @@ class AgentActor:
                 HomeReceipt.from_json(receipt.to_json()),
                 self._registry.database.parent,
                 self._registry.home_provisioner.hyprial_home,
+                tuple(item for item in (self._home_runtime_preparers or {}).items() if item[1] is not None),
             )
             self._migration_effects.submit_reserved(EffectRequest(operation_id, 0, effect))
         except BaseException as error:
@@ -965,7 +966,7 @@ class AgentActor:
         state = self._desired_state.load()
         harnesses = getattr(state, "harnesses", ())
         for spec in harnesses:
-            if getattr(spec, "harness", None) == "lark":
+            if getattr(spec, "harness", None) not in DECLARED_HARNESSES:
                 continue
             agent = self._registry.get(str(getattr(spec, "name", "")))
             if agent is None:

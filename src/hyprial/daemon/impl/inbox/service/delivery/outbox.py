@@ -14,7 +14,10 @@ from hyprial.daemon.impl.inbox.tracking.progress  import (
     decode_progress_event,
     encode_progress_event,
 )
-from hyprial.daemon.impl.inbox.service.synchronization import _synchronized
+from hyprial.daemon.impl.inbox.service.synchronization import (
+    _record_committed_change,
+    _synchronized,
+)
 
 """SQLite-backed outbox, inbox, deduplication, FIFO, DLQ and custody state."""
 # Route C progress-event storage bounds (backpressure layer 3).  The
@@ -150,10 +153,11 @@ class InboxServiceOutboxMixin:
         notices = self.system_notices(recipient)
         if notices:
             with self._db:
-                self._db.executemany(
+                deleted = self._db.executemany(
                     "DELETE FROM system_notices WHERE message_id = ?",
                     ((item.message_id,) for item in notices),
-                )
+                ).rowcount > 0
+            _record_committed_change(self, deleted)
         return notices
     @_synchronized
     def dismiss_system_notice(

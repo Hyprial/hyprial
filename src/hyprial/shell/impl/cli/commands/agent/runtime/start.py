@@ -14,6 +14,7 @@ import shutil
 import sys
 import typer
 
+from hyprial.shell.impl.cli.output import warn
 from hyprial.shell.impl.cli.commands.agent.admin import agent_app
 from hyprial.shell.impl.cli.commands.common.support import JsonObject, _daemon_ipc_roundtrip_seconds, _resolved_agent_cwd, _resolved_interactive_resume_cwd, _user_proxy_launch_params
 
@@ -77,6 +78,7 @@ def start(
         help="Model vendor (for example deepseek); separate from the harness kind.",
     ),
     model: str | None = typer.Option(None, "--model", help="Model id."),
+    effort: str | None = typer.Option(None, "--effort", help="Reasoning effort: Codex none/minimal/low/medium/high/xhigh/max/ultra; Claude low/medium/high/xhigh/max. Omitted keeps the model vendor default; model support varies."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
     """Start a harness connector through the daemon."""
@@ -89,6 +91,7 @@ def start(
         from hyprial.daemon import (
             ModelProviderError,
             validate_model_selection,
+            with_reasoning_effort,
         )
 
         from hyprial.kernel import TIERS
@@ -216,6 +219,7 @@ def start(
                 )
             headless = True
         try:
+            runtime_args = with_reasoning_effort(harness_kind, runtime_args, effort)
             validate_model_selection(
                 harness_kind, model_provider, model,
                 context=f"hyprial agent start --name {name}",
@@ -535,6 +539,10 @@ def start(
                     f"the worker established {started_session!r}",
                     {"harness": harness_kind, "name": name, "sessionRef": expected},
                 )
+        if isinstance(started, dict):
+            for warning in started.get("warnings", ()):
+                if isinstance(warning, str):
+                    warn(warning, json_output=json_output)
         return started
 
     services._execute(operation, json_output=json_output)

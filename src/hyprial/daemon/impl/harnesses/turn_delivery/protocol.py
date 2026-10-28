@@ -81,7 +81,7 @@ def mechanism_of(harness: str) -> str | None:
 
 
 def harness_supports_before_delivery(harness: str) -> bool:
-    """Whether the declared headless mechanism can inject prompt context."""
+    """Whether prompt context is allowed; unknown kinds use safe model summaries."""
 
     # Deferred to avoid the daemon/harness import cycle during module loading.
     from hyprial.daemon.impl.harnesses.capabilities import support
@@ -94,7 +94,7 @@ def harness_supports_before_delivery(harness: str) -> bool:
         headless=True,
         capability=Capability.HEADLESS_EXEC,
     )
-    return declared.mechanism != "python_worker"
+    return declared is None or declared.mechanism != "python_worker"
 
 
 __all__ = [

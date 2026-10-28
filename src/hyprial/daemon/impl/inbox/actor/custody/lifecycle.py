@@ -1,6 +1,10 @@
 from __future__ import annotations
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from hyprial.kernel import PortCommandRejected
+from hyprial.daemon.impl.inbox.service.synchronization import _observe_committed_changes
+from hyprial.daemon.impl.inbox.service.link_ledger import _retention_only_update
 from hyprial.daemon.impl.inbox.contracts.api  import (
     InboxMessage,
     ReceiveResult,
@@ -184,6 +188,7 @@ class DeliveryCustodyLifecycleMixin:
             advanced = self._service.wake_outbox_recipient(
                 command.recipient, now_ms=command.now_ms,
             )
+            self._committed_version()
             self._publish_bool(
                 command.correlation_id,
                 "wake_outbox_recipient",
@@ -194,26 +199,27 @@ class DeliveryCustodyLifecycleMixin:
             if not self._current_fence(command.generation, command.version):
                 self._reject_stale(command.correlation_id)
                 return
-            items, notices = self._service._prune_inbox_state(command.now_ms)
-            self._stage_expired_sender_notices(command.correlation_id, notices)
-            version = self._committed_version()
+            with self._publishing_commits():
+                items, notices = self._service._prune_inbox_state(command.now_ms)
+                self._stage_expired_sender_notices(command.correlation_id, notices)
             self._publish(
                 InboxPruneCompleted(
                     correlation_id=command.correlation_id,
                     generation=self._generation,
-                    version=version,
+                    version=self._version,
                     items=items,
                 )
             )
             return
         if isinstance(command, RefreshHoldCommand):
+            refreshed = self._service.refresh_hold(
+                command.message_id, now_ms=command.now_ms,
+            )
+            self._committed_version()
             self._publish_bool(
                 command.correlation_id,
                 "refresh_hold",
-                self._service.refresh_hold(
-                    command.message_id,
-                    now_ms=command.now_ms,
-                ),
+                refreshed,
             )
             return
         if isinstance(command, FailMessageCommand):
@@ -283,55 +289,62 @@ class DeliveryCustodyLifecycleMixin:
             self._claim_custody_retry(command)
             return
         if isinstance(command, RetireOutboxReceiptCommand):
+            retired = self._service.retire_outbox_receipt(
+                command.sender, command.message_id, now_ms=command.now_ms,
+            )
+            self._committed_version()
             self._publish_bool(
                 command.correlation_id,
                 "retire_outbox_receipt",
-                self._service.retire_outbox_receipt(
-                    command.sender,
-                    command.message_id,
-                    now_ms=command.now_ms,
-                ),
+                retired,
             )
             return
         if isinstance(command, ReceiveSystemNoticeCommand):
+            received = self._service.receive_system_notice(command.notice)
+            self._committed_version()
             self._publish_bool(
                 command.correlation_id,
                 "receive_system_notice",
-                self._service.receive_system_notice(command.notice),
+                received,
             )
             return
         if isinstance(command, DrainSystemNoticesCommand):
+            with self._publishing_commits():
+                notices = self._service.drain_system_notices(command.recipient)
             self._publish_messages(
                 command.correlation_id,
                 "drain_system_notices",
-                self._service.drain_system_notices(command.recipient),
+                notices,
             )
             return
         if isinstance(command, DismissSystemNoticeCommand):
+            dismissed = self._service.dismiss_system_notice(
+                command.message_id, recipient=command.recipient,
+            )
+            self._committed_version()
             self._publish_bool(
                 command.correlation_id,
                 "dismiss_system_notice",
-                self._service.dismiss_system_notice(
-                    command.message_id, recipient=command.recipient
-                ),
+                dismissed,
             )
             return
         if isinstance(command, BatchSnapshotCommand):
-            selection = self._service.batch_snapshot(
-                command.recipient,
-                keys=command.keys,
-                now_ms=command.now_ms,
-                cursor=command.cursor,  # type: ignore[arg-type]
-                after=command.after,  # type: ignore[arg-type]
-                after_digest=command.after_digest,
-                include_notices=command.include_notices,
-                only=command.only,
-            )
+            with self._publishing_commits():
+                selection = self._service.batch_snapshot(
+                    command.recipient,
+                    keys=command.keys,
+                    now_ms=command.now_ms,
+                    cursor=command.cursor,  # type: ignore[arg-type]
+                    after=command.after,  # type: ignore[arg-type]
+                    after_digest=command.after_digest,
+                    include_notices=command.include_notices,
+                    only=command.only,
+                )
             self._publish(
                 BatchSnapshotCompleted(
                     command.correlation_id,
                     self._generation,
-                    self._committed_version(),
+                    self._version,
                     selection,
                 )
             )
@@ -340,10 +353,12 @@ class DeliveryCustodyLifecycleMixin:
             self._submit_progress(command)
             return
         if isinstance(command, ReceiveProgressCommand):
+            received = self._service.receive_progress_event(command.message)
+            self._committed_version()
             self._publish_bool(
                 command.correlation_id,
                 "receive_progress_event",
-                self._service.receive_progress_event(command.message),
+                received,
             )
             return
         if isinstance(command, AdmittedPendingCommand):
@@ -369,10 +384,8 @@ class DeliveryCustodyLifecycleMixin:
             )
             return
         if isinstance(command, FetchPendingCommand):
-            self._publish_messages(
-                command.correlation_id,
-                "fetch_pending",
-                self._service.fetch_pending_admitted(
+            with self._publishing_commits():
+                messages = self._service.fetch_pending_admitted(
                     command.recipient,
                     now_ms=command.now_ms,
                     only=(
@@ -381,7 +394,11 @@ class DeliveryCustodyLifecycleMixin:
                         else None
                     ),
                     completed_turn=command.completed_turn,
-                ),
+                )
+            self._publish_messages(
+                command.correlation_id,
+                "fetch_pending",
+                messages,
             )
             return
         if isinstance(command, PruneOutboxCommand):
@@ -447,13 +464,17 @@ class DeliveryCustodyLifecycleMixin:
             )
             return
         if isinstance(command, UpdateLinkLedgerCommand):
-            result = self._service.update_link_ledger(command)
-            version = self._committed_version()
+            if _retention_only_update(command):
+                with self._publishing_commits():
+                    result = self._service.update_link_ledger(command)
+            else:
+                result = self._service.update_link_ledger(command)
+                self._committed_version()
             self._publish(
                 LinkLedgerUpdated(
                     correlation_id=command.correlation_id,
                     generation=self._generation,
-                    version=version,
+                    version=self._version,
                     result=result,
                 )
             )
@@ -608,6 +629,17 @@ class DeliveryCustodyLifecycleMixin:
                 detail="delivery command generation/version fence is stale",
             )
         )
+    @contextmanager
+    def _publishing_commits(self) -> Iterator[None]:
+        """Publish committed facts even when a later operation phase fails."""
+
+        with _observe_committed_changes(self._service) as changes:
+            try:
+                yield
+            finally:
+                if changes.changed:
+                    self._committed_version()
+
     def _committed_version(self) -> int:
         self._version += 1
         self._refresh_projection()
