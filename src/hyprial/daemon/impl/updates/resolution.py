@@ -53,19 +53,21 @@ def _version_tag(tag: str) -> Version | None:
     raw_version = tag[1:]
     # ``Version`` itself accepts another leading ``v`` and an epoch.  Neither
     # spelling belongs to the release-automation contract: default candidates
-    # are exactly one lower-case ``v`` followed by an X.Y.Z-family version.
+    # are exactly one lower-case ``v`` followed by an X.Y.Z[.N...]-family version.
     if not raw_version[:1].isdigit() or "!" in raw_version:
         return None
     try:
         version = Version(raw_version)
     except InvalidVersion:
         return None
-    # Release automation documents and accepts exactly the vX.Y.Z family.
-    return version if len(version.release) == 3 else None
+    # main-release tags hotfixes with extra release parts (0.5.5.2, 0.5.5.2.1);
+    # a resolver that drops them resolves "latest" to an older X.Y.Z and the
+    # downgrade guard then turns every hotfix upgrade into a silent no-op.
+    return version if len(version.release) >= 3 else None
 
 
 def select_latest_version_tag(candidates: dict[str, str]) -> tuple[str, str, Version]:
-    """Select the highest vX.Y.Z-family tag by PEP 440 ordering.
+    """Select the highest vX.Y.Z[.N...]-family tag by PEP 440 ordering.
 
     Development and other prereleases are included.  For PEP 440-equivalent
     spellings, the raw tag name is a deterministic lexical tie-breaker.
