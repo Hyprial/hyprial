@@ -179,6 +179,10 @@ class ClaudeChannelAdapter:
         self.open_turn: str | None = None
         self._turn_origin = "pulse"
         self._turn_started = False
+        #: Set from the register answer when this stdio process was compiled
+        #: from a different build than the daemon.  Mutations are refused with
+        #: MCP_CHANNEL_STALE instead of a schema-level SUMMARY_REQUIRED.
+        self._channel_stale: dict[str, Any] | None = None
         self.turn_injected: set[str] = set()
         self.owed_settle: set[str] = set()
         self._turn_lock = anyio.Lock()
@@ -219,7 +223,7 @@ class ClaudeChannelAdapter:
     async def _register(self) -> dict[str, Any]:
         harness_pid = os.getppid()
         harness_identity = process_birth_identity(harness_pid)
-        return await self._call(
+        answer = await self._call(
             "session.register",
             {
                 "cwd": self.cwd,
@@ -248,6 +252,14 @@ class ClaudeChannelAdapter:
             },
             mutation=True,
         )
+        stale = answer.get("channelStale")
+        self._channel_stale = stale if isinstance(stale, dict) else None
+        return answer
+
+    def stale_error(self) -> dict[str, Any] | None:
+        """The stale-channel refusal this process must expose to its harness."""
+
+        return self._channel_stale
 
     async def _call(self, method: str, params: dict[str, Any], *, mutation: bool) -> dict[str, Any]:
         return await self.proxy.call(

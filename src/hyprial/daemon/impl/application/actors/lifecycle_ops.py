@@ -69,6 +69,27 @@ from hyprial.daemon.impl.ipc.params import (
     _required_string,
 )
 
+#: How long lifecycle.start observes the harness actor after the operation
+#: commits.  A streaming harness can refuse on the next reconcile tick; a
+#: longer wait would delay every successful start, while this window keeps a
+#: visible refusal from being reported as success.
+START_FAILURE_OBSERVATION_SECONDS = 1.0
+
+
+def _visible_start_failure(
+    rows: tuple[dict[str, object], ...], harness: str, name: str
+) -> str | None:
+    """The harness actor error for ``harness:name`` if it has already settled."""
+
+    for row in rows:
+        if row.get("runtime") == harness and row.get("name") == name:
+            error = row.get("error")
+            if error:
+                return str(error)
+            if row.get("state") == "failed":
+                return "harness start failed"
+    return None
+
 
 class _LifecycleOpsMixin:
     """Application cluster mixin; the state owner is DaemonApplication."""
@@ -669,6 +690,7 @@ class _LifecycleOpsMixin:
                 raise self._start_failure_with_harness_error(
                     spec, resume_error, last_error=last_error
                 ) from resume_error
+        readiness_confirmed = self._observe_start_readiness(spec.harness, name)
         handover = (
             HandoverNotice(
                 actor=prior_agent.actor,
@@ -699,12 +721,50 @@ class _LifecycleOpsMixin:
                 if resume_ref is not None
                 else {}
             ),
+            **({} if readiness_confirmed else {"readiness": "unconfirmed"}),
             **(
                 {"harnessHandover": handover.to_json()}
                 if handover is not None
                 else {}
             ),
         }
+
+    def _observe_start_readiness(self, harness: str, name: str) -> bool:
+        """Wait for readiness or a refusal, whichever the actor reports first.
+
+        The lifecycle operation completes when the launcher returned a
+        handle, and that handle alone is not readiness: a streaming harness
+        can refuse its own start on the next reconcile tick (Pi P2 trust is
+        the production case).  A false readiness after the bounded window is
+        reported as unconfirmed, never as a successful ready start.
+        """
+
+        wait_ready = getattr(self._harnesses, "wait_ready", None)
+        ready = False
+        if callable(wait_ready):
+            try:
+                ready = bool(wait_ready(harness, name, START_FAILURE_OBSERVATION_SECONDS))
+            except DaemonRequestError:
+                raise
+            except Exception:  # noqa: BLE001 - status below is authoritative
+                ready = False
+        status = getattr(self._harnesses, "status", None)
+        if not callable(status):
+            return ready
+        error = _visible_start_failure(tuple(status()), harness, name)
+        if error is not None:
+            raise DaemonRequestError(ipc_errors.HARNESS_START_FAILED, error)
+        if ready:
+            return True
+        if callable(wait_ready):
+            return False
+        deadline = time.monotonic() + START_FAILURE_OBSERVATION_SECONDS
+        while time.monotonic() < deadline:
+            error = _visible_start_failure(tuple(status()), harness, name)
+            if error is not None:
+                raise DaemonRequestError(ipc_errors.HARNESS_START_FAILED, error)
+            time.sleep(0.05)
+        return False
 
     def _ipc_down(self, params) -> Any:
         state = self.desired_state.load()

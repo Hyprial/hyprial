@@ -18,6 +18,10 @@ activation marker always carries the incarnation field -- the four-field
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+from typing import Any
+from hyprial.kernel import HarnessLaunchSpec
+
 __all__ = ["pac_worker_fields", "pac_worker_marker"]
 
 _PAC_MARKER_HEAD = "pac"
@@ -54,3 +58,17 @@ def pac_worker_marker(nickname: str | None) -> str | None:
     """Return ``nickname`` when it is a strict PAC activation marker, else None."""
 
     return nickname if pac_worker_fields(nickname) is not None else None
+
+
+def retain_managed_creation(
+    actor: str, capabilities: dict[str, Any], harnesses: Iterable[HarnessLaunchSpec],
+) -> dict[str, Any]:
+    """Retain old PAC ownership on registry reuse before an interactive launch.
+
+    The desired-state marker is authority; a worker-looking actor name is not.
+    This upgrades only an existing incarnation with a matching ownership record.
+    """
+    if any(spec.name == actor and pac_worker_marker(spec.nickname) is not None
+           for spec in harnesses):
+        return {**capabilities, "creationOrigin": "managed-launch"}
+    return capabilities

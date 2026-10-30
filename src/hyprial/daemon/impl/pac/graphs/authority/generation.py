@@ -27,10 +27,12 @@ from hyprial.daemon.impl.pac.graphs.reactor  import PacReactor, planned_to_json
 from hyprial.daemon.impl.pac.storage.store  import PacGraphStore
 from hyprial.daemon.impl.pac.workflows.graphs  import compile_workflow, replay_graph
 from hyprial.daemon.impl.pac.contracts.workflow  import load_workflow_text
+from hyprial.daemon.impl.pac.graphs.authority.clock_batch import run_clock_batch
 from hyprial.daemon.impl.pac.graphs.authority.commands import (
     ActivateGraph,
     CancelWorkflow,
     ClockTick,
+    ClockTickMany,
     CloseGraph,
     EnqueueRemoteOutcome,
     EnsureRemoteKey,
@@ -64,6 +66,8 @@ from hyprial.daemon.impl.pac.graphs.authority.commands import (
     _DeferredRuntime,
     _RESTORE_FACT_COMMANDS,
 )
+
+
 
 if TYPE_CHECKING:  # forward reference to the owner class, no runtime import cycle
     from hyprial.daemon.impl.pac.graphs.authority import PacGraphAuthority
@@ -402,7 +406,7 @@ class _Generation:
             return
         if completion.error is not None:
             if effect.kind in {"resolve", "start"}:
-                self._record_actor_failure(effect, completion.error)
+                self._record_actor_failure(effect, completion.error, completion.exception)
             elif effect.kind in {"observe", "stop"}:
                 self._record_cleanup_effect_failure(
                     effect,
@@ -517,7 +521,9 @@ class _Generation:
             store.close()
             self.wake_delivery()
 
-    def _record_actor_failure(self, effect: _ActorEffect, detail: str) -> None:
+    def _record_actor_failure(
+        self, effect: _ActorEffect, detail: str, exception: Exception | None = None,
+    ) -> None:
         store = PacGraphStore(self.database)
         try:
             node = store.node(effect.graph_id, effect.node_id)
@@ -544,7 +550,7 @@ class _Generation:
                 publisher=self.owner.hook_publisher,
             )
             coordinator._launch_failed(
-                effect.graph_id, node, dict(row), RuntimeError(detail)
+                effect.graph_id, node, dict(row), exception or RuntimeError(detail)
             )
         finally:
             store.close()
@@ -582,6 +588,8 @@ class _Generation:
                 actor=command.actor, request_id=command.request_id,
                 reason_ref=command.reason_ref, output_text=command.output_text,
             )
+        if isinstance(command, ClockTickMany):
+            return run_clock_batch(self, command)
         if isinstance(command, (HarnessOutcome, RequestPruned)):
             service = self.workflow_service()
             if service is None:

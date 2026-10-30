@@ -39,12 +39,17 @@ def tailnet_settings(home: Path) -> dict:
     port = section.get('controlPort', 7448)
     trust = section.get('trustMembersForUpperLayers', True)
     pins = section.get('authorities', {})
+    # Opt-in only: with several owner rows and no pin, "self" lets the local
+    # device claim authority. Off by default so an upgrade never elects one.
+    default = section.get('authorityDefault')
     if (not isinstance(store, str) or not Path(store).is_absolute()
             or type(port) is not int or not 1 <= port <= 65535
-            or type(trust) is not bool or not isinstance(pins, dict)):
+            or type(trust) is not bool or not isinstance(pins, dict)
+            or default not in (None, 'self')):
         raise ForwardingSidecarError('Invalid tailnet settings.', code='BAD_REQUEST')
     return {'membershipStore': store, 'controlPort': port,
-            'trustMembersForUpperLayers': trust, 'authorities': pins}
+            'trustMembersForUpperLayers': trust, 'authorities': pins,
+            'authorityDefault': default}
 
 
 def pin_authority(home: Path, tailnet_id: str, authority: dict) -> None:

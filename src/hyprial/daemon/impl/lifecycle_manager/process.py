@@ -349,7 +349,7 @@ class LifecycleProcessManager:
         """The Empty-branch exit check, with the same fault discipline."""
 
         with self._condition:
-            if not self._closed:
+            if not self._closed or self._reserving:
                 return False
         try:
             pending = bool(self._store.pending())

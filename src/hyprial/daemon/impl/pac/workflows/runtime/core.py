@@ -592,7 +592,8 @@ class _GraphWorkflowServiceCore:
                     continue
                 if row["actor_node"]:
                     bad = db.execute(
-                        "SELECT type FROM journal WHERE graph_id=? AND type IN ('actor_lost','actor_unowned','launch_failed') "
+                        "SELECT type,json_extract(data_json,'$.errorCode') AS error_code FROM journal "
+                        "WHERE graph_id=? AND type IN ('actor_lost','actor_unowned','launch_failed') "
                         "AND json_extract(data_json,'$.nodeId')=? ORDER BY seq DESC LIMIT 1",
                         (graph_id, row["actor_node"]),
                     ).fetchone()
@@ -601,7 +602,10 @@ class _GraphWorkflowServiceCore:
                             store,
                             graph,
                             node.node_id,
-                            f"pac:{bad['type']}",
+                            f"pac:{bad['type']}" + (
+                                ":CLAUDE_CREDENTIAL_MISSING"
+                                if bad["error_code"] == "CLAUDE_CREDENTIAL_MISSING" else ""
+                            ),
                             at,
                             reactor,
                         )

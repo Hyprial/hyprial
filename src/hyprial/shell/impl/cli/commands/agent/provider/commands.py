@@ -23,6 +23,7 @@ from __future__ import annotations
 import base64
 import os
 import stat
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -193,13 +194,16 @@ def agent_provider_login(
     force: bool = typer.Option(
         False, "--force", help="Replace an existing credential."
     ),
+    setup_token: bool = typer.Option(
+        False, "--setup-token", help="Read a long-lived Claude setup token from non-TTY stdin; --actor names its sole SQLite owner. Recommended for shared defaults."
+    ),
     make_default: bool = typer.Option(
         False,
         "--default",
         help=(
             "Also record this provider as the machine default that future "
-            "'hyprial agent create' runs seed from. Existing agents are not "
-            "touched. Without --actor only the default is recorded."
+            "CLI, PAC and lifecycle creates use. Existing agents are not "
+            "touched. For Claude, --actor names the sole credential owner."
         ),
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
@@ -211,6 +215,11 @@ def agent_provider_login(
     home, and the vendor bills and audits it as that user. API keys stay the
     default (hyprial agent secret grant); this OAuth seed is the explicit
     alternative.
+
+    Copying a refreshable OAuth login to several agents makes their refreshes
+    interfere. --setup-token is recommended for defaults that many agents share.
+    Obtain the long-lived token with claude setup-token and pipe only the token
+    to stdin; it is stored once in the --actor owner's SQLite, not native files.
 
     One-shot, not a refresh loop: when the seeded login expires or breaks, log
     in again with the vendor CLI and re-run this command with --force.
@@ -229,10 +238,24 @@ def agent_provider_login(
         target = actor or _addressed_actor_or_none()
         if target is None and not make_default:
             target = _addressed_actor(services)
+        if make_default and provider == "claude" and target is None:
+            raise services.CliError(ipc_errors.INVALID_ARGUMENT, "Claude defaults require --actor OWNER; re-run login --default --actor OWNER")
+        if setup_token:
+            if provider != "claude" or source is not None or actor is None or sys.stdin.isatty():
+                raise services.CliError(ipc_errors.INVALID_ARGUMENT, "--setup-token requires claude, --actor, non-TTY stdin, and no --source")
+            raw = sys.stdin.read(16386)
+            token = raw.strip()
+            if (len(raw) > 16385 or not token or len(token) > 16384
+                    or "\x00" in token or any(char.isspace() for char in token)):
+                raise services.CliError(ipc_errors.INVALID_ARGUMENT, "stdin must contain one non-empty setup token")
+            return services._daemon_request("agent.provider.login", {
+                "actor": target, "provider": provider, "setupToken": token,
+                "force": force, "makeDefault": make_default,
+            })
         documents = read_provider_documents(services, provider, source=source)
         result: dict[str, Any] = {"ok": True, "provider": provider}
         if target is not None:
-            result = seed_agent(services, provider, target, documents, force=force)
+            return seed_agent(services, provider, target, documents, force=force, make_default=make_default)
         if make_default:
             recorded = services._daemon_request(
                 "agent.provider.default", {"provider": provider}
@@ -277,6 +300,7 @@ def seed_agent(
     documents: list[tuple[str, bytes]],
     *,
     force: bool = False,
+    make_default: bool = False,
 ) -> dict[str, Any]:
     seeded = services._daemon_request(
         "agent.provider.login",
@@ -291,6 +315,7 @@ def seed_agent(
                 for filename, content in documents
             ],
             "force": force,
+            **({"makeDefault": True} if make_default else {}),
         },
     )
     return _with_revoke_hint(seeded, provider, actor)
@@ -303,10 +328,11 @@ def agent_provider_default(
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
-    """Show (or clear) the provider future 'hyprial agent create' runs seed from.
+    """Show or clear the provider default for future agents, including PAC.
 
-    Set it with 'hyprial agent provider login <provider> --default'. The seed
-    copies the login of the user this daemon is logged in as.
+    Set with 'agent provider login claude --actor OWNER --setup-token --default'.
+    Legacy provider-name defaults do not seed PAC: re-run login --default
+    --actor OWNER to bind the source. Use --setup-token for shared defaults.
     """
     services = get_services()
 
@@ -314,9 +340,13 @@ def agent_provider_default(
         services = get_services()
         if clear:
             _refuse_in_worker_shell(services)
-        return services._daemon_request(
+        result = services._daemon_request(
             "agent.provider.default", {"clear": True} if clear else {}
         )
+        if result.get("provider") == "claude" and not result.get("defaultCredential"):
+            result["hint"] = "Legacy provider-name default does not seed PAC; re-run hyprial agent provider login claude --default --actor OWNER (prefer --setup-token)."
+            warn(result["hint"], json_output=json_output)
+        return result
 
     services._execute(operation, json_output=json_output)
 
@@ -381,6 +411,10 @@ def seed_new_agent(
     a custom-provider agent. The result is ``skipped`` with the safe next step.
     """
 
+    if isinstance(default, dict) and default.get("defaultCredential"):
+        # Creation's identity owner already applied this source (including PAC).
+        return {"state": "seeded" if preferred_harness == default["provider"] else "skipped",
+                "provider": default["provider"], "credentialSource": default["credentialSource"]}
     if default == "codex" and model_provider not in {None, "openai"}:
         seed: dict[str, Any] = {
             "state": "skipped",

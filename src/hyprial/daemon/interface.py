@@ -46,8 +46,13 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.configuration.network_profile import DEFAULT_PROFILE as DEFAULT_PROFILE
     from hyprial.daemon.impl.application import DaemonApplication as DaemonApplication
     from hyprial.daemon.impl.forwarding.membership.maintenance import TailnetMaintenance as TailnetMaintenance
+    from hyprial.daemon.impl.forwarding.membership.hardening.offline import OfflineMembership as OfflineMembership
+    from hyprial.daemon.impl.application.start_backoff import read_start_failures as read_start_failures
     from hyprial.daemon.impl.configuration.ownership import DaemonOwnershipBusy as DaemonOwnershipBusy
     from hyprial.daemon.impl.configuration.ownership import DaemonStateOwnershipFence as DaemonStateOwnershipFence
+    from hyprial.daemon.impl.configuration.ownership import (  # noqa: I001
+        wait_for_state_ownership as wait_for_state_ownership,
+    )
     from hyprial.daemon.impl.desired_state.store import DesiredStateStore as DesiredStateStore
     from hyprial.daemon.impl.harnesses.dsh.api import DshHttpApi as DshHttpApi
     from hyprial.daemon.impl.operations.management import EnsureSquireRegistryCommand as EnsureSquireRegistryCommand
@@ -304,6 +309,7 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.adapters.lark.credentials.scopes import valid_scope_name as valid_scope_name
     from hyprial.daemon.impl.transfer.archive.bundle import validate_bundle as validate_bundle
     from hyprial.daemon.impl.harnesses.claude.runtime import validate_claude_auth_environment as validate_claude_auth_environment
+    from hyprial.daemon.impl.harnesses.claude.runtime import validate_legacy_claude_auth as validate_legacy_claude_auth
     from hyprial.daemon.impl.harnesses.model_provider import validate_model_selection as validate_model_selection
     from hyprial.daemon.impl.configuration.network_profile import validate_profile as validate_profile
     import hyprial.daemon.impl.pac.views.missions as views_missions
@@ -366,8 +372,11 @@ _FACADE_EXPORTS = {
     'DEFAULT_PROFILE': ('hyprial.daemon.impl.configuration.network_profile', 'DEFAULT_PROFILE'),
     'DaemonApplication': ('hyprial.daemon.impl.application', 'DaemonApplication'),
     'TailnetMaintenance': ('hyprial.daemon.impl.forwarding.membership.maintenance', 'TailnetMaintenance'),
+    'OfflineMembership': ('hyprial.daemon.impl.forwarding.membership.hardening.offline', 'OfflineMembership'),
+    'read_start_failures': ('hyprial.daemon.impl.application.start_backoff', 'read_start_failures'),
     'DaemonOwnershipBusy': ('hyprial.daemon.impl.configuration.ownership', 'DaemonOwnershipBusy'),
     'DaemonStateOwnershipFence': ('hyprial.daemon.impl.configuration.ownership', 'DaemonStateOwnershipFence'),
+    'wait_for_state_ownership': ('hyprial.daemon.impl.configuration.ownership', 'wait_for_state_ownership'),
     'DesiredStateStore': ('hyprial.daemon.impl.desired_state.store', 'DesiredStateStore'),
     'DshHttpApi': ('hyprial.daemon.impl.harnesses.dsh.api', 'DshHttpApi'),
     'EnsureSquireRegistryCommand': ('hyprial.daemon.impl.operations.management', 'EnsureSquireRegistryCommand'),
@@ -623,6 +632,7 @@ _FACADE_EXPORTS = {
     'valid_scope_name': ('hyprial.daemon.impl.adapters.lark.credentials.scopes', 'valid_scope_name'),
     'validate_bundle': ('hyprial.daemon.impl.transfer.archive.bundle', 'validate_bundle'),
     'validate_claude_auth_environment': ('hyprial.daemon.impl.harnesses.claude.runtime', 'validate_claude_auth_environment'),
+    'validate_legacy_claude_auth': ('hyprial.daemon.impl.harnesses.claude.runtime', 'validate_legacy_claude_auth'),
     'validate_document': ('hyprial.daemon.impl.org.document', 'validate_document'),
     'validate_model_selection': ('hyprial.daemon.impl.harnesses.model_provider', 'validate_model_selection'),
     'validate_profile': ('hyprial.daemon.impl.configuration.network_profile', 'validate_profile'),
@@ -704,8 +714,11 @@ __all__ = [
     'DEFAULT_PROFILE',
     'DaemonApplication',
     'TailnetMaintenance',
+    'OfflineMembership',
+    'read_start_failures',
     'DaemonOwnershipBusy',
     'DaemonStateOwnershipFence',
+    'wait_for_state_ownership',
     'DesiredStateStore',
     'DshHttpApi',
     'EnsureSquireRegistryCommand',
@@ -962,6 +975,7 @@ __all__ = [
     'valid_scope_name',
     'validate_bundle',
     'validate_claude_auth_environment',
+    'validate_legacy_claude_auth',
     'validate_document',
     'validate_model_selection',
     'validate_profile',

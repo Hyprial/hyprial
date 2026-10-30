@@ -35,8 +35,13 @@ __all__ = [
     "update_org_create",
 ]
 
-#: JSON array of org names, relative to the daemon's home.
-LEFT_ORGS_RELPATH = "state/tailcat/left-orgs.json"
+#: ``LEFT_ORGS_RELPATH`` / ``left_orgs_path`` / ``read_left_orgs`` live in a
+#: leaf shared with the membership import (no cycle); re-exported here.
+from hyprial.daemon.impl.forwarding.membership.hardening.left_orgs import (  # noqa: E402
+    LEFT_ORGS_RELPATH as LEFT_ORGS_RELPATH,
+    left_orgs_path as left_orgs_path,
+    read_left_orgs as read_left_orgs,
+)
 
 #: Owner-node ACL entry authorizations (design-org-orgfs-usage §8.3):
 #: ``{org: {agent URI: {"grantedAtMs": int, "untilMs": int | null}}}``.
@@ -47,31 +52,6 @@ ORG_ACL_GRANTS_RELPATH = "state/org/org-acl-grants.json"
 
 #: Durable creator-owned recovery records for multi-step ``org.create``.
 ORG_CREATE_INTENTS_RELPATH = "state/org/create-intents.json"
-
-def left_orgs_path(home: Path) -> Path:
-    return Path(home) / LEFT_ORGS_RELPATH
-
-
-def read_left_orgs(home: Path) -> list[str]:
-    """The orgs this node has left; an absent or corrupt file means none.
-
-    # LAX(tailnet-cutover): a corrupt file is treated as empty rather than
-    # failing loudly; the proper shape is a typed state record with a
-    # schema version, like the other files under ``state/tailcat/``.
-    """
-
-    try:
-        raw = left_orgs_path(home).read_text(encoding="utf-8")
-    except OSError:
-        return []
-    try:
-        value = json.loads(raw)
-    except ValueError:
-        return []
-    if not isinstance(value, list):
-        return []
-    return sorted({org for org in value if isinstance(org, str)})
-
 
 def add_left_org(home: Path, org: str) -> list[str]:
     """Record ``org`` as left (idempotent) and return the new list."""

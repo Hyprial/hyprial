@@ -106,6 +106,7 @@ def _request_json(
     *,
     data: Mapping[str, str] | None = None,
     headers: Mapping[str, str] | None = None,
+    timeout: float | None = None,
 ) -> tuple[int, Any]:
     """One HTTP request via ``urllib.request``; returns (status, parsed body).
 
@@ -122,9 +123,9 @@ def _request_json(
         request_headers.setdefault("Content-Type", "application/x-www-form-urlencoded")
     request = urllib.request.Request(url, data=body, headers=request_headers)
     # ALL_PROXY-only shells: urllib alone would go direct (proxy_route).
-    open_url, route = url_opener()
+    open_url, route = url_opener(follow_redirects=False)
     try:
-        with open_url(request, timeout=_HTTP_TIMEOUT_S) as response:
+        with open_url(request, timeout=_HTTP_TIMEOUT_S if timeout is None else timeout) as response:
             status = response.status
             raw = response.read()
     except urllib.error.HTTPError as error:
@@ -220,9 +221,11 @@ def _validate_endpoints(discovery: Any, profile: NetworkProfile) -> OidcEndpoint
     return OidcEndpoints(**endpoints)
 
 
-def _fetch_endpoints(profile: NetworkProfile) -> OidcEndpoints:
+def _fetch_endpoints(
+    profile: NetworkProfile, *, timeout: float | None = None
+) -> OidcEndpoints:
     url = f"{profile.issuer}/.well-known/openid-configuration"
-    status, discovery = _request_json(url)
+    status, discovery = _request_json(url, timeout=timeout)
     if status != 200:
         raise LoginError(
             "DISCOVERY_UNAVAILABLE",

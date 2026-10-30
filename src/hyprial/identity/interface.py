@@ -90,6 +90,8 @@ if TYPE_CHECKING:
     from hyprial.identity.impl.agents.runtime.enforcement import EnforcementError as EnforcementError
     from hyprial.identity.impl.agents.runtime.enforcement import GRANTABLE_CAPABILITIES as GRANTABLE_CAPABILITIES
     from hyprial.identity.impl.agents.actor.ports import GrantAgentCapabilityCommand as GrantAgentCapabilityCommand
+    from hyprial.identity.impl.agents.actor.ports import DefaultClaudeCredentialCommand as DefaultClaudeCredentialCommand
+    from hyprial.identity.impl.agents.actor.ports import DefaultClaudeCredentialCompleted as DefaultClaudeCredentialCompleted
     from hyprial.identity.impl.agents.actor.ports import GrantAgentSecretCommand as GrantAgentSecretCommand
     from hyprial.identity.impl.agents.runtime.visibility import GrantRecord as GrantRecord
     from hyprial.identity.impl.agents.registry._base import HandoverNotice as HandoverNotice
@@ -229,6 +231,7 @@ if TYPE_CHECKING:
     from hyprial.identity.impl.agents.home.native_credential import install_native_credential_set as install_native_credential_set
     from hyprial.identity.impl.agents.home.native_credential import remove_native_credentials as remove_native_credentials
     from hyprial.identity.impl.agents.home.native_credential import native_secrets_root as native_secrets_root
+    from hyprial.identity.impl.agents.home.native_credential import prepare_legacy_claude_native_root as prepare_legacy_claude_native_root
     from hyprial.identity.impl.org_directory import bootstrap_yaml as bootstrap_yaml
     from hyprial.identity.impl.agents.runtime.enforcement import check_channel as check_channel
     from hyprial.identity.impl.agents.runtime.enforcement import check_org_context as check_org_context
@@ -369,6 +372,8 @@ _FACADE_EXPORTS = {
     'EnforcementError': ('hyprial.identity.impl.agents.runtime.enforcement', 'EnforcementError'),
     'GRANTABLE_CAPABILITIES': ('hyprial.identity.impl.agents.runtime.enforcement', 'GRANTABLE_CAPABILITIES'),
     'GrantAgentCapabilityCommand': ('hyprial.identity.impl.agents.actor.ports', 'GrantAgentCapabilityCommand'),
+    'DefaultClaudeCredentialCommand': ('hyprial.identity.impl.agents.actor.ports', 'DefaultClaudeCredentialCommand'),
+    'DefaultClaudeCredentialCompleted': ('hyprial.identity.impl.agents.actor.ports', 'DefaultClaudeCredentialCompleted'),
     'GrantAgentSecretCommand': ('hyprial.identity.impl.agents.actor.ports', 'GrantAgentSecretCommand'),
     'GrantRecord': ('hyprial.identity.impl.agents.runtime.visibility', 'GrantRecord'),
     'HandoverNotice': ('hyprial.identity.impl.agents.registry._base', 'HandoverNotice'),
@@ -508,6 +513,7 @@ _FACADE_EXPORTS = {
     'install_native_credential_set': ('hyprial.identity.impl.agents.home.native_credential', 'install_native_credential_set'),
     'remove_native_credentials': ('hyprial.identity.impl.agents.home.native_credential', 'remove_native_credentials'),
     'native_secrets_root': ('hyprial.identity.impl.agents.home.native_credential', 'native_secrets_root'),
+    'prepare_legacy_claude_native_root': ('hyprial.identity.impl.agents.home.native_credential', 'prepare_legacy_claude_native_root'),
     'bootstrap_yaml': ('hyprial.identity.impl.org_directory', 'bootstrap_yaml'),
     'check_channel': ('hyprial.identity.impl.agents.runtime.enforcement', 'check_channel'),
     'check_org_context': ('hyprial.identity.impl.agents.runtime.enforcement', 'check_org_context'),
@@ -667,6 +673,8 @@ __all__ = [
     'EnforcementError',
     'GRANTABLE_CAPABILITIES',
     'GrantAgentCapabilityCommand',
+    'DefaultClaudeCredentialCommand',
+    'DefaultClaudeCredentialCompleted',
     'GrantAgentSecretCommand',
     'GrantRecord',
     'HandoverNotice',
@@ -806,6 +814,7 @@ __all__ = [
     'install_native_credential_set',
     'remove_native_credentials',
     'native_secrets_root',
+    'prepare_legacy_claude_native_root',
     'bootstrap_yaml',
     'check_channel',
     'check_org_context',

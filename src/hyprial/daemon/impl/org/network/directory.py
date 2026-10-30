@@ -308,12 +308,18 @@ class OrgFsDirectoryStore:
         return devices, pending, problems
 
     def parked_commits(self, org: str) -> list[dict[str, Any]]:
-        """Commits received for ``org``'s directory but parked behind a gap."""
-        status = self._fs.status(self._space_id(org))
+        """Commits received for ``org``'s directory but parked behind a gap.
+
+        Read the pending table directly.  ``fs.status`` also computes
+        ``unconfirmed_commits`` by scanning every committed envelope, which
+        made this pane linear in the journal's history (group-internal had
+        320k rows); parked rows are independent of that history.
+        """
+
         return [
             # Rows parked before the author column existed carry ''.
             {"author": author or "unknown", "commits": count}
-            for author, count in status.parked_commits
+            for author, count in self._fs.parked_commits(self._space_id(org))
         ]
 
     def put_device(self, org: str, device: DirectoryDevice) -> None:

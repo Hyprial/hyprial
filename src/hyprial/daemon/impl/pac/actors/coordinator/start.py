@@ -250,7 +250,12 @@ class _CoordinatorUp:
                 # Absence is meaningful in every daemon epoch. The previous
                 # epoch guard made this branch unreachable after a successful
                 # start in the current process and left the actor flag stuck.
-                self._complete_lost(graph_id, node, activation, observation)
+                if self.store.workflow_node_request_pending(graph_id, node.node_id):
+                    # #1779: the request account still owes this node a worker,
+                    # so absence is a lost worker, not a finished job.
+                    self._relaunch_accepted(graph_id, node, activation, observation)
+                else:
+                    self._complete_lost(graph_id, node, activation, observation)
             return
         if observation.present:
             self._complete_up(graph_id, node, activation, observation)
@@ -269,6 +274,60 @@ class _CoordinatorUp:
             self._launch_failed(graph_id, node, activation, error)
             return
         self._complete_up(graph_id, node, activation, observation)
+
+    def _relaunch_accepted(
+        self,
+        graph_id: str,
+        node: NodeRow,
+        activation: dict[str, Any],
+        observation: RuntimeObservation,
+    ) -> None:
+        """Re-arm one lost activation whose accepted request is still owed.
+
+        Re-arming means a fresh operation id and ``op='pending'`` so the normal
+        up-path can start the worker again; the identity marker (incarnation)
+        is kept, because the work is the same request, not a new one.  No
+        journal event is written here: ``_complete_up`` records ``actor_up``
+        once the restart actually succeeds, and the runtime projector must not
+        see a lost/failed mark for work that is still owed.
+        """
+
+        db = self.store.write()
+        try:
+            graph = self.store.graph(graph_id)
+            current = db.execute(
+                "SELECT * FROM actor_activations WHERE graph_id=? AND node_id=?",
+                (graph_id, node.node_id),
+            ).fetchone()
+            if (
+                graph is None
+                or current is None
+                or current["operation_id"] != activation["operation_id"]
+                or current["desired"] != "up"
+                or current["op"] != "done"
+            ):
+                db.rollback()
+                return
+            db.execute(
+                "UPDATE actor_activations SET op='pending',effect_id=?,operation_id=?,"
+                "daemon_epoch=?,updated_at=? WHERE graph_id=? AND node_id=?",
+                (
+                    str(uuid4()),
+                    f"pac-relaunch:{uuid4().hex}",
+                    self.daemon_epoch,
+                    int(self.clock()),
+                    graph_id,
+                    node.node_id,
+                ),
+            )
+            db.commit()
+        except BaseException:
+            db.rollback()
+            raise
+        fresh = self._activation(graph_id, node.node_id)
+        if fresh is None:
+            return
+        self._reconcile_up(graph_id, node, fresh, observation)
 
     def _complete_up(
         self,
@@ -636,6 +695,7 @@ class _CoordinatorUp:
                     "operationId": current["operation_id"], "identityMarker": None,
                     "daemonEpoch": self.daemon_epoch,
                     "error": str(error),
+                    "errorCode": getattr(error, "code", None),
                 },
             )
             db.execute(

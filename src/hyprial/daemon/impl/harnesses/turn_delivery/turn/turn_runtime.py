@@ -4,6 +4,11 @@ The concrete harness clients remain I/O adapters.  This coordinator is the
 single mutable owner of delivery ordering and terminal result publication; it
 uses only the public :mod:`hyprial.actor_runtime` surface and the frozen typed turn
 ports.
+
+Workflow-owned running turns are not steerable. A harness steer may be an
+advance mechanism (Claude interrupts the current turn), so folding a later
+message into a workflow turn would abort the node; the later message waits in
+the pending queue and runs as the next turn instead.
 """
 
 from __future__ import annotations
@@ -489,6 +494,9 @@ class _TurnShard:
         current = self._current
         if current is None or self._closing:
             self._reject(command.correlation_id, "TURN_NOT_IN_FLIGHT")
+            return
+        if current.delivery.workflow:
+            self._reject(command.correlation_id, "WORKFLOW_TURN_NOT_STEERABLE")
             return
         if current.delivery.delivery_id == command.delivery_id:
             # The delivery IS the running turn: there is nothing queued to

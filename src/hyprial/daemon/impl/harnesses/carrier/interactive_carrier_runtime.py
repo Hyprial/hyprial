@@ -26,6 +26,7 @@ FINAL_OBSERVED = "FINAL_OBSERVED"
 SETTLED = "SETTLED"
 REMOTE_SETTLED = "REMOTE_SETTLED"
 KEPT = "KEPT"
+STATUS_UNKNOWN = "STATUS_UNKNOWN"
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +96,13 @@ class CarrierKept:
 
 
 @dataclass(frozen=True, slots=True)
+class CarrierStatusUnknown:
+    generation: int
+    delivery_id: str
+    attempts: int
+
+
+@dataclass(frozen=True, slots=True)
 class CarrierRemoved:
     generation: int
     delivery_id: str
@@ -114,6 +122,7 @@ CarrierCommand = (
     | CarrierSettlementDeferred
     | CarrierSettled
     | CarrierKept
+    | CarrierStatusUnknown
     | CarrierRemoved
     | CarrierReconcileError
 )
@@ -208,6 +217,9 @@ class _CarrierShard:
         elif isinstance(command, CarrierKept):
             if self._current(command.generation, command.delivery_id) is not None:
                 self._kept(command)
+        elif isinstance(command, CarrierStatusUnknown):
+            if self._current(command.generation, command.delivery_id) is not None:
+                self._status_unknown(command)
         elif isinstance(command, CarrierRemoved):
             if self._current(command.generation, command.delivery_id) is not None:
                 self._remove(command.delivery_id)
@@ -308,6 +320,18 @@ class _CarrierShard:
         self._states.pop(command.delivery_id, None)
         with self._projection.lock:
             self._projection.rows.pop(command.delivery_id, None)
+
+    def _status_unknown(self, command: CarrierStatusUnknown) -> None:
+        state = self._states[command.delivery_id]
+        previous = state.stage
+        self._store.record_status_unknown(
+            self._actor, command.delivery_id, command.attempts
+        )
+        state.stage = STATUS_UNKNOWN
+        state.settlement_attempts = command.attempts
+        state.version += 1
+        self._publish(state)
+        self._log_transition(state, previous, STATUS_UNKNOWN)
 
     def _remove(self, delivery_id: str) -> None:
         self._store.delete(self._actor, delivery_id)
@@ -438,7 +462,7 @@ class _CarrierShard:
                     {"recoveredState": FETCHED},
                 )
                 continue
-            if stored.state not in {TURN_STARTED, FINAL_OBSERVED}:
+            if stored.state not in {TURN_STARTED, FINAL_OBSERVED, STATUS_UNKNOWN}:
                 self._log(
                     "error",
                     "worker.carrier.error",

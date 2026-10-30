@@ -414,6 +414,7 @@ class DeliveryCustodyFacade:
         after_digest: str | None = None,
         include_notices: bool = True,
         only: tuple[str, ...] | None = None,
+        mark_fetched: bool = True,
     ) -> object:
         """One frozen batch selection, admitted on the inbox actor thread."""
 
@@ -428,6 +429,7 @@ class DeliveryCustodyFacade:
                 after_digest,
                 include_notices,
                 only,
+                mark_fetched,
             ),
             BatchSnapshotCompleted,
         )

@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import time
-from typing import Any, TYPE_CHECKING
+from typing import Any
 from hyprial import __version__
 from hyprial.daemon.impl.autoupdate import SCHEDULE
 from hyprial.identity import (
@@ -28,8 +28,6 @@ from hyprial.daemon.impl.forwarding  import (
 from hyprial.daemon.impl.composition  import (
     DomainCommandError,
 )
-if TYPE_CHECKING:
-    pass
 from hyprial.daemon.impl.links.ports import (
     IPC_LINK_ADD,
     IPC_LINK_DROP,
@@ -673,10 +671,9 @@ class _IpcDispatchMixin:
                     "agent.provider.logout",
                     "agent.provider.default",
                 ):
-                    operator, _peer_pid = self._identity_binding_operator(
-                        params, trusted_message_origin=_trusted_message_origin
+                    return self._handle_agent_provider_request(
+                        method, params, trusted_message_origin=_trusted_message_origin
                     )
-                    return self._handle_agent_provider(method, params, operator=operator)
                 if method == "agent.create":
                     return self._handle_agent_create_with_default(params)
                 return self._handle_agent(method, params)

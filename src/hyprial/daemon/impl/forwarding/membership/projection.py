@@ -27,11 +27,13 @@ def candidates(status: dict[str, Any], *, master_public: str, device_id: str) ->
     return peers
 
 
-def status_for_app(app: Any) -> dict[str, Any]:
+def status_for_app(app: Any, *, timeout: float | None = None) -> dict[str, Any]:
+    """``timeout`` is the request-path bound; background callers leave it None."""
+
     supervisor = getattr(app, "_forwarding_supervisor", None)
     if supervisor is None:
         return {"readiness": {"sidecar": False, "control": False, "member": False}, "tailnets": []}
-    return supervisor.membership_request("membership-status", {})
+    return supervisor.membership_request("membership-status", {}, timeout=timeout)
 
 
 def candidates_for_app(app: Any) -> dict[str, str]:

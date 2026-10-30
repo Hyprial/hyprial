@@ -79,6 +79,8 @@ class HarnessDelivery:
     batch_cursor: str | None = None
     #: Ordered members this batch delivery claims and settles independently.
     message_ids: tuple[str, ...] = ()
+    #: Authoritative PAC classification, resolved before this delivery exists.
+    workflow: bool = False
 
     def __post_init__(self) -> None:
         if self.message_ids and self.delivery_id not in self.message_ids:

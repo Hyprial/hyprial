@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import time
 from pathlib import Path
+from collections.abc import Callable
 from typing import IO
 
 from hyprial.kernel import lock_exclusive
@@ -66,3 +67,36 @@ class DaemonStateOwnershipFence:
 
     def __exit__(self, *_error: object) -> None:
         self.close()
+
+def wait_for_state_ownership(
+    state_dir: Path,
+    *,
+    acquire: Callable[[Path], DaemonStateOwnershipFence],
+    probe_holder: Callable[[], int | None],
+    sleep: Callable[[float], None] = time.sleep,
+    log: Callable[[dict[str, object]], None] | None = None,
+    poll_seconds: float = 1.0,
+) -> DaemonStateOwnershipFence:
+    """Take ownership, waiting while a healthy daemon still owns the state.
+
+    Allen's ruling (2026-10-29): when the lock is held, the daemon blocks and
+    takes over once the holder exits instead of exiting. Exiting is what made
+    launchd's KeepAlive restart the same process 2,900 times: every attempt lost
+    the race and reported failure.
+
+    The wait is unbounded on purpose -- a hard deadline would just reinstate the
+    restart loop -- but it is only taken while ``probe_holder`` proves a healthy
+    daemon is serving. A lock held with no answering daemon stays a fast failure,
+    because that is a broken state, not a busy one.
+    """
+
+    while True:
+        try:
+            return acquire(state_dir)
+        except DaemonOwnershipBusy:
+            holder = probe_holder()
+            if holder is None:
+                raise
+            if log is not None:
+                log({"event": "waiting-for-lock", "holder_pid": holder})
+            sleep(max(0.001, poll_seconds))

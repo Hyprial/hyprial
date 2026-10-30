@@ -103,9 +103,24 @@ def create_mcp_server(
         log_level="WARNING",
     )
 
+    def refuse_stale_channel() -> None:
+        """Surface a version/schema-skewed stdio channel as a stable error.
+
+        The refusal is minted by the daemon at registration and carried back
+        by the channel; without it the old process would keep failing at the
+        MCP schema edge (for example SUMMARY_REQUIRED with no remedy).
+        """
+
+        if channel_adapter is None:
+            return
+        stale = channel_adapter.stale_error()
+        if stale is not None:
+            raise ToolError(json.dumps(stale, ensure_ascii=False, sort_keys=True))
+
     async def invoke(
         ctx: Context, method: str, params: dict[str, Any], *, mutation: bool
     ) -> dict[str, Any]:
+        refuse_stale_channel()
         try:
             return await proxy.call(
                 actor=actor,
@@ -178,6 +193,7 @@ def create_mcp_server(
         messageId: NonEmpty, summary: NonEmpty, message: NonEmpty, ctx: Context
     ) -> dict[str, Any]:
         if channel_adapter is not None:
+            refuse_stale_channel()
             return await channel_adapter.harness_reply(messageId, summary, message)
         return await invoke(
             ctx,
@@ -214,6 +230,7 @@ def create_mcp_server(
     )
     async def harness_read(ctx: Context) -> dict[str, Any]:
         if channel_adapter is not None:
+            refuse_stale_channel()
             return await channel_adapter.harness_read()
         return await invoke(ctx, "message.pending.batch", {}, mutation=False)
 
@@ -244,6 +261,7 @@ def create_mcp_server(
     )
     async def harness_ack(messageId: NonEmpty, ctx: Context) -> dict[str, Any]:
         if channel_adapter is not None:
+            refuse_stale_channel()
             return await channel_adapter.harness_ack(messageId)
         return await invoke(ctx, "message.ack", {"messageId": messageId}, mutation=True)
 

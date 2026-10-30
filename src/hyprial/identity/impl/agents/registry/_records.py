@@ -753,12 +753,14 @@ class _RegistryRecordsMixin:
         environment_names: Iterable[str],
         revision: int,
         prevalidated_home_token: str | None = None,
+        owner_actor: str | None = None,
     ) -> "SecretGrant":
         """Bind one exact entry to the current agent incarnation."""
 
         from hyprial.identity.impl.agents.runtime.secrets  import SecretGrant, SecretSource
 
         agent = self.require(actor)
+        owner = self.require(owner_actor) if owner_actor is not None else None
         grant = SecretGrant(
             actor=agent.actor,
             entity_token=agent.entity_token,
@@ -768,9 +770,14 @@ class _RegistryRecordsMixin:
             field_name=field_name,
             environment_names=tuple(environment_names),
             revision=revision,
+            owner_actor=None if owner is None else owner.actor,
+            owner_entity_token=None if owner is None else owner.entity_token,
         )
+        if owner is not None:
+            if self.home_receipt(owner.actor).entity_token != owner.entity_token:
+                raise AgentError("secret owner incarnation changed")
         validated_home_token = None
-        if grant.source is SecretSource.AGENT_PRIVATE:
+        if grant.source in {SecretSource.AGENT_PRIVATE, SecretSource.AGENT_SHARED}:
             validated_home_token = (
                 self.home_receipt(agent.actor).entity_token
                 if prevalidated_home_token is None
@@ -778,6 +785,8 @@ class _RegistryRecordsMixin:
             )
         with self._lock, self._db:
             self._db.execute("BEGIN IMMEDIATE")
+            if owner is not None and self.require(owner.actor).entity_token != owner.entity_token:
+                raise AgentError("secret owner incarnation changed")
             incumbent = self._db.execute(
                 "SELECT entity_token FROM agents WHERE actor=?", (agent.actor,)
             ).fetchone()
@@ -807,12 +816,14 @@ class _RegistryRecordsMixin:
             self._db.execute(
                 "INSERT INTO agent_secret_grants "
                 "(agent, entity_token, grant_id, source, entry_id, field_name, "
-                "environment_names, revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "environment_names, revision, owner_actor, owner_entity_token) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(agent, grant_id) DO UPDATE SET "
                 "entity_token=excluded.entity_token, source=excluded.source, "
                 "entry_id=excluded.entry_id, field_name=excluded.field_name, "
                 "environment_names=excluded.environment_names, "
-                "revision=excluded.revision",
+                "revision=excluded.revision, owner_actor=excluded.owner_actor, "
+                "owner_entity_token=excluded.owner_entity_token",
                 (
                     grant.actor,
                     grant.entity_token,
@@ -822,6 +833,8 @@ class _RegistryRecordsMixin:
                     grant.field_name,
                     json.dumps(list(grant.environment_names)),
                     grant.revision,
+                    grant.owner_actor,
+                    grant.owner_entity_token,
                 ),
             )
         return grant
@@ -855,6 +868,8 @@ class _RegistryRecordsMixin:
             ),
             environment_names=tuple(names),
             revision=int(row["revision"]),
+            owner_actor=row["owner_actor"],
+            owner_entity_token=row["owner_entity_token"],
         )
     def secret_inventory(self, actor: str | None = None) -> tuple["SecretGrant", ...]:
         """Operator metadata inventory; values and filesystem discovery excluded."""

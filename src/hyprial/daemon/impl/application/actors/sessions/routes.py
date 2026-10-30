@@ -22,9 +22,6 @@ from hyprial.identity import (
     AGENT_HEARTBEAT_TTL_SECONDS,
 )
 from hyprial.kernel import ipc_errors
-from hyprial.daemon.impl.transport import (
-    KeySpace,
-)
 from hyprial.daemon.impl.desired_state  import (
     InteractiveSession,
 )
@@ -34,6 +31,7 @@ from hyprial.daemon.impl.route_registration  import (
     RouteCommandError,
     RouteRegistrationClient,
 )
+from .route_maintenance import _SessionRouteMaintenanceMixin
 from hyprial.daemon.impl.operations.session_ports  import (
     HeartbeatSessionCommand,
     RefreshSessionCommand,
@@ -72,8 +70,7 @@ class _InteractiveRouteEffectGate:
 
 _INTERACTIVE_HEARTBEAT_TTL_SECONDS = AGENT_HEARTBEAT_TTL_SECONDS
 
-
-class _SessionRoutesMixin:
+class _SessionRoutesMixin(_SessionRouteMaintenanceMixin):
     """Application cluster mixin; the state owner is DaemonApplication."""
 
     def _ensure_session_route_coordinator(self) -> SessionRouteCoordinator:
@@ -154,7 +151,11 @@ class _SessionRoutesMixin:
             revision = current.result.binding_revision
             session = self._agent_session_domains.session.read_session(actor)
             harness = "claude" if session is None else _session_harness(session)
-            if agent is not None and revision is None:
+            if agent is not None and (revision is None or revision == 0):
+                # 0 is the "not managed" sentinel written by a pre-migration
+                # refresh (manage_agent=False), not a real binding revision.
+                # Re-observe with the Agent now present instead of feeding it
+                # to record_activity_if_binding() as a binding race.
                 current = self._call_session(
                     replace(
                         command,
@@ -163,14 +164,26 @@ class _SessionRoutesMixin:
                         ),
                         actor=actor,
                         force_bind=False,
+                        manage_agent=True,
                     )
                 )
                 continue
 
             callback_error: list[BaseException] = []
 
-            def route_and_confirm(confirm: Callable[[], None]) -> bool:
-                def commit() -> bool:
+            def route_and_confirm(confirm: Callable[[], bool]) -> bool:
+                expected_binding = (
+                    self._agent_liveness.binding(actor)
+                    if agent is not None
+                    else None
+                )
+                fence = (
+                    (lambda: self._agent_liveness.binding(actor) == expected_binding)
+                    if agent is not None
+                    else None
+                )
+
+                def route() -> bool:
                     try:
                         with self._interactive_route_lock:
                             accepted = (
@@ -189,24 +202,63 @@ class _SessionRoutesMixin:
                                 ),
                                 generation=request.epoch,
                                 version=current.version,
+                                fence=fence,
                             )
-                        confirm()
                         return True
                     except BaseException as error:
                         callback_error.append(error)
                         return False
 
                 if agent is None:
-                    return commit()
+                    return route() and confirm()
                 assert revision is not None
-                return self.agents.record_activity_if_binding(
+                # A cheap precheck rejects a binding that was taken over while
+                # this heartbeat was being observed, before any route I/O.
+                if not self.agents.record_activity_if_binding(
                     actor,
                     expected_revision=revision,
                     harness=harness,
                     runtime="interactive",
                     session_id=session_ref,
-                    on_match=commit,
-                )
+                    on_match=lambda: True,
+                ):
+                    return False
+                # Route I/O must run outside the Agent actor: otherwise one
+                # slow route blocks every other actor's liveness callback.
+                # The second binding check/confirm is the fence for the
+                # observation itself; a racing takeover retries the caller.
+                route_ok = route()
+                try:
+                    matched = self.agents.record_activity_if_binding(
+                        actor,
+                        expected_revision=revision,
+                        harness=harness,
+                        runtime="interactive",
+                        session_id=session_ref,
+                        on_match=confirm,
+                    )
+                except BaseException as error:
+                    callback_error.append(error)
+                    matched = False
+                if not matched or not route_ok:
+                    # The route was either published before the binding
+                    # changed, or its publish fence rejected it. Withdraw
+                    # exactly this session's lease; never leave a stale route
+                    # advertising a taken-over session.
+                    # Withdraw exactly this session's lease; never leave the
+                    # stale route advertising a taken-over session.
+                    try:
+                        self._close_interactive_route_effect(
+                            actor,
+                            session_ref,
+                            operation_id=f"{request.operation_id}:{kind.value}:undo",
+                            generation=request.epoch,
+                            version=current.version,
+                        )
+                    except BaseException as error:
+                        callback_error.append(error)
+                    return False
+                return True
 
             owned, matched = (
                 self._agent_session_domains.session.commit_liveness_if_owned(
@@ -564,15 +616,6 @@ class _SessionRoutesMixin:
                 ):
                     del self._interactive_route_effect_gates[actor]
 
-    def _interactive_route_needs_ensure(
-        self, actor: str, session_ref: str | None
-    ) -> bool:
-        routes = self._routes
-        if routes is None or actor == self.node_id:
-            return False
-        lease = self._interactive_route_lease(actor, session_ref)
-        return lease not in routes.owners(actor)
-
     def _ensure_interactive_route_effect(
         self,
         actor: str,
@@ -581,6 +624,7 @@ class _SessionRoutesMixin:
         operation_id: str,
         generation: int,
         version: int,
+        fence: Callable[[], bool] | None = None,
     ) -> bool:
         """Publish and receive for a CC actor distinct from this daemon node."""
 
@@ -599,6 +643,7 @@ class _SessionRoutesMixin:
             actor=actor,
             owner_lease=lease,
             ensure_spec=self._actor_route_spec(actor, advertise=canonical),
+            fence=fence,
         )
         if not canonical:
             # Admission gate, downgrade-don't-reject: a pre-canonical
@@ -826,30 +871,6 @@ class _SessionRoutesMixin:
                 version=0,
             )
 
-    def _close_other_interactive_routes_effect(
-        self,
-        actor: str,
-        session_ref: str,
-        *,
-        operation_id: str,
-        generation: int,
-        version: int,
-    ) -> None:
-        routes = self._routes
-        if routes is None:
-            return
-        current_owner = self._interactive_route_lease(actor, session_ref)
-        for index, owner in enumerate(tuple(routes.owners(actor))):
-            if owner.startswith("session:") and owner != current_owner:
-                self._settled_route_mutation(
-                    routes,
-                    operation_id=f"{operation_id}:{index}",
-                    generation=generation,
-                    version=version,
-                    actor=actor,
-                    owner_lease=owner,
-                )
-
     def _close_interactive_route_effect(
         self,
         actor: str,
@@ -900,6 +921,7 @@ class _SessionRoutesMixin:
         actor: str,
         owner_lease: str,
         ensure_spec: RouteSpec | None = None,
+        fence: Callable[[], bool] | None = None,
     ) -> Any:
         if not isinstance(routes, RouteRegistrationClient):
             if ensure_spec is not None:
@@ -918,6 +940,7 @@ class _SessionRoutesMixin:
                 version,
                 ensure_spec,
                 owner_lease,
+                fence,
             )
             if ensure_spec is not None
             else DropRouteCommand(
@@ -942,7 +965,7 @@ class _SessionRoutesMixin:
                 completed = routes.call_settled(request)
                 break
             except RouteCommandError as error:
-                if error.code == "PORT_CLOSING":
+                if error.code in {"PORT_CLOSING", "ROUTE_LEASE_STALE"}:
                     raise
                 self._log(
                     "warn",
@@ -968,16 +991,3 @@ class _SessionRoutesMixin:
                 self._interactive_route_resource_tokens[key] = token
         return completed
 
-    @staticmethod
-    def _interactive_route_lease(actor: str, session_ref: str | None) -> str:
-        return f"session:{session_ref or f'legacy:{actor}'}"
-
-    @staticmethod
-    def _actor_route_spec(actor: str, *, advertise: bool = True) -> RouteSpec:
-        keys = KeySpace()
-        return RouteSpec(
-            route_id=actor,
-            liveliness_key=keys.actor_liveliness(actor),
-            inbox_key=keys.inbox_all(actor),
-            advertise=advertise,
-        )

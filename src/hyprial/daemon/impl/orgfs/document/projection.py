@@ -119,10 +119,15 @@ class FacadeProjection:
                 space.tree.get_update(),
                 space.meta.get_update(),
                 {node_id: replace(node) for node_id, node in space.nodes.items()},
-                {
-                    doc_id: document.export()
-                    for doc_id, document in space.contents.items()
-                },
+                # The operation may mutate only its declared content document.
+                # Tree/meta operations do not mutate content CRDTs. Keep the
+                # mapping separately so rollback also preserves untouched handles.
+                (
+                    {doc_id: space.contents[doc_id].export()}
+                    if doc_id not in ("meta", space.tree_doc_id)
+                    else {}
+                ),
+                dict(space.contents),
                 dict(space.members),
                 set(space.removed_members),
             )
@@ -172,16 +177,21 @@ class FacadeProjection:
                         doc_id, mutate, author=self.author, actor=self.actor
                     )
             except Exception as exc:
-                tree_update, meta_update, nodes, contents, members, removed = rollback
+                (
+                    tree_update, meta_update, nodes, contents,
+                    content_objects, members, removed,
+                ) = rollback
                 space.tree = TreeDocument(update=tree_update)
                 restored_meta = Doc()
                 restored_meta.apply_update(meta_update)
                 space.meta = restored_meta
                 space.nodes = nodes
-                space.contents = {
-                    key: _ContentDocument(update=value)
-                    for key, value in contents.items()
-                }
+                for key, value in contents.items():
+                    restored = _ContentDocument(update=value)
+                    original = content_objects[key]
+                    original.doc = restored.doc
+                    original.text = restored.text
+                space.contents = content_objects
                 space.members = members
                 space.removed_members = removed
                 code = getattr(exc, "code", "invalid-argument")
@@ -249,7 +259,13 @@ class FacadeProjection:
             space.tree.get_update(),
             space.meta.get_update(),
             {node_id: replace(node) for node_id, node in space.nodes.items()},
-            {doc_id: document.export() for doc_id, document in space.contents.items()},
+            # Each content mutation must declare its doc ID in items. Restore
+            # can declare several; a text/structured write declares just one.
+            {
+                doc_id: space.contents[doc_id].export()
+                for doc_id in before_states
+                if doc_id not in ("meta", space.tree_doc_id)
+            },
             dict(space.contents),
             dict(space.members),
             set(space.removed_members),

@@ -6,8 +6,13 @@ import hashlib
 import json
 import os
 import time
-from typing import TYPE_CHECKING
-from hyprial.kernel import FORWARDING_COMMAND_ENV
+from typing import TYPE_CHECKING, Any
+from hyprial.kernel import AdmissionResult, FORWARDING_COMMAND_ENV, ipc_errors
+from hyprial.daemon.impl.correlation.bounded_cadence import BoundedCadence, CadenceCompleted
+from hyprial.daemon.impl.application.netendpoints.reconcile_requests import (
+    ForwardingReconcileRequests,
+    ReconcileWaiter,
+)
 from hyprial.daemon.impl.bootstrap.discovery  import (
     ForwardingEndpoints,
     merge_endpoints,
@@ -452,3 +457,111 @@ class _ForwardingOpsMixin:
             durationMs=int((time.monotonic() - started_at) * 1000),
         )
 
+
+    # -- reply-before-reconcile (0.5.5.1 hotfix, 2026-10-28) -----------------
+    #
+    # Explicit org membership operations reply once their write is durable
+    # and hand the forwarding reconcile to the ``forwarding-reconcile``
+    # cadence -- the same actor the maintenance tick drives -- instead of
+    # running it on the IPC thread.  Attribution and the per-request
+    # ``org.<op>.reconcile`` event live in ``ForwardingReconcileRequests``.
+
+    def _new_forwarding_reconcile_requests(self) -> ForwardingReconcileRequests:
+        """State-owner hook: the bookkeeping is owned here, held by the application."""
+
+        # Late-bound: the application logger may be replaced after construction.
+        return ForwardingReconcileRequests(
+            lambda level, domain, event, **fields: self._log(level, domain, event, **fields)
+        )
+
+    def _ensure_forwarding_cadence(
+        self, *, require_supervisor: bool = True
+    ) -> BoundedCadence[None] | None:
+        """Get or create THE forwarding cadence: the only reconcile owner.
+
+        Maintenance passes ``require_supervisor=False`` so its tick never
+        reconciles inline (a supervisor that appears later would otherwise
+        let an org request run a second reconcile beside it -- review of
+        0d910d1d2, P1).  Requests need a supervisor; nothing is created
+        once the daemon is stopping.
+        """
+
+        with self._forwarding_reconcile_requests.guard:
+            cadence = self._forwarding_cadence
+            stopping = getattr(self, "stop_event", None)
+            if cadence is None and not (stopping is not None and stopping.is_set()) and (
+                self._forwarding_supervisor is not None or not require_supervisor
+            ):
+                cadence = BoundedCadence(
+                    "forwarding-reconcile",
+                    lambda _observed_at_ms: self._reconcile_forwarding_endpoints(),
+                    self._on_forwarding_tick_completed,
+                )
+                self._forwarding_cadence = cadence
+            return cadence
+
+    def _on_forwarding_tick_completed(
+        self, completion: CadenceCompleted[None]
+    ) -> None:
+        if completion.error is not None:
+            self._log(
+                "error", "daemon", "forwarding.reconcile_failed",
+                errorType=completion.error,
+                detail=completion.detail or completion.error,
+                durationMs=completion.duration_ms,
+            )
+        self._forwarding_reconcile_requests.settle(completion)
+
+    def _request_forwarding_reconcile(
+        self, reason: str, *, waiter: ReconcileWaiter | None = None, **fields: Any
+    ) -> bool:
+        """Schedule one reconcile for an explicit operation; never blocks the reply.
+
+        Returns False (and logs) when no supervisor exists to reconcile with.
+        An overloaded or closing cadence keeps the request recorded: the
+        maintenance tick resubmits within about a second and settles it.
+        """
+
+        cadence = (
+            self._ensure_forwarding_cadence()
+            if self._forwarding_supervisor is not None
+            else None
+        )
+        if cadence is None:
+            self._log("warn", "org", "org.reconcile.unscheduled", reason=reason, **fields)
+            return False
+        observed_at_ms = self._forwarding_reconcile_requests.record(
+            reason, waiter=waiter, **fields
+        )
+        admission = cadence.submit(observed_at_ms)
+        if admission is not AdmissionResult.ACCEPTED:
+            self._log(
+                "warn", "daemon", "forwarding.reconcile_request_deferred",
+                reason=reason, admission=admission.value,
+            )
+        return True
+
+    def _await_forwarding_reconcile(
+        self, reason: str, *, timeout: float, **fields: Any
+    ) -> None:
+        """Request a reconcile and wait (bounded) for a run that started after it.
+
+        For steps that need the redial done before they continue (join /
+        execute ``connect-inviter`` / ``connect-members``).  The run happens on
+        the cadence, never on the caller's thread, so it cannot overlap another
+        reconcile.  No supervisor: nothing to redial (logged as unscheduled).
+        """
+
+        waiter = ReconcileWaiter()
+        if not self._request_forwarding_reconcile(reason, waiter=waiter, **fields):
+            return
+        if not waiter.done.wait(timeout):
+            raise ForwardingSidecarError(
+                f"forwarding reconcile for {reason} did not complete within {timeout:g}s",
+                code=ipc_errors.FORWARDING_RECONCILE_TIMEOUT,
+            )
+        if not waiter.ok:
+            raise ForwardingSidecarError(
+                f"forwarding reconcile for {reason} failed: {waiter.detail}",
+                code=waiter.code or ipc_errors.FORWARDING_RECONCILE_FAILED,
+            )

@@ -19,13 +19,22 @@ from hyprial.daemon.impl.pac.actors.coordinator import (
     RuntimeObservation,
     throttle_cleanup_retries,
 )
+from hyprial.daemon.impl.pac.actors.clocks import (
+    PAC_CLOCK_BATCH as _PAC_CLOCK_BATCH,
+    PAC_CLOCK_QUEUE_JOBS as _PAC_CLOCK_QUEUE_JOBS,
+    run_clock_worker,
+)
 from hyprial.daemon.impl.pac.actors.marker import pac_worker_marker
-from hyprial.daemon.impl.pac.graphs.reactor import NotificationSender, PacReactor
+from hyprial.daemon.impl.pac.graphs.reactor import NotificationSender
 from hyprial.daemon.impl.pac.storage.store import PacGraphStore, default_database_path
 
 
 class GraphClockAuthority(Protocol):
     def clock_tick(self, graph_id: str) -> dict[str, Any]: ...
+
+    def clock_tick_many(self, graph_ids: Any, **kwargs: Any) -> dict[str, Any]: ...
+
+
 
 
 #: One actor reconcile slower than this gets its own log line.  Close->reclaim
@@ -335,7 +344,9 @@ class PacActorService:
         self._actor_queue: queue.Queue[tuple[str, str] | None] = queue.Queue(
             maxsize=128
         )
-        self._clock_queue: queue.Queue[str | None] = queue.Queue(maxsize=128)
+        self._clock_queue: queue.Queue[list[str] | None] = queue.Queue(
+            maxsize=max(1, _PAC_CLOCK_QUEUE_JOBS // _PAC_CLOCK_BATCH)
+        )
         # Cadence admission is deliberately independent of graph I/O. A
         # single pending scan coalesces ticks while the database is slow.
         self._scan_queue: queue.Queue[bool | None] = queue.Queue(maxsize=1)
@@ -536,17 +547,11 @@ class PacActorService:
         running_due = force_actors or now >= self._actor_running_due
         store = PacGraphStore(self.database, read_only=True)
         try:
-            graphs = list(
-                store._db.execute(
-                    "SELECT graph_id, activated_at, closed_at "
-                    "FROM graphs ORDER BY graph_id"
-                )
-            )
-            clock_jobs = [
-                str(graph["graph_id"])
-                for graph in graphs
-                if graph["activated_at"] is not None and graph["closed_at"] is None
-            ]
+            # The clock-job set is pushed down to SQL: the predicate is the
+            # same four cells as before, but the query no longer fetches the
+            # whole graph history to filter it in Python.  Closed-graph
+            # cleanup has its own query and does not arrive here.
+            _clock_rows, clock_jobs = store.tick_clock_jobs()
             # Read-only compatibility for the pinned schema-15 candidate.
             # Schema 16 cleanup intents become authoritative after dev sync.
             has_cleanup_intents = (
@@ -684,26 +689,33 @@ class PacActorService:
                 self._clock_scan_offset % len(clock_jobs) if clock_jobs else 0
             )
             rotated_clocks = clock_jobs[clock_offset:] + clock_jobs[:clock_offset]
-            for clock_index, graph_id in enumerate(rotated_clocks):
-                if graph_id in self._active_clocks:
-                    continue
+            pending = [
+                graph_id
+                for graph_id in rotated_clocks
+                if graph_id not in self._active_clocks
+            ]
+            for start in range(0, len(pending), _PAC_CLOCK_BATCH):
+                batch = pending[start:start + _PAC_CLOCK_BATCH]
                 try:
-                    self._clock_queue.put_nowait(graph_id)
+                    self._clock_queue.put_nowait(batch)
                 except queue.Full:
-                    self._clock_scan_offset = (clock_offset + clock_index) % len(
-                        clock_jobs
-                    )
+                    self._clock_scan_offset = (
+                        clock_offset + start
+                    ) % len(clock_jobs)
                     warnings.append(
                         (
                             "pac.clock.queue_full",
                             {
-                                "graphId": graph_id,
-                                "capacity": self._clock_queue.maxsize,
+                                "graphId": batch[0],
+                                "batchSize": len(batch),
+                                # capacity stays expressed in clock jobs: the
+                                # queue admits batches, the policy is about jobs
+                                "capacity": _PAC_CLOCK_QUEUE_JOBS,
                             },
                         )
                     )
                     break
-                self._active_clocks.add(graph_id)
+                self._active_clocks.update(batch)
             if actor_due or running_due:
                 self._admit_actor_sweep(open_actor_jobs, closed_actor_jobs, warnings)
 
@@ -816,43 +828,9 @@ class PacActorService:
             self._actor_queue_saturated = True
 
     def _clock_worker(self) -> None:
-        while True:
-            graph_id = self._clock_queue.get()
-            if graph_id is None:
-                return
-            if self._closed:
-                # close() has begun: drop the remaining backlog instead of
-                # draining it.  Queued ticks are a replayable view of the
-                # graphs table -- the next service instance's submit_tick
-                # re-derives every clock job, and tick side effects are
-                # SQL-idempotent across restarts -- so discarding them here
-                # loses nothing, while draining them would tie close()
-                # latency to the backlog size.
-                return
-            try:
-                if self._graph_authority is not None:
-                    self._graph_authority.clock_tick(graph_id)
-                else:
-                    store = PacGraphStore(self.database)
-                    try:
-                        PacReactor(
-                            store, sender=self.sender, logger=self.logger,
-                            publisher=self._hook_publisher,
-                        ).tick_clocks(graph_id)
-                    finally:
-                        store.close()
-            except Exception as error:  # noqa: BLE001 - isolate one graph from the service
-                self.logger(
-                    "error",
-                    "pac",
-                    "pac.clock.tick_failed",
-                    graphId=graph_id,
-                    errorType=type(error).__name__,
-                    detail=str(error)[:500],
-                )
-            finally:
-                with self._lock:
-                    self._active_clocks.discard(graph_id)
+        """Thread target; the drain loop lives in ``actors.clocks``."""
+
+        run_clock_worker(self)
 
     def _actor_worker(self) -> None:
         while True:

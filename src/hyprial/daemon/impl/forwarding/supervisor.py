@@ -411,12 +411,17 @@ class ForwardingSidecarSupervisor:
             raise ForwardingSidecarError("forwarding sidecar is not running")
         return backend.controller.peer_key(address)
 
-    def membership_request(self, op: str, params: Mapping[str, Any]) -> dict[str, Any]:
+    def membership_request(
+        self, op: str, params: Mapping[str, Any], *, timeout: float | None = None
+    ) -> dict[str, Any]:
+        """``timeout`` bounds the wait (IPC request paths); None keeps the
+        background allowance (policy.MEMBERSHIP_WAIT_SECONDS)."""
+
         backend = self.endpoints()
         if backend is None:
             raise ForwardingSidecarError("forwarding sidecar is not running", code="AUTHORITY_UNREACHABLE")
         try:
-            result = backend.controller.membership_request(op, params)
+            result = backend.controller.membership_request(op, params, timeout=timeout)
         except ForwardingSidecarError as error:
             self.last_membership_observation = {'code': error.code, 'observedAtMs': int(time.time() * 1000)}
             raise

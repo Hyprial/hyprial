@@ -29,6 +29,7 @@ from hyprial.daemon.impl.api import (
 )
 
 from hyprial.kernel import ProcessLiveness, ProcessLivenessState
+from hyprial.kernel import ipc_errors
 from hyprial.kernel import HarnessLaunchSpec
 from hyprial.kernel import Logger
 
@@ -766,7 +767,7 @@ class PythonWorkerTurnAdapter(ConcurrentTurnProcess):
                 node="script-worker",
                 kind=self.kind,
                 stage="protocol",
-                code="HARNESS_START_FAILED" if startup_failure else "HARNESS_TRANSIENT_FAILURE",
+                code=ipc_errors.HARNESS_START_FAILED if startup_failure else ipc_errors.HARNESS_TRANSIENT_FAILURE,
                 retryable=not startup_failure,
                 errorType="ProtocolError",
                 message=detail[:500],

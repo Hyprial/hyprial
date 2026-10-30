@@ -805,6 +805,9 @@ class _RestoreMixin:
             return
         self._restore_done.set()
         self._log("info", "daemon", "daemon.ready", nodeId=self.node_id)
+        from hyprial.daemon.impl.application.start_backoff import reset_start_failures
+
+        reset_start_failures(self.state_dir)
         self._start_maintenance_scheduler()
 
     def _restore_provider_auth(self) -> None:

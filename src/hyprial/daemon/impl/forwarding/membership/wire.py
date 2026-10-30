@@ -1,4 +1,10 @@
-"""Correlated stdio v6 membership commands; control timeout is 30 seconds."""
+"""Correlated stdio v6 membership commands; the Go exchange timeout is 30 seconds.
+
+The wire awaits a reply for 31 seconds (just past the Go exchange); an IPC
+request path may pass a shorter ``timeout``.  A reply that arrives after the
+wait is buffered by the shared response demultiplexer and aged out, never
+misattributed.
+"""
 from __future__ import annotations
 
 import json
@@ -7,7 +13,11 @@ import uuid
 from collections.abc import Mapping
 from typing import Any
 
+from hyprial.kernel import ipc_errors
+
 from ..policy import FORWARD_PROTOCOL_VERSION, ForwardingSidecarError
+
+WIRE_MEMBERSHIP_WAIT_SECONDS = 31.0
 
 OPERATIONS = frozenset({
     "membership-init", "roster-fetch", "member-announce", "member-revoke",
@@ -36,7 +46,9 @@ class MembershipWireMixin:
             raise ForwardingSidecarError('Invalid v6 startup readiness/correlation.', code='SIDECAR_PROTOCOL_MISMATCH')
         self.readiness = dict(readiness)
 
-    def membership_request(self, op: str, params: Mapping[str, Any]) -> dict[str, Any]:
+    def membership_request(
+        self, op: str, params: Mapping[str, Any], *, timeout: float | None = None
+    ) -> dict[str, Any]:
         if op not in OPERATIONS or not isinstance(params, Mapping):
             raise ForwardingSidecarError("Invalid membership command.", code="BAD_REQUEST")
         request_id = uuid.uuid4().hex
@@ -44,12 +56,22 @@ class MembershipWireMixin:
                    "requestId": request_id, "params": dict(params)}
         if len(json.dumps(request).encode()) > 1024 * 1024:
             raise ForwardingSidecarError("Membership frame is too large.", code="MEMBERSHIP_LIMIT_EXCEEDED")
+        wait = WIRE_MEMBERSHIP_WAIT_SECONDS if timeout is None else min(float(timeout), WIRE_MEMBERSHIP_WAIT_SECONDS)
         with self._write_lock:
             self._send(request)
-        event = self._await_response(
-            lambda candidate: candidate.get("requestId") == request_id,
-            deadline=time.monotonic() + 31.0,
-        )
+        deadline = time.monotonic() + wait
+        try:
+            event = self._await_response(
+                lambda candidate: candidate.get("requestId") == request_id,
+                deadline=deadline,
+            )
+        except ForwardingSidecarError as error:
+            if error.code == "FORWARD_PROTOCOL" and time.monotonic() >= deadline:
+                raise ForwardingSidecarError(
+                    f"Tailnet membership command {op} timed out after {wait:g}s.",
+                    code=ipc_errors.MEMBERSHIP_SIDECAR_TIMEOUT,
+                ) from error
+            raise
         if event.get("op") != op:
             raise ForwardingSidecarError("Membership response operation mismatch.", code="BAD_REQUEST")
         if event.get("event") == "error":

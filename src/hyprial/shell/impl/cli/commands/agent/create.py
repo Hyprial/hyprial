@@ -62,11 +62,12 @@ def agent_create(
     to another harness, start it there; that rebinds the same agent rather
     than creating a new one, so it is not a name conflict.
 
-    Credentials: when a machine default is recorded ('hyprial agent provider
-    login <p> --default'), the new agent is seeded from this host's login of
-    that vendor CLI (owned by the daemon's logged-in user; revoke with 'hyprial
-    agent provider logout'). Otherwise the result and stderr say how to give it
-    one: that OAuth seed, or an API key via 'hyprial agent secret grant'.
+    Credentials: a captured Claude default ('agent provider login claude
+    --actor OWNER --setup-token --default') grants its token to new agents with
+    --preferred-harness claude. A captured native default copies the named
+    owner's login instead. PAC and lifecycle creation use the same policy.
+    Legacy provider-name defaults still seed from host login in this CLI only;
+    re-run provider login --default --actor OWNER to bind a Claude source for PAC.
     """
     services = get_services()
 

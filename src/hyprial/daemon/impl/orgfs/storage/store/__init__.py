@@ -197,6 +197,11 @@ class LocalSpaceStore(StoreMembership, StoreJournal, StoreAdmission, StoreSnapsh
                 manifest_json TEXT NOT NULL,
                 PRIMARY KEY (doc_id, snapshot_id)
             );
+            CREATE TABLE IF NOT EXISTS doc_checkpoints (
+                doc_id TEXT PRIMARY KEY,
+                rowid INTEGER NOT NULL,
+                version BLOB NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS purge_plans (
                 plan_id TEXT PRIMARY KEY,
                 plan_json TEXT NOT NULL,
@@ -429,19 +434,42 @@ class LocalSpaceStore(StoreMembership, StoreJournal, StoreAdmission, StoreSnapsh
 
 
     def _replay_journal(self) -> None:
-        rows = self._db.execute(
-            "SELECT envelope_bytes FROM commits ORDER BY rowid"
-        ).fetchall()
-        for row in rows:
-            envelope = self._decode_envelope(bytes(row[0]))
-            update = self._update_bytes(envelope)
-            doc = self._doc(envelope["docId"])
-            try:
-                doc.apply_update(update)
-            except (ValueError, TypeError) as exc:
-                raise StoreError(
-                    "invalid-argument", "journal update cannot be applied"
-                ) from exc
+        known = set(self._docs)
+        known.update(
+            str(row[0])
+            for row in self._db.execute("SELECT DISTINCT doc_id FROM commits")
+        )
+        for doc_id in ("meta", *sorted(known - {"meta"})):
+            after = 0
+            checkpoint = self._db.execute(
+                "SELECT rowid, version FROM doc_checkpoints WHERE doc_id = ?",
+                (doc_id,),
+            ).fetchone()
+            doc = self._doc(doc_id)
+            max_rowid = self._db.execute(
+                "SELECT COALESCE(MAX(rowid), 0) FROM commits WHERE doc_id = ?",
+                (doc_id,),
+            ).fetchone()[0]
+            if (
+                checkpoint is not None
+                and int(checkpoint["rowid"]) <= int(max_rowid)
+                and bytes(checkpoint["version"]) == doc.get_state()
+            ):
+                after = int(checkpoint["rowid"])
+            rows = self._db.execute(
+                "SELECT envelope_bytes FROM commits "
+                "WHERE doc_id = ? AND rowid > ? ORDER BY rowid",
+                (doc_id, after),
+            ).fetchall()
+            for row in rows:
+                envelope = self._decode_envelope(bytes(row[0]))
+                update = self._update_bytes(envelope)
+                try:
+                    doc.apply_update(update)
+                except (ValueError, TypeError) as exc:
+                    raise StoreError(
+                        "invalid-argument", "journal update cannot be applied"
+                    ) from exc
         self._persist_all_documents()
 
 
@@ -496,19 +524,29 @@ class LocalSpaceStore(StoreMembership, StoreJournal, StoreAdmission, StoreSnapsh
             path.parent.mkdir(parents=True, exist_ok=True)
             if doc_id.startswith("doc-"):
                 self._write_document_file(path, doc_id, doc.get_update())
-                continue
-            descriptor, temporary_name = tempfile.mkstemp(
-                prefix=".orgfs-doc-", dir=path.parent
+            else:
+                descriptor, temporary_name = tempfile.mkstemp(
+                    prefix=".orgfs-doc-", dir=path.parent
+                )
+                temporary = Path(temporary_name)
+                try:
+                    with os.fdopen(descriptor, "wb") as stream:
+                        stream.write(doc.get_update())
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    os.replace(temporary, path)
+                finally:
+                    temporary.unlink(missing_ok=True)
+            row = self._db.execute(
+                "SELECT COALESCE(MAX(rowid), 0) AS rowid FROM commits WHERE doc_id = ?",
+                (doc_id,),
+            ).fetchone()
+            self._db.execute(
+                "INSERT OR REPLACE INTO doc_checkpoints(doc_id, rowid, version) "
+                "VALUES (?, ?, ?)",
+                (doc_id, int(row["rowid"]), doc.get_state()),
             )
-            temporary = Path(temporary_name)
-            try:
-                with os.fdopen(descriptor, "wb") as stream:
-                    stream.write(doc.get_update())
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                os.replace(temporary, path)
-            finally:
-                temporary.unlink(missing_ok=True)
+        self._db.commit()
 
 
     def _doc(self, doc_id: str) -> Doc:

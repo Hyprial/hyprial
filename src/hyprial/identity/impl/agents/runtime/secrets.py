@@ -116,6 +116,7 @@ class SecretSource(str, Enum):
 
     USER_PROVIDER = "user-provider"
     AGENT_PRIVATE = "agent-private"
+    AGENT_SHARED = "agent-shared"
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,8 +151,15 @@ class SecretGrant:
     field_name: str | None
     environment_names: tuple[str, ...]
     revision: int
+    owner_actor: str | None = None
+    owner_entity_token: str | None = None
 
     def __post_init__(self) -> None:
+        if self.source is SecretSource.AGENT_SHARED:
+            if not self.owner_actor or not self.owner_entity_token:
+                raise ValueError("shared secret grants require an owner incarnation")
+        elif self.owner_actor is not None or self.owner_entity_token is not None:
+            raise ValueError("only shared secret grants can name an owner")
         for value, label in (
             (self.actor, "actor"),
             (self.entity_token, "entity_token"),
@@ -271,6 +279,13 @@ class SecretResolver:
             raise SecretResolutionError("grant-stale", grant.entry_id, "authorize")
         if grant.entity_token != entity_token:
             raise SecretResolutionError("grant-stale", grant.entry_id, "authorize")
+        if grant.source is SecretSource.AGENT_SHARED:
+            from hyprial.identity.impl.agents.secret_store.defaults import read_shared_value
+
+            receipt = self.registry.home_receipt(actor)
+            if receipt.entity_token != grant.entity_token:
+                raise SecretResolutionError("grant-stale", grant.entry_id, "home")
+            return ResolvedSecret(grant, read_shared_value(self.registry, grant))
         path = self._entry_path(actor, grant)
         try:
             if grant.source is SecretSource.AGENT_PRIVATE:

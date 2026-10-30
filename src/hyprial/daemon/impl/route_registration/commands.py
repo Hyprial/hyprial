@@ -87,6 +87,7 @@ class _NativeEnsure:
     spec: RouteSpec
     owner_lease: str
     lease_token: str
+    fence: Callable[[], bool] | None = None
 
 
 @dataclass(frozen=True, slots=True)

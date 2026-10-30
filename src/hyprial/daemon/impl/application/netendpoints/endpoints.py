@@ -117,6 +117,7 @@ def compose_daemon_worker_launch(
         channel=channel,
         environ=environ,
         agent_name=spec.name,
+        harness=spec.harness,
         worker_proxy=launch_worker_proxy_route(hyprial_home, spec),
     )
 

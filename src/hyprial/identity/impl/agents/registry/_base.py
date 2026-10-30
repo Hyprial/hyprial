@@ -755,6 +755,9 @@ def _connect(database: Path) -> sqlite3.Connection:
             "FOREIGN KEY (agent, entity_token) REFERENCES agents(actor, entity_token) "
             "ON DELETE CASCADE)"
         )
+        from hyprial.identity.impl.agents.secret_store.defaults import initialize_shared_grants
+
+        initialize_shared_grants(connection)
         connection.execute(
             "CREATE TABLE IF NOT EXISTS agent_capability_grants ("
             "actor TEXT NOT NULL, entity_token TEXT NOT NULL, grant_id TEXT NOT NULL, "

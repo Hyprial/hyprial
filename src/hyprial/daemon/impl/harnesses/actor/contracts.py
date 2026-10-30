@@ -314,6 +314,7 @@ class _DeliveryReservation:
     harness_id: str
     process_generation: int
     claim_token: str | None = None
+    message_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

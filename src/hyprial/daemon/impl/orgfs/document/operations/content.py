@@ -601,6 +601,19 @@ class FacadeContent:
         )
 
 
+    @_facade_locked
+    def parked_commits(self, space_id: str) -> tuple[tuple[str, int], ...]:
+        """Read only the pending table; never scan committed history."""
+
+        self._space(space_id)
+        store = self._store(space_id)
+        return (
+            tuple(store.parked_commits())
+            if store is not None and hasattr(store, "parked_commits")
+            else ()
+        )
+
+
     def export_tree_update(self, space_id: str, state: bytes | None = None) -> bytes:
         return self._space(space_id).tree.get_update(state)
 

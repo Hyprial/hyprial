@@ -152,7 +152,10 @@ def _command(
     spec = step.spec
     if step.domain == "agent":
         if operation == "create":
-            return CreateAgentCommand(correlation, spec.agent_name, reuse_existing=True)
+            return CreateAgentCommand(
+                correlation, spec.agent_name, reuse_existing=True,
+                launch_harness=spec.harness.harness,
+            )
         if operation == "destroy":
             return DestroyAgentCommand(correlation, spec.agent_name)
         if operation == "bind":

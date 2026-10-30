@@ -25,7 +25,9 @@ from hyprial.identity.impl.agents.actor.ports import CreateTransferHostedAgentCo
 from hyprial.identity.impl.agents.actor.ports import DestroyAgentCommand
 from hyprial.kernel import EffectCompleted
 from hyprial.identity.impl.agents.actor.ports import GrantAgentCapabilityCommand
-from hyprial.identity.impl.agents.actor.ports import GrantAgentSecretCommand
+from hyprial.identity.impl.agents.actor.ports import (
+    GrantAgentSecretCommand, DefaultClaudeCredentialCommand, DefaultClaudeCredentialCompleted,
+)
 from hyprial.identity.impl.agents.home.effects import VerifyLandingPayload
 from hyprial.identity.impl.agents.home.effects import MaterialiseLandingHome
 from hyprial.identity.impl.agents.migration.actor import MigrationOwnerCall
@@ -191,6 +193,7 @@ class _GenerationDispatchMixin:
                 GrantAgentCapabilityCommand,
                 RevokeAgentCapabilityCommand,
                 GrantAgentSecretCommand,
+                DefaultClaudeCredentialCommand,
                 RevokeAgentSecretCommand,
             ),
         ):
@@ -415,6 +418,19 @@ class _GenerationDispatchMixin:
                     command.correlation_id, self.generation, version,
                     "revoke", changed,
                 ))
+            elif isinstance(command, DefaultClaudeCredentialCommand):
+                if command.clear:
+                    self.registry.clear_default_claude_credential()
+                elif command.owner_actor is not None:
+                    self.registry.set_default_claude_credential(
+                        command.owner_actor, command.entry_id,
+                        prevalidated_owner_token=command.owner_entity_token,
+                        kind=command.kind,
+                    )
+                self._publish(DefaultClaudeCredentialCompleted(
+                    command.correlation_id, self.generation, self.version.bump(),
+                    self.registry.default_claude_credential(),
+                ))
             elif isinstance(command, GrantAgentSecretCommand):
                 grant = self.registry.grant_secret(
                     command.actor, grant_id=command.grant_id,
@@ -423,6 +439,7 @@ class _GenerationDispatchMixin:
                     environment_names=command.environment_names,
                     revision=command.revision,
                     prevalidated_home_token=command.prevalidated_home_token,
+                    owner_actor=command.owner_actor,
                 )
                 self._publish(AgentSecretGrantCompleted(
                     command.correlation_id, self.generation, self.version.bump(),

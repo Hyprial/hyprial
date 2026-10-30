@@ -16,7 +16,7 @@ from hyprial.kernel import (
     ipc_errors,
 )
 
-from .policy import ForwardingSidecarError
+from .policy import ForwardingSidecarError, membership_wait_seconds
 from .services import (
     ServiceControlError,
     _MapServiceSidecar,
@@ -158,7 +158,9 @@ class ForwardingControllerAuthority:
                 "forwarding sidecar does not support service connect",
             )
 
-    def _call(self, command: object, *, service: bool = False) -> object | None:
+    def _call(
+        self, command: object, *, service: bool = False, timeout: float | None = None
+    ) -> object | None:
         operation_id = command.operation_id  # type: ignore[attr-defined]
         reply = _SidecarReply()
         with self._guard:
@@ -182,9 +184,20 @@ class ForwardingControllerAuthority:
                     f"forwarding sidecar I/O admission {admitted.value}"
                 )
         wait_timeout = min(self._timeout, SERVICE_CONTROL_TIMEOUT_SECONDS) if service else self._timeout
-        if isinstance(command, _MembershipSidecar):
-            wait_timeout = max(wait_timeout, 35.0)
+        membership = isinstance(command, _MembershipSidecar)
+        if membership:
+            # Background callers keep the 35s allowance; an IPC request path
+            # passes its own bound (policy.REQUEST_MEMBERSHIP_WAIT_SECONDS).
+            wait_timeout = membership_wait_seconds(wait_timeout, timeout)
         if not reply.ready.wait(wait_timeout):
+            if membership:
+                # The serial owner still finishes (or times out) the command
+                # behind this reply; the caller gets a stable code, not a hang.
+                raise ForwardingSidecarError(
+                    f"Tailnet membership command {command.op} timed out after "  # type: ignore[attr-defined]
+                    f"{wait_timeout:g}s.",
+                    code=ipc_errors.MEMBERSHIP_SIDECAR_TIMEOUT,
+                )
             raise TimeoutError(
                 f"forwarding sidecar command {operation_id} remains accepted"
             )
@@ -277,8 +290,12 @@ class ForwardingControllerAuthority:
         assert isinstance(result, dict)
         return result
 
-    def membership_request(self, op: str, params: Mapping[str, Any]) -> dict[str, Any]:
-        result = self._call(_MembershipSidecar(uuid.uuid4().hex, op, dict(params)))
+    def membership_request(
+        self, op: str, params: Mapping[str, Any], *, timeout: float | None = None
+    ) -> dict[str, Any]:
+        result = self._call(
+            _MembershipSidecar(uuid.uuid4().hex, op, dict(params)), timeout=timeout
+        )
         assert isinstance(result, dict)
         return result
 

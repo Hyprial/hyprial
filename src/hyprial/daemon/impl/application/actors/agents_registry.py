@@ -514,6 +514,7 @@ class _AgentsRegistryMixin:
             return None
         from hyprial.identity import runtime_capabilities
         from hyprial.daemon.impl.harnesses.capabilities import declare
+        from hyprial.daemon.impl.pac.actors.marker import retain_managed_creation
 
         agent = self.agents.get(name)
         same_harness = agent is not None and (
@@ -547,7 +548,7 @@ class _AgentsRegistryMixin:
             agent = self.agents.create(
                 name,
                 cwd=cwd,
-                capabilities=facts,
+                capabilities={**facts, "creationOrigin": "managed-launch"},
                 provider=facts["provider"],
                 model=facts["model"],
                 harness_args={harness: args} if args else None,
@@ -565,7 +566,9 @@ class _AgentsRegistryMixin:
             self._publish_agent_restore_allow(agent)
             return agent
         changes: dict[str, Any] = {
-            "capabilities": {**agent.capabilities, **facts},
+            "capabilities": retain_managed_creation(
+                agent.actor, {**agent.capabilities, **facts}, self.desired_state.load().harnesses
+            ),
             "provider": facts["provider"],
             "model": facts["model"],
         }

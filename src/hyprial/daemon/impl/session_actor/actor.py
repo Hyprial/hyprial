@@ -520,26 +520,41 @@ class SessionActor:
         self,
         actor: str,
         session_ref: str,
-        effect: Callable[[Callable[[], None]], bool],
+        effect: Callable[[Callable[[], bool]], bool],
     ) -> tuple[bool, bool]:
         """Fence heartbeat effects by current session ownership.
 
         ``effect`` receives a confirmation callback. Callers invoke it inside
-        the Agent binding fence after route effects have succeeded.
+        the Agent binding fence after route effects have succeeded.  The
+        callback revalidates ownership/version because the effect runs outside
+        the projection lock; a false confirmation makes the caller retry its
+        binding instead of publishing a stale liveness observation.
         """
 
-        def while_owned() -> bool:
-            def confirm() -> None:
-                self._runtime_projection.register(
-                    actor,
-                    session_ref,
-                    self._clock_ms(),
-                    confirmed=True,
+        def while_owned(version: int) -> bool:
+            def confirm() -> bool:
+                if not self._session_projection.still_owned(
+                    actor, session_ref, version
+                ):
+                    return False
+
+                def register() -> None:
+                    self._runtime_projection.register(
+                        actor,
+                        session_ref,
+                        self._clock_ms(),
+                        confirmed=True,
+                    )
+
+                return self._session_projection.confirm_if_owned(
+                    actor, session_ref, version, register
                 )
 
             return effect(confirm)
 
-        return self._session_projection.if_owned(actor, session_ref, while_owned)
+        return self._session_projection.if_owned(
+            actor, session_ref, while_owned
+        )
 
     def read_runtime(self, actor: str) -> SessionRuntimeProjection | None:
         sessions, _version = self._session_projection.read()

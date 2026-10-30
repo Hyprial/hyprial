@@ -77,6 +77,10 @@ IPC_TIMEOUT = "IPC_TIMEOUT"
 # membership line above -- a code another process branches on is protocol.
 DAEMON_DISCONNECTED = "DAEMON_DISCONNECTED"
 DAEMON_START_FAILED = "DAEMON_START_FAILED"
+# A harness start was accepted by the lifecycle manager but the harness
+# refused or died during its own start precondition.  Distinct from a daemon
+# start failure: the CLI command failed, the daemon itself is healthy.
+HARNESS_START_FAILED = "HARNESS_START_FAILED"
 DAEMON_START_TIMEOUT = "DAEMON_START_TIMEOUT"
 # Minted by the daemon into its startup log; the CLI parses the JSON and
 # branches on it to explain a refused start (docs/reference/proto.md §3.7 exemplar).
@@ -184,6 +188,10 @@ INVALID_SESSION_SOURCE = "INVALID_SESSION_SOURCE"
 INVALID_CHANNEL_LEASE = "INVALID_CHANNEL_LEASE"
 CHANNEL_LIVENESS_UNAVAILABLE = "CHANNEL_LIVENESS_UNAVAILABLE"
 STALE_DAEMON_GENERATION = "STALE_DAEMON_GENERATION"
+# The stdio MCP channel process was started from a different hyprial build/schema
+# than the daemon it talks to.  Reported instead of a generic tool failure so the
+# operator gets a restart instruction rather than guessing at SUMMARY_REQUIRED.
+MCP_CHANNEL_STALE = "MCP_CHANNEL_STALE"
 
 # -- agents / adapters ---------------------------------------------------
 AGENT_EXISTS = "AGENT_EXISTS"
@@ -233,6 +241,16 @@ SERVICE_SIDECAR_UNSUPPORTED = "SERVICE_SIDECAR_UNSUPPORTED"
 SERVICE_REGISTRY_INVALID = "SERVICE_REGISTRY_INVALID"
 SERVICE_DEVICE_UNAVAILABLE = "SERVICE_DEVICE_UNAVAILABLE"
 SERVICE_NOT_AUTHORIZED = "SERVICE_NOT_AUTHORIZED"
+# Minted by the forwarding sidecar I/O owner when a membership command issued
+# from an IPC request path (org invite/join/network) outlives its bound; the
+# CLI surfaces it as the reply code instead of an uncoded DAEMON_ERROR after
+# the roundtrip budget (0.5.5.1 hotfix, 2026-10-28).
+MEMBERSHIP_SIDECAR_TIMEOUT = "MEMBERSHIP_SIDECAR_TIMEOUT"
+# A join/execute bootstrap step waits (bounded by the request path) for the
+# forwarding reconcile it requested; the cadence did not finish one in time,
+# or the run it waited on failed without a code of its own.
+FORWARDING_RECONCILE_TIMEOUT = "FORWARDING_RECONCILE_TIMEOUT"
+FORWARDING_RECONCILE_FAILED = "FORWARDING_RECONCILE_FAILED"
 ROUTINE_UNAVAILABLE = "ROUTINE_UNAVAILABLE"
 ROUTINE_NAME_IMMUTABLE = "ROUTINE_NAME_IMMUTABLE"
 ROUTINE_BINDING_IMMUTABLE = "ROUTINE_BINDING_IMMUTABLE"
@@ -245,6 +263,7 @@ AUTOUPDATE_NOTIFICATION_UNAVAILABLE = "AUTOUPDATE_NOTIFICATION_UNAVAILABLE"
 ORG_SOURCE_UNREACHABLE = "ORG_SOURCE_UNREACHABLE"
 ORG_SPACE_NOT_JOINED = "ORG_SPACE_NOT_JOINED"
 ORGFS_CONTENT_PENDING = "content-pending"
+ORGFS_INVALID_SPACE_DIRECTORY = "ORGFS_INVALID_SPACE_DIRECTORY"
 ORGFS_INVALID_URI = "invalid-uri"
 ORGFS_CROSS_SPACE_URI = "cross-space-uri"
 # Every external ACL-space mutation is refused at the shared orgfs.* bridge;

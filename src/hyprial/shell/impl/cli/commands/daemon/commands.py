@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+import time
+from typing import Any
 from hyprial.shell.impl.cli.commands.common.services import get_services
 
 from hyprial.kernel import ipc_errors
@@ -94,6 +97,83 @@ def daemon_start(
     services._execute(operation, json_output=json_output)
 
 
+def _acquire_daemon_fence(
+    services: Any,
+    state_dir: Any,
+    *,
+    timeout: float,
+    sleep: Callable[[float], None] | None = None,
+    log: Callable[[dict[str, object]], None] | None = None,
+    json_output: bool = False,
+):
+    """Take the daemon lock, waiting while a healthy daemon holds it.
+
+    The bounded first attempt keeps the shutdown-overlap behaviour the daemon
+    start path already relies on. After that, Allen's ruling (2026-10-29):
+    block while a serving daemon answers and take over when it exits, instead of
+    exiting -- exiting is what made launchd's KeepAlive restart the same losing
+    process 2,900 times. The wait is observable: every poll reports
+    `waiting-for-lock` with the holder pid.
+    """
+
+    from hyprial.daemon import (
+        DaemonOwnershipBusy,
+        DaemonStateOwnershipFence,
+        wait_for_state_ownership,
+    )
+
+    try:
+        return DaemonStateOwnershipFence.acquire(state_dir, timeout=timeout)
+    except DaemonOwnershipBusy:
+        pass
+
+    def _holder() -> int | None:
+        try:
+            value = services._daemon_probe(timeout=0.5)
+        except Exception:  # noqa: BLE001 - no answer means "not healthy"
+            return None
+        daemon = value.get("daemon") if isinstance(value, dict) else None
+        source = daemon if isinstance(daemon, dict) else value
+        pid = source.get("pid") if isinstance(source, dict) else None
+        return pid if type(pid) is int and pid > 0 else None
+
+    report = log or (
+        lambda event: _report_lock_wait(event, json_output=json_output)
+    )
+    try:
+        return wait_for_state_ownership(
+            state_dir,
+            acquire=lambda path: DaemonStateOwnershipFence.acquire(path, timeout=0.0),
+            probe_holder=_holder,
+            sleep=sleep or time.sleep,
+            log=report,
+        )
+    except DaemonOwnershipBusy as error:
+        raise services.CliError(error.code, str(error)) from error
+
+
+def _report_lock_wait(event: dict[str, object], *, json_output: bool) -> None:
+    """Report a wait through the CLI output channel, on stderr only.
+
+    Production runs the supervised daemon as ``daemon run --json``, where stdout
+    is reserved for the single result object; ``progress`` writes one NDJSON
+    event per line under ``--json`` and the human sentence otherwise, and keeps
+    every write inside the output module (a direct ``sys.stderr.write`` here is
+    an output-discipline violation).
+    """
+
+    if event.get("event") != "waiting-for-lock":
+        return
+    from hyprial.shell.impl.cli.output import progress
+
+    progress(
+        "daemon.lock.waiting",
+        f"daemon.lock busy: waiting for lock (holder_pid={event.get('holder_pid')})",
+        json_output=json_output,
+        holderPid=event.get("holder_pid"),
+    )
+
+
 @daemon_app.command("run")
 def daemon_run(
     json_output: bool = typer.Option(False, "--json", help="Emit JSON after shutdown."),
@@ -107,11 +187,6 @@ def daemon_run(
         services.require_initialized_hyprial_home()
         from hyprial.daemon import DaemonApplication
         from hyprial.daemon import application_lock_wait_timeout as _lock_wait_timeout
-        from hyprial.daemon import (
-            DaemonOwnershipBusy,
-            DaemonStateOwnershipFence,
-        )
-
         from hyprial.identity import IdentityTransactionLock
 
         state_dir = services._state_dir()
@@ -122,12 +197,12 @@ def daemon_run(
         except IdentityTransactionBusy as error:
             raise services.CliError(error.code, str(error)) from error
         with transaction:
-            try:
-                fence = DaemonStateOwnershipFence.acquire(
-                    state_dir, timeout=_lock_wait_timeout()
-                )
-            except DaemonOwnershipBusy as error:
-                raise services.CliError(error.code, str(error)) from error
+            fence = _acquire_daemon_fence(
+                services,
+                state_dir,
+                timeout=_lock_wait_timeout(),
+                json_output=json_output,
+            )
             with fence:
                 from hyprial.shell.impl.daemon_wiring import daemon_dependencies, usage_factory
 

@@ -76,13 +76,9 @@ BASE_CHILD_ENVIRONMENT_NAMES = frozenset(
         "XDG_CACHE_HOME",
         "XDG_DATA_HOME",
         "XDG_STATE_HOME",
-        # Harness config roots: the same rule as HOME/XDG above.  The
-        # unconfigured P1 mode preserves the daemon's values; a P2
-        # composition strips every P2_CONTROLLED name from base and supplies
-        # the agent's own native root.  Only GENERATED before, these were
-        # silently dropped by the P1b B2 whitelist: from 2026-09-20 the
-        # nightly's claude workers ignored its CLAUDE_CONFIG_DIR=~/.claude-ci
-        # and ran on ~/.claude (E2E-006 claude.fresh-session-id BLOCKED).
+        # P1 preserves Codex/Pi selectors; Claude composition replaces its
+        # selector with the agent's own native root. P2 strips all controlled
+        # roots from base and supplies its resolved agent profile.
         "CLAUDE_CONFIG_DIR",
         "CODEX_HOME",
         "PI_CODING_AGENT_DIR",
@@ -288,6 +284,8 @@ class ChildEnvironmentLaunch:
     agent_home_profile_applied: bool = field(
         default=False, repr=False, compare=False
     )
+    # Durable creation provenance, not an inference from the actor's name.
+    managed_creation: bool = False
 
 
 #: The per-scheme proxy names a catch-all proxy may stand in for.
@@ -416,6 +414,7 @@ def compose_worker_child_launch(
     environ: Mapping[str, str],
     agent_name: str,
     worker_proxy: "WorkerProxyRoute | None" = None,
+    harness: str | None = None,
 ) -> ChildEnvironmentLaunch:
     """The daemon-side composition of one worker's complete environment (B1).
 
@@ -473,6 +472,15 @@ def compose_worker_child_launch(
         )
         and not (worker_proxy is not None and name in _ROUTED_PROXY_NAMES)
     }
+    if (runtime_context is None
+            and (harness or registry.require(agent_name).preferred_harness) == "claude"):
+        from hyprial.identity.impl.agents.home.native_credential import prepare_legacy_claude_native_root
+
+        # Never inherit an ambient selector, even when no native login exists.
+        base.pop("CLAUDE_CONFIG_DIR", None)
+        if "HYPRIAL_AGENT_DIR" in generated:
+            native, _ = prepare_legacy_claude_native_root(Path(generated["HYPRIAL_AGENT_DIR"]))
+            generated["CLAUDE_CONFIG_DIR"] = str(native)
     if (
         GIT_ONE_SHOT_TRIPLE.intersection(environ) == GIT_ONE_SHOT_TRIPLE
         and git_one_shot_is_valid(environ)
@@ -502,6 +510,10 @@ def compose_worker_child_launch(
     return ChildEnvironmentLaunch(
         environment=complete,
         actor=channel.actor,
+        managed_creation=(
+            registry.require(agent_name).capabilities.get("creationOrigin")
+            == "managed-launch"
+        ),
         grants=tuple(
             (secret.grant.grant_id, secret.grant.revision)
             for secret in resolved

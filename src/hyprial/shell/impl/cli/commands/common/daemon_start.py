@@ -42,6 +42,10 @@ _SAFE_DAEMON_STARTUP_EVENTS = frozenset(
         # filter admits exactly these names: level alone never admits an
         # event, so the set stays closed.
         "daemon.start.failed",
+        # A service-managed daemon that failed to start waits before exiting
+        # so launchd/systemd cannot hot-loop it; the event names that wait
+        # (attempt, backoffMs) next to the failure it follows.
+        "daemon.start.backoff",
         # One persisted interactive session can conflict with an already-live
         # connector during actor-runtime recovery.  The daemon stays ready,
         # while this event names the isolated agent and the refusal reason.

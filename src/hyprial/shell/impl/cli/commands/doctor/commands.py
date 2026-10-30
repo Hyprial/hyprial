@@ -19,6 +19,7 @@ from hyprial.shell.impl.cli.commands.doctor.dsh_tui import (
 from hyprial.shell.impl.cli.commands.doctor.route_session import (
     _route_session_doctor_check,
 )
+from hyprial.shell.impl.cli.commands.doctor.checks.start_failures import start_failures_doctor_checks
 from hyprial.shell.impl.cli.commands.doctor.zenoh import _zenoh_doctor_check
 from hyprial.shell.impl.cli.commands.doctor.upgrade_steps import _upgrade_steps_doctor_check
 
@@ -141,6 +142,7 @@ def _doctor_result(*, fix: bool = False) -> JsonObject:
     # and the on-disk device key/record are host facts, not IPC facts.
     checks.append(_tailcat_sidecar_doctor_check())
     checks.append(_device_key_doctor_check())
+    checks.extend(start_failures_doctor_checks(services._state_dir()))
     from .checks.names import name_collision_check
     collision = name_collision_check()
     if collision is not None:
@@ -778,40 +780,33 @@ def _mcp_channel_doctor_check(result: JsonObject) -> JsonObject | None:
     if not isinstance(raw_sessions, list):
         return None
     channels = [
-        item
-        for item in raw_sessions
+        item for item in raw_sessions
         if isinstance(item, dict)
-        and (
-            item.get("source") == "claude-channel"
-            or item.get("runtime") == "claude_interactive"
-        )
+        and (item.get("source") == "claude-channel"
+             or item.get("runtime") == "claude_interactive")
     ]
     if not channels:
         return None
     generations = [
         channel_generation(
             build_version=item.get("channelBuildVersion"),
-            protocol_version=item.get("channelProtocolVersion"),
-        )
+            protocol_version=item.get("channelProtocolVersion"))
         for item in channels
     ]
     legacy = generations.count("legacy_or_unknown")
     unfenced = sum(item.get("ownerFence") is not True for item in channels)
     confirmed = sum(
         item.get("channelCurrentThisGeneration") is True
-        and isinstance(item.get("channelCurrentEpoch"), str)
-        for item in channels
-    )
+        and isinstance(item.get("channelCurrentEpoch"), str) for item in channels)
     confirmed_current = sum(
         generation == "current"
         and item.get("channelCurrentThisGeneration") is True
         and isinstance(item.get("channelCurrentEpoch"), str)
-        for item, generation in zip(channels, generations, strict=True)
-    )
+        for item, generation in zip(channels, generations, strict=True))
     alive = sum(item.get("channelAlive") is True for item in channels)
+    build_stale = sum(item.get("channelBuildStale") is True for item in channels)
     recently_observed = sum(
-        item.get("channelRecentlyObserved") is True for item in channels
-    )
+        item.get("channelRecentlyObserved") is True for item in channels)
     metrics: JsonObject = {
         "total": len(channels),
         "current": confirmed_current,
@@ -822,8 +817,9 @@ def _mcp_channel_doctor_check(result: JsonObject) -> JsonObject | None:
         "protocolVersion": CHANNEL_PROTOCOL_VERSION,
         "recentlyObserved": recently_observed,
         "alive": alive,
+        **({"buildStale": build_stale} if build_stale else {}),
     }
-    if legacy or unfenced or confirmed != len(channels) or alive != len(channels):
+    if legacy or unfenced or build_stale or confirmed != len(channels) or alive != len(channels):
         return {
             "name": "mcp-channel-generation",
             "status": "warn",
@@ -832,6 +828,13 @@ def _mcp_channel_doctor_check(result: JsonObject) -> JsonObject | None:
                 "legacy/unknown Channel code, lack the stable owner fence, or "
                 "have not completed a ref-guarded refresh and recent "
                 "operational-liveness observation for this daemon generation"
+                + (
+                    f"; {build_stale} channel(s) were started from a different "
+                    "hyprial build and are stale: restart the Claude session "
+                    "so the stdio channel reloads the current tool schema"
+                    if build_stale
+                    else ""
+                )
             ),
             "action": {
                 "command": "hyprial agent start claude --name <name> [--resume <session-id>]",

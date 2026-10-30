@@ -30,8 +30,10 @@ from hyprial.daemon.impl.transfer.execution.container import (
 from hyprial.daemon.impl.harnesses.codex.process  import PROCESS_FORCE_JOIN_SECONDS, _OwnedProcessGroup
 from hyprial.daemon.impl.harnesses.claude.runtime  import (
     CLAUDE_RUNTIME_ENVIRONMENT,
+    ClaudeRuntimeError,
     prepare_claude_runtime_context,
     validate_claude_auth_environment,
+    validate_legacy_claude_auth,
 )
 from hyprial.daemon.impl.harnesses.protocol.common  import summarize_stderr
 from hyprial.daemon.impl.harnesses.model_provider  import claude_provider_environment
@@ -46,6 +48,7 @@ from hyprial.daemon.impl.harnesses.streaming.process  import (
     StreamingTurnProcess,
     )
 from hyprial.daemon.impl.harnesses.worker_channel  import WorkerChannel
+from .readiness import observe_readiness
 
 # The turn-client seam predates the shared pump under these names; retain
 # them so existing composition and tests keep one import path.
@@ -150,11 +153,27 @@ def _validated_claude_launch_environment(
         base_environment,
         allow_legacy_home_fallback=runtime_context is None,
     )
-    if runtime_context is not None:
-        validate_claude_auth_environment(
-            runtime_context.roots.native_root,
-            {**base_environment, **provider_environment},
-        )
+    source = "missing"
+    try:
+        combined = {**base_environment, **provider_environment}
+        if runtime_context is not None:
+            validate_claude_auth_environment(runtime_context.roots.native_root, combined)
+            source = "env-grant" if any(combined.get(name) for name in (
+                "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
+            )) else "agent-native"
+        elif complete_launch is not None:
+            source = validate_legacy_claude_auth(combined)
+            base_environment["CLAUDE_CONFIG_DIR"] = combined["CLAUDE_CONFIG_DIR"]
+    except ClaudeRuntimeError:
+        source = "missing"
+        raise
+    finally:
+        if worker_channel is not None and complete_launch is not None:
+            Logger.worker(worker_channel.state_dir, runtime="claude", name=spec.name).info(
+                "worker.claude.credential_source", credentialSource=source,
+                actor=complete_launch.actor,
+                runtimeMode="p2" if runtime_context is not None else "legacy",
+            )
     return runtime_context, base_environment, provider_environment
 
 
@@ -468,10 +487,14 @@ class IsolatedAgentSdkClient:
             if os.name == "nt":
                 if not is_windows_owned_process_group(self._process_group):
                     raise ConnectionError("Windows SDK requires a Job-owned launch")
-                self._process = await self._process_group.spawn(self.command, **options)
+                self._process = await observe_readiness(
+                    self._process_group.spawn(self.command, **options),
+                    logger=self._logger, stage="worker-spawn",
+                )
             else:
-                self._process = await asyncio.create_subprocess_exec(
-                    *self.command, start_new_session=True, **options
+                self._process = await observe_readiness(
+                    asyncio.create_subprocess_exec(*self.command, start_new_session=True, **options),
+                    logger=self._logger, stage="worker-spawn",
                 )
         if self._process_group is not None:
             # Publishing ownership can raise if the group is already stopping or
@@ -495,7 +518,10 @@ class IsolatedAgentSdkClient:
         self._stderr_task = asyncio.create_task(self._drain_stderr())
         self._exit_task = asyncio.create_task(self._watch_process_exit())
         try:
-            ready = await self._read_message(timeout=self._startup_timeout_seconds)
+            ready = await observe_readiness(
+                self._read_message(timeout=self._startup_timeout_seconds),
+                logger=self._logger, stage="sdk-ready",
+            )
             if ready.get("type") != "ready":
                 raise ConnectionError(f"Agent SDK worker failed to start: {ready!r}")
             session_id = ready.get("sessionId")

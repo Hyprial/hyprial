@@ -22,6 +22,11 @@ from pathlib import Path
 from typing import Literal, Protocol
 from xml.sax.saxutils import escape as xml_escape
 
+from hyprial.daemon.impl.configuration.launchd_jobs import (
+    argv_runs_daemon as _argv_runs_daemon,
+    read_launchd_plist as _read_launchd_plist,
+    text_program_argv_runs_daemon as _text_program_argv_runs_daemon,
+)
 from hyprial.kernel import current_uid
 
 LAUNCHD_LABEL = "com.hyprial.hyprial.daemon"
@@ -210,35 +215,96 @@ class ServiceManager:
             )
         return self.service_home / ".config" / "systemd" / "user" / "hyprial.service"
 
+    def _launchd_jobs(self) -> list[tuple[str, Path]]:
+        """LaunchAgents jobs that run THIS install's daemon, not just our label.
+
+        Production ran an operator-written job named ``com.hyprial.daemon``
+        (``bash -lc "ulimit -n 65536; exec .../hyprial daemon run --json"``)
+        while our own label was never loaded, so keying the supervisor identity
+        to the label made every restart spawn an unsupervised daemon.
+
+        The identity is the parsed argv, matched exactly: the executable resolves
+        to this install's executable and the subcommand is exactly ``daemon run``.
+        A ``bash -lc`` wrapper is unwrapped first (the wrapper exists to raise the
+        descriptor limit, not to run another program). Substring matching would
+        claim ``<exe>-other-install``, ``daemon status run``, or any plist that
+        merely mentions the path in metadata.
+        """
+
+        if self.platform != "launchd":
+            return []
+        canonical = self.unit_path
+        jobs: list[tuple[str, Path]] = []
+        if canonical.is_file():
+            jobs.append((LAUNCHD_LABEL, canonical))
+        try:
+            candidates = sorted(canonical.parent.glob("*.plist"))
+        except OSError:
+            candidates = []
+        executable = Path(str(self.config.executable.resolve()))
+        for path in candidates:
+            if path == canonical:
+                continue
+            parsed = _read_launchd_plist(path)
+            if parsed is None:
+                continue
+            label, argv, program = parsed
+            if not _argv_runs_daemon(argv, executable, program):
+                continue
+            jobs.append((label or path.stem, path))
+        return jobs
+
+    def _launchd_loaded_status(
+        self, label: str, path: Path, result: subprocess.CompletedProcess[str]
+    ) -> ServiceStatus:
+        match = re.search(r"\bpid\s*=\s*(\d+)", result.stdout)
+        pid = int(match.group(1)) if match else None
+        runs_match = re.search(r"\bruns\s*=\s*(\d+)", result.stdout)
+        exit_match = re.search(r"\blast exit code\s*=\s*(-?\d+)", result.stdout)
+        running = bool(
+            re.search(r"\bstate\s*=\s*running\b", result.stdout)
+            or (pid is not None and pid > 0)
+        )
+        return ServiceStatus(
+            "launchd",
+            label,
+            path,
+            path.is_file(),
+            True,
+            running,
+            pid,
+            relaunch_count=int(runs_match.group(1)) if runs_match else None,
+            last_exit_code=int(exit_match.group(1)) if exit_match else None,
+        )
+
     def status(self, *, deadline: float | None = None) -> ServiceStatus:
         installed = self.unit_path.is_file()
         if self.platform == "launchd":
+            jobs = self._launchd_jobs()
+            for label, path in jobs:
+                target = f"gui/{self.uid}/{label}"
+                result = self._invoke(("launchctl", "print", target), deadline=deadline)
+                if result.returncode != 0:
+                    if not self._reports_not_loaded(result, label=label):
+                        self._raise_command(("launchctl", "print", target), result)
+                    continue
+                return self._launchd_loaded_status(label, path, result)
+            if jobs:
+                # Files exist but none of them is loaded: report the job we
+                # found (installed, not loaded) instead of the canonical label,
+                # so callers can name the supervisor that owns the state.
+                label, path = jobs[0]
+                return ServiceStatus("launchd", label, path, True, False, False)
+            # No attributable job file at all: keep the canonical "not loaded"
+            # answer so install() can decide what to do.
             target = f"gui/{self.uid}/{LAUNCHD_LABEL}"
             result = self._invoke(("launchctl", "print", target), deadline=deadline)
-            if result.returncode != 0:
-                if not self._reports_not_loaded(result):
-                    self._raise_command(("launchctl", "print", target), result)
-                return ServiceStatus(
-                    "launchd", LAUNCHD_LABEL, self.unit_path, installed, False, False
-                )
-            match = re.search(r"\bpid\s*=\s*(\d+)", result.stdout)
-            pid = int(match.group(1)) if match else None
-            runs_match = re.search(r"\bruns\s*=\s*(\d+)", result.stdout)
-            exit_match = re.search(r"\blast exit code\s*=\s*(-?\d+)", result.stdout)
-            running = bool(
-                re.search(r"\bstate\s*=\s*running\b", result.stdout)
-                or (pid is not None and pid > 0)
-            )
+            if result.returncode != 0 and not self._reports_not_loaded(result):
+                self._raise_command(("launchctl", "print", target), result)
+            if result.returncode == 0:
+                return self._launchd_loaded_status(LAUNCHD_LABEL, self.unit_path, result)
             return ServiceStatus(
-                "launchd",
-                LAUNCHD_LABEL,
-                self.unit_path,
-                installed,
-                True,
-                running,
-                pid,
-                relaunch_count=int(runs_match.group(1)) if runs_match else None,
-                last_exit_code=int(exit_match.group(1)) if exit_match else None,
+                "launchd", LAUNCHD_LABEL, self.unit_path, installed, False, False
             )
         result = self._invoke(
             (
@@ -320,11 +386,15 @@ class ServiceManager:
         """Combine supervisor, ownership, template, and serving-process facts."""
 
         base = self.status(deadline=deadline)
-        existing = self._existing_text()
-        ownership_reason = self._ownership_reason(existing, loaded=base.loaded)
+        # The loaded job decides which file describes the supervisor: a job the
+        # operator named differently still runs OUR daemon (see _launchd_jobs).
+        existing = self._existing_text_at(base.unit_path)
+        ownership_reason = self._ownership_reason(
+            existing, loaded=base.loaded, path=base.unit_path
+        )
         attributed = (
             existing is not None
-            and self._is_attributed(existing)
+            and self._is_attributed(existing, label=base.unit)
             and ownership_reason is None
         )
         expected = self._rendered()
@@ -386,7 +456,7 @@ class ServiceManager:
                     "launchctl",
                     "kickstart",
                     "-k",
-                    f"gui/{self.uid}/{LAUNCHD_LABEL}",
+                    f"gui/{self.uid}/{before.unit}",
                 ),
                 deadline=deadline,
             )
@@ -590,14 +660,21 @@ class ServiceManager:
         )
 
     def _existing_text(self) -> str | None:
+        return self._existing_text_at(self.unit_path)
+
+    @staticmethod
+    def _existing_text_at(path: Path) -> str | None:
         try:
-            return self.unit_path.read_text(encoding="utf-8")
-        except FileNotFoundError:
+            return path.read_text(encoding="utf-8")
+        except OSError:
             return None
 
-    def _ownership_reason(self, text: str | None, *, loaded: bool) -> str | None:
+    def _ownership_reason(
+        self, text: str | None, *, loaded: bool, path: Path | None = None
+    ) -> str | None:
+        unit_path = self.unit_path if path is None else path
         try:
-            directory_stat = self.unit_path.parent.stat()
+            directory_stat = unit_path.parent.stat()
         except FileNotFoundError:
             return "supervisor-file-missing" if loaded else None
         if directory_stat.st_uid != os.getuid():
@@ -607,7 +684,7 @@ class ServiceManager:
         if text is None:
             return "supervisor-file-missing" if loaded else None
         try:
-            unit_stat = self.unit_path.stat()
+            unit_stat = unit_path.stat()
         except FileNotFoundError:
             return "supervisor-file-missing" if loaded else None
         if unit_stat.st_uid != os.getuid():
@@ -617,12 +694,15 @@ class ServiceManager:
         return None
 
     def _reports_not_loaded(
-        self, result: subprocess.CompletedProcess[str]
+        self,
+        result: subprocess.CompletedProcess[str],
+        *,
+        label: str | None = None,
     ) -> bool:
         if self.platform == "launchd":
             expected = (
-                f'Could not find service "{LAUNCHD_LABEL}" in domain for user '
-                f"gui: {self.uid}"
+                f'Could not find service "{label or LAUNCHD_LABEL}" in domain '
+                f"for user gui: {self.uid}"
             )
             return result.returncode == 113 and expected in result.stderr.splitlines()
         return (
@@ -630,16 +710,19 @@ class ServiceManager:
             and result.stderr.strip() == "Unit hyprial.service could not be found."
         )
 
-    def _is_attributed(self, text: str) -> bool:
+    def _is_attributed(self, text: str, *, label: str | None = None) -> bool:
         executable = str(self.config.executable.resolve())
         if self.platform == "launchd":
-            return (
-                f"<string>{LAUNCHD_LABEL}</string>" in text
-                and f"<string>{ServiceTemplates._escape_xml(executable)}</string>"
-                in text
-                and "<string>daemon</string>" in text
-                and "<string>run</string>" in text
+            # Attribution is about WHAT the job runs. A job the operator named
+            # differently but pointed at our executable is still our supervisor;
+            # requiring our own label here is what pushed production into an
+            # unsupervised spawn while launchd idled.
+            label_ok = label in (None, LAUNCHD_LABEL) or (
+                f"<string>{label}</string>" in text
             )
+            if not label_ok:
+                return False
+            return _text_program_argv_runs_daemon(text, Path(executable))
         quoted = ServiceTemplates._quote_systemd(executable)
         return (
             f"ExecStart={quoted} daemon run" in text

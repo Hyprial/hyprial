@@ -221,14 +221,14 @@ class _AgentRegistryOpsMixin:
                 source = SecretSource(source_raw)
                 home_token = (
                     self._agent_session_domains.agent.prevalidate_home(actor).entity_token
-                    if source is SecretSource.AGENT_PRIVATE else None
+                    if source in {SecretSource.AGENT_PRIVATE, SecretSource.AGENT_SHARED} else None
                 )
                 generation = self._agent_session_domains.agent.generation
                 event = self._agent_session_domains.call_agent(
                     GrantAgentSecretCommand(
                         f"{_AGENT_OPERATION_NAMESPACE}:secret-grant:{uuid4().hex}", actor, grant_id,
                         source, entry_id, field_name, tuple(raw_names), revision,
-                        home_token,
+                        home_token, _optional_string_param(params.get("ownerActor"), "ownerActor"),
                     ),
                     AgentSecretGrantCompleted,
                 )
@@ -251,6 +251,8 @@ class _AgentRegistryOpsMixin:
                     "fieldName": grant.field_name,
                     "environmentNames": list(grant.environment_names),
                     "revision": grant.revision,
+                    "ownerActor": grant.owner_actor,
+                    "ownerEntityToken": grant.owner_entity_token,
                 },
             }
         if method == "agent.secret.list":
@@ -269,6 +271,8 @@ class _AgentRegistryOpsMixin:
                         "fieldName": grant.field_name,
                         "environmentNames": list(grant.environment_names),
                         "revision": grant.revision,
+                        "ownerActor": grant.owner_actor,
+                        "ownerEntityToken": grant.owner_entity_token,
                     }
                     for grant in grants
                 ],

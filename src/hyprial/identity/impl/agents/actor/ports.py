@@ -74,7 +74,10 @@ class CreateAgentCommand:
         return _thaw_json(self.config)
 
     def capabilities_payload(self) -> dict[str, object]:
-        return {key: _thaw_json(value) for key, value in self.capabilities}
+        facts = {key: _thaw_json(value) for key, value in self.capabilities}
+        if self.launch_harness is not None:
+            facts["creationOrigin"] = "managed-launch"
+        return facts
 
 
 @dataclass(frozen=True, slots=True)
@@ -347,6 +350,25 @@ class GrantAgentSecretCommand:
     environment_names: tuple[str, ...]
     revision: int
     prevalidated_home_token: str | None = None
+    owner_actor: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DefaultClaudeCredentialCommand:
+    correlation_id: str
+    owner_actor: str | None = None
+    entry_id: str | None = None
+    owner_entity_token: str | None = None
+    clear: bool = False
+    kind: str = "setup-token"
+
+
+@dataclass(frozen=True, slots=True)
+class DefaultClaudeCredentialCompleted:
+    correlation_id: str
+    generation: str
+    version: int
+    reference: dict[str, str] | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -387,6 +409,7 @@ AgentCommand: TypeAlias = (
     | GrantAgentCapabilityCommand
     | RevokeAgentCapabilityCommand
     | GrantAgentSecretCommand
+    | DefaultClaudeCredentialCommand
     | RevokeAgentSecretCommand
 )
 
@@ -644,6 +667,7 @@ AgentEvent: TypeAlias = (
     | AgentLifecycleReceiptCompleted
     | AgentCapabilityGrantCompleted
     | AgentSecretGrantCompleted
+    | DefaultClaudeCredentialCompleted
     | AgentRuntimeLaunchLeaseCompleted
     | AgentDestroyReservationCompleted
     | AgentDestroySettled

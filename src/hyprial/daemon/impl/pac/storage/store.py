@@ -397,6 +397,45 @@ class PacGraphStore:
             "SELECT graph_id FROM graphs ORDER BY graph_id"
         )]
 
+    def workflow_node_request_pending(self, graph_id: str, actor_node: str) -> bool:
+        """Is an accepted workflow request still owed to this actor? (#1779)
+
+        The PAC request account is the judgement, not the inbox: a workflow
+        node that is still ``requested`` with a recorded requestId has work the
+        harness has not finished, so a restarted daemon owes it a worker.  A
+        node that reached done/failed/cancelled/blocked owes nothing -- which
+        is what keeps the terminal-lost contract for restarts intact.
+        """
+
+        row = self._db.execute(
+            "SELECT 1 FROM workflow_nodes WHERE graph_id=? AND actor_node=? "
+            "AND state='requested' AND request_id IS NOT NULL AND request_id<>'' "
+            "LIMIT 1",
+            (graph_id, actor_node),
+        ).fetchone()
+        return row is not None
+
+    def tick_clock_jobs(self) -> tuple[list[dict[str, Any]], list[str]]:
+        """Return the graphs whose clocks the tick must consider, in SQL.
+
+        Closed-graph cleanup runs its own query and never arrives through the
+        clock jobs, so the set is exactly "activated and not yet closed".  The
+        predicate belongs in SQL: the caller used to fetch every historical
+        graph and filter in Python, which grows with the whole history rather
+        than with the open set.  ``graph_ids()`` keeps the unfiltered listing
+        that the routine source needs.
+        """
+
+        rows = [
+            dict(row)
+            for row in self._db.execute(
+                "SELECT graph_id FROM graphs "
+                "WHERE activated_at IS NOT NULL AND closed_at IS NULL "
+                "ORDER BY graph_id"
+            )
+        ]
+        return rows, [str(row["graph_id"]) for row in rows]
+
     def nodes(self, graph_id: str) -> list[NodeRow]:
         return [
             NodeRow(

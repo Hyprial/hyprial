@@ -125,6 +125,11 @@ def _redact_text(value: str) -> str:
 def redact(value: Any, *, key: str | None = None) -> Any:
     """Recursively remove credentials and URL-shaped values from log data."""
 
+    # Closed diagnostic vocabulary, not an exemption for arbitrary credential data.
+    if key == "credentialSource" and isinstance(value, str) and value in {
+        "env-grant", "agent-native", "missing", "ambient",
+    }:
+        return value
     if key is not None and _SENSITIVE_KEY.search(key):
         return "[REDACTED]"
     if isinstance(value, str):

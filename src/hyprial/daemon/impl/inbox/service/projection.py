@@ -602,6 +602,7 @@ class InboxServiceProjectionMixin:
         bounds: BatchBounds,
         deferred: tuple[BatchMember, ...] = (),
         predecessor_digest: str | None = None,
+        mark_fetched: bool = True,
     ) -> BatchSelection:
         """Admit inbox candidates once, then freeze members and deferred."""
 
@@ -644,7 +645,8 @@ class InboxServiceProjectionMixin:
                 continue
             seen_deferred.add(key)
             merged.append(member)
-        self._batch_stamp(admitted, notice_rows, now)
+        if mark_fetched:
+            self._batch_stamp(admitted, notice_rows, now)
         return BatchSelection(
             recipient, bounds, tuple(rows), tuple(merged), predecessor_digest
         )
@@ -718,6 +720,7 @@ class InboxServiceProjectionMixin:
         after_digest: str | None = None,
         include_notices: bool = True,
         only: tuple[str, ...] | None = None,
+        mark_fetched: bool = True,
     ) -> BatchSelection:
         """Select exactly one frozen batch; a read, never a settlement.
 
@@ -770,7 +773,8 @@ class InboxServiceProjectionMixin:
                 rows.append(self._batch_row(member.source, message, member.ordinal))
             admitted = tuple(r.message for r in rows if r.source == SOURCE_INBOX)
             noticed = tuple(r.message for r in rows if r.source == SOURCE_NOTICE)
-            self._batch_stamp(admitted, noticed, now)
+            if mark_fetched:
+                self._batch_stamp(admitted, noticed, now)
             return BatchSelection(
                 recipient, cursor.bounds, tuple(rows), cursor.deferred,
                 cursor.predecessor_digest,
@@ -785,6 +789,7 @@ class InboxServiceProjectionMixin:
                     keep(self._batch_live_notices(keys)) if include_notices else ()
                 ),
                 bounds=bounds,
+                mark_fetched=mark_fetched,
             )
         deferred_keys = {
             (m.source, m.message_id, m.ordinal) for m in after.deferred
@@ -823,6 +828,7 @@ class InboxServiceProjectionMixin:
             notice_rows=notice_candidates,
             bounds=bounds,
             predecessor_digest=after_digest,
+            mark_fetched=mark_fetched,
         )
 
     def _clear_nonterminal_failures(

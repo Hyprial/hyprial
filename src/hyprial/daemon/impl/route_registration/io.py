@@ -487,7 +487,7 @@ class RouteRegistrationIo(_RouteReceiptMixin):
                 return
             lease_token = request.expected_resource_token or uuid.uuid4().hex
             self._submit_native(
-                _NativeEnsure(token, spec.route_id, spec, owner_lease, lease_token)
+                _NativeEnsure(token, spec.route_id, spec, owner_lease, lease_token, command.fence)
             )
         except Exception as error:
             self._fail_owned(token, "ensure", spec.route_id, error)
@@ -613,6 +613,12 @@ class RouteRegistrationIo(_RouteReceiptMixin):
     def _execute_native(self, work: NativeRouteEffect) -> _NativeRouteCompleted:
         if isinstance(work, _NativeEnsure):
             liveliness: Registration | None = None
+            if work.fence is not None and not work.fence():
+                return _NativeRouteCompleted(
+                    work.token,
+                    work.route_id,
+                    error="RouteLeaseStale: binding changed before publish",
+                )
             try:
                 if self._registration_factory is not None:
                     liveliness, queryable = self._registration_factory(work.spec)
@@ -849,7 +855,11 @@ class RouteRegistrationIo(_RouteReceiptMixin):
                 (
                     "ROUTE_PARTIAL_CLEANUP"
                     if isinstance(error, RoutePartialCleanup)
-                    else "ROUTE_IO_FAILED"
+                    else (
+                        "ROUTE_LEASE_STALE"
+                        if str(error).startswith("RouteLeaseStale:")
+                        else "ROUTE_IO_FAILED"
+                    )
                 ),
                 f"{type(error).__name__}: {error}",
             )

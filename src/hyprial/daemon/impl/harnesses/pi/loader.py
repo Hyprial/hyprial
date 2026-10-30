@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, Literal, Mapping
 
 from hyprial.daemon.impl.harnesses.model_provider import pi_model_definitions
 from hyprial.kernel import git_subprocess_environment
+from hyprial.kernel import ipc_errors
 
 if TYPE_CHECKING:
     from hyprial.identity import AgentRuntimeContext
@@ -300,7 +301,7 @@ def pi_loader_probe_argv(
 class PiStartPreconditionError(ValueError):
     """A deterministic P2 configuration refusal that retry cannot heal."""
 
-    code = "HARNESS_START_FAILED"
+    code = ipc_errors.HARNESS_START_FAILED
     permanent_start_failure = True
     start_precondition_failure = True
 

@@ -108,12 +108,7 @@ class _MaintenanceMixin:
                 self._runtime_timer,
                 self._on_dispatch_tick_completed,
             )
-        if self._forwarding_cadence is None and self._forwarding_supervisor is not None:
-            self._forwarding_cadence = BoundedCadence(
-                "forwarding-reconcile",
-                lambda _observed_at_ms: self._reconcile_forwarding_endpoints(),
-                self._on_forwarding_tick_completed,
-            )
+        self._ensure_forwarding_cadence(require_supervisor=False)
         self._maintenance_generation += 1
         self._schedule_maintenance(self._maintenance_generation, delay=1.0)
 
@@ -133,17 +128,6 @@ class _MaintenanceMixin:
             self._record_maintenance_outcome(
                 completion.started_at, completion.result, (), 0,
                 (("runtime.timer", completion.duration_ms),),
-            )
-
-    def _on_forwarding_tick_completed(
-        self, completion: CadenceCompleted[None]
-    ) -> None:
-        if completion.error is not None:
-            self._log(
-                "error", "daemon", "forwarding.reconcile_failed",
-                errorType=completion.error,
-                detail=completion.detail or completion.error,
-                durationMs=completion.duration_ms,
             )
 
     def _schedule_maintenance(self, generation: int, *, delay: float) -> None:
@@ -650,11 +634,11 @@ class _MaintenanceMixin:
                     "restore.policy_refresh_overloaded",
                     errorType=type(error).__name__,
                 )
-        forwarding = self._forwarding_cadence
-        if forwarding is None:
-            _timed("forwarding.timer", self._reconcile_forwarding_endpoints)
-        else:
-            admission = forwarding.submit(int(time.time_ns() // 1_000_000))
+        # Never inline: the cadence is the single reconcile owner shared with
+        # org requests (None only while stopping).
+        forwarding = self._ensure_forwarding_cadence(require_supervisor=False)
+        if forwarding is not None:
+            admission = forwarding.submit(self._forwarding_reconcile_requests.observation())
             if admission is AdmissionResult.OVERLOADED:
                 self._log("warn", "daemon", "forwarding.tick_overloaded")
         self._note_forwarding_timer_tick()

@@ -12,6 +12,7 @@ from uuid import uuid4
 from hyprial.daemon.impl.network.routing.session_route_coordinator  import (
     SessionRouteKind,
 )
+from hyprial import __version__
 from hyprial.identity import (
     RUNTIME_HEADLESS,
     RUNTIME_INTERACTIVE,
@@ -153,6 +154,14 @@ def _interactive_session_status(
             build_version=session.channel_build_version,
             protocol_version=session.channel_protocol_version,
         )
+        # A channel that registered with an older build still speaks a schema
+        # compiled into that stdio process.  Protocol 2 alone cannot tell old
+        # from current (summary predates the protocol bump), so compare the
+        # build token the process was launched from.
+        if session.channel_build_version is not None:
+            status["channelBuildStale"] = (
+                session.channel_build_version != __version__
+            )
     return status
 
 def _session_harness(session: InteractiveSession) -> str:
@@ -372,8 +381,28 @@ class _SessionRegistryMixin:
             ),
         )
         result = completed.result.to_payload()
+        stale = (
+            session.source == "claude-channel"
+            and session.channel_build_version is not None
+            and session.channel_build_version != __version__
+        )
         return {
             **result,
+            **(
+                {
+                    "channelStale": {
+                        "code": ipc_errors.MCP_CHANNEL_STALE,
+                        "channelBuildVersion": session.channel_build_version,
+                        "daemonVersion": __version__,
+                        "restart": (
+                            "restart the Claude session so the stdio channel "
+                            "reloads this hyprial build"
+                        ),
+                    }
+                }
+                if stale
+                else {}
+            ),
             **({"liveIncumbentGuardApplied": True} if guarded else {}),
             **(
                 {"harnessHandover": handover.to_json()}

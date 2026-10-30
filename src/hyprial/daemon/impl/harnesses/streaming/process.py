@@ -285,6 +285,7 @@ class SequentialTurnProcess(
                             hook_request=delivery.hook_request,
                             notice=delivery.notice,
                             batch_cursor=getattr(delivery, "batch_cursor", None), message_ids=getattr(delivery, "message_ids", ()),
+                            workflow=getattr(delivery, "workflow", False),
                         ),
                     )
                 )
@@ -508,6 +509,7 @@ class SequentialTurnProcess(
                                         self._aborted_generations.discard(generation)
                                     current_fence = None
                                     continue
+                                admission_wait_reported = False
                                 current = HarnessDelivery(
                                     delivery_id=projection.delivery_id,
                                     conversation_id=projection.conversation_id,
@@ -518,6 +520,7 @@ class SequentialTurnProcess(
                                     hook_request=projection.hook_request,
                                     notice=projection.notice,
                                     batch_cursor=projection.batch_cursor, message_ids=projection.message_ids,
+                                    workflow=projection.workflow,
                                 )
                             channel = getattr(self, "worker_channel", None)
                             if channel is not None:
@@ -534,6 +537,9 @@ class SequentialTurnProcess(
                                 try:
                                     authorized = delivery_current(channel.state_dir, current.delivery_id)
                                 except RemoteWorkflowUnavailable:
+                                    if not admission_wait_reported:
+                                        self._log_turn("worker.readiness.waiting", current, stage="turn-admission", elapsedSeconds=0)
+                                        admission_wait_reported = True
                                     await asyncio.sleep(0.2)
                                     continue
                                 if not authorized:
@@ -864,13 +870,8 @@ class SequentialTurnProcess(
             self._loop = None
 
         def _backoff_delay(self, failures: int) -> float:
-            """Exponential retry spacing: base doubles per failure up to the cap.
-    
-            The pre-#270 constant 0.25s meant a turn that hits its wall-clock cap
-            was replayed immediately and identically, forming the observed
-            15-minute failure loop.
-            """
-    
+            """Exponential retry spacing prevents immediate identical turn replay."""
+
             if failures <= 1:
                 return self._reconnect_delay_seconds
             return min(

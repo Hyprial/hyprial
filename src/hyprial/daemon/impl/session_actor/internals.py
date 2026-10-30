@@ -138,15 +138,54 @@ class _SessionProjectionState:
             return self._by_actor.get(actor), self._by_ref.get(session_ref)
 
     def if_owned(
-        self, actor: str, session_ref: str, effect: Callable[[], bool]
+        self, actor: str, session_ref: str, effect: Callable[[int], bool]
     ) -> tuple[bool, bool]:
-        """Run ``effect`` while the exact session ownership cannot change."""
+        """Precheck exact ownership, then run ``effect`` outside the lock.
+
+        The effect may perform slow route I/O.  It receives the observed
+        projection version and must call :meth:`still_owned` before its
+        confirmation commit; holding the global view lock across I/O blocks
+        every other actor's heartbeat read.
+        """
 
         with self._lock:
             current = self._by_actor.get(actor)
             if current is None or current.session_ref != session_ref:
                 return False, False
-            return True, effect()
+            version = self._version
+        return True, effect(version)
+
+    def still_owned(self, actor: str, session_ref: str, version: int) -> bool:
+        """Revalidate exact ownership and version after an unlocked effect."""
+
+        with self._lock:
+            current = self._by_actor.get(actor)
+            return (
+                current is not None
+                and current.session_ref == session_ref
+                and self._version == version
+            )
+
+    def confirm_if_owned(
+        self, actor: str, session_ref: str, version: int, confirm: Callable[[], None]
+    ) -> bool:
+        """Atomically revalidate ownership/version and run ``confirm``.
+
+        The check and the confirmation must share the lock: a bare
+        ``still_owned`` call followed by a separate write can be overtaken by
+        a concurrent register between the two.
+        """
+
+        with self._lock:
+            current = self._by_actor.get(actor)
+            if (
+                current is None
+                or current.session_ref != session_ref
+                or self._version != version
+            ):
+                return False
+            confirm()
+            return True
 
 
 class _SessionRuntimeState:

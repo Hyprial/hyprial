@@ -144,7 +144,7 @@ class CodexCarrierStore:
                 """
                 SELECT * FROM codex_interactive_delivery
                 WHERE actor = ? AND (
-                    session_ref = ? OR state IN ('FINAL_OBSERVED', 'REMOTE_SETTLED', 'KEPT')
+                    session_ref = ? OR state IN ('FINAL_OBSERVED', 'REMOTE_SETTLED', 'KEPT', 'STATUS_UNKNOWN')
                 )
                 ORDER BY rowid
                 """,
@@ -291,7 +291,7 @@ class CodexCarrierStore:
             self._db.execute(
                 """
                 UPDATE codex_interactive_delivery
-                SET settlement_attempts = ?
+                SET settlement_attempts = MAX(settlement_attempts, ?)
                 WHERE actor = ? AND message_id = ?
                 """,
                 (attempts, actor, message_id),
@@ -320,6 +320,22 @@ class CodexCarrierStore:
                 "UPDATE codex_interactive_delivery SET state = 'REMOTE_SETTLED' "
                 "WHERE actor = ? AND message_id = ?",
                 (actor, message_id),
+            )
+
+    def record_status_unknown(
+        self, actor: str, message_id: str, attempts: int
+    ) -> None:
+        """Persist a terminal tombstone without deleting the id correlation."""
+
+        with self._lock, self._db:
+            self._db.execute(
+                """
+                UPDATE codex_interactive_delivery
+                SET state = 'STATUS_UNKNOWN',
+                    settlement_attempts = MAX(settlement_attempts, ?)
+                WHERE actor = ? AND message_id = ?
+                """,
+                (attempts, actor, message_id),
             )
 
     def record_kept(self, actor: str, message_id: str) -> None:

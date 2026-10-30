@@ -30,6 +30,9 @@ class CadenceCompleted(Generic[_Result]):
     result: _Result | None
     error: str | None
     detail: str | None = None
+    #: The failed effect's stable ``.code`` when it carries one (sidecar and
+    #: org errors do); ``error`` stays the exception type name.
+    code: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,9 +197,13 @@ class BoundedCadence(Generic[_Result]):
             result = None
             error = type(caught).__name__
             detail = str(caught)[:500]
+            raised = getattr(caught, "code", None)
+            code = raised if isinstance(raised, str) and raised else None
+        else:
+            code = None
         completion = CadenceCompleted(
             tick.epoch, tick.observed_at_ms, started,
-            int((time.monotonic() - started) * 1000), result, error, detail,
+            int((time.monotonic() - started) * 1000), result, error, detail, code,
         )
         if self._completed is not None:
             try:

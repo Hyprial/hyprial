@@ -283,7 +283,7 @@ class _ProcessEventsBehavior:
                         else (
                             failure_code
                             if isinstance(failure_code, str) and failure_code
-                            else "HARNESS_START_FAILED"
+                            else ipc_errors.HARNESS_START_FAILED
                         )
                     ),
                     str(failure),

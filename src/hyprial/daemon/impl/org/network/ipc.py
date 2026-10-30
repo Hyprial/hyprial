@@ -22,7 +22,10 @@ from hyprial.daemon.impl.ipc.params import (
     _required_string,
 )
 from hyprial.daemon.impl.orgfs.api import OrgFsError
-from hyprial.daemon.impl.forwarding.policy import ForwardingSidecarError
+from hyprial.daemon.impl.forwarding.policy import (
+    REQUEST_MEMBERSHIP_WAIT_SECONDS,
+    ForwardingSidecarError,
+)
 from hyprial.daemon.impl.org.network.casdoor import casdoor_groups_for_home
 from hyprial.daemon.impl.org.network.casdoor.client import CasdoorGroupError
 from hyprial.daemon.impl.org.network.casdoor.membership import (
@@ -63,7 +66,12 @@ def _invalid_device_diagnostics(app: Any) -> InvalidDeviceQuarantine:
     return quarantine
 
 
-def _build_service(app: Any) -> OrgNetworkService:
+def _build_service(
+    app: Any, *, membership_timeout: float | None = None
+) -> OrgNetworkService:
+    """``membership_timeout`` bounds every sidecar membership call the service
+    makes; None (startup/background builders) keeps the 35s allowance."""
+
     fs = app._require_orgfs_runtime().facade
 
     def membership_request(op: str, params: dict) -> dict:
@@ -71,7 +79,7 @@ def _build_service(app: Any) -> OrgNetworkService:
         supervisor = getattr(app, '_forwarding_supervisor', None)
         if supervisor is None:
             raise ForwardingSidecarError('Tailnet sidecar unavailable.', code='MEMBERSHIP_NOT_INITIALIZED')
-        return supervisor.membership_request(op, params)
+        return supervisor.membership_request(op, params, timeout=membership_timeout)
 
     def map_peer(peer: str, address: str) -> int | None:
         # The invite/join bootstrap connects a peer by assigning it a
@@ -98,6 +106,16 @@ def _build_service(app: Any) -> OrgNetworkService:
         if supervisor is None:
             return
         unbind_peer_slot(app, peer)
+
+    def request_redial() -> None:
+        # Bootstrap steps need the redial done before the next step, but it
+        # runs on the single-owner cadence, bounded, never on this thread.
+        try:
+            app._await_forwarding_reconcile(
+                "org-join", timeout=REQUEST_MEMBERSHIP_WAIT_SECONDS
+            )
+        except ForwardingSidecarError as error:
+            raise OrgNetworkError(error.code, str(error)) from error
 
     def read_own_address() -> str | None:
         try:
@@ -143,7 +161,7 @@ def _build_service(app: Any) -> OrgNetworkService:
         unmap_peer=unmap_peer,
         derive_client_key=derive_client_key,
         local_server_public=local_server_public,
-        request_redial=lambda: app._reconcile_forwarding_endpoints(),
+        request_redial=request_redial,
         read_own_address=read_own_address,
         forwarding_status=lambda: app._forwarding_status_json(),
         membership_request=membership_request,
@@ -154,6 +172,12 @@ def _build_service(app: Any) -> OrgNetworkService:
             level, domain, event, **fields
         ),
     )
+
+
+def _request_service(app: Any) -> OrgNetworkService:
+    """The service for an IPC request: sidecar waits bounded under the CLI roundtrip."""
+
+    return _build_service(app, membership_timeout=REQUEST_MEMBERSHIP_WAIT_SECONDS)
 
 
 def _translate(error: BaseException) -> DaemonRequestError:
@@ -171,7 +195,9 @@ def _translate(error: BaseException) -> DaemonRequestError:
 def ipc_org_create(app: Any, params: JsonObject) -> dict:
     org = _required_string(params.get("org"), "org")
     try:
-        return _access_changed(app, "org-create", _build_service(app).create(org))
+        return _access_changed(
+            app, "org-create", _request_service(app).create(org), org=org
+        )
     except OrgFsError as error:
         raise _translate(error) from error
     except (InviteError, OrgNetworkError, ValueError) as error:
@@ -183,7 +209,7 @@ def ipc_org_repair(app: Any, params: JsonObject) -> dict:
     org = None if org_value is None else _required_string(org_value, "org")
     apply = _optional_boolean(params.get("apply"), "apply") or False
     try:
-        return _build_service(app).repair(org, apply=apply)
+        return _request_service(app).repair(org, apply=apply)
     except OrgFsError as error:
         raise _translate(error) from error
     except (InviteError, OrgNetworkError, ValueError) as error:
@@ -194,9 +220,9 @@ def ipc_org_invite(app: Any, params: JsonObject) -> dict:
     org = _required_string(params.get("org"), "org")
     user = _required_string(params.get("user"), "user")
     try:
-        result = _build_service(app).invite(org, user)
+        result = _request_service(app).invite(org, user)
         _membership_changed(app, org, user)
-        return _access_changed(app, "org-invite", result)
+        return _access_changed(app, "org-invite", result, org=org, user=user)
     except OrgFsError as error:
         raise _translate(error) from error
     except (InviteError, OrgNetworkError, ValueError) as error:
@@ -220,7 +246,8 @@ def _publish_identity_binding_after_join(app: Any) -> None:
 def ipc_org_execute(app: Any, params: JsonObject) -> dict:
     link = _required_string(params.get("link"), "link")
     try:
-        result = _access_changed(app, "org-execute", _build_service(app).execute(link))
+        result = _request_service(app).execute(link)
+        result = _access_changed(app, "org-execute", result, org=result.get("org"))
         _publish_identity_binding_after_join(app)
         return result
     except OrgFsError as error:
@@ -234,7 +261,8 @@ def ipc_org_join(app: Any, params: JsonObject) -> dict:
 
     link = _required_string(params.get("link"), "link")
     try:
-        result = _access_changed(app, "org-join", _build_service(app).join(link))
+        result = _request_service(app).join(link)
+        result = _access_changed(app, "org-join", result, org=result.get("org"))
         _publish_identity_binding_after_join(app)
         return result
     except OrgFsError as error:
@@ -246,9 +274,10 @@ def ipc_org_join(app: Any, params: JsonObject) -> dict:
 def ipc_org_leave(app: Any, params: JsonObject) -> dict:
     org = _required_string(params.get("org"), "org")
     try:
-        return _access_changed(app, "org-leave", _build_service(app).leave(
+        return _access_changed(app, "org-leave", _request_service(app).leave(
             org, confirmed=_optional_boolean(params.get('confirmed'), 'confirmed') or False,
-            operation_id=params.get('operationId'), device_ids=params.get('deviceIds')))
+            operation_id=params.get('operationId'), device_ids=params.get('deviceIds')),
+            org=org)
     except OrgFsError as error:
         raise _translate(error) from error
     except (InviteError, OrgNetworkError, ValueError) as error:
@@ -259,11 +288,11 @@ def ipc_org_remove(app: Any, params: JsonObject) -> dict:
     org = _required_string(params.get("org"), "org")
     user = _required_string(params.get("user"), "user")
     try:
-        result = _build_service(app).remove(
+        result = _request_service(app).remove(
             org, user, confirmed=_optional_boolean(params.get('confirmed'), 'confirmed') or False,
             operation_id=params.get('operationId'), device_ids=params.get('deviceIds'))
         _membership_changed(app, org, user)
-        return _access_changed(app, "org-remove", result)
+        return _access_changed(app, "org-remove", result, org=org, user=user)
     except OrgFsError as error:
         raise _translate(error) from error
     except (InviteError, OrgNetworkError, ValueError) as error:
@@ -273,7 +302,9 @@ def ipc_org_remove(app: Any, params: JsonObject) -> dict:
 def ipc_org_delete(app: Any, params: JsonObject) -> dict:
     org = _required_string(params.get("org"), "org")
     try:
-        return _access_changed(app, "org-delete", _build_service(app).delete(org))
+        return _access_changed(
+            app, "org-delete", _request_service(app).delete(org), org=org
+        )
     except OrgFsError as error:
         raise _translate(error) from error
     except (InviteError, OrgNetworkError, ValueError) as error:
@@ -282,7 +313,7 @@ def ipc_org_delete(app: Any, params: JsonObject) -> dict:
 
 def ipc_org_list(app: Any, params: JsonObject) -> dict:
     try:
-        return _build_service(app).list()
+        return _request_service(app).list()
     except OrgFsError as error:
         raise _translate(error) from error
     except (InviteError, OrgNetworkError, ValueError) as error:
@@ -295,14 +326,15 @@ def ipc_org_network(app: Any, params: JsonObject) -> dict:
         from hyprial.identity import read_device_record
         key = _required_string(params['peerKey'], 'peerKey')
         record = read_device_record(app.hyprial_home)
-        return {'owner': owner_for_key(status_for_app(app), key, record.server_public) if record else None}
+        status = status_for_app(app, timeout=REQUEST_MEMBERSHIP_WAIT_SECONDS)
+        return {'owner': owner_for_key(status, key, record.server_public) if record else None}
     org = params.get("org")
     if org is not None and not isinstance(org, str):
         raise DaemonRequestError(
             ipc_errors.INVALID_ARGUMENT, "org must be a string when present"
         )
     try:
-        result = _build_service(app).network(org)
+        result = _request_service(app).network(org)
     except OrgFsError as error:
         raise _translate(error) from error
     except (InviteError, OrgNetworkError, ValueError) as error:
@@ -345,7 +377,7 @@ def _org_acl_owner_space(app: Any, org: str) -> None:
     """The org must exist here and this daemon's owner must own it."""
 
     try:
-        space = _build_service(app)._require_space(org)
+        space = _request_service(app)._require_space(org)
     except (OrgFsError, ValueError) as error:
         raise _translate(error) from error
     author = (
@@ -580,11 +612,22 @@ def stop_casdoor_membership_sync(app: Any) -> None:
         raise RuntimeError(f"org Casdoor sync did not stop: {', '.join(failures)}")
 
 
-def _access_changed(app: Any, reason: str, result: Any) -> Any:
-    """Refresh slot bindings after explicit membership operations."""
+def _access_changed(app: Any, reason: str, result: Any, **fields: Any) -> Any:
+    """Schedule the forwarding reconcile through the daemon request owner.
 
-    if getattr(app, '_forwarding_supervisor', None) is not None:
-        app._reconcile_forwarding_endpoints()
+    Production 0.5.5.1.1 uses #2061's ``_request_forwarding_reconcile``:
+    record the request for ``org.<op>.reconcile`` attribution, then submit one
+    cadence tick.  Management IPC never runs the reconcile inline; before a
+    scheduler exists the request is only recorded/logged and the reply returns.
+    """
+
+    request = getattr(app, "_request_forwarding_reconcile", None)
+    if callable(request):
+        request(reason, **fields)
+    else:
+        log = getattr(app, "_log", None)
+        if callable(log):
+            log("warn", "org", "org.reconcile.unscheduled", reason=reason, **fields)
     return result
 
 

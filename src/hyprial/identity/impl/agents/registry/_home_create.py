@@ -507,6 +507,7 @@ class _RegistryHomeCreateMixin:
                 f"agent-record:{agent.actor}", True, agent.to_json()
             )
             self._record_home_resource_locked(receipt, True)
+            self._grant_default_claude_locked(agent)
             for adapter in agent.pinned_adapters:
                 self._db.execute(
                     "INSERT INTO pins(adapter, agent) VALUES(?, ?)",
@@ -665,6 +666,7 @@ class _RegistryHomeCreateMixin:
                 try:
                     with self._db:
                         self._db.execute(*self._insert_statement(agent))
+                        self._grant_default_claude_locked(agent)
                         self._record_external_resource_locked(
                             f"agent-record:{agent.actor}", True, agent.to_json()
                         )
@@ -753,6 +755,7 @@ class _RegistryHomeCreateMixin:
                     f"agent-record:{agent.actor}", True, agent.to_json()
                 )
                 self._record_home_resource_locked(claim, True)
+                self._grant_default_claude_locked(agent)
                 for adapter in agent.pinned_adapters:
                     self._db.execute(
                         "INSERT INTO pins(adapter, agent) VALUES(?, ?)",

@@ -32,6 +32,7 @@ import typer
 from hyprial.identity import ORG_SPACE_PREFIX
 from hyprial.shell.impl.cli.commands.common.support import JsonObject
 from hyprial.shell.impl.cli.commands.org.acl import acl_app
+from .authority import org_migration_status, org_pin_authority
 from .maintenance import org_repin
 
 org_app = typer.Typer(
@@ -46,6 +47,8 @@ org_app = typer.Typer(
 )
 org_app.add_typer(acl_app, name="acl")
 org_app.command('repin')(org_repin)
+org_app.command('pin-authority')(org_pin_authority)
+org_app.command('migration-status')(org_migration_status)
 
 context_app = typer.Typer(
     help=(
@@ -300,23 +303,29 @@ def org_invite(
 ) -> None:
     """Invite one user and print the invite link (§5.1).
 
-    The link is a secret (its payload embeds the inviter's Tailcat address
-    and a bearer token): the human output is exactly two lines — the
-    clickable https form and the copy-paste command — and is never written
-    to disk or logs.  ``--json`` passes the daemon's fields through
-    verbatim: ``link`` (https), ``deepLink``, ``command``, ``invite``
-    (bare token) and ``expiresAt``.
+    The link is a secret; the human output prefers the /j short link and
+    keeps the long link below it.  ``--json`` passes the daemon fields
+    through and adds ``short`` (null when minting degrades).
     """
     services = get_services()
-
     def render(result: Mapping[str, Any]) -> str:
         command = result.get("command")
-        lines = [result["link"]]
+        short = result.get("short")
+        link = result["link"]
+        lines = [short if isinstance(short, str) and short else link]
+        if isinstance(short, str) and short:
+            lines.append(f"长链：{link}")
         if isinstance(command, str) and command:
             lines.append(f"或在终端执行：{command}")
+        lines.append("（私发，勿贴群）")
         return "\n".join(lines)
 
     def operation() -> CliResult:
+        from hyprial.shell.impl.invites.shortlink import (
+            ShortLinkUnavailable,
+            shorten_invite_link,
+        )
+
         services = get_services()
         result = services._daemon_request(
             "org.invite", {"org": _validated_org(org), "user": user}
@@ -325,7 +334,18 @@ def org_invite(
             raise services.CliError(
                 "INVALID_RESPONSE", "org.invite must return the https invite link"
             )
-        return CliResult({"ok": True, **result}, render=render)
+        short: str | None = None
+        try:
+            short = shorten_invite_link(result["link"])
+        except ShortLinkUnavailable as error:
+            if error.notify:
+                progress(
+                    "org.invite.short_link_unavailable",
+                    f"短链不可用：{error}",
+                    json_output=json_output,
+                    reason=str(error),
+                )
+        return CliResult({"ok": True, **result, "short": short}, render=render)
 
     services._execute(operation, json_output=json_output)
 

@@ -1,4 +1,10 @@
-"""DaemonEventBridge reconcile cluster: retry pump, harness actor reconciliation, dispatch deliveries, holds and progress."""
+"""DaemonEventBridge reconcile cluster: retry pump, harness actor reconciliation, dispatch deliveries, holds and progress.
+
+Production wiring uses actor_mode=False, so per-worker dispatch must stay inside
+one reconcile tick. It still gets a bounded per-agent offer deadline: an agent
+that does not settle is skipped for that round, logged once, and left pending
+for the next round instead of holding the tick or its peers.
+"""
 
 from __future__ import annotations
 
@@ -26,6 +32,7 @@ from hyprial.daemon.impl.inbox.batch.render import (
     render_scalar_summary,
 )
 from hyprial.daemon.impl.inbox.batch.service import capture_batch
+from hyprial.daemon.impl.dispatch.runtime.offers import DispatchAgentTimeout
 from hyprial.daemon.impl.harnesses.turn_delivery.protocol import (
     is_mechanism_hook_request,
     mechanism_of,
@@ -258,6 +265,7 @@ class _BridgeReconcileMixin:
         )
 
     def _dispatch_harness_deliveries(self) -> int:
+        self._retry_batch_fetches()
         accepted = self._drain_dispatch_offer_outcomes()
         pending_result_ids = getattr(
             self.harnesses, "pending_result_delivery_ids", lambda: frozenset()
@@ -265,9 +273,32 @@ class _BridgeReconcileMixin:
         for actor in self.harnesses.streaming_actors():
             try:
                 accepted += self._dispatch_actor_deliveries(actor, pending_result_ids)
+            except DispatchAgentTimeout as timeout:
+                self._log_agent_dispatch_timeout(
+                    actor, timeout.elapsed_ms, timeout.operation_id
+                )
             except Exception as error:  # noqa: BLE001 - per-actor tick isolation
                 self._log_actor_failure(actor, "dispatch", error)
         return accepted
+
+    def _log_agent_dispatch_timeout(
+        self, actor: str, elapsed_ms: int, operation_id: str
+    ) -> None:
+        announced = getattr(self, "_dispatch_timeout_announced", None)
+        if announced is None:
+            announced = self._dispatch_timeout_announced = set()
+        if operation_id in announced:
+            return
+        announced.add(operation_id)
+        if self._logger is not None:
+            self._logger(
+                "warn",
+                "daemon",
+                "harness.dispatch.agent_timeout",
+                agent=actor,
+                durationMs=elapsed_ms,
+                code="DISPATCH_AGENT_TIMEOUT",
+            )
 
     def _log_actor_failure(self, actor: str, phase: str, error: Exception) -> None:
         if self._logger is not None:
@@ -292,6 +323,31 @@ class _BridgeReconcileMixin:
             return None
         return kind
 
+    def _offer_delivery(
+        self,
+        actor: str,
+        delivery: HarnessDelivery,
+        *,
+        original: InboxMessage,
+        retry: bool,
+        notice: bool,
+    ) -> bool:
+        offers = self._dispatch_offers
+        if offers is None:
+            return bool(self.harnesses.dispatch(actor, delivery))
+        if getattr(self, "_actor_mode", False):
+            return offers.offer(
+                actor, delivery, original=original, retry=retry, notice=notice
+            )
+        return offers.offer_sync(
+            actor,
+            delivery,
+            original=original,
+            retry=retry,
+            notice=notice,
+            timeout_ms=getattr(self, "_dispatch_agent_timeout_ms", 1500),
+        )
+
     def _dispatch_actor_deliveries(self, actor: str, pending_result_ids: frozenset[str]) -> int:
         """Dispatch one actor inside the caller's fault boundary."""
         accepted = 0
@@ -304,6 +360,27 @@ class _BridgeReconcileMixin:
         recipient = self.harness_actor_uri(actor)
         if self._blocked_actor is not None and self._blocked_actor(recipient):
             return accepted
+        pending_batches = getattr(self, "_pending_batch_claims", None)
+        batch_active = bool(
+            (pending_batches is not None and actor in pending_batches)
+            or self._batch_claims.get(actor)
+        )
+        offers = self._dispatch_offers
+        if offers is not None:
+            announced = getattr(self, "_dispatch_timeout_announced", None)
+            if announced is None:
+                announced = self._dispatch_timeout_announced = set()
+            active = offers.active(actor)
+            if active is None:
+                announced.intersection_update(offers.active_operation_ids())
+            else:
+                elapsed_ms = offers.active_elapsed_ms(actor)
+                timeout_ms = getattr(self, "_dispatch_agent_timeout_ms", 1500)
+                if elapsed_ms >= timeout_ms:
+                    self._log_agent_dispatch_timeout(
+                        actor, elapsed_ms, active.operation_id
+                    )
+                return accepted
         pending_messages = self.inbox.pending_messages(recipient)
         # The link gate runs on the inbox actor thread (review B3); the
         # runtime only names rows it has already answered or is settling so
@@ -346,6 +423,8 @@ class _BridgeReconcileMixin:
                 # Already claimed by the accepted batch delivery.
                 continue
             hook_request = is_mechanism_hook_request(message)
+            if batch_active and not hook_request:
+                continue
             if actor_held and not hook_request:
                 # Keep scanning only for mechanism-owned hook requests.
                 # They must be able to reach a dedicated handler even
@@ -378,6 +457,7 @@ class _BridgeReconcileMixin:
                 message=self._injection_message_text(message),
                 origin=self._message_origin(message),
                 hook_request=hook_request,
+                workflow=self._is_workflow_message(message),
             )
             if self._delivery_hooks is not None:
                 if not delivery.hook_request:
@@ -390,17 +470,12 @@ class _BridgeReconcileMixin:
                         actor_held = True
                         continue
                     delivery = prepared
-            offers = self._dispatch_offers
-            if offers is not None:
-                if offers.offer(
-                    actor, delivery, original=message,
-                    retry=is_retry, notice=False,
-                ):
-                    # One in-flight offer per worker keeps that worker's
-                    # ordinary inbox order while other workers continue.
+            if self._offer_delivery(
+                actor, delivery, original=message,
+                retry=is_retry, notice=False,
+            ):
+                if getattr(self, "_actor_mode", False):
                     break
-                continue
-            if self.harnesses.dispatch(actor, delivery):
                 if self._delivery_hooks is not None:
                     self._delivery_hooks.mark_dispatched(message.message_id)
                 if is_retry:
@@ -418,7 +493,7 @@ class _BridgeReconcileMixin:
                     now_ms=self._clock_ms(),
                     force=True,
                 )
-        if actor_held:
+        if actor_held or batch_active:
             return accepted
         if callable(notice_reader) and callable(dismiss_notice):
             for notice in notices:
@@ -443,15 +518,12 @@ class _BridgeReconcileMixin:
                         if prepared is None:
                             break
                         delivery = prepared
-                offers = self._dispatch_offers
-                if offers is not None:
-                    if offers.offer(
-                        actor, delivery, original=notice,
-                        retry=False, notice=True,
-                    ):
+                if self._offer_delivery(
+                    actor, delivery, original=notice,
+                    retry=False, notice=True,
+                ):
+                    if getattr(self, "_actor_mode", False):
                         break
-                    continue
-                if self.harnesses.dispatch(actor, delivery):
                     if self._delivery_hooks is not None:
                         self._delivery_hooks.mark_dispatched(notice.message_id)
                         self._delivery_hooks.forget_delivery(notice.message_id)
@@ -460,6 +532,11 @@ class _BridgeReconcileMixin:
                     dismiss_notice(notice.message_id)
                     accepted += 1
         return accepted
+
+    def _is_workflow_message(self, message: InboxMessage) -> bool:
+        from hyprial.daemon.impl.pac.contracts.delivery import is_workflow_delivery
+
+        return is_workflow_delivery(self.state_dir, message.message_id)
 
     def _model_eligible(self, message: InboxMessage) -> bool:
         """May this row join a model-facing batch?
@@ -492,6 +569,9 @@ class _BridgeReconcileMixin:
         """
 
         claimed = self._batch_claims.get(actor, ())
+        pending_batches = getattr(self, "_pending_batch_claims", None)
+        if pending_batches is not None and actor in pending_batches:
+            return claimed, False
         candidates = tuple(
             message
             for message in messages
@@ -518,6 +598,7 @@ class _BridgeReconcileMixin:
             epoch="",
             include_notices=False,
             only=tuple(message.message_id for message in candidates),
+            mark_fetched=False,
         )
         if not view.text or not view.cursor:
             return claimed, False
@@ -537,6 +618,7 @@ class _BridgeReconcileMixin:
             origin=self._message_origin(first),
             batch_cursor=view.cursor,
             message_ids=members,
+            workflow=any(self._is_workflow_message(message) for message in candidates),
         )
         # Preserve the existing first-member hook interception.  The batch
         # already carries that member's ID, so no wrapper identity is minted.
@@ -548,14 +630,81 @@ class _BridgeReconcileMixin:
             if prepared is None:
                 return claimed, False
             delivery = replace(delivery, hook_text=prepared.hook_text)
-        offers = self._dispatch_offers
-        if offers is not None:
-            offered = offers.offer(actor, delivery, original=first, retry=False, notice=False)
-            if not offered:
-                return claimed, False
-        elif not self.harnesses.dispatch(actor, delivery):
+        pending_batches = getattr(self, "_pending_batch_claims", None)
+        if pending_batches is None:
+            pending_batches = self._pending_batch_claims = {}
+        pending_batches[actor] = (members, candidates)
+        try:
+            offered = self._offer_delivery(
+                actor, delivery, original=first, retry=False, notice=False
+            )
+        except DispatchAgentTimeout:
+            raise
+        if not offered:
+            pending_batches.pop(actor, None)
             return claimed, False
-        for message in candidates:
+        pending_batches.pop(actor, None)
+        self._claim_batch(
+            actor,
+            members,
+            candidates,
+            stamp=not getattr(self, "_actor_mode", False),
+        )
+        return self._batch_claims.get(actor, claimed), True
+
+    def _confirm_batch_fetched(
+        self, recipient: str, members: tuple[str, ...]
+    ) -> None:
+        try:
+            mark = getattr(self.inbox, "mark_batch_fetched", None)
+            if callable(mark):
+                mark(recipient, frozenset(members))
+            else:
+                fetch = getattr(self.inbox, "fetch_pending", None)
+                if callable(fetch):
+                    fetch(recipient, only=frozenset(members))
+        except Exception as error:  # noqa: BLE001 - retry from the pending map
+            pending = getattr(self, "_pending_batch_fetches", None)
+            if pending is None:
+                pending = self._pending_batch_fetches = {}
+            pending[recipient] = (recipient, members)
+            if self._logger is not None:
+                self._logger(
+                    "warn",
+                    "daemon",
+                    "harness.batch.fetch_deferred",
+                    worker=recipient,
+                    count=len(members),
+                    errorType=type(error).__name__,
+                )
+
+    def _retry_batch_fetches(self) -> None:
+        pending = getattr(self, "_pending_batch_fetches", None)
+        if not pending:
+            return
+        for key, (recipient, members) in tuple(pending.items()):
+            try:
+                mark = getattr(self.inbox, "mark_batch_fetched", None)
+                if callable(mark):
+                    mark(recipient, frozenset(members))
+                else:
+                    fetch = getattr(self.inbox, "fetch_pending", None)
+                    if callable(fetch):
+                        fetch(recipient, only=frozenset(members))
+            except Exception:
+                continue
+            pending.pop(key, None)
+
+    def _claim_batch(
+        self,
+        actor: str,
+        members: tuple[str, ...],
+        messages: tuple[InboxMessage, ...],
+        *,
+        stamp: bool,
+    ) -> None:
+        recipient = self.harness_actor_uri(actor)
+        for message in messages:
             self._note_delivery_seen(actor, message)
             self._refresh_queued_hold(
                 message.message_id,
@@ -565,9 +714,9 @@ class _BridgeReconcileMixin:
             )
             if self._delivery_hooks is not None:
                 self._delivery_hooks.mark_dispatched(message.message_id)
-        claimed = *claimed, *members
-        self._batch_claims[actor] = claimed
-        return claimed, True
+        self._batch_claims[actor] = (*self._batch_claims.get(actor, ()), *members)
+        if stamp:
+            self._confirm_batch_fetched(self.harness_actor_uri(actor), members)
 
     def _release_batch_claim(
         self, delivery_id: str, message_ids: tuple[str, ...] = ()
@@ -575,6 +724,11 @@ class _BridgeReconcileMixin:
         """Release the real members named by a result."""
 
         members = frozenset(message_ids or (delivery_id,))
+        pending = getattr(self, "_pending_batch_claims", None)
+        if pending is not None:
+            for pending_actor, (pending_members, _messages) in tuple(pending.items()):
+                if members.intersection(pending_members):
+                    pending.pop(pending_actor, None)
         for actor, claimed in tuple(self._batch_claims.items()):
             remaining = tuple(member for member in claimed if member not in members)
             if len(remaining) == len(claimed):
@@ -593,7 +747,13 @@ class _BridgeReconcileMixin:
         if offers is None:
             return 0
         accepted = 0
+        pending_batches = getattr(self, "_pending_batch_claims", None)
         for outcome in offers.completed():
+            late_batch = (
+                pending_batches.pop(outcome.worker, None)
+                if pending_batches is not None
+                else None
+            )
             if outcome.error is not None and self._logger is not None:
                 self._logger(
                     "warn", "daemon", "dispatch.offer_failed",
@@ -602,7 +762,17 @@ class _BridgeReconcileMixin:
                     detail=outcome.error,
                 )
             if not outcome.accepted:
+                if outcome.message_ids:
+                    self._release_batch_claim(
+                        outcome.delivery_id, outcome.message_ids
+                    )
                 continue
+            if late_batch is not None:
+                self._claim_batch(outcome.worker, *late_batch, stamp=True)
+            elif self._batch_claims.get(outcome.worker) and outcome.message_ids:
+                self._confirm_batch_fetched(
+                    outcome.recipient, outcome.message_ids
+                )
             if self._delivery_hooks is not None:
                 self._delivery_hooks.mark_dispatched(outcome.delivery_id)
             if outcome.notice:

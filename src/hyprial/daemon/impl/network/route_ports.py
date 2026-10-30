@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TypeAlias
+from typing import Callable, TypeAlias
 
 from hyprial.kernel import CommandSink
 
@@ -26,6 +26,7 @@ class EnsureRouteCommand:
     version: int
     spec: RouteSpec
     owner_lease: str | None = None
+    fence: Callable[[], bool] | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -9,6 +9,8 @@ from pathlib import Path
 
 from threading import Lock, RLock
 
+import uuid
+
 import threading
 
 import time
@@ -19,7 +21,8 @@ from typing import Any
 
 from hyprial.kernel import (
     ActorHandle,
-    ActorRuntime)
+    ActorRuntime,
+    ipc_errors)
 
 from hyprial.kernel import EffectLane, EffectRequest
 
@@ -39,6 +42,7 @@ from hyprial.daemon.impl.orgfs.network.supplier_health import SupplierSyncHealth
 
 
 from hyprial.daemon.impl.orgfs.storage.replica_authority  import ReplicaAuthority
+from hyprial.daemon.impl.orgfs.storage.store.vocabulary import StoreError
 
 
 
@@ -132,12 +136,19 @@ class OrgFsRuntime(
         spaces_root = self.state_dir / "orgfs" / "spaces"
         if spaces_root.is_dir():
             for path in sorted(spaces_root.iterdir()):
-                if (
-                    not path.is_dir()
-                    or path.is_symlink()
-                    or not (path / "journal.sqlite3").is_file()
-                    or path.name in self._purging_spaces
-                ):
+                if not path.is_dir() or path.is_symlink():
+                    continue
+                if path.name in self._purging_spaces:
+                    continue
+                try:
+                    uuid.UUID(path.name)
+                except ValueError:
+                    raise StoreError(
+                        ipc_errors.ORGFS_INVALID_SPACE_DIRECTORY,
+                        f"unexpected directory under {spaces_root}: {path}; "
+                        "space directories must be UUIDs",
+                    ) from None
+                if not (path / "journal.sqlite3").is_file():
                     continue
                 self.stores.get(path.name)
                 self.facade.load_space(path.name)

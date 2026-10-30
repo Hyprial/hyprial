@@ -12,7 +12,7 @@ import queue
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -30,6 +30,7 @@ from hyprial.daemon.impl.pac.graphs.authority.commands import (
     ActivateGraph,
     CancelWorkflow,
     ClockTick,
+    ClockTickMany,
     CloseGraph,
     EnqueueRemoteOutcome,
     EnsureRemoteKey,
@@ -246,6 +247,22 @@ class PacGraphAuthority:
 
     def clock_tick(self, graph_id: str) -> dict[str, Any]:
         return self._call(ClockTick(f"pac-clock-{uuid4().hex}", graph_id))
+
+    def clock_tick_many(
+        self,
+        graph_ids: Sequence[str],
+        *,
+        shared_connection: bool = True,
+        stop_on_error: bool = False,
+    ) -> dict[str, Any]:
+        """Tick every clock job of one tick through a single round trip."""
+
+        return self._call(ClockTickMany(
+            f"pac-clocks-{uuid4().hex}",
+            tuple(graph_ids),
+            shared_connection=shared_connection,
+            stop_on_error=stop_on_error,
+        ))
 
     def attach_reconciler(
         self, runtime: Any, reference_root: Path, daemon_epoch: str, *,

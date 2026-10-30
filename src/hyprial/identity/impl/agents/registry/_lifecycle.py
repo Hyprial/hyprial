@@ -190,6 +190,7 @@ class _RegistryLifecycleMixin:
                 self._db.execute(*self._insert_statement(agent))
                 if home_attempt is not None:
                     self._record_home_resource_locked(home_attempt.receipt, True)
+                self._grant_default_claude_locked(agent)
                 for adapter in agent.pinned_adapters:
                     self._db.execute(
                         "INSERT INTO pins(adapter, agent) VALUES(?, ?)",
@@ -607,6 +608,7 @@ class _RegistryLifecycleMixin:
                 agent = reservation.agent
                 self._db.execute(*self._insert_statement(agent))
                 self._record_home_resource_locked(receipt, True)
+                self._grant_default_claude_locked(agent)
                 for adapter in agent.pinned_adapters:
                     self._db.execute(
                         "INSERT INTO pins(adapter, agent) VALUES(?, ?)",
@@ -694,7 +696,7 @@ class _RegistryLifecycleMixin:
                 model=payload.model,
                 capabilities=payload.capabilities_payload(),
                 harness_args=dict(payload.harness_args),
-                preferred_harness=payload.preferred_harness,
+                preferred_harness=payload.preferred_harness or payload.launch_harness,
                 created_at_ms=int(self._clock()),
             ).to_json()
         raise TypeError(f"unsupported lifecycle create payload: {type(payload).__name__}")

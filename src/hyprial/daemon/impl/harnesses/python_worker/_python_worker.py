@@ -19,6 +19,8 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
+from hyprial.kernel import ipc_errors
+
 PROTOCOL_VERSION = 1
 MAX_LINE_BYTES = 8 * 1024 * 1024
 DEFAULT_MODEL = "jev-latest"
@@ -338,16 +340,16 @@ def _resolve_commit() -> str:
     for value in candidates:
         if isinstance(value, str) and len(value) == 40 and set(value) <= _HEX40:
             return value
-    raise WorkerError("HARNESS_START_FAILED", "Hyprial commit is unavailable")
+    raise WorkerError(ipc_errors.HARNESS_START_FAILED, "Hyprial commit is unavailable")
 
 
 def _startup_metadata(kind: str) -> dict[str, object]:
     try:
         sdk_version = importlib.metadata.version("typesafe-sdk")
     except importlib.metadata.PackageNotFoundError as error:
-        raise WorkerError("HARNESS_START_FAILED", "typesafe-sdk is unavailable") from error
+        raise WorkerError(ipc_errors.HARNESS_START_FAILED, "typesafe-sdk is unavailable") from error
     if sdk_version != "0.7.0":
-        raise WorkerError("HARNESS_START_FAILED", "typesafe-sdk version mismatch")
+        raise WorkerError(ipc_errors.HARNESS_START_FAILED, "typesafe-sdk version mismatch")
     commit = _resolve_commit()
     script_hash = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     values = {

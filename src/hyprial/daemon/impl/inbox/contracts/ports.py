@@ -192,6 +192,7 @@ class BatchSnapshotCommand:
     after_digest: str | None = None
     include_notices: bool = True
     only: tuple[str, ...] | None = None
+    mark_fetched: bool = True
 
 
 @dataclass(frozen=True, slots=True)

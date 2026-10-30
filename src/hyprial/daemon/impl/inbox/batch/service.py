@@ -127,6 +127,7 @@ def capture_batch(
     actor_home: Path | None = None,
     epoch: str = "",
     include_notices: bool = True,
+    mark_fetched: bool = True,
     _origin_resolver_for_test: Callable[
         [object, str], dict[str, object]
     ] | None = None,
@@ -156,6 +157,7 @@ def capture_batch(
         after_digest=after_digest,
         include_notices=include_notices,
         only=only,
+        **({"mark_fetched": False} if not mark_fetched else {}),
     )
     snapshot = build_snapshot(
         selection,

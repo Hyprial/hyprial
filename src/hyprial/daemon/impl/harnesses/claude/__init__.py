@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from hyprial.kernel import HarnessLaunchSpec
+from hyprial.kernel import HarnessLaunchSpec, Logger
 
 from hyprial.daemon.impl.harnesses.protocol.common  import (
     ConnectorOptions,
@@ -81,6 +82,7 @@ class ClaudeConnector:
                 os.environ, self.options.env or {}, provider_environment
             )
         )
+        environment = self._admit_credentials(spec, complete_launch, environment)
         return PtyHarnessProcess.spawn(
             "claude",
             argv,
@@ -90,3 +92,53 @@ class ClaudeConnector:
             startup_probe_seconds=self.options.startup_probe_seconds,
             stop_grace_seconds=self.options.stop_grace_seconds,
         )
+
+    @staticmethod
+    def _admit_credentials(
+        spec: HarnessLaunchSpec,
+        complete_launch: "ChildEnvironmentLaunch | None",
+        environment: dict[str, str],
+    ) -> dict[str, str]:
+        from hyprial.daemon.impl.pac.actors.marker import pac_worker_marker
+        from .runtime import ClaudeRuntimeError, validate_legacy_claude_auth
+
+        guarded = (
+            (complete_launch is not None and complete_launch.managed_creation)
+            or pac_worker_marker(spec.nickname) is not None
+        )
+        source = "missing" if guarded else "ambient"
+        try:
+            if guarded and complete_launch is not None:
+                # Share SDK admission, including P1 and P2 root/auth checks.
+                from hyprial.daemon.impl.harnesses.agent_sdk import _validated_claude_launch_environment
+
+                _, base, provider = _validated_claude_launch_environment(
+                    spec, env=None, worker_channel=None, complete_launch=complete_launch,
+                )
+                environment = {**base, **provider}
+                source = "env-grant" if any(environment.get(name) for name in (
+                    "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
+                )) else "agent-native"
+            else:
+                candidate = dict(environment)
+                try:
+                    source = validate_legacy_claude_auth(candidate)
+                except ClaudeRuntimeError as error:
+                    if guarded or (complete_launch is not None
+                                   and error.code != "CLAUDE_CREDENTIAL_MISSING"):
+                        raise
+                    # Resident PTY admission remains compatible. Do not inspect
+                    # ambient credentials or infer that an ambient login exists.
+                else:
+                    if complete_launch is None or complete_launch.runtime_context is None:
+                        environment = candidate
+            return environment
+        finally:
+            state_dir = environment.get("HARNESS_STATE_DIR")
+            if state_dir:
+                Logger.worker(Path(state_dir), runtime="claude", name=spec.name).info(
+                    "worker.claude.credential_source", credentialSource=source,
+                    actor=complete_launch.actor if complete_launch is not None else spec.name,
+                    runtimeMode=("p2" if complete_launch is not None
+                                 and complete_launch.runtime_context is not None else "legacy"),
+                )

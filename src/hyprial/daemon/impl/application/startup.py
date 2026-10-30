@@ -5,6 +5,12 @@ from __future__ import annotations
 from __future__ import annotations
 import json
 import os
+import re
+
+from hyprial.daemon.impl.application.start_backoff import (
+    record_start_failure,
+    relaunch_wait_seconds,
+)
 import sys
 import threading
 import time
@@ -76,6 +82,16 @@ def _mirror_startup_event_to_stderr(event: str, **fields: Any) -> None:
         )
     except Exception:  # noqa: BLE001 - the mirror must never mask its failure
         pass
+
+_ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
+
+
+def _error_code(error: BaseException) -> str | None:
+    """A daemon/sidecar error code token (never message text) for diagnostics."""
+
+    code = getattr(error, "code", None)
+    return code if isinstance(code, str) and _ERROR_CODE.match(code) else None
+
 
 class _ContextBoundProviderAuthRunner:
     """Hold Agent home custody for one complete model-vendor auth invocation."""
@@ -178,12 +194,13 @@ class _StartupMixin:
         def step(operation: Callable[[], Any], phase: DaemonStartupPhase) -> Any:
             try:
                 return self._startup_step(operation, phase)
-            except BaseException:
+            except BaseException as error:
                 # The launch summary reads the launch capture (stderr), not
                 # daemon.jsonl -- mirror the failure name there or a failed
                 # `hyprial init` reports `daemonEvents: []`.
                 _mirror_startup_event_to_stderr(
-                    "daemon.start.failed", phase=phase.value
+                    "daemon.start.failed", phase=phase.value,
+                    **({"code": code} if (code := _error_code(error)) else {}),
                 )
                 raise
 
@@ -332,6 +349,8 @@ class _StartupMixin:
                     homeLease=lease_observation,
                 )
                 self._close()
+                if run_failed:
+                    self._wait_before_relaunch()
             finally:
                 # Armed *before* the closing steps rather than after them.
                 # After, a hang inside `_home_guard.close` would leave nothing
@@ -369,8 +388,10 @@ class _StartupMixin:
                 "daemon.start.failed",
                 phase=phase_name,
                 errorType=type(error).__name__,
+                code=_error_code(error),
                 error=str(error)[:500],
                 elapsedMs=int((time.monotonic() - started) * 1000),
+                **self._start_failure_fields(_error_code(error), phase_name),
             )
             raise
         self._log_trace(
@@ -380,6 +401,41 @@ class _StartupMixin:
             elapsedMs=int((time.monotonic() - started) * 1000),
         )
         return result
+
+    def _start_failure_fields(self, code: str | None, phase: str) -> dict[str, Any]:
+        """Consecutive failed-start count and the relaunch backoff it implies.
+
+        Counted once per process: a nested phase failing inside its parent
+        phase logs twice but is one attempt. Without a state dir (bare
+        fixtures) both fields are None rather than invented.
+        """
+
+        cached = getattr(self, "_start_failure_record", None)
+        if cached is None:
+            state_dir = getattr(self, "state_dir", None)
+            cached = (
+                record_start_failure(state_dir, code=code, phase=phase)
+                if state_dir is not None
+                else {"attempt": None, "backoffMs": None}
+            )
+            self._start_failure_record = cached
+        return cached
+
+    def _wait_before_relaunch(self) -> None:
+        """Throttle a supervisor-driven relaunch loop after a failed start.
+
+        launchd ThrottleInterval (5 s) and systemd Restart= relaunch blindly;
+        a deterministic refusal became a hot loop. Only a service-managed
+        daemon waits, never on its first failure, and a stop request (SIGTERM
+        from `hyprial daemon stop`/launchctl) ends the wait at once.
+        """
+
+        fields = getattr(self, "_start_failure_record", None) or {}
+        seconds = relaunch_wait_seconds(fields)
+        if seconds <= 0:
+            return
+        self._log_trace("warn", "daemon.start.backoff", **fields)
+        self.stop_event.wait(seconds)
 
     def owns_process_exit(self) -> None:
         """Declare that this daemon *is* the process, so it may force the exit.

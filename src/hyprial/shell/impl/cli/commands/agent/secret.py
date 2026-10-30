@@ -702,7 +702,8 @@ def agent_secret_entry_write(
 def agent_secret_grant(
     actor: str = typer.Argument(..., help="Agent instance name."),
     grant_id: str = typer.Option(..., "--grant-id", help="Stable grant id."),
-    source: str = typer.Option(..., "--source", help="user-" + "provider or agent-private"),
+    source: str = typer.Option(..., "--source", help="user-" + "provider, agent-private or agent-shared"),
+    owner_agent: str | None = typer.Option(None, "--owner-agent", help="Source owner for agent-shared."),
     entry_id: str = typer.Option(..., "--entry-id", help="Secret entry id."),
     field_name: str = typer.Option(..., "--field-name", help="Model-vendor field name."),
     environment_name: list[str] = typer.Option(
@@ -721,12 +722,26 @@ def agent_secret_grant(
                 "actor": actor,
                 "grantId": grant_id,
                 "source": source,
+                "ownerActor": owner_agent,
                 "entryId": entry_id,
                 "fieldName": field_name,
                 "environmentNames": environment_name,
                 "revision": revision,
             },
         ),
+        json_output=json_output,
+    )
+
+
+@secret_app.command("ls")
+def agent_secret_grants(
+    actor: str | None = typer.Argument(None, help="Agent name; omit to list all grants."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """List explicit grants and their owner references, never values."""
+    services = get_services()
+    services._execute(
+        lambda: services._daemon_request("agent.secret.list", {"actor": actor}),
         json_output=json_output,
     )
 

@@ -21,6 +21,7 @@ class TurnDeliveryProjection:
     #: delivery header.  ``message_ids`` are the ordered members it claims.
     batch_cursor: str | None = None
     message_ids: tuple[str, ...] = ()
+    workflow: bool = False
 
 
 @dataclass(frozen=True, slots=True)

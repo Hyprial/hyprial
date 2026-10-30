@@ -9,7 +9,10 @@ from pathlib import Path, PurePosixPath
 
 from hyprial.kernel import private_metadata_violation
 
-from hyprial.identity import AgentConfigError, verify_native_projection
+from hyprial.identity import (
+    AgentConfigError, NativeCredentialError, prepare_legacy_claude_native_root,
+    verify_native_projection,
+)
 from hyprial.identity import (
     AgentRuntimeContext,
     validate_shared_credential_binding,
@@ -202,11 +205,51 @@ def validate_claude_auth_environment(
         raise _missing_claude_credential(credentials)
 
 
+def validate_legacy_claude_auth(environment: dict[str, str]) -> str:
+    """Do not inspect ambient native auth. Only the verified agent root is eligible."""
+    home = environment.get("HYPRIAL_AGENT_DIR")
+    selected = [name for name in _EXPLICIT_AUTH_NAMES if environment.get(name)]
+    if _DEAD_AUTH_NAME in environment or len(selected) > 1:
+        raise ClaudeRuntimeError("Claude launch has unsupported or conflicting authentication")
+    if not home or not Path(home).is_absolute():
+        raise _missing_claude_credential(Path("<agent-native>") / ".credentials.json")
+    native_root = Path(home) / "secrets" / "native" / "claude"
+    if not selected and environment.get("CLAUDE_CONFIG_DIR") != str(native_root):
+        raise _missing_claude_credential(native_root / ".credentials.json")
+    try:
+        native_root, provisioned = prepare_legacy_claude_native_root(Path(home))
+    except (NativeCredentialError, OSError) as error:
+        raise ClaudeRuntimeError(str(error)) from error
+    environment["CLAUDE_CONFIG_DIR"] = str(native_root)
+    _prepare_legacy_session_root(Path(home), native_root)
+    if not selected and provisioned:
+        raise _missing_claude_credential(native_root / ".credentials.json")
+    # A configuration-scoped Keychain login in a pre-existing root need not
+    # have a file. Creation alone is not authorization for a new empty root.
+    credentials = native_root / ".credentials.json"
+    # Preserve P1 explicit-auth precedence; P2 alone rejects native/env coexistence.
+    if not selected and (credentials.exists() or credentials.is_symlink()):
+        validate_claude_auth_environment(native_root, environment)
+    return "env-grant" if selected else "agent-native"
+
+
+def _prepare_legacy_session_root(home: Path, native_root: Path) -> None:
+    session_root = home / "state" / "sessions" / "claude"
+    try:
+        for root in (home / "state", home / "state/sessions", session_root):
+            root.mkdir(mode=0o700, exist_ok=True)
+            _require_private_directory(root, "session")
+        _ensure_session_link(native_root / _SESSION_LINK, session_root)
+    except OSError as error:
+        raise ClaudeRuntimeError(f"cannot prepare Claude session root: {error}") from error
+
+
 def _missing_claude_credential(credentials: Path) -> ClaudeRuntimeError:
     methods = ", ".join(_EXPLICIT_AUTH_NAMES)
     return ClaudeRuntimeError(
-        "Claude credential is missing: provide a non-empty 0600 regular file at "
-        f"{credentials}, or set exactly one of {methods} in the agent environment",
+        "Claude credential is missing: use agent provider login claude --actor <agent> "
+        f"to install native credentials at {credentials}, or grant exactly one of "
+        f"{methods} to the agent",
         code=CLAUDE_CREDENTIAL_MISSING,
         permanent_start_failure=True,
     )

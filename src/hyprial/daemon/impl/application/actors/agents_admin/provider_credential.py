@@ -7,27 +7,18 @@ boundary as ``_handle_agent``, so this module owns the parameter reading and the
 error mapping while the application object keeps owning the registry and the
 agent home authority.
 
-``agent.provider.default`` keeps the machine default for future
-``agent create`` runs in ``<state_dir>/provider-default.json`` (schemaVersion 1,
-0600, atomic replace). The daemon only records the provider name; the CLI that
-runs ``agent create`` reads the host login and seeds through
-``agent.provider.login``, so the daemon still never reads operator paths.
-Changing it is refused unless the router judged the caller the machine
-operator (``_identity_binding_operator``: not a daemon worker, no actor or
-session in the request, not a registered interactive session); reading it is
-open.  That is L0 bookkeeping on the local socket, the same posture as
-``agent.grant``, not an authentication boundary.  Seeding and logout refuse
-an agent whose owner is not this daemon's user (a host-invited visitor):
-decision 3 makes the credential the daemon user's, so it never goes to someone
-else's agent, and this feature does not touch the native files a visitor's
-agent holds.  Only ``agent.provider.{login,logout,default}`` are routed here; other
-``agent.provider.*`` names fall through to the general agent handler.
-Every answer names the previous value, because changing it changes what later
-creates on this machine receive. ``agent.create`` answers carry the current
-default as ``providerDefault`` (the router sends ``agent.create`` through
-:meth:`_AgentProviderMixin._handle_agent_create_with_default`), so the CLI
-learns it without a second round trip; an unreadable default is reported, never
-allowed to fail a create that already happened.
+Claude login stores either an owned SQLite setup token or an uploaded native
+login. ``--default`` designates the fenced owner reference in registry SQLite;
+identity creation applies it to CLI, PAC and lifecycle agents. The daemon never
+reads arbitrary operator paths. Historical provider-name defaults remain in
+``provider-default.json`` for CLI compatibility only. Captured Claude defaults
+replace that name; clearing removes both kinds but keeps existing grants.
+
+Default mutation requires the local host operator. Provider login's ``actor``
+is the recipient; trusted worker origin, session identity and registered
+interactive peer checks still gate mutation. This remains L0 local bookkeeping,
+not a new authentication boundary. ``agent.create.providerDefault`` reports the
+captured source object, historical name, or null, so the CLI does not copy again.
 
 This module also holds the bounded sqlite-to-environment launch helper. The
 adjacent ``registry_ops`` dispatch file is already at the structural line gate;
@@ -62,17 +53,38 @@ _DEFAULT_LOCK = threading.Lock()
 class _AgentProviderMixin:
     """Application cluster mixin; the state owner is DaemonApplication."""
 
+    def _handle_agent_provider_request(
+        self, method: str, params: JsonObject, *, trusted_message_origin: str | None,
+    ) -> Any:
+        # Login's actor is the recipient. Keep worker/session/interactive-peer fences.
+        attribution = ({key: value for key, value in params.items() if key != "actor"}
+                       if method == "agent.provider.login" else params)
+        operator, _ = self._identity_binding_operator(
+            attribution, trusted_message_origin=trusted_message_origin,
+        )
+        return self._handle_agent_provider(method, params, operator=operator)
+
     def _handle_agent_provider(
         self, method: str, params: JsonObject, *, operator: bool = True
     ) -> Any:
         if method == "agent.provider.login":
+            if params.get("makeDefault") and not operator:
+                raise DaemonRequestError(ipc_errors.CALLER_NOT_AUTHORIZED, "only the host operator may change the provider default")
             return handle_provider_login(self, params)
         if method == "agent.provider.logout":
             return handle_provider_logout(self, params)
         if method == "agent.provider.default":
-            return handle_provider_default(
+            reference = self._agent_registry.default_claude_credential()
+            result = handle_provider_default(
                 Path(self.state_dir) / _DEFAULT_FILE, params, operator=operator
             )
+            if params.get("clear") or params.get("provider") is not None:
+                change_default_credential(self, {"harness": "claude", "clear": True}, operator=operator)
+                if reference:
+                    result["previous"] = "claude"
+            elif reference:
+                result.update(provider="claude", credentialSource=reference["kind"], defaultCredential=reference)
+            return result
         raise DaemonRequestError(
             ipc_errors.METHOD_NOT_FOUND, f"unknown daemon method {method}"
         )
@@ -82,10 +94,48 @@ class _AgentProviderMixin:
         if not isinstance(created, dict):
             return created
         try:
-            default = read_provider_default(Path(self.state_dir) / _DEFAULT_FILE)
+            reference = self._agent_registry.default_claude_credential()
+            default = ({"provider": "claude", "credentialSource": reference["kind"],
+                        "defaultCredential": reference} if reference else
+                       read_provider_default(Path(self.state_dir) / _DEFAULT_FILE))
         except DaemonRequestError as error:
             return {**created, "providerDefault": None, "providerDefaultError": str(error)}
         return {**created, "providerDefault": default}
+
+
+def change_default_credential(app: Any, params: JsonObject, *, operator: bool) -> dict[str, Any]:
+    from uuid import uuid4
+    from hyprial.identity import (
+        DefaultClaudeCredentialCommand, DefaultClaudeCredentialCompleted, SecretResolutionError,
+    )
+
+    reference = params.get("reference")
+    clear = params.get("clear", False)
+    if params.get("harness") != "claude" or not isinstance(clear, bool):
+        raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, "expected harness claude and boolean clear")
+    if (reference is not None or clear) and not operator:
+        raise DaemonRequestError(ipc_errors.CALLER_NOT_AUTHORIZED, "only the host operator may change the Claude credential default")
+    owner = entry = token = None
+    kind = str(params.get("kind", "setup-token"))
+    if reference is not None:
+        if clear or not isinstance(reference, str) or reference.count("/") != 1:
+            raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, "reference must be OWNER/ENTRY; cannot combine with clear")
+        owner, entry = reference.split("/")
+        try:
+            agent = _owned_agent(app, owner)
+            token = (agent.entity_token if kind == "native" else
+                     app._agent_registry.validate_default_claude_credential(owner, entry))
+        except (ValueError, SecretResolutionError) as error:
+            raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
+    generation = app._agent_session_domains.agent.generation
+    event = app._agent_session_domains.call_agent(
+        DefaultClaudeCredentialCommand(uuid4().hex, owner, entry, token, clear, kind),
+        DefaultClaudeCredentialCompleted,
+    )
+    if event.generation != generation:
+        raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, "default credential completion fence mismatch")
+    return {"ok": True, "provider": "claude" if event.reference else None,
+            "credentialSource": kind if event.reference else None, "defaultCredential": event.reference}
 
 
 def materialize_agent_secret_environment(*, registry: Any, actor: str) -> dict[str, str]:
@@ -176,21 +226,52 @@ def handle_provider_login(application: Any, params: JsonObject) -> dict[str, obj
 
     actor = _required_string(params.get("actor"), "actor")
     provider = _required_string(params.get("provider"), "provider")
-    documents = _decoded_documents(params.get("files"))
     force = bool(params.get("force", False))
-
+    make_default = params.get("makeDefault", False)
+    if not isinstance(make_default, bool):
+        raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, "makeDefault must be boolean")
     agent = _owned_agent(application, actor)
+    if make_default and agent.hosted_by is not None:
+        raise DaemonRequestError(ipc_errors.TARGET_NOT_AUTHORIZED, "a hosted agent cannot own the machine default")
     receipt = application._agent_registry.home_receipt(agent.actor, require_ready=False)
-    try:
-        installed = install_native_credential_set(
-            Path(receipt.path),
-            provider,
-            documents,
-            force=force,
-        )
-    except NativeCredentialError as error:
-        raise DaemonRequestError(error.code, error.message) from error
-    return {"ok": True, "actor": agent.actor, **installed}
+    if "setupToken" in params:
+        token = params["setupToken"]
+        if (provider != "claude" or "files" in params or not isinstance(token, str)
+                or not token.strip() or "\x00" in token
+                or any(char.isspace() for char in token) or len(token) > 16384):
+            raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, "setupToken requires one non-empty Claude token and no files")
+        store = AgentSecretStore(Path(receipt.path))
+        if store.get("claude", "CLAUDE_CODE_OAUTH_TOKEN") is not None and not force:
+            raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, "Claude setup token exists; use --force to replace it")
+        store.set(service="claude", field="CLAUDE_CODE_OAUTH_TOKEN", value=token,
+                  actor=agent.actor, via="daemon", at_ms=application._agent_registry.now_ms())
+        # The owner is an explicit consumer too; normal grant resolution injects it.
+        application._handle_agent("agent.secret.grant", {
+            "actor": agent.actor, "grantId": "provider-claude", "source": "agent-private",
+            "entryId": "claude", "fieldName": "CLAUDE_CODE_OAUTH_TOKEN",
+            "environmentNames": ["CLAUDE_CODE_OAUTH_TOKEN"],
+            "revision": 1 + (prior.revision if (prior := application._agent_registry.secret_grant(agent.actor, "provider-claude")) else 0),
+        })
+        installed = {"provider": provider, "credentialSource": "setup-token"}
+    else:
+        documents = _decoded_documents(params.get("files"))
+        try:
+            installed = install_native_credential_set(Path(receipt.path), provider, documents, force=force)
+        except NativeCredentialError as error:
+            raise DaemonRequestError(error.code, error.message) from error
+    result = {"ok": True, "actor": agent.actor, **installed}
+    if make_default:
+        previous = application._handle_agent_provider("agent.provider.default", {}).get("provider")
+        if provider == "claude":
+            result["default"] = change_default_credential(application, {
+                "harness": "claude", "reference": f"{agent.actor}/claude",
+                "kind": "setup-token" if "setupToken" in params else "native",
+            }, operator=True)
+            (Path(application.state_dir) / _DEFAULT_FILE).unlink(missing_ok=True)
+            result["default"]["previous"] = previous
+        else:
+            result["default"] = application._handle_agent_provider("agent.provider.default", {"provider": provider})
+    return result
 
 
 def _owned_agent(application: Any, actor: str) -> Any:

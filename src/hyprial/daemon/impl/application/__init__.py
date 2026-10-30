@@ -502,6 +502,7 @@ class DaemonApplication(
         self._runtime: DaemonEventBridge | None = None
         self._dispatch_cadence: BoundedCadence[ReconcileSummary] | None = None
         self._forwarding_cadence: BoundedCadence[None] | None = None
+        self._forwarding_reconcile_requests = self._new_forwarding_reconcile_requests()
         self._session_route_coordinator: SessionRouteCoordinator | None = None
         self._hook_bus: Any | None = None
         self._daemon_hooks: Any | None = None

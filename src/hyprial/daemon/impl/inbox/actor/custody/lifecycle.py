@@ -339,6 +339,7 @@ class DeliveryCustodyLifecycleMixin:
                     after_digest=command.after_digest,
                     include_notices=command.include_notices,
                     only=command.only,
+                    mark_fetched=command.mark_fetched,
                 )
             self._publish(
                 BatchSnapshotCompleted(

@@ -232,6 +232,10 @@ class DaemonEventBridge(_BridgeForwardsMixin, _BridgeReconcileMixin, _BridgeResu
         #: Members an accepted managed batch already claimed, keyed only by
         #: actor.  The wrapper's transient turn id is never a settlement key.
         self._batch_claims: dict[str, tuple[str, ...]] = {}
+        self._pending_batch_claims: dict[
+            str, tuple[tuple[str, ...], tuple[InboxMessage, ...]]
+        ] = {}
+        self._pending_batch_fetches: dict[str, tuple[str, tuple[str, ...]]] = {}
         #: Actor-mode batch members not yet durably classified.  The outer key
         #: exists only until the transient Harness claim can be retired.
         self._pending_batch_members: dict[str, dict[str, HarnessResult]] = {}
@@ -300,6 +304,8 @@ class DaemonEventBridge(_BridgeForwardsMixin, _BridgeReconcileMixin, _BridgeResu
         self._actor_mode = actor_mode
         self._dispatch_state: DispatchStateAuthority | None = None
         self._dispatch_offers: DispatchOfferCoordinator | None = None
+        self._dispatch_agent_timeout_ms = 1500
+        self._dispatch_timeout_announced: set[str] = set()
         self._hold_refresh: HoldRefreshCoordinator | None = None
         self._progress_publish: ProgressPublishCoordinator | None = None
         self._result_settlement: ResultSettlementCoordinator | None = None
@@ -392,9 +398,6 @@ class DaemonEventBridge(_BridgeForwardsMixin, _BridgeReconcileMixin, _BridgeResu
             self._notice_failures_logged = DispatchOwnedSet(
                 owner, DispatchTable.NOTICE_FAILURES_LOGGED
             )
-            self._dispatch_offers = DispatchOfferCoordinator(
-                self.harnesses.dispatch
-            )
             refresh_hold = getattr(self.inbox, "refresh_hold", None)
             if callable(refresh_hold):
                 self._hold_refresh = HoldRefreshCoordinator(
@@ -439,6 +442,10 @@ class DaemonEventBridge(_BridgeForwardsMixin, _BridgeReconcileMixin, _BridgeResu
                 lambda _at_ms: self._report_stalled_deliveries(),
                 self._availability_completed,
             )
+        dispatch = getattr(self.harnesses, "dispatch", None)
+        self._dispatch_offers = (
+            DispatchOfferCoordinator(dispatch) if callable(dispatch) else None
+        )
         self._started = True
         self._retry_pump_halt.clear()
         self._retry_pump_kick.clear()

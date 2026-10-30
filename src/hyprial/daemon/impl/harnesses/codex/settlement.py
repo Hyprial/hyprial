@@ -24,6 +24,7 @@ from hyprial.daemon.impl.harnesses.carrier.interactive_carrier_runtime  import (
     CarrierRemoved,
     CarrierSettled,
     CarrierSettlementDeferred,
+    CarrierStatusUnknown,
     EnqueueTurnRequested,
     SupplyFinalRequested,
 )
@@ -35,6 +36,9 @@ from hyprial.daemon.impl.harnesses.codex.native_env import (
 from hyprial.daemon.impl.harnesses.codex.process import (
     CodexAppServerRpcError,
 )
+
+
+DEFAULT_STATUS_QUERY_LIMIT = 8
 
 
 class _CarrierSettlementMixin:
@@ -215,23 +219,62 @@ class _CarrierSettlementMixin:
             """Require durable delivery evidence before terminalising an ack miss."""
     
             message_id = state.delivery.delivery_id
+            limit = int(
+                getattr(self, "status_query_limit", DEFAULT_STATUS_QUERY_LIMIT)
+            )
+            counts = getattr(self, "_status_query_counts", None)
+            if counts is None:
+                counts = self._status_query_counts = {}
+            attempted = max(state.settlement_attempts, counts.get(message_id, 0))
+            if attempted >= limit:
+                self._settle_status_unknown(
+                    state,
+                    detail=(
+                        "message.status budget exhausted before query; "
+                        f"attempts={attempted} limit={limit}"
+                    ),
+                )
+                return
+            counts[message_id] = attempted + 1
+            self._persist_status_attempt(state, attempted + 1)
+
             try:
                 status = self.daemon_request(
                     "message.status", self._signed({"messageId": message_id})
                 )
             except Exception as status_error:  # noqa: BLE001 - unknown fate retries
+                if attempted >= limit:
+                    self._settle_status_unknown(
+                        state,
+                        detail=(
+                            "message.status budget exhausted; "
+                            f"attempts={attempted} limit={limit}"
+                        ),
+                    )
+                    return
                 self._defer_settlement(
                     state,
                     method="message.ack",
                     error=f"MESSAGE_ACK_UNAVAILABLE; status unavailable: {status_error}",
+                    attempts=attempted + 1,
                 )
                 return
             status_state = str(status.get("state") or "unknown")
             if status_state not in {"fetched", "expired"}:
+                if attempted >= limit:
+                    self._settle_status_unknown(
+                        state,
+                        detail=(
+                            "message.status budget exhausted; "
+                            f"attempts={attempted} limit={limit}"
+                        ),
+                    )
+                    return
                 self._defer_settlement(
                     state,
                     method="message.ack",
                     error=f"MESSAGE_ACK_UNAVAILABLE; delivery status={status_state}",
+                    attempts=attempted + 1,
                 )
                 return
             self._settle_elsewhere(
@@ -241,6 +284,50 @@ class _CarrierSettlementMixin:
                 code=ipc_errors.MESSAGE_ACK_UNAVAILABLE,
                 deliveryStatus=status_state,
             )
+            counts.pop(message_id, None)
+
+        def _persist_status_attempt(
+            self, state: CarrierDeliverySnapshot, attempts: int
+        ) -> None:
+            store = self._store
+            if store is not None:
+                store.record_settlement_attempts(
+                    self.actor, state.delivery.delivery_id, attempts
+                )
+
+        def _settle_status_unknown(
+            self, state: CarrierDeliverySnapshot, *, detail: str
+        ) -> None:
+            """Terminalise an ack miss whose status budget is exhausted."""
+
+            message_id = state.delivery.delivery_id
+            if message_id in self._carrier_settled_pending:
+                return
+            self._carrier_settled_pending.add(message_id)
+            self._log(
+                "warn",
+                "worker.carrier.settlement.status_unknown",
+                state=state,
+                stage="message.status",
+                daemonCode=ipc_errors.MESSAGE_ACK_UNAVAILABLE,
+                attempts=state.settlement_attempts,
+                limit=int(
+                    getattr(self, "status_query_limit", DEFAULT_STATUS_QUERY_LIMIT)
+                ),
+                detail=detail,
+            )
+            counts = getattr(self, "_status_query_counts", None)
+            if counts is not None:
+                counts.pop(state.delivery.delivery_id, None)
+            self._submit_carrier_fact(
+                CarrierStatusUnknown(
+                    generation=state.generation,
+                    delivery_id=state.delivery.delivery_id,
+                    attempts=state.settlement_attempts,
+                )
+            )
+            with self._carrier_io_lock:
+                self._carrier_clients.pop(state.delivery.delivery_id, None)
 
         def _settle_elsewhere(
             self,
@@ -286,8 +373,9 @@ class _CarrierSettlementMixin:
             method: str,
             error: str,
             result: dict[str, object] | None = None,
+            attempts: int | None = None,
         ) -> None:
-            attempts = state.settlement_attempts + 1
+            attempts = attempts or state.settlement_attempts + 1
             delay = min(
                 5.0,
                 max(

@@ -52,7 +52,8 @@ class _DeliveryBehavior:
 
 
     def _on_dispatch(self, command: DispatchHarnessDeliveryCommand) -> None:
-        if command.delivery.delivery_id in self._delivery_reservations:
+        members = command.delivery.message_ids or (command.delivery.delivery_id,)
+        if any(member in self._delivery_reservations for member in members):
             self._emit_event(
                 HarnessDeliveryAdmitted(
                     command.correlation_id,
@@ -89,9 +90,11 @@ class _DeliveryBehavior:
             return
         selected_key, selected_record = selected
         process = cast(StreamingHarnessProcess, selected_record.process)
-        self._delivery_reservations[command.delivery.delivery_id] = (
-            _DeliveryReservation(selected_key, selected_record.generation)
+        reservation = _DeliveryReservation(
+            selected_key, selected_record.generation, None, members
         )
+        for member in members:
+            self._delivery_reservations[member] = reservation
         self._result_reservation_snapshot = frozenset(self._delivery_reservations)
         correlation = self._register_call(
             command.correlation_id,
@@ -297,9 +300,22 @@ class _DeliveryBehavior:
             # offered to a replacement, retain the old result without taking
             # ownership of the replacement's reservation.
             if reservation is None or reservation.process_generation == generation:
-                self._delivery_reservations[result.delivery_id] = (
-                    _DeliveryReservation(harness_id, generation, token)
+                members = (
+                    reservation.message_ids
+                    if reservation is not None
+                    else result.message_ids
+                ) or (result.delivery_id,)
+                claimed_reservation = _DeliveryReservation(
+                    harness_id, generation, token, tuple(members)
                 )
+                for member in members:
+                    existing = self._delivery_reservations.get(member)
+                    if (
+                        existing is None
+                        or existing.claim_token is None
+                        or existing.process_generation != generation
+                    ):
+                        self._delivery_reservations[member] = claimed_reservation
         self._result_reservation_snapshot = frozenset(self._delivery_reservations)
         claims = tuple(self._claimed_results.values())
         for correlation_id, limit in self._claim_waiters:
@@ -335,7 +351,8 @@ class _DeliveryBehavior:
                 and reservation.claim_token == command.claim_token
                 and reservation.process_generation == claim.process_generation
             ):
-                self._delivery_reservations.pop(command.delivery_id, None)
+                for member in reservation.message_ids or (command.delivery_id,):
+                    self._delivery_reservations.pop(member, None)
                 self._result_reservation_snapshot = frozenset(
                     self._delivery_reservations
                 )
@@ -356,7 +373,10 @@ class _DeliveryBehavior:
             return
         if generation is not None and reservation.process_generation != generation:
             return
-        self._delivery_reservations.pop(delivery_id, None)
+        for member in reservation.message_ids or (delivery_id,):
+            current = self._delivery_reservations.get(member)
+            if current is not None and current.claim_token is None:
+                self._delivery_reservations.pop(member, None)
         self._result_reservation_snapshot = frozenset(self._delivery_reservations)
 
 

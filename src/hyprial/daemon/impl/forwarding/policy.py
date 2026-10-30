@@ -166,3 +166,27 @@ class ForwardingSidecarError(RuntimeError):
     def __init__(self, message: str, *, code: str = "FORWARD_PROTOCOL") -> None:
         self.code = code
         super().__init__(message)
+
+
+#: Membership commands wait this long for the sidecar when nothing bounds
+#: them: startup and background work (membership migration, leave-request
+#: processing, the Casdoor sync actor) may ride out a slow authority.
+MEMBERSHIP_WAIT_SECONDS = 35.0
+#: Membership commands issued from an IPC request path (`invite-create`,
+#: `invite-redeem`, `membership-status` for a CLI read) must answer inside
+#: the CLI's 15s roundtrip, with room for the reply itself.  The sidecar's
+#: own exchange timeout is 30s and the wire awaits 31s; a request that
+#: outlives this bound is reported as MEMBERSHIP_SIDECAR_TIMEOUT while the
+#: serial I/O owner finishes (or times out) the command behind it.
+REQUEST_MEMBERSHIP_WAIT_SECONDS = 10.0
+
+
+def membership_wait_seconds(default: float, requested: float | None) -> float:
+    """The wait for one membership command: unbounded callers get the
+    background allowance; a request path is capped by what it asked for,
+    never above that allowance."""
+
+    allowance = max(default, MEMBERSHIP_WAIT_SECONDS)
+    if requested is None:
+        return allowance
+    return min(float(requested), allowance)

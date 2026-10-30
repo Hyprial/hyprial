@@ -77,7 +77,9 @@ hyprial <域> <子命令> --help   # 参数面
   只有显式 `creating` / `partial` 状态表示创建未完成。生命周期标记缺失、缺少 state 或 JSON 损坏时按 ACL 绑定回退：有绑定为 `legacy-active`，无绑定为 `partial`。JSON 损坏、未知状态及无效/内容未到达的设备行会出现在 `org network --json` 的 `dataProblems` 与 doctor 警告中；设备行问题不阻断同一空间的其它有效设备。
   设备发布失败时，create 输出 `published:false`、`ok:false` 并退出 1，可同名重试。`org network` 的不可用原因是 `creating`、`partial` 或 `policy-denied`。
   `hyprial org repair [org]` 默认只读列出不完整创建。显式 `--apply` 才恢复当前 owner 的候选。不得用生产运行做测试。`hyprial org invite <org> --user <u>` 生成邀请链接
-  （https 主形式，另附可复制的 `hyprial org join '<链接>'`；链接含连接凭据，只发给被邀请人）；
+  （https 主形式，另附可复制的 `hyprial org join '<链接>'`；登录态下会附
+  `https://hyprial.ai/j` 短链，`--json` 的 `short` 失败为 null；短链同样是凭据，
+  私发勿贴群，短链失败只给长链；链接含连接凭据，只发给被邀请人）；
   对方用 `hyprial org join <链接|->` 加入，或在网页上接受后由设备执行 `hyprial org pending`
   拾取（`hyprial login` 成功后会自动拾取一次）。`org list`、`org network [<org>]` 查看；
   `org pending` 只读 Casdoor，不写 `consumedBy`；本机 `org.list` 的 `spaceId` 和
@@ -100,7 +102,23 @@ hyprial <域> <子命令> --help   # 参数面
 - Tailnet 升级：daemon 与边车须同时升级到 stdio v6，维护窗口先升级固定 authority；
   不支持混合版本或自动选举。旧邀请返回 `INVITE_VERSION_UNSUPPORTED`，须重新签发 v2。
   成员表只由边车维护；Directory 是发布副本，不是准入来源。一次性离线迁移遇到
-  `MIGRATION_AUTHORITY_MISSING` 时补齐明确的 owner 设备 pin/address，禁止任意选择设备。
+  `MIGRATION_AUTHORITY_MISSING` 时补齐明确的 owner 设备 pin，禁止任意选择设备（0.5.5.1.1）：
+  先 `hyprial org migration-status --json` 看每个 org space 的 pin/回执/accepted-rejected-dropped/
+  lastError 与 skipReason；再 `hyprial org pin-authority <spaceId> --device <deviceId> --yes`
+  （离线可用，daemon 停或不停都行；只写 settings.json 的 pin；边车成员表已存在时拒绝
+  `MEMBERSHIP_ALREADY_INITIALIZED`，此时用 `org repin`）；然后重启 daemon，authority 设备先起。
+  成员节点同样要先 pin（authority 是本机事实，远端 owner 行哪怕只有一行也不自动选用）。
+  0.5.5.1 留下的 `pending` 回执每次启动都按当前本地文件重算并改写（旧请求在
+  `diagnostics.supersededParams`），该跳过的空间回执改为 `skipped`；只有 `complete` 回执是权威的。
+  错误信息里列出候选 deviceId（不含地址/密钥）。可选 `forwarding.tailnet.authorityDefault:"self"`
+  让本机在多设备 owner 且无 pin 时自选为 authority（默认关闭，不要在成员节点打开）。
+  已删除的 org（`directory/org.json` state deleted）、已离开的 org、零设备行的探针 org 会被跳过，
+  各记一条 `membership.migration.skipped {spaceId, org, reason}`，不再导致启动失败。
+  重命名主机留下的同密钥旧行按 `updatedAt` 保留最新一条，丢弃项写进回执 `diagnostics.droppedDeviceIds`；
+  损坏的 `updatedAt` 不再拒绝整行。回执 `lastError:{code,at}` 保存边车最后一次拒绝码。
+  启动失败事件 `daemon.start.failed` 带 `code`、`attempt`、`backoffMs`；连续失败计数在
+  `state/daemon-start-failures.json`（`hyprial doctor` 的 `daemon-start-failures` 行），受管（launchd/
+  systemd）daemon 在第 2 次起失败后按 5s·2^(n-1)（上限 60s）退避再退出，SIGTERM 可打断；`daemon.ready` 清零。
   已完成迁移后丢失成员文件须人工恢复备份；不要删迁移回执来触发重新导入。
   authority 失联时有效 roster 租约最多 300 秒；到期关闭现有业务连接，只保留控制通道，恢复后刷新。
   重启普通成员不能续用磁盘中的旧租约。分别检查 sidecar/control/member/zenoh/orgfs readiness；
@@ -320,7 +338,35 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
   已有 grant 指向的直接旧文件会在首次解析时迁入 SQLite，核对后删除；不保留文件回退或明文备份。
   冲突时拒绝解析并保留源文件，不覆盖 SQLite。新建 agent 不生成空 `secrets/`；
   `secrets/native/` 的第三方 harness 登录态原样保留，只有空目录才删除。
-- **给 agent 下发 provider 凭据**(凭据一律归 daemon 登录用户;不回显;每条都可撤)。设计:
+- **新建 Claude agent 的默认凭据**：操作者先在可信终端运行 `claude setup-token`。
+  在 host 操作员终端把 token 从非 TTY stdin 传入
+  `agent provider login claude --setup-token --actor <owner> --default`。
+  值只存 owner 的 SQLite；默认只保存化身和条目引用，不含值。
+  新建本机 Claude agent（含 PAC worker）自动获得 `default-claude` grant；不复制值。
+  CLI 创建必须指定 `--preferred-harness claude`。
+  `agent provider default --json` 查引用，`agent secret ls <consumer> --json` 查 grant。
+  `agent secret revoke <consumer> default-claude` 撤 grant；`agent provider default --clear`
+  只清默认。默认变更不改已有 agent，不覆盖已有显式 auth grant，不恢复已撤销 grant。
+  已有 agent 可用 `agent secret grant <consumer> --source agent-shared --owner-agent <owner>
+  --entry-id claude --field-name CLAUDE_CODE_OAUTH_TOKEN --environment-name CLAUDE_CODE_OAUTH_TOKEN
+  --grant-id claude --revision 1` 显式授权。轮换或撤销后，消费者必须重启。
+  原生复制仍用 `agent provider login claude --actor <owner> --default`。
+  复制可刷新的 OAuth 登录给多个 agent，会使刷新相互干扰；共享默认宜用 `--setup-token`。
+  旧版 provider-name 默认不支持 PAC 自动复制，必须重跑 `login claude --default --actor <owner>`。
+  缺少显式 auth 环境和自有 native 根时，P1 SDK 启动永久失败：`CLAUDE_CREDENTIAL_MISSING`。
+  工作流所有或启动时创建的 agent，其 PTY 启动也执行此检查。
+  命令覆盖和交互式 CLI 不得绕过检查。不得为每个 agent 运行 `/login`。
+  操作员创建的常驻 PTY 不因缺少凭据被拒绝，来源记为 `ambient`。
+  daemon 组合的 P1 Claude 环境始终选择 `<agent home>/secrets/native/claude`。
+  该根的 `projects` 链接指向 `<agent home>/state/sessions/claude`。
+  env grant 使用同一路径，不继承宿主的 `CLAUDE_CONFIG_DIR`。
+  新建空根的 `.hyprial-launch-provisioned` 非秘密标记跨重试保留。
+  带标记的根须有 env grant，或由显式原生安装清除标记，才能通过检查。
+  env grant 不清除标记，撤销后仍拒绝缺少来源的启动。不得手动删除标记。
+  常驻交互式 CLI 的凭据限制留待 0.5.5.2 secrets 改造。
+  已有的自有私密根即使没有凭据文件，也可通过来源检查，支持 Keychain-only 来源。
+  文件存在时仍检查权限；系统不读取 Keychain。操作步骤见 `docs/guides/agent-secrets.md`。
+- **给 agent 下发 provider 凭据**（以下旧 `user-provider` 路径归 daemon 登录用户；不回显；每条可撤）。设计:
   `docs/design/provider-login-2026-10-14.md`。
   - API key(默认):`printf %s "$KEY" | hyprial agent secret provider-write <entry> --field apiKey`
     (stdin 非 TTY、一行),再 `hyprial agent secret grant <actor> --source user-provider --entry-id <entry>
@@ -349,9 +395,11 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
     `hyprial agent provider login codex --actor <name> --force --source <doctor 给出的绝对 backup path>`,
     然后重启 agent;不要直接把文件复制回 projection/native home。确认新 OpenAI 启动正常后,可把旧
     backup 移到同权限的批准归档位置;只要文件仍在上述目录,doctor 会继续提示。
-  - 新建默认:`hyprial agent provider login <p> --default` 记机器默认(回执带 previous);之后
-    `hyprial agent create` 自动从本机登录种入新 agent,结果 `providerSeed.state` = seeded/refused/
-    not-configured,后两者在 stderr 给出两条修法。`hyprial agent provider default [--clear]` 查/清。
+  - 新建默认：Claude 使用前述带 `--actor` 的引用流程；Codex/Pi 可用
+    `hyprial agent provider login <p> --default` 记录默认名称（回执带 previous）。
+    Codex/Pi 的 `agent create` 仍从本机登录复制，结果 `providerSeed.state` 为
+    seeded/refused/not-configured，后两者在 stderr 给出修法。
+    `hyprial agent provider default [--clear]` 查/清默认。
     ⛔ 不回溯已有 agent;`--preferred-harness` 与默认不同 ⇒ skipped;只有 operator shell 能改默认;
     不给 host-invite 访客种入。`--provider hyprial`(#1407)走 `HYPRIAL_API_KEY` 的 secret grant,不经此路。
 - `hyprial agent start claude|codex|pi|dsh|jev --name ... [--headless] --cwd ... -- <harness args>`

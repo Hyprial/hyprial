@@ -74,6 +74,22 @@ class ClockTick:
 
 
 @dataclass(frozen=True, slots=True)
+class ClockTickMany:
+    """One round trip for every clock job of a tick.
+
+    ``shared_connection`` and ``stop_on_error`` are measured separately
+    because the two savings (round trips vs store connect/close per graph)
+    must stay independently attributable: `shared_connection=False` keeps the
+    single round trip while still opening one store per graph.
+    """
+
+    correlation_id: str
+    graph_ids: tuple[str, ...]
+    shared_connection: bool = True
+    stop_on_error: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class RecordDelivery:
     correlation_id: str
     graph_id: str

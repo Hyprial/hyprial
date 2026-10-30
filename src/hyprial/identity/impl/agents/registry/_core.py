@@ -33,7 +33,10 @@ from .config_binding import _RegistryConfigBindingMixin
 if TYPE_CHECKING:
     from hyprial.identity.impl.agents.runtime.secrets import SecretGrant
 
-class AgentRegistry(_RegistryConfigBindingMixin, _RegistryLifecycleMixin, _RegistryHomeCreateMixin, _RegistryHomeDestroyMixin, _RegistryRecordsMixin):
+from hyprial.identity.impl.agents.secret_store.defaults import DefaultCredentialMixin
+
+
+class AgentRegistry(DefaultCredentialMixin, _RegistryConfigBindingMixin, _RegistryLifecycleMixin, _RegistryHomeCreateMixin, _RegistryHomeDestroyMixin, _RegistryRecordsMixin):
     """Every agent on this machine, in one real SQLite database.
 
     The database path is a constructor argument so tests (and a second daemon

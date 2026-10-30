@@ -123,6 +123,65 @@ def native_secrets_root(agent_home: Path, harness: str) -> Path:
     return Path(agent_home) / "secrets" / "native" / harness
 
 
+# Non-secret negative provenance, not a credential or a login-success marker.
+_CLAUDE_LAUNCH_PROVISIONED = ".hyprial-launch-provisioned"
+
+
+def prepare_legacy_claude_native_root(agent_home: Path) -> tuple[Path, bool]:
+    """Publish a private root with negative provenance before making it visible.
+
+    Existing roots retain file-less/Keychain admission. New roots remain missing
+    across retries until an explicit native installation removes the marker.
+    Only the actor lifecycle owner calls this on its verified home.
+    """
+    import uuid
+
+    _require_private_descriptor_io()
+    root = native_secrets_root(agent_home, "claude")
+    current = os.open(agent_home, _DIRECTORY_FLAGS)
+    temporary = None
+    try:
+        _require_private_directory(current, Path(agent_home))
+        shown = Path(agent_home)
+        for part in ("secrets", "native"):
+            shown /= part
+            child = _open_or_create_directory(part, current, shown, create=True)
+            os.close(current)
+            current = child
+        if _lstat_at("claude", current) is None:
+            temporary = ".claude-launch-" + uuid.uuid4().hex
+            os.mkdir(temporary, 0o700, dir_fd=current)
+            staging = _open_directory_or_refuse(temporary, current, root)
+            try:
+                _create_private_at(_CLAUDE_LAUNCH_PROVISIONED, b"", staging)
+                os.fsync(staging)
+            finally:
+                os.close(staging)
+            try:
+                os.rename(temporary, "claude", src_dir_fd=current, dst_dir_fd=current)
+                temporary = None
+                os.fsync(current)
+            except OSError as error:
+                if error.errno not in (errno.EEXIST, errno.ENOTEMPTY):
+                    raise
+        directory = _open_directory_or_refuse("claude", current, root)
+        try:
+            _require_private_directory(directory, root)
+            provisioned = _lstat_at(_CLAUDE_LAUNCH_PROVISIONED, directory) is not None
+        finally:
+            os.close(directory)
+        return root, provisioned
+    finally:
+        if temporary is not None:
+            staging = _open_directory_or_refuse(temporary, current, root)
+            try:
+                _unlink_quietly(_CLAUDE_LAUNCH_PROVISIONED, staging)
+            finally:
+                os.close(staging)
+            os.rmdir(temporary, dir_fd=current)
+        os.close(current)
+
+
 def supported_harnesses() -> tuple[str, ...]:
     return tuple(sorted(NATIVE_CREDENTIAL_FILES))
 
@@ -153,6 +212,31 @@ def install_native_credential_set(
     """Write every credential file ``harness`` reads, or none of them."""
 
     return _install(agent_home, harness, documents, force=force, whole_set=True)
+
+
+def read_native_credential_set(agent_home: Path, harness: str) -> list[tuple[str, bytes]]:
+    """Read only an explicitly authorized owner's private native files."""
+    allowed = _allowed(harness)
+    _require_private_descriptor_io()
+    directory = _open_private_chain(Path(agent_home), harness, create=False)
+    if directory is None:
+        raise NativeCredentialError(ipc_errors.PROVIDER_SOURCE_MISSING, "native default source is absent")
+    try:
+        documents = []
+        for name in sorted(allowed):
+            metadata = _lstat_at(name, directory)
+            if metadata is None:
+                raise NativeCredentialError(ipc_errors.PROVIDER_SOURCE_MISSING, "native default file is absent")
+            if (not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o777 != 0o600
+                    or metadata.st_uid != os.getuid()):
+                raise NativeCredentialError(ipc_errors.PROVIDER_UNSAFE_PATH, "native default file is not private")
+            content = _read_at(name, directory)
+            if not content:
+                raise NativeCredentialError(ipc_errors.PROVIDER_SOURCE_MISSING, "native default file is empty")
+            documents.append((name, content))
+        return documents
+    finally:
+        os.close(directory)
 
 
 def remove_native_credentials(agent_home: Path, harness: str) -> dict[str, object]:
@@ -241,6 +325,10 @@ def _install(
             directory = _open_private_chain(Path(agent_home), harness, create=True)
         assert directory is not None
         _write_plan(plan, directory, root)
+        if harness == "claude":
+            # A failed/partial installation must never authorize a launch root.
+            _unlink_quietly(_CLAUDE_LAUNCH_PROVISIONED, directory)
+            os.fsync(directory)
     finally:
         if directory is not None:
             os.close(directory)

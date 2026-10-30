@@ -796,6 +796,7 @@ def refresh_access_token(
     sleep: Callable[[float], None] | None = None,
     clock: Callable[[], float] | None = None,
     now: Callable[[], datetime] | None = None,
+    timeout: float | None = None,
 ) -> str:
     """Exchange the stored refresh token for a fresh access token.
 
@@ -817,7 +818,14 @@ def refresh_access_token(
             "hyprial login for this profile",
             data={"credentialIssuer": credential.issuer, "issuer": profile.issuer},
         )
-    endpoints = _fetch_endpoints(profile)
+    deadline = None if timeout is None else time.monotonic() + timeout
+
+    def remaining() -> float | None:
+        if deadline is None:
+            return None
+        return max(0.0, deadline - time.monotonic())
+
+    endpoints = _fetch_endpoints(profile, timeout=remaining())
     status, payload = _request_json(
         endpoints.token_endpoint,
         data={
@@ -825,6 +833,7 @@ def refresh_access_token(
             "client_id": profile.client_id,
             "refresh_token": credential.refresh_token,
         },
+        timeout=remaining(),
     )
     error = _token_error(status, payload, where="refresh token")
     if error is not None:

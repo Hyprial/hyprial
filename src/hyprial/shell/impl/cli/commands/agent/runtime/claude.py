@@ -44,6 +44,39 @@ def _reject_claude_session_identity_args(runtime_args: tuple[str, ...]) -> None:
             )
 
 
+def _legacy_pty_admission(
+    creation: JsonObject, environment: dict[str, str], *, name: str, state_dir: Path,
+) -> None:
+    """No new secret transport: admit only this launch's existing auth sources."""
+    from hyprial.daemon import ClaudeRuntimeError, validate_legacy_claude_auth
+    from hyprial.kernel import Logger
+
+    services = get_services()
+    managed = creation.get("agent", {}).get("capabilities", {}).get("creationOrigin") == "managed-launch"
+    source = "missing" if managed else "ambient"
+    try:
+        if managed:
+            # Only daemon-verified ownership/home metadata, never a guessed path.
+            receipt = services._daemon_request("agent.ensure-home", {"name": name})
+            home = Path(receipt["home"]["path"])
+            environment["HYPRIAL_AGENT_DIR"] = str(home)
+            native = home / "secrets/native/claude"
+            if native.is_dir():
+                environment["CLAUDE_CONFIG_DIR"] = str(native)
+        candidate = dict(environment)
+        try:
+            source = validate_legacy_claude_auth(candidate)
+        except ClaudeRuntimeError as error:
+            if managed:
+                raise services.CliError(error.code or ipc_errors.INVALID_ARGUMENT, str(error)) from error
+        else:
+            environment.update(candidate)
+    finally:
+        Logger.worker(state_dir, runtime="claude", name=name).info(
+            "worker.claude.credential_source", credentialSource=source, runtimeMode="legacy",
+        )
+
+
 def _start_interactive_claude(
     *,
     name: str,
@@ -121,16 +154,15 @@ def _start_interactive_claude(
                 f"cannot resume Claude session {resume!r}: {error}; "
                 "no Agent was changed and nothing was started",
             ) from error
-    handover = _handover_prompt(
-        services._create_agent_for_start(
-            name=name,
-            harness="claude",
-            runtime="interactive",
-            cwd=cwd,
-            provider=model_provider,
-            model=model,
-        )
+    creation = services._create_agent_for_start(
+        name=name,
+        harness="claude",
+        runtime="interactive",
+        cwd=cwd,
+        provider=model_provider,
+        model=model,
     )
+    handover = _handover_prompt(creation)
     runtime_environment = (
         runtime_payload
         if runtime_projection is None
@@ -399,14 +431,26 @@ def _start_interactive_claude(
                     ipc_errors.INVALID_ARGUMENT,
                     "Claude P2 runtime context is missing CLAUDE_CONFIG_DIR",
                 )
+            source = "missing"
             try:
                 validate_claude_auth_environment(
                     Path(native_root), launch_environment
                 )
+                source = "env-grant" if any(launch_environment.get(key) for key in (
+                    "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
+                )) else "agent-native"
             except ClaudeRuntimeError as error:
                 raise services.CliError(
                     error.code or ipc_errors.INVALID_ARGUMENT, str(error)
                 ) from error
+            finally:
+                from hyprial.kernel import Logger
+
+                Logger.worker(state_dir, runtime="claude", name=name).info(
+                    "worker.claude.credential_source", credentialSource=source, runtimeMode="p2",
+                )
+        else:
+            _legacy_pty_admission(creation, launch_environment, name=name, state_dir=state_dir)
         # M2: the attached TUI (and every shell it runs) carries the carrier's
         # daemon-bound identity. Build a child-only map; never mutate os.environ.
         _publish_session_ref(session_ref_file, session_ref)
