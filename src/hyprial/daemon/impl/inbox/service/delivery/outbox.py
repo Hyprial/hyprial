@@ -20,9 +20,7 @@ from hyprial.daemon.impl.inbox.service.synchronization import (
 )
 
 """SQLite-backed outbox, inbox, deduplication, FIFO, DLQ and custody state."""
-# Route C progress-event storage bounds (backpressure layer 3).  The
-# system_notices table predates these guards and stays unbounded; the
-# progress table never repeats that.
+# Route C progress bounds are independent of the system-notice lifecycle.
 PROGRESS_EVENT_TTL_MS = 600_000  # 10 minutes
 PROGRESS_EVENT_PER_DELIVERY_LIMIT = 50
 PROGRESS_EVENT_PER_RECIPIENT_LIMIT = 500
@@ -100,25 +98,42 @@ class InboxServiceOutboxMixin:
         parsed = parse_agent_uri(sender)
         return parsed[1] if parsed is not None else None
     @_synchronized
-    def receive_system_notice(self, notice: InboxMessage) -> bool:
+    def receive_system_notice(
+        self, notice: InboxMessage, *, allow_replay: bool = False
+    ) -> bool:
         """Persist an offered system notice outside inbox FIFO and receipts."""
 
         if notice.intent != "system":
             return False
         with self._db:
-            cursor = self._persist_system_notice_locked(notice)
-        return cursor.rowcount == 1 or self._has_system_notice(notice.message_id)
+            if allow_replay:
+                self._persist_system_notice_locked(notice, allow_replay=True)
+            else:
+                self._persist_system_notice_locked(notice)
+        # Inserted, already present, or suppressed by a live acknowledgement:
+        # each is an accepted offer, including a replay under a legacy key.
+        return True
     def _persist_system_notice_locked(
-        self, notice: InboxMessage
+        self, notice: InboxMessage, *, allow_replay: bool = False
     ) -> sqlite3.Cursor:
         if notice.intent != "system":
             raise ValueError("system notice intent must be 'system'")
-        return self._db.execute(
+        # Both receive and transactional DLQ insertion use the same identity
+        # before checking or clearing a tombstone and before persisting a row.
+        notice = self._canonicalize_system_notice(notice)
+        if allow_replay:
+            # Reply reminders own their bounded, in-memory dedup lifecycle.
+            self._db.execute(
+                "DELETE FROM system_notice_acks WHERE message_id = ? AND recipient = ?",
+                (notice.message_id, notice.recipient),
+            )
+        cursor = self._db.execute(
             """INSERT OR IGNORE INTO system_notices(
                    message_id, conversation_id, sender, recipient, payload,
                    intent, lifecycle, idempotency_key, created_at_ms, summary,
-                   arrival_ordinal
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   arrival_ordinal, received_at_ms
+               ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                   WHERE ? = 0""",
             (
                 notice.message_id,
                 notice.conversation_id,
@@ -131,8 +146,12 @@ class InboxServiceOutboxMixin:
                 notice.created_at_ms,
                 notice.summary,
                 self._next_arrival_ordinal(),
+                self._now_ms(),
+                self._notice_acked_locked(notice.recipient, notice.message_id),
             ),
         )
+        self._prune_system_notices_locked(keep_message_id=notice.message_id)
+        return cursor
     def _has_system_notice(self, message_id: str) -> bool:
         return (
             self._db.execute(
@@ -157,6 +176,9 @@ class InboxServiceOutboxMixin:
                     "DELETE FROM system_notices WHERE message_id = ?",
                     ((item.message_id,) for item in notices),
                 ).rowcount > 0
+                for item in notices:
+                    self._record_notice_ack_locked(recipient, item.message_id, self._now_ms())
+                self._prune_system_notices_locked()
             _record_committed_change(self, deleted)
         return notices
     @_synchronized
@@ -166,6 +188,11 @@ class InboxServiceOutboxMixin:
         """Remove one notice, optionally scoped to the caller's own inbox key."""
 
         with self._db:
+            row = self._db.execute(
+                "SELECT recipient FROM system_notices WHERE message_id = ?", (message_id,),
+            ).fetchone()
+            if row is None:
+                return False
             if recipient is None:
                 cursor = self._db.execute(
                     "DELETE FROM system_notices WHERE message_id = ?", (message_id,)
@@ -175,6 +202,9 @@ class InboxServiceOutboxMixin:
                     "DELETE FROM system_notices WHERE message_id = ? AND recipient = ?",
                     (message_id, recipient),
                 )
+            if cursor.rowcount == 1:
+                self._record_notice_ack_locked(str(row["recipient"]), message_id, self._now_ms())
+                self._prune_system_notices_locked()
         return cursor.rowcount == 1
     @_synchronized
     def submit_progress_event(self, event: ProgressEvent, *, recipient: str) -> bool:

@@ -1,0 +1,89 @@
+.org-block {
+  margin-bottom: 16px;
+}
+
+.org-members {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.org-member-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.org-member-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-weight: 650;
+}
+
+.org-members-empty {
+  margin: 12px 0 0;
+}
+
+.org-invitation-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0 0;
+}
+
+.org-invitation-note {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.org-join-failed {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0 0;
+}
+
+.org-join-error {
+  margin: 0;
+  color: #8f1d2c;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.org-invitation-copy {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.org-invitation-message {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.org-form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.org-forms {
+  display: grid;
+  gap: 16px;
+}
+
+.org-form-error {
+  margin: 0;
+  color: #8f1d2c;
+  font-size: 12.5px;
+  line-height: 1.5;
+}

@@ -164,6 +164,7 @@ class RetireOutboxReceiptCommand:
 class ReceiveSystemNoticeCommand:
     correlation_id: str
     notice: InboxMessage
+    allow_replay: bool = False
 
 
 @dataclass(frozen=True, slots=True)

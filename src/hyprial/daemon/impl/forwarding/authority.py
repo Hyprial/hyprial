@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -10,6 +11,7 @@ from typing import Any
 
 from hyprial.kernel import (
     SERVICE_CONTROL_TIMEOUT_SECONDS,
+    MEMBERSHIP_REPLY_MARGIN_SECONDS,
     ActorRuntime,
     ActorSpec,
     AdmissionResult,
@@ -70,6 +72,8 @@ class _MembershipSidecar:
     operation_id: str
     op: str
     params: Mapping[str, Any]
+    timeout: float
+    deadline: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +92,7 @@ class _SidecarReply:
         self.ready = threading.Event()
         self.value: object | None = None
         self.error: BaseException | None = None
+        self.leg = "sidecar-queue"
 
 
 class ForwardingControllerAuthority:
@@ -184,19 +189,19 @@ class ForwardingControllerAuthority:
                     f"forwarding sidecar I/O admission {admitted.value}"
                 )
         wait_timeout = min(self._timeout, SERVICE_CONTROL_TIMEOUT_SECONDS) if service else self._timeout
+        if timeout is not None:
+            wait_timeout = min(wait_timeout, timeout)
         membership = isinstance(command, _MembershipSidecar)
         if membership:
-            # Background callers keep the 35s allowance; an IPC request path
-            # passes its own bound (policy.REQUEST_MEMBERSHIP_WAIT_SECONDS).
-            wait_timeout = membership_wait_seconds(wait_timeout, timeout)
+            wait_timeout = max(0.0, command.deadline - time.monotonic()) + MEMBERSHIP_REPLY_MARGIN_SECONDS
         if not reply.ready.wait(wait_timeout):
             if membership:
-                # The serial owner still finishes (or times out) the command
-                # behind this reply; the caller gets a stable code, not a hang.
                 raise ForwardingSidecarError(
-                    f"Tailnet membership command {command.op} timed out after "  # type: ignore[attr-defined]
-                    f"{wait_timeout:g}s.",
+                    f"Tailnet membership command {command.op} leg {reply.leg} timed out "
+                    f"after {wait_timeout:g}s.",
                     code=ipc_errors.MEMBERSHIP_SIDECAR_TIMEOUT,
+                    details={"operation": command.op, "leg": reply.leg,
+                             "budgetSeconds": wait_timeout},
                 )
             raise TimeoutError(
                 f"forwarding sidecar command {operation_id} remains accepted"
@@ -227,7 +232,22 @@ class ForwardingControllerAuthority:
             elif isinstance(command, _PeerKeySidecar):
                 value = self._controller.peer_key(command.address)
             elif isinstance(command, _MembershipSidecar):
-                value = self._controller.membership_request(command.op, command.params)
+                remaining = command.deadline - time.monotonic()
+                if remaining <= 0:
+                    raise ForwardingSidecarError(
+                        f"Tailnet membership command {command.op} timed out in the sidecar queue "
+                        f"after {command.timeout:g}s.",
+                        code=ipc_errors.MEMBERSHIP_SIDECAR_TIMEOUT,
+                        details={"operation": command.op, "leg": "sidecar-queue",
+                                 "budgetSeconds": command.timeout},
+                    )
+                with self._guard:
+                    reply = self._pending.get(command.operation_id)
+                    if reply is not None:
+                        reply.leg = command.op
+                value = self._controller.membership_request(
+                    command.op, command.params, timeout=remaining
+                )
             elif isinstance(command, _DeriveClientKeySidecar):
                 value = self._controller.derive_client_key(command.server_public)
             elif isinstance(command, _MapServiceSidecar):
@@ -264,13 +284,13 @@ class ForwardingControllerAuthority:
         assert isinstance(result, tuple)
         return result
 
-    def map_peer(self, peer: str, address: str, slot: str) -> str:
+    def map_peer(self, peer: str, address: str, slot: str, *, timeout: float | None = None) -> str:
         """Bind ``peer`` onto the fixed ``slot`` (protocol v6).
 
         Returns the bound slot wire id (the resolved id on a tcp growth
         bind); the fixed slot pool is the only mapping shape.
         """
-        result = self._call(_MapSidecarPeer(uuid.uuid4().hex, peer, address, slot))
+        result = self._call(_MapSidecarPeer(uuid.uuid4().hex, peer, address, slot), timeout=timeout)
         assert isinstance(result, str)
         return result
 
@@ -293,8 +313,9 @@ class ForwardingControllerAuthority:
     def membership_request(
         self, op: str, params: Mapping[str, Any], *, timeout: float | None = None
     ) -> dict[str, Any]:
+        wait = membership_wait_seconds(op, timeout)
         result = self._call(
-            _MembershipSidecar(uuid.uuid4().hex, op, dict(params)), timeout=timeout
+            _MembershipSidecar(uuid.uuid4().hex, op, dict(params), wait, time.monotonic() + wait)
         )
         assert isinstance(result, dict)
         return result

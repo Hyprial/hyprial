@@ -7,10 +7,11 @@ from hyprial.shell.impl.cli.commands.common.services import get_services
 from typing import Any
 from hyprial.kernel import ipc_errors
 import typer
+from hyprial.shell.impl.cli.commands.common.groups import group
 
 from hyprial.shell.impl.cli.commands.adapter.admin import _parse_adapter_routes
 from hyprial.shell.impl.cli.commands.common.support import JsonObject
-route_app = typer.Typer(
+route_app = group(
     help="Manage one adapter's outbound routes (route:<adapter>:<route>)."
 )
 
@@ -72,7 +73,7 @@ def _route_operation(call: Any) -> JsonObject:
     except PersistentConfigError as error:
         raise services.CliError(_route_error_code(error), str(error)) from error
     try:
-        result["daemonReload"] = services._daemon_request(
+        result["daemonReload"] = services.runtime.request(
             "adapter.reload", {}, timeout=5.0, restore_wait=0.0
         )
     except (services.CliError, ipc_errors.TransientDaemonError):
@@ -100,7 +101,7 @@ def adapter_route_list(
         except PersistentConfigError as error:
             raise services.CliError(_route_error_code(error), str(error)) from error
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @route_app.command("candidates")
@@ -125,7 +126,7 @@ def adapter_route_candidates(
             "candidates": services._route_candidates(name),
         }
 
-    services._execute(operation, json_output=json_output, allow_missing_home=True)
+    services.runtime.execute(operation, json_output=json_output, allow_missing_home=True)
 
 
 @route_app.command("add")
@@ -165,7 +166,7 @@ def adapter_route_add(
             )
         )
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @route_app.command("remove")
@@ -195,4 +196,4 @@ def adapter_route_remove(
             )
         )
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)

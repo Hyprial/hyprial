@@ -22,6 +22,14 @@ from hyprial.kernel import DECLARED_HARNESSES as DECLARED_HARNESSES, HarnessLaun
 
 PLUGIN_KINDS = frozenset({"mcp", "skill", "pi-extension", "claude-plugin"})
 
+WHOLE_SESSION_SOURCES = frozenset({"claude-channel", "pi-extension"})
+"""Installed-producer session sources whose observations cover the whole turn.
+
+Only the Claude channel and the Pi extension install real producers today, so
+only those sources make a cell's contact scope ``whole-session``; every other
+source counts carrier deliveries only.
+"""
+
 
 @dataclass(frozen=True, slots=True)
 class CapabilitySupport:

@@ -235,7 +235,7 @@ def login(
             for transaction in held_identity_transaction:
                 transaction.close()
 
-    services._execute(operation, json_output=json_output, allow_missing_home=True)
+    services.runtime.execute(operation, json_output=json_output, allow_missing_home=True)
 
 
 @app.command()
@@ -333,7 +333,7 @@ def logout(
         finally:
             transaction.close()
 
-    services._execute(operation, json_output=json_output, allow_missing_home=True)
+    services.runtime.execute(operation, json_output=json_output, allow_missing_home=True)
 
 
 _ORG_LIST_HINT_SECONDS = 2.0
@@ -355,7 +355,7 @@ def _organization_next_steps(services) -> list[str] | None:
         # restore budget (that budget can be minutes), and no retry loop.  The
         # caller has already logged in successfully; the only thing at stake
         # here is whether one extra line is printed.
-        result = services._daemon_request(
+        result = services.runtime.request(
             "org.list", {}, timeout=_ORG_LIST_HINT_SECONDS, restore_wait=0.0
         )
     except Exception:  # noqa: BLE001 - D12: a hint is never worth failing login

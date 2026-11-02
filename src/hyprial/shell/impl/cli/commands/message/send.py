@@ -41,7 +41,7 @@ def _validate_from_identity(
     if ctx.resilient_parsing or not value or ":" in value:
         return value
     try:
-        answer = services._daemon_request("agent.resolve", {"name": value}, timeout=1.0)
+        answer = services.runtime.request("agent.resolve", {"name": value}, timeout=1.0)
     except (services.CliError, ipc_errors.TransientDaemonError) as error:
         if isinstance(error, services.CliError) and error.code == ipc_errors.AMBIGUOUS_TARGET:
             raise typer.BadParameter(str(error), ctx=ctx, param=param) from error
@@ -241,16 +241,14 @@ def send(
 
     def operation() -> Any:
         services = get_services()
-        from hyprial.biz import worker_binding
-
-        binding = worker_binding()
+        binding = services.runtime.worker_session_binding()
         if source is None:
             if binding is None:
                 raise services.CliError(
                     ipc_errors.INVALID_ARGUMENT,
                     "--from is required outside a verified agent session",
                 )
-            source_value = binding[0]
+            source_value = binding.actor
         else:
             source_value = source
         summary_value = _require_summary(summary)
@@ -269,7 +267,9 @@ def send(
                     }
                 )
         params: JsonObject = {
-            **_message_claim_params(source_value, on_behalf_of=on_behalf_of),
+            **_message_claim_params(
+                source_value, on_behalf_of=on_behalf_of, binding=binding
+            ),
             "to": to,
             "message": text,
             "summary": summary_value,
@@ -282,7 +282,7 @@ def send(
             params["replyTo"] = reply_to
         if resources:
             params["resourcePaths"] = resources
-        result = services._daemon_request("message.send", params)
+        result = services.runtime.request("message.send", params)
         if isinstance(result, dict):
             result = _lift_hold(result)
         if (
@@ -302,4 +302,4 @@ def send(
             return CliResult(result, render=_render_send)
         return result
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)

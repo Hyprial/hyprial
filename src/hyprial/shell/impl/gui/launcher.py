@@ -1,13 +1,11 @@
 """Minimal foreground launcher for the shared ``gui/`` web application.
 
 This module deliberately does not resurrect the retired Python GUI host or the
-old packaged ``src/gui`` product.  It starts the Vite/npm frontend from a GUI
-project checkout and an independent Node placeholder service, passes their two
-endpoints to the child processes, and owns only those child process groups.
-
-The launcher is intentionally small: it validates the selected Git worktree,
-does not write into it, and never discovers or stops processes by name or
-port.  Git worktrees are a development convenience, not a security sandbox.
+old packaged ``src/gui`` product.  Installed normal mode serves verified wheel
+assets with Python; source/dev mode starts the Vite/npm frontend and an
+independent placeholder service.  It owns only its child process groups and
+never discovers or stops processes by name or port.  A Git worktree is a
+development convenience, not a security sandbox.
 """
 
 from __future__ import annotations
@@ -36,13 +34,11 @@ import webbrowser
 from hyprial.kernel import ipc_errors
 
 from .errors import GuiError
-from .project import (
-    GuiProject,
-    _npm_prefix,
-    inspect_project,
-    resolve_gui_home,
-)
-from .worktree import AutoGuiWorktree, auto_worktree_payload, ensure_dev_worktree
+from .install import GuiAssets
+from .install.launch import select_dev_target, select_normal_target
+from .install.report import render_startup, startup_payload  # noqa: F401 - re-export
+from .project import GuiProject, _npm_prefix, inspect_project, resolve_gui_home  # noqa: F401
+from .worktree import AutoGuiWorktree, ensure_dev_worktree  # noqa: F401
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 4173
@@ -59,8 +55,6 @@ STUB_READY_POLL_SECONDS = 0.1
 STUB_EXIT_FLUSH_SECONDS = 1.0
 PROCESS_STOP_TIMEOUT_SECONDS = 5.0
 PROCESS_KILL_TIMEOUT_SECONDS = 2.0
-NOT_IMPLEMENTED_TEXT = "not implemented: hyprial backend not wired"
-
 _LOOPBACK_NAMES = frozenset({"localhost", "127.0.0.1", "::1"})
 _STUB_EOF = object()
 
@@ -85,6 +79,8 @@ class GuiLaunchPlan:
     open_browser: bool
     build_argv: tuple[str, ...] | None = None
     auto_worktree: AutoGuiWorktree | None = None
+    installed_assets: GuiAssets | None = None
+    dev_prompt: str = ""
 
     @property
     def backend_health_url(self) -> str:
@@ -218,16 +214,65 @@ def build_plan(
     host = parse_host(ip)
     frontend_port = parse_port(port)
     source = dict(os.environ if environ is None else environ)
-    auto: AutoGuiWorktree | None = None
-    explicit_home = gui_home is not None or bool(
-        str(source.get("HYPRIAL_GUI_HOME") or "").strip()
+    target = (
+        select_normal_target(
+            gui_home,
+            environ=source,
+            cwd=cwd,
+            inspect=inspect,
+            which=which,
+            run=run,
+        )
+        if mode == "normal"
+        else select_dev_target(
+            gui_home,
+            environ=source,
+            cwd=cwd,
+            inspect=inspect,
+            which=which,
+            run=run,
+            ensure=ensure_dev_worktree,
+        )
     )
-    if mode == "dev" and not explicit_home:
-        auto = ensure_dev_worktree(cwd=cwd, environ=source, which=which, run=run)
-        home = auto.home
-    else:
-        home = resolve_gui_home(gui_home, environ=source, cwd=cwd)
-    project = inspect(home, which=which, run=run)
+    project = target.project
+    auto = target.auto
+
+    preset_endpoint = str(source.get("HYPRIAL_BACKEND_ENDPOINT") or "").strip()
+    _assert_port_free(host, frontend_port)
+    url = _frontend_url(host, frontend_port)
+    if target.static_root is not None:
+        backend_endpoint = (
+            _loopback_endpoint(preset_endpoint) if preset_endpoint else None
+        )
+        frontend_argv = (
+            sys.executable,
+            "-m",
+            "hyprial.shell.impl.gui.install.server",
+            "--root",
+            str(target.static_root),
+            "--host",
+            host,
+            "--port",
+            str(frontend_port),
+        )
+        return GuiLaunchPlan(
+            mode="normal",
+            project=project,
+            host=host,
+            port=frontend_port,
+            url=url,
+            backend_endpoint=backend_endpoint,
+            backend_owned=False,
+            backend_argv=None,
+            frontend_argv=frontend_argv,
+            env=_child_environment(
+                source,
+                gui_home=target.static_root,
+                backend_endpoint=backend_endpoint,
+            ),
+            open_browser=not no_open,
+            installed_assets=target.assets,
+        )
 
     frontend_script = "dev" if mode == "dev" else "start"
     if frontend_script not in project.scripts:
@@ -237,7 +282,6 @@ def build_plan(
             {"gui_home": str(project.home), "script": frontend_script},
         )
 
-    preset_endpoint = str(source.get("HYPRIAL_BACKEND_ENDPOINT") or "").strip()
     if preset_endpoint:
         backend_endpoint: str | None = _loopback_endpoint(preset_endpoint)
         backend_owned = False
@@ -268,9 +312,6 @@ def build_plan(
             ]
         )
 
-    _assert_port_free(host, frontend_port)
-
-    url = _frontend_url(host, frontend_port)
     child_env = _child_environment(
         source,
         gui_home=project.home,
@@ -311,6 +352,8 @@ def build_plan(
         open_browser=not no_open,
         build_argv=build_argv,
         auto_worktree=auto,
+        installed_assets=target.assets,
+        dev_prompt=target.dev_prompt,
     )
 
 
@@ -397,52 +440,6 @@ def start_session(
         if plan.backend_owned:
             _terminate_child(backend)
         raise
-
-
-def startup_payload(session: GuiSession) -> dict[str, Any]:
-    """The one machine-readable startup record emitted before the wait."""
-    plan = session.plan
-    return {
-        "ok": True,
-        "mode": plan.mode,
-        "gui_home": str(plan.project.home),
-        "git_worktree": str(plan.project.worktree),
-        "git_branch": plan.project.branch,
-        "url": plan.url,
-        "host": plan.host,
-        "port": plan.port,
-        "hot_reload": plan.hot_reload,
-        "backend_endpoint": plan.backend_endpoint or "",
-        "backend_owned": plan.backend_owned,
-        "frontend_pid": session.frontend.process.pid,
-        "backend_pid": (
-            session.backend.process.pid if session.backend is not None else None
-        ),
-        "node_version": plan.project.node_version,
-        "npm_version": plan.project.npm_version,
-        "auto_worktree": auto_worktree_payload(plan.auto_worktree),
-        "business": NOT_IMPLEMENTED_TEXT,
-        "note": (
-            "The GUI uses the independent Node placeholder boundary; "
-            "business calls are not wired to a daemon."
-        ),
-    }
-
-
-def render_startup(payload: Mapping[str, Any]) -> str:
-    """Human output for a running session; the URL is stable and copyable."""
-    lines = [
-        f"Hyprial GUI ({payload['mode']})",
-        f"  GUI_HOME : {payload['gui_home']}",
-        f"  Git      : {payload['git_branch']} at {payload['git_worktree']}",
-        f"  URL      : {payload['url']}",
-        f"  backend  : {payload['backend_endpoint']} "
-        f"({'owned by CLI' if payload['backend_owned'] else 'external, loopback only'})",
-        f"  hot reload: {'enabled' if payload['hot_reload'] else 'not used'}",
-        f"  business : {payload['business']}",
-        "  stop     : Ctrl-C (only this invocation's processes are reclaimed)",
-    ]
-    return "\n".join(lines)
 
 
 def _run_build(

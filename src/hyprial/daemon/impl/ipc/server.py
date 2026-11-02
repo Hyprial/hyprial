@@ -13,7 +13,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol, TYPE_CHECKING, runtime_checkable
-from hyprial.kernel import AdmissionResult
+from hyprial.kernel import AdmissionResult, MEMBERSHIP_BUDGETS
 from hyprial.daemon.impl.ipc.ipc_request_owner  import IpcRequestOwner
 from hyprial.daemon.impl.dispatch.runtime.diagnostics  import DispatchDiagnostics
 from hyprial.kernel import ipc_errors
@@ -543,7 +543,12 @@ class _IpcServerMixin:
             name="hyprial-daemon-ipc-request",
             daemon=True,
         ).start()
-        deadline = time.monotonic() + _IPC_REQUEST_TIMEOUT
+        timeout = (
+            MEMBERSHIP_BUDGETS["join-ipc"].seconds
+            if method in {"org.join", "org.execute"}
+            else _IPC_REQUEST_TIMEOUT
+        )
+        deadline = time.monotonic() + timeout
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:

@@ -59,7 +59,7 @@ def render_connect(data: Mapping[str, Any]) -> str:
         lines.append(f"Use:  connect to {local}")
     if data.get("auth"):
         lines.append(f"Key:  {data['auth']}")
-    lines.append(f"Guide: hyprial service guide {name}")
+    lines.append(f"Guide: hyprial org service guide {name}")
     return "\n".join(lines)
 
 

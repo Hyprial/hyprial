@@ -380,10 +380,12 @@ class DeliveryCustodyFacade:
             )
         )
 
-    def receive_system_notice(self, notice: InboxMessage) -> bool:
+    def receive_system_notice(
+        self, notice: InboxMessage, *, allow_replay: bool = False
+    ) -> bool:
         return self._bool(
             ReceiveSystemNoticeCommand(
-                self._correlation("receive-notice"), notice
+                self._correlation("receive-notice"), notice, allow_replay
             )
         )
 
@@ -653,6 +655,9 @@ class DeliveryCustodyFacade:
             since_inclusive=since_inclusive,
         )
 
+    def system_notice_counts(self, node_id: str) -> dict[str, int]:
+        return self._reads.system_notice_counts(node_id)
+
     def system_notices(self, recipient: str) -> tuple[InboxMessage, ...]:
         return self._reads.system_notices(recipient)
 
@@ -753,6 +758,9 @@ class DeliveryCustodyFacade:
         """The latest durable submit receipt for one message id, or None."""
 
         return self._reads.submission_result_by_message(message_id)
+
+    def lookup_send(self, **selectors: str) -> dict[str, str]:
+        return self._reads.lookup_send(**selectors)
 
     def dlq_count(self) -> int:
         return self._reads.dlq_count()

@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import typer
+from hyprial.shell.impl.cli.commands.common.groups import group
 
 from hyprial.kernel import ipc_errors
 from hyprial.shell.impl.cli.commands.common.services import get_services
 from hyprial.shell.impl.cli.commands.common.support import JsonObject
 
 
-tiers_app = typer.Typer(
+tiers_app = group(
     help="Inspect recorded model-tier availability and probe runtime combinations.",
     invoke_without_command=True,
+    # Declared no-argument behavior: bare `hyprial agent tiers` reports tiers.
+    no_args_is_help=False,
 )
 
 
@@ -33,7 +36,7 @@ def _delivery_agent_live(agent: str | None) -> bool:
     if agent is None:
         return False
     try:
-        status = services._daemon_request("ps", {})
+        status = services.runtime.request("ps", {})
     except ipc_errors.DaemonUnavailableError:
         return False
     connectors = status.get("connectors")
@@ -69,7 +72,7 @@ def agent_tiers(
         except ValueError as error:
             raise services.CliError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @tiers_app.command("probe")
@@ -112,4 +115,4 @@ def tiers_probe(
         )
         return document
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)

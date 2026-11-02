@@ -9,9 +9,10 @@ from hyprial.shell.impl.cli.commands.common.services import get_services
 from pathlib import Path
 import os
 import typer
+from hyprial.shell.impl.cli.commands.common.groups import group
 
 from hyprial.shell.impl.cli.commands.common.support import JsonObject, _local_operator_identity
-user_auth_app = typer.Typer(
+user_auth_app = group(
     help=(
         "Watch the lark-cli USER credential: detect expiry, walk the device "
         "flow to 'one click away', and push the link to a human."
@@ -59,7 +60,7 @@ def _lark_auth_send(sender: str, route: str, text: str) -> None:
     token) -- deliberately independent of the expired lark-cli user token."""
     services = get_services()
 
-    services._daemon_request(
+    services.runtime.request(
         "message.send",
         {
             "from": _local_operator_identity(),
@@ -180,7 +181,7 @@ def lark_auth_check(
             )
         return result.to_json()
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @user_auth_app.command("complete")
@@ -227,4 +228,4 @@ def lark_auth_complete(
             )
         return result.to_json()
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)

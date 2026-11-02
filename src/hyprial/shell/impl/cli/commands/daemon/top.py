@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from hyprial.shell.impl.cli.output import CliResult
+from hyprial.shell.impl.cli.output.status import format_run_state
 
 from hyprial.shell.impl.cli.commands.common.services import get_services
 
@@ -240,7 +241,8 @@ def _render_top(
         "W",
         "OUT",
         "INJQ",
-        "STATE",
+        "LEGACY",
+        "RUN STATE",
     ]
     rows: list[list[str]] = []
     for row in actors:
@@ -286,6 +288,7 @@ def _render_top(
             _format_top_link_count(row.get(TOP_FIELD_OUTBOUND_IN_FLIGHT)),
             _format_top_link_count(row.get(TOP_FIELD_INBOUND_AWAITING_INJECTION)),
             _top_state_label(row, now_ms),
+            format_run_state(row.get("runState")),
         ]
         rows.append(cells)
 
@@ -330,6 +333,7 @@ def _render_top(
                 f"  {item.get('recipient')}  pending={item.get('pending', '?')}"
                 f"  (current: {item.get('currentRecipient', '?')})"
             )
+    lines.append("LEGACY: log/contact diagnostics, not run state; RUN STATE: shared cell observation.")
     lines.extend(_render_top_quota(payload.get("quota"), now_ms))
     return "\n".join(lines)
 
@@ -445,9 +449,16 @@ def top_status(
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
-    """Show whether each agent is actually working: turns, queue, verdicts.
+    """Show scoped cell run state, plus legacy turn and queue diagnostics.
 
-    Headless turn fields come from the current worker-generation JSONL log and
+    RUN STATE comes only from the daemon's shared runState projection, not
+    logs or process sampling. Missing runState is unsupported/unknown.
+    The reason, measured turn age, scope, certainty and permission capability
+    remain explicit; suspected-stuck is not proof of deadlock or a kill policy.
+    LEGACY is the prior log/contact heuristic (JSON state/stateDetail), not
+    a current run-state claim. Presence, queue and permission coverage differ.
+
+    Headless legacy turn fields come from the current worker-generation JSONL log and
     stay null when that generation boundary cannot be proven.
     Interactive Claude ``turnCount`` and ``lastTurnEndedAtMs`` come from fenced
     Stop-hook receipts held by this daemon generation; ``turnCountSinceMs``
@@ -470,11 +481,11 @@ def top_status(
 
     def operation() -> Any:
         services = get_services()
-        result = services._daemon_request("top.snapshot")
+        result = services.runtime.request("top.snapshot")
         if not isinstance(result, dict) or not isinstance(result.get("actors"), list):
             raise services.CliError(
                 "INVALID_RESPONSE", "daemon top.snapshot result must contain actors"
             )
         return CliResult({"ok": True, **result}, render=lambda data: _render_top(data, wide=wide))
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)

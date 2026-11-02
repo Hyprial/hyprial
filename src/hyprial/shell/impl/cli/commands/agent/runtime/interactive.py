@@ -256,7 +256,7 @@ def _runtime_context_projection(
     """
     services = get_services()
 
-    result = services._daemon_request(
+    result = services.runtime.request(
         "agent.runtime-context",
         {
             "name": name,
@@ -349,7 +349,7 @@ def _runtime_launch_custody(projection: JsonObject | None):
             "authority-prepared runtime context is missing launchToken",
         )
     operation_id = f"cli:runtime-launch:{services.uuid4().hex}"
-    acquired = services._daemon_request(
+    acquired = services.runtime.request(
         "agent.runtime-launch.acquire",
         {"launchToken": launch_token, "operationId": operation_id},
     )
@@ -384,7 +384,7 @@ def _runtime_launch_custody(projection: JsonObject | None):
         raise
     finally:
         try:
-            services._daemon_request(
+            services.runtime.request(
                 "agent.runtime-launch.release",
                 {"leaseToken": lease_token, "operationId": operation_id},
             )
@@ -527,7 +527,7 @@ def _launch_detached_tui(
     deadline = services.time.monotonic() + registration_deadline_seconds
     next_pane_read = services.time.monotonic()
     while services.time.monotonic() < deadline:
-        registered = is_session_registered(services._daemon_request("ps"))
+        registered = is_session_registered(services.runtime.request("ps"))
         # A dead tmux session is this path's process.poll(): the TUI exited
         # before its carrier ever registered.
         if registered or not tmux_mod.has_session(tmux_bin, session_name):

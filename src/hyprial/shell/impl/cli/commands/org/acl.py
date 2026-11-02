@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Any
 
 import typer
+from hyprial.shell.impl.cli.commands.common.groups import group
 
 from hyprial.identity import org_space_name
 from hyprial.kernel import ipc_errors
@@ -26,7 +27,7 @@ from hyprial.shell.impl.cli.commands.common.support import (
 from hyprial.shell.impl.cli.output import CliResult
 from hyprial.shell.impl.cli.output.tables import render_table
 
-acl_app = typer.Typer(
+acl_app = group(
     help=(
         "Authorize agents to write an org's ACL space. The entry gate "
         "defaults to the owner's terminal and user-proxy; these commands "
@@ -100,14 +101,14 @@ def acl_grant(
         }
         if until is not None:
             params["untilMs"] = _until_ms(until)
-        result = services._daemon_request("org.acl.grant", params)
+        result = services.runtime.request("org.acl.grant", params)
         if not isinstance(result, dict):
             raise services.CliError(
                 "INVALID_RESPONSE", "org.acl.grant must return an object"
             )
         return {"ok": True, **result}
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @acl_app.command("revoke")
@@ -120,7 +121,7 @@ def acl_revoke(
     services = get_services()
 
     def operation() -> JsonObject:
-        result = services._daemon_request(
+        result = services.runtime.request(
             "org.acl.revoke",
             {**_acl_caller(), "org": _validated_org(org), "agent": agent},
         )
@@ -130,7 +131,7 @@ def acl_revoke(
             )
         return {"ok": True, **result}
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @acl_app.command("ls")
@@ -152,7 +153,7 @@ def acl_ls(
         )
 
     def operation() -> CliResult:
-        result = services._daemon_request(
+        result = services.runtime.request(
             "org.acl.ls", {**_acl_caller(), "org": _validated_org(org)}
         )
         if not isinstance(result, dict) or not isinstance(result.get("grants"), list):
@@ -161,4 +162,4 @@ def acl_ls(
             )
         return CliResult({"ok": True, **result}, render=render)
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)

@@ -8,7 +8,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import replace
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING
 from uuid import uuid4
 from hyprial.kernel import AdmissionResult
 from hyprial.daemon.impl.network.routing.session_route_coordinator  import (
@@ -25,13 +25,8 @@ from hyprial.kernel import ipc_errors
 from hyprial.daemon.impl.desired_state  import (
     InteractiveSession,
 )
-from hyprial.kernel import LifecycleMutationRequest
-from hyprial.daemon.impl.network.route_ports  import DropRouteCommand, EnsureRouteCommand, RouteSpec
-from hyprial.daemon.impl.route_registration  import (
-    RouteCommandError,
-    RouteRegistrationClient,
-)
 from .route_maintenance import _SessionRouteMaintenanceMixin
+from .route_retry import _SessionRouteRetryMixin
 from hyprial.daemon.impl.operations.session_ports  import (
     HeartbeatSessionCommand,
     RefreshSessionCommand,
@@ -70,7 +65,7 @@ class _InteractiveRouteEffectGate:
 
 _INTERACTIVE_HEARTBEAT_TTL_SECONDS = AGENT_HEARTBEAT_TTL_SECONDS
 
-class _SessionRoutesMixin(_SessionRouteMaintenanceMixin):
+class _SessionRoutesMixin(_SessionRouteRetryMixin, _SessionRouteMaintenanceMixin):
     """Application cluster mixin; the state owner is DaemonApplication."""
 
     def _ensure_session_route_coordinator(self) -> SessionRouteCoordinator:
@@ -351,6 +346,16 @@ class _SessionRoutesMixin(_SessionRouteMaintenanceMixin):
                     reason=retirement.reason,
                     destroy_attempt=reservation.reservation_token,
                 )
+                with self._interactive_route_lock:
+                    intents = self._session_route_intents()
+                    for pending_key in tuple(intents):
+                        pending_actor, pending_lease = pending_key
+                        if pending_actor != actor or not pending_lease.startswith(
+                            "session:"
+                        ):
+                            continue
+                        if pending_lease[len("session:"):] in refs:
+                            intents.pop(pending_key, None)
             except BaseException:
                 self._release_agent_destroy_reservation(
                     reservation.reservation_token
@@ -681,8 +686,6 @@ class _SessionRoutesMixin(_SessionRouteMaintenanceMixin):
         makes the actor offline even while its heartbeat is still fresh.
         """
 
-        from hyprial.daemon.impl.mcp.channel.ownership import _owner_process_status
-
         sessions = [
             session
             for session in self._agent_session_domains.session.read_sessions()
@@ -693,9 +696,7 @@ class _SessionRoutesMixin(_SessionRouteMaintenanceMixin):
         if not sessions:
             return None
         verdicts = {
-            _owner_process_status(
-                session.process_pid, session.process_identity
-            ).value
+            self._agent_session_domains.session.process_observations.sample(session).value
             for session in sessions
         }
         if verdicts <= {"pid-missing", "identity-mismatch"}:
@@ -706,8 +707,6 @@ class _SessionRoutesMixin(_SessionRouteMaintenanceMixin):
         self, sessions: tuple[SessionProjection, ...] | None = None
     ) -> tuple[SessionProjection, ...]:
         """Retire only sessions whose PID/birth fence proves the carrier dead."""
-
-        from hyprial.daemon.impl.mcp.channel.ownership import _owner_process_status
 
         observed = (
             self._agent_session_domains.session.read_sessions()
@@ -725,9 +724,7 @@ class _SessionRoutesMixin(_SessionRouteMaintenanceMixin):
                 or session.process_identity is None
             ):
                 continue
-            verdict = _owner_process_status(
-                session.process_pid, session.process_identity
-            ).value
+            verdict = self._agent_session_domains.session.process_observations.sample(session).value
             if verdict not in {"pid-missing", "identity-mismatch"}:
                 continue
             if session.session_ref is None:
@@ -910,84 +907,4 @@ class _SessionRoutesMixin(_SessionRouteMaintenanceMixin):
                 self._retire_interactive_route_versions_locked(actor)
             else:
                 self._interactive_route_versions.pop((actor, session_ref), None)
-
-    def _settled_route_mutation(
-        self,
-        routes: RouteRegistrationClient,
-        *,
-        operation_id: str,
-        generation: int,
-        version: int,
-        actor: str,
-        owner_lease: str,
-        ensure_spec: RouteSpec | None = None,
-        fence: Callable[[], bool] | None = None,
-    ) -> Any:
-        if not isinstance(routes, RouteRegistrationClient):
-            if ensure_spec is not None:
-                return routes.ensure(ensure_spec, owner_lease=owner_lease)
-            return routes.drop(actor, owner_lease=owner_lease)
-        key = (actor, owner_lease)
-        with self._interactive_route_lock:
-            expected_token = self._interactive_route_resource_tokens.get(key)
-        attempt_token = f"{operation_id}:attempt:0"
-        correlation_id = f"{attempt_token}:completion"
-        payload = (
-            EnsureRouteCommand(
-                correlation_id,
-                attempt_token,
-                generation,
-                version,
-                ensure_spec,
-                owner_lease,
-                fence,
-            )
-            if ensure_spec is not None
-            else DropRouteCommand(
-                correlation_id,
-                attempt_token,
-                generation,
-                version,
-                actor,
-                owner_lease,
-            )
-        )
-        request = LifecycleMutationRequest(
-            correlation_id,
-            attempt_token,
-            operation_id,
-            expected_token if ensure_spec is None else None,
-            payload,
-        )
-        retry = 0
-        while True:
-            try:
-                completed = routes.call_settled(request)
-                break
-            except RouteCommandError as error:
-                if error.code in {"PORT_CLOSING", "ROUTE_LEASE_STALE"}:
-                    raise
-                self._log(
-                    "warn",
-                    "daemon",
-                    "session_route.route_retry",
-                    actor=actor,
-                    ownerLease=owner_lease,
-                    operationId=operation_id,
-                    attemptToken=attempt_token,
-                    retry=retry,
-                    errorCode=error.code,
-                    detail=error.detail,
-                )
-                retry += 1
-                time.sleep(min(0.005 * (2 ** min(retry, 7)), 0.5))
-        token = completed.provenance.resource_token
-        with self._interactive_route_lock:
-            if ensure_spec is not None:
-                self._interactive_route_resource_tokens[key] = token
-            elif expected_token is None or token == expected_token:
-                self._interactive_route_resource_tokens.pop(key, None)
-            else:
-                self._interactive_route_resource_tokens[key] = token
-        return completed
 

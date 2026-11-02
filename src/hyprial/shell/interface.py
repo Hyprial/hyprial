@@ -3,6 +3,9 @@
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from hyprial.shell.impl.gui.adapter.operations.client import daemon_request as daemon_request
+    from hyprial.shell.impl.gui.adapter.operations.client import daemon_request_once as daemon_request_once
+    from hyprial.shell.impl.gui.live.runtime import run_gui_backend as run_gui_backend
     from hyprial.shell.impl.cli.commands.workflow.run import _identity as cli_identity
     import hyprial.shell.impl.desktop_network as desktop_network
     from hyprial.shell.impl.gui.runtime import gui_status as gui_status
@@ -12,15 +15,22 @@ if TYPE_CHECKING:
     from hyprial.shell.impl.cli.commands.routine.commands import routine_app as routine_app
     from hyprial.shell.impl.gui.runtime import start_gui_background as start_gui_background
     from hyprial.shell.impl.gui.runtime import stop_gui as stop_gui
+    from hyprial.shell.impl.upgrade_bootstrap import prime_post_install_imports as prime_post_install_imports
+    from hyprial.shell.impl.worker_context import worker_session_binding as worker_session_binding
     from hyprial.shell.impl.gui.apps import upgrade as upgrade_gui
     from hyprial.shell.impl.cli.commands.workflow.run import workflow_app as workflow_app
 
 _FACADE_EXPORTS = {
+    'daemon_request': ('hyprial.shell.impl.gui.adapter.operations.client', 'daemon_request'),
+    'daemon_request_once': ('hyprial.shell.impl.gui.adapter.operations.client', 'daemon_request_once'),
+    'run_gui_backend': ('hyprial.shell.impl.gui.live.runtime', 'run_gui_backend'),
     'cli_identity': ('hyprial.shell.impl.cli.commands.workflow.run', '_identity'),
     'desktop_network': ('hyprial.shell.impl.desktop_network', None),
     'gui_status': ('hyprial.shell.impl.gui.runtime', 'gui_status'),
     'main': ('hyprial.shell.impl.cli.runtime.entry', 'main'),
     'perform_gui_action': ('hyprial.shell.impl.gui.apps', 'perform'),
+    'prime_post_install_imports': ('hyprial.shell.impl.upgrade_bootstrap', 'prime_post_install_imports'),
+    'worker_session_binding': ('hyprial.shell.impl.worker_context', 'worker_session_binding'),
     'resolve_gui_invocation': ('hyprial.shell.impl.gui.apps', 'resolve_invocation'),
     'routine_app': ('hyprial.shell.impl.cli.commands.routine.commands', 'routine_app'),
     'start_gui_background': ('hyprial.shell.impl.gui.runtime', 'start_gui_background'),
@@ -48,11 +58,16 @@ def __dir__() -> list[str]:
 
 
 __all__ = [
+    'daemon_request',
+    'daemon_request_once',
+    'run_gui_backend',
     'cli_identity',
     'desktop_network',
     'gui_status',
     'main',
     'perform_gui_action',
+    'prime_post_install_imports',
+    'worker_session_binding',
     'resolve_gui_invocation',
     'routine_app',
     'start_gui_background',

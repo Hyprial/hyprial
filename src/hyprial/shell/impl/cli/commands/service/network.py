@@ -40,7 +40,7 @@ def service_expose(
 
     def operation() -> JsonObject:
         services = get_services()
-        result = services._daemon_request(
+        result = services.runtime.request(
             "network.expose",
             {"port": port, "target": target, "proxyProtocol": proxy_protocol},
         )
@@ -48,7 +48,7 @@ def service_expose(
             raise services.CliError("INVALID_RESPONSE", "network.expose must return exposure")
         return {"ok": True, **result}
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @service_app.command("unexpose")
@@ -61,12 +61,12 @@ def service_unexpose(
 
     def operation() -> JsonObject:
         services = get_services()
-        result = services._daemon_request("network.unexpose", {"port": port})
+        result = services.runtime.request("network.unexpose", {"port": port})
         if not isinstance(result, dict) or result.get("port") != port:
             raise services.CliError("INVALID_RESPONSE", "network.unexpose must return port")
         return {"ok": True, **result}
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @service_app.command("exposures")
@@ -93,12 +93,12 @@ def service_exposures(
 
     def operation() -> CliResult:
         services = get_services()
-        result = services._daemon_request("network.exposures")
+        result = services.runtime.request("network.exposures")
         if not isinstance(result, dict) or not isinstance(result.get("exposures"), list):
             raise services.CliError("INVALID_RESPONSE", "network.exposures must return exposures")
         return CliResult({"ok": True, **result}, render=render)
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @service_app.command("whois")
@@ -116,12 +116,12 @@ def service_whois(
 
     def operation() -> JsonObject:
         services = get_services()
-        result = services._daemon_request("network.peerKey", {"addr": address})
+        result = services.runtime.request("network.peerKey", {"addr": address})
         if not isinstance(result, dict) or not isinstance(result.get("found"), bool):
             raise services.CliError("INVALID_RESPONSE", "network.peerKey must return found")
         return {"ok": True, **result}
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 __all__ = ["service_expose", "service_exposures", "service_unexpose", "service_whois"]

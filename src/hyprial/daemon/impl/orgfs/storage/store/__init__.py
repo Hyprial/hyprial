@@ -12,6 +12,8 @@ import tempfile
 
 import threading
 
+import time
+
 from pathlib import Path
 
 from collections.abc import Iterable
@@ -48,6 +50,8 @@ from hyprial.daemon.impl.orgfs.storage.store.vocabulary import _EMPTY_UPDATE as 
 from hyprial.daemon.impl.orgfs.storage.store.vocabulary import _LOG as _LOG
 from hyprial.daemon.impl.orgfs.storage.store.vocabulary import _MAX_PENDING_IMPORTS as _MAX_PENDING_IMPORTS
 from hyprial.daemon.impl.orgfs.storage.store.vocabulary import _MAX_PENDING_IMPORT_AGE_SECONDS as _MAX_PENDING_IMPORT_AGE_SECONDS
+from hyprial.daemon.impl.orgfs.storage.store.vocabulary import _MEMBERSHIP_MEMO_LIMIT as _MEMBERSHIP_MEMO_LIMIT
+from hyprial.daemon.impl.orgfs.storage.store.vocabulary import _PENDING_DRAIN_BUDGET_SECONDS as _PENDING_DRAIN_BUDGET_SECONDS
 from hyprial.daemon.impl.orgfs.storage.store.vocabulary import _SAFE_WRITER as _SAFE_WRITER
 from hyprial.daemon.impl.orgfs.storage.store.vocabulary import _b64 as _b64
 from hyprial.daemon.impl.orgfs.storage.store.vocabulary import _changed_meta_entries as _changed_meta_entries
@@ -126,6 +130,11 @@ class LocalSpaceStore(StoreMembership, StoreJournal, StoreAdmission, StoreSnapsh
         self._pending_drop_count = 0
         self._pending_drop_warning_at = float("-inf")
         self._pending_drop_warning_interval_seconds = 60.0
+        self._monotonic = time.monotonic
+        self._pending_drain_budget_seconds = _PENDING_DRAIN_BUDGET_SECONDS
+        self._drain_budget_warning_at = float("-inf")
+        self._membership_memo_head: tuple[int, int] | None = None
+        self._membership_memo: set[bytes] = set()
         self._local_registration_ids: dict[str, set[int]] = {}
         self._dirty_docs: set[str] = set()
         self._commits_since_checkpoint = 0

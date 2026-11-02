@@ -9,8 +9,9 @@ from typing import Any
 from collections.abc import Mapping
 import time
 import typer
+from hyprial.shell.impl.cli.commands.common.groups import group
 
-outbox_app = typer.Typer(help="Inspect and prune the durable outbox.")
+outbox_app = group(help="Inspect and prune the durable outbox.")
 
 DASH = "\u2014"
 
@@ -107,16 +108,16 @@ def outbox_list(
     def operation() -> Any:
         services = get_services()
         if actor is None:
-            result = services._daemon_request("outbox.list")
+            result = services.runtime.request("outbox.list")
         else:
-            result = services._daemon_request(
+            result = services.runtime.request(
                 "message.query", {"from": actor, "view": "outbox"}
             )
         if isinstance(result, Mapping):
             return CliResult(result, render=_render_outbox_list)
         return result
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @outbox_app.command("prune")
@@ -129,7 +130,7 @@ def outbox_prune(
     """Move dead outbox entries (undeliverable scheme or expired TTL) to the DLQ."""
     services = get_services()
 
-    services._execute(
-        lambda: services._daemon_request("outbox.prune", {"dryRun": dry_run}),
+    services.runtime.execute(
+        lambda: services.runtime.request("outbox.prune", {"dryRun": dry_run}),
         json_output=json_output,
     )

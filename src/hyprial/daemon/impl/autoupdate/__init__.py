@@ -21,6 +21,10 @@ from pathlib import Path
 from typing import Any, Literal, Protocol
 
 import hyprial.daemon.impl.updates as updates
+from hyprial.daemon.impl.configuration.launchd_jobs import (
+    owned_unit_file,
+    printed_plist_path,
+)
 from hyprial.kernel import configured_hyprial_home
 
 AUTOUPDATE_LABEL = "com.hyprial.hyprial.autoupdate"
@@ -429,15 +433,42 @@ def remove_legacy_timer_units(
     if not existing:
         return ()
 
+    # Preflight every affected label before any unload, unlink or reload. A
+    # local file is not proof that the user manager loaded that file.
+    if selected == "systemd":
+        for path in paths:
+            command = (
+                "systemctl", "--user", "show", path.name,
+                "--property=LoadState", "--property=FragmentPath",
+            )
+            probe = command_runner(command)
+            if probe.returncode == 4 and probe.stderr.strip() == (
+                f"Unit {path.name} could not be found."
+            ):
+                continue
+            if probe.returncode != 0:
+                raise RuntimeError(
+                    f"legacy timer probe failed ({probe.returncode}): {probe.stderr.strip()}"
+                )
+            fields = dict(
+                line.split("=", 1) for line in probe.stdout.splitlines() if "=" in line
+            )
+            if fields.get("LoadState") == "not-found":
+                continue
+            if fields.get("LoadState") != "loaded":
+                raise RuntimeError(f"legacy timer load state is unknown: {path.name}")
+            _require_legacy_unit_path(fields.get("FragmentPath"), path)
+
     if selected == "launchd":
         domain = f"gui/{os.getuid() if uid is None else uid}"
         probe = command_runner(("launchctl", "print", f"{domain}/{AUTOUPDATE_LABEL}"))
         if probe.returncode == 0:
+            _require_legacy_unit_path(printed_plist_path(probe.stdout), paths[0])
             _require_legacy_timer_command(
                 command_runner,
                 ("launchctl", "bootout", f"{domain}/{AUTOUPDATE_LABEL}"),
             )
-        elif probe.returncode != 113 and "Could not find service" not in probe.stderr:
+        elif probe.returncode != 113 or "Could not find service" not in probe.stderr:
             raise RuntimeError(
                 f"legacy timer removal failed ({probe.returncode}): "
                 f"launchctl print {domain}/{AUTOUPDATE_LABEL}: {probe.stderr.strip()}"
@@ -455,6 +486,13 @@ def remove_legacy_timer_units(
             command_runner, ("systemctl", "--user", "daemon-reload")
         )
     return existing
+
+
+def _require_legacy_unit_path(reported: Path | str | None, expected: Path) -> None:
+    if reported is None or not str(reported).strip() or not owned_unit_file(reported, expected):
+        raise RuntimeError(
+            f"refusing legacy timer cleanup: foreign or unknown loaded unit path for {expected}"
+        )
 
 
 def write_last_run(state_dir: Path, record: Json) -> Path:

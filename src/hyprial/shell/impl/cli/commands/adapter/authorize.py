@@ -256,4 +256,4 @@ def adapter_authorize(
             ),
         }
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)

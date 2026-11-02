@@ -50,7 +50,7 @@ def org_pin_authority(
             return {'ok': True, **tool.pin_authority(space_id, device, confirmed=True, control_port=control_port)}
         return _offline_operation(services, body)
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 def _render_status(data: Mapping[str, Any]) -> str:
@@ -80,4 +80,4 @@ def org_migration_status(
         return CliResult(_offline_operation(services, lambda tool: {'ok': True, 'spaces': tool.migration_status()}),
                          render=_render_status)
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)

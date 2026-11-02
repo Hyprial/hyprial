@@ -87,6 +87,8 @@ from hyprial.kernel.impl.contracts.channels.forwarding import (
     DEFAULT_PEER_PORT,
     FORWARDING_COMMAND_ENV,
     FORWARDING_UP_ENV,
+    MEMBERSHIP_BUDGETS,
+    MEMBERSHIP_REPLY_MARGIN_SECONDS,
     SERVICE_CONTROL_TIMEOUT_SECONDS,
     SERVICE_RECONCILE_INTERVAL_SECONDS,
     SERVICE_REGISTRY_READ_TIMEOUT_SECONDS,
@@ -121,6 +123,37 @@ from hyprial.kernel.impl.contracts.daemon.daemon_teardown import (
 from hyprial.kernel.impl.contracts.daemon.ipc_errors import (
     DaemonRequestError,
     ORGFS_CONTENT_PENDING,
+)
+from hyprial.kernel.impl.contracts.daemon.method_spec import (
+    HttpBinding,
+    HttpIdentityMode,
+    IdentityBinding,
+    IdempotencySpec,
+    MethodError,
+    MethodSpec,
+    MethodSpecError,
+    PreviewSpec,
+    StreamSpec,
+    export_catalog,
+    export_openapi,
+    validate_method_spec,
+    validate_method_specs,
+)
+from hyprial.kernel.impl.contracts.daemon.examples import (
+    ExampleKind,
+    ExampleSpecError,
+    MethodExample,
+    MethodExampleError,
+    MethodExampleSet,
+    PARAM_ERROR_CODES,
+    example_to_json,
+    validate_method_example_set,
+    validate_method_example_sets,
+)
+from hyprial.kernel.impl.ipc import (
+    daemon_request,
+    daemon_request_once,
+    daemon_socket_path,
 )
 from hyprial.kernel.impl.contracts.daemon.lifecycle_budgets import (
     IDENTITY_BINDING_JWKS_TTL_SECONDS,
@@ -215,6 +248,10 @@ from hyprial.kernel.impl.log import (
     redact,
     route_path,
 )
+from hyprial.kernel.impl.log.stamps import (
+    LogStamp,
+    stamp_std_streams,
+)
 from hyprial.kernel.impl.platform.privacy.account import (
     current_uid,
     posix_metadata_enforced,
@@ -293,6 +330,7 @@ from hyprial.kernel.impl.processes._dsh_resolver import (
     resolve_hostname,
 )
 from hyprial.kernel.impl.processes.owned_process import (
+    bind_current_process_to_parent,
     darwin_group_has_live_members,
     linux_group_has_live_members,
     parse_linux_process_stat,
@@ -309,6 +347,7 @@ from hyprial.kernel.impl.processes.process_facts import (
 )
 
 __all__ = [
+    "bind_current_process_to_parent",
     "_candidate",
     "ActorEvent",
     "ActorEventKind",
@@ -351,6 +390,9 @@ __all__ = [
     "DaemonLaunchResult",
     "DaemonRequestError",
     "DaemonStartupPhase",
+    "daemon_request",
+    "daemon_request_once",
+    "daemon_socket_path",
     "DEADLINE_NODE",
     "DEFAULT_GIT_URL",
     "default_hyprial_home",
@@ -359,10 +401,26 @@ __all__ = [
     "DEFAULT_POLICIES",
     "delivery_address_error",
     "DISPATCH_SERVICE_ACTOR_NAME",
+    "export_catalog",
+    "export_openapi",
+    "example_to_json",
+    "ExampleKind",
+    "ExampleSpecError",
+    "HttpBinding",
+    "HttpIdentityMode",
+    "IdentityBinding",
+    "IdempotencySpec",
     "is_agent_id_segment",
     "is_device_id_segment",
     "is_identity_id_segment",
     "is_user_id_segment",
+    "MethodError",
+    "MethodExample",
+    "MethodExampleError",
+    "MethodExampleSet",
+    "MethodSpec",
+    "MethodSpecError",
+    "PARAM_ERROR_CODES",
     "DesiredStateError",
     "DomainEffectClaim",
     "DrainReport",
@@ -378,6 +436,8 @@ __all__ = [
     "FORGEJO_GIT_URL",
     "FORWARDING_COMMAND_ENV",
     "FORWARDING_UP_ENV",
+    "MEMBERSHIP_BUDGETS",
+    "MEMBERSHIP_REPLY_MARGIN_SECONDS",
     "GRAPH_END_STATES",
     "GenerationScheduler",
     "git_subprocess_environment",
@@ -425,6 +485,7 @@ __all__ = [
     "linux_group_has_live_members",
     "lock_exclusive",
     "Logger",
+    "LogStamp",
     "ManagedHarnessProcess",
     "MAX_FRAME_BYTES",
     "migrate_pre_trajectory_logs",
@@ -456,6 +517,7 @@ __all__ = [
     "PersistentConfiguration",
     "PortAdmission",
     "PortCommandRejected",
+    "PreviewSpec",
     "RequestPortError",
     "RUNTIME_OVERFLOW_OWNER",
     "RuntimeCpuCounters",
@@ -489,12 +551,14 @@ __all__ = [
     "safe_turn_identifier",
     "safe_turn_tool_names",
     "SESSION_CARRIER_SOURCES",
+    "StreamSpec",
     "SERVICE_CONTROL_TIMEOUT_SECONDS",
     "SERVICE_RECONCILE_INTERVAL_SECONDS",
     "SERVICE_REGISTRY_READ_TIMEOUT_SECONDS",
     "session_fetch_params",
     "short_actor_name",
     "SmolvmRuntimeSpec",
+    "stamp_std_streams",
     "STATE_AUTHORITY",
     "STATE_DONE",
     "STATE_ESCALATED",
@@ -517,9 +581,29 @@ __all__ = [
     "user_agent",
     "with_user_agent",
     "uri_scheme",
+    "validate_method_spec",
+    "validate_method_specs",
+    "validate_method_example_set",
+    "validate_method_example_sets",
     "windows_process_identity",
     "WORK_NODE",
     "WorkerBinding",
     "WorkerChannelError",
     "worker_cleanup_complete_event_payload",
+    # Read-only lifecycle observation.
+    "LifecycleCursor", "LifecycleEvent", "LifecycleObservationPort",
+    "LifecycleObservationState", "LifecycleSnapshot", "LifecycleTarget",
+    "ObservationBatch", "ObservationSubscription",
 ]
+
+# Read-only lifecycle observation, independent of the execution runtime API.
+from .impl.observation.contracts import (
+    LifecycleCursor as LifecycleCursor,
+    LifecycleEvent as LifecycleEvent,
+    LifecycleObservationPort as LifecycleObservationPort,
+    LifecycleObservationState as LifecycleObservationState,
+    LifecycleSnapshot as LifecycleSnapshot,
+    LifecycleTarget as LifecycleTarget,
+    ObservationBatch as ObservationBatch,
+    ObservationSubscription as ObservationSubscription,
+)

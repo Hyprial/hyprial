@@ -44,7 +44,7 @@ def list_workflows(
             identity = _identity()
         except PacError as error:
             raise services.CliError(error.code, str(error)) from error
-        result = services._daemon_request(
+        result = services.runtime.request(
             "workflow.list",
             {
                 "limit": limit,
@@ -59,7 +59,7 @@ def list_workflows(
             render=lambda data: _render_workflow_list(data["runs"], all_callers=all_callers),
         )
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 @workflow_app.command("inspect")
 def inspect(
@@ -100,7 +100,7 @@ def inspect(
             "workflow.node.inspect", {"runId": run_id, "target": node}
         )
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 def _render_context(graph_id: str, node_id: str):
     def render(document: Any) -> str:
@@ -167,7 +167,7 @@ def events(
             raise PacError("PAC_EVENTS_ARGUMENT", "--snapshot and --after are mutually exclusive")
         return CliStream(items(), render_item=_render_event)
 
-    get_services()._execute(operation, json_output=json_output)
+    get_services().runtime.execute(operation, json_output=json_output)
 
 def _render_event(item: Any) -> str:
     if "seq" in item and "type" in item:

@@ -36,6 +36,9 @@ class GuiProject:
     node_version: str
     npm_version: str
     scripts: Mapping[str, str]
+    installed: bool = False
+    source_commit: str = ""
+    source_remote: str = ""
 
 
 def resolve_gui_home(

@@ -222,6 +222,9 @@ class HarnessLaunchSpec:
     # these fields use unambiguous names and never contain credentials.
     model_provider: str | None = None
     model: str | None = None
+    # Optional official reasoning-effort selection; applied once by the daemon
+    # lifecycle launch preparation, omitted from the wire when unset.
+    effort: str | None = None
     # U0b (Allen 2026-09-03): every desired-state row is "user intent +
     # LAST KNOWN RESULT".  ``running`` is the default and is OMITTED from
     # the serialized form (absent == running, exactly like every other
@@ -339,6 +342,7 @@ class HarnessLaunchSpec:
                 record.get("modelProvider"), f"{label}.modelProvider"
             ),
             model=_optional_string(record.get("model"), f"{label}.model"),
+            effort=_optional_string(record.get("effort"), f"{label}.effort"),
             status=str(raw_status),
         )
 
@@ -384,6 +388,7 @@ class HarnessLaunchSpec:
                 else {}
             ),
             **({"model": self.model} if self.model is not None else {}),
+            **({"effort": self.effort} if self.effort is not None else {}),
             # Omitted when running: absent == running keeps pre-U0b
             # documents byte-stable across the round trip.
             **({"status": self.status} if self.status != "running" else {}),

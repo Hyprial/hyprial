@@ -187,7 +187,9 @@ def validate_model_selection(
     model: str | None,
     *,
     context: str | None = None,
-) -> None:
+    effort: str | None = None,
+    args: tuple[str, ...] = (),
+) -> tuple[str, ...]:
     """Validate the public provider/model vocabulary for one harness.
 
     ``context`` names whoever asked, when the caller knows.  It is optional
@@ -213,8 +215,13 @@ def validate_model_selection(
             "Look for the old name in the launch command (after '--'), in "
             "the agent's stored harnessArgs, or in a saved script or recipe."
         )
+    encoded_args = (
+        with_reasoning_effort(harness, tuple(args), effort)
+        if effort is not None
+        else tuple(args)
+    )
     if provider is None:
-        return
+        return encoded_args
     if harness == "claude" and provider not in {
         "anthropic",
         DEEPSEEK_PROVIDER,
@@ -259,6 +266,7 @@ def validate_model_selection(
             "DeepSeek's Codex Responses endpoint currently supports only "
             f"{DEEPSEEK_MODEL!r}"
         )
+    return encoded_args
 
 
 def _pi_auth_key(root: Path, provider: str = DEEPSEEK_PROVIDER) -> str | None:

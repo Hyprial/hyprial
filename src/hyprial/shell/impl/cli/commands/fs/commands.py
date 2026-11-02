@@ -12,14 +12,15 @@ import json
 import os
 from hyprial.kernel import parse_orgfs_uri
 import typer
+from hyprial.shell.impl.cli.commands.common.groups import group
 
 from hyprial.shell.impl.cli.commands.common.support import JsonObject, _local_operator_identity, _message_claim_params
 from hyprial.shell.impl.cli.output import CliResult, confirm as ask, render_generic
-fs_app = typer.Typer(help="Share and synchronize organization folders.")
-space_app = typer.Typer(help="Organization folders: list, create, join, status, serve, web, checkout.")
-member_app = typer.Typer(help="Read and change organization folder membership.")
-trash_app = typer.Typer(help="List and restore deleted nodes.")
-purge_app = typer.Typer(help="Owner-reviewed permanent deletion.")
+fs_app = group(help="Share and synchronize organization folders.")
+space_app = group(help="Organization folders: list, create, join, status, serve, web, checkout.")
+member_app = group(help="Read and change organization folder membership.")
+trash_app = group(help="List and restore deleted nodes.")
+purge_app = group(help="Owner-reviewed permanent deletion.")
 fs_app.add_typer(space_app, name="space")
 fs_app.add_typer(member_app, name="member")
 fs_app.add_typer(trash_app, name="trash")
@@ -39,9 +40,9 @@ def _fs_run(method: str, params: JsonObject, *, json_output: bool) -> None:
         return render_generic(with_human_web_urls(dict(data), home))
 
     def operation() -> CliResult:
-        return CliResult(get_services()._daemon_request(method, params), render=render)
+        return CliResult(get_services().runtime.request(method, params), render=render)
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @space_app.command("list")
@@ -267,12 +268,12 @@ def fs_invite(
 
     def operation() -> Any:
         services = get_services()
-        member = services._daemon_request(
+        member = services.runtime.request(
             "orgfs.invite", {"spaceId": space_id, "user": user, "mode": mode}
         )
         notified = False
         if not no_notify:
-            spaces = services._daemon_request("orgfs.spaces", {})
+            spaces = services.runtime.request("orgfs.spaces", {})
             name = next(
                 (
                     item.get("name")
@@ -297,7 +298,7 @@ def fs_invite(
             # The body is JSON; the reader only needs this line.
             from hyprial.daemon import summary_from_text
 
-            services._daemon_request(
+            services.runtime.request(
                 "message.send",
                 {
                     **(
@@ -313,7 +314,7 @@ def fs_invite(
             notified = True
         return {"member": member, "notified": notified}
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @member_app.command("remove")
@@ -413,7 +414,7 @@ def fs_web(
             problems = [str(problem) for problem in check_config(config)]
             return CliResult({"ok": not problems, "problems": problems}, render=render)
 
-        get_services()._execute(operation, json_output=json_output, allow_missing_home=True)
+        get_services().runtime.execute(operation, json_output=json_output, allow_missing_home=True)
         return
     # The service runs in the foreground until stopped; its exit status is the
     # server's, and its log is not a command result (output discipline allowlist).
@@ -566,7 +567,7 @@ def fs_purge(
                 raise services.CliError(
                     "PURGE_DECLINED", f"space {space_id!r} was not purged"
                 )
-        result = services._daemon_request(
+        result = services.runtime.request(
             "orgfs.space_purge", {"spaceId": space_id}
         )
         if not isinstance(result, dict):
@@ -575,7 +576,7 @@ def fs_purge(
             )
         return CliResult(result, render=render)
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @purge_app.command("status")

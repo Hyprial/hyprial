@@ -1,0 +1,169 @@
+.org-topology {
+  display: grid;
+  gap: 12px;
+}
+
+.org-topology .topology-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.org-topology .topology-views {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.org-topology .topology-views .button[aria-pressed='true'] {
+  border-color: var(--ink);
+}
+
+.org-topology .topology-state {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.org-topology .topology-diagram-scroll {
+  display: grid;
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.org-topology .topology-diagram {
+  display: grid;
+  gap: 10px;
+  min-width: 320px;
+}
+
+.org-topology .topology-nodes,
+.org-topology .topology-edges,
+.org-topology .topology-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.org-topology .topology-node,
+.org-topology .topology-edge {
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.org-topology .topology-node--member {
+  border-radius: 999px;
+}
+
+.org-topology .topology-node--machine {
+  border-radius: 12px;
+}
+
+.org-topology .topology-node[aria-pressed='true'],
+.org-topology .topology-edge[aria-pressed='true'] {
+  border-color: var(--ink);
+  box-shadow: inset 0 0 0 1px var(--ink);
+}
+
+.org-topology .topology-node-label {
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.org-topology .topology-node-meta {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.org-topology .topology-edge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.org-topology .topology-legend {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.org-topology .topology-node:focus-visible,
+.org-topology .topology-edge:focus-visible,
+.org-topology .topology-views .button:focus-visible,
+.org-topology .topology-panel button:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.org-topology .topology-panel {
+  display: grid;
+  gap: 10px;
+  max-height: min(60vh, 420px);
+  overflow-y: auto;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fff;
+}
+
+.org-topology .topology-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  position: sticky;
+  top: 0;
+  padding-bottom: 8px;
+  background: #fff;
+}
+
+.org-topology .topology-panel-head h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.org-topology .topology-panel-fields {
+  display: grid;
+  grid-template-columns: 80px minmax(0, 1fr);
+  gap: 6px 12px;
+  margin: 0;
+}
+
+.org-topology .topology-panel-fields dt {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.org-topology .topology-panel-fields dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.org-topology .topology-panel-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+}
+
+@media (max-width: 430px) {
+  .org-topology .topology-nodes,
+  .org-topology .topology-edges {
+    flex-direction: column;
+  }
+}

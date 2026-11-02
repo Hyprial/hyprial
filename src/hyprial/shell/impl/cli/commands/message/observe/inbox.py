@@ -31,6 +31,6 @@ def message_inbox(
 
     def operation() -> Any:
         source = actor if actor is not None else _local_operator_identity()
-        return services._daemon_request("message.query", {"from": source, "view": "inbox"})
+        return services.runtime.request("message.query", {"from": source, "view": "inbox"})
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)

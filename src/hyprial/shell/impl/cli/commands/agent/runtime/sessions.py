@@ -126,7 +126,7 @@ def _start_interactive_pi(
             )
         )
     else:
-        preflight = services._daemon_request(
+        preflight = services.runtime.request(
             "agent.start.preflight",
             {"name": name, "harness": "pi", "runtime": "interactive"},
         )
@@ -150,7 +150,7 @@ def _start_interactive_pi(
             if isinstance(key, str) and isinstance(value, str)
         }
     )
-    status = services._daemon_request("ps")
+    status = services.runtime.request("ps")
     actor = _interactive_actor(name, status)
     display_name = nickname or agent_uri_actor(actor) or actor
     # Single identity decision: the Harness ref and the pi session id are
@@ -359,7 +359,7 @@ def _start_interactive_pi(
         # names that exact cause (research finding E8).
         deadline = _registration_clock() + 180.0
         while _registration_clock() < deadline:
-            status = services._daemon_request("ps")
+            status = services.runtime.request("ps")
             sessions = status.get("interactiveSessions", [])
             registered = isinstance(sessions, list) and any(
                 isinstance(item, dict)
@@ -576,7 +576,7 @@ def _start_interactive_codex(
             model=model,
         )
     else:
-        preflight = services._daemon_request(
+        preflight = services.runtime.request(
             "agent.start.preflight",
             {"name": name, "harness": "codex", "runtime": "interactive"},
         )
@@ -604,7 +604,7 @@ def _start_interactive_codex(
     )
     from hyprial.identity import apply_runtime_environment_profile
 
-    status = services._daemon_request("ps")
+    status = services.runtime.request("ps")
     actor = _interactive_actor(name, status)
     codex_bin = os.environ.get("HARNESS_CODEX_BIN", "codex")
     # A detached pane outlives this CLI, so its socket directory must too: the
@@ -835,7 +835,7 @@ def _start_interactive_codex(
                 "session.register_guarded" if resume is not None else "session.register"
             )
             try:
-                registration = services._daemon_request(
+                registration = services.runtime.request(
                     registration_method,
                     {
                     "actor": actor,
@@ -871,7 +871,7 @@ def _start_interactive_codex(
                 # ps, so a daemon that accepted the call but never reflected
                 # the session cannot be reported as detached-and-ready.
                 if not _codex_attach_registration(
-                    actor, session_ref, services._daemon_request("ps")
+                    actor, session_ref, services.runtime.request("ps")
                 ):
                     raise services.CliError(
                         "CODEX_ATTACH_REGISTRATION_FAILED",
@@ -913,7 +913,7 @@ def _start_interactive_codex(
                 session_ref=session_ref,
                 cwd=cwd,
                 command=argv,
-                daemon_request=lambda method, params: services._daemon_request(method, params),
+                daemon_request=lambda method, params: services.runtime.request(method, params),
                 logger=Logger.worker(services._state_dir(), runtime="codex", name=actor),
                 state_path=services._state_dir() / "codex-interactive-carrier.sqlite3",
                 process_pid=process_pid if process_identity is not None else None,
@@ -961,7 +961,7 @@ def _start_interactive_codex(
                 carrier.stop()
             if registered and session_ref is not None:
                 try:
-                    services._daemon_request(
+                    services.runtime.request(
                         "session.unregister",
                         {"actor": actor, "sessionRef": session_ref},
                         restore_wait=0.0,

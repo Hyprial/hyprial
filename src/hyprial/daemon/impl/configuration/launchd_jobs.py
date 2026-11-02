@@ -146,3 +146,27 @@ def _matches_wrapper_script(script: str, executable: Path) -> bool:
         r"(?:[ \t]+--json)?[ \t]*"
     )
     return re.fullmatch(pattern, script) is not None
+
+
+def printed_plist_path(stdout: str) -> Path | None:
+    """The plist ``launchctl print`` reports for a loaded job, if it reports one."""
+
+    import re
+
+    match = re.search(r"^\s*path\s*=\s*(\S.*?)\s*$", stdout, re.MULTILINE)
+    return Path(match.group(1)) if match else None
+
+
+def owned_unit_file(reported: Path | str | None, unit_file: Path) -> bool:
+    """Whether a loaded job's own file is the unit file this home manages.
+
+    The label is machine-global while the unit file is per home, so a job loaded
+    from elsewhere belongs to another home or install.  ``None`` keeps the
+    caller's answer when the manager does not report the path.
+    """
+
+    import os
+
+    if reported is None or str(reported).strip() == "":
+        return True
+    return os.path.realpath(reported) == os.path.realpath(unit_file)

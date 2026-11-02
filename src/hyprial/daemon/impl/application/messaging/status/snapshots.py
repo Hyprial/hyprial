@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from __future__ import annotations
 import contextlib
+import time
 from hyprial.daemon.impl.adapters.spec import is_adapter_provider
 from collections import defaultdict
 from collections.abc import Iterator
@@ -38,6 +39,7 @@ class _WorkerStatusSnapshot:
         running_by_actor: dict[str, bool],
         session_ref_by_actor: dict[str, str | None],
         desired: "DesiredState | None" = None,
+        run_states: dict | None = None,
     ) -> None:
         self.statuses = statuses
         self.running_by_actor = running_by_actor
@@ -46,13 +48,14 @@ class _WorkerStatusSnapshot:
         # the request snapshot): _actor_status_snapshot reuses it instead of
         # loading a second time.  None when the store had nothing to give.
         self.desired = desired
+        self.run_states = run_states or {}
 
 
 class _WorkerSnapshotMixin:
     """Application cluster mixin; the state owner is DaemonApplication."""
 
     @contextlib.contextmanager
-    def _worker_status_snapshot(self) -> Iterator[_WorkerStatusSnapshot]:
+    def _worker_status_snapshot(self, *, sessions=None) -> Iterator[_WorkerStatusSnapshot]:
         """Install one shared worker-status snapshot for the calling request.
 
         The liveness ``worker_running`` callback is injected once at
@@ -63,7 +66,7 @@ class _WorkerSnapshotMixin:
         request's verdicts.
         """
 
-        snapshot = self._build_worker_status_snapshot()
+        snapshot = self._build_worker_status_snapshot(sessions=sessions)
         previous = self._current_worker_snapshot()
         self._worker_snapshot_local.current = snapshot
         try:
@@ -71,7 +74,20 @@ class _WorkerSnapshotMixin:
         finally:
             self._worker_snapshot_local.current = previous
 
-    def _build_worker_status_snapshot(self) -> _WorkerStatusSnapshot:
+    def _cell_run_state_rows(self, *, sessions=None):
+        domains = getattr(self, "_agent_session_domains", None)
+        if domains is None:
+            return {}
+        return domains.cells.run_states(self._cell_interactive_facts(sessions=sessions), {},
+                                        now_ms=time.time_ns() // 1_000_000,
+                                        monotonic_ms=time.monotonic_ns() // 1_000_000)
+
+    def _cell_run_state_field(self, actor):
+        snapshot = self._current_worker_snapshot()
+        rows = snapshot.run_states if snapshot is not None else self._cell_run_state_rows()
+        return {"runState": rows[actor]} if actor in rows else {}
+
+    def _build_worker_status_snapshot(self, *, sessions=None) -> _WorkerStatusSnapshot:
         """One supervisor round trip + one desired-state load, as two tables.
 
         Kind lookup uses the same unambiguous worker resolver as individual
@@ -126,4 +142,5 @@ class _WorkerSnapshotMixin:
             running_by_actor=running_by_actor,
             session_ref_by_actor=session_ref_by_actor,
             desired=desired_loaded,
+            run_states=_WorkerSnapshotMixin._cell_run_state_rows(self, sessions=sessions),
         )

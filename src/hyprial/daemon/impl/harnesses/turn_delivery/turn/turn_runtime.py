@@ -19,6 +19,8 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 import logging
+from uuid import uuid4
+from .observation import read_turn_facts
 
 from hyprial.kernel import (
     PROCESS_LIFECYCLE,
@@ -205,6 +207,10 @@ class _TurnProjection:
     def __init__(self) -> None:
         self.lock = threading.RLock()
         self.in_flight: TurnDeliveryProjection | None = None
+        self.run_epoch = uuid4().hex
+        self.run_known = True
+        self.run_since_ms = None
+        self.run_since_monotonic_ms = None
         self.results: deque[TurnResultProjection] = deque()
 
 
@@ -401,6 +407,8 @@ class _TurnShard:
         emitted_at_ms = time.time_ns() // 1_000_000
         with self._projection.lock:
             self._projection.in_flight = command.delivery
+            self._projection.run_since_ms = emitted_at_ms
+            self._projection.run_since_monotonic_ms = time.monotonic_ns() // 1_000_000
         self._event_sink(
             TurnStarted(
                 correlation_id=command.correlation_id,
@@ -729,6 +737,8 @@ class TurnRuntime:
             self._generation += 1
             with self._projection.lock:
                 self._projection.in_flight = None
+                self._projection.run_epoch = uuid4().hex
+                self._projection.run_known = self._generation == 1
             return _TurnShard(
                 generation=self._generation,
                 projection=self._projection,
@@ -866,6 +876,9 @@ class TurnRuntime:
                 allow_retry=allow_retry,
             )
         )
+
+    def read_run_facts(self):
+        return read_turn_facts(self._projection)
 
     def read_in_flight(self) -> TurnDeliveryProjection | None:
         with self._projection.lock:

@@ -38,6 +38,8 @@ from .events import (
     _EventT,
     _check_domain_receipt,
 )
+from .cell_observation import CellObservationView
+from hyprial.daemon.impl.cells.observability.policy import RunPolicies
 from .views import (
     AgentIdentityProjectionView,
     AgentDirectoryFacade,
@@ -100,6 +102,7 @@ class AgentSessionDomains:
         persistence_late_result: Callable[[str], object | None] | None = None,
         session_desired_state: object | None = None,
     ) -> None:
+        cell_policies = RunPolicies.load(hyprial_home)
         registry = AgentRegistry(
             database,
             owner=owner,
@@ -150,6 +153,7 @@ class AgentSessionDomains:
             persistence_late_result=persistence_late_result,
         )
         self._session = self.session
+        self.cells = CellObservationView(self.agent, self.session, node_id, policies=cell_policies)
         self.agents = AgentDirectoryFacade(self)
         self.liveness = AgentLivenessProjectionFacade(self)
 
@@ -316,6 +320,7 @@ class AgentSessionDomains:
             if self._domains_closed:
                 return True
             started = time.monotonic()
+            self.cells.close()
             session = self.session.drain(timeout * 0.6)
             if not session.complete:
                 return False

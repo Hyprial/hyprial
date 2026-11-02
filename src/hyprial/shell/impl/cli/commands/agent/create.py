@@ -90,7 +90,7 @@ def agent_create(
             params["model"] = model
         if preferred_harness is not None:
             params["preferredHarness"] = preferred_harness
-        created = services._daemon_request("agent.create", params)
+        created = services.runtime.request("agent.create", params)
         if not isinstance(created, dict):
             return created
         seed = seed_new_agent(
@@ -103,7 +103,7 @@ def agent_create(
         )
         return {**created, "providerSeed": seed}
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 @agent_app.command("host-invite")
 def agent_host_invite(
@@ -123,9 +123,9 @@ def agent_host_invite(
             params["cwd"] = str(cwd.expanduser().resolve())
         if preferred_harness is not None:
             params["preferredHarness"] = preferred_harness
-        return services._daemon_request("agent.host-invite", params)
+        return services.runtime.request("agent.host-invite", params)
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 def _create_agent_for_start(
     *,
@@ -163,4 +163,4 @@ def _create_agent_for_start(
         params["model"] = model
     if include_resume_snapshot:
         params["includeResumeSnapshot"] = True
-    return services._daemon_request("agent.create", params)
+    return services.runtime.request("agent.create", params)

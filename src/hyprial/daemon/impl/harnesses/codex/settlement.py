@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import sys as sys
 import time
+from enum import StrEnum
 
 from hyprial.kernel import capped_exponential
 from hyprial.kernel import PortAdmission
 from hyprial.daemon.impl.api import HarnessDelivery
 
 from hyprial.daemon.impl.harnesses.carrier.codex_carrier_support import HintPort
+from hyprial.daemon.impl.harnesses.carrier.codex_recovery import CarrierRecoveryMixin
 from hyprial.daemon.impl.harnesses.carrier.contract import settle_injected
 from hyprial.daemon.impl.harnesses.carrier.interactive_carrier_runtime  import (
+    FETCHED,
     FINAL_OBSERVED,
     TURN_STARTED,
     CarrierDeliverySnapshot,
@@ -41,18 +44,43 @@ from hyprial.daemon.impl.harnesses.codex.process import (
 DEFAULT_STATUS_QUERY_LIMIT = 8
 
 
-class _CarrierSettlementMixin:
+class CarrierFactOutcome(StrEnum):
+    """Whether a submitted fact reached the actor or its durable relay.
+
+    ``ACCEPTED`` and ``RELAYED`` mean the fact will be applied; ``DROPPED``
+    means the relay was full and nothing retains it, so any one-shot
+    suppression recorded before the submit must be retried later.  Truthiness
+    keeps the historical ``bool`` answer of ``_submit_carrier_fact``: only
+    ``ACCEPTED`` is truthy, so callers that only need "did the actor take it"
+    keep working unchanged.
+    """
+
+    ACCEPTED = "accepted"
+    RELAYED = "relayed"
+    DROPPED = "dropped"
+
+    def __bool__(self) -> bool:
+        return self is CarrierFactOutcome.ACCEPTED
+
+
+class _CarrierSettlementMixin(CarrierRecoveryMixin):
         def _reconcile_inflight_turns(self) -> None:
             inflight = tuple(
                 state
                 for state in self._carrier_runtime.snapshots()
                 if state.stage == TURN_STARTED and state.turn_id is not None
             )
+            progress = getattr(self, "_carrier_turn_progress", {})
+            active = {(s.generation, s.delivery.delivery_id, s.attempt) for s in inflight}
+            for key in tuple(progress):
+                if key not in active:
+                    progress.pop(key, None)
             for state in inflight:
                 assert state.turn_id is not None
                 try:
                     turn = self.server.read_turn(state.turn_id)
                 except CodexAppServerRpcError as error:
+                    self._turn_reconcile_deadline(state)
                     detail = str(error) or type(error).__name__
                     if state.last_reconcile_error != detail:
                         self._log(
@@ -71,6 +99,7 @@ class _CarrierSettlementMixin:
                         )
                     continue
                 except Exception as error:  # noqa: BLE001 - independent read retry
+                    self._turn_reconcile_deadline(state)
                     detail = str(error) or type(error).__name__
                     if state.last_reconcile_error != detail:
                         self._log(
@@ -108,6 +137,7 @@ class _CarrierSettlementMixin:
                     reply is not None and final_phase
                 ):
                     if reply is None:
+                        self._turn_reconcile_deadline(state, turn)
                         self._log(
                             "error",
                             "worker.carrier.error",
@@ -140,6 +170,8 @@ class _CarrierSettlementMixin:
                     )
                     with self._carrier_io_lock:
                         self._carrier_clients.pop(state.delivery.delivery_id, None)
+                else:
+                    self._turn_reconcile_deadline(state, turn)
 
         def _settle_finals(self) -> None:
             now = time.monotonic()
@@ -201,10 +233,12 @@ class _CarrierSettlementMixin:
 
         def _settle_kept(self, state: CarrierDeliverySnapshot) -> None:
             message_id = state.delivery.delivery_id
-            self._carrier_settled_pending.add(message_id)
-            self._submit_carrier_fact(
+            outcome = self._submit_carrier_fact(
                 CarrierKept(generation=state.generation, delivery_id=message_id)
             )
+            if outcome is CarrierFactOutcome.DROPPED:
+                return
+            self._carrier_settled_pending.add(message_id)
             self._log("info", "worker.carrier.settlement.kept", state=state)
             with self._carrier_io_lock:
                 self._carrier_clients.pop(message_id, None)
@@ -303,7 +337,6 @@ class _CarrierSettlementMixin:
             message_id = state.delivery.delivery_id
             if message_id in self._carrier_settled_pending:
                 return
-            self._carrier_settled_pending.add(message_id)
             self._log(
                 "warn",
                 "worker.carrier.settlement.status_unknown",
@@ -319,13 +352,16 @@ class _CarrierSettlementMixin:
             counts = getattr(self, "_status_query_counts", None)
             if counts is not None:
                 counts.pop(state.delivery.delivery_id, None)
-            self._submit_carrier_fact(
+            outcome = self._submit_carrier_fact(
                 CarrierStatusUnknown(
                     generation=state.generation,
                     delivery_id=state.delivery.delivery_id,
                     attempts=state.settlement_attempts,
                 )
             )
+            if outcome is CarrierFactOutcome.DROPPED:
+                return
+            self._carrier_settled_pending.add(message_id)
             with self._carrier_io_lock:
                 self._carrier_clients.pop(state.delivery.delivery_id, None)
 
@@ -356,13 +392,15 @@ class _CarrierSettlementMixin:
             if store is None:
                 raise RuntimeError("carrier store closed before remote settlement journal")
             store.record_remote_settled(self.actor, message_id)
-            self._carrier_settled_pending.add(message_id)
-            self._submit_carrier_fact(
+            outcome = self._submit_carrier_fact(
                 CarrierSettled(
                     generation=state.generation,
                     delivery_id=message_id,
                 )
             )
+            if outcome is CarrierFactOutcome.DROPPED:
+                return
+            self._carrier_settled_pending.add(message_id)
             with self._carrier_io_lock:
                 self._carrier_clients.pop(message_id, None)
 
@@ -422,7 +460,17 @@ class _CarrierSettlementMixin:
                     )
                     if enqueue_key in self._carrier_enqueued:
                         continue
-                    if not self._pump.enqueue(effect.delivery):
+                    state = self._carrier_runtime.snapshot(effect.delivery.delivery_id)
+                    if (
+                        state is None or state.stage != FETCHED
+                        or state.generation != effect.generation
+                        or state.version != effect.version
+                    ):
+                        continue
+                    delivery = self._prepare_carrier_delivery(effect.delivery)
+                    if delivery is None:
+                        continue
+                    if not self._enqueue_carrier_delivery(delivery):
                         self._log(
                             "warn",
                             "worker.carrier.effect.deferred",
@@ -444,10 +492,10 @@ class _CarrierSettlementMixin:
                         **dict(effect.fields),
                     )
 
-        def _submit_carrier_fact(self, command: CarrierCommand) -> bool:
+        def _submit_carrier_fact(self, command: CarrierCommand) -> CarrierFactOutcome:
             admission = self._carrier_runtime.submit(command, timeout=0.05)
             if admission is PortAdmission.ACCEPTED:
-                return True
+                return CarrierFactOutcome.ACCEPTED
             if admission is PortAdmission.CLOSING:
                 self._log(
                     "error",
@@ -455,12 +503,12 @@ class _CarrierSettlementMixin:
                     stage=type(command).__name__,
                     error="carrier actor is closing; durable store retains the fact",
                 )
-                return False
+                return CarrierFactOutcome.DROPPED
             with self._carrier_fact_lock:
                 key = self._carrier_fact_key(command)
                 if key in self._carrier_facts:
                     self._carrier_facts[key] = command
-                    return False
+                    return CarrierFactOutcome.RELAYED
                 if len(self._carrier_facts) >= self._carrier_fact_capacity:
                     self._log(
                         "warn",
@@ -468,7 +516,7 @@ class _CarrierSettlementMixin:
                         stage=type(command).__name__,
                         error="carrier durable fact relay is full; store retains fact",
                     )
-                    return False
+                    return CarrierFactOutcome.DROPPED
                 self._carrier_facts[key] = command
             self._log(
                 "warn",
@@ -476,7 +524,7 @@ class _CarrierSettlementMixin:
                 stage=type(command).__name__,
                 retryInSeconds=self.poll_seconds,
             )
-            return False
+            return CarrierFactOutcome.RELAYED
 
         def _retry_carrier_facts(self) -> None:
             while True:

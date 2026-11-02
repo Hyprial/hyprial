@@ -46,6 +46,9 @@ from hyprial.daemon.impl.orgfs.storage.store  import CommitRecord, LocalSpaceSto
 
 from hyprial.daemon.impl.orgfs.composition.vocabulary import _CheckoutSpace, _DirectoryCallOperation, _JoinSpace, _LifecycleAuthority, _LifecycleCommand, _LifecycleFailure, _LifecycleOutcome, _LifecycleWaiter, _MeshCreation, _OpenSpaceMesh, _ServeSpace, _SpaceResourceHandle
 
+ORGFS_LIFECYCLE_WAIT_SECONDS = 120.0
+
+
 class RuntimeLifecycle:
     """Responsibility methods on the sole OrgFsRuntime state host.
 
@@ -273,7 +276,7 @@ class RuntimeLifecycle:
                 return
 
 
-    def _ask_lifecycle(self, operation: _DirectoryCallOperation) -> object:
+    def _ask_lifecycle(self, operation: _DirectoryCallOperation, *, timeout: float | None = None) -> object:
         with self._resource_lock:
             if operation.space_id in self._purging_spaces:
                 raise OrgFsError("unknown-space", {"spaceId": operation.space_id})
@@ -310,7 +313,23 @@ class RuntimeLifecycle:
                 "resource-exhausted" if admission is AdmissionResult.OVERLOADED else "unavailable",
                 {"message": "directory lifecycle admission was " + admission.value},
             )
-        waiter.done.wait()
+        wait = ORGFS_LIFECYCLE_WAIT_SECONDS if timeout is None else timeout
+        started = time.monotonic()
+        if not waiter.done.wait(wait):
+            with self._lifecycle_lock:
+                authority.waiters.pop(operation_id, None)
+            if self.logger is not None:
+                self.logger(
+                    "warn", "orgfs.lifecycle.wait-timeout",
+                    operation={_JoinSpace: "join", _ServeSpace: "serve",
+                               _CheckoutSpace: "checkout", _OpenSpaceMesh: "open-mesh"}[type(operation)],
+                    waitedSeconds=max(0.0, time.monotonic() - started),
+                    budgetSeconds=wait,
+                    commandId=operation_id,
+                )
+            raise OrgFsError("unavailable", {"message": "OrgFS lifecycle wait timed out",
+                                           "leg": "join-orgfs" if isinstance(operation, _JoinSpace) else "orgfs-lifecycle",
+                                           "budgetSeconds": wait})
         if waiter.error is not None:
             error = waiter.error
             details = {key: value for key, value in error.details}
@@ -593,8 +612,8 @@ class RuntimeLifecycle:
         return reconciled
 
 
-    def join(self, space_id: str) -> SpaceInfo:
-        return self._ask_lifecycle(_JoinSpace(space_id))  # type: ignore[return-value]
+    def join(self, space_id: str, *, timeout: float | None = None) -> SpaceInfo:
+        return self._ask_lifecycle(_JoinSpace(space_id), timeout=timeout)  # type: ignore[return-value]
 
 
     def _join_sync(self, space_id: str) -> SpaceInfo:

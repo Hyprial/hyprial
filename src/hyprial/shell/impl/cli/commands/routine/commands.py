@@ -11,6 +11,7 @@ from hyprial.shell.impl.cli.output import CliResult
 from pathlib import Path
 
 import typer
+from hyprial.shell.impl.cli.commands.common.groups import group
 
 
 from hyprial.biz  import RoutineSchemaError, RoutineSpec, load_routine
@@ -19,13 +20,18 @@ from hyprial.shell.impl.cli.commands.common.support import _render_routine_list
 from hyprial.shell.impl.cli.commands.common.services import get_services
 from typing import Any
 
-routine_app = typer.Typer(
+routine_app = group(
     help="Self-drive routines: periodic task-board-driven duty cycles over PAC runs.",
     no_args_is_help=True,
 )
 
 
-templates_app = typer.Typer(help="Inspect built-in routine templates.", invoke_without_command=True)
+templates_app = group(
+    help="Inspect built-in routine templates.",
+    invoke_without_command=True,
+    # Declared no-argument behavior: bare `hyprial routine templates` lists them.
+    no_args_is_help=False,
+)
 routine_app.add_typer(templates_app, name="templates")
 
 
@@ -39,7 +45,7 @@ def templates(
 
     if ctx.invoked_subcommand is not None:
         return
-    get_services()._execute(
+    get_services().runtime.execute(
         lambda: CliResult(
             {"ok": True, "templates": list(BUILTIN_TEMPLATES)},
             render=lambda data: "\n".join(data["templates"]),
@@ -64,7 +70,7 @@ def template_show(
             raise get_services().CliError("TEMPLATE_NOT_FOUND", str(error)) from None
         return CliResult({"ok": True, "name": name, "yaml": text}, render=lambda data: data["yaml"])
 
-    get_services()._execute(operation, json_output=json_out, allow_missing_home=True)
+    get_services().runtime.execute(operation, json_output=json_out, allow_missing_home=True)
 
 
 def _plan_document(spec: RoutineSpec) -> dict[str, object]:
@@ -135,7 +141,7 @@ def plan(
         return CliResult({"ok": True, "plan": _plan_document(spec)}, render=render, json_indent=2)
 
     spec: RoutineSpec
-    get_services()._execute(operation, json_output=json_out)
+    get_services().runtime.execute(operation, json_output=json_out)
 
 
 def _routine_identity(claimed: str | None = None) -> dict[str, str]:
@@ -205,12 +211,12 @@ def routine_add(
             except OSError as error:
                 raise services.CliError(ipc_errors.INVALID_ARGUMENT, f"cannot read {file}: {error}") from None
         # Coordinator admission includes one shared lifecycle start.
-        result = services._daemon_request("routine.add", {"yaml": text, **_routine_identity(from_identity)}, timeout=60.0)
+        result = services.runtime.request("routine.add", {"yaml": text, **_routine_identity(from_identity)}, timeout=60.0)
         if not isinstance(result, dict) or not isinstance(result.get("name"), str):
             raise services.CliError("INVALID_RESPONSE", "routine.add must return name")
         return {"ok": True, **result}
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @routine_app.command("list")
@@ -225,7 +231,7 @@ def routine_list(
 
     def operation() -> Any:
         services = get_services()
-        result = services._daemon_request(
+        result = services.runtime.request(
             "routine.list",
             {
                 **({"all": True} if all_callers else {}),
@@ -239,7 +245,7 @@ def routine_list(
             render=lambda data: _render_routine_list(data["routines"], all_callers=all_callers),
         )
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @routine_app.command("status")
@@ -252,12 +258,12 @@ def routine_status(
 
     def operation() -> Any:
         services = get_services()
-        result = services._daemon_request("routine.status", {"name": name, **_routine_identity()})
+        result = services.runtime.request("routine.status", {"name": name, **_routine_identity()})
         if not isinstance(result, dict) or not isinstance(result.get("name"), str):
             raise services.CliError("INVALID_RESPONSE", "routine.status must return name")
         return {"ok": True, **result}
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @routine_app.command("remove")
@@ -270,14 +276,14 @@ def routine_remove(
 
     def operation() -> Any:
         services = get_services()
-        result = services._daemon_request("routine.remove", {"name": name, **_routine_identity()})
+        result = services.runtime.request("routine.remove", {"name": name, **_routine_identity()})
         if not isinstance(result, dict) or result.get("removed") is not True:
             raise services.CliError(
                 "INVALID_RESPONSE", "routine.remove must return removed=true"
             )
         return {"ok": True, **result}
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @routine_app.command("set")
@@ -297,7 +303,7 @@ def routine_set(
             raise services.CliError(
                 ipc_errors.INVALID_ARGUMENT, f"cannot read {file}: {error}"
             ) from None
-        result = services._daemon_request(
+        result = services.runtime.request(
             "routine.set",
             {"name": name, "yaml": text, **_routine_identity()},
             timeout=60.0,
@@ -306,7 +312,7 @@ def routine_set(
             raise services.CliError("INVALID_RESPONSE", "routine.set must return the same name")
         return {"ok": True, **result}
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @routine_app.command("pause")
@@ -319,14 +325,14 @@ def routine_pause(
 
     def operation() -> Any:
         services = get_services()
-        result = services._daemon_request("routine.pause", {"name": name, **_routine_identity()})
+        result = services.runtime.request("routine.pause", {"name": name, **_routine_identity()})
         if not isinstance(result, dict) or result.get("enabled") is not False:
             raise services.CliError(
                 "INVALID_RESPONSE", "routine.pause must return enabled=false"
             )
         return {"ok": True, **result}
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @routine_app.command("resume")
@@ -339,11 +345,11 @@ def routine_resume(
 
     def operation() -> Any:
         services = get_services()
-        result = services._daemon_request("routine.resume", {"name": name, **_routine_identity()})
+        result = services.runtime.request("routine.resume", {"name": name, **_routine_identity()})
         if not isinstance(result, dict) or result.get("enabled") is not True:
             raise services.CliError(
                 "INVALID_RESPONSE", "routine.resume must return enabled=true"
             )
         return {"ok": True, **result}
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)

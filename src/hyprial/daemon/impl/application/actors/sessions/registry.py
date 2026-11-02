@@ -569,6 +569,7 @@ class _SessionRegistryMixin:
                     manage_agent=self.agents.get(actor) is not None,
             ),
         )
+        self._declare_turn_coverage(params, actor=actor, session_ref=session_ref)
         return completed.result.to_payload()
 
     def _ipc_session_heartbeat(self, params) -> Any:
@@ -590,7 +591,13 @@ class _SessionRegistryMixin:
                     manage_agent=self.agents.get(actor) is not None,
             ),
         )
-        return completed.result.to_payload()
+        runtime = self._agent_session_domains.session.read_runtime(actor)
+        return {
+            **completed.result.to_payload(),
+            "observationGap": bool(
+                runtime and runtime.session_ref == session_ref and runtime.observation_gap
+            ),
+        }
 
     def _ipc_session_unregister(self, params) -> Any:
         actor = self._mcp_actor(params)
@@ -755,7 +762,11 @@ class _SessionRegistryMixin:
     def _reset_interactive_turn_stats(
         self, actor: str, session_ref: str, *, reporting: bool
     ) -> None:
-        """Start a fresh daemon-local counter for a newly registered session."""
+        """Reset display counters and receipts, never observation fences.
+
+        Observation history belongs to the separate daemon-epoch run store.
+        Only the identity owner's changed mount fence advances that history.
+        """
 
         current = self._agent_session_domains.session.read_session(actor)
         if current is None or current.session_ref != session_ref:
@@ -764,8 +775,6 @@ class _SessionRegistryMixin:
             current = self._agent_session_domains.session.read_session(actor)
             if current is None or current.session_ref != session_ref:
                 return
-            # A generation change supersedes every older sessionRef's ledger
-            # (their reports are fenced anyway): drop them with the counter.
             for key in [k for k in self._carrier_turn_ledgers if k[0] == actor]:
                 del self._carrier_turn_ledgers[key]
             if not reporting:

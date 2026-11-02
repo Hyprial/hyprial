@@ -51,7 +51,7 @@ def workflow_gc(
                 ipc_errors.INVALID_ARGUMENT,
                 "PAC GC is daemon-owned; pass --dry-run to preview it",
             )
-        preview = services._daemon_request("pac.gc.preview", {})
+        preview = services.runtime.request("pac.gc.preview", {})
         if not isinstance(preview, dict):
             raise services.CliError("INVALID_RESPONSE", "pac.gc.preview must return an object")
         try:
@@ -75,4 +75,4 @@ def workflow_gc(
 
         return CliResult({"ok": True, **preview, "worktrees": results}, render=render)
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)

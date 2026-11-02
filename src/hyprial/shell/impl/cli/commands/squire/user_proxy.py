@@ -8,10 +8,11 @@ from hyprial.kernel import LIFECYCLE_IPC_MARGIN_SECONDS, LIFECYCLE_OPERATION_DEA
 from hyprial.kernel import ipc_errors
 import json
 import typer
+from hyprial.shell.impl.cli.commands.common.groups import group
 
 from hyprial.shell.impl.cli.commands.common.support import JsonObject, _resolved_agent_cwd, _user_proxy_launch_params
 from hyprial.shell.impl.cli.commands.agent.runtime.tiers import _delivery_agent_live
-user_proxy_app = typer.Typer(
+user_proxy_app = group(
     help="Configure the personal user-proxy delivery channel."
 )
 
@@ -64,7 +65,7 @@ def user_proxy_status(
             "live": _delivery_agent_live(agent) if agent is not None else False,
         }
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @user_proxy_app.command("setup")
@@ -162,7 +163,7 @@ def user_proxy_setup(
                 "user-proxy requires its own dedicated Lark adapter",
             )
 
-        status = services._daemon_request("ps", {})
+        status = services.runtime.request("ps", {})
         daemon = status.get("daemon")
         node_id = daemon.get("nodeId") if isinstance(daemon, dict) else None
         if node_id != profile.preferred_receiver.machine:
@@ -171,7 +172,7 @@ def user_proxy_setup(
                 "user-proxy setup must run on the profile's preferred-receiver "
                 f"node {profile.preferred_receiver.machine!r}, not {node_id!r}",
             )
-        pins_result = services._daemon_request("adapter.pins", {})
+        pins_result = services.runtime.request("adapter.pins", {})
         raw_pins = pins_result.get("pins")
         pins = raw_pins if isinstance(raw_pins, dict) else {}
         pinned = pins.get(adapter)
@@ -263,13 +264,13 @@ def user_proxy_setup(
                 "live user-proxy has no registered agent URI",
             )
         if pinned != target_uri:
-            pin_result = services._daemon_request(
+            pin_result = services.runtime.request(
                 "adapter.pin", {"name": adapter, "actor": target_uri}
             )
             if pin_result.get("changed") is True:
                 changed.append("adapter.pin")
         if not proxy_live:
-            worker = services._daemon_request(
+            worker = services.runtime.request(
                 "lifecycle.start",
                 _user_proxy_launch_params(proxy_name, route_uri),
                 timeout=(
@@ -303,4 +304,4 @@ def user_proxy_setup(
             "profile": profile.to_json(),
         }
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)

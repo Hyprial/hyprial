@@ -104,6 +104,9 @@ class _LifecycleOpsMixin:
     ) -> None:
         """Compose the durable cross-domain lifecycle control plane."""
 
+        self._agent_session_domains.cells.attach_harnesses(
+            getattr(harnesses.actor, "projection", None)
+        )
         router = CorrelationEventRouter()
 
         agent_port = AtomicLifecycleDomainPort(
@@ -217,12 +220,15 @@ class _LifecycleOpsMixin:
             live_resource=self._harness_resource_is_live,
             journal_store=self._state_persistence.settled_journal,
             combined_shared_receipts=True,
+            observation_host_id=self.node_id,
+            observation_fence=self._agent_session_domains.cells.operation_fence,
         )
         self._lifecycle_router = router
         self._lifecycle_domain_ports = (agent_port, session_port, harness_port)
         self._route_registration = route_port
         self._routes = RouteRegistrationClient(route_port, router)
         self._lifecycle_manager = manager
+        self._agent_session_domains.cells.attach_coordinator(manager)
         self._start_transfer_source(harnesses, manager)
 
     def _lifecycle_spec(self, spec: HarnessLaunchSpec) -> LifecycleSpec:
@@ -524,6 +530,22 @@ class _LifecycleOpsMixin:
         spec = HarnessLaunchSpec.from_json(
             {**params, "provider": harness, "name": name}, "provider"
         )
+        if spec.effort is not None:
+            from hyprial.daemon.impl.harnesses.model_provider import (
+                ModelProviderError,
+                with_reasoning_effort,
+            )
+
+            try:
+                spec = replace(
+                    spec,
+                    args=with_reasoning_effort(harness, spec.args, spec.effort),
+                    effort=None,
+                )
+            except ModelProviderError as error:
+                raise DaemonRequestError(
+                    ipc_errors.INVALID_ARGUMENT, str(error)
+                ) from error
         # The agent record is durable launch intent: an explicit request is
         # merged with (and wins over) the harnessArgs stored by an earlier
         # ``agent create``/registration, so a resident pi agent that was once

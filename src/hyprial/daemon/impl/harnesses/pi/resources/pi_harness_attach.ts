@@ -21,7 +21,12 @@
  *   4. reports the turn: `session.turn.started` before the fetched read,
  *      `session.turn.ended` when the run settles, both under one reportId,
  *      held and retried until the daemon confirms (an extension restart is a
- *      new session and drops unconfirmed reports);
+ *      new session and drops unconfirmed reports). Registration and every
+ *      daemon-generation refresh also publish `session.turn.refresh` -- the
+ *      current open run with producer-local elapsed time and the negotiated
+ *      coverage capabilities -- so a daemon that lost its receipt ledger
+ *      recovers the run without any inbox traffic or extra model turn; a
+ *      daemon without that method keeps its previous coverage;
  *   5. after the turn ends, asks `message.settle_hint` for every injected id
  *      and obeys it: "ack" -> `message.ack`, "keep" -> send nothing. The
  *      carrier never replies on anyone's behalf; the daemon-rendered batch
@@ -41,6 +46,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import bridgeFactory from "./pi_harness_bridge.ts";
@@ -82,6 +88,16 @@ const CODE_SUPERSEDED = "SESSION_SUPERSEDED";
 const CODE_STALE = "STALE_SESSION";
 const CODE_ACK_UNAVAILABLE = "MESSAGE_ACK_UNAVAILABLE";
 const REPORT_RETRY_CAP_MS = 5000; // ceiling of the turn-report retry backoff
+
+/** Deterministic refusals of the current-run refresh: retrying cannot help in
+ * this daemon generation, so the obligation is dropped instead of looping. */
+const UNSUPPORTED_TURN_REFRESH_CODES = new Set([
+  "METHOD_NOT_FOUND",
+  "INVALID_REQUEST",
+  "INVALID_ARGUMENT",
+  "INVALID_CHANNEL_LEASE",
+  "CHANNEL_LIVENESS_UNAVAILABLE",
+]);
 
 interface TurnReport {
   phase: "started" | "ended";
@@ -204,6 +220,16 @@ export default function (pi: ExtensionAPI) {
   const completed = new Set<string>(); // ack accepted (or already done)
   const kept = new Set<string>();
   let openTurn: string | null = null;
+  let openTurnStartedAt: number | null = null;
+  // A new extension process is a new producer epoch: its sequence restarts.
+  // The daemon only compares sequences inside one epoch, so a retried or
+  // reordered refresh can never resurrect state a newer one replaced.
+  const producerEpoch = randomUUID();
+  let producerSeq = -1;
+  let turnRefreshOwed = false;
+  let turnRefreshUnsupported = false;
+  let turnRefreshEpoch: string | null = null;
+  let turnRefreshInFlight = false;
   const reportQueue: TurnReport[] = [];
   let reportFlight: Promise<boolean> | null = null;
   let reportFailures = 0;
@@ -306,6 +332,7 @@ export default function (pi: ExtensionAPI) {
   async function openTurnIfNeeded(): Promise<boolean> {
     if (openTurn === null) {
       openTurn = randomUUID();
+      openTurnStartedAt = performance.now();
       reportQueue.push({ phase: "started", reportId: openTurn });
     }
     await flushReports();
@@ -317,6 +344,98 @@ export default function (pi: ExtensionAPI) {
     if (openTurn === null) return;
     reportQueue.push({ phase: "ended", reportId: openTurn, status });
     openTurn = null;
+    openTurnStartedAt = null;
+  }
+
+  /**
+   * The current run set plus negotiated coverage. Observation only: the
+   * daemon publishes no turn event for it and reads no inbox row.
+   */
+  function runStateParams(): Record<string, unknown> {
+    producerSeq += 1;
+    const runs: Record<string, unknown>[] = [];
+    if (openTurn !== null) {
+      const run: Record<string, unknown> = {
+        reportId: openTurn,
+        phase: agentRunning ? "executing" : "prepared",
+      };
+      if (openTurnStartedAt !== null) {
+        run.elapsedMs = Math.max(
+          0,
+          Math.round(performance.now() - openTurnStartedAt),
+        );
+      }
+      runs.push(run);
+    }
+    return signed({
+      schemaVersion: 1,
+      producerEpoch,
+      daemonEpoch: turnRefreshEpoch,
+      seq: producerSeq,
+      openRuns: runs,
+      capabilities: {
+        wholeSessionTurns: true,
+        preparation: true,
+        permissionWait: false,
+        producerActivity: false,
+      },
+    });
+  }
+
+  /**
+   * Best effort by contract: a refusal or a transient loss must never fail
+   * registration, polling or delivery. A transient failure leaves a bounded
+   * retry obligation that each successful ordinary contact services exactly
+   * once (the poll/heartbeat cadence paces it); a deterministic refusal is
+   * cached for this daemon generation instead of being retried in a loop, and
+   * registration or confirmed session refresh to a new epoch clears it.
+   */
+  async function refreshTurns(): Promise<boolean> {
+    if (turnRefreshUnsupported || turnRefreshInFlight) return false;
+    turnRefreshInFlight = true;
+    try {
+      return await publishTurnRefresh();
+    } finally {
+      turnRefreshInFlight = false;
+    }
+  }
+
+  async function publishTurnRefresh(): Promise<boolean> {
+    const epoch = turnRefreshEpoch;
+    let answer: Record<string, unknown>;
+    try {
+      answer = await callDaemon("session.turn.refresh", runStateParams(), false);
+    } catch (error) {
+      if (epoch !== turnRefreshEpoch) {
+        turnRefreshOwed = true;
+        return false;
+      }
+      const code = errorCode(error);
+      if (UNSUPPORTED_TURN_REFRESH_CODES.has(code) || code === CODE_SUPERSEDED) {
+        if (code !== CODE_SUPERSEDED) turnRefreshUnsupported = true;
+        turnRefreshOwed = false;
+        return false;
+      }
+      turnRefreshOwed = true;
+      return false;
+    }
+    turnRefreshOwed = epoch !== turnRefreshEpoch || answer.rejectionReason === "stale_daemon_epoch";
+    return !turnRefreshOwed;
+  }
+
+  function confirmTurnRefreshEpoch(result: Record<string, unknown>): void {
+    const epoch = result.daemonEpoch;
+    if (typeof epoch === "string" && epoch && epoch !== turnRefreshEpoch) {
+      turnRefreshEpoch = epoch;
+      turnRefreshUnsupported = false;
+      turnRefreshOwed = true;
+    }
+  }
+
+  async function serviceTurnRefresh(result: Record<string, unknown>): Promise<void> {
+    if (result.observationGap === true) turnRefreshOwed = true;
+    if (!turnRefreshOwed || turnRefreshUnsupported) return;
+    await refreshTurns();
   }
 
   function registerParams(): Record<string, unknown> {
@@ -352,22 +471,34 @@ export default function (pi: ExtensionAPI) {
           "CODEX_RESUME_GUARD_UNCONFIRMED: daemon did not confirm guarded registration",
         );
       }
+      turnRefreshUnsupported = false;
+      confirmTurnRefreshEpoch(result);
+      await refreshTurns();
       return result;
     }
     if (action instanceof Refresh) {
-      return callDaemon("session.refresh", signed(), false);
+      const result = await callDaemon("session.refresh", signed(), false);
+      confirmTurnRefreshEpoch(result);
+      await refreshTurns();
+      return result;
     }
     if (action instanceof Heartbeat) {
-      return callDaemon("session.heartbeat", signed(), false);
+      const result = await callDaemon("session.heartbeat", signed(), false);
+      await serviceTurnRefresh(result);
+      return result;
     }
     if (action instanceof ListInbox) {
-      return callDaemon("message.pending.list", signed(), false);
+      const result = await callDaemon("message.pending.list", signed(), false);
+      await serviceTurnRefresh(result);
+      return result;
     }
     const params: Record<string, unknown> = {
       knownMessageIds: [...action.knownMessageIds],
     };
     if (action.holdMs !== null) params.holdMs = action.holdMs;
-    return callDaemon("message.pending.wait", signed(params), false);
+    const result = await callDaemon("message.pending.wait", signed(params), false);
+    await serviceTurnRefresh(result);
+    return result;
   }
 
   /** The sole carrier consumption boundary: one daemon-rendered batch. */

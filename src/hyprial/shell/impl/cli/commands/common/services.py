@@ -1,27 +1,36 @@
-"""Per-invocation resolution of the CLI's monkeypatchable service bindings.
+"""Explicitly assembled service instance for unmigrated command families.
 
-``hyprial.cli`` was a single module, and the test suite (plus operators'
-tooling) rebinds names on it - ``monkeypatch.setattr(cli, "_daemon_request",
-fake)`` and friends.  After the command-family extraction those names live in
-their owning modules. The native Shell composition owner,
-``hyprial.shell.impl.cli.runtime.entry``, is now the binding authority and
-builds one :class:`CliServices` per lookup from its current
-module globals, so a patched attribute is honored by every extracted call
-site exactly as before.  No ``__getattr__``, no eval, no hidden state: the
-resolver is registered once by the native entry at composition time via
-:func:`set_service_resolver`.
+The composition root (:mod:`hyprial.shell.impl.cli.runtime.services`) imports
+the owning helpers and builds one :class:`CliServices`.  Command modules read
+that instance through :func:`get_services`; there is no per-invocation
+``globals()``/``getattr`` sweep and no entry-module lookup authority.
+
+Tests patch the owning module for request/execute (``support``) or the
+explicit ``get_services()`` instance for command-specific helpers.  New B/C
+code must use :class:`~hyprial.shell.impl.cli.runtime.composition.CliRuntime`
+rather than growing this snapshot.
 """
 from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from hyprial.shell.impl.cli.runtime.composition import CliRuntime
 
 
-@dataclass(frozen=True)
+@dataclass
 class CliServices:
-    """Current bindings of every externally rebindable CLI name."""
+    """Current bindings of every externally rebindable CLI name.
 
+    ``runtime`` owns the two cross-cutting ports.  Commands call
+    ``services.runtime.request(...)`` / ``services.runtime.execute(...)``
+    rather than carrying independent request/execute snapshot fields, so a
+    request/output change has one source of truth during the A/C transition.
+    """
+
+    runtime: CliRuntime
     CliError: type[Exception]
     time: Any
     print: Callable[..., None]
@@ -30,10 +39,8 @@ class CliServices:
     _create_agent_for_start: Callable[..., Any]
     _daemon_probe: Callable[..., Any]
     _daemon_ready_for_process: Callable[..., Any]
-    _daemon_request: Callable[..., Any]
     _describe_survivor: Callable[..., Any]
     _dsh_host_describe: Callable[..., Any]
-    _execute: Callable[..., Any]
     _hyprial_home: Callable[..., Any]
     _initialize_org_context: Callable[..., Any]
     _lark_auth_timer_check: Callable[..., Any]
@@ -79,20 +86,24 @@ class CliServices:
     write_failure_marker: Callable[..., Any]
 
 
-_resolver: Callable[[], CliServices] | None = None
+_services: CliServices | None = None
 
 
-def set_service_resolver(resolver: Callable[[], CliServices]) -> None:
-    """Register the composition root's binding reader (called once by cli)."""
-    global _resolver
-    _resolver = resolver
+def install_services(services: CliServices) -> None:
+    """Install the composition root's explicitly assembled instance once."""
+
+    global _services
+    if _services is not None:
+        raise RuntimeError("CLI services are already installed")
+    _services = services
 
 
 def get_services() -> CliServices:
-    """Return the bindings live on the native Shell entry *right now*."""
-    if _resolver is None:
+    """Return the explicitly assembled instance for unmigrated families."""
+
+    if _services is None:
         raise RuntimeError(
-            "hyprial.shell.impl.cli.commands.common.services: no resolver registered; "
-            "import hyprial.shell.impl.cli.runtime.entry before invoking commands"
+            "hyprial.shell.impl.cli.commands.common.services: CLI services are not "
+            "installed; run the composition root or install a test double"
         )
-    return _resolver()
+    return _services

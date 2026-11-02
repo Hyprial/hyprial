@@ -13,10 +13,11 @@ from hyprial.shell.impl.cli.commands.common.services import get_services
 
 from pathlib import Path
 import typer
+from hyprial.shell.impl.cli.commands.common.groups import group
 
 from hyprial.shell.impl.cli.commands.common.support import JsonObject
 from hyprial.shell.impl.cli.output import CliResult
-profile_app = typer.Typer(
+profile_app = group(
     help=(
         "Inspect, create and select network profiles. One profile is one "
         "HYPRIAL_HOME; the only selection mechanism is HYPRIAL_HOME itself."
@@ -91,7 +92,7 @@ def profile_list(
         lines.append("(* = current: the home configured_hyprial_home() resolves to)")
         return "\n".join(lines)
 
-    get_services()._execute(
+    get_services().runtime.execute(
         lambda: CliResult({"ok": True, "profiles": _profile_rows()}, render=render),
         json_output=json_output,
         allow_missing_home=True,
@@ -119,7 +120,7 @@ def profile_show(
         profile, source = services.resolve_profile()
         return CliResult({"ok": True, "source": source, "profile": profile.as_record()}, render=render)
 
-    services._execute(operation, json_output=json_output, allow_missing_home=True)
+    services.runtime.execute(operation, json_output=json_output, allow_missing_home=True)
 
 
 @profile_app.command("use")
@@ -158,7 +159,7 @@ def profile_use(
         }
 
     # Text mode emits exactly one eval-safe line.
-    services._execute(
+    services.runtime.execute(
         lambda: CliResult(operation(), render=lambda data: f"export HYPRIAL_HOME={data['home']}"),
         json_output=json_output,
         allow_missing_home=True,
@@ -248,4 +249,4 @@ def profile_create(
             "profile": profile.as_record(),
         }
 
-    services._execute(operation, json_output=json_output, allow_missing_home=True)
+    services.runtime.execute(operation, json_output=json_output, allow_missing_home=True)

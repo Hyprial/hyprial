@@ -53,7 +53,7 @@ def read_body(
         from hyprial.daemon import IPC_MESSAGE_READ_BODY
 
         services = get_services()
-        result = services._daemon_request(
+        result = services.runtime.request(
             IPC_MESSAGE_READ_BODY,
             {**_message_claim_params(source), "messageId": message_id},
         )
@@ -61,4 +61,4 @@ def read_body(
             return CliResult(result, render=_render_read)
         return result
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)

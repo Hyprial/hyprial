@@ -444,7 +444,13 @@ class _RegistryCore:
                 if self._store.cycle_for_routine(row.name) is not None:
                     skip_dispatch = True
                     schedule_events.append((row.name, slot, "skipped", 1, "cycle-busy", command.observed_at_ms))
-                    self._store.apply(routine=replace(row, next_due_ms=next_due, version=self._next_version()),
+                    # Skip the slot without minting a new routine revision: the
+                    # version is the in-flight cycle's completion fence
+                    # (effect/row/cycle versions must agree), so bumping it
+                    # here would drop the running cycle's completion, orphan
+                    # the cycle and leave every later slot cycle-busy forever
+                    # (field report: version 32461 -> 32469, cycle 32461).
+                    self._store.apply(routine=replace(row, next_due_ms=next_due),
                                       schedule_events=tuple(schedule_events))
                     continue
                 schedule_events.append((row.name, slot, "admitted", 1, "scheduled", command.observed_at_ms))

@@ -30,6 +30,7 @@ __all__ = [
     "CarrierPort",
     "INJECTION_FORMAT",
     "INJECTION_KINDS",
+    "IPC_SESSION_TURN_REFRESH",
     "IPC_SESSION_TURN_ENDED",
     "IPC_SESSION_TURN_STARTED",
     "Injection",
@@ -41,6 +42,12 @@ __all__ = [
 
 IPC_SESSION_TURN_STARTED = "session.turn.started"
 IPC_SESSION_TURN_ENDED = "session.turn.ended"
+#: Current-run refresh a carrier publishes after registration/recovery. It is
+#: declared and bound through the request catalog (a declared name never
+#: reaches the frozen legacy router); the sibling ``session.turn.*`` reports
+#: above remain on the legacy chain, which the legacy-method ledger forbids
+#: from growing.
+IPC_SESSION_TURN_REFRESH = "session.turn.refresh"
 IPC_MESSAGE_ACK = "message.ack"
 TURN_END_STATUSES = frozenset({"completed", "failed"})
 INJECTION_KINDS = frozenset({"message", "notice"})

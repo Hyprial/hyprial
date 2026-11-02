@@ -10,6 +10,7 @@ import sys
 from typing import Any
 
 import typer
+from hyprial.shell.impl.cli.commands.common.groups import group
 
 from hyprial.kernel import ipc_errors
 from hyprial.shell.impl.cli.commands.common.services import get_services
@@ -18,7 +19,7 @@ from hyprial.shell.impl.cli.commands.daemon.commands import daemon_app
 from hyprial.shell.impl.cli.output import CliResult, confirm, render_generic
 
 
-daemon_service_app = typer.Typer(
+daemon_service_app = group(
     help="Install, remove, and inspect the per-user daemon supervisor service.",
     no_args_is_help=True,
 )
@@ -165,7 +166,7 @@ def daemon_service_status(
     """Inspect service ownership, rendered configuration, and process custody."""
 
     services = get_services()
-    services._execute(
+    services.runtime.execute(
         lambda: CliResult(
             _run_service(
                 lambda manager: _status_payload(
@@ -194,7 +195,7 @@ def daemon_service_install(
     def operation() -> CliResult:
         return CliResult(_run_service(install), render=render_generic)
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @daemon_service_app.command("uninstall")
@@ -213,7 +214,7 @@ def daemon_service_uninstall(
     def operation() -> CliResult:
         return CliResult(_run_service(uninstall), render=render_generic)
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 def _manager_failure_reason(error: BaseException) -> str:
@@ -409,19 +410,63 @@ def daemon_service_doctor_check(
             else manager.inspect(serving_pid=serving_pid)
         )
     except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
+        from hyprial.daemon import (
+            USER_BUS_ADDRESS_UNREACHABLE_REASON,
+            USER_BUS_UNAVAILABLE_REASON,
+        )
         reason = getattr(error, "reason", None)
         missing_file = reason == "supervisor-file-missing"
+        bus_unavailable = reason == USER_BUS_UNAVAILABLE_REASON
+        bus_address_unreachable = reason == USER_BUS_ADDRESS_UNREACHABLE_REASON
+        if bus_unavailable:
+            # "cannot ask" is not "asked and it is broken": report the fourth
+            # state so the aggregated view cannot count it as a pass.
+            return {
+                "name": "daemon-service",
+                "status": "unknown",
+                "detail": str(error),
+                "action": {
+                    "command": "loginctl enable-linger <user>",
+                    "description": (
+                        "This session cannot reach the per-user systemd bus, so the "
+                        "service cannot be inspected. Enable lingering for the daemon "
+                        "account, then retry with XDG_RUNTIME_DIR=/run/user/<uid>."
+                    ),
+                },
+                "metrics": {"reason": reason},
+            }
+        if bus_address_unreachable:
+            # Same reasoning as ``bus_unavailable``: the supervisor was never
+            # asked (the address points nowhere), so this is "cannot ask", not
+            # "asked and broken".  #2145 documented that in the contract table
+            # but only wired the no-session case to ``unknown``.
+            return {
+                "name": "daemon-service",
+                "status": "unknown",
+                "detail": str(error),
+                "action": {
+                    "command": "env -u DBUS_SESSION_BUS_ADDRESS hyprial doctor",
+                    "description": (
+                        "DBUS_SESSION_BUS_ADDRESS is set but its socket is missing, so "
+                        "the service cannot be inspected. Fix or unset it; lingering "
+                        "does not help while the address is explicit."
+                    ),
+                },
+                "metrics": {"reason": reason},
+            }
+        if missing_file:
+            description = (
+                "Manually unload the stale supervisor label, then reinstall the service."
+            )
+        else:
+            description = "Inspect ownership before changing the supervisor file."
         return {
             "name": "daemon-service",
             "status": "fail",
             "detail": str(error),
             "action": {
                 "command": "hyprial daemon service status --json",
-                "description": (
-                    "Manually unload the stale supervisor label, then reinstall the service."
-                    if missing_file
-                    else "Inspect ownership before changing the supervisor file."
-                ),
+                "description": description,
             },
             "metrics": {"reason": reason} if isinstance(reason, str) else {},
         }
@@ -462,7 +507,44 @@ def daemon_service_doctor_check(
             "metrics": metrics,
         }
     if not status.installed:
-        return None
+        # Never installed => the daemon runs unsupervised.  That is not a fault
+        # (many hosts start it by hand) and must not turn a healthy machine red,
+        # so it is a warn: it degrades restart resilience, nothing else.
+        return {
+            "name": "daemon-service",
+            "status": "warn",
+            "detail": (
+                "no supervisor service is installed: the daemon runs unsupervised "
+                "and will not restart after a reboot"
+            ),
+            "action": {
+                "command": "hyprial daemon service install",
+                "description": (
+                    "Install the per-user service so the daemon restarts at login "
+                    "and after failures (on systemd, enable lingering too)."
+                ),
+            },
+            "metrics": {
+                **metrics,
+                "reason": "unsupervised",
+                "bootPersistent": status.boot_persistent,
+            },
+        }
+    if status.platform == "systemd" and status.boot_persistent is not True:
+        return {
+            "name": "daemon-service",
+            "status": "warn",
+            "detail": (
+                "the service is installed but user lingering is off: it starts at "
+                "login, not at boot"
+            ),
+            "action": {
+                "command": "loginctl enable-linger <user>",
+                "description": "Enable lingering so the user manager (and the "
+                "service) starts without a login session.",
+            },
+            "metrics": {**metrics, "reason": "linger-off"},
+        }
     detail = (
         f"{status.platform} service matches its template and custody is "
         f"{status.supervision}"

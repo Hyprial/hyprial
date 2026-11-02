@@ -64,9 +64,7 @@ from hyprial.daemon.impl.harnesses.codex.process import (
     CodexAppServerRpcError,
     _CodexSession,
     _CodexTurnOutcome,
-    _codex_progress_observation,
     _managed_process_group,
-    _notification_turn_id,
     resolve_codex_executable,
     _spawn_managed_codex,
     _thread_id,
@@ -76,6 +74,7 @@ from hyprial.daemon.impl.harnesses.codex.app_server import (
     _thread_execution_params,
 )
 from hyprial.daemon.impl.harnesses.codex.process import _ClientCloseMixin
+from hyprial.daemon.impl.harnesses.codex.observation import CodexTurnObservationMixin
 from hyprial.daemon.impl.harnesses.codex.projection import (
     warn_if_unrecorded_codex_version,
 )
@@ -85,6 +84,7 @@ from hyprial.daemon.impl.harnesses.codex.carrier import (
 
 
 class CodexAppServerClient(
+    CodexTurnObservationMixin,
     _CodexSpawnEnvironmentMixin,
     _ClientCloseMixin,
 ):
@@ -663,112 +663,6 @@ class CodexAppServerClient(
 
         async def notify(self, method: str, params: object = None) -> None:
             await self._write({"method": method, "params": params or {}})
-
-        async def _turn_events(self, turn_id: str) -> AsyncIterator[object]:
-            """Yield correlated coarse progress, then the completed turn object."""
-    
-            # Producer-local quiet-period watch (#277: no timeout ever kills a
-            # turn; liveness will be the connector's job via steer probing).
-            # Activity is ONLY a new app-server notification correlated with
-            # this turn, observed here in the client -- before the route-C
-            # progress channel's drop-oldest queue and coalescing, whose silence
-            # therefore never means anything.  Crossing the threshold reports
-            # ``turn-stalled``; a report re-fires every further threshold of
-            # continued silence so the signal survives log tails and cannot be
-            # missed, and the first new correlated notification reports
-            # ``turn-resumed`` and clears the condition.
-            threshold = self._turn_idle_timeout_seconds
-            last_activity = asyncio.get_running_loop().time()
-            next_stall_report = last_activity + threshold
-            stalled = False
-            while True:
-                now = asyncio.get_running_loop().time()
-                if now >= next_stall_report:
-                    stalled = True
-                    next_stall_report = now + threshold
-                    quiet = now - last_activity
-                    yield ProgressObservation(
-                        phase="turn-stalled",
-                        summary=(
-                            f"Codex turn quiet for {quiet:.0f}s (no correlated "
-                            f"app-server activity; sensitivity {threshold:g}s)"
-                        ),
-                        detail={
-                            "quietSeconds": round(quiet, 3),
-                            "thresholdSeconds": threshold,
-                            "detector": "producer-quiet-watch",
-                        },
-                    )
-                try:
-                    message = await asyncio.wait_for(
-                        self._notifications.get(), timeout=0.5
-                    )
-                except TimeoutError:
-                    # This poll recovers a dropped terminal notification.  Its
-                    # "inProgress" answer is level state that can be stuck
-                    # forever, so it never counts as activity.
-                    try:
-                        polled = await self._read_turn(turn_id)
-                    except ConnectionError as error:
-                        if "was not found" not in str(error):
-                            raise
-                    else:
-                        if polled.get("status") not in {None, "inProgress"}:
-                            yield ProgressObservation(
-                                phase="turn-end",
-                                summary=(
-                                    "Codex turn completed"
-                                    if polled.get("status") == "completed"
-                                    else f"Codex turn ended ({polled.get('status')})"
-                                ),
-                                terminal=True,
-                            )
-                            yield polled
-                            return
-                    continue
-                if isinstance(message, BaseException):
-                    raise message
-                params = message.get("params")
-                if (
-                    isinstance(params, dict)
-                    and _notification_turn_id(params) == turn_id
-                ):
-                    if stalled:
-                        stalled = False
-                        quiet = asyncio.get_running_loop().time() - last_activity
-                        yield ProgressObservation(
-                            phase="turn-resumed",
-                            summary=(
-                                f"Codex turn active again after {quiet:.0f}s quiet"
-                            ),
-                            detail={
-                                "quietSeconds": round(quiet, 3),
-                                "thresholdSeconds": threshold,
-                                "detector": "producer-quiet-watch",
-                            },
-                        )
-                    last_activity = asyncio.get_running_loop().time()
-                    next_stall_report = last_activity + threshold
-                if message.get("method") != "turn/completed":
-                    observation = _codex_progress_observation(
-                        message,
-                        thread_id=self._require_thread_id(),
-                        turn_id=turn_id,
-                    )
-                    if observation is not None:
-                        yield observation
-                    continue
-                turn = params.get("turn") if isinstance(params, dict) else None
-                if isinstance(turn, dict) and turn.get("id") == turn_id:
-                    observation = _codex_progress_observation(
-                        message,
-                        thread_id=self._require_thread_id(),
-                        turn_id=turn_id,
-                    )
-                    if observation is not None:
-                        yield observation
-                    yield turn
-                    return
 
         async def _read_turn(self, turn_id: str) -> dict[str, object]:
             thread_id = self._require_thread_id()

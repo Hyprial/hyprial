@@ -67,6 +67,7 @@ from hyprial.identity import (
 )
 
 from .tailnet import TailnetLifecycle
+from .tailnet.budget import JoinBudget
 
 JOIN_RETRY_SECONDS = 0.5
 DEFAULT_JOIN_TIMEOUT_SECONDS = 30.0
@@ -78,9 +79,10 @@ _Logger = Callable[..., None]
 class OrgNetworkError(RuntimeError):
     """A typed org-network failure; ``code`` is the IPC-facing code."""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, details: dict | None = None) -> None:
         super().__init__(message)
         self.code = code
+        self.details = details or {}
 
 
 def _canonical_member_uri(user: str) -> str:
@@ -156,6 +158,7 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
         self._membership_request = membership_request
         self._invite_ttl_seconds = invite_ttl_seconds
         self._join_timeout_seconds = join_timeout_seconds
+        self._join_budget: JoinBudget | None = None
         self._sleep = sleep
         self._now = now
 
@@ -356,18 +359,24 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
         """Decode a link and run its declarative join workflow (§2.5)."""
 
         parsed = decode_invite(link)
-        # Tailnet redemption is first: no live OrgFS holder or directory row.
-        self._redeem_tailnet(parsed)
-        self._announce_tailnet(parsed.space_id)
-        steps = parse_bootstrap_yaml(parsed.workflow_yaml)
-        executed: list[dict[str, Any]] = []
-        for step in steps:
-            detail = self._execute_step(parsed, step.kind)
-            executed.append({"kind": step.kind, "ok": True, "detail": detail})
-            if step.kind == "join-org":  # a join undoes an earlier leave here,
-                clear_left_org(self._home, parsed.org)  # even if a later step fails
-        self._log("info", "org", "org.execute", org=parsed.org, spaceId=parsed.space_id)
-        return {"org": parsed.org, "spaceId": parsed.space_id, "steps": executed}
+        self._join_budget = JoinBudget()
+        try:
+            self._redeem_tailnet(parsed)
+            self._join_budget.remaining("member-announce")
+            self._announce_tailnet(parsed.space_id)
+            steps = parse_bootstrap_yaml(parsed.workflow_yaml)
+            executed: list[dict[str, Any]] = []
+            for step in steps:
+                self._join_budget.remaining(step.kind)
+                detail = self._execute_step(parsed, step.kind)
+                self._join_budget.remaining(step.kind)
+                executed.append({"kind": step.kind, "ok": True, "detail": detail})
+                if step.kind == "join-org":
+                    clear_left_org(self._home, parsed.org)
+            self._log("info", "org", "org.execute", org=parsed.org, spaceId=parsed.space_id)
+            return {"org": parsed.org, "spaceId": parsed.space_id, "steps": executed}
+        finally:
+            self._join_budget = None
 
     def join(self, link: str) -> dict[str, Any]:
         """Join via any invite form — bare token, https URL, deep link (§5.1).
@@ -567,20 +576,35 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
 
     def _join_with_retry(self, space_id: str) -> None:
         deadline = time.monotonic() + self._join_timeout_seconds
+        leg = "join-orgfs"
         while True:
             try:
-                self._fs.join(space_id)
+                if self._join_budget is None:
+                    self._fs.join(space_id)
+                else:
+                    remaining = self._join_budget.remaining(leg)
+                    if self._join_timeout_seconds > 0:
+                        remaining = min(
+                            remaining, max(0.0, deadline - time.monotonic())
+                        )
+                    self._fs.join(space_id, timeout=remaining)
+                    self._join_budget.remaining(leg)
                 return
             except OrgFsError as error:
                 retryable = error.code == "no-holder-online" or (
                     error.code == "not-a-member"
                     and error.details.get("reason") == "supplier-not-online"
                 )
+                if self._join_budget is not None:
+                    self._join_budget.remaining(leg)
                 if not retryable:
                     raise
                 if time.monotonic() >= deadline:
                     raise
-                self._sleep(JOIN_RETRY_SECONDS)
+                wait = min(JOIN_RETRY_SECONDS, deadline - time.monotonic())
+                if self._join_budget is not None:
+                    wait = self._join_budget.remaining(leg, wait)
+                self._sleep(wait)
 
     def _publish_into(self, org: str) -> bool:
         """Write this device's row into one org's directory.

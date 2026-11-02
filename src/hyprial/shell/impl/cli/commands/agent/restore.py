@@ -43,8 +43,8 @@ def agent_restore(
                 ipc_errors.INVALID_ARGUMENT,
                 "--list cannot be combined with a name, policy, or --threshold",
             )
-        services._execute(
-            lambda: services._daemon_request("agent.restore-policy", {"list": True}),
+        services.runtime.execute(
+            lambda: services.runtime.request("agent.restore-policy", {"list": True}),
             json_output=json_output,
         )
         return
@@ -58,8 +58,8 @@ def agent_restore(
             threshold_ms = int(parse_duration(threshold, "threshold") * 1_000)
         except DurationParseError as error:
             raise services.CliError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
-        services._execute(
-            lambda: services._daemon_request(
+        services.runtime.execute(
+            lambda: services.runtime.request(
                 "agent.restore-threshold", {"thresholdMs": threshold_ms}
             ),
             json_output=json_output,
@@ -70,8 +70,8 @@ def agent_restore(
             ipc_errors.INVALID_ARGUMENT,
             "agent restore needs <NAME> <POLICY>, --threshold <DURATION>, or --list",
         )
-    services._execute(
-        lambda: services._daemon_request(
+    services.runtime.execute(
+        lambda: services.runtime.request(
             "agent.restore-policy", {"name": name, "policy": policy}
         ),
         json_output=json_output,

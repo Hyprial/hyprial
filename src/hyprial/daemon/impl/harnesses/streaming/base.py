@@ -2,6 +2,8 @@
 
 
 from typing import TYPE_CHECKING
+from dataclasses import replace
+from hyprial.daemon.impl.cells.observability.model import RunFacts
 
 
 
@@ -16,6 +18,24 @@ class BaseTurnProcess:
     of its public behavior.  Concurrent implementations use this same family
     marker while owning a correlated multi-in-flight adapter.
     """
+
+    def read_run_facts(self) -> RunFacts:
+        """Read the concrete turn owner; marker membership alone grants no coverage."""
+        runtime = getattr(self, "_turn_runtime", None)
+        if runtime is None:
+            return RunFacts()
+        facts = runtime.read_run_facts()
+        # A pump thread before native readiness is not evidence of idle.
+        ready = self._ready.is_set() and not self._stopping.is_set()
+        with self._lock:
+            client = self._client
+        read_activity = getattr(client, "read_run_activity", None)
+        activity = read_activity() if callable(read_activity) else None
+        return replace(facts, running=ready and self.running,
+                       activity_supported=activity is not None,
+                       quiet=activity[0] if activity is not None else False,
+                       quiet_after_ms=activity[2] if activity is not None else None,
+                       last_activity_at_ms=activity[1] if activity is not None else None)
 
     @property
     def dispatch_ready(self) -> bool:

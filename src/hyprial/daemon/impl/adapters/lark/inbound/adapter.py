@@ -1,10 +1,38 @@
-"""Lark event conversion, routing, acknowledgement, and receipt correlation."""
+"""Lark event conversion, routing, acknowledgement, and receipt correlation.
+
+Decision block — 0.5.5.3 bounded inline backfill (#2213 review 1344 Q1,
+rule revised per R&D lead addendum after e2e-verifier 1344 follow-up):
+- The live-message-triggered backfill used to call ``_reconcile_recent_ordered``
+  directly on the serial inbound effect lane; one hanging history call stalled
+  live injection for every chat (waiter gives up at 30s, lane stays blocked).
+- ``_run_inline_backfill`` pulls history on a detached thread and waits at
+  most ``DEFAULT_INLINE_BACKFILL_SECONDS`` (same order as the scheduled path's
+  30s ``ordered`` wait); the SDK client pins an explicit per-request HTTP
+  timeout (see outbound/sdk.py). Within the bound the sweep replays on the
+  lane exactly as before (ordering preserved).
+- On expiry the chat PAUSES -- the live message is never injected ahead of
+  the unsettled history (that would break ``test_live_event_cannot_overtake_cold_start_backfill``).
+  The triggering message is held: the caller persists it as a
+  ``backfill-unavailable`` dead letter and refuses the ack (platform
+  redelivery custody), and neither the observation watermark nor the
+  ``backfilled_chats`` epoch mark advances. A detached finisher replays the
+  eventually-returned batch on the lane via ``ordered`` and then injects the
+  held messages in arrival order, tidying their hold dead letters; the chat
+  resumes in order. If the fetch never returns, the finisher logs
+  ``lark.backfill.async-deferred``, releases the pause, and redelivery plus
+  the scheduled sweep (anchored to the reconciled point) recover the held
+  bodies.
+- The pause is strictly per chat: other chats keep flowing on the serial
+  lane, and messages for the paused chat arriving while the fetch is
+  outstanding join the same held queue instead of piling up fetch threads.
+- A per-chat active set prevents thread pile-up while a fetch is outstanding.
+"""
 
 from __future__ import annotations
 
 import threading
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -24,6 +52,7 @@ from hyprial.daemon.impl.adapters.lark.contracts.wire import (
     InboundOutcome,
     LarkApiPort,
     LarkInboundMessage,
+    ReconcileReport,
     RouteDirectory,
 )
 from hyprial.daemon.impl.adapters.lark.credentials.identities import resolve_sender_identity
@@ -45,7 +74,28 @@ from hyprial.daemon.impl.adapters.lark.inbound.reconcile import (
     DEFAULT_DEAD_LETTER_ALERT_THRESHOLD,
     _ReconcileDeadLetterMixin,
 )
+from hyprial.daemon.impl.adapters.lark.runtime.health import (
+    DEFAULT_RECONCILE_LOOKBACK_SECONDS,
+)
 OperatorNotifier = Callable[[str, str], bool]
+DEFAULT_INLINE_BACKFILL_SECONDS = 25.0
+
+
+@dataclass
+class _InlineBackfill:
+    """One chat's outstanding inline-backfill fetch and its held messages."""
+
+    chat_id: str
+    fetcher: threading.Thread | None = None
+    outcome: dict[str, Any] | None = None
+    now_ms: int = 0
+    held: list[LarkInboundMessage] = field(default_factory=list)
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+
+_PAUSED_INLINE_BACKFILL_REPORT = ReconcileReport(
+    0, 0, 0, 0, 0, retryable_errors=("adapter: backfill-paused",),
+)
 def _channel_actor_adapter_name(channel_actor_id: str) -> str:
     """The operator-facing adapter name from either channel URI shape.
 
@@ -165,6 +215,7 @@ class LarkAdapter(
         org_context_path: Path | None = None,
         users: UserStore | LazyUserStore | None = None,
         identity_resolver: IdentityResolver | None = None,
+        inline_backfill_budget: float | None = None,
     ) -> None:
         if dead_letter_alert_threshold < 1:
             raise ValueError("dead-letter alert threshold must be positive")
@@ -172,8 +223,19 @@ class LarkAdapter(
             raise ValueError("transient retry budget must not be negative")
         if transient_retry_backoff_initial <= 0.0:
             raise ValueError("transient retry backoff start must be positive")
+        self._inline_backfill_budget = (
+            DEFAULT_INLINE_BACKFILL_SECONDS
+            if inline_backfill_budget is None
+            else inline_backfill_budget
+        )
+        if self._inline_backfill_budget <= 0.0:
+            raise ValueError("inline backfill budget must be positive")
+        self._inline_backfill_lock = threading.Lock()
+        self._inline_backfills: dict[str, _InlineBackfill] = {}
         self._state = state
         self._closing = threading.Event()
+        self._backfill_epoch = 0
+        self._backfilled_chats: dict[str, int] = {}
         # The per-machine user store, consulted first when naming a sender.
         # ``None`` (no users.sqlite3 on this machine) keeps #818's
         # identities-only resolution exactly.
@@ -237,12 +299,187 @@ class LarkAdapter(
         frozen_recovery: bool = False,
         recovery_deadline: float | None = None,
     ) -> InboundOutcome:
-        return self._handle_inbound(
+        epoch = self._backfill_epoch
+        needs_backfill = (
+            not frozen_recovery
+            and not self._state.seen_message(message.message_id)
+            and self._state.pending_command_response(message.message_id) is None
+            and self._backfilled_chats.get(message.chat_id) != epoch
+        )
+        if needs_backfill:
+            if (message.chat_id in self._state.recent_chats()
+                    or self._state.has_pending_inbound_chat(message.chat_id)):
+                report = self._run_inline_backfill(message)
+                if report.retryable_errors:
+                    self._record_dead_letter(message, reason="backfill-unavailable")
+                    return InboundOutcome(status="error", ack_error="backfill-unavailable")
+                if not report.blocked_chats:
+                    self._backfilled_chats[message.chat_id] = epoch
+            else:
+                self._backfilled_chats[message.chat_id] = epoch
+        outcome = self._handle_inbound(
             message,
             suppress_guidance=suppress_guidance,
             frozen_recovery=frozen_recovery,
             recovery_deadline=recovery_deadline,
         )
+        if (outcome.status in {"forwarded", "duplicate", "ignored"}
+                and self._backfilled_chats.get(message.chat_id) == epoch):
+            try:
+                observed_ms = int(message.create_time or "0")
+            except ValueError:
+                observed_ms = 0
+            if observed_ms > 0:
+                self._state.observe_chat(
+                    message.chat_id, min(observed_ms, int(self._utcnow().timestamp() * 1000)),
+                )
+        return outcome
+
+    def begin_backfill(self) -> None:
+        """Fence live admission before scheduling each reconnect sweep."""
+        self._backfill_epoch += 1
+
+    def _run_inline_backfill(self, message: LarkInboundMessage) -> ReconcileReport:
+        """Bounded inline backfill for one chat ahead of its live message.
+
+        History is pulled on a detached thread; the lane waits at most the
+        inline budget. Within the budget the batch replays on the lane (full
+        ordering). Past it the chat pauses instead of injecting: the
+        triggering message joins the paused entry's held queue (the caller
+        then dead-letters it and refuses the ack, leaving redelivery custody
+        while the checkpoint stays put), and a detached finisher replays the
+        eventually-returned batch and then the held messages on the lane in
+        order. A chat with an outstanding fetch pauses further messages the
+        same way instead of piling up fetch threads; every other chat keeps
+        flowing.
+        """
+
+        chat_id = message.chat_id
+        with self._inline_backfill_lock:
+            entry = self._inline_backfills.get(chat_id)
+            if entry is not None:
+                self._hold_for_paused_chat(entry, message)
+                return _PAUSED_INLINE_BACKFILL_REPORT
+            entry = _InlineBackfill(chat_id=chat_id)
+            self._inline_backfills[chat_id] = entry
+        budget = self._inline_backfill_budget
+        now_ms = int(self._utcnow().timestamp() * 1000)
+        _, window_start_ms = self._history_window(
+            chat_id, now_ms=now_ms,
+            lookback_seconds=DEFAULT_RECONCILE_LOOKBACK_SECONDS,
+        )
+        entry.now_ms = now_ms
+        start_time = str(window_start_ms // 1000)
+        outcome: dict[str, Any] = {}
+        entry.outcome = outcome
+
+        def _fetch() -> None:
+            try:
+                outcome["batch"] = self._lark.list_chat_messages(
+                    chat_id,
+                    start_time=start_time,
+                    chat_type=self._state.chat_type(chat_id),
+                )
+            except Exception as error:  # noqa: BLE001
+                outcome["error"] = error
+
+        fetcher = threading.Thread(
+            target=_fetch, name=f"lark-inline-backfill-fetch:{chat_id}", daemon=True,
+        )
+        entry.fetcher = fetcher
+        fetcher.start()
+        fetcher.join(budget)
+        if fetcher.is_alive():
+            self._log_backfill(
+                "lark.backfill.inline-deadline",
+                chatId=chat_id, deadlineSeconds=budget, windowStartMs=window_start_ms,
+            )
+            self._hold_for_paused_chat(entry, message)
+            self._spawn_finisher(entry)
+            return _PAUSED_INLINE_BACKFILL_REPORT
+        self._discard_inline_backfill(entry)
+        return self._reconcile_recent_ordered(
+            chat_ids=(chat_id,), now_ms=now_ms,
+            fetch=self._inline_fetch_result(outcome),
+        )
+
+    def _inline_fetch_result(
+        self, outcome: dict[str, Any],
+    ) -> Callable[[str, str], Any]:
+        def fetch(_chat_id: str, _start_time: str) -> Any:
+            if "error" in outcome:
+                raise outcome["error"]
+            if "batch" not in outcome:
+                raise RuntimeError("adapter: inline-backfill-no-result")
+            return outcome["batch"]
+
+        return fetch
+
+    def _inline_async_replay_timeout(self) -> float:
+        return max(30.0, 10.0 * self._inline_backfill_budget)
+
+    def _hold_for_paused_chat(
+        self, entry: _InlineBackfill, message: LarkInboundMessage,
+    ) -> None:
+        with entry.lock:
+            entry.held.append(message)
+
+    def _discard_inline_backfill(self, entry: _InlineBackfill) -> None:
+        with self._inline_backfill_lock:
+            if self._inline_backfills.get(entry.chat_id) is entry:
+                del self._inline_backfills[entry.chat_id]
+
+    def _spawn_finisher(self, entry: _InlineBackfill) -> None:
+        threading.Thread(
+            target=self._finish_paused_backfill, args=(entry,),
+            name=f"lark-inline-backfill-finish:{entry.chat_id}", daemon=True,
+        ).start()
+
+    def _defer_paused_backfill(self, entry: _InlineBackfill) -> None:
+        self._discard_inline_backfill(entry)
+        self._log_backfill("lark.backfill.async-deferred", chatId=entry.chat_id)
+
+    def _finish_paused_backfill(self, entry: _InlineBackfill) -> None:
+        fetcher = entry.fetcher
+        if fetcher is None:
+            self._defer_paused_backfill(entry)
+            return
+        fetcher.join(self._inline_async_replay_timeout())
+        if fetcher.is_alive():
+            self._defer_paused_backfill(entry)
+            return
+        try:
+            self._inbound.ordered(
+                lambda: self._resume_paused_chat(entry),
+                timeout=self._inline_async_replay_timeout(),
+            )
+        except Exception:  # noqa: BLE001 - redelivery custody covers the held bodies
+            self._defer_paused_backfill(entry)
+
+    def _resume_paused_chat(self, entry: _InlineBackfill) -> None:
+        try:
+            report = self._reconcile_recent_ordered(
+                chat_ids=(entry.chat_id,), now_ms=entry.now_ms,
+                fetch=self._inline_fetch_result(entry.outcome or {}),
+            )
+        finally:
+            self._discard_inline_backfill(entry)
+        if report.retryable_errors or report.blocked_chats:
+            self._log_backfill("lark.backfill.async-deferred", chatId=entry.chat_id)
+            return
+        with entry.lock:
+            held, entry.held = entry.held, []
+        for message in held:
+            outcome = self._handle_inbound(message)
+            if outcome.status in {"forwarded", "duplicate", "ignored"}:
+                self._state.clear_dead_letter(message.message_id)
+            else:
+                self._log_backfill(
+                    "lark.backfill.resume-deferred",
+                    chatId=entry.chat_id, messageId=message.message_id,
+                    status=outcome.status,
+                )
+                break
 
     def close(self, timeout: float = 5.0) -> None:
         """Boundedly drain actor admission and its ordered effect lane."""

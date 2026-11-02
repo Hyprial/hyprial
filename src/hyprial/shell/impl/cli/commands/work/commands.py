@@ -8,23 +8,23 @@ from pathlib import Path
 from typing import Any
 
 import typer
+from hyprial.shell.impl.cli.commands.common.groups import group
 
-from hyprial.biz import worker_binding
 from hyprial.identity import PacError
 from hyprial.shell.impl.cli.commands.common.services import get_services
 from hyprial.shell.impl.cli.commands.common.support import _local_operator_identity
 from hyprial.shell.impl.cli.output import CliResult, render_generic
 
-work_app = typer.Typer(help="Create and update durable work items in OrgFS.")
+work_app = group(help="Create and update durable work items in OrgFS.")
 
 
 def _caller_identity() -> dict[str, str]:
     try:
-        binding = worker_binding()
+        binding = get_services().runtime.worker_session_binding()
     except PacError as error:
         raise get_services().CliError(error.code, str(error), error.data) from error
     return (
-        {"actor": binding[0], "sessionRef": binding[1]}
+        {"actor": binding.actor, "sessionRef": binding.session_ref}
         if binding is not None
         else {"actor": _local_operator_identity()}
     )
@@ -38,14 +38,14 @@ def _run(
 ) -> None:
     def operation() -> CliResult:
         identity = _caller_identity()
-        result = get_services()._daemon_request(method, {**params(), **identity})
+        result = get_services().runtime.request(method, {**params(), **identity})
         if not isinstance(result, dict):
             raise get_services().CliError(
                 "INVALID_RESPONSE", f"{method} returned a non-object"
             )
         return CliResult(result, render=render_generic)
 
-    get_services()._execute(operation, json_output=json_output)
+    get_services().runtime.execute(operation, json_output=json_output)
 
 
 def _association_request(_json_output: bool) -> Callable[[str, Mapping[str, Any]], Any]:
@@ -55,7 +55,7 @@ def _association_request(_json_output: bool) -> Callable[[str, Mapping[str, Any]
 
     def request(method: str, params: Mapping[str, Any]) -> Any:
         extra = identity if method.startswith("workflow.") else {}
-        result = get_services()._daemon_request(method, {**params, **extra})
+        result = get_services().runtime.request(method, {**params, **extra})
         if not isinstance(result, dict):
             raise get_services().CliError(
                 "INVALID_RESPONSE", f"{method} returned a non-object"
@@ -66,7 +66,7 @@ def _association_request(_json_output: bool) -> Callable[[str, Mapping[str, Any]
 
 
 def _org_space(explicit: str | None) -> str:
-    result = get_services()._daemon_request("org.list", {})
+    result = get_services().runtime.request("org.list", {})
     rows = result.get("orgs") if isinstance(result, Mapping) else None
     if not isinstance(rows, list) or any(not isinstance(row, Mapping) for row in rows):
         raise get_services().CliError(
@@ -359,7 +359,7 @@ def work_collect(
 
         return CliResult({"ok": True, **collected}, render=render)
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @work_app.command("finish")
@@ -398,4 +398,4 @@ def work_finish(
             render=lambda _data: json.dumps(finished, ensure_ascii=False, indent=2),
         )
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)

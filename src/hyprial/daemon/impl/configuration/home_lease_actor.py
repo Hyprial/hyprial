@@ -84,6 +84,7 @@ class HomeLeaseAuthority:
             raise TypeError("self_fence_on_expiry must be a bool")
         self._self_fence_on_expiry = self_fence_on_expiry
         self._lost_callback = options.pop("ownership_lost", None)
+        self._logger = options.pop("logger", None)
         self._duplicate_callback = options.pop("duplicate_detected", None)
         self._failed_callback = options.pop("duplicate_check_failed", None)
         self._guard = threading.RLock()
@@ -204,7 +205,8 @@ class HomeLeaseAuthority:
             self._request(event)
             return
         if isinstance(event, LeaseLost):
-            self._fence("ownership-record-lost")
+            detail = self._core.last_failure()
+            self._fence("ownership-record-lost" + (f":{detail}" if detail else ""))
             return
         if isinstance(event, LeaseExpired):
             if (
@@ -341,6 +343,19 @@ class HomeLeaseAuthority:
         self._core._stop.set()
         self._scheduler.cancel("renew")
         self._scheduler.cancel("expiry")
+        if self._logger is not None:
+            try:
+                self._logger(
+                    "warn", "daemon.home_lease.fenced",
+                    fenceReason=reason,
+                    generation=self.generation,
+                    heartbeatAgeSeconds=(
+                        self._core._monotonic_clock() - self._heartbeat_at
+                        if self._heartbeat_at is not None else None
+                    ),
+                )
+            except BaseException:  # noqa: BLE001 - diagnostics must not prevent fencing
+                pass
         if self._lost_callback is not None:
             self._lost_callback()
 

@@ -297,6 +297,7 @@ class _LifecycleBehavior:
 
 
     def close_runtime(self, timeout: float) -> bool:
+        self._projection.lifecycle_observations.close()
         deadline = time.monotonic() + max(0.0, timeout)
         with self._generation_lock:
             self._closing = True

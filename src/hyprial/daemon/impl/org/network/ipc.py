@@ -25,6 +25,7 @@ from hyprial.daemon.impl.orgfs.api import OrgFsError
 from hyprial.daemon.impl.forwarding.policy import (
     REQUEST_MEMBERSHIP_WAIT_SECONDS,
     ForwardingSidecarError,
+    membership_wait_seconds,
 )
 from hyprial.daemon.impl.org.network.casdoor import casdoor_groups_for_home
 from hyprial.daemon.impl.org.network.casdoor.client import CasdoorGroupError
@@ -69,8 +70,7 @@ def _invalid_device_diagnostics(app: Any) -> InvalidDeviceQuarantine:
 def _build_service(
     app: Any, *, membership_timeout: float | None = None
 ) -> OrgNetworkService:
-    """``membership_timeout`` bounds every sidecar membership call the service
-    makes; None (startup/background builders) keeps the 35s allowance."""
+    """Use operation budgets, optionally constrained by the caller's bound."""
 
     fs = app._require_orgfs_runtime().facade
 
@@ -79,7 +79,10 @@ def _build_service(
         supervisor = getattr(app, '_forwarding_supervisor', None)
         if supervisor is None:
             raise ForwardingSidecarError('Tailnet sidecar unavailable.', code='MEMBERSHIP_NOT_INITIALIZED')
-        return supervisor.membership_request(op, params, timeout=membership_timeout)
+        timeout = membership_wait_seconds(op, membership_timeout)
+        if service._join_budget is not None:
+            timeout = service._join_budget.remaining(op, timeout)
+        return supervisor.membership_request(op, params, timeout=timeout)
 
     def map_peer(peer: str, address: str) -> int | None:
         # The invite/join bootstrap connects a peer by assigning it a
@@ -94,7 +97,11 @@ def _build_service(
             raise OrgNetworkError(
                 "FORWARDING_UNAVAILABLE", "forwarding sidecar is not configured"
             )
-        return bind_peer_slot(app, peer, address)
+        timeout = service._join_budget.remaining("map-peer") if service._join_budget is not None else None
+        result = bind_peer_slot(app, peer, address, timeout=timeout)
+        if service._join_budget is not None:
+            service._join_budget.remaining("map-peer")
+        return result
 
     def unmap_peer(peer: str) -> None:
         # Unlike map_peer this never *starts* the sidecar: a daemon whose
@@ -111,11 +118,14 @@ def _build_service(
         # Bootstrap steps need the redial done before the next step, but it
         # runs on the single-owner cadence, bounded, never on this thread.
         try:
-            app._await_forwarding_reconcile(
-                "org-join", timeout=REQUEST_MEMBERSHIP_WAIT_SECONDS
-            )
+            timeout = REQUEST_MEMBERSHIP_WAIT_SECONDS
+            if service._join_budget is not None:
+                timeout = service._join_budget.remaining("redial", timeout)
+            app._await_forwarding_reconcile("org-join", timeout=timeout)
         except ForwardingSidecarError as error:
-            raise OrgNetworkError(error.code, str(error)) from error
+            if service._join_budget is not None:
+                service._join_budget.remaining("redial")
+            raise OrgNetworkError(error.code, str(error), error.details) from error
 
     def read_own_address() -> str | None:
         try:
@@ -145,7 +155,7 @@ def _build_service(
         )
         return value if isinstance(value, str) and value else None
 
-    return OrgNetworkService(
+    service = OrgNetworkService(
         fs=fs,
         home=Path(app.hyprial_home),
         node_id=app.node_id,
@@ -172,12 +182,13 @@ def _build_service(
             level, domain, event, **fields
         ),
     )
+    return service
 
 
 def _request_service(app: Any) -> OrgNetworkService:
     """The service for an IPC request: sidecar waits bounded under the CLI roundtrip."""
 
-    return _build_service(app, membership_timeout=REQUEST_MEMBERSHIP_WAIT_SECONDS)
+    return _build_service(app)
 
 
 def _translate(error: BaseException) -> DaemonRequestError:
@@ -186,7 +197,7 @@ def _translate(error: BaseException) -> DaemonRequestError:
     if isinstance(error, InviteError):
         return DaemonRequestError(error.code, str(error))
     if isinstance(error, (OrgNetworkError, ForwardingSidecarError)):
-        return DaemonRequestError(error.code, str(error))
+        return DaemonRequestError(error.code, str(error), error.details or None)
     if isinstance(error, ValueError):
         return DaemonRequestError(ipc_errors.INVALID_ARGUMENT, str(error))
     return DaemonRequestError("ORG_NETWORK_ERROR", str(error))

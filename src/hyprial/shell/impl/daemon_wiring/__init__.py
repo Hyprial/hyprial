@@ -6,6 +6,18 @@ from .quota import quota_evaluator_factory, quota_hook_consumer_factory
 from .hooks import hook_consumers, reply_reminder_consumer_factory
 
 
+def daemon_stdio_stamp():
+    """Return ``(stamp, context)`` that stamps a supervised daemon's stdio.
+
+    A service manager appends stdout/stderr to one file across restarts, so
+    each record must name when it was written and which daemon wrote it.
+    """
+    from hyprial.kernel import LogStamp, stamp_std_streams
+
+    stamp = LogStamp()
+    return stamp, stamp_std_streams(stamp)
+
+
 def daemon_dependencies():
     """Constructor callbacks; usage_factory belongs only to from_environment."""
     from hyprial.biz import ServiceDiscoveryError, discover_installed_services

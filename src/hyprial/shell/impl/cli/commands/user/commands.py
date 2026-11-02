@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 import typer
+from hyprial.shell.impl.cli.commands.common.groups import group
 
 from hyprial.kernel import ipc_errors
 from hyprial.shell.impl.cli.commands.common.services import get_services
@@ -40,13 +41,13 @@ _AUDIT_LABELS = {
 _AUDIT_ORDER = tuple(_AUDIT_LABELS)
 _OPEN_ID_HINT = "unknown until this person messages the adapter; see user whois"
 
-user_app = typer.Typer(
+user_app = group(
     help=(
         "Resolve platform accounts to members or guests through the daemon's "
         "merged identity view. Guests never grant authorization."
     )
 )
-bindings_app = typer.Typer(help="Inspect binding state or publish your own proof.")
+bindings_app = group(help="Inspect binding state or publish your own proof.")
 user_app.add_typer(bindings_app, name="bindings")
 
 
@@ -127,7 +128,7 @@ def _binding_view(source: str | None = None) -> JsonObject:
                 "--source must be one of: " + ", ".join(sorted(_SOURCES)),
             )
         params["source"] = source
-    result = get_services()._daemon_request("identity.bindings.list", params)
+    result = get_services().runtime.request("identity.bindings.list", params)
     view: JsonObject = {
         "rows": _rows(result, method="identity.bindings.list", keys=("bindings",))
     }
@@ -262,7 +263,7 @@ def _binding_publication_command(
 ) -> None:
     def operation() -> CliResult:
         try:
-            value = get_services()._daemon_request(
+            value = get_services().runtime.request(
                 method, _binding_publication_scope(org=org, all_orgs=all_orgs)
             )
         except Exception as error:
@@ -276,7 +277,7 @@ def _binding_publication_command(
             _mapping(value, method=method), render=_render_binding_publication
         )
 
-    get_services()._execute(operation, json_output=json_output)
+    get_services().runtime.execute(operation, json_output=json_output)
 
 
 @user_app.command("list")
@@ -288,7 +289,7 @@ def user_list(
 ) -> None:
     """List the merged binding view; JSON output uses {"rows": [...]}."""
 
-    get_services()._execute(
+    get_services().runtime.execute(
         lambda: CliResult(_binding_view(source), render=_render_bindings),
         json_output=json_output,
     )
@@ -321,12 +322,12 @@ def user_bind(
             "user": user,
             "confirmedBy": _confirmer(confirmed_by),
         }
-        result = get_services()._daemon_request("identity.override.set", params)
+        result = get_services().runtime.request("identity.override.set", params)
         return CliResult(
             _mapping(result, method="identity.override.set"), render=_render_mutation
         )
 
-    get_services()._execute(operation, json_output=json_output)
+    get_services().runtime.execute(operation, json_output=json_output)
 
 
 @user_app.command("unbind")
@@ -348,12 +349,12 @@ def user_unbind(
         params = _identity_target(
             union_id=union_id, adapter=adapter, open_id=open_id
         )
-        result = get_services()._daemon_request("identity.override.clear", params)
+        result = get_services().runtime.request("identity.override.clear", params)
         return CliResult(
             _mapping(result, method="identity.override.clear"), render=_render_mutation
         )
 
-    get_services()._execute(operation, json_output=json_output)
+    get_services().runtime.execute(operation, json_output=json_output)
 
 
 @user_app.command("whois")
@@ -377,12 +378,12 @@ def user_whois(
         )
         # Preserve the resolver's conflict detail. A conflict remains an error,
         # so neither JSON nor human output can accidentally select a user.
-        result = get_services()._daemon_request("identity.resolve", params)
+        result = get_services().runtime.request("identity.resolve", params)
         return CliResult(
             _mapping(result, method="identity.resolve"), render=_render_whois
         )
 
-    get_services()._execute(operation, json_output=json_output)
+    get_services().runtime.execute(operation, json_output=json_output)
 
 
 @user_app.command("add")
@@ -429,7 +430,7 @@ def user_add(
             if value is not None:
                 params[name] = value
         result = _mapping(
-            get_services()._daemon_request("identity.users.add", params),
+            get_services().runtime.request("identity.users.add", params),
             method="identity.users.add",
         )
         record = result.get("user")
@@ -445,7 +446,7 @@ def user_add(
             ),
         )
 
-    get_services()._execute(operation, json_output=json_output)
+    get_services().runtime.execute(operation, json_output=json_output)
 
 
 @user_app.command("show")
@@ -456,7 +457,7 @@ def user_show(
     """Show one local member or guest through the daemon authority."""
 
     def operation() -> JsonObject:
-        result = get_services()._daemon_request(
+        result = get_services().runtime.request(
             "identity.users.list", {"user": user}
         )
         rows = _rows(
@@ -471,7 +472,7 @@ def user_show(
             raise get_services().CliError("USER_NOT_FOUND", "user not found")
         return matches[0]
 
-    get_services()._execute(operation, json_output=json_output)
+    get_services().runtime.execute(operation, json_output=json_output)
 
 
 def _account_keys(row: Mapping[str, Any]) -> set[tuple[str, str]]:
@@ -623,7 +624,7 @@ def user_bindings_audit(
             rows.append(audit_row)
         return CliResult({"rows": rows}, render=_render_audit)
 
-    get_services()._execute(operation, json_output=json_output)
+    get_services().runtime.execute(operation, json_output=json_output)
 
 
 _BINDING_PUBLICATION_HELP = (

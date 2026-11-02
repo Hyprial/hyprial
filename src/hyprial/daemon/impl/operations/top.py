@@ -407,6 +407,7 @@ def build_actor_row(
         "runtime": runtime,
         "status": status.get("status", "online" if running else "offline"),
         "processState": process_state,
+        **({"runState": status["runState"]} if "runState" in status else {}),
         "sources": list(status.get("sources", [])),
         "running": running,
         "pid": pid,
@@ -480,6 +481,7 @@ def build_top_snapshot(
     dispatch_conversation_count: int = 0,
     inbound_awaiting_injection: dict[str, int] | None = None,
     link_fields: dict[str, dict[str, int | None]] | None = None,
+    batch_claims: dict[str, dict[str, object]] | None = None,
 ) -> JsonObject:
     """The full ``top.snapshot`` IPC result."""
 
@@ -512,6 +514,10 @@ def build_top_snapshot(
                 link_fields=(link_fields or {}).get(status_actor),
             )
         )
+    for row in actors:
+        claim = (batch_claims or {}).get(row["actor"])
+        if claim:
+            row.setdefault("stateDetail", {}).update(claim)
     return {
         "daemon": {
             "pid": daemon_pid,

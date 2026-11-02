@@ -18,6 +18,17 @@ CREATE TABLE IF NOT EXISTS adapter_model_backup (
 """
 
 
+def downgrade_adapter_state_result(state_dir: Path) -> dict[str, object]:
+    """Offline downgrade result boundary; maps the two public refusals."""
+
+    from hyprial.daemon.impl.configuration.ownership import DaemonOwnershipBusy
+
+    try:
+        return {"ok": True, **downgrade_adapter_state(state_dir)}
+    except (DesiredStateError, DaemonOwnershipBusy) as error:
+        return {"ok": False, "code": "ADAPTER_DOWNGRADE_REFUSED", "error": str(error)}
+
+
 def backup_document(db, document):
     if document is None or document["schemaVersion"] >= 3:
         return

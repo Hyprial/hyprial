@@ -1,0 +1,191 @@
+:root {
+  color-scheme: light;
+  /* Shared v11/v13 prototype families. Noomo assets are not bundled here, so
+     the declared fallback is what actually renders when they are absent. */
+  --font-ui:
+    "NoomoRoman", "Noto Sans SC", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", ui-sans-serif, system-ui, -apple-system,
+    BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-brand:
+    "NoomoMachina", "Noto Sans SC", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --ink: #17131f;
+  --ink-soft: #4d4d54;
+  --muted: #70727a;
+  --line: #d7d8d5;
+  --line-soft: #e9eae7;
+  --paper: #f5f6f3ee;
+  --card: #fcfdfa;
+  --green: #dff493;
+  --green-wash: #edf2e7;
+  --green-line: #d5e5af;
+  --selected: #f1f5ff;
+  --selected-line: #7192d8;
+  --focus: #6a91e8;
+  --shadow-window: 0 24px 70px #56627a28;
+  --shadow-menu: 0 24px 70px #56627a28;
+  --radius-xl: 30px;
+  --radius-lg: 18px;
+  --radius-md: 13px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  margin: 0;
+  /* ADR-GUI-004: never inherit the prototype's 980px desktop minimum. */
+  min-width: 0;
+  color: var(--ink);
+  font-family: var(--font-ui);
+  background: #fff;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button,
+a {
+  touch-action: manipulation;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: #dfe9ff;
+  color: var(--ink);
+}
+
+/* S1 additive v17 semantic layer. These tokens are consumed only by the new
+   `.ui-*` primitives; the legacy variables above keep their existing values so
+   old pages do not change until their own migration slice. */
+:root {
+  /* Raw palette */
+  --ui-blue-600: #0048a8;
+  --ui-blue-500: #1159b8;
+  --ui-blue-wash: #e7eeff;
+  --ui-jade-600: #0fa06e;
+  --ui-jade-wash: #e7f6f0;
+  --ui-red-600: #b01228;
+  --ui-red-wash: #fdecef;
+  --ui-amber-700: #9a5a00;
+  --ui-amber-wash: #fff4df;
+  --ui-yellow-500: #ffd400;
+  --ui-white: #ffffff;
+  --ui-neutral-50: #f5f5f7;
+  --ui-neutral-100: #ececef;
+  --ui-neutral-200: #e6e6ea;
+  --ui-neutral-300: #d3d3d9;
+  --ui-neutral-400: #b6b6bc;
+  --ui-neutral-600: #6e6e76;
+  --ui-neutral-800: #3a3a40;
+  --ui-neutral-900: #17171b;
+  --ui-overlay: rgb(23 23 27 / 48%);
+
+  /* Semantic text, surfaces and borders */
+  --ui-ink-1: var(--ui-neutral-900);
+  --ui-ink-2: var(--ui-neutral-800);
+  --ui-ink-3: var(--ui-neutral-600);
+  --ui-ink-4: var(--ui-neutral-400);
+  --ui-border: var(--ui-neutral-200);
+  --ui-border-strong: var(--ui-neutral-300);
+  --ui-ground: var(--ui-neutral-50);
+  --ui-ground-2: var(--ui-neutral-100);
+  --ui-surface: var(--ui-white);
+  --ui-surface-muted: #fafafb;
+
+  /* Semantic action and status colours */
+  --ui-accent: var(--ui-blue-600);
+  --ui-accent-hover: var(--ui-blue-500);
+  --ui-accent-wash: var(--ui-blue-wash);
+  --ui-on-accent: var(--ui-white);
+  --ui-focus: rgb(0 72 168 / 45%);
+  --ui-info: var(--ui-blue-600);
+  --ui-info-wash: var(--ui-blue-wash);
+  --ui-positive: var(--ui-jade-600);
+  --ui-positive-wash: var(--ui-jade-wash);
+  --ui-danger: var(--ui-red-600);
+  --ui-danger-wash: var(--ui-red-wash);
+  --ui-warning: var(--ui-amber-700);
+  --ui-warning-wash: var(--ui-amber-wash);
+  --ui-highlight: var(--ui-yellow-500);
+
+  /* Typography: local fallbacks only; no remote font request. */
+  --ui-font-ui:
+    "NoomoRoman", "Noto Sans SC", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", ui-sans-serif, system-ui, -apple-system,
+    BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --ui-font-cn:
+    "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
+    ui-sans-serif, system-ui, sans-serif;
+  --ui-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --ui-text-xs: 12px;
+  --ui-text-sm: 13px;
+  --ui-text-md: 14px;
+  --ui-text-lg: 16px;
+  --ui-text-xl: 20px;
+  --ui-text-2xl: 24px;
+  --ui-text-3xl: 30px;
+  --ui-leading-tight: 1.2;
+  --ui-leading-normal: 1.5;
+  --ui-leading-relaxed: 1.65;
+  --ui-tracking-wide: 0.06em;
+
+  /* Spacing on a 4px base */
+  --ui-space-1: 4px;
+  --ui-space-2: 8px;
+  --ui-space-3: 12px;
+  --ui-space-4: 16px;
+  --ui-space-5: 20px;
+  --ui-space-6: 24px;
+  --ui-space-8: 32px;
+  --ui-space-10: 40px;
+  --ui-space-12: 48px;
+
+  /* Shape, elevation and motion */
+  --ui-radius-sm: 12px;
+  --ui-radius-md: 20px;
+  --ui-radius-lg: 28px;
+  --ui-radius-xl: 40px;
+  --ui-radius-pill: 999px;
+  --ui-shadow-sm: 0 2px 8px rgb(23 23 27 / 6%);
+  --ui-shadow-card:
+    0 12px 32px rgb(23 23 27 / 8%),
+    0 2px 6px rgb(23 23 27 / 4%);
+  --ui-shadow-dialog: 0 24px 80px rgb(23 23 27 / 24%);
+  --ui-motion-fast: 120ms;
+  --ui-motion-base: 180ms;
+  --ui-motion-slow: 260ms;
+  --ui-ease-standard: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ui-z-dialog: 1000;
+
+  /* The only component-slot tokens in S1: shared control measurements. */
+  --ui-control-height-sm: 32px;
+  --ui-control-height-md: 40px;
+  --ui-focus-width: 2px;
+}

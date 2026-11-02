@@ -22,8 +22,8 @@ def agent_home_census(
     """Measure agent-home P2 and legacy use without changing agent state."""
     services = get_services()
 
-    services._execute(
-        lambda: services._daemon_request("agent.home-census"),
+    services.runtime.execute(
+        lambda: services.runtime.request("agent.home-census"),
         json_output=json_output,
     )
 
@@ -111,7 +111,7 @@ def agent_readiness(
         params["forgejoHost"] = forgejo_host
 
     def operation() -> JsonObject:
-        result = services._daemon_request("agent.readiness", params)
+        result = services.runtime.request("agent.readiness", params)
         if not isinstance(result, dict):
             raise services.CliError(
                 "INVALID_RESPONSE", "agent.readiness must return an object"
@@ -120,7 +120,7 @@ def agent_readiness(
         # while the report keeps its own ready/ok distinction in JSON.
         return {**result, "ok": bool(result.get("ready"))}
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @agent_app.command("ensure-home")
@@ -186,7 +186,7 @@ def agent_ensure_home(
                     ipc_errors.INVALID_ARGUMENT,
                     "pass either agent names or --all-legacy, not both",
                 )
-            census = services._daemon_request("agent.home-census")
+            census = services.runtime.request("agent.home-census")
             if not isinstance(census, dict) or not isinstance(
                 census.get("agents"), list
             ):
@@ -229,7 +229,7 @@ def agent_ensure_home(
         failures = 0
         for actor in selected:
             try:
-                outcome = services._daemon_request(
+                outcome = services.runtime.request(
                     "agent.ensure-home", {"name": actor}
                 )
             except DaemonRequestError as error:
@@ -254,12 +254,12 @@ def agent_ensure_home(
             "results": results,
         }
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 def _agent_running_status(services: Any) -> dict[str, bool]:
     """Actor -> has-live-binding, from the ordinary agent list read."""
 
-    listing = services._daemon_request("agent.list", {})
+    listing = services.runtime.request("agent.list", {})
     if not isinstance(listing, dict) or not isinstance(listing.get("agents"), list):
         raise services.CliError(
             "INVALID_RESPONSE", "agent.list must return agents"
@@ -317,7 +317,7 @@ def _routine_binding_matches_agent(value: object, requested: str) -> bool:
 
 def _guard_agent_migration_routines(agent: str, *, json_output: bool) -> None:
     services = get_services()
-    result = services._daemon_request(
+    result = services.runtime.request(
         "routine.list",
         {"all": True, **services._routine_identity()},
     )
@@ -370,12 +370,12 @@ def agent_migrate_preflight(
     def operation() -> Any:
         services = get_services()
         _guard_agent_migration_routines(agent, json_output=json_output)
-        return services._daemon_request(
+        return services.runtime.request(
             "agent.migrate.preflight",
             {"agent": agent, "manifest": _migration_manifest(manifest)},
         )
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 @migration_app.command("execute")
 def agent_migrate_execute(
@@ -397,12 +397,12 @@ def agent_migrate_execute(
     def operation() -> Any:
         services = get_services()
         _guard_agent_migration_routines(agent, json_output=json_output)
-        return services._daemon_request(
+        return services.runtime.request(
             "agent.migrate.execute",
             {"agent": agent, "migrationId": migration_id},
         )
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 @migration_app.command("rollback")
 def agent_migrate_rollback(
@@ -437,7 +437,7 @@ def agent_migrate_rollback(
     def operation() -> Any:
         services = get_services()
         _guard_agent_migration_routines(agent, json_output=json_output)
-        return services._daemon_request(
+        return services.runtime.request(
             "agent.migrate.rollback",
             {
                 "agent": agent,
@@ -450,4 +450,4 @@ def agent_migrate_rollback(
             },
         )
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)

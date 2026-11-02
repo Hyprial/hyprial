@@ -1,13 +1,12 @@
 """OrgFS update admission, including organization device-row ownership.
 
 Protected org-directory ownership is enforced independently by every replica.
-This boundary assumes ``origin.author`` is genuine; author signatures are a
-separate prerequisite and are not provided by this module.  Protected content
-uses a deterministic id encoding its path principal, so admission depends only
-on ``(doc_id, author)`` and cannot vary with content/link arrival order.
-
-Aged pending rows are re-evaluated under the current admission policy before
-removal.  Every expiry batch emits its space, organization, oldest hold time,
+This boundary assumes ``origin.author`` is genuine; signatures are a separate
+prerequisite and are not provided by this module.  Protected content uses a
+deterministic id encoding its path principal, so admission depends only on
+``(doc_id, author)`` and cannot vary with content/link arrival order.  Aged
+pending rows are re-evaluated under the current admission policy before
+removal; every expiry batch emits its space, organization, oldest hold time,
 and admitted/discarded counts so expiry is never a silent loss boundary.
 """
 
@@ -359,9 +358,7 @@ class StoreAdmission:
             except json.JSONDecodeError:
                 if strict:
                     raise ValueError("incoming tree row must be valid JSON") from None
-                _LOG.warning(
-                    "orgfs skipped invalid tree row node_id=%s", node_id
-                )
+                _LOG.warning("orgfs skipped invalid tree row node_id=%s", node_id)
                 continue
             if isinstance(value, dict):
                 rows[str(node_id)] = value
@@ -546,7 +543,7 @@ class StoreAdmission:
             (cutoff, after_rowid, self._pending_drain_page_size),
         ).fetchall()
 
-    def _expire_pending_locked(self, applied: list[bytes]) -> int:
+    def _expire_pending_locked(self, applied: list[bytes], deadline: float | None) -> int:
         age = timedelta(seconds=self._pending_import_max_age_seconds)
         cutoff = (datetime.now(UTC) - age).isoformat()
         summary = self._db.execute(
@@ -561,6 +558,8 @@ class StoreAdmission:
         oldest = "missing" if int(summary[2]) else str(summary[1])
         applied_before = len(applied)
         while True:
+            if self._drain_budget_exceeded(deadline):
+                return count
             progressed = False
             after_rowid = 0
             while True:
@@ -568,6 +567,8 @@ class StoreAdmission:
                 if not rows:
                     break
                 for row in rows:
+                    if self._drain_budget_exceeded(deadline):
+                        return count
                     after_rowid = int(row["pending_rowid"])
                     progressed = self._drain_pending_row(row, applied) or progressed
             if not progressed:
@@ -589,21 +590,18 @@ class StoreAdmission:
             "orgfs.pending_expired org=%s space=%s count=%s oldestHeldAt=%s "
             "reason=age-after-revalidation admittedCount=%s discardedCount=%s "
             "unresolvedCount=%s",
-            self._pending_org(),
-            self.space_id,
-            count,
-            oldest,
-            admitted,
-            count - admitted,
-            unresolved,
+            self._pending_org(), self.space_id, count, oldest,
+            admitted, count - admitted, unresolved,
         )
         return count
 
-    def expire_pending(self) -> int:
+    def expire_pending(self, *, deadline: float | None = None) -> int:
         """Re-evaluate and resolve aged parked envelopes during idle maintenance."""
+        if deadline is None:
+            deadline = self._monotonic() + self._pending_drain_budget_seconds
         with self._lock:
             before = int(self._db.execute("SELECT COUNT(*) FROM pending").fetchone()[0])
-            drained = self._drain_pending()
+            drained = self._drain_pending(deadline)
             self._last_drained += drained
             after = int(self._db.execute("SELECT COUNT(*) FROM pending").fetchone()[0])
             return before - after
@@ -613,17 +611,12 @@ class StoreAdmission:
 
         self._pending_drop_count += count
         now = time.monotonic()
-        if (
-            now - self._pending_drop_warning_at
-            < self._pending_drop_warning_interval_seconds
-        ):
+        if now - self._pending_drop_warning_at < self._pending_drop_warning_interval_seconds:
             return
         self._pending_drop_warning_at = now
         _LOG.warning(
             "orgfs dropped pending dependency: space=%s reason=%s droppedCount=%s",
-            self.space_id,
-            reason,
-            self._pending_drop_count,
+            self.space_id, reason, self._pending_drop_count,
         )
 
     def _pending(self, envelope: bytes, supplier: str) -> bool:
@@ -771,11 +764,7 @@ class StoreAdmission:
                 )
             _LOG.warning(
                 "orgfs rejected same journal key with different bytes: space=%s doc=%s writer=%s seq=%s supplier=%s",
-                self.space_id,
-                value["docId"],
-                writer,
-                seq,
-                supplier,
+                self.space_id, value["docId"], writer, seq, supplier,
             )
             return ImportResult("rejected", "log-key-conflict")
         doc_id = str(value["docId"])
@@ -836,10 +825,21 @@ class StoreAdmission:
         )
 
 
-    def _drain_pending(self) -> tuple[bytes, ...]:
+    def _drain_budget_exceeded(self, deadline: float | None) -> bool:
+        if deadline is None or self._monotonic() < deadline:
+            return False
+        now = self._monotonic()
+        if now - self._drain_budget_warning_at >= self._pending_drop_warning_interval_seconds:
+            self._drain_budget_warning_at = now
+            _LOG.warning("orgfs pending drain deferred by budget: space=%s", self.space_id)
+        return True
+
+    def _drain_pending(self, deadline: float | None = None) -> tuple[bytes, ...]:
         applied: list[bytes] = []
         while True:
-            self._expire_pending_locked(applied)
+            if self._drain_budget_exceeded(deadline):
+                return tuple(applied)
+            self._expire_pending_locked(applied, deadline)
             progressed = False
             after_rowid = 0
             while True:
@@ -851,6 +851,8 @@ class StoreAdmission:
                 if not rows:
                     break
                 for row in rows:
+                    if self._drain_budget_exceeded(deadline):
+                        return tuple(applied)
                     after_rowid = int(row["pending_rowid"])
                     progressed = self._drain_pending_row(row, applied) or progressed
             if not progressed:
@@ -900,8 +902,7 @@ class StoreAdmission:
                 _LOG.warning(
                     "orgfs discarded pending retired document update: "
                     "space=%s doc=%s code=snapshot-barrier",
-                    self.space_id,
-                    row["doc_id"],
+                    self.space_id, row["doc_id"],
                 )
             self._db.execute(
                 "DELETE FROM pending WHERE writer = ? AND seq = ? AND doc_id = ?",
@@ -938,11 +939,7 @@ class StoreAdmission:
                     )
                 _LOG.warning(
                     "orgfs rejected same journal key with different bytes: space=%s doc=%s writer=%s seq=%s supplier=%s",
-                    self.space_id,
-                    value["docId"],
-                    writer,
-                    seq,
-                    supplier,
+                    self.space_id, value["docId"], writer, seq, supplier,
                 )
                 return ImportResult("rejected", "log-key-conflict")
             try:

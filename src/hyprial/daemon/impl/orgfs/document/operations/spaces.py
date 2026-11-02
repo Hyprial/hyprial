@@ -237,13 +237,13 @@ class FacadeSpaces:
 
 
     @_facade_locked
-    def join(self, space_id: str) -> SpaceInfo:
+    def join(self, space_id: str, *, timeout: float | None = None) -> SpaceInfo:
         existing = self._existing_space(space_id)
         if existing is not None:
             return existing.info
         if self.mesh is None:
             raise OrgFsError("no-holder-online")
-        info = self.mesh.join(space_id)
+        info = self.mesh.join(space_id) if timeout is None else self.mesh.join(space_id, timeout=timeout)
         if not isinstance(info, SpaceInfo):
             raise OrgFsError(
                 "invalid-argument", {"message": "mesh returned invalid space info"}

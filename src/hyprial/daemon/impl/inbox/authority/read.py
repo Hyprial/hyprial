@@ -18,15 +18,14 @@ from hyprial.daemon.impl.inbox.contracts.api  import (
 from hyprial.daemon.impl.inbox.history import (
     conversation_messages as _conversation_messages,
 )
+from hyprial.daemon.impl.inbox.send_lookup import lookup_send
 from hyprial.daemon.impl.inbox.links.pull  import DEFAULT_HOLD_TTL_MS, DeliveryStatus, TerminalState
 from hyprial.daemon.impl.inbox.service.state  import ConsumptionState
+from hyprial.daemon.impl.inbox.service.delivery.system_notices import system_notice_counts
 
 from hyprial.daemon.impl.inbox.authority.rows import ledger_row as _ledger_row
 
 _REPLY_COMPLETION_HANDOFF_GRACE_SECONDS = 0.5
-
-
-
 
 def _inbound_row(row: sqlite3.Row) -> LinkInboundRow:
     fetched = row["fetched_at_ms"]
@@ -89,6 +88,10 @@ def delivery_pending(
 class InboxReadProjection:
     """Stable read-only SQLite face; every connection is opened ``mode=ro``."""
 
+    def lookup_send(self, **selectors: str) -> dict[str, str]:
+        with self._connect() as connection:
+            return lookup_send(connection, **selectors)
+
     def __init__(self, database: Path) -> None:
         self._database = database
 
@@ -113,7 +116,8 @@ class InboxReadProjection:
             conversation_id=str(row["conversation_id"]),
             sender=str(row["sender"]),
             recipient=str(row["recipient"]),
-            payload=bytes(row["payload"]),
+            payload=(row["payload"].encode("utf-8")
+                     if isinstance(row["payload"], str) else bytes(row["payload"])),
             intent=str(row["intent"]),
             lifecycle=DeliveryLifecycle(str(row["lifecycle"])),
             created_at_ms=int(row["created_at_ms"]),
@@ -965,6 +969,10 @@ class InboxReadProjection:
         with self._connect() as connection:
             rows = connection.execute(query, params).fetchall()
         return tuple(self._message(row) for row in rows)
+
+    def system_notice_counts(self, node_id: str) -> dict[str, int]:
+        with self._connect() as connection:
+            return system_notice_counts(connection, node_id)
 
     def _count(self, table: str) -> int:
         if table not in {"outbox", "custody", "dlq"}:

@@ -50,7 +50,10 @@ from hyprial.daemon.impl.adapters.lark.state.records import (
     _pending_responses,
 )
 from hyprial.daemon.impl.adapters.lark.state.schema import _LarkStateSchema
-class LarkStateStore(_LarkStateSchema):
+from hyprial.daemon.impl.adapters.lark.state.recovery import _PendingRecoveryState
+
+
+class LarkStateStore(_PendingRecoveryState, _LarkStateSchema):
     def __init__(
         self,
         path: Path,
@@ -158,6 +161,40 @@ class LarkStateStore(_LarkStateSchema):
             )
             self._prune(db, "chat_types", MAX_CORRELATIONS)
 
+    def chat_observed_ms(self, chat_id: str) -> int | None:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT observed_ms FROM chat_observations WHERE adapter = ? AND chat_id = ?",
+                (self.adapter, chat_id),
+            ).fetchone()
+        return None if row is None else int(row["observed_ms"])
+
+    def observe_chat(self, chat_id: str, observed_ms: int) -> None:
+        with self._transaction() as db:
+            db.execute(
+                """INSERT INTO chat_observations(adapter, chat_id, observed_ms)
+                   VALUES (?, ?, ?) ON CONFLICT(adapter, chat_id)
+                   DO UPDATE SET observed_ms = MAX(observed_ms, excluded.observed_ms)""",
+                (self.adapter, chat_id, observed_ms),
+            )
+
+    def chat_reconciled_ms(self, chat_id: str) -> int | None:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT reconciled_ms FROM chat_reconciliations WHERE adapter = ? AND chat_id = ?",
+                (self.adapter, chat_id),
+            ).fetchone()
+        return None if row is None else int(row["reconciled_ms"])
+
+    def mark_chat_reconciled(self, chat_id: str, reconciled_ms: int) -> None:
+        with self._transaction() as db:
+            db.execute(
+                """INSERT INTO chat_reconciliations(adapter, chat_id, reconciled_ms)
+                   VALUES (?, ?, ?) ON CONFLICT(adapter, chat_id)
+                   DO UPDATE SET reconciled_ms = MAX(reconciled_ms, excluded.reconciled_ms)""",
+                (self.adapter, chat_id, reconciled_ms),
+            )
+
     def recent_chats(self) -> tuple[str, ...]:
         """Chats with prior inbound activity — the reconciliation scan set.
 
@@ -170,10 +207,12 @@ class LarkStateStore(_LarkStateSchema):
                 """SELECT chat_id FROM request_correlations WHERE adapter = ?
                    UNION
                    SELECT chat_id FROM dead_letters WHERE adapter = ?
+                   UNION
+                   SELECT chat_id FROM chat_observations WHERE adapter = ?
                    EXCEPT
                    SELECT chat_id FROM retired_chats WHERE adapter = ?
                    ORDER BY chat_id""",
-                (self.adapter, self.adapter, self.adapter),
+                (self.adapter, self.adapter, self.adapter, self.adapter),
             ).fetchall()
         return tuple(row["chat_id"] for row in rows)
 
@@ -409,13 +448,13 @@ class LarkStateStore(_LarkStateSchema):
             after = None if row is None else str(row["value"])
             rows = self._db.execute(
                 "SELECT message_id, event_id, request FROM pending_inbound_submissions"
-                " WHERE adapter = ? AND (? IS NULL OR message_id > ?) ORDER BY message_id LIMIT ?",
+                " WHERE adapter = ? AND dead_lettered = 0 AND (? IS NULL OR message_id > ?) ORDER BY message_id LIMIT ?",
                 (self.adapter, after, after, limit),
             ).fetchall()
             if after is not None and len(rows) < limit:
                 rows += self._db.execute(
                     "SELECT message_id, event_id, request FROM pending_inbound_submissions"
-                    " WHERE adapter = ? AND message_id <= ? ORDER BY message_id LIMIT ?",
+                    " WHERE adapter = ? AND dead_lettered = 0 AND message_id <= ? ORDER BY message_id LIMIT ?",
                     (self.adapter, after, limit - len(rows)),
                 ).fetchall()
         return tuple(tuple(str(row[key]) for key in ("message_id", "event_id", "request")) for row in rows)
@@ -424,9 +463,19 @@ class LarkStateStore(_LarkStateSchema):
         with self._transaction() as db:
             db.execute("INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", (f"pending-inbound-cursor:{self.adapter}", message_id))
 
+    def has_pending_inbound_chat(self, chat_id: str) -> bool:
+        with self._lock:
+            return self._db.execute(
+                """SELECT 1 FROM pending_inbound_submissions WHERE adapter = ? AND dead_lettered = 0
+                   AND CASE WHEN json_valid(request)
+                       THEN json_extract(request, '$.request.provider_metadata.chatId')
+                       ELSE NULL END = ? LIMIT 1""",
+                (self.adapter, chat_id),
+            ).fetchone() is not None
+
     def pending_inbound_submission_count(self) -> int:
         with self._lock:
-            return int(self._db.execute("SELECT COUNT(*) FROM pending_inbound_submissions WHERE adapter = ?", (self.adapter,)).fetchone()[0])
+            return int(self._db.execute("SELECT COUNT(*) FROM pending_inbound_submissions WHERE adapter = ? AND dead_lettered = 0", (self.adapter,)).fetchone()[0])
 
     def record_pending_inbound_submission(
         self, message_id: str, event_id: str, request: str

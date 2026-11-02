@@ -300,7 +300,9 @@ class DeliveryCustodyLifecycleMixin:
             )
             return
         if isinstance(command, ReceiveSystemNoticeCommand):
-            received = self._service.receive_system_notice(command.notice)
+            received = self._service.receive_system_notice(
+                command.notice, allow_replay=command.allow_replay,
+            )
             self._committed_version()
             self._publish_bool(
                 command.correlation_id,

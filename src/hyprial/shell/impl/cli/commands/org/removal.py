@@ -3,7 +3,7 @@ from hyprial.shell.impl.cli.output import confirm, notice
 
 
 def confirmed_removal(services, method, params, *, yes: bool):
-    preview = services._daemon_request(method, {**params, 'confirmed': False})
+    preview = services.runtime.request(method, {**params, 'confirmed': False})
     if (not isinstance(preview, dict) or not isinstance(preview.get('operationId'), str)
             or not preview['operationId'] or not isinstance(preview.get('deviceIds'), list)
             or any(not isinstance(device, str) for device in preview['deviceIds'])):
@@ -24,7 +24,7 @@ def confirmed_removal(services, method, params, *, yes: bool):
     if not yes:
         if not services._stdin_isatty() or not confirm('Confirm this removal?'):
             raise services.CliError('CONFIRMATION_REQUIRED', 'Re-run with --yes to confirm this exact removal.')
-    result = services._daemon_request(method, {**params, **binding, 'confirmed': True})
+    result = services.runtime.request(method, {**params, **binding, 'confirmed': True})
     if not isinstance(result, dict):
         raise services.CliError('INVALID_RESPONSE', 'Removal must return an object.')
     if result.get('phase') != 'complete':

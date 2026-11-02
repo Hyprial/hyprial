@@ -8,6 +8,7 @@ from hyprial.daemon.impl.adapters.lark.contracts import lifecycle as lark_lifecy
 from hyprial.identity import (
     Agent,
     PinConflictError,
+    PinStateConflictError,
 )
 from hyprial.daemon.impl.adapters.lark.contracts.errors import (
     AdapterStartError,
@@ -26,6 +27,17 @@ if TYPE_CHECKING:
 from hyprial.daemon.impl.ipc.params import (
     _required_string,
 )
+
+
+def _pin_expectation(params: dict[str, Any]) -> dict[str, object]:
+    if "expectedActor" not in params:
+        return {}
+    expected = params["expectedActor"]
+    if expected is not None and (
+        not isinstance(expected, str) or parse_agent_uri(expected) is None
+    ):
+        raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, "expectedActor must be null or a canonical agent URI")
+    return {"expected_actor": expected}
 
 
 class _AdapterAdminMixin:
@@ -151,7 +163,9 @@ class _AdapterAdminMixin:
         # this handler only translates the typed violation.
         staged_legacy = dict(self.desired_state.load().channel_pins).get(name)
         try:
-            previous = self.agents.pin(name, agent.actor)
+            previous = self.agents.pin(name, agent.actor, **_pin_expectation(params))
+        except PinStateConflictError as error:
+            raise DaemonRequestError(error.code, str(error), error.details) from error
         except PinConflictError as error:
             raise DaemonRequestError(
                 error.code,
@@ -182,7 +196,10 @@ class _AdapterAdminMixin:
         assert self._adapters is not None
         name = self._require_adapter(params.get("name"))
         staged_legacy = dict(self.desired_state.load().channel_pins).get(name)
-        previous = self.agents.unpin(name)
+        try:
+            previous = self.agents.unpin(name, **_pin_expectation(params))
+        except PinStateConflictError as error:
+            raise DaemonRequestError(error.code, str(error), error.details) from error
         # Also drop any unmigrated legacy staging entry, for the same
         # no-resurrection reason as adapter.pin.
         _state, legacy = self.desired_state.remove_channel_pin(name)
@@ -201,6 +218,7 @@ class _AdapterAdminMixin:
         assert self._adapters is not None
         return {
             "ok": True,
+            "supportsExpectedActor": True,
             "pins": self._adapter_pins(),
         }
 

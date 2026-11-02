@@ -173,7 +173,7 @@ state 由 finish 生成(完整的 asked 和 declined 集合,超出 7 天窗口�
 1. 读:`hyprial org work show <id> --org <org> --json`。
 2. 只用 `hyprial org work` 子命令修改并始终传 `--org <org>`：勾选用 `work check`，日志用 `work note`，状态用
    `work status`/`work done`，无效历史恢复用 `work repair`，PAC 关联用 `work link`，关键词用
-   `work keywords <id> --add <kw>… --remove <kw>…`。⛔ 不用 `hyprial fs write` 改 work item。
+   `work keywords <id> --add <kw>… --remove <kw>…`。⛔ 不用 `hyprial org fs write` 改 work item。
 3. `work link` 只追加、可重复调用且幂等；`work keywords` 的增删和两者的作者都会追加进
    `## Log`。daemon 用有界 CAS 重试，持续冲突会返回 `WORK_ITEM_VERSION_CONFLICT`。
 4. 写后再 `hyprial org work show <id> --org <org> --json` 校验目标字段。`work show`/`work ls` 会把 raw write
@@ -209,7 +209,7 @@ verified 的含义是"经 `work.*` 完成，除非有以 daemon 用户身份运�
 的 `conflicts` 或 `hyprial org work ls --invalid --org <org> --json` 发现同名副本及其 nodeId；逐份运行
 `hyprial org work show <id> --copy id:<nodeId> --org <org> --json`，把两份原文发给 <用户>。收到决定后运行
 `hyprial org work resolve <id> --keep <选中的 node 引用> --org <org>`，再用 `note`、`check` 或
-`status dropped` 等普通命令合并多余副本。resolve 由你直接执行即可(任何读写成员都可以,调用者会记进两边日志和账本);被保留的那份必须能解析,解析不了的副本会原样移到新 id;这份副本 `org work` 无法修复,告诉 <用户>:由 owner 用 `hyprial fs` 删除,或留作证据。⛔ 不自动删除任何一份。
+`status dropped` 等普通命令合并多余副本。resolve 由你直接执行即可(任何读写成员都可以,调用者会记进两边日志和账本);被保留的那份必须能解析,解析不了的副本会原样移到新 id;这份副本 `org work` 无法修复,告诉 <用户>:由 owner 用 `hyprial org fs` 删除,或留作证据。⛔ 不自动删除任何一份。
 
 **已知限制**(设计 §9):在 orgfs 的两项修复(267703c2、80a6e231)上线之前,可能出现
 "别人改了 mission,我这边看不到"。<用户> 反映这种情况时,把 mission 文件名和你读到的

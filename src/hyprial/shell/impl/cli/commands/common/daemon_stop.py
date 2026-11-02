@@ -95,9 +95,9 @@ def _stop_daemon_with_proof(
 ) -> JsonObject:
     services = get_services()
     if expected_epoch is None:
-        result = services._daemon_request("shutdown", timeout=2.0)
+        result = services.runtime.request("shutdown", timeout=2.0)
     else:
-        result = services._daemon_request(
+        result = services.runtime.request(
             "shutdown", {"expectedEpoch": expected_epoch}, timeout=2.0,
         )
     old_pid = (

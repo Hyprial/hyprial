@@ -2,19 +2,13 @@
 from __future__ import annotations
 
 
-import base64
-import hashlib
-import json
 import os
-import secrets
 import signal
-import socket
-import struct
 import subprocess
 import sys as sys
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +25,10 @@ from hyprial.identity import (
 from hyprial.daemon.impl.harnesses.codex.launch.inputs import (
     _provider_flags,
     build_codex_launch_inputs,
+)
+from hyprial.daemon.impl.harnesses.codex.transport import (
+    CodexRpcConnection,
+    open_app_server_connection,
 )
 from hyprial.daemon.impl.harnesses.codex.native_env import (
     CodexAgentHomeError,
@@ -216,12 +214,16 @@ class CodexInteractiveAppServer:
         self.request_timeout_seconds = request_timeout_seconds
         self._process: subprocess.Popen[Any] | None = None
         self._group = _OwnedProcessGroup()
-        self._socket: _CodexUnixWebSocket | None = None
+        self._socket: CodexRpcConnection | None = None
         # The interactive carrier reads turns from a worker thread while
         # stop()/interrupt() may issue a concurrent RPC from the pump loop.
         # The app-server socket is a single request/response stream, so keep
         # those operations serialized or responses can cross-wire.
         self._rpc_lock = threading.RLock()
+        self._notification_listeners: dict[
+            Callable[[dict[str, object]], None], Callable[[], None]
+        ] = {}
+        self._stopped = False
         self._next_request_id = 1
         self._discovered_thread_id: str | None = None
         self._native_load_evidence: CodexNativeLoadEvidence | None = None
@@ -267,7 +269,7 @@ class CodexInteractiveAppServer:
                     )
                 if self.socket_path.exists():
                     try:
-                        self._socket = _CodexUnixWebSocket(
+                        self._socket = open_app_server_connection(
                             self.socket_path, timeout=self.request_timeout_seconds
                         )
                         initialize = self.request(
@@ -319,12 +321,12 @@ class CodexInteractiveAppServer:
             raise
 
     def request(self, method: str, params: object = None) -> dict[str, object]:
-        client = self._socket
-        if client is None:
-            raise ConnectionError("Codex interactive app-server is not connected")
-        request_id = self._next_request_id
-        self._next_request_id += 1
         with self._rpc_lock:
+            client = self._socket
+            if client is None:
+                raise ConnectionError("Codex interactive app-server is not connected")
+            request_id = self._next_request_id
+            self._next_request_id += 1
             response = client.request(method, params or {}, request_id)
         if "error" in response:
             error = response["error"]
@@ -341,10 +343,85 @@ class CodexInteractiveAppServer:
         return result
 
     def notify(self, method: str, params: object = None) -> None:
-        if self._socket is None:
-            raise ConnectionError("Codex interactive app-server is not connected")
         with self._rpc_lock:
-            self._socket.send_json({"method": method, "params": params or {}})
+            client = self._socket
+            if client is None:
+                raise ConnectionError("Codex interactive app-server is not connected")
+            client.send_notification(method, params or {})
+
+    def add_notification_listener(
+        self, listener: Callable[[dict[str, object]], None]
+    ) -> Callable[[], None]:
+        """Follow native app-server events on this connection.
+
+        The listener must not issue a request on this connection from the
+        thread that delivers the event; it runs on the socket reader.
+        """
+
+        with self._rpc_lock:
+            client = self._socket
+            if client is None:
+                raise ConnectionError("Codex interactive app-server is not connected")
+            self._notification_listeners[listener] = client.add_notification_listener(listener)
+
+        def remove() -> None:
+            with self._rpc_lock:
+                detach = self._notification_listeners.pop(listener, None)
+                if detach is not None:
+                    detach()
+
+        return remove
+
+    def _reconnect_observation(self) -> None:
+        """Replace only a lost client connection, never restart the app-server."""
+
+        with self._rpc_lock:
+            if self._stopped:
+                raise ConnectionError("Codex interactive app-server is stopped")
+            previous = self._socket
+            if previous is not None and not previous.closed:
+                return
+            if previous is not None:
+                previous.close()
+            client = open_app_server_connection(
+                self.socket_path, timeout=self.request_timeout_seconds
+            )
+            self._socket = client
+            try:
+                for listener, detach in tuple(self._notification_listeners.items()):
+                    detach()
+                    self._notification_listeners[listener] = client.add_notification_listener(listener)
+                self.request("initialize", {
+                    "clientInfo": {
+                        "name": "hyprial-codex-interactive", "version": __version__,
+                    },
+                    "capabilities": {"experimentalApi": True},
+                })
+                self.notify("initialized", {})
+            except BaseException:
+                client.close()
+                raise
+
+    def subscribe_thread(self) -> dict[str, object]:
+        """Join the TUI thread so its native turn events reach this client."""
+
+        thread_id = self._require_discovered_thread()
+        self._reconnect_observation()
+        return _thread_payload(self.request("thread/resume", {"threadId": thread_id}))
+
+    def read_thread_snapshot(self) -> dict[str, object]:
+        """Current native thread view: status plus retained turns."""
+
+        thread_id = self._require_discovered_thread()
+        return _thread_payload(
+            self.request("thread/read", {"threadId": thread_id, "includeTurns": True})
+        )
+
+    def _require_discovered_thread(self) -> str:
+        thread_id = self._discovered_thread_id
+        if thread_id is None:
+            raise ConnectionError("Codex interactive thread is not discovered")
+        return thread_id
 
     def discover_thread(self) -> tuple[str, str]:
         """Discover the TUI thread through the mandatory three-level ladder."""
@@ -557,6 +634,13 @@ class CodexInteractiveAppServer:
             raise ConnectionError("Codex app-server did not return a turn ID")
         return turn_id
 
+    def turn_activity_sequence(self, turn_id: str) -> int:
+        """Return a turn-correlated notification sequence, never a level status."""
+        with self._rpc_lock:
+            client = self._socket
+            thread_id = self._discovered_thread_id
+            return client.turn_activity_sequence(thread_id, turn_id) if client and thread_id else 0
+
     def read_turn(self, turn_id: str) -> dict[str, object]:
         thread_id = self._discovered_thread_id
         if thread_id is None:
@@ -598,10 +682,12 @@ class CodexInteractiveAppServer:
         )
 
     def stop(self) -> None:
-        socket_client = self._socket
-        self._socket = None
-        if socket_client is not None:
-            socket_client.close()
+        with self._rpc_lock:
+            self._stopped = True
+            socket_client = self._socket
+            self._socket = None
+            if socket_client is not None:
+                socket_client.close()
         process = self._process
         self._process = None
         if process is not None:
@@ -619,108 +705,12 @@ class CodexInteractiveAppServer:
             self._group.release_if_gone(process.pid)
         self.socket_path.unlink(missing_ok=True)
 
-class _CodexUnixWebSocket:
-    """Minimal Unix-domain RFC 6455 client for Codex's local app-server."""
+def _thread_payload(result: dict[str, object]) -> dict[str, object]:
+    thread = result.get("thread")
+    if not isinstance(thread, dict):
+        raise ConnectionError("Codex app-server returned no thread object")
+    return thread
 
-    def __init__(self, path: Path, *, timeout: float) -> None:
-        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.sock.settimeout(timeout)
-        self.sock.connect(str(path))
-        key = base64.b64encode(secrets.token_bytes(16)).decode()
-        self.sock.sendall(
-            (
-                "GET / HTTP/1.1\r\nHost: localhost\r\n"
-                "Upgrade: websocket\r\nConnection: Upgrade\r\n"
-                f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
-            ).encode()
-        )
-        response = self._read_until(b"\r\n\r\n")
-        if b"101" not in response.split(b"\r\n", 1)[0]:
-            raise ConnectionError("Codex app-server WebSocket handshake failed")
-        expected = base64.b64encode(
-            hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()
-        )
-        if expected not in response:
-            raise ConnectionError("Codex app-server WebSocket accept mismatch")
-
-    def send_json(self, value: dict[str, object]) -> None:
-        payload = json.dumps(value, separators=(",", ":")).encode()
-        mask = secrets.token_bytes(4)
-        masked = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
-        length = len(masked)
-        if length < 126:
-            header = bytes([0x81, 0x80 | length])
-        elif length < 65536:
-            header = bytes([0x81, 0x80 | 126]) + struct.pack("!H", length)
-        else:
-            header = bytes([0x81, 0x80 | 127]) + struct.pack("!Q", length)
-        self.sock.sendall(header + mask + masked)
-
-    def request(self, method: str, params: object, request_id: int) -> dict[str, object]:
-        self.send_json({"method": method, "id": request_id, "params": params})
-        while True:
-            message = self.recv_json()
-            if message.get("id") == request_id:
-                return message
-            if "method" in message and "id" in message:
-                self.send_json(
-                    {
-                        "id": message["id"],
-                        "error": {
-                            "code": -32601,
-                            "message": "hyprial PR1 does not handle app-server server requests",
-                        },
-                    }
-                )
-
-    def recv_json(self) -> dict[str, object]:
-        while True:
-            first, second = self._recv_exact(2)
-            opcode = first & 0x0F
-            length = second & 0x7F
-            if length == 126:
-                length = struct.unpack("!H", self._recv_exact(2))[0]
-            elif length == 127:
-                length = struct.unpack("!Q", self._recv_exact(8))[0]
-            mask = self._recv_exact(4) if second & 0x80 else b""
-            payload = bytearray(self._recv_exact(length))
-            if mask:
-                for index in range(length):
-                    payload[index] ^= mask[index % 4]
-            if opcode == 0x9:
-                continue
-            if opcode == 0x8:
-                raise ConnectionError("Codex app-server WebSocket closed")
-            if opcode == 0x1:
-                value = json.loads(payload.decode())
-                if not isinstance(value, dict):
-                    raise ConnectionError("Codex app-server returned non-object JSON")
-                return value
-
-    def close(self) -> None:
-        try:
-            self.sock.sendall(bytes([0x88, 0x80, 0, 0, 0, 0]))
-        except OSError:
-            pass
-        self.sock.close()
-
-    def _read_until(self, marker: bytes) -> bytes:
-        data = bytearray()
-        while marker not in data:
-            chunk = self.sock.recv(4096)
-            if not chunk:
-                raise ConnectionError("Codex app-server closed during handshake")
-            data.extend(chunk)
-        return bytes(data)
-
-    def _recv_exact(self, length: int) -> bytes:
-        data = bytearray()
-        while len(data) < length:
-            chunk = self.sock.recv(length - len(data))
-            if not chunk:
-                raise ConnectionError("Codex app-server WebSocket closed unexpectedly")
-            data.extend(chunk)
-        return bytes(data)
 
 def _option_values(args: tuple[str, ...], *options: str) -> list[str]:
     values: list[str] = []

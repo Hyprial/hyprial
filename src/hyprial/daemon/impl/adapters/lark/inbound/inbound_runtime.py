@@ -14,7 +14,7 @@ import uuid
 import weakref
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, TypeVar
 
 from hyprial.kernel import ActorHandle, ActorRuntime, ActorSpec, AdmissionResult
 
@@ -22,6 +22,9 @@ from hyprial.daemon.impl.adapters.lark.contracts.wire import (
     InboundOutcome,
     LarkInboundMessage,
 )
+
+
+_Result = TypeVar("_Result")
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +149,8 @@ class _InboundEffects:
         except TypeError:
             self._processor_ref = lambda: processor
         self._slots = threading.BoundedSemaphore(capacity)
+        self._ordered_lock = threading.Lock()
+        self._ordered_active = 0
         self._pool = ThreadPoolExecutor(
             max_workers=workers,
             thread_name_prefix="hyprial-lark-inbound-effect",
@@ -227,6 +232,33 @@ class _InboundEffects:
 
         future.add_done_callback(completed)
         return True
+
+    def ordered(self, operation: Callable[[], _Result], *, timeout: float) -> _Result:
+        if self._closing or not self._slots.acquire(blocking=False):
+            raise RuntimeError("Lark inbound effect lane unavailable")
+        with self._ordered_lock:
+            self._ordered_active += 1
+
+        def settled(_done: object) -> None:
+            with self._ordered_lock:
+                self._ordered_active -= 1
+            self._slots.release()
+
+        try:
+            future = self._pool.submit(operation)
+        except BaseException:
+            settled(None)
+            raise
+        future.add_done_callback(settled)
+        try:
+            return future.result(timeout=timeout)
+        except FutureTimeout:
+            future.cancel()
+            raise
+
+    def ordered_count(self) -> int:
+        with self._ordered_lock:
+            return self._ordered_active
 
     def close(self) -> None:
         self._closing = True
@@ -401,13 +433,17 @@ class LarkInboundRuntime:
             result.cancel()
             return InboundOutcome(status="error", ack_error="inbound-timeout")
 
+    def ordered(self, operation: Callable[[], _Result], *, timeout: float = 30.0) -> _Result:
+        """Run a recovery operation on the same bounded lane as live messages."""
+        return self._effects.ordered(operation, timeout=timeout)
+
     def close(self, timeout: float = 5.0) -> None:
         handle = self._handle
         if handle is None:
             return
         self._closing = True
         deadline = time.monotonic() + max(0.0, timeout)
-        while self._authority.custody_count() and time.monotonic() < deadline:
+        while (self._authority.custody_count() or self._effects.ordered_count()) and time.monotonic() < deadline:
             time.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
         if self._authority.custody_count():
             self._authority.fail_all(RuntimeError("Lark inbound drain deadline expired"))

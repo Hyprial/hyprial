@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-# Grace between ``DaemonApplication._close`` finishing and the process being
-# forced out.  This outlasts interpreter teardown; it does not bound close
-# steps that have no timeout of their own.
+# Final exit grace after ``DaemonApplication._close`` finishes. The owning
+# daemon replaces its earlier broad close deadline with this shorter window.
 DAEMON_EXIT_BACKSTOP_SECONDS = 15.0
 
 # Recap persistence (unified hook consumers) is mechanism-owned and must
@@ -39,9 +38,9 @@ DAEMON_CLOSE_BUDGET_SECONDS = sum(
     seconds for _name, seconds in DAEMON_CLOSE_STEP_BUDGETS
 )
 
-# This is the budgeted portion plus the exit backstop, not a hard bound for
-# unbudgeted close steps.  The deliberately qualified name prevents callers
-# from claiming more than the contract provides.
+# Sum of the budgeted portion and final exit grace. The owning daemon also
+# uses this window for a forced-exit timer before close starts. It bounds a
+# stuck close; it does not promise that every unbudgeted step can finish.
 TEARDOWN_BUDGETED_SECONDS = (
     DAEMON_CLOSE_BUDGET_SECONDS + DAEMON_EXIT_BACKSTOP_SECONDS
 )

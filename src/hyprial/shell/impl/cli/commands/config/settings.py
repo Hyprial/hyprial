@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import typer
+from hyprial.shell.impl.cli.commands.common.groups import group
 
 from hyprial.shell.impl.cli.commands.common.services import get_services
 from hyprial.shell.impl.cli.commands.common.support import JsonObject, _SETUP_HINTS, _write_setup_hint
 
-config_app = typer.Typer(
+config_app = group(
     help="Read and write operator switches in settings.json."
 )
 
@@ -199,4 +200,4 @@ def config_set(
             "path": str(path),
         }
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)

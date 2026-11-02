@@ -146,7 +146,9 @@ class InboxReplyReminders:
             created_at_ms=self._clock_ms(),
             summary=text,
         )
-        return self._inbox.receive_system_notice(notice)
+        # The consumer owns bounded in-memory reminder dedup; eviction/restart
+        # may remind again. A notice ack must not suppress that new reminder.
+        return self._inbox.receive_system_notice(notice, allow_replay=True)
 
     def log(self, level: str, event: str, **fields: Any) -> None:
         if self._logger is not None:

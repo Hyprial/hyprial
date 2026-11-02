@@ -22,14 +22,24 @@ from pathlib import Path
 from typing import Literal, Protocol
 from xml.sax.saxutils import escape as xml_escape
 
+from hyprial.daemon.impl.bootstrap.user_bus import (
+    USER_BUS_ADDRESS_UNREACHABLE_REASON as USER_BUS_ADDRESS_UNREACHABLE_REASON,
+    USER_BUS_UNAVAILABLE_REASON as USER_BUS_UNAVAILABLE_REASON,
+    UserBusState as UserBusState,
+    session_bus_environment as session_bus_environment,
+    user_bus_state as user_bus_state,
+)
 from hyprial.daemon.impl.configuration.launchd_jobs import (
     argv_runs_daemon as _argv_runs_daemon,
+    owned_unit_file as _owned_unit_file,
+    printed_plist_path as _printed_plist_path,
     read_launchd_plist as _read_launchd_plist,
     text_program_argv_runs_daemon as _text_program_argv_runs_daemon,
 )
 from hyprial.kernel import current_uid
 
 LAUNCHD_LABEL = "com.hyprial.hyprial.daemon"
+
 ServicePlatform = Literal["launchd", "systemd"]
 SupervisionState = Literal["supervised", "unsupervised", "lost"]
 
@@ -79,6 +89,7 @@ class ServiceStatus:
     ownership_busy: bool = False
     ownership_reason: str | None = None
     backup_path: Path | None = None
+    foreign_loaded: bool = False  # loaded from another unit file: refuse
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,6 +214,11 @@ class ServiceManager:
         self.sleep = sleep
         self.parent_pid = parent_pid or self._parent_pid
         self.templates = ServiceTemplates()
+        # The environment actually handed to the supervisor command.  The
+        # classification later re-reads os.environ otherwise, which can differ
+        # from what was executed (e.g. a caller that set XDG_RUNTIME_DIR after
+        # import) -- so the probe must classify the same values it used.
+        self._bus_environment: dict[str, str] | None = None
 
     @property
     def unit_path(self) -> Path:
@@ -255,26 +271,31 @@ class ServiceManager:
         return jobs
 
     def _launchd_loaded_status(
-        self, label: str, path: Path, result: subprocess.CompletedProcess[str]
+        self,
+        label: str,
+        path: Path,
+        result: subprocess.CompletedProcess[str],
+        *,
+        owned: bool = True,
     ) -> ServiceStatus:
         match = re.search(r"\bpid\s*=\s*(\d+)", result.stdout)
         pid = int(match.group(1)) if match else None
         runs_match = re.search(r"\bruns\s*=\s*(\d+)", result.stdout)
         exit_match = re.search(r"\blast exit code\s*=\s*(-?\d+)", result.stdout)
-        running = bool(
-            re.search(r"\bstate\s*=\s*running\b", result.stdout)
-            or (pid is not None and pid > 0)
+        running = owned and bool(
+            re.search(r"\bstate\s*=\s*running\b", result.stdout) or (pid or 0) > 0
         )
         return ServiceStatus(
             "launchd",
             label,
             path,
             path.is_file(),
-            True,
+            owned,
             running,
-            pid,
+            pid if owned else None,
             relaunch_count=int(runs_match.group(1)) if runs_match else None,
             last_exit_code=int(exit_match.group(1)) if exit_match else None,
+            foreign_loaded=not owned,
         )
 
     def status(self, *, deadline: float | None = None) -> ServiceStatus:
@@ -288,7 +309,12 @@ class ServiceManager:
                     if not self._reports_not_loaded(result, label=label):
                         self._raise_command(("launchctl", "print", target), result)
                     continue
-                return self._launchd_loaded_status(label, path, result)
+                return self._launchd_loaded_status(
+                    label,
+                    path,
+                    result,
+                    owned=_owned_unit_file(_printed_plist_path(result.stdout), path),
+                )
             if jobs:
                 # Files exist but none of them is loaded: report the job we
                 # found (installed, not loaded) instead of the canonical label,
@@ -302,7 +328,14 @@ class ServiceManager:
             if result.returncode != 0 and not self._reports_not_loaded(result):
                 self._raise_command(("launchctl", "print", target), result)
             if result.returncode == 0:
-                return self._launchd_loaded_status(LAUNCHD_LABEL, self.unit_path, result)
+                return self._launchd_loaded_status(
+                    LAUNCHD_LABEL,
+                    self.unit_path,
+                    result,
+                    owned=_owned_unit_file(
+                        _printed_plist_path(result.stdout), self.unit_path
+                    ),
+                )
             return ServiceStatus(
                 "launchd", LAUNCHD_LABEL, self.unit_path, installed, False, False
             )
@@ -318,6 +351,7 @@ class ServiceManager:
                 "--property=MainPID",
                 "--property=NRestarts",
                 "--property=ExecMainStatus",
+                "--property=FragmentPath",
             ),
             deadline=deadline,
         )
@@ -334,6 +368,7 @@ class ServiceManager:
                     "--property=MainPID",
                     "--property=NRestarts",
                     "--property=ExecMainStatus",
+                    "--property=FragmentPath",
                 ),
                 result,
             )
@@ -355,11 +390,12 @@ class ServiceManager:
         fields = dict(
             line.split("=", 1) for line in result.stdout.splitlines() if "=" in line
         )
-        loaded = fields.get("LoadState") == "loaded"
-        running = (
-            fields.get("ActiveState") == "active"
-            and fields.get("SubState") == "running"
+        loaded = fields.get("LoadState") == "loaded" and _owned_unit_file(
+            fields.get("FragmentPath"), self.unit_path
         )
+        foreign_loaded = fields.get("LoadState") == "loaded" and not loaded
+        active = fields.get("ActiveState") == "active"
+        running = active and not foreign_loaded and fields.get("SubState") == "running"
         raw_pid = fields.get("MainPID", "0")
         pid = int(raw_pid) if raw_pid.isdigit() and int(raw_pid) > 0 else None
         raw_restarts = fields.get("NRestarts", "")
@@ -371,10 +407,11 @@ class ServiceManager:
             installed,
             loaded,
             running,
-            pid,
+            None if foreign_loaded else pid,
             boot_persistent,
             relaunch_count=(int(raw_restarts) if raw_restarts.isdigit() else None),
             last_exit_code=(int(raw_exit) if raw_exit.lstrip("-").isdigit() else None),
+            foreign_loaded=foreign_loaded,
         )
 
     def inspect(
@@ -448,6 +485,7 @@ class ServiceManager:
         else:
             observed_pid = serving_pid(max(0.0, min(1.0, deadline - time.monotonic())))
         before = self.inspect(serving_pid=observed_pid, deadline=deadline)
+        self._require_owned_label(before)
         if not before.installed or not before.attributed:
             return before
         if self.platform == "launchd":
@@ -527,6 +565,7 @@ class ServiceManager:
         """Repair owned template/custody drift without adopting foreign files."""
 
         current = self.inspect(serving_pid=serving_pid())
+        self._require_owned_label(current)
         if (current.installed or current.loaded) and not current.attributed:
             detail = (
                 f"foreign or unsafe service file {self.unit_path}"
@@ -552,8 +591,41 @@ class ServiceManager:
         fixed = self.wait_for_custody(serving_pid)
         return self._copy_status(fixed, backup_path=backup)
 
+    def _manageable_status(self) -> ServiceStatus:
+        """Current status, refused when this home may not touch the label."""
+
+        operating = Path(os.path.realpath(self.service_home))
+        home = Path(os.path.realpath(self.config.hyprial_home))
+        if home != operating and not home.is_relative_to(operating):
+            raise ServiceOwnershipError(
+                f"refusing to manage a supervisor unit for HYPRIAL_HOME {home} "
+                f"outside the operating home {operating}",
+                reason="hyprial-home-outside-operating-home",
+            )
+        current = self.status()
+        self._require_owned_label(current)
+        return current
+
+    def _require_owned_label(self, current: ServiceStatus) -> None:
+        """Refuse to mutate a label another home's unit file already loaded.
+
+        ``status()`` reports it as not this home's supervisor, but writing,
+        bootstrapping or kickstarting that label addresses the other job.
+        All mutation entries check here before commands, callbacks or file writes.
+        """
+
+        if not current.foreign_loaded:
+            return
+        raise ServiceOwnershipError(
+            "refusing to touch the loaded supervisor label of another unit file "
+            f"(this home's: {current.unit_path})",
+            reason="supervisor-label-foreign"
+            if current.installed
+            else "supervisor-file-missing",
+        )
+
     def install(self) -> ServiceStatus:
-        before = self.status()
+        before = self._manageable_status()
         existing = self._existing_text()
         ownership_reason = self._ownership_reason(existing, loaded=before.loaded)
         if before.loaded and existing is None:
@@ -612,7 +684,7 @@ class ServiceManager:
         )
 
     def uninstall(self) -> ServiceStatus:
-        before = self.status()
+        before = self._manageable_status()
         existing = self._existing_text()
         ownership_reason = self._ownership_reason(existing, loaded=before.loaded)
         if before.loaded and existing is None:
@@ -873,18 +945,46 @@ class ServiceManager:
         if result.returncode != 0:
             self._raise_command(command, result)
 
-    @staticmethod
     def _raise_command(
-        command: Sequence[str], result: subprocess.CompletedProcess[str]
+        self, command: Sequence[str], result: subprocess.CompletedProcess[str]
     ) -> None:
+        stderr = result.stderr.strip()
+        if self.platform == "systemd" and command[:2] == ("systemctl", "--user"):
+            state = user_bus_state(self.bus_environment(), uid=self.uid)
+            if state == "no-session":
+                raise ServiceCommandError(
+                    "the per-user systemd bus is not reachable from this session "
+                    "(no DBUS_SESSION_BUS_ADDRESS, and no /run/user/<uid>/bus): "
+                    f"{' '.join(command)}: {stderr}. "
+                    "Enable lingering for the daemon account "
+                    "(`loginctl enable-linger <user>`) so its user manager runs "
+                    "without a login session, then retry with "
+                    "XDG_RUNTIME_DIR=/run/user/<uid>.",
+                    reason=USER_BUS_UNAVAILABLE_REASON,
+                )
+            if state == "address-unreachable":
+                raise ServiceCommandError(
+                    "DBUS_SESSION_BUS_ADDRESS is set but its socket does not exist, "
+                    f"so the user bus cannot be reached: {' '.join(command)}: {stderr}. "
+                    "Fix or unset DBUS_SESSION_BUS_ADDRESS (lingering does not help: "
+                    "the address is explicit).",
+                    reason=USER_BUS_ADDRESS_UNREACHABLE_REASON,
+                )
         raise ServiceCommandError(
             f"service command failed ({result.returncode}): {' '.join(command)}: "
-            f"{result.stderr.strip()}",
+            f"{stderr}",
             reason="manager-command-failed",
         )
 
-    @staticmethod
+    def bus_environment(self) -> dict[str, str]:
+        """The environment used for supervisor commands (computed once)."""
+
+        if self._bus_environment is None:
+            self._bus_environment = session_bus_environment()
+        return self._bus_environment
+
     def _run(
+        self,
         command: Sequence[str],
         *,
         timeout: float | None = None,
@@ -895,4 +995,5 @@ class ServiceManager:
             capture_output=True,
             check=False,
             timeout=15.0 if timeout is None else timeout,
+            env=self.bus_environment(),
         )

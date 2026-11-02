@@ -22,6 +22,14 @@ hyprial <域> <子命令> --help   # 参数面
 人工在后台做";实际 `adapter add` 默认流程就能自动创建 App。
 **--help 是权威,记忆和本文件都只是索引。**
 
+## 命令组迁移（0.5.5.2）
+
+使用 `org service`、`org fs`、`user proxy`、`agent link`、`init onboarding`；
+`host` 保持顶层。旧顶层路径不是别名：退出 2，stdout 为空（含 `--json`），
+stderr 只输出 `moved: hyprial <旧参数>  →  hyprial <新参数>` 一行。
+裸命令组显示帮助并退出 2；例外为 `init`（初始化）、`daemon upgrade`、
+`agent tiers`、`routine templates`（默认报告）。`init onboarding` 不先执行初始化。
+
 ## 能力面地图(按域)
 
 ### daemon 生命周期与诊断
@@ -39,6 +47,35 @@ hyprial <域> <子命令> --help   # 参数面
   缺失时不得回退为非托管重启；先按 doctor 提示人工卸载旧 label。`doctor --fix` 可修复可归属的
   游离 daemon 和模板漂移并保留旧文件备份；外国 plist/unit 一律不改。
 - `hyprial agent list [--json]` — agent/connector 运行状态（原 `ps` 的 connector/session 段）
+  Cell diagnostics: `agents[].runState` is the additive local run observation;
+  select the canonical `uri`, not a short name. `hyprial agent top [--wide] [--json]`
+  shows the same projection under `actors[].runState` (canonical `actor`). Human
+  output includes reason, measured turn age, base state, certainty, scope, health
+  and permission capability. Top's `LEGACY` column is the prior log/contact
+  heuristic, not run state; JSON `state/stateDetail` retain their prior meaning.
+  Missing runState means `unknown (unsupported)`, never idle. Failed agent queries
+  return an error, not an empty fleet. `daemon status` is still daemon-only, not
+  an agent-status substitute; do not restore the retired root `ps` command.
+  `carrier-deliveries` is not whole-terminal coverage. `permission=unsupported`
+  means `coverage.permissionWait=false`, not "no permission wait". `turn-age=-`
+  is unknown, not zero. `suspected-stuck` is a warning, never proof of deadlock;
+  it does not kill/restart a process or approve/deny a request. Provider blocks
+  remain separate from permission waits, including on a stopped agent.
+  No remote run-state or Lark notifications are added. `scope=carrier-deliveries`
+  means the producer did not negotiate whole-session coverage: the row is
+  unknown/partial, not idle. Claude Channel and Pi attach negotiate coverage on
+  registration and re-publish their current open run when they recover the
+  daemon generation, so a disconnect, a lost end pulse or a daemon restart is
+  replaced by the real current state without extra inbox traffic, and an
+  accepted refresh also acknowledges a contact gap the session owner recorded
+  (a heartbeat alone cannot). A failed refresh is retried by the ordinary poll
+  cadence; a daemon that does not know the method is cached for that generation
+  instead of being retried. A refresh is observation only: no turn event, no
+  fetch/ack/reply, no lease renewal.
+  Codex whole-TUI and permission evidence require separate E2/E3 acceptance;
+  CLI goldens are not native acceptance. See
+  `contract/daemon-lifecycle/run-state.md` and
+  `contract/daemon-lifecycle/interactive-turn-refresh.md`.
 - `hyprial log --name <worker> / --actor / --since / --conversation / --correlation-id`
   — daemon 结构化日志查询;原始日志 `~/.hyprial/state/logs/daemon.jsonl`
 - `hyprial daemon upgrade` — 普通升级的持久源固定为公网
@@ -65,13 +102,13 @@ hyprial <域> <子命令> --help   # 参数面
   `doctor --fix` 的升级步骤移除，daemon 启动只报告 pending。`hyprial daemon upgrade status --json` 的 `autoUpgradeEnabled` 读出开/关。用户或 agent 要开自动升级就走这条命令，
   不要手编 settings.json。
 - 楔死排障(doctor 超时但进程活着):看 daemon.jsonl 的 `reconcile_overrun`
-- `hyprial service expose <port> --target unix:/绝对路径|tcp:127.0.0.1:<port> [--proxy-protocol v2|none]`
+- `hyprial org service expose <port> --target unix:/绝对路径|tcp:127.0.0.1:<port> [--proxy-protocol v2|none]`
   —— 通过 hyprial-tailcat 边车（Tailcat，随 wheel 分发）把本机服务暴露给组织内的设备；默认 PROXY v2，
   首帧带来源地址和对端设备的 nodekey（TLV 0xE0），服务端再经边车的有效成员表把 nodekey 映射为用户，不读组织目录做准入。
   v2 只允许 unix target（本机任何进程都能连 tcp 回环端口并伪造头）；查不到来访者身份时直接断开，
   不会转给后端。tcp target 必须显式 `--proxy-protocol none`，此时不带任何身份。
-  `service unexpose <port>` 删除；`service exposures [--json]` 查看 daemon 持久 desired set；
-  `service whois <ip:port> [--json]` 只查对端 nodekey（R7 由 `network peer-key` 改名）。unix target 的父目录必须属于当前用户且
+  `org service unexpose <port>` 删除；`org service exposures [--json]` 查看 daemon 持久 desired set；
+  `org service whois <ip:port> [--json]` 只查对端 nodekey（R7 由 `network peer-key` 改名）。unix target 的父目录必须属于当前用户且
   权限恰为 0700。不要绕过 daemon 直接写 sidecar stdin。
 - 组织网络：`hyprial org create <org>` 建组织。客户端超时后用同名命令重试。daemon 会按创建者专属 intent 恢复，不会重复建 space。
   只有显式 `creating` / `partial` 状态表示创建未完成。生命周期标记缺失、缺少 state 或 JSON 损坏时按 ACL 绑定回退：有绑定为 `legacy-active`，无绑定为 `partial`。JSON 损坏、未知状态及无效/内容未到达的设备行会出现在 `org network --json` 的 `dataProblems` 与 doctor 警告中；设备行问题不阻断同一空间的其它有效设备。
@@ -249,7 +286,7 @@ hyprial <域> <子命令> --help   # 参数面
 - routine 默认创建并持有常驻协调 agent，也可执行工作；rm 回收自己拥有的 actor，pause 不回收。
 - `hyprial workflow list [--all]` / `hyprial routine list [--all]`：不加 --json 时输出人读的表格。agent 默认只看到自己派的（或自己拥有的），加 --all 看本节点全部，不需要额外授权；主人在终端里直接运行，默认就能看到全部。--json 每行带 `lastProgressAtMs`（该图最新一条 journal 事件的时间；显式心跳命令 `workflow progress` 尚未提供，计划中，见 #1210）、`currentNode {nodeId,state}`（按依赖顺序第一个未完成的节点）（workflow），以及 `lastDispatchAtMs`、`lastOutcome`（routine）。判断是不是卡住，看这两个字段，别只看 state=running。
 - `hyprial workflow gc --dry-run [REPO ...] [--all]`：只读检查本机 Git worktree；目录或其 gitdir 链接已丢失、有未提交文件或有未推送提交都算 leftover。它只为已合并且干净、且 24 小时内没有活动的树建议 remove(刚从 origin/dev 新建、还在被 worker 用的树看起来和已完成的一样，所以按该树自己的 index/HEAD 修改时间排除)，建议前会提示先确认没人在用；只为 git 标记为 prunable 的树建议 prune；默认同时按 origin/HEAD、origin/dev、origin/main 判断是否已合并，不会执行这些命令。
-- `hyprial workflow overview show|publish <space>`：PAC 总览页。`publish` 把本机的任务线、Workflow 和 Routine 写成 orgfs 空间里的 `pac-overview/nodes/<节点>.js`（blob，只在内容变化时写），维护工作项视图资产 `pac-overview/work_items_view.js`，并维护合并所有节点的 `pac-overview/index.html`；它还会拉取其他节点尚未到达的文件、刷新本机 checkout，最后输出可以直接用浏览器打开的 `file://…/index.html`。页面每分钟自动重载。图数据只包含运行这条命令的调用方看得到的图，节点输出会脱敏并截断；页面另带 org 的全部工作项（状态、负责人/指派人、清单、验收标准、依赖、最近 20 条日志、打开/关闭时间；日志、验收与清单文本脱敏并截断），发布到某个空间即对该空间的读者可见。⚠️ 信任边界：空间里任何有写权限的成员都能往页面上放脚本，所以只发布到所有写入者都可信的空间；`publish` 会开启并保持本机对该空间的只读 checkout（`hyprial fs space checkout <space> --disable` 关闭）。
+- `hyprial workflow overview show|publish <space>`：PAC 总览页。`publish` 把本机的任务线、Workflow 和 Routine 写成 orgfs 空间里的 `pac-overview/nodes/<节点>.js`（blob，只在内容变化时写），维护工作项视图资产 `pac-overview/work_items_view.js`，并维护合并所有节点的 `pac-overview/index.html`；它还会拉取其他节点尚未到达的文件、刷新本机 checkout，最后输出可以直接用浏览器打开的 `file://…/index.html`。页面每分钟自动重载。图数据只包含运行这条命令的调用方看得到的图，节点输出会脱敏并截断；页面另带 org 的全部工作项（状态、负责人/指派人、清单、验收标准、依赖、最近 20 条日志、打开/关闭时间；日志、验收与清单文本脱敏并截断），发布到某个空间即对该空间的读者可见。⚠️ 信任边界：空间里任何有写权限的成员都能往页面上放脚本，所以只发布到所有写入者都可信的空间；`publish` 会开启并保持本机对该空间的只读 checkout（`hyprial org fs space checkout <space> --disable` 关闭）。
 - workflow history list/status 只读查询旧任务。切换会终止并归档未结束旧任务；空 home 也有旧写入屏障，不代表存在历史任务。
 
 最小任务书示例（先替换工作目录与任务，再 plan/run）：
@@ -514,7 +551,7 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
      - `hyprial message read <messageId> --from <自身>`:取正文;是消费动作(记 fetched),不闭合,仍要
        reply 或 ack。
      - `hyprial message ack <messageId> --from <自身>`:不需回复时结算。
-     - `hyprial link list|stats --from <自身>`:看 link、k、W、cwnd、在途;`hyprial link add|drop
+     - `hyprial agent link list|stats --from <自身>`:看 link、k、W、cwnd、在途;`hyprial agent link add|drop
        <peer> --from <自身>`:运维动作,`drop` 返回 `reclaiming`,回收异步完成,排干数见
        `link.reclaimed` 事件。
      - `hyprial message outbox list [--json]`:被 hold 的消息与 `holdReason`(该命令不接受 `--from`)。
@@ -532,7 +569,7 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
      | --- | --- | --- |
      | `LINK_MINTING` / `minting`、`awaiting-peer` | 已写本方引用,等对端写回 | 什么都不做;daemon 放行。⛔ 不要重发 |
      | `LINK_PEER_FULL` / `awaiting-peer` | 对端 link 数已满(v1 为估计) | 等;确有急事走 owner 升级。⛔ 不要换个话题重发 |
-     | `LINK_SELF_FULL` / `k` | 本方 link 已满且都有在途请求 | 先收回复或闭合自己的请求;需要时请运维 `link drop` |
+     | `LINK_SELF_FULL` / `k` | 本方 link 已满且都有在途请求 | 先收回复或闭合自己的请求;需要时请运维 `agent link drop` |
      | `LINK_SELF_FULL` / `churn` | 短时间回收过多 | 等一个周期 |
      | `LINK_SELF_FULL` / `org-unavailable` | 本节点不在 org 空间或 orgfs 不可用 | 只剩 owner 通道;报 owner |
      | `LINK_SELF_FULL` / `gate-unavailable` | daemon 的 link 服务未就绪 | 报运维;不要重发 |
@@ -548,10 +585,10 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
        服务起不来(发送全部 hold),改完先看日志 `link.service_composed` 的 `bypass` 字段。
      - 生效后:只因 link 状态的 hold/拒绝全部放行,已 hold 的积压在启动那一轮放出;
        **link 记账冻结**:不写 link 文件、不排队 intent、不做驱逐;启动日志 `link.bookkeeping_disabled`
-       出现一次。此时 `hyprial link add` 返回 `state:not-recorded`(reason
-       `bookkeeping-disabled-by-bypass`),`hyprial link list --json` 的 `bookkeeping` 为 `false`;
+       出现一次。此时 `hyprial agent link add` 返回 `state:not-recorded`(reason
+       `bookkeeping-disabled-by-bypass`),`hyprial agent link list --json` 的 `bookkeeping` 为 `false`;
        不要把它当 `established`。关掉旁路后 link 状态从头重建。
-       `hyprial link list --json`、`hyprial link stats --json` 的 `bypass` 为 `true`;每次放行记
+       `hyprial agent link list --json`、`hyprial agent link stats --json` 的 `bypass` 为 `true`;每次放行记
        `link.bypass_admitted`
        (同一 actor/peer/原因 60 s 一条)。
      - 仍然拦:身份(`CALLER_NOT_AUTHORIZED`)、回复校验、`LINK_RECLAIMED`;远端 agent 入站改为
@@ -579,7 +616,7 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
   报 `reason: caller-not-authenticated` 说明这次调用没带会话凭证(不是由 `hyprial claude`
   或 daemon 启动的会话),与路径无关:任何文件都不能附带。
   ⚠️ MCP 的 harness_send / harness_reply 只能发文字,**不能**据此认为飞书只能收文字;要发文件就用上面的 CLI。
-- **orgfs 导入/导出本地文件**(`orgfs_import`/`orgfs_export`、`hyprial fs import/export`)守同一条
+- **orgfs 导入/导出本地文件**(`orgfs_import`/`orgfs_export`、`hyprial org fs import/export`)守同一条
   **路径规则**:源文件和导出目标都必须是 workspace 或会话工作目录下的**绝对路径**,
   hyprial home 与 daemon 状态目录一律拒绝(`ATTACHMENT_PATH_REFUSED`)。导出不会覆盖已存在的文件,
   要覆盖显式传 `overwrite=true`(CLI `--overwrite`),否则报 `reason: exists`。

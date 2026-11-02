@@ -135,6 +135,8 @@ class SessionRuntimeProjection:
     current_epoch: str | None
     last_heartbeat_ms: int | None
     alive: bool
+    observation_gap: bool = False
+    observation_gap_revision: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,3 +251,10 @@ class SessionProjectionPort(Protocol):
     def read_sessions(self) -> tuple[SessionProjection, ...]: ...
 
     def read_runtime(self, actor: str) -> SessionRuntimeProjection | None: ...
+
+    def acknowledge_observation_gap(
+        self, actor: str, session_ref: str, *, gap_revision: int | None,
+    ) -> bool:
+        """Ack a recovered contact gap for a current-state refresh only."""
+
+        ...

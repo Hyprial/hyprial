@@ -7,9 +7,10 @@ from hyprial.shell.impl.cli.commands.common.services import get_services
 from collections.abc import Callable
 from hyprial.kernel import ipc_errors
 import typer
+from hyprial.shell.impl.cli.commands.common.groups import group
 
 from hyprial.shell.impl.cli.commands.common.support import JsonObject
-onboarding_app = typer.Typer(
+onboarding_app = group(
     help="Plan first-run setup from the machine's current read-only state."
 )
 
@@ -37,7 +38,7 @@ def _onboarding_snapshot() -> dict[str, object]:
     return OnboardingStateReader(
         hyprial_home=services._hyprial_home(),
         state_dir=services._state_dir(),
-        daemon_request=services._daemon_request,
+        daemon_request=services.runtime.request,
         scope_authorized=_onboarding_scope_authorized,
     ).read()
 
@@ -55,7 +56,7 @@ def onboarding_plan(
 
         return {"ok": True, **plan_first_run(services._onboarding_snapshot())}
 
-    services._execute(operation, json_output=json_output, allow_missing_home=True)
+    services.runtime.execute(operation, json_output=json_output, allow_missing_home=True)
 
 
 def _onboarding_apply_actions() -> dict[str, Callable[[], object]]:
@@ -73,7 +74,7 @@ def _onboarding_apply_actions() -> dict[str, Callable[[], object]]:
         # exactly these to answer "which role already exists" (see _agent_role in
         # hyprial.onboarding).
         services = get_services()
-        return lambda: services._daemon_request("agent.create", {"name": name})
+        return lambda: services.runtime.request("agent.create", {"name": name})
 
     def squire() -> object:
         # The command's own body, with the derived defaults: one implementation,
@@ -94,7 +95,7 @@ def _onboarding_apply_actions() -> dict[str, Callable[[], object]]:
     names = _configured_adapter_names()
     if len(names) == 1:
         adapter = names[0]
-        actions["lark-pin"] = lambda: services._daemon_request(
+        actions["lark-pin"] = lambda: services.runtime.request(
             "adapter.pin", {"name": adapter, "actor": "squire"}
         )
         # The outbound route points at the chat the user already talked to this
@@ -210,4 +211,4 @@ def onboarding_apply(
         except OnboardingApplyError as error:
             raise services.CliError(error.code, str(error), error.details or None) from error
 
-    services._execute(operation, json_output=json_output, allow_missing_home=True)
+    services.runtime.execute(operation, json_output=json_output, allow_missing_home=True)

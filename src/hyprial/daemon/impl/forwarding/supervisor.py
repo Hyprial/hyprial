@@ -414,8 +414,7 @@ class ForwardingSidecarSupervisor:
     def membership_request(
         self, op: str, params: Mapping[str, Any], *, timeout: float | None = None
     ) -> dict[str, Any]:
-        """``timeout`` bounds the wait (IPC request paths); None keeps the
-        background allowance (policy.MEMBERSHIP_WAIT_SECONDS)."""
+        """Forward the caller's bound; None selects the operation's table budget."""
 
         backend = self.endpoints()
         if backend is None:

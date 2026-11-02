@@ -105,6 +105,9 @@ class InboxServiceRetryMixin:
                     # already settled" -- they differ for auditing, not for
                     # control flow.
                     return AckResult(message_id, True, "MESSAGE_ALREADY_SETTLED")
+                notice_ack = self._ack_system_notice(recipient, message_id, now)
+                if notice_ack is not None:
+                    return notice_ack
                 return AckResult(message_id, False, ipc_errors.MESSAGE_ACK_UNAVAILABLE)
             cursor = self._db.execute(
                 """UPDATE inbox
@@ -591,7 +594,8 @@ class InboxServiceRetryMixin:
             conversation_id=str(row["conversation_id"]),
             sender=str(row["sender"]),
             recipient=str(row["recipient"]),
-            payload=bytes(row["payload"]),
+            payload=(row["payload"].encode("utf-8")
+                     if isinstance(row["payload"], str) else bytes(row["payload"])),
             intent=str(row["intent"]),
             lifecycle=DeliveryLifecycle(str(row["lifecycle"])),
             idempotency_key=row["idempotency_key"],

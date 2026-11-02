@@ -50,7 +50,10 @@ v0 boundaries (deliberate, fail-closed):
 - A daemon outcome that is not provably an acceptance (unknown submit
   outcome, transport failure, malformed answer) raises
   :class:`AppAdapterUnavailable` -- the caller must treat it as uncertain,
-  keeping its original ``idempotencyKey`` for retry or lookup.
+  keeping its original request for ``sessions.send.lookup`` without resending.
+- ``sessions.send.lookup`` resolves a single-agent send from the daemon's
+  retained sender copy. Missing evidence stays unknown; a read failure never
+  proves that the original send failed.
 - ``acceptedAt`` has no source on the daemon's ``message.send`` answer and is
   deliberately absent (Core falls back to its own clock); the daemon's
   per-delivery ``duplicate`` marker passes through as ``deduplicated`` when
@@ -108,6 +111,7 @@ IDENTITY_FIELDS = frozenset(
 V0_OPERATIONS = {
     "capabilities.get": {"supported": True},
     "sessions.send": {"supported": True},
+    "sessions.send.lookup": {"supported": True},
     "sessions.events": {"supported": True},
     "sessions.list": {"supported": True},
     "sessions.history": {"supported": True},
@@ -554,6 +558,42 @@ class AppChatAdapter:
             params["sessionRef"] = self._session_ref
         return self._project_send_ack(self._call("message.send", params))
 
+    def send_lookup(self, session_id: str, request: Mapping[str, Any]) -> dict[str, Any]:
+        """Read the original frozen send; a read refusal cannot fail that send."""
+        try:
+            binding = self._binding(session_id)
+            body = self._validate_send_request(request)
+            if len(binding.targets) != 1:
+                raise AppAdapterUnavailable("lookup requires one agent target")
+            params = {
+                "from": self._sender, "target": binding.targets[0],
+                "conversationId": binding.conversation_id, **body,
+            }
+            if self._session_ref is not None:
+                params["sessionRef"] = self._session_ref
+            result = self._call("message.send.lookup", params)
+        except AppAdapterError as error:
+            raise AppAdapterUnavailable(
+                "lookup-unavailable", {"code": error.code},
+            ) from error
+        if isinstance(result, Mapping):
+            reason = result.get("reason")
+            if result.get("status") == "unknown" and isinstance(reason, str) and reason in {
+                "not-found", "request-mismatch", "invalid-record", "unavailable",
+            }:
+                return {"status": "unknown", "reason": reason}
+            if (
+                result.get("status") == "accepted"
+                and result.get("commandId") == body["idempotencyKey"]
+                and result.get("conversationId") == binding.conversation_id
+                and isinstance(result.get("messageId"), str)
+                and result["messageId"]
+            ):
+                return {key: result[key] for key in (
+                    "status", "commandId", "conversationId", "messageId",
+                )}
+        raise AppAdapterUnavailable("invalid-response")
+
     def events(self, session_id: str, since: int | None = None) -> dict[str, Any]:
         """``sessions.events`` -- project this session's delivery progress.
 
@@ -810,6 +850,13 @@ class AppChatAdapter:
                 "daemon-unavailable", {"detail": str(error)}
             ) from error
         except DaemonRequestError as error:
+            if error.code in {
+                ipc_errors.SUBMIT_OUTCOME_UNKNOWN, "INVALID_JSON", "INVALID_RESPONSE",
+                "IPC_RESPONSE_TOO_LARGE", ipc_errors.VERSION_MISMATCH,
+            }:
+                raise AppAdapterUnavailable(
+                    "outcome-unknown", {"code": error.code, "data": error.data},
+                ) from error
             raise AppAdapterError(
                 DAEMON_REJECTED, str(error), {"code": error.code, "data": error.data}
             ) from error

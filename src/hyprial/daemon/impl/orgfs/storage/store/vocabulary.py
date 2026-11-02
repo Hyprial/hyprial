@@ -37,6 +37,8 @@ PYCRDT_CLIENT_ID_BITS = 53
 PYCRDT_CLIENT_ID_MAX = (1 << PYCRDT_CLIENT_ID_BITS) - 1
 _MAX_PENDING_IMPORTS = 512
 _MAX_PENDING_IMPORT_AGE_SECONDS = 60 * 60
+_MEMBERSHIP_MEMO_LIMIT = 4096
+_PENDING_DRAIN_BUDGET_SECONDS = 5.0
 #: Replica key components stay 15 bytes below the usual 255-byte filesystem
 #: component limit.  This covers the longest ``.tmp-XXXXXXXX`` suffix plus a
 #: byte of margin and is shared by ingress writer validation.  Document ids

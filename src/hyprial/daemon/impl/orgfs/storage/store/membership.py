@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+# orgfs pending-replay fix (2026-11-02, M-emergent-org-structure-refactor-0062):
+# _membership_at replays the meta journal once per token: candidates are
+# trialed on a scratch Doc; only accepted updates reach the probe Doc.  A
+# failed trial that advanced the scratch is rolled back by re-applying the
+# merged baseline; pending failures leave no trace in pycrdt 0.14.9.
+# Unresolvable tokens are memoized in memory keyed by the meta-history head
+# (count, max rowid of meta commits); meta_frontiers stays durable cache.
+
 import hashlib
 import json
 
 from typing import Any, Iterable, Mapping
 
-from pycrdt import Doc, Map
-from hyprial.daemon.impl.orgfs.storage.store.vocabulary import DocMutator, PYCRDT_CLIENT_ID_MAX, RetirementRecord, StoreError, _LOG, _changed_meta_entries, _decode_state_vector, _doc_roots, _empty_meta, _encode_state_vector, _now, _state_covers, _unb64, _wire_doc_id, _writer_is_safe
+from pycrdt import Doc, Map, merge_updates
+from hyprial.daemon.impl.orgfs.storage.store.vocabulary import DocMutator, PYCRDT_CLIENT_ID_MAX, RetirementRecord, StoreError, _LOG, _MEMBERSHIP_MEMO_LIMIT, _changed_meta_entries, _decode_state_vector, _doc_roots, _empty_meta, _encode_state_vector, _now, _state_covers, _unb64, _wire_doc_id, _writer_is_safe
 _MEMBER_ADD_FRONTIER_SCHEMA_VERSION = 1
 
 class StoreMembership:
@@ -673,6 +681,10 @@ class StoreMembership:
         author = str(envelope["origin"]["author"])
         return author if owner and str(owner) == author else None
 
+    def _meta_history_head(self) -> tuple[int, int]:
+        row = self._db.execute("SELECT COUNT(*), COALESCE(MAX(rowid), 0) FROM commits WHERE doc_id = 'meta'").fetchone()
+        return int(row[0]), int(row[1])
+
     def _membership_at(
         self, token: bytes
     ) -> tuple[str | None, dict[str, dict[str, Any]], Doc] | None:
@@ -696,6 +708,12 @@ class StoreMembership:
                         membership,
                         cached,
                     )
+        head = self._meta_history_head()
+        if head != self._membership_memo_head:
+            self._membership_memo_head = head
+            self._membership_memo.clear()
+        elif token in self._membership_memo:
+            return None
         owner = self._genesis_owner()
         if owner is None:
             return None
@@ -708,7 +726,7 @@ class StoreMembership:
             if client not in ignored_ids
         }
         selected: list[bytes] = []
-        remaining: list[tuple[dict[int, int], bytes]] = []
+        candidates: list[tuple[dict[int, int], bytes]] = []
         for commit in self._db.execute(
             "SELECT envelope_bytes FROM commits WHERE doc_id = 'meta' ORDER BY rowid"
         ):
@@ -716,58 +734,53 @@ class StoreMembership:
                 envelope = self._decode_envelope(bytes(commit["envelope_bytes"]))
                 update = self._update_bytes(envelope)
                 if str(envelope["origin"].get("author")) == owner:
-                    remaining.append(
-                        (
-                            {
-                                client: clock
-                                for client, clock in _decode_state_vector(
-                                    _unb64(str(envelope["origin"]["metaFrontier"]))
-                                ).items()
-                                if client not in ignored_ids
-                            },
-                            update,
-                        )
-                    )
+                    frontier = _decode_state_vector(_unb64(str(envelope["origin"]["metaFrontier"])))
+                    before = {client: clock for client, clock in frontier.items() if client not in ignored_ids}
+                    candidates.append((before, update))
                 else:
                     selected.append(update)
             except (KeyError, StoreError, TypeError, ValueError):
                 return None
         probe = Doc()
+        scratch = Doc()
         for update in selected:
             probe.apply_update(update)
-        while remaining:
-            progressed = False
-            for before, update in tuple(remaining):
-                if not self._state_map_covers(target, before):
-                    remaining.remove((before, update))
-                    continue
-                trial = Doc()
-                try:
-                    for applied in (*selected, update):
-                        trial.apply_update(applied)
-                except (TypeError, ValueError):
-                    return None
-                trial_frontier = {
-                    client: clock
-                    for client, clock in _decode_state_vector(
-                        trial.get_state()
-                    ).items()
-                    if client not in ignored_ids
-                }
-                remaining.remove((before, update))
-                if self._state_map_covers(target, trial_frontier):
-                    probe = trial
-                    selected.append(update)
-                    progressed = True
-                    break
-            if not progressed:
-                break
+            scratch.apply_update(update)
+        scratch_state = scratch.get_state()
+        accepted: list[bytes] = []
+        for before, update in candidates:
+            if not self._state_map_covers(target, before):
+                continue
+            try:
+                scratch.apply_update(update)
+            except (TypeError, ValueError):
+                return None
+            trial_state = scratch.get_state()
+            trial = _decode_state_vector(trial_state)
+            trial_frontier = {client: clock for client, clock in trial.items() if client not in ignored_ids}
+            if self._state_map_covers(target, trial_frontier):
+                probe.apply_update(update)
+                accepted.append(update)
+                scratch_state = trial_state
+            elif trial_state != scratch_state:
+                scratch = Doc()
+                if selected or accepted:
+                    try:
+                        scratch.apply_update(merge_updates(*selected, *accepted))
+                    except (TypeError, ValueError):
+                        for replayed in (*selected, *accepted):
+                            scratch.apply_update(replayed)
+                scratch_state = scratch.get_state()
         projected = {
             client: clock
             for client, clock in _decode_state_vector(probe.get_state()).items()
             if client not in ignored_ids
         }
         if projected != target:
+            memo = self._membership_memo
+            if len(memo) >= _MEMBERSHIP_MEMO_LIMIT:
+                memo.clear()
+            memo.add(token)
             return None
         roots = _doc_roots(probe)
         members = roots.get("members")

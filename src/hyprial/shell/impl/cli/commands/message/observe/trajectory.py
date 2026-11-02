@@ -209,7 +209,7 @@ def _trajectory_result(message_id: str) -> JsonObject:
                 if parse_agent_uri(sender) is not None
                 else {"from": sender}
             )
-            value = services._daemon_request(
+            value = services.runtime.request(
                 "message.status",
                 {**status_params, "messageId": message_id},
                 restore_wait=0.0,
@@ -372,4 +372,4 @@ def message_trajectory(
     def operation() -> Any:
         return CliResult(_trajectory_result(message_id), render=_format_trajectory)
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)

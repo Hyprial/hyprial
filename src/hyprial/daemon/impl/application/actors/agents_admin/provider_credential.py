@@ -34,9 +34,12 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from hyprial.daemon.impl.composition import DomainCommandError
 from hyprial.daemon.impl.ipc.params import JsonObject, _required_string
 from hyprial.identity import (
     NATIVE_CREDENTIAL_FILES,
+    AgentError,
+    AgentHomeError,
     AgentSecretStore,
     FingerprintUnavailable,
     NativeCredentialError,
@@ -56,13 +59,19 @@ class _AgentProviderMixin:
     def _handle_agent_provider_request(
         self, method: str, params: JsonObject, *, trusted_message_origin: str | None,
     ) -> Any:
-        # Login's actor is the recipient. Keep worker/session/interactive-peer fences.
-        attribution = ({key: value for key, value in params.items() if key != "actor"}
-                       if method == "agent.provider.login" else params)
-        operator, _ = self._identity_binding_operator(
-            attribution, trusted_message_origin=trusted_message_origin,
-        )
-        return self._handle_agent_provider(method, params, operator=operator)
+        try:
+            attribution = ({key: value for key, value in params.items() if key != "actor"}
+                           if method == "agent.provider.login" else params)
+            operator, _ = self._identity_binding_operator(
+                attribution, trusted_message_origin=trusted_message_origin,
+            )
+            return self._handle_agent_provider(method, params, operator=operator)
+        except (AgentError, DomainCommandError) as error:
+            raise DaemonRequestError(
+                error.code, str(error), data=getattr(error, "data", None)
+            ) from error
+        except AgentHomeError as error:
+            raise DaemonRequestError(AgentError.code, str(error)) from error
 
     def _handle_agent_provider(
         self, method: str, params: JsonObject, *, operator: bool = True

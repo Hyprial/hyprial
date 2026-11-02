@@ -57,6 +57,7 @@ from .settlement import (
 from .forwards import _BridgeForwardsMixin
 from .reconcile import _BridgeReconcileMixin
 from .results import _BridgeResultsMixin
+from .batch_claims import _BridgeBatchClaimsMixin
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,7 +142,9 @@ class _RunMarker:
 
 
 
-class DaemonEventBridge(_BridgeForwardsMixin, _BridgeReconcileMixin, _BridgeResultsMixin):
+class DaemonEventBridge(
+    _BridgeForwardsMixin, _BridgeReconcileMixin, _BridgeResultsMixin, _BridgeBatchClaimsMixin
+):
 
     def __init__(
         self,
@@ -174,6 +177,7 @@ class DaemonEventBridge(_BridgeForwardsMixin, _BridgeReconcileMixin, _BridgeResu
         delivery_hooks: "DeliveryHookService | None" = None,
         link_admission: object | None = None,
         actor_mode: bool = False,
+        batch_actor_home: Callable[[str], object] | None = None,
     ) -> None:
         if hold_ttl_ms <= 0:
             raise ValueError("hold TTL must be positive")
@@ -213,6 +217,7 @@ class DaemonEventBridge(_BridgeForwardsMixin, _BridgeReconcileMixin, _BridgeResu
         # composed slot so WP2's single bind is visible here (see wp4 T17).
         # There is exactly one default: a fresh, unbound slot (review item 3).
         self._link_admission = link_admission or LinkAdmission(logger=logger)
+        self._batch_actor_home = batch_actor_home
         self._blocking_failure_observer = blocking_failure_observer
         self._blocking_failure_identity = blocking_failure_identity
         self._blocked_actor = blocked_actor
@@ -232,6 +237,8 @@ class DaemonEventBridge(_BridgeForwardsMixin, _BridgeReconcileMixin, _BridgeResu
         #: Members an accepted managed batch already claimed, keyed only by
         #: actor.  The wrapper's transient turn id is never a settlement key.
         self._batch_claims: dict[str, tuple[str, ...]] = {}
+        self._batch_claim_metadata: dict[str, tuple[int, int | None]] = {}
+        self._batch_claim_snapshot: tuple[tuple[str, tuple[str, ...], int], ...] = ()
         self._pending_batch_claims: dict[
             str, tuple[tuple[str, ...], tuple[InboxMessage, ...]]
         ] = {}

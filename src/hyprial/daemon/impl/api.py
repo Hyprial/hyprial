@@ -132,6 +132,8 @@ def describe_sender(origin: Mapping[str, Any] | None) -> str | None:
         return f"{name} (NOT verified: owner ambiguous between {candidates})"
     if standing == "observed":
         return f"{name} (NOT verified: display name only, no owner)"
+    if sender.get("lookupFailed") is True:
+        return f"{name} (NOT verified: identity lookup failed)"
     return f"{name} (NOT verified: sender unresolved)"
 
 

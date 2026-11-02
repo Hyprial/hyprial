@@ -1,0 +1,62 @@
+{
+  "name": "@hyprial/gui-app",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared Hyprial GUI for web, desktop and mobile (ADR-GUI-003/004/005)",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node scripts/serve.mjs --mode production",
+    "dev": "node scripts/serve.mjs --mode development",
+    "stub": "node scripts/stub-backend.mjs",
+    "client:reference": "node scripts/generate-reference-client.mjs",
+    "client:reference:check": "node scripts/generate-reference-client.mjs --check",
+    "client:fixture": "node scripts/generate-client.mjs --input tests/client/fixtures/http-openapi.generic.json --out tests/client/fixtures/generated --source http-openapi.generic.json",
+    "client:fixture:check": "node scripts/generate-client.mjs --input tests/client/fixtures/http-openapi.generic.json --out tests/client/fixtures/generated --source http-openapi.generic.json --check",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --maxWorkers=2 --exclude tests/agent-provider-browser.test.mjs",
+    "test:watch": "vitest",
+    "test:browser": "node --test --test-concurrency=5 tests/dev-overlay-interaction.mjs",
+    "build": "tsc --noEmit && vite build",
+    "verify:production-copy": "npm run build && node scripts/verify-production-copy.mjs dist",
+    "verify:safe-r1-build": "node tests/safe-r1-build-contract.mjs",
+    "verify:safe-r1-browser": "node tests/safe-r1-browser-contract.mjs",
+    "verify": "npm run typecheck && npm run client:reference:check && npm run test && npm run test:browser && npm run build && node scripts/verify-production-copy.mjs dist && npm run verify:first-run-browser && npm run verify:safe-r1-build && npm run verify:safe-r1-browser && npm run verify:j3-browser && npm run verify:j5-browser && npm run verify:j2-browser && npm run verify:j6-browser && npm run verify:j7-browser && npm run verify:j10-browser && npm run verify:j4-browser && npm run verify:linked-browser",
+    "verify:first-run-browser": "node tests/first-run-browser-contract.mjs",
+    "verify:j3-browser": "node tests/modules/dev03/j3-browser-contract.mjs",
+    "verify:j5-browser": "node tests/modules/dev04/j5-browser-contract.mjs",
+    "verify:j2-browser": "node tests/modules/dev02/j2-browser-contract.mjs",
+    "verify:j6-browser": "node tests/modules/dev05/j6-browser-contract.mjs",
+    "verify:j7-browser": "node tests/modules/dev05/j7-browser-contract.mjs",
+    "verify:j10-browser": "node tests/modules/dev01/j10-browser-contract.mjs",
+    "verify:j4-browser": "node tests/modules/dev03/j4-browser-contract.mjs",
+    "verify:linked-browser": "node tests/linked-preview-browser.mjs",
+    "verify:agent-provider-browser": "vitest run tests/agent-provider-browser.test.mjs"
+  },
+  "dependencies": {
+    "@radix-ui/react-select": "2.4.1",
+    "@radix-ui/react-slot": "1.5.0",
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "tailwind-merge": "3.7.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "4.3.3",
+    "@testing-library/jest-dom": "7.0.1",
+    "@testing-library/react": "16.3.3",
+    "@testing-library/user-event": "14.6.8",
+    "@types/node": "24.10.1",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "jsdom": "30.1.3",
+    "playwright-core": "1.63.0",
+    "tailwindcss": "4.3.3",
+    "typescript": "5.9.3",
+    "vite": "8.3.5",
+    "vitest": "5.0.5"
+  }
+}

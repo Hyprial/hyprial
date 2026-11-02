@@ -7,10 +7,11 @@ from hyprial.shell.impl.cli.commands.common.services import get_services
 from typing import Any
 from hyprial.kernel import ipc_errors
 import typer
+from hyprial.shell.impl.cli.commands.common.groups import group
 
 from hyprial.shell.impl.cli.commands.common.support import JsonObject
 from hyprial.shell.impl.cli.output import CliResult
-identities_app = typer.Typer(
+identities_app = group(
     help=(
         "Record and query platform-identity mappings (who is who): "
         "platform id ↔ display name ↔ hyprial owner, with provenance and "
@@ -88,7 +89,7 @@ def adapter_identities_sync(
             store.close()
         return {"adapter": name, **report}
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @identities_app.command("list")
@@ -114,7 +115,7 @@ def adapter_identities_list(
             store.close()
         return _identities_result(name, rows)
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @identities_app.command("find")
@@ -147,10 +148,10 @@ def adapter_identities_find(
             store.close()
         return _identities_result(name, rows)
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
-media_app = typer.Typer(
+media_app = group(
     help=(
         "Retrieve platform media referenced by inbound stand-ins. Image and "
         "file messages reach agents as labels carrying a "
@@ -223,4 +224,4 @@ def adapter_media_get(
             "fileName": result.file_name,
         }, render=lambda data: str(data["path"]))
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)

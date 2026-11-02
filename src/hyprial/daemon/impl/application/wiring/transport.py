@@ -588,6 +588,9 @@ class _WiringTransportMixin:
                     # longer require rebuilding delivery policy.
                     "interactive_recipient": lambda recipient: recipient
                     in self._registered_interactive_actors(),
+                    "notice_recipient_resolver": lambda name: self._resolve_agent_alias(
+                        normalize_agent_recipient(name)
+                    ),
                 },
             ),
             DaemonStartupPhase.ACTOR_RUNTIME_INBOX_STORE,
@@ -875,6 +878,7 @@ class _WiringTransportMixin:
             delivery_hooks=graph.delivery_hooks,
             link_admission=self._link_admission,
             actor_mode=True,
+            batch_actor_home=self.agents.batch_actor_home,
         )
         recipient_wakes: RecipientWakeCoordinator | None = None
         stop_recipient_wake_observer: Callable[[], None] | None = None

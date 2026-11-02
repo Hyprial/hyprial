@@ -1,0 +1,57 @@
+.start-page__header {
+  margin: 0 0 26px;
+}
+
+.start-page__header .ui-page-header__title {
+  font-family: var(--font-brand);
+  font-size: 38px;
+  font-weight: 400;
+  letter-spacing: -0.04em;
+  line-height: 1.08;
+}
+
+.start-page .metric.ui-card {
+  min-height: 112px;
+  padding: var(--ui-space-6);
+}
+
+.start-page .recent-card.ui-card,
+.start-page .board-card.ui-card,
+.start-page .recommendation-card.ui-card {
+  padding: var(--ui-space-5);
+}
+
+.start-page .ui-card.recommendation-card {
+  border-color: var(--green-line);
+  background: var(--green);
+}
+
+.start-page .recent-card .ui-button,
+.start-page .recommendation-card .ui-button {
+  align-self: flex-start;
+  margin-top: auto;
+}
+
+.start-page .recent-card .ui-state,
+.start-page .board-card .ui-state {
+  margin-top: var(--ui-space-3);
+}
+
+.start-page .recommendation-card .ui-button {
+  margin-top: var(--ui-space-3);
+}
+
+@media (max-width: 979px) {
+  .start-page__header {
+    margin-bottom: 16px;
+  }
+
+  .start-page__header .ui-page-header__title {
+    font-size: 32px;
+  }
+
+  .start-page .metric.ui-card {
+    min-height: 98px;
+    padding: var(--ui-space-3);
+  }
+}

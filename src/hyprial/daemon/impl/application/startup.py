@@ -33,6 +33,7 @@ from hyprial.daemon.impl.processes.shutdown_stall  import (
 )
 from hyprial.daemon.impl.configuration.ownership  import DaemonOwnershipBusy, DaemonStateOwnershipFence
 from hyprial.kernel import (
+    TEARDOWN_BUDGETED_SECONDS,
     parse_channel_uri,
 )
 if TYPE_CHECKING:
@@ -348,15 +349,15 @@ class _StartupMixin:
                     failureSite=failure_site,
                     homeLease=lease_observation,
                 )
+                # A blocked close must not prevent the exit guarantee from
+                # being armed. Embedded daemons still never own process exit.
+                self._arm_exit_backstop(TEARDOWN_BUDGETED_SECONDS)
                 self._close()
                 if run_failed:
                     self._wait_before_relaunch()
             finally:
-                # Armed *before* the closing steps rather than after them.
-                # After, a hang inside `_home_guard.close` would leave nothing
-                # armed at all -- the guarantee would be missing in exactly the
-                # case it exists for. It costs nothing when the steps finish,
-                # because the process is gone before its timer matures.
+                # Replace the broad close deadline with the final exit grace,
+                # before home-lease release and the remaining departure steps.
                 self._arm_exit_backstop()
                 shutdown_errors = self._finish_shutdown_and_leave(
                     previous_handlers, failed=run_failed

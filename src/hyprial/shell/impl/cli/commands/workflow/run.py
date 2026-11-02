@@ -7,8 +7,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import typer
+from hyprial.shell.impl.cli.commands.common.groups import group
 
-from hyprial.biz import actor_owner, check_actor_claim, worker_binding
+from hyprial.biz import actor_owner, check_actor_claim
 from hyprial.identity import PacError
 from hyprial.shell.impl.cli.commands.common.services import get_services
 from hyprial.shell.impl.cli.commands.common.support import JsonObject
@@ -22,21 +23,21 @@ if TYPE_CHECKING:
     from hyprial.daemon import WorkflowSpec
 
 
-workflow_app = typer.Typer(
+workflow_app = group(
     help="Plan and run PAC graphs with managed workers.", no_args_is_help=True
 )
 
-history_app = typer.Typer(
+history_app = group(
     help="Read archived legacy workflow history.", no_args_is_help=True
 )
 
-worker_app = typer.Typer(help="Control workers owned by a workflow.", no_args_is_help=True)
+worker_app = group(help="Control workers owned by a workflow.", no_args_is_help=True)
 
-notify_app = typer.Typer(help="Workflow notification maintenance.", no_args_is_help=True)
+notify_app = group(help="Workflow notification maintenance.", no_args_is_help=True)
 
-migration_app = typer.Typer(help="Read-only workflow migration reports.", no_args_is_help=True)
+migration_app = group(help="Read-only workflow migration reports.", no_args_is_help=True)
 
-overview_app = typer.Typer(
+overview_app = group(
     help="PAC overview page: this node's task lines, workflows and routines.",
     no_args_is_help=True,
 )
@@ -52,11 +53,10 @@ def _plan_document(spec: WorkflowSpec) -> dict[str, Any]:
     return spec.to_json()
 
 def _identity(claimed: str | None = None) -> dict[str, str]:
-    binding = worker_binding()
+    binding = get_services().runtime.worker_session_binding()
     if binding is not None:
-        actor, session = binding
-        check_actor_claim(claimed, actor)
-        return {"actor": actor, "sessionRef": session}
+        check_actor_claim(claimed, binding.actor)
+        return {"actor": binding.actor, "sessionRef": binding.session_ref}
     actor = actor_owner()
     check_actor_claim(claimed, actor)
     return {"actor": actor}
@@ -68,7 +68,7 @@ def _call(
     json_output: bool,
     claimed: str | None = None,
 ):
-    get_services()._execute(
+    get_services().runtime.execute(
         lambda: _call_result(method, params, claimed=claimed), json_output=json_output
     )
 
@@ -78,7 +78,7 @@ def _call_result(method: str, params: dict[str, Any], *, claimed: str | None = N
         identity = _identity(claimed)
     except PacError as error:
         raise services.CliError(error.code, str(error)) from error
-    result = services._daemon_request(method, {**params, **identity})
+    result = services.runtime.request(method, {**params, **identity})
     if not isinstance(result, dict):
         raise services.CliError("INVALID_RESPONSE", f"{method} returned a non-object")
     return {"ok": True, **result}
@@ -122,7 +122,7 @@ def plan(
                 identity = _identity()
             except PacError as error:
                 raise services.CliError(error.code, str(error)) from error
-            preview = services._daemon_request(
+            preview = services.runtime.request(
                 "workflow.expansion.plan", {**target, "yaml": raw, **identity}
             )
             if not isinstance(preview, dict):
@@ -141,7 +141,7 @@ def plan(
                 identity = _identity()
             except PacError as error:
                 raise services.CliError(error.code, str(error)) from error
-            preview = services._daemon_request(
+            preview = services.runtime.request(
                 "workflow.plan", {"yaml": file.read_text(encoding="utf-8"), **identity}
             )
             if not isinstance(preview, dict):
@@ -159,7 +159,7 @@ def plan(
             **({"reminderError": reminder_error} if reminder_error else {}),
         }
 
-    services._execute(operation, json_output=json_out)
+    services.runtime.execute(operation, json_output=json_out)
 
 @workflow_app.command("run")
 def run(
@@ -199,7 +199,7 @@ def run(
             warn(reminder, json_output=json_output)
         authoritative_plan = spec.to_json()
         if any(node.expands is not None for node in spec.nodes):
-            preview = services._daemon_request(
+            preview = services.runtime.request(
                 "workflow.plan", {"yaml": raw, **identity}
             )
             if not isinstance(preview, dict):
@@ -209,7 +209,7 @@ def run(
             plan = json.dumps(authoritative_plan, ensure_ascii=False, indent=2)
             if not confirm("Dispatch this graph?", preview=plan):
                 raise services.CliError("CONFIRMATION_DECLINED", "graph not dispatched")
-        result = services._daemon_request(
+        result = services.runtime.request(
             "workflow.start",
             {
                 "yaml": raw,
@@ -232,4 +232,4 @@ def run(
             ),
         )
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)

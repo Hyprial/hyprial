@@ -1,0 +1,38 @@
+/* No Preflight. Prefixed utilities cannot match existing page class names.
+   Utilities stay unlayered, like our existing CSS, so global element defaults
+   (button font/color) cannot outrank the component's explicit utility classes. */
+@import "tailwindcss/theme.css" layer(theme) prefix(tw);
+@import "tailwindcss/utilities.css" prefix(tw) source(none);
+@source "../components/ui";
+@source "../components/primitives/Button.tsx";
+@source "../components/primitives/Card.tsx";
+@source "../components/primitives/Select.tsx";
+
+/* Map straight to S1 tokens. Do not overwrite legacy --card or --muted. */
+@theme inline {
+  --color-background: var(--ui-ground);
+  --color-foreground: var(--ui-ink-1);
+  --color-card: var(--ui-surface);
+  --color-card-foreground: var(--ui-ink-1);
+  --color-popover: var(--ui-surface);
+  --color-popover-foreground: var(--ui-ink-1);
+  --color-primary: var(--ui-accent);
+  --color-primary-hover: var(--ui-accent-hover);
+  --color-primary-foreground: var(--ui-on-accent);
+  --color-secondary: var(--ui-ground-2);
+  --color-secondary-foreground: var(--ui-ink-2);
+  --color-muted: var(--ui-ground-2);
+  --color-muted-foreground: var(--ui-ink-3);
+  --color-accent: var(--ui-accent-wash);
+  --color-accent-foreground: var(--ui-accent);
+  --color-destructive: var(--ui-danger);
+  --color-border: var(--ui-border);
+  --color-input: var(--ui-border-strong);
+  --color-ring: var(--ui-focus);
+  --font-sans: var(--ui-font-ui);
+  --text-xs: var(--ui-text-sm);
+  --text-sm: var(--ui-text-md);
+  --radius-sm: var(--ui-radius-sm);
+  --radius-md: var(--ui-radius-md);
+  --spacing: var(--ui-space-1);
+}

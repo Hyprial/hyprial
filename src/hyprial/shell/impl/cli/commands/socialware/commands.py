@@ -6,13 +6,13 @@ from hyprial.shell.impl.cli.commands.common.services import get_services
 
 from typing import Any
 from hyprial.kernel import ipc_errors
-import sys
 import typer
+from hyprial.shell.impl.cli.commands.common.groups import group
 
 from hyprial.shell.impl.cli.commands.common.support import JsonObject, _probe_reports_running
 
 
-socialware_app = typer.Typer(
+socialware_app = group(
     help="Install and manage socialware applications (coming soon)."
 )
 
@@ -44,7 +44,7 @@ def install(
             "COMING_SOON", "hyprial socialware install is coming soon"
         )
 
-    services._execute(operation, json_output=json_output, allow_missing_home=True)
+    services.runtime.execute(operation, json_output=json_output, allow_missing_home=True)
 
 
 def _running_daemon_before_upgrade(version: str) -> JsonObject | None:
@@ -81,115 +81,24 @@ def _running_daemon_before_upgrade(version: str) -> JsonObject | None:
 
 
 def _prime_post_install_restart_imports() -> frozenset[str]:
-    """Load restart-only modules before ``uv tool install`` replaces us.
+    """Load shell-owned backend/GUI modules and this CLI's own restart tail."""
 
-    A uv tool upgrade atomically removes the distribution backing this still
-    running CLI process.  Any first import after that boundary resolves
-    against a path that no longer exists, even though the newly installed
-    command is complete.  The restart path intentionally remains in this
-    process so it can preserve the pre-install daemon snapshot and return one
-    atomic upgrade result; load its lazy dependencies before crossing the
-    destructive install boundary.
-    """
+    import sys
 
-    # Resolve every lazy dependency used after installation while this exact
-    # distribution still backs the process.  ``uv tool install --force`` may
-    # replace package files in place; importing even one new module afterwards
-    # can combine an old package object in ``sys.modules`` with new module code.
-    from hyprial.daemon import (
-        AUTOUPDATE_CHILD_ENV,
-        AUTOUPDATE_TRIGGER_ENV,
-        DesiredStateStore,
-        ForwardingConfigurationError,
-        OwnerMigrationHostedConflict,
-        RestartProcessObservation,
-        RestartProcessState,
-        ServiceConfig,
-        ServiceManager,
-        ServiceOwnershipError,
-        ensure_dispatch_policy,
-        harness_desired_generation,
-        latest_start_failure,
-        notify_restore_followup,
-        notify_upgrade_outcome,
-        owner_process_status,
-        prime_upgrade_alert_imports,
-        process_cpu_seconds,
-        read_last_run,
-        read_process_identity,
-        resolve_profile,
-        restart_failure_detail,
-        restore_followup_budget_seconds,
-        run_mcp_entry,
-        run_self_check,
-        run_upgrade_steps,
-        start_failure_line,
-        tcp_probe,
-        write_last_run,
-    )
-    from hyprial.identity import (
-        IDENTITY_TRANSACTION_FD_ENV,
-        IdentityTransactionBusy,
-        IdentityTransactionLock,
-        UserProfileError,
-        UserProfileStore,
-    )
-    from hyprial.kernel import DaemonLaunchResult, HarnessLaunchSpec, parse_channel_uri
+    from hyprial.shell import prime_post_install_imports
     from hyprial.shell.impl.cli.commands.daemon.restart import (
         _record_autoupdate_restart_confirmation,
     )
     from hyprial.shell.impl.cli.commands.daemon.service import (
         restart_supervised_daemon,
     )
-    from hyprial.shell.impl.gui.apps import upgrade as unpack_gui
 
-    _ = (
-        AUTOUPDATE_CHILD_ENV,
-        AUTOUPDATE_TRIGGER_ENV,
-        DesiredStateStore,
-        ForwardingConfigurationError,
-        OwnerMigrationHostedConflict,
-        RestartProcessObservation,
-        RestartProcessState,
-        ServiceConfig,
-        ServiceManager,
-        ServiceOwnershipError,
-        ensure_dispatch_policy,
-        harness_desired_generation,
-        latest_start_failure,
-        notify_restore_followup,
-        notify_upgrade_outcome,
-        owner_process_status,
-        prime_upgrade_alert_imports,
-        process_cpu_seconds,
-        read_last_run,
-        read_process_identity,
-        resolve_profile,
-        restart_failure_detail,
-        restore_followup_budget_seconds,
-        run_mcp_entry,
-        run_self_check,
-        run_upgrade_steps,
-        start_failure_line,
-        tcp_probe,
-        write_last_run,
-        IDENTITY_TRANSACTION_FD_ENV,
-        IdentityTransactionBusy,
-        IdentityTransactionLock,
-        UserProfileError,
-        UserProfileStore,
-        DaemonLaunchResult,
-        HarnessLaunchSpec,
-        parse_channel_uri,
-        _record_autoupdate_restart_confirmation,
-        restart_supervised_daemon,
-        unpack_gui,
-    )
-    prime_upgrade_alert_imports()
-    return frozenset(
+    _ = (_record_autoupdate_restart_confirmation, restart_supervised_daemon)
+    primed = set(prime_post_install_imports())
+    primed.update(
         name for name in sys.modules if name == "hyprial" or name.startswith("hyprial.")
     )
-
+    return frozenset(primed)
 
 def _require_installed_commit(
     installed: Any, resolution: Any, resolved: JsonObject, resolved_suffix: str

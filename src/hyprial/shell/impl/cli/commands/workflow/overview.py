@@ -40,12 +40,12 @@ def _overview_model(
         raise services.CliError(error.code, str(error)) from error
 
     def request(method: str, params: Any) -> Any:
-        result = services._daemon_request(method, {**params, **identity})
+        result = services.runtime.request(method, {**params, **identity})
         if not isinstance(result, dict):
             raise services.CliError("INVALID_RESPONSE", f"{method} returned a non-object")
         return result
 
-    status = services._daemon_request("ps", {})
+    status = services.runtime.request("ps", {})
     daemon = status.get("daemon") if isinstance(status, dict) else None
     node = daemon.get("nodeId") if isinstance(daemon, dict) else None
     if not isinstance(node, str) or not node:
@@ -103,7 +103,7 @@ def overview_show(
 
         return CliResult({"ok": True, **model}, render=render)
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 @overview_app.command("publish")
 def overview_publish(
@@ -124,7 +124,7 @@ def overview_publish(
 ):
     """Write this node's data (and the page) into an orgfs space, if it changed.
 
-    Open <checkout>/<path>/index.html from `hyprial fs space checkout <space>` to view
+    Open <checkout>/<path>/index.html from `hyprial org fs space checkout <space>` to view
     every publishing node together; the page reloads itself every minute.
     Graphs are only those the caller can see, with node output redacted and
     truncated.  The page also carries every work item of the org (status,
@@ -132,7 +132,7 @@ def overview_publish(
     opened/closed; log/acceptance/checklist text redacted and truncated), so
     publishing into a space shows them to that space's readers.
     Publishing enables this node's read-only checkout of the space and leaves
-    it on (`hyprial fs space checkout <space> --disable` turns it off).  Every member
+    it on (`hyprial org fs space checkout <space> --disable` turns it off).  Every member
     who can write the space can put scripts on the page: publish only into a
     space whose writers you trust.
     """
@@ -143,7 +143,7 @@ def overview_publish(
         problem = model.pop("missionsError", None)
 
         def fs_request(method: str, params: Any) -> Any:
-            result = services._daemon_request(method, dict(params))
+            result = services.runtime.request(method, dict(params))
             if not isinstance(result, dict):
                 raise services.CliError("INVALID_RESPONSE", f"{method} returned a non-object")
             return result
@@ -189,4 +189,4 @@ def overview_publish(
 
         return CliResult(payload, render=render)
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)

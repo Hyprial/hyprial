@@ -204,6 +204,8 @@ class _InboundPipelineMixin:
     ) -> InboundOutcome:
         if self._closing.is_set():
             return InboundOutcome(status="error", ack_error="inbound-closing")
+        if self._state.pending_inbound_dead_lettered(message.message_id):
+            return InboundOutcome(status="submission-dead-lettered")
         # Idempotency is keyed on BOTH the event id (platform redelivery of
         # the same event) and the native message id (the same message
         # arriving via live event, manual recovery, or reconcile replay).

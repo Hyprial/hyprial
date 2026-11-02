@@ -20,6 +20,7 @@ from hyprial.daemon.impl.inbox.contracts.summary import body_bytes, body_text
 from hyprial.daemon.impl.inbox.history import (
     conversation_messages as _conversation_messages,
 )
+from hyprial.daemon.impl.inbox.send_lookup import lookup_send
 from hyprial.daemon.impl.inbox.links.pull  import (
     DeliveryStatus,
     DeliveryStatusStore,
@@ -53,6 +54,10 @@ def _dispatch_reply_to(message: InboxMessage) -> str | None:
     return None
 
 class InboxServiceProjectionMixin:
+    @_synchronized
+    def lookup_send(self, **selectors: str) -> dict[str, str]:
+        return lookup_send(self._db, **selectors)
+
     @_synchronized
     def prune_outbox(
         self,

@@ -84,7 +84,7 @@ def _assign(app: Any, store: SlotAssignments, label: str) -> int:
     return slot
 
 
-def bind_peer_slot(app: Any, device_label: str, address: str) -> int | None:
+def bind_peer_slot(app: Any, device_label: str, address: str, *, timeout: float | None = None) -> int | None:
     """Assign (or reuse) the peer's slot and ``map-peer`` it; returns the slot.
 
     Returns the slot even while the sidecar is down -- the assignment is
@@ -98,7 +98,8 @@ def bind_peer_slot(app: Any, device_label: str, address: str) -> int | None:
     if backend is None:
         return slot
     try:
-        changed = backend.bind(device_label, address, slot)
+        kwargs = {} if timeout is None else {"timeout": timeout}
+        changed = backend.bind(device_label, address, slot, **kwargs)
         if changed is None:
             _log(
                 app,

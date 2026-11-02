@@ -28,14 +28,16 @@ from hyprial.identity import org_space_name
 import json
 import sys
 import typer
+from hyprial.shell.impl.cli.commands.common.groups import group
 
 from hyprial.identity import ORG_SPACE_PREFIX
 from hyprial.shell.impl.cli.commands.common.support import JsonObject
 from hyprial.shell.impl.cli.commands.org.acl import acl_app
 from .authority import org_migration_status, org_pin_authority
+from .context_views import org_human_view, org_meta
 from .maintenance import org_repin
 
-org_app = typer.Typer(
+org_app = group(
     help=(
         "Inspect and locally adopt organization context, and manage org "
         "membership over the Tailcat directory. Adoption is a local owner "
@@ -50,7 +52,7 @@ org_app.command('repin')(org_repin)
 org_app.command('pin-authority')(org_pin_authority)
 org_app.command('migration-status')(org_migration_status)
 
-context_app = typer.Typer(
+context_app = group(
     help=(
         "Inspect, validate, and locally adopt the organization context document. "
         "`fetch` stages candidates; `import` is the single owner-adopted slot; "
@@ -185,16 +187,16 @@ def org_context_validate(
                 "valid": True,
                 "slot": "accepted" if path is None else "file",
                 "path": str(target),
-                "meta": _org_meta(document),
+                "meta": org_meta(document),
             },
             render=_context_validate_render,
         )
 
-    services._execute(operation, json_output=json_output, allow_missing_home=True)
+    services.runtime.execute(operation, json_output=json_output, allow_missing_home=True)
 # `org group invite` is the spelling callers have used; keep it as an alias of
 # `org invite` rather than a second implementation.  Registering the SAME
 # callable means the two entry points cannot drift apart.
-group_app = typer.Typer(help="Alias group for organization subcommands.")
+group_app = group(help="Alias group for organization subcommands.")
 
 
 # -- org network lifecycle (tailnet cutover §4.4; IPC org.*, W-D §4.3) -------
@@ -256,13 +258,13 @@ def org_create(
 
     def operation() -> JsonObject:
         services = get_services()
-        result = services._daemon_request("org.create", {"org": _validated_org(org)})
+        result = services.runtime.request("org.create", {"org": _validated_org(org)})
         if not isinstance(result, dict):
             raise services.CliError("INVALID_RESPONSE", "org.create must return an object")
         published = result.get("published", result.get("devicePublished"))
         return {"ok": published is not False, **result}
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @org_app.command("repair")
@@ -285,12 +287,12 @@ def org_repair(
         params: JsonObject = {"apply": apply}
         if org is not None:
             params["org"] = _validated_org(org)
-        result = services._daemon_request("org.repair", params)
+        result = services.runtime.request("org.repair", params)
         if not isinstance(result, dict):
             raise services.CliError("INVALID_RESPONSE", "org.repair must return an object")
         return {"ok": True, **result}
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @org_app.command("invite")
@@ -327,7 +329,7 @@ def org_invite(
         )
 
         services = get_services()
-        result = services._daemon_request(
+        result = services.runtime.request(
             "org.invite", {"org": _validated_org(org), "user": user}
         )
         if not isinstance(result, dict) or not isinstance(result.get("link"), str):
@@ -347,7 +349,7 @@ def org_invite(
                 )
         return CliResult({"ok": True, **result, "short": short}, render=render)
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 def _read_link_argument(link: str) -> str:
@@ -502,12 +504,10 @@ def _org_join_via_ipc(method: str, link: str, *, json_output: bool) -> None:
     def operation() -> JsonObject:
         services = get_services()
         _retry_binding_proof_before_join(json_output=json_output)
-        # The join workflow maps the inviter, redials, and then retries
-        # ``fs.join`` until the holder is visible (bounded at 30s
-        # daemon-side), so the default 15s IPC roundtrip would cut a slow
-        # but healthy join in half.
-        result = services._daemon_request(
-            method, {"link": _read_link_argument(link)}, timeout=75.0
+        from hyprial.shell.impl.invites.join import request_join
+
+        result = request_join(
+            services.runtime, _read_link_argument(link), method=method, json_output=json_output
         )
         if not isinstance(result, dict):
             raise services.CliError(
@@ -517,7 +517,7 @@ def _org_join_via_ipc(method: str, link: str, *, json_output: bool) -> None:
         # depends on it, so keep the passthrough verbatim.
         return {"ok": True, **result}
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 group_app.command("invite")(org_invite)
@@ -552,12 +552,14 @@ def org_leave(
     def operation() -> JsonObject:
         services = get_services()
         from .removal import confirmed_removal
-        result = confirmed_removal(services, 'org.leave', {'org': _validated_org(org)}, yes=yes)
+        result = confirmed_removal(
+            services, 'org.leave', {'org': _validated_org(org)}, yes=yes
+        )
         if not isinstance(result, dict):
             raise services.CliError("INVALID_RESPONSE", "org.leave must return an object")
         return {"ok": True, **result}
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @org_app.command("remove")
@@ -577,8 +579,12 @@ def org_remove(
     def operation() -> JsonObject:
         services = get_services()
         from .removal import confirmed_removal
-        result = confirmed_removal(services, 'org.remove',
-                                   {'org': _validated_org(org), 'user': user}, yes=yes)
+        result = confirmed_removal(
+            services,
+            'org.remove',
+            {'org': _validated_org(org), 'user': user},
+            yes=yes,
+        )
         if not isinstance(result, dict):
             raise services.CliError("INVALID_RESPONSE", "org.remove must return an object")
         group = result.get("casdoorGroup")
@@ -592,7 +598,7 @@ def org_remove(
             }
         return {"ok": True, **result}
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @org_app.command("delete")
@@ -624,12 +630,12 @@ def org_delete(
                 raise services.CliError(
                     "DELETE_DECLINED", f"org {org!r} was not deleted"
                 )
-        result = services._daemon_request("org.delete", {"org": validated_org})
+        result = services.runtime.request("org.delete", {"org": validated_org})
         if not isinstance(result, dict):
             raise services.CliError("INVALID_RESPONSE", "org.delete must return an object")
         return {"ok": True, **result}
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @org_app.command("list")
@@ -641,12 +647,12 @@ def org_list(
 
     def operation() -> JsonObject:
         services = get_services()
-        result = services._daemon_request("org.list")
+        result = services.runtime.request("org.list")
         if not isinstance(result, dict):
             raise services.CliError("INVALID_RESPONSE", "org.list must return an object")
         return {"ok": True, **result}
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @org_app.command("pending")
@@ -668,6 +674,7 @@ def org_pending(
 
     def operation() -> JsonObject | str:
         services = get_services()
+        from hyprial.shell.impl.invites.join import request_join
         from hyprial.shell.impl.invites.pending import (
             InvitePickupError,
             run_pending,
@@ -684,17 +691,17 @@ def org_pending(
                 services._hyprial_home(),
                 accept_all=accept_all,
                 confirm=confirm,
-                ipc_join=lambda text: services._daemon_request(
-                    "org.join", {"link": text}
+                ipc_join=lambda text: request_join(
+                    services.runtime, text, json_output=json_output
                 ),
-                ipc_list=lambda: services._daemon_request("org.list"),
+                ipc_list=lambda: services.runtime.request("org.list"),
                 now=None,
             )
         except InvitePickupError as error:
             raise services.CliError(error.code, str(error)) from error
         return CliResult(result, render=_render_pending)
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 def _render_pending(result: Mapping[str, Any]) -> str:
@@ -734,38 +741,15 @@ def org_network(
         params: JsonObject = {}
         if org is not None:
             params["org"] = _validated_org(org)
-        result = services._daemon_request("org.network", params)
+        result = services.runtime.request("org.network", params)
         if not isinstance(result, dict):
             raise services.CliError("INVALID_RESPONSE", "org.network must return an object")
         return {"ok": True, **result}
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 # -- org-context document commands (unchanged semantics) ---------------------
-
-
-def _org_meta(document: Any) -> JsonObject:
-    """The displayable fields the parsed body backs (never an adoption time).
-
-    ``OrgMeta.to_json`` is the single recovery function; ``org status`` reads
-    the same view from the parsed body, so show and status never disagree.
-    """
-
-    return dict(document.meta.to_json())
-
-
-def _org_human_view(data: Mapping[str, Any]) -> str:
-    """The human view of an org result without the machine-only warnings.
-
-    ``warnings`` is the ``--json`` home of the warning the ``warn`` channel
-    already wrote to stderr; rendering it again on stdout would report the
-    same fact twice in the human mode.
-    """
-
-    return render_generic(
-        {key: value for key, value in data.items() if key != "warnings"}
-    )
 
 
 @context_app.command("show")
@@ -801,7 +785,7 @@ def org_show(
                     "status": "absent",
                     "message": "org-context absent",
                 },
-                render=_org_human_view,
+                render=org_human_view,
             )
         try:
             record = store.acceptance_record()
@@ -829,7 +813,7 @@ def org_show(
         result: JsonObject = {
             "ok": True,
             "status": "accepted",
-            "meta": _org_meta(document),
+            "meta": org_meta(document),
             "source": {
                 "publisher": document.meta.publisher,
             },
@@ -840,9 +824,9 @@ def org_show(
             result["adoptedAt"] = record.adopted_at.isoformat().replace("+00:00", "Z")
         if warning is not None:
             result["warnings"] = [warning]
-        return CliResult(result, render=_org_human_view)
+        return CliResult(result, render=org_human_view)
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 def _org_full_document(store: Any, document: Any) -> JsonObject:
@@ -871,9 +855,9 @@ def org_status(
         status = OrgContextStore(services._hyprial_home()).status()
         for warning in status.get("warnings", []):
             warn(f"hyprial: {warning['message']}", json_output=json_output)
-        return CliResult({"ok": True, **status}, render=_org_human_view)
+        return CliResult({"ok": True, **status}, render=org_human_view)
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @context_app.command("fetch")
@@ -899,7 +883,7 @@ def org_fetch(
         params: JsonObject = {"timeoutSeconds": timeout}
         if source_target is not None:
             params["from"] = source_target
-        result = services._daemon_request("org.fetch", params, timeout=timeout + 1.0)
+        result = services.runtime.request("org.fetch", params, timeout=timeout + 1.0)
         if not isinstance(result, dict) or not isinstance(
             result.get("candidates"), list
         ):
@@ -908,7 +892,7 @@ def org_fetch(
             )
         return {"ok": True, **result}
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @context_app.command("import")
@@ -946,7 +930,7 @@ def org_import(
             )
         )
         preview: JsonObject = {
-            "meta": _org_meta(document),
+            "meta": org_meta(document),
             "source": {
                 "publisher": document.meta.publisher,
             },
@@ -972,7 +956,7 @@ def org_import(
         published = False
         orgfs_published = False
         try:
-            publish_result = services._daemon_request(
+            publish_result = services.runtime.request(
                 "org.publish", timeout=2.0, restore_wait=0.0
             )
         except (services.CliError, ipc_errors.TransientDaemonError):
@@ -995,4 +979,4 @@ def org_import(
             "adoptedAt": record.adopted_at.isoformat().replace("+00:00", "Z"),
         }
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)

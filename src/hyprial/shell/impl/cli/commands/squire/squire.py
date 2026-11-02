@@ -10,15 +10,16 @@ from hyprial.shell.impl.cli.output import CliResult, render_generic
 from pathlib import Path
 from hyprial.kernel import ipc_errors
 import typer
+from hyprial.shell.impl.cli.commands.common.groups import group
 
 from hyprial.shell.impl.cli.commands.common.support import JsonObject
-squire_app = typer.Typer(help="Configure and inspect the personal Squire agent.")
+squire_app = group(help="Configure and inspect the personal Squire agent.")
 
 
 def _identity_rows(
     method: str, params: JsonObject, *, key: str
 ) -> list[dict[str, object]]:
-    result = get_services()._daemon_request(method, params)
+    result = get_services().runtime.request(method, params)
     rows = result.get(key) if isinstance(result, Mapping) else None
     if not isinstance(rows, list) or not all(isinstance(row, Mapping) for row in rows):
         raise get_services().CliError(
@@ -214,7 +215,7 @@ def _squire_setup_operation(
         ) -> SquireRegistryResult:
             services = get_services()
             try:
-                response = services._daemon_request(
+                response = services.runtime.request(
                     "management.squire.ensure", command.to_payload()
                 )
             except ipc_errors.DaemonUnavailableError:
@@ -298,7 +299,7 @@ def _squire_setup_operation(
                     identity.owner_key, channel, binding_code
                 )
                 try:
-                    services._daemon_request(
+                    services.runtime.request(
                         "identity.override.set",
                         {
                             "adapter": parsed_channel[2],
@@ -450,4 +451,4 @@ def squire_setup(
         )
         return CliResult(result, render=_render_squire_setup)
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)

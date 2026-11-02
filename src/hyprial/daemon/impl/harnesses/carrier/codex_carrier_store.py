@@ -368,15 +368,15 @@ class CodexCarrierStore:
             ).fetchall()
         return frozenset(str(r[0]) for r in rows)
 
-    def delete_in_state(self, actor: str, message_id: str, state: str) -> None:
+    def delete_in_state(self, actor: str, message_id: str, state: str) -> bool:
         """Delete a row only while it is still in ``state`` (FETCHED or KEPT)."""
 
         with self._lock, self._db:
-            self._db.execute(
+            return self._db.execute(
                 "DELETE FROM codex_interactive_delivery "
                 "WHERE actor = ? AND message_id = ? AND state = ?",
                 (actor, message_id, state),
-            )
+            ).rowcount == 1
 
     def add_turn_report(
         self,

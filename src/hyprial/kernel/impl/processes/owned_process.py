@@ -10,7 +10,7 @@ import threading
 import time
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from hyprial.kernel.impl.processes.process_facts import (
     ProcessLiveness,
@@ -243,6 +243,71 @@ def process_birth_identity(pid: int) -> str | None:
         if identity is not None:
             return identity
     return _ps_process_birth_identity(pid)
+
+
+def bind_current_process_to_parent(
+    parent_pid: int,
+    parent_identity: str,
+    *,
+    before_exit: Callable[[], None] | None = None,
+) -> Callable[[], None]:
+    """Exit this child when its parent PID/birth identity cannot be verified.
+
+    The child calls this after spawn. Identity loss is fail-closed, including
+    probe errors and PID reuse. Optional cleanup gets at most 0.25 seconds on
+    a daemon thread; exceptions or blocked cleanup cannot prevent os._exit(0).
+    No request deadline, readiness protocol or restart policy lives here.
+
+    The returned release function disables the binding and joins its watcher
+    within 1.5 seconds, raising if that cannot be confirmed. Release cannot
+    undo termination already committed after parent loss. This binds only the
+    current process; explicit process-group termination remains its owner's job.
+    """
+    if (type(parent_pid) is not int or parent_pid <= 0
+            or not isinstance(parent_identity, str) or not parent_identity):
+        raise ValueError("parent PID and birth identity are required")
+    stopped = threading.Event()
+
+    def read_identity() -> str | None:
+        if os.name == "nt":
+            from hyprial.kernel.impl.platform.ports import windows_process_identity
+            return windows_process_identity(parent_pid)
+        return process_birth_identity(parent_pid)
+
+    def cleanup() -> None:
+        if before_exit is None:
+            return
+        try:
+            before_exit()
+        except BaseException:  # noqa: BLE001 - best effort; termination must follow
+            pass
+
+    def watch_parent() -> None:
+        while not stopped.is_set():
+            try:
+                alive = os.getppid() == parent_pid and read_identity() == parent_identity
+            except Exception:  # noqa: BLE001 - unverified ownership fails closed
+                alive = False
+            if not alive:
+                try:
+                    if before_exit is not None:
+                        callback = threading.Thread(target=cleanup, name="parent-loss-cleanup", daemon=True)
+                        callback.start()
+                        callback.join(timeout=0.25)
+                finally:
+                    os._exit(0)
+            stopped.wait(0.2)
+
+    watcher = threading.Thread(target=watch_parent, name="parent-process-binding", daemon=True)
+    watcher.start()
+
+    def release() -> None:
+        stopped.set()
+        watcher.join(timeout=1.5)
+        if watcher.is_alive():
+            raise RuntimeError("parent process binding cleanup is unconfirmed")
+
+    return release
 
 
 class OwnedProcessGroup:

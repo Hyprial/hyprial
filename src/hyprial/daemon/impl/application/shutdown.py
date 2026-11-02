@@ -231,11 +231,11 @@ class _ShutdownMixin:
         if not self._home_guard.close(5.0):
             raise RuntimeError("home lease authority did not release before deadline")
 
-    def _arm_exit_backstop(self) -> None:
-        """Guarantee the process dies once it has finished dying.
+    def _arm_exit_backstop(self, seconds: float | None = None) -> None:
+        """Bound close hangs as well as the final interpreter shutdown.
 
-        Everything above has run: the lock is released, the socket is gone,
-        `daemon.json` is gone. This daemon is over. But CPython will not exit
+        run() first arms the teardown budget before _close(), then replaces
+        it with the shorter exit grace before final cleanup. CPython will not exit
         until it has joined every non-daemon thread, and a thread parked in a
         `queue.get()` with no sentinel is never coming back -- so the process
         stays alive holding nothing, and its connector fleet, still attached to
@@ -264,9 +264,25 @@ class _ShutdownMixin:
             # Embedded in somebody else's interpreter; their exit is theirs.
             return
 
+        budget = _EXIT_BACKSTOP_SECONDS if seconds is None else max(0.0, seconds)
+        lock = getattr(self, "_exit_backstop_lock", None)
+        if lock is None:
+            lock = self._exit_backstop_lock = threading.Lock()
+        with lock:
+            previous = getattr(self, "_exit_backstop_cancel", None)
+            if previous is not None:
+                previous.set()
+            cancel = self._exit_backstop_cancel = threading.Event()
+
         def _force_exit() -> None:
-            time.sleep(_EXIT_BACKSTOP_SECONDS)
-            # Reached only if interpreter shutdown is still parked on a join --
+            if cancel.wait(budget):
+                return
+            # Expiry commits only if this is still the active timer. A later
+            # arm replaces a pending deadline, not an already committed exit.
+            with lock:
+                if self._exit_backstop_cancel is not cancel:
+                    return
+            # Reached when close or interpreter shutdown is still parked --
             # the state nobody has managed to observe, because by the time an
             # operator looks the process is gone or the machine was restarted.
             # So the evidence is taken here, on the way out.  Without it every
@@ -296,11 +312,11 @@ class _ShutdownMixin:
             self._log_trace(
                 "warn",
                 "daemon.exit.forced",
-                afterSeconds=_EXIT_BACKSTOP_SECONDS,
+                afterSeconds=budget,
                 threads=threads,
                 stackDump=str(dump_path) if dump_path is not None else None,
                 detail=(
-                    "shutdown completed but the process did not exit; forcing "
+                    "shutdown deadline expired but the process did not exit; forcing "
                     "so the connector fleet is not orphaned"
                 ),
             )

@@ -13,7 +13,8 @@ MVP matrix (deny by default -- every allow is an explicit row):
   device; both describe the facade itself, not a conversation (the facade only
   ever lists the bindings the composition root configured, so this reveals
   nothing the device's owner could not already see).
-- ``sessions.history`` / ``sessions.events`` / ``sessions.send``: allowed only
+- ``sessions.history`` / ``sessions.events`` / ``sessions.send`` /
+  ``sessions.send.lookup``: allowed only
   when the request names a configured session binding AND the verified author
   is one of that binding's targets.  A session therefore belongs to the actors
   it binds, and a device row owned by anyone else cannot reach it even with a
@@ -41,9 +42,9 @@ from hyprial.shell.impl.gui.adapter.envelope import VerifiedRequest
 #: The two operations that describe the facade itself (no session domain).
 SESSIONLESS_OPERATIONS = frozenset({"capabilities.get", "sessions.list"})
 
-#: The three operations scoped to one session binding.
+#: Operations scoped to one session binding, including uncertain-send reads.
 SESSION_OPERATIONS = frozenset(
-    {"sessions.history", "sessions.events", "sessions.send"}
+    {"sessions.history", "sessions.events", "sessions.send", "sessions.send.lookup"}
 )
 
 

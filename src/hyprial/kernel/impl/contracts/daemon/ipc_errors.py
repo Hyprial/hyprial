@@ -70,7 +70,7 @@ DAEMON_RESTORING = "DAEMON_RESTORING"
 # ``.code`` channel and user surface as daemon-sent codes) ---------------
 DAEMON_UNAVAILABLE = "DAEMON_UNAVAILABLE"
 IPC_TIMEOUT = "IPC_TIMEOUT"
-# Minted by the CLI's IPC transport when the daemon peer closes the
+# Minted by the kernel IPC client when the daemon peer closes the
 # connection before answering (``_peer_gone``).  Joined the registry with
 # PR #332 F4②: it rides the CLI's ``--json`` failure object into the e2e
 # runner's machine-readable transient judgment, which is exactly the
@@ -180,6 +180,14 @@ class SubmitOutcomeUnknownError(DaemonRequestError):
 
     def __init__(self, message: str, data: Any | None = None) -> None:
         super().__init__(SUBMIT_OUTCOME_UNKNOWN, message, data)
+
+# -- preview → execute confirmation (design.md §7; DR-04 vocabulary) ---
+# The preview instance ID is NOT a business ``moveId`` and NOT an execution
+# operation.  These codes describe the generic confirmation record only.
+PREVIEW_UNKNOWN = "PREVIEW_UNKNOWN"
+PREVIEW_EXPIRED = "PREVIEW_EXPIRED"
+PREVIEW_STALE = "PREVIEW_STALE"
+OPERATION_IN_PROGRESS = "OPERATION_IN_PROGRESS"
 
 # -- sessions / channel leases ------------------------------------------
 SESSION_SUPERSEDED = "SESSION_SUPERSEDED"

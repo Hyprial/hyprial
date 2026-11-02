@@ -484,7 +484,7 @@ def agent_secret_set(
 ) -> None:
     """Set one or more fields from non-TTY stdin without exposing values."""
 
-    get_services()._execute(
+    get_services().runtime.execute(
         lambda: _write_secret_values(
             command="set",
             agent=agent,
@@ -511,7 +511,7 @@ def agent_secret_rotate(
 ) -> None:
     """Replace one existing field from non-TTY stdin."""
 
-    get_services()._execute(
+    get_services().runtime.execute(
         lambda: _write_secret_values(
             command="rotate",
             agent=agent,
@@ -623,7 +623,7 @@ def agent_secret_remove(
             )
         return result
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @secret_app.command("history")
@@ -661,7 +661,7 @@ def agent_secret_history(
             result["state"] = "remote_revoked_value_present"
         return result
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
     if incomplete:
         raise typer.Exit(code=10)
 
@@ -690,12 +690,12 @@ def agent_secret_entry_write(
                 ipc_errors.INVALID_ARGUMENT,
                 "secret write requires one non-empty line on stdin",
             )
-        return services._daemon_request(
+        return services.runtime.request(
             "agent.secret." + "provider-write",
             {"entryId": entry_id, "fieldName": field_name, "value": value},
         )
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @secret_app.command("grant")
@@ -715,8 +715,8 @@ def agent_secret_grant(
     """Grant one named secret entry to one current agent incarnation."""
     services = get_services()
 
-    services._execute(
-        lambda: services._daemon_request(
+    services.runtime.execute(
+        lambda: services.runtime.request(
             "agent.secret.grant",
             {
                 "actor": actor,
@@ -740,8 +740,8 @@ def agent_secret_grants(
 ) -> None:
     """List explicit grants and their owner references, never values."""
     services = get_services()
-    services._execute(
-        lambda: services._daemon_request("agent.secret.list", {"actor": actor}),
+    services.runtime.execute(
+        lambda: services.runtime.request("agent.secret.list", {"actor": actor}),
         json_output=json_output,
     )
 
@@ -785,7 +785,7 @@ def agent_secret_list(
             secrets.append(metadata)
         return {"agent": agent, "secrets": secrets}
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
     if incomplete:
         raise typer.Exit(code=10)
 
@@ -799,8 +799,8 @@ def agent_secret_revoke(
     """Revoke one legacy grant; the underlying credential entry remains intact."""
     services = get_services()
 
-    services._execute(
-        lambda: services._daemon_request(
+    services.runtime.execute(
+        lambda: services.runtime.request(
             "agent.secret.revoke", {"actor": actor, "grantId": grant_id}
         ),
         json_output=json_output,

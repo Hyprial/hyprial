@@ -112,9 +112,13 @@ class SessionActor:
         )
         self._lease_ttl_seconds = lease_ttl_seconds
         self._version = _Version()
-        self._runtime_projection = _SessionRuntimeState(daemon_epoch)
+        self._runtime_projection = _SessionRuntimeState(daemon_epoch, lease_ttl_seconds=lease_ttl_seconds)
         self._session_projection = _SessionProjectionState(
             self._store.load().interactive_sessions
+        )
+        from .process_observation import SessionProcessObservations
+        self.process_observations = SessionProcessObservations(
+            agent_identity, self.read_session, lambda: self._generation,
         )
         # Owned by the actor, not the generation: a guardian restart mints a
         # new _SessionGeneration and the totals must survive it.
@@ -571,6 +575,30 @@ class SessionActor:
             ttl_seconds=self._lease_ttl_seconds,
         )
 
+    def acknowledge_observation_gap(
+        self, actor: str, session_ref: str, *, gap_revision: int | None,
+    ) -> bool:
+        """Acknowledge a recovered contact gap for the current session.
+
+        Only an authenticated current-state statement from the owning session
+        may call this, with the gap revision read before snapshot admission.
+        The owner requires that exact revision and current, confirmed contact.
+        A concurrent gap, superseded session, stale heartbeat or different daemon
+        generation keeps the gap. Heartbeats and list reads never call it.
+        """
+
+        sessions, _version = self._session_projection.read()
+        current = next((item for item in sessions if item.actor == actor), None)
+        if current is None or current.session_ref != session_ref:
+            return False
+        return self._runtime_projection.acknowledge_observation_gap(
+            actor,
+            session_ref,
+            now_ms=self._clock_ms(),
+            ttl_seconds=self._lease_ttl_seconds,
+            gap_revision=gap_revision,
+        )
+
     def assert_owner(self, actor: str, session_ref: str) -> None:
         sessions, _version = self._session_projection.read()
         current = next((item for item in sessions if item.actor == actor), None)
@@ -598,7 +626,13 @@ class SessionActor:
             f"interactive session {session_ref} no longer owns actor {actor}",
         )
 
+    @property
+    def lifecycle_observations(self):
+        """Owner-side mount seam; readers use its read-only reader port."""
+        return self._runtime_projection.lifecycle_observations
+
     def drain(self, timeout: float = 5.0) -> DrainReport:
+        self.lifecycle_observations.close()
         started = time.monotonic()
         self._draining = True
         persistence = self._persistence

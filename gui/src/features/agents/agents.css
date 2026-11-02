@@ -1,0 +1,494 @@
+.agent-panel {
+  margin-top: 16px;
+}
+
+.agent-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.agent-list .contact-card {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.agent-detail-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.agent-detail-title {
+  min-width: 0;
+}
+
+.agent-detail-title h2 {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 20px;
+  font-weight: 660;
+  letter-spacing: -0.03em;
+}
+
+.agent-detail-title p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.agent-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 16px 0 0;
+}
+
+.agent-detail-grid dt {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.agent-detail-grid dd {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.agent-detail-source {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.agent-detail-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 14px;
+}
+
+.agent-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.agent-form {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  max-width: 520px;
+}
+
+.agent-form label {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.agent-form input,
+.agent-form select {
+  min-width: 0;
+  width: 100%;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  font: inherit;
+  font-size: 13px;
+}
+
+.agent-form input[aria-invalid="true"] {
+  border-color: #b6423a;
+}
+
+.agent-form-guide {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.agent-form-guide .agent-note {
+  margin: 0;
+}
+
+.agent-field-error {
+  margin: 0;
+  color: #8f1d2c;
+  font-size: 12px;
+}
+
+.agent-note {
+  margin: 0;
+  color: #6e5a2f;
+  font-size: 12px;
+}
+
+.agent-form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.agent-form-message {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.agent-form-message[role="alert"] {
+  color: #8f1d2c;
+}
+
+.agent-dialog-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(27, 23, 32, 0.35);
+}
+
+.agent-dialog {
+  width: min(380px, calc(100vw - 32px));
+  padding: 20px;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 24px 60px rgba(27, 23, 32, 0.28);
+}
+
+.agent-dialog h2 {
+  margin: 0 0 8px;
+  font-size: 18px;
+  font-weight: 660;
+  letter-spacing: -0.02em;
+}
+
+.agent-dialog p {
+  margin: 0 0 16px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.agent-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.agent-not-found {
+  margin-top: 16px;
+}
+
+.badge-preset {
+  border-color: var(--peach-line, #eed2bc);
+  background: var(--peach-wash, #f9ece2);
+  color: var(--peach-ink, #7a4a26);
+  margin-left: 6px;
+  vertical-align: 2px;
+  font-size: 11px;
+}
+
+.agent-manage {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.agent-manage-section h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 660;
+  letter-spacing: -0.01em;
+}
+
+.agent-manage-note {
+  margin: 4px 0 8px;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.agent-runtime-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.agent-placeholder-note {
+  margin: 8px 0 0;
+  color: #8f1d2c;
+  font-size: 12.5px;
+}
+
+.agent-grant-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agent-grant-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: #fff;
+  font-size: 12.5px;
+}
+
+.agent-grant-summary {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.agent-grant-id {
+  margin-left: auto;
+  color: var(--muted);
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+}
+
+.agent-credential-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.agent-credential-guide {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.agent-credential-guide .agent-manage-note {
+  margin: 0;
+}
+
+.agent-cli-hint {
+  max-width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink-soft);
+  font-family: var(--font-mono, monospace);
+  font-size: 11.5px;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.agent-field-hint {
+  margin: -4px 0 0;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+@media (max-width: 1099px) {
+  .agent-list {
+    grid-template-columns: 1fr;
+  }
+
+  .agent-detail-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* 统一面包屑：子视图（详情 / 创建 / 找不到）的页面层级与回退入口。 */
+.page-breadcrumb {
+  margin: 4px 0 8px;
+}
+
+.page-breadcrumb ol {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.page-breadcrumb li + li::before {
+  content: '/';
+  margin-right: 8px;
+  color: var(--muted);
+}
+
+.page-breadcrumb a {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.page-breadcrumb a:hover {
+  text-decoration: underline;
+}
+
+.page-breadcrumb [aria-current='page'] {
+  font-family: var(--font-brand);
+  font-size: 20px;
+}
+
+/* 运行段的运行时事实（实际 harness / 正在使用的模型）。 */
+.agent-runtime-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 10px 0 0;
+}
+
+.agent-runtime-facts dt {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.agent-runtime-facts dd {
+  margin: 2px 0 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 640px) {
+  .agent-runtime-facts {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* 所有者分组与列表视图。 */
+.agent-group {
+  margin-top: 14px;
+}
+
+.agent-group-title {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.agent-group-count {
+  font-size: 11px;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  padding: 0 6px;
+}
+
+.contacts-dimensions {
+  display: grid;
+  grid-template-columns: auto minmax(0, 180fr) auto minmax(0, 180fr) auto;
+  gap: 8px 10px;
+  align-items: center;
+  margin-top: 10px;
+  font-size: 12px;
+}
+
+.contacts-dimensions > label {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.view-toggle {
+  display: inline-flex;
+  gap: 6px;
+  justify-self: end;
+}
+
+.agent-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.agent-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1.2fr) minmax(0, 1.6fr) minmax(0, 1.2fr) auto;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: #fff;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  font-size: 13px;
+  min-width: 0;
+}
+
+.agent-row:hover {
+  border-color: var(--line);
+}
+
+.agent-row-name {
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.agent-row-role,
+.agent-row-host {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.agent-row-badges {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
+@media (max-width: 760px) {
+  .contacts-dimensions {
+    grid-template-columns: 1fr;
+  }
+
+  .view-toggle {
+    justify-self: start;
+  }
+
+  .agent-row {
+    grid-template-columns: auto minmax(0, 1fr);
+    row-gap: 4px;
+  }
+
+  .agent-row-role,
+  .agent-row-host {
+    grid-column: 2;
+  }
+
+  .agent-row-badges {
+    grid-column: 2;
+  }
+}

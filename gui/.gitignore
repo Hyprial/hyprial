@@ -1,0 +1,11 @@
+node_modules/
+dist/
+coverage/
+.vite/
+artifacts/
+prototype/generated/
+public/prototype-v17/
+*.local
+.env
+.env.*
+!.env.example

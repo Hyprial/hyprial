@@ -7,6 +7,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Callable
 from dataclasses import replace
+from pathlib import Path
 from hyprial.identity import (
     Agent,
     AgentConfig,
@@ -14,6 +15,7 @@ from hyprial.identity import (
     AgentRegistry,
     HandoverNotice,
     PinConflictError,
+    PinStateConflictError,
 )
 from hyprial.identity import HomePayloadFile
 from hyprial.identity import (
@@ -65,6 +67,8 @@ if TYPE_CHECKING:
 from .events import (
     DomainCommandError,
 )
+
+_PIN_EXPECTATION_UNSET = object()
 
 
 def harness_launch_projection(spec: HarnessLaunchSpec) -> HarnessLaunchProjection:
@@ -140,6 +144,11 @@ class AgentDirectoryFacade:
             return hosted.uri
         return canonical_agent_uri(self.owner, self.machine, name)
 
+    def cell(self, actor: str):
+        """The agent's diagnostic attachment, separate from its execution lifetime."""
+        local = self.local_actor(actor)
+        return None if local is None else self._domains.cells.snapshot(self.uri_for(local))
+
     def get(self, actor: str) -> Agent | None:
         local = self.local_actor(actor)
         if local is None:
@@ -157,6 +166,15 @@ class AgentDirectoryFacade:
     def is_blocked(self, actor: str) -> bool:
         projection = self.projection(actor)
         return bool(projection is not None and projection.block is not None)
+
+    def batch_actor_home(self, actor: str) -> Path | None:
+        """The agent's private state root for inbox-batch spill files."""
+
+        try:
+            receipt = self._domains._registry.home_receipt(actor, validate_mirror=False)
+        except Exception:
+            return None
+        return Path(receipt.path)
 
     def require(self, actor: str) -> Agent:
         item = self.get(actor)
@@ -685,17 +703,21 @@ class AgentDirectoryFacade:
             )
         return event
 
-    def pin(self, adapter: str, actor: str) -> str | None:
+    def pin(self, adapter: str, actor: str, *, expected_actor: object = _PIN_EXPECTATION_UNSET) -> str | None:
         pins = self.pins()
-        previous = pins.get(adapter)
+        previous = pins.get(adapter) if expected_actor is _PIN_EXPECTATION_UNSET else expected_actor
         try:
             event = self._domains.call_agent(
                 PinAgentAdapterCommand(
-            f"agent-command:pin:{uuid.uuid4().hex}", actor, adapter
+                    f"agent-command:pin:{uuid.uuid4().hex}", actor, adapter,
+                    expected_actor=None if expected_actor is _PIN_EXPECTATION_UNSET else expected_actor,
+                    strict_compare=expected_actor is not _PIN_EXPECTATION_UNSET,
                 ),
                 AgentMutationCompleted,
             )
         except DomainCommandError as error:
+            if error.code == PinStateConflictError.code:
+                raise PinStateConflictError(adapter, expected_actor, self.pins().get(adapter)) from error
             if error.code != PinConflictError.code:
                 raise
             agent = self.require(actor)
@@ -722,14 +744,21 @@ class AgentDirectoryFacade:
         )
         return previous if event.changed else previous
 
-    def unpin(self, adapter: str) -> str | None:
-        previous = self.pins().get(adapter)
-        self._domains.call_agent(
-            UnpinAgentAdapterCommand(
-            f"agent-command:unpin:{uuid.uuid4().hex}", adapter
-            ),
-            AgentMutationCompleted,
-        )
+    def unpin(self, adapter: str, *, expected_actor: object = _PIN_EXPECTATION_UNSET) -> str | None:
+        previous = self.pins().get(adapter) if expected_actor is _PIN_EXPECTATION_UNSET else expected_actor
+        try:
+            self._domains.call_agent(
+                UnpinAgentAdapterCommand(
+                    f"agent-command:unpin:{uuid.uuid4().hex}", adapter,
+                    expected_actor=None if expected_actor is _PIN_EXPECTATION_UNSET else expected_actor,
+                    strict_compare=expected_actor is not _PIN_EXPECTATION_UNSET,
+                ),
+                AgentMutationCompleted,
+            )
+        except DomainCommandError as error:
+            if error.code == PinStateConflictError.code:
+                raise PinStateConflictError(adapter, expected_actor, self.pins().get(adapter)) from error
+            raise
         return previous
 
     def unpin_if(self, adapter: str, expected_actor: str | None) -> str | None:

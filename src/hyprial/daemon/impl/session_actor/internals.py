@@ -18,8 +18,10 @@ from hyprial.identity import (
     ReleaseAgentCommand,
 )
 from hyprial.kernel import ipc_errors
+from hyprial.daemon.impl.lifecycle.observation import LifecycleObservationOwner
 from hyprial.kernel import (
     CHANNEL_PROTOCOL_VERSION,
+    CHANNEL_LIVENESS_TTL_SECONDS,
 )
 from hyprial.kernel import PortAdmission, PortCommandRejected
 from hyprial.daemon.impl.desired_state  import (
@@ -191,28 +193,78 @@ class _SessionProjectionState:
 class _SessionRuntimeState:
     """Thread-safe immutable snapshots of generation-local session signals."""
 
-    def __init__(self, daemon_epoch: str) -> None:
+    def __init__(self, daemon_epoch: str, *, lease_ttl_seconds=CHANNEL_LIVENESS_TTL_SECONDS) -> None:
         self._daemon_epoch = daemon_epoch
+        self._lease_ttl_ms = int(lease_ttl_seconds * 1000)
+        self._observation_gaps: dict[str, int] = {}
+        self._gap_revision = 0
         self._lock = threading.Lock()
         self._confirmed: dict[str, str] = {}
         self._heartbeats: dict[str, tuple[str, int]] = {}
+        self.lifecycle_observations = LifecycleObservationOwner()
 
     def register(
         self, actor: str, session_ref: str, observed_at_ms: int, *, confirmed: bool
     ) -> None:
         with self._lock:
+            previous = self._heartbeats.get(actor)
+            if previous is None or previous[0] != session_ref:
+                self._observation_gaps.pop(actor, None)
+            elif observed_at_ms - previous[1] > self._lease_ttl_ms:
+                self._gap_revision += 1
+                self._observation_gaps[actor] = self._gap_revision
             if confirmed:
                 self._confirmed[actor] = session_ref
             self._heartbeats[actor] = (session_ref, observed_at_ms)
+            self.lifecycle_observations.publish(
+                actor, session_ref, state="unknown", cause="session-contact",
+                available=confirmed, runtime_epoch=f"{self._daemon_epoch}:{session_ref}",
+            )
 
     def drop(self, actor: str) -> None:
         with self._lock:
             self._confirmed.pop(actor, None)
-            self._heartbeats.pop(actor, None)
+            self._observation_gaps.pop(actor, None)
+            heartbeat = self._heartbeats.pop(actor, None)
+            if heartbeat is not None:
+                self.lifecycle_observations.publish(
+                    actor, heartbeat[0], state="unknown", cause="session-detached", available=False,
+                    runtime_epoch=f"{self._daemon_epoch}:{heartbeat[0]}",
+                )
 
     def confirmed(self, actor: str) -> str | None:
         with self._lock:
             return self._confirmed.get(actor)
+
+    def acknowledge_observation_gap(
+        self,
+        actor: str,
+        session_ref: str,
+        *,
+        now_ms: int,
+        ttl_seconds: float,
+        gap_revision: int | None,
+    ) -> bool:
+        """Clear only the gap captured before an accepted current-state refresh.
+
+        The revision comparison and current-contact checks share the owner
+        lock. A new gap, even for the same session, needs a newer statement.
+        Heartbeats, lists and rejected producer sequences cannot acknowledge it.
+        """
+
+        with self._lock:
+            if gap_revision is None or self._observation_gaps.get(actor) != gap_revision:
+                return False
+            heartbeat = self._heartbeats.get(actor)
+            confirmed = self._confirmed.get(actor)
+            if heartbeat is None or heartbeat[0] != session_ref:
+                return False
+            if confirmed != session_ref:
+                return False
+            if max(0, now_ms - heartbeat[1]) > int(ttl_seconds * 1000):
+                return False
+            self._observation_gaps.pop(actor, None)
+            return True
 
     def heartbeat(self, actor: str) -> tuple[str, int] | None:
         with self._lock:
@@ -229,6 +281,7 @@ class _SessionRuntimeState:
         with self._lock:
             confirmed = self._confirmed.get(actor)
             heartbeat = self._heartbeats.get(actor)
+            gap_revision = self._observation_gaps.get(actor)
         matches = bool(
             session_ref is not None
             and heartbeat is not None
@@ -248,6 +301,8 @@ class _SessionRuntimeState:
             ),
             last_heartbeat_ms=heartbeat[1] if matches else None,
             alive=alive,
+            observation_gap=gap_revision is not None,
+            observation_gap_revision=gap_revision,
         )
 
 

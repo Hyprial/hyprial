@@ -42,7 +42,7 @@ class AppAdapterUnavailable(Exception):
     """The outcome cannot be determined (transport, timeout, unknown submit).
 
     The caller must not treat this as failure or success; the same
-    ``idempotencyKey`` may be used to retry or to query the outcome.
+    frozen request must be retained for lookup before any retry decision.
     """
 
     def __init__(self, reason: str, details: Any | None = None) -> None:

@@ -245,6 +245,7 @@ class PinAgentAdapterCommand:
     adapter: str
     expected_actor: str | None = None
     compare: bool = False
+    strict_compare: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,6 +254,7 @@ class UnpinAgentAdapterCommand:
     adapter: str
     expected_actor: str | None = None
     compare: bool = False
+    strict_compare: bool = False
 
 
 @dataclass(frozen=True, slots=True)

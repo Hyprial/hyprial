@@ -6,10 +6,11 @@ from hyprial.shell.impl.cli.commands.common.services import get_services
 
 from typing import Any
 import typer
+from hyprial.shell.impl.cli.commands.common.groups import group
 
 from hyprial.shell.impl.cli.commands.common.support import _message_claim_params
 
-delivery_app = typer.Typer(help="Ask what actually happened to messages you sent.")
+delivery_app = group(help="Ask what actually happened to messages you sent.")
 
 
 @delivery_app.command("status")
@@ -40,6 +41,6 @@ def delivery_status(
             params["messageId"] = message_id
         if timeout is not None:
             params["timeoutSeconds"] = timeout
-        return services._daemon_request("message.status", params)
+        return services.runtime.request("message.status", params)
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)

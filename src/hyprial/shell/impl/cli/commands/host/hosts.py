@@ -56,7 +56,7 @@ def host_list(
 
     def operation() -> Any:
         services = get_services()
-        result = services._daemon_request(
+        result = services.runtime.request(
             "hosts", {"refresh": True} if refresh else {}
         )
         if not isinstance(result, dict) or not isinstance(result.get("hosts"), list):
@@ -71,7 +71,7 @@ def host_list(
             json_indent=2,
         )
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 def _reserved_host_command(command: str, *, json_output: bool) -> None:
@@ -83,7 +83,7 @@ def _reserved_host_command(command: str, *, json_output: bool) -> None:
             "COMING_SOON", f"hyprial host {command} is coming soon"
         )
 
-    services._execute(operation, json_output=json_output, allow_missing_home=True)
+    services.runtime.execute(operation, json_output=json_output, allow_missing_home=True)
 
 
 @host_app.command("status")

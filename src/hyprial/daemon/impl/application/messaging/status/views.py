@@ -173,7 +173,7 @@ class _StatusViewsMixin:
         # One request, one worker-status snapshot: connectors[] and every
         # agents[] verdict read the same tables instead of each verdict
         # paying its own supervisor round trip and per-connector loads.
-        with self._worker_status_snapshot() as worker_status:
+        with self._worker_status_snapshot(sessions=interactive_sessions) as worker_status:
             connector_statuses = [dict(item) for item in worker_status.statuses]
             desired_by_key = {
                 (spec.harness, spec.name): spec
@@ -251,6 +251,10 @@ class _StatusViewsMixin:
                     "owner": self.owner,
                     "socket": str(self.socket_path),
                     "lifecycle": self._lifecycle_status(),
+                    "systemNotices": (
+                        self._inbox.system_notice_counts(self.node_id)
+                        if callable(getattr(self._inbox, "system_notice_counts", None)) else None
+                    ),
                     "hooks": [
                         {
                             "name": lane.name,
@@ -588,6 +592,7 @@ class _StatusViewsMixin:
                 actor_statuses
             ),
             link_fields=link_top_fields(self, actor_statuses),
+            batch_claims=(self._runtime.batch_claim_details(now_ms) if self._runtime else {}),
         )
         result["quota"] = (
             self._usage_cache.snapshot_payload(now_ms)

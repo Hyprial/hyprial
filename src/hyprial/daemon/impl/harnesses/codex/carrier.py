@@ -24,6 +24,7 @@ from hyprial.daemon.impl.harnesses.carrier.codex_carrier_support import TurnRepo
 from hyprial.daemon.impl.harnesses.carrier.interactive_carrier_runtime  import (
     FETCHED,
     FINAL_OBSERVED,
+    STATUS_UNKNOWN,
     CarrierCommand,
     CarrierFinalObserved,
     CarrierRemoved,
@@ -41,6 +42,10 @@ from hyprial.daemon.impl.harnesses.codex.process import (
 )
 from hyprial.daemon.impl.harnesses.codex.app_server import (
     CodexInteractiveAppServer,
+)
+from hyprial.daemon.impl.harnesses.codex.observation.whole_session import (
+    CarrierTurnOwnership,
+    WholeTerminalTurns,
 )
 from hyprial.daemon.impl.harnesses.codex.settlement import (
     _CarrierSettlementMixin,
@@ -78,11 +83,21 @@ _IDLE_HOLDS_PER_LIST = 2
 class CodexInteractiveTurnClient:
     """TurnClient adapter over the already-running external app-server."""
 
-    def __init__(self, server: CodexInteractiveAppServer) -> None:
+    def __init__(
+        self,
+        server: CodexInteractiveAppServer,
+        prepare_delivery: Callable[[HarnessDelivery], HarnessDelivery | None] | None = None,
+        *,
+        ownership: CarrierTurnOwnership | None = None,
+    ) -> None:
         self.server = server
+        self._prepare_delivery = prepare_delivery
+        self.delivery_skipped = False
+        self._ownership = ownership
         self._turn_id: str | None = None
         self._observation_lock = threading.Lock()
         self._reconciled_final: tuple[str, str] | None = None
+        self._status_unknown: str | None = None
 
     @property
     def turn_id(self) -> str | None:
@@ -102,6 +117,12 @@ class CodexInteractiveTurnClient:
             if self._turn_id == turn_id:
                 self._reconciled_final = (turn_id, reply)
 
+    def supply_status_unknown(self, turn_id: str) -> None:
+        """Release the local observer without interrupting the native turn."""
+        with self._observation_lock:
+            if self._turn_id == turn_id:
+                self._status_unknown = turn_id
+
     @property
     def running(self) -> bool:
         return self.server.pid is not None
@@ -116,15 +137,46 @@ class CodexInteractiveTurnClient:
     async def __aexit__(self, *args: object) -> bool:
         return False
 
+    async def query_delivery(self, delivery: HarnessDelivery) -> None:
+        self.delivery_skipped = False
+        if self._prepare_delivery is not None:
+            prepared = await asyncio.to_thread(self._prepare_delivery, delivery)
+            if prepared is None:
+                self._turn_id = None
+                self.delivery_skipped = True
+                return
+            delivery = prepared
+        await self.query(delivery.model_prompt())
+
     async def query(self, prompt: str) -> None:
+        """Start one carrier-injected turn and claim it before the RPC.
+
+        The whole-terminal observer can be handed this turn's native
+        notification before the response arrives, so the claim must already be
+        held; the settlement path stays the only reporter of this turn.
+        """
+
         if self._turn_id is not None:
             raise ConnectionError("Codex interactive app-server turn is busy")
-        turn_id = await asyncio.to_thread(self.server.start_turn, prompt)
+        ownership = self._ownership
+        if ownership is not None:
+            ownership.begin_start()
+        try:
+            turn_id = await asyncio.to_thread(self.server.start_turn, prompt)
+        except BaseException:
+            if ownership is not None:
+                ownership.abort_start()
+            raise
         with self._observation_lock:
             self._turn_id = turn_id
             self._reconciled_final = None
+        if ownership is not None:
+            ownership.commit_start(turn_id)
 
     async def receive_response(self) -> AsyncIterator[object]:
+        if self.delivery_skipped:
+            yield _CodexTurnOutcome("Codex queued delivery no longer pending", is_error=True)
+            return
         turn_id = self._turn_id
         if turn_id is None:
             raise ConnectionError("Codex interactive turn was not started")
@@ -135,6 +187,12 @@ class CodexInteractiveTurnClient:
             while True:
                 with self._observation_lock:
                     reconciled = self._reconciled_final
+                    status_unknown = self._status_unknown
+                if status_unknown == turn_id:
+                    yield _CodexTurnOutcome(
+                        "Codex native turn status unknown after idle deadline", is_error=True
+                    )
+                    return
                 if reconciled is not None and reconciled[0] == turn_id:
                     yield _CodexTurnOutcome(reconciled[1])
                     return
@@ -169,6 +227,7 @@ class CodexInteractiveTurnClient:
             with self._observation_lock:
                 self._turn_id = None
                 self._reconciled_final = None
+                self._status_unknown = None
 
     async def interrupt(self) -> None:
         turn_id = self.turn_id
@@ -235,6 +294,8 @@ class CodexInteractiveCarrier(_CarrierSettlementMixin):
             self._store: CodexCarrierStore | None = CodexCarrierStore(state_path)
             self._stop = threading.Event()
             self._carrier_io_lock = threading.RLock()
+            self._carrier_queue_context: dict[str, dict[str, object]] = {}
+            self._carrier_skipped_deliveries: set[str] = set()
             self._carrier_clients: dict[str, CodexInteractiveTurnClient] = {}
             self._carrier_fact_lock = threading.RLock()
             self._carrier_facts: dict[tuple[str, str], CarrierCommand] = {}
@@ -254,6 +315,11 @@ class CodexInteractiveCarrier(_CarrierSettlementMixin):
             # journal's primary key makes a repeat harmless, this avoids
             # re-adding a row the daemon already confirmed.
             self._carrier_reported_ended: set[str] = set()
+            self._turn_ownership = CarrierTurnOwnership()
+            self._whole_terminal: WholeTerminalTurns | None = None
+            self._whole_terminal_detach: Callable[[], None] | None = None
+            self._declared_turn_coverage = "carrier-deliveries"
+            self._declared_coverage_gaps = 0
             self._thread = threading.Thread(
                 target=self._poll_main,
                 name=f"hyprial-codex-interactive-carrier-{session_ref[:8]}",
@@ -262,7 +328,9 @@ class CodexInteractiveCarrier(_CarrierSettlementMixin):
             self._pump = StreamingTurnProcess(
                 harness="codex",
                 label="Codex interactive app-server",
-                client_factory=lambda: CodexInteractiveTurnClient(server),
+                client_factory=lambda: CodexInteractiveTurnClient(
+                    server, self._prepare_dequeued_delivery, ownership=self._turn_ownership
+                ),
                 thread_name=f"hyprial-codex-interactive-pump-{session_ref[:8]}",
                 logger=logger,
                 reconnect_delay_seconds=0.25,
@@ -296,11 +364,13 @@ class CodexInteractiveCarrier(_CarrierSettlementMixin):
             return self.server.pid
 
         def start(self) -> None:
+            self._start_whole_terminal()
             self._thread.start()
 
         def stop(self) -> None:
             self._stop.set()
             try:
+                self._stop_whole_terminal()
                 self._pump.stop()
                 self._thread.join(timeout=3.0)
             finally:
@@ -308,8 +378,99 @@ class CodexInteractiveCarrier(_CarrierSettlementMixin):
                     self._retry_carrier_facts()
                     self._carrier_runtime.drain(3.0)
                     self._drain_carrier_effects()
+                    self._flush_whole_terminal_reports()
                     self._store.close()
                     self._store = None
+
+        def _start_whole_terminal(self) -> None:
+            """Follow native TUI turns on the shared app-server, when supported.
+
+            The launcher owns that app-server on behalf of the TUI, so a
+            foreground session can observe every turn in the terminal. A server
+            without the subscription surface, or a detached mode without this
+            carrier, keeps carrier-only coverage instead of inventing turns.
+            """
+
+            subscribe = getattr(self.server, "subscribe_thread", None)
+            read_thread = getattr(self.server, "read_thread_snapshot", None)
+            add_listener = getattr(self.server, "add_notification_listener", None)
+            if not (
+                callable(subscribe) and callable(read_thread) and callable(add_listener)
+            ):
+                return
+            observer = WholeTerminalTurns(
+                thread_id=self.session_ref,
+                subscribe=subscribe,
+                read_thread=read_thread,
+                record=self._record_whole_terminal_turn,
+                owned=self._turn_ownership.owns,
+                log=lambda event, detail: self._log(
+                    "warn", "worker.carrier.error", stage=event, error=detail
+                ),
+            )
+            self._whole_terminal_detach = add_listener(observer.notify)
+            self._whole_terminal = observer
+            observer.start()
+
+        def _stop_whole_terminal(self) -> None:
+            detach = self._whole_terminal_detach
+            self._whole_terminal_detach = None
+            if detach is not None:
+                detach()
+            observer = self._whole_terminal
+            self._whole_terminal = None
+            if observer is not None:
+                observer.stop()
+
+        def _turn_coverage(self) -> str:
+            observer = self._whole_terminal
+            if observer is not None and observer.subscribed:
+                return "whole-session"
+            return "carrier-deliveries"
+
+        def _sync_turn_coverage(self) -> None:
+            """Publish a changed observation capability on the existing refresh.
+
+            A session that cannot subscribe must not keep a whole-session claim
+            it can no longer honour; a newly subscribed one must stop looking
+            carrier-only. This is one daemon read per change, never per poll.
+            """
+
+            observer = self._whole_terminal
+            gaps = observer.coverage_gaps if observer is not None else 0
+            coverage = self._turn_coverage()
+            if gaps != self._declared_coverage_gaps:
+                if self._declared_turn_coverage == "whole-session":
+                    coverage = "carrier-deliveries"
+            if coverage != self._declared_turn_coverage:
+                self.daemon_request(
+                    "session.refresh", self._signed({"turnCoverage": coverage})
+                )
+                self._declared_turn_coverage = coverage
+            self._declared_coverage_gaps = gaps
+
+        def _record_whole_terminal_turn(
+            self, turn_id: str, phase: str, status: str | None
+        ) -> None:
+            if self._store is None or self._stop.is_set():
+                raise RuntimeError("Codex turn report store is stopped")
+            self._turn_reports.record(
+                turn_id,
+                phase,
+                status if phase == "ended" else None,
+                "",
+            )
+
+        def _flush_whole_terminal_reports(self) -> None:
+            try:
+                self._turn_reports.flush()
+            except Exception as error:  # noqa: BLE001 - shutdown boundary
+                self._log(
+                    "warn",
+                    "worker.carrier.error",
+                    stage="turn-report-flush",
+                    error=str(error) or type(error).__name__,
+                )
 
         def _signed(self, extra: dict[str, object] | None = None) -> dict[str, object]:
             return {
@@ -344,6 +505,8 @@ class CodexInteractiveCarrier(_CarrierSettlementMixin):
 
             if self._stop.is_set():
                 return None
+            self._reconcile_inflight_turns()
+            self._sync_turn_coverage()
             active, _urgent = self._drive_heartbeat()
             if not active:
                 return None
@@ -428,7 +591,10 @@ class CodexInteractiveCarrier(_CarrierSettlementMixin):
                     "session.register", self._registration_params()
                 )
             if isinstance(action, Refresh):
-                return self.daemon_request("session.refresh", self._signed())
+                return self.daemon_request(
+                    "session.refresh",
+                    self._signed({"turnCoverage": self._turn_coverage()}),
+                )
             if isinstance(action, Heartbeat):
                 return self.daemon_request("session.heartbeat", self._signed())
             if isinstance(action, ListInbox):
@@ -499,7 +665,10 @@ class CodexInteractiveCarrier(_CarrierSettlementMixin):
             )
 
         def _inbox_hold_allowed(self) -> bool:
-            return not self._carrier_runtime.snapshots() and self._pump.idle
+            return not any(
+                state.stage != STATUS_UNKNOWN
+                for state in self._carrier_runtime.snapshots()
+            ) and self._pump.idle
 
         def _list_may_hold(self, response: Mapping[str, object]) -> bool:
             if not self._inbox_hold_allowed():
@@ -542,6 +711,7 @@ class CodexInteractiveCarrier(_CarrierSettlementMixin):
             array); a failed, malformed or incremental answer proves nothing.
             """
 
+            self._sweep_settled_fetched()
             rows = response.get("messages")
             store = self._store
             if store is None or response.get("ok") is not True or not isinstance(rows, list):
@@ -659,8 +829,14 @@ class CodexInteractiveCarrier(_CarrierSettlementMixin):
             self._reconcile_inflight_turns()
     
             for result in self._pump.drain_results():
+                with self._carrier_io_lock:
+                    if result.delivery_id in self._carrier_skipped_deliveries:
+                        self._carrier_skipped_deliveries.discard(result.delivery_id)
+                        continue
                 state = self._carrier_runtime.snapshot(result.delivery_id)
-                if state is None:
+                if state is None or state.stage == STATUS_UNKNOWN:
+                    continue
+                if result.delivery_id in self._carrier_settled_pending:
                     continue
                 if result.status is HarnessResultStatus.COMPLETED:
                     self._submit_carrier_fact(
@@ -727,7 +903,7 @@ class CodexInteractiveCarrier(_CarrierSettlementMixin):
             return int(self._heartbeat_clock() * 1000)
 
         def _on_turn_started(self, delivery: HarnessDelivery, client: object) -> None:
-            if not isinstance(client, CodexInteractiveTurnClient):
+            if not isinstance(client, CodexInteractiveTurnClient) or client.delivery_skipped:
                 return
             turn_id = client.turn_id
             if turn_id is None:

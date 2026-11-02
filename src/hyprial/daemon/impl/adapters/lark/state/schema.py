@@ -12,6 +12,14 @@ There is no migration from the JSON era (product decision: the old runtime
 state is void after the cutover).  A pre-SQLite state file found on disk is
 renamed with a ``.retired`` suffix -- kept for audit, never read -- and the
 store starts empty.
+
+Decision block — 0.5.5.3 sweep window anchor (#2213 review 1344 Q2):
+- ``chat_reconciliations`` records the last point each chat was fully swept
+  (clean sweep, no errors). The idle/reconnect sweep window anchors to it
+  instead of the live watermark, so a same-epoch gap older than the lookback
+  is still re-driven after later live messages advance ``chat_observations``.
+- Additive ``CREATE TABLE IF NOT EXISTS``, no schema-version bump (same
+  policy as ``retired_chats``).
 """
 
 from __future__ import annotations
@@ -41,6 +49,7 @@ class _LarkStateSchema:
         self._db.execute("PRAGMA foreign_keys=ON")
         self._create_schema()
         self._migrate_pending_inbound_notice_claim()
+        self._migrate_pending_recovery()
         self._check_schema_version()
         # Fail closed at open exactly like the JSON loader did: corrupt
         # pending rows raise ``ValueError``; an over-capacity backlog raises
@@ -51,6 +60,13 @@ class _LarkStateSchema:
             or capacity.bytes > capacity.max_bytes
         ):
             raise PendingCommandCapacityError(replace(capacity, status="full"))
+
+    def _migrate_pending_recovery(self) -> None:
+        with self._transaction() as db:
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(pending_inbound_submissions)")}
+            for name in ("recovery_failures", "dead_lettered"):
+                if name not in columns:
+                    db.execute(f"ALTER TABLE pending_inbound_submissions ADD COLUMN {name} INTEGER NOT NULL DEFAULT 0")
 
     def _retire_foreign_database(self) -> None:
         """A file already at the database path must actually be SQLite.
@@ -195,6 +211,20 @@ class _LarkStateSchema:
                     PRIMARY KEY (
                         adapter, conversation_id, reason, window_start_ms
                     )
+                );
+
+                CREATE TABLE IF NOT EXISTS chat_observations (
+                    adapter TEXT NOT NULL,
+                    chat_id TEXT NOT NULL,
+                    observed_ms INTEGER NOT NULL,
+                    PRIMARY KEY (adapter, chat_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS chat_reconciliations (
+                    adapter TEXT NOT NULL,
+                    chat_id TEXT NOT NULL,
+                    reconciled_ms INTEGER NOT NULL,
+                    PRIMARY KEY (adapter, chat_id)
                 );
 
                 CREATE TABLE IF NOT EXISTS chat_types (

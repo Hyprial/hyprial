@@ -428,7 +428,8 @@ def register_bundle_complete_command(app, get_dependencies):
         #: ready, transport deadline).  A reachable daemon that refuses has
         #: answered.  ``DAEMON_RESTORING`` deliberately stays out: the request
         #: layer already waits out the restore gate for its bounded budget
-        #: (``_restore_wait_budget``), so a refusal arriving here means the
+        #: (``hyprial.kernel.impl.ipc.client._restore_wait_budget``), so a
+        #: refusal arriving here means the
         #: daemon kept refusing past that window -- a hard failure
         #: (``registration_not_removed``), not an unverifiable state.
         #: (Design answer, kanban e75fa678 [0]: the hard failure is intended.)

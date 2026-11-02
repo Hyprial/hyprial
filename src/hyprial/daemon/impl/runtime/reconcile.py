@@ -32,6 +32,7 @@ from hyprial.daemon.impl.inbox.batch.render import (
     render_scalar_summary,
 )
 from hyprial.daemon.impl.inbox.batch.service import capture_batch
+from hyprial.daemon.impl.inbox.batch.spill import SpillUnavailable
 from hyprial.daemon.impl.dispatch.runtime.offers import DispatchAgentTimeout
 from hyprial.daemon.impl.harnesses.turn_delivery.protocol import (
     is_mechanism_hook_request,
@@ -196,6 +197,7 @@ class _BridgeReconcileMixin:
         active = set(self.harnesses.streaming_actors())
         generation_reader = getattr(self.harnesses, "streaming_generations", None)
         generations = generation_reader() if callable(generation_reader) else {}
+        self._reconcile_batch_claims(active, generations)
         active_workers = {self.harness_actor_uri(name) for name in active}
         for attempt in tuple(self._inflight.values()):
             if attempt.identity.worker not in active_workers:
@@ -270,6 +272,11 @@ class _BridgeReconcileMixin:
         pending_result_ids = getattr(
             self.harnesses, "pending_result_delivery_ids", lambda: frozenset()
         )()
+        pending_result_ids = pending_result_ids.union(
+            member
+            for _, members in self._pending_batch_fetches.values()
+            for member in members
+        )
         for actor in self.harnesses.streaming_actors():
             try:
                 accepted += self._dispatch_actor_deliveries(actor, pending_result_ids)
@@ -590,16 +597,30 @@ class _BridgeReconcileMixin:
             # Minimal inbox ports retain their scalar-summary delivery path.
             # A supported batch port that raises still fails this actor only.
             return claimed, False
-        view = capture_batch(
-            self.inbox,
-            recipient,
-            keys=(recipient,),
-            limit_bytes=self._inbox_batch_inline_bytes(),
-            epoch="",
-            include_notices=False,
-            only=tuple(message.message_id for message in candidates),
-            mark_fetched=False,
-        )
+        home_reader = getattr(self, "_batch_actor_home", None)
+        actor_home = home_reader(recipient) if callable(home_reader) else None
+        try:
+            view = capture_batch(
+                self.inbox,
+                recipient,
+                keys=(recipient,),
+                limit_bytes=self._inbox_batch_inline_bytes(),
+                actor_home=actor_home,
+                epoch="",
+                include_notices=False,
+                only=tuple(message.message_id for message in candidates),
+                mark_fetched=False,
+            )
+        except SpillUnavailable as error:
+            if self._logger is not None:
+                self._logger(
+                    "warn",
+                    "daemon",
+                    "harness.batch.spill_fallback",
+                    agent=recipient,
+                    errorType=type(error).__name__,
+                )
+            return claimed, False
         if not view.text or not view.cursor:
             return claimed, False
         members = view.message_ids
@@ -634,6 +655,8 @@ class _BridgeReconcileMixin:
         if pending_batches is None:
             pending_batches = self._pending_batch_claims = {}
         pending_batches[actor] = (members, candidates)
+        self._begin_batch_claim(actor, members)
+        self._publish_batch_claims()
         try:
             offered = self._offer_delivery(
                 actor, delivery, original=first, retry=False, notice=False
@@ -641,7 +664,7 @@ class _BridgeReconcileMixin:
         except DispatchAgentTimeout:
             raise
         if not offered:
-            pending_batches.pop(actor, None)
+            self._release_batch_claim(members[0], members, reason="offer-refused")
             return claimed, False
         pending_batches.pop(actor, None)
         self._claim_batch(
@@ -667,7 +690,8 @@ class _BridgeReconcileMixin:
             pending = getattr(self, "_pending_batch_fetches", None)
             if pending is None:
                 pending = self._pending_batch_fetches = {}
-            pending[recipient] = (recipient, members)
+            previous = pending.get(recipient, (recipient, ()))[1]
+            pending[recipient] = (recipient, tuple(dict.fromkeys((*previous, *members))))
             if self._logger is not None:
                 self._logger(
                     "warn",
@@ -695,49 +719,6 @@ class _BridgeReconcileMixin:
                 continue
             pending.pop(key, None)
 
-    def _claim_batch(
-        self,
-        actor: str,
-        members: tuple[str, ...],
-        messages: tuple[InboxMessage, ...],
-        *,
-        stamp: bool,
-    ) -> None:
-        recipient = self.harness_actor_uri(actor)
-        for message in messages:
-            self._note_delivery_seen(actor, message)
-            self._refresh_queued_hold(
-                message.message_id,
-                worker=recipient,
-                now_ms=self._clock_ms(),
-                force=True,
-            )
-            if self._delivery_hooks is not None:
-                self._delivery_hooks.mark_dispatched(message.message_id)
-        self._batch_claims[actor] = (*self._batch_claims.get(actor, ()), *members)
-        if stamp:
-            self._confirm_batch_fetched(self.harness_actor_uri(actor), members)
-
-    def _release_batch_claim(
-        self, delivery_id: str, message_ids: tuple[str, ...] = ()
-    ) -> None:
-        """Release the real members named by a result."""
-
-        members = frozenset(message_ids or (delivery_id,))
-        pending = getattr(self, "_pending_batch_claims", None)
-        if pending is not None:
-            for pending_actor, (pending_members, _messages) in tuple(pending.items()):
-                if members.intersection(pending_members):
-                    pending.pop(pending_actor, None)
-        for actor, claimed in tuple(self._batch_claims.items()):
-            remaining = tuple(member for member in claimed if member not in members)
-            if len(remaining) == len(claimed):
-                continue
-            if remaining:
-                self._batch_claims[actor] = remaining
-            else:
-                self._batch_claims.pop(actor, None)
-
     def _inbox_batch_inline_bytes(self) -> int:
         value = getattr(self, "_inbox_batch_inline_limit_bytes", None)
         return value if isinstance(value, int) and not isinstance(value, bool) else 16 * 1024
@@ -750,7 +731,7 @@ class _BridgeReconcileMixin:
         pending_batches = getattr(self, "_pending_batch_claims", None)
         for outcome in offers.completed():
             late_batch = (
-                pending_batches.pop(outcome.worker, None)
+                pending_batches.get(outcome.worker)
                 if pending_batches is not None
                 else None
             )
@@ -764,10 +745,11 @@ class _BridgeReconcileMixin:
             if not outcome.accepted:
                 if outcome.message_ids:
                     self._release_batch_claim(
-                        outcome.delivery_id, outcome.message_ids
+                        outcome.delivery_id, outcome.message_ids, reason="offer-refused"
                     )
                 continue
             if late_batch is not None:
+                pending_batches.pop(outcome.worker, None)
                 self._claim_batch(outcome.worker, *late_batch, stamp=True)
             elif self._batch_claims.get(outcome.worker) and outcome.message_ids:
                 self._confirm_batch_fetched(

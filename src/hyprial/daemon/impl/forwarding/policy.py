@@ -1,4 +1,4 @@
-"""Exposure target/peer-key address validation and exposure normalization policy."""
+"""Forwarding validation, typed errors and membership operation wait policy."""
 
 from __future__ import annotations
 import ipaddress
@@ -6,7 +6,7 @@ import stat
 from collections.abc import Mapping
 from pathlib import Path
 
-from hyprial.kernel import private_metadata_violation
+from hyprial.kernel import MEMBERSHIP_BUDGETS, private_metadata_violation
 
 
 FORWARD_PROTOCOL_VERSION = 6
@@ -163,30 +163,17 @@ def parse_derp_map(event: dict[str, object]) -> tuple[str | None, str | None]:
 
 
 class ForwardingSidecarError(RuntimeError):
-    def __init__(self, message: str, *, code: str = "FORWARD_PROTOCOL") -> None:
+    def __init__(self, message: str, *, code: str = "FORWARD_PROTOCOL", details: dict | None = None) -> None:
         self.code = code
+        self.details = details or {}
         super().__init__(message)
 
 
-#: Membership commands wait this long for the sidecar when nothing bounds
-#: them: startup and background work (membership migration, leave-request
-#: processing, the Casdoor sync actor) may ride out a slow authority.
-MEMBERSHIP_WAIT_SECONDS = 35.0
-#: Membership commands issued from an IPC request path (`invite-create`,
-#: `invite-redeem`, `membership-status` for a CLI read) must answer inside
-#: the CLI's 15s roundtrip, with room for the reply itself.  The sidecar's
-#: own exchange timeout is 30s and the wire awaits 31s; a request that
-#: outlives this bound is reported as MEMBERSHIP_SIDECAR_TIMEOUT while the
-#: serial I/O owner finishes (or times out) the command behind it.
-REQUEST_MEMBERSHIP_WAIT_SECONDS = 10.0
+REQUEST_MEMBERSHIP_WAIT_SECONDS = MEMBERSHIP_BUDGETS["membership-status"].seconds
 
 
-def membership_wait_seconds(default: float, requested: float | None) -> float:
-    """The wait for one membership command: unbounded callers get the
-    background allowance; a request path is capped by what it asked for,
-    never above that allowance."""
+def membership_wait_seconds(op: str, requested: float | None) -> float:
+    """Use the operation budget unless the caller supplies a tighter bound."""
 
-    allowance = max(default, MEMBERSHIP_WAIT_SECONDS)
-    if requested is None:
-        return allowance
-    return min(float(requested), allowance)
+    allowance = MEMBERSHIP_BUDGETS[op].seconds
+    return allowance if requested is None else min(float(requested), allowance)

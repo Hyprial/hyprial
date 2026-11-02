@@ -72,6 +72,21 @@ class _ProcessEventsBehavior:
                 self._settle_deferred_restore_target(key, batch_id)
             return
         record.generation += 1
+        # Capture diagnostic association once at this execution admission. Never
+        # re-label an old running process from a later Agent binding on reads.
+        record.observation_entity_token = None
+        record.observation_binding_revision = None
+        if self._agent_identity is not None:
+            try:
+                token = self._agent_identity.entity_token(record.spec.name)
+                revision, harness, runtime, _session = self._agent_identity.binding_key(record.spec.name)
+                if (token is not None and harness == record.spec.harness and runtime == "headless"
+                        and self._agent_identity.entity_token(record.spec.name) == token):
+                    record.observation_entity_token = token
+                    record.observation_binding_revision = revision
+            except Exception:
+                # Observation uncertainty must not change start/recovery policy.
+                pass
         record.starting = True
         record.attempt_kind = kind
         record.process = None

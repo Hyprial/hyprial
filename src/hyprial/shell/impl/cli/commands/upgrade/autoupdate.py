@@ -12,12 +12,13 @@ from hyprial.kernel import ipc_errors
 import os
 import sys
 import typer
+from hyprial.shell.impl.cli.commands.common.groups import group
 
 from hyprial.shell.impl.cli.commands.common.pending_restart import _clear_pending_restart, _read_pending_restart, _restart_daemon_onto_install
 from hyprial.shell.impl.cli.commands.daemon.restart import _daemon_restart_identity, _record_autoupdate_restart_confirmation, _record_autoupdate_restart_not_required
 from hyprial.shell.impl.cli.commands.common.support import JsonObject, _probe_reports_running, _utc_now
 from hyprial.shell.impl.cli.commands.upgrade.commands import upgrade_app
-autoupdate_app = typer.Typer(
+autoupdate_app = group(
     help="Inspect daemon-owned automatic upgrades."
 )
 
@@ -40,7 +41,7 @@ def autoupdate_status(
 
         scheduler: JsonObject
         try:
-            scheduler_result = services._daemon_request(
+            scheduler_result = services.runtime.request(
                 "autoupdate.status", timeout=1.0, restore_wait=0.0
             )
         # PR #332 F4②: the best-effort transport-transient set, spelled as
@@ -94,7 +95,7 @@ def autoupdate_status(
     def operation() -> CliResult:
         return CliResult(collect(), render=_render_autoupdate_status)
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 def _pending_restart_state(pending: JsonObject | None) -> str | None:
@@ -302,7 +303,7 @@ def autoupdate_restart(
         _clear_pending_restart()
         return with_steps(result)
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @upgrade_app.command("run", hidden=True)
@@ -323,7 +324,7 @@ def autoupdate_run(
         # daemon and becomes a successful no-op when that owner is unavailable.
         if os.environ.get(AUTOUPDATE_CHILD_ENV) != "1":
             try:
-                scheduled = services._daemon_request(
+                scheduled = services.runtime.request(
                     "autoupdate.trigger", timeout=2.0, restore_wait=0.0
                 )
             except (
@@ -431,4 +432,4 @@ def autoupdate_run(
         write_last_run(services._state_dir(), record)
         return record
 
-    services._execute(operation, json_output=json_output, allow_missing_home=True)
+    services.runtime.execute(operation, json_output=json_output, allow_missing_home=True)

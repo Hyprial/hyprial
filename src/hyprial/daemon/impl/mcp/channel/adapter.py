@@ -58,6 +58,16 @@ from hyprial.daemon.impl.mcp.channel.notifier import (
 
 _logger = logging.getLogger(__name__)
 
+#: Deterministic refusals of the current-run refresh: retrying cannot help in
+#: this daemon generation, so the obligation is dropped instead of looping.
+_TURN_REFRESH_UNSUPPORTED_CODES = frozenset({
+    ipc_errors.METHOD_NOT_FOUND,
+    ipc_errors.INVALID_REQUEST,
+    ipc_errors.INVALID_ARGUMENT,
+    ipc_errors.INVALID_CHANNEL_LEASE,
+    ipc_errors.CHANNEL_LIVENESS_UNAVAILABLE,
+})
+
 class RuntimeKind(StrEnum):
     CLAUDE_INTERACTIVE = "claude_interactive"
     CLAUDE_MANAGED_HEADLESS = "claude_managed_headless"
@@ -179,6 +189,16 @@ class ClaudeChannelAdapter:
         self.open_turn: str | None = None
         self._turn_origin = "pulse"
         self._turn_started = False
+        #: Producer identity for the current-run refresh lane (E1).  A new
+        #: channel process is a new producer epoch, so its sequence restarts.
+        self._producer_epoch = uuid4().hex
+        self._producer_seq = -1
+        self._turn_opened_monotonic: float | None = None
+        #: Current-run refresh obligation, serviced by the existing cadence.
+        self._turn_refresh_owed = False
+        self._turn_refresh_unsupported = False
+        self._turn_refresh_epoch: str | None = None
+        self._turn_refresh_in_flight = False
         #: Set from the register answer when this stdio process was compiled
         #: from a different build than the daemon.  Mutations are refused with
         #: MCP_CHANNEL_STALE instead of a schema-level SUMMARY_REQUIRED.
@@ -208,17 +228,25 @@ class ClaudeChannelAdapter:
         if isinstance(action, Register):
             return await self._register()
         if isinstance(action, Refresh):
-            return await self._call("session.refresh", {"channelLeaseToken": self._lease_token}, mutation=False)
+            answer = await self._call("session.refresh", {"channelLeaseToken": self._lease_token}, mutation=False)
+            self._confirm_turn_refresh_epoch(answer)
+            await self.refresh_turns()
+            return answer
         if isinstance(action, Heartbeat):
-            return await self._call("session.heartbeat", {"channelLeaseToken": self._lease_token}, mutation=False)
-        if isinstance(action, ListInbox):
+            answer = await self._call("session.heartbeat", {"channelLeaseToken": self._lease_token}, mutation=False)
+        elif isinstance(action, ListInbox):
             self._tracked_before_list = self.coordinator.pending_deliveries(self.actor)
-            return await self._call("message.pending.list", {}, mutation=False)
-        assert isinstance(action, Wait)
-        params: dict[str, Any] = {"knownMessageIds": list(action.known_message_ids)}
-        if action.hold_ms is not None:
-            params["holdMs"] = action.hold_ms
-        return await self._call("message.pending.wait", params, mutation=False)
+            answer = await self._call("message.pending.list", {}, mutation=False)
+        else:
+            assert isinstance(action, Wait)
+            params: dict[str, Any] = {"knownMessageIds": list(action.known_message_ids)}
+            if action.hold_ms is not None:
+                params["holdMs"] = action.hold_ms
+            answer = await self._call("message.pending.wait", params, mutation=False)
+        if answer.get("observationGap") is True:
+            self._turn_refresh_owed = True
+        await self.service_turn_refresh()
+        return answer
 
     async def _register(self) -> dict[str, Any]:
         harness_pid = os.getppid()
@@ -254,6 +282,9 @@ class ClaudeChannelAdapter:
         )
         stale = answer.get("channelStale")
         self._channel_stale = stale if isinstance(stale, dict) else None
+        self._turn_refresh_unsupported = False
+        self._confirm_turn_refresh_epoch(answer)
+        await self.refresh_turns()
         return answer
 
     def stale_error(self) -> dict[str, Any] | None:
@@ -472,6 +503,120 @@ class ClaudeChannelAdapter:
             "session.turn.ended", {"reportIds": list(report_ids)}, mutation=True
         )
 
+    def _confirm_turn_refresh_epoch(self, answer: dict[str, Any]) -> None:
+        """Scope capability refusals to a confirmed session generation."""
+
+        epoch = answer.get("daemonEpoch")
+        if isinstance(epoch, str) and epoch and epoch != self._turn_refresh_epoch:
+            self._turn_refresh_epoch = epoch
+            self._turn_refresh_unsupported = False
+            self._turn_refresh_owed = True
+
+    async def refresh_turns(self) -> bool:
+        """Publish this carrier's current run set through the session fence.
+
+        Observation only: it never fails registration, polling or delivery.
+        A transient failure leaves a bounded retry obligation that the existing
+        cadence services (``service_turn_refresh``), so a lost refresh is
+        recovered rather than forgotten. A deterministic refusal (an older
+        daemon without the method, a schema or lease mismatch) is cached for
+        this daemon generation instead of being retried in a loop; the next
+        successful registration or confirmed session refresh to a new epoch
+        clears it.
+        """
+
+        if self._turn_refresh_unsupported or self._turn_refresh_in_flight:
+            return False
+        self._turn_refresh_in_flight = True
+        try:
+            return await self._publish_turn_refresh()
+        finally:
+            self._turn_refresh_in_flight = False
+
+    async def _publish_turn_refresh(self) -> bool:
+        """One snapshot flight; concurrent contact lanes never wait on it."""
+
+        epoch = self._turn_refresh_epoch
+        try:
+            answer = await self._call(
+                "session.turn.refresh", self._run_state_params(), mutation=False
+            )
+        except DaemonRequestRejected as error:
+            if epoch != self._turn_refresh_epoch:
+                self._turn_refresh_owed = True
+                return False
+            if error.code in _TURN_REFRESH_UNSUPPORTED_CODES:
+                self._turn_refresh_unsupported = True
+                self._settle_turn_refresh_owed()
+            elif error.code == SESSION_SUPERSEDED_CODE:
+                self._settle_turn_refresh_owed()
+            else:
+                self._owe_turn_refresh(error)
+            return False
+        except _DAEMON_CONTACT_ERRORS as error:
+            self._owe_turn_refresh(error)
+            return False
+        self._turn_refresh_owed = (
+            epoch != self._turn_refresh_epoch
+            or answer.get("rejectionReason") == "stale_daemon_epoch"
+        )
+        return not self._turn_refresh_owed
+
+    async def service_turn_refresh(self) -> bool:
+        """Service one owed observation refresh per successful contact.
+
+        Bounded by the carrier's own cadence: each successful ordinary request
+        may carry at most one retry, so a failing daemon sees one extra
+        observation RPC per poll/heartbeat round-trip -- never a tight loop and
+        never a delivery dependency. A deterministic refusal is not owed at all.
+        """
+
+        if not self._turn_refresh_owed or self._turn_refresh_unsupported:
+            return False
+        return await self.refresh_turns()
+
+    def _owe_turn_refresh(self, error: BaseException) -> None:
+        self._turn_refresh_owed = True
+        _logger.debug(
+            "current-run refresh for actor %s failed (%s); owed to the next "
+            "successful poll/heartbeat contact",
+            self.actor,
+            error,
+        )
+
+    def _settle_turn_refresh_owed(self) -> None:
+        self._turn_refresh_owed = False
+
+    def _run_state_params(self) -> dict[str, Any]:
+        """Current open run set plus negotiated coverage capabilities."""
+
+        self._producer_seq += 1
+        runs: list[dict[str, Any]] = []
+        if self.open_turn is not None:
+            run: dict[str, Any] = {
+                "reportId": self.open_turn,
+                "phase": "executing" if self._turn_started else "prepared",
+            }
+            if self._turn_opened_monotonic is not None:
+                run["elapsedMs"] = max(
+                    0, int((time.monotonic() - self._turn_opened_monotonic) * 1_000)
+                )
+            runs.append(run)
+        return {
+            "schemaVersion": 1,
+            "producerEpoch": self._producer_epoch,
+            "daemonEpoch": self._turn_refresh_epoch,
+            "seq": self._producer_seq,
+            "openRuns": runs,
+            "capabilities": {
+                "wholeSessionTurns": True,
+                "preparation": True,
+                "permissionWait": False,
+                "producerActivity": False,
+            },
+            "channelLeaseToken": self._lease_token,
+        }
+
     # -- model turns (wp5c.md §4) ------------------------------------------
 
     async def apply_turn_start(self, report_id: str) -> None:
@@ -553,6 +698,7 @@ class ClaudeChannelAdapter:
 
     def _begin_turn(self, report_id: str, origin: str) -> None:
         self.open_turn, self._turn_origin, self._turn_started = report_id, origin, False
+        self._turn_opened_monotonic = time.monotonic()
         self._save_open_turn()
 
     async def _ensure_started(self, call: Any) -> None:
@@ -588,6 +734,7 @@ class ClaudeChannelAdapter:
 
     def _clear_open_turn(self) -> None:
         self.open_turn, self._turn_started = None, False
+        self._turn_opened_monotonic = None
         path = self._open_turn_path()
         if path is not None:
             path.unlink(missing_ok=True)

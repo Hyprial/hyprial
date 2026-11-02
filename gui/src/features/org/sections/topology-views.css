@@ -1,0 +1,286 @@
+/*
+ * 组织拓扑的两种视图（交互设计 5.6）。节点和边都是按钮；连线用边框画，
+ * 不依赖测量或画布。所在区域变窄（例如打开 Inspect 侧栏、窄屏）时改为上下排列。
+ */
+.org-topology-view {
+  display: grid;
+  gap: var(--ui-space-4);
+  min-width: 0;
+  container-type: inline-size;
+}
+
+.org-topology-view > p {
+  margin: 0;
+}
+
+.org-graph-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ui-space-2) var(--ui-space-4);
+  margin: 0;
+  padding: 0;
+  color: var(--ui-ink-3);
+  font-size: var(--ui-text-xs);
+  list-style: none;
+}
+
+.org-graph-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ui-space-2);
+}
+
+.org-graph-legend__swatch {
+  width: 28px;
+  border-top: 2px solid var(--ui-ink-2);
+}
+
+.org-graph-legend__swatch--route {
+  border-top-style: dashed;
+  border-top-color: var(--ui-ink-3);
+}
+
+.org-graph-layer {
+  display: grid;
+  gap: var(--ui-space-2);
+  min-width: 0;
+}
+
+.org-graph-layer > h3,
+.org-graph-layer > p {
+  margin: 0;
+}
+
+.org-graph,
+.org-graph-nodes,
+.org-graph-tree,
+.org-graph-tree ul {
+  display: grid;
+  gap: var(--ui-space-2);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.org-graph {
+  gap: var(--ui-space-3);
+}
+
+.org-graph-nodes {
+  display: flex;
+  flex-wrap: wrap;
+}
+
+/* link 层：左边是发送方，右边是它持有的 link；同一发送方的边从一条竖线分出。 */
+.org-graph__group {
+  display: grid;
+  grid-template-columns: minmax(0, 13rem) minmax(0, 1fr);
+  align-items: start;
+  min-width: 0;
+}
+
+.org-graph__out {
+  display: grid;
+  gap: var(--ui-space-1);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border-left: 2px solid var(--ui-ink-3);
+  list-style: none;
+}
+
+.org-graph__row {
+  display: grid;
+  grid-template-columns: minmax(6.5rem, 10rem) minmax(0, 1fr);
+  align-items: center;
+  min-width: 0;
+}
+
+/* 路由约定层：对象 ┄ 范围，一行一条，不画箭头。 */
+.org-graph__route {
+  display: grid;
+  grid-template-columns: minmax(0, 13rem) minmax(6.5rem, 10rem) minmax(0, 1fr);
+  align-items: center;
+  min-width: 0;
+}
+
+/* 发送方（或路由对象）与它的边之间的连线：从节点右边连到分叉的竖线。 */
+.org-graph__holder {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.org-graph__holder.has-edges::after {
+  content: '';
+  flex: 1 1 auto;
+  min-width: var(--ui-space-3);
+  border-top: 2px solid var(--ui-ink-3);
+}
+
+.org-graph__holder--route.has-edges::after {
+  border-top-style: dashed;
+}
+
+.org-graph__node {
+  display: grid;
+  justify-self: start;
+  gap: 2px;
+  min-width: 0;
+  max-width: 100%;
+  padding: var(--ui-space-2) var(--ui-space-3);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-md);
+  background: var(--ui-surface);
+  color: var(--ui-ink-1);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.org-graph__node--agent,
+.org-graph__node--peer {
+  border-radius: var(--ui-radius-pill);
+  padding-inline: var(--ui-space-4);
+}
+
+.org-graph__node--scope {
+  border-style: dashed;
+}
+
+.org-graph__node-label {
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.org-graph__node-meta {
+  color: var(--ui-ink-3);
+  font-size: var(--ui-text-xs);
+  overflow-wrap: anywhere;
+}
+
+.org-graph__node[aria-pressed='true'],
+.org-graph__node[data-related='true'] {
+  border-color: var(--ui-accent);
+  background: var(--ui-accent-wash);
+}
+
+.org-graph__edge {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-1);
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 var(--ui-space-1) 0 0;
+  border: 0;
+  background: transparent;
+  color: var(--ui-ink-2);
+  font: inherit;
+  font-size: var(--ui-text-xs);
+  cursor: pointer;
+}
+
+.org-graph__line {
+  flex: 1 1 8px;
+  min-width: 8px;
+  border-top: 2px solid currentColor;
+}
+
+.org-graph__edge--route .org-graph__line {
+  border-top-style: dashed;
+}
+
+.org-graph__edge--route {
+  color: var(--ui-ink-3);
+}
+
+.org-graph__edge-label {
+  flex: none;
+  white-space: nowrap;
+}
+
+.org-graph__arrow {
+  flex: none;
+  width: 0;
+  height: 0;
+  margin-left: calc(-1 * var(--ui-space-1));
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  border-left: 8px solid currentColor;
+}
+
+/* 状态未确认的 link 照实画出，颜色变浅，文字写明。 */
+.org-graph__edge[data-state='unknown'] {
+  color: var(--ui-ink-3);
+}
+
+.org-graph__edge[aria-pressed='true'],
+.org-graph__edge[data-related='true'] {
+  color: var(--ui-accent);
+}
+
+.org-graph__edge[aria-pressed='true'] .org-graph__edge-label {
+  font-weight: 650;
+}
+
+.org-graph__node:focus-visible,
+.org-graph__edge:focus-visible {
+  outline: var(--ui-focus-width) solid var(--ui-focus);
+  outline-offset: 2px;
+}
+
+/* 结构视图：部门按汇报关系缩进，竖线连到下级。 */
+.org-graph-tree ul {
+  margin: var(--ui-space-2) 0 0 var(--ui-space-5);
+  padding-left: var(--ui-space-4);
+  border-left: 2px solid var(--ui-ink-3);
+}
+
+.org-graph-tree li {
+  display: grid;
+  min-width: 0;
+}
+
+.org-graph-tree ul > li {
+  position: relative;
+}
+
+.org-graph-tree ul > li::before {
+  content: '';
+  position: absolute;
+  top: 1.4em;
+  left: calc(-1 * var(--ui-space-4));
+  width: calc(var(--ui-space-4) - 2px);
+  border-top: 2px solid var(--ui-ink-3);
+}
+
+@container (max-width: 520px) {
+  .org-graph__group {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .org-graph__holder.has-edges::after {
+    display: none;
+  }
+
+  .org-graph__out {
+    margin-left: var(--ui-space-4);
+  }
+
+  .org-graph__row {
+    grid-template-columns: minmax(6.5rem, 8rem) minmax(0, 1fr);
+  }
+
+  .org-graph__route {
+    grid-template-columns: minmax(6.5rem, 8rem) minmax(0, 1fr);
+  }
+
+  .org-graph__route > :first-child {
+    grid-column: 1 / -1;
+  }
+
+  .org-graph__route > .org-graph__edge {
+    margin-left: var(--ui-space-4);
+  }
+}

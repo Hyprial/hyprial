@@ -20,7 +20,8 @@ from hyprial.daemon.impl.api  import (
 from hyprial.kernel  import (
     ManagedHarnessProcess,
     )
-from hyprial.kernel import HarnessLaunchSpec
+from hyprial.kernel import HarnessLaunchSpec, ProcessLiveness, ProcessLivenessState
+from hyprial.daemon.impl.lifecycle.observation import LifecycleObservationOwner
 from hyprial.daemon.impl.harnesses.runtime.ports  import (
     HarnessCallIoCompleted,
     HarnessLaunchProjection,
@@ -293,6 +294,8 @@ class _Record:
     restart_after: float | None = None
     last_error: str | None = None
     liveness_binding: object | None = None
+    observation_entity_token: str | None = None
+    observation_binding_revision: int | None = None
     completed_start: HarnessProcessStarted | None = None
     # U0b: terminal verdict for a restore-kind start that did not come back
     # (Allen 2026-09-03: one attempt, no auto-retry).  Needed alongside the
@@ -345,6 +348,11 @@ class HarnessProjection:
         # Compatibility-only error face.  Session-ref/streaming projections
         # never consult these mutable process handles.
         self._processes: dict[str, ManagedHarnessProcess] = {}
+        self.lifecycle_observations = LifecycleObservationOwner()
+        self._observation_sources: dict[str, str] = {}
+        self._observation_fences: dict[str, tuple[str | None, int | None, str]] = {}
+        self._run_epochs: dict[str, str] = {}
+        self._run_instances: dict[str, tuple[object, str]] = {}
 
     def publish(
         self,
@@ -447,7 +455,42 @@ class HarnessProjection:
             worker_ref = getattr(worker_channel, "session_ref", None)
             if isinstance(worker_ref, str) and worker_ref:
                 worker_refs[(record.spec.harness, record.spec.name)] = worker_ref
+        rows_by_key = {row.harness_id: row for row in rows}
         with self._lock:
+            for key, record in records.items():
+                row = rows_by_key[key]
+                # The legacy healthy/running boolean is not an exit fact.
+                state = "running" if row.running else "starting" if record.starting else "unknown"
+                cause = {"running": "process-running", "starting": "start-pending",
+                         "unknown": "process-unavailable"}[state]
+                if state == "unknown":
+                    liveness = getattr(record.process, "liveness", None)
+                    if callable(liveness):
+                        try:
+                            fact = liveness()
+                        except Exception:
+                            # Diagnostics must not change the owner's recovery policy.
+                            cause = "process-liveness-unavailable"
+                        else:
+                            if (isinstance(fact, ProcessLiveness) and fact.observed
+                                    and fact.state is ProcessLivenessState.DEAD):
+                                state, cause = "stopped", "process-stopped"
+                self.lifecycle_observations.publish(
+                    key, record.incarnation, state=state, cause=cause,
+                    available=state != "unknown",
+                    runtime_epoch=f"{record.incarnation}:{record.generation}",
+                )
+            for key, incarnation in self._observation_sources.items():
+                if key not in records:
+                    self.lifecycle_observations.publish(
+                        key, incarnation, state="unknown", cause="resource-removed", available=False,
+                    )
+            self._observation_sources = {key: record.incarnation for key, record in records.items()}
+            self._observation_fences = {
+                key: (record.observation_entity_token, record.observation_binding_revision,
+                      record.incarnation) for key, record in records.items()
+            }
+            self._run_epochs = {key: f"{record.incarnation}:{record.generation}" for key, record in records.items()}
             self._rows = tuple(rows)
             self._last_errors = errors
             self._failed = frozenset(failed)
@@ -455,7 +498,58 @@ class HarnessProjection:
             self._streaming_generations = tuple(streaming_generations)
             self._session_refs = refs
             self._worker_session_refs = worker_refs
+            self._run_instances = {
+                key: self._run_instances[key] if key in self._run_instances
+                and self._run_instances[key][0] is process else (process, uuid.uuid4().hex)
+                for key, process in processes.items()
+            }
             self._processes = processes
+
+    def read_run_instance(self, key, entity_token, binding_revision):
+        """Private composition fence; contains no process handle or I/O."""
+        with self._lock:
+            fence = self._observation_fences.get(key)
+            if fence is None or fence[:2] != (entity_token, binding_revision):
+                return None
+            instance = self._run_instances.get(key)
+            return fence[2], None if instance is None else instance[1]
+
+    def read_run_facts(self):
+        """One group read of current turn projections, without supervisor RPCs.
+
+        Handles stay within their owner adapter. Only immutable values and the
+        captured binding fence leave it. A concurrent generation change makes
+        the returned row unavailable rather than assigning old facts to it.
+        """
+        from dataclasses import replace
+        from hyprial.daemon.impl.cells.observability.model import RunFacts
+
+        with self._lock:
+            processes, fences, epochs = dict(self._processes), dict(self._observation_fences), dict(self._run_epochs)
+        rows = {}
+        for key, fence in fences.items():
+            process = processes.get(key)
+            read = getattr(process, "read_run_facts", None)
+            try:
+                facts = read() if callable(read) else RunFacts()
+            except Exception:
+                facts = RunFacts()
+            if not isinstance(facts, RunFacts):
+                facts = RunFacts()
+            with self._lock:
+                if self._run_epochs.get(key) != epochs[key] or self._processes.get(key) is not process:
+                    facts = RunFacts(conflict=True)
+            rows[(key, fence[0], fence[1])] = replace(facts, source_epoch=f"{epochs[key]}:{facts.source_epoch}")
+        return rows
+
+    def read_observation_source(self, key: str, entity_token: str,
+                                binding_revision: int) -> str | None:
+        """Resolve only the incarnation/binding captured by the process owner."""
+        with self._lock:
+            source = self._observation_fences.get(key)
+            if source is None or source[:2] != (entity_token, binding_revision):
+                return None
+            return source[2]
 
     def status(self) -> tuple[dict[str, object], ...]:
         with self._lock:

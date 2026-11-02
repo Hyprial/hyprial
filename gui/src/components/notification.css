@@ -1,0 +1,192 @@
+/* Toast 队列与通知中心（统一通知面）。 */
+
+.toast-host {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 120;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: min(360px, calc(100vw - 32px));
+}
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 12px 32px rgba(27, 23, 32, 0.16);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.toast-tone {
+  flex: none;
+  border-radius: 999px;
+  padding: 0 8px;
+  font-size: 11px;
+  border: 1px solid var(--line-soft);
+  color: var(--muted);
+}
+
+.toast-info {
+  border-color: var(--line);
+}
+.toast-success {
+  border-color: var(--green-line);
+}
+.toast-success .toast-tone {
+  background: var(--green-wash);
+  border-color: var(--green-line);
+  color: var(--green-ink);
+}
+.toast-warning {
+  border-color: #eed2bc;
+}
+.toast-warning .toast-tone {
+  background: #f9ece2;
+  border-color: #eed2bc;
+  color: #7a4a26;
+}
+.toast-error {
+  border-color: #e3b8b3;
+}
+.toast-error .toast-tone {
+  background: #f8e7e5;
+  border-color: #e3b8b3;
+  color: #8f1d2c;
+}
+
+.toast-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  flex: 1;
+}
+
+.toast-close {
+  flex: none;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+/* 铃铛与账号触发器同排（rail-foot），无边框，仅图标 + 未读红点。 */
+.rail-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rail-foot > .account {
+  flex: 1;
+  min-width: 0;
+}
+
+.notif {
+  position: relative;
+  flex: none;
+}
+
+.notif-bell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  background: none;
+  color: var(--ink-soft);
+  cursor: pointer;
+  padding: 0;
+}
+
+.notif-bell:hover {
+  color: var(--ink);
+}
+
+.notif-bell-icon {
+  width: 19px;
+  height: 19px;
+}
+
+.notif-dot {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #d5435a;
+  border: 1.5px solid #fff;
+}
+
+.notif-panel {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  right: 0;
+  width: min(320px, calc(100vw - 32px));
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 16px 40px rgba(27, 23, 32, 0.18);
+}
+
+.notif-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.notif-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.notif-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.notif-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+.notif-source {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.notif-warning {
+  border-color: #eed2bc;
+  background: #f9ece2;
+}
+
+.notif-error {
+  border-color: #e3b8b3;
+  background: #f8e7e5;
+}

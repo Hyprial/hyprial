@@ -266,7 +266,7 @@ def _fenced_dsh_unregister(
     """
 
     try:
-        status = services._daemon_request("ps")
+        status = services.runtime.request("ps")
     except Exception:  # noqa: BLE001 - teardown must not mask the launch result
         return
     sessions = status.get("interactiveSessions", [])
@@ -283,7 +283,7 @@ def _fenced_dsh_unregister(
     if not owned:
         return
     try:
-        services._daemon_request(
+        services.runtime.request(
             "session.unregister",
             {"actor": actor, "sessionRef": session_ref},
             restore_wait=0.0,
@@ -412,7 +412,7 @@ def _start_interactive_dsh(
             model=model,
         )
     )
-    status = services._daemon_request("ps")
+    status = services.runtime.request("ps")
     actor = _interactive_actor(name, status)
     actor_name = _interactive_actor_name(name)
     display_name = nickname or actor_name
@@ -515,7 +515,7 @@ def _start_interactive_dsh(
         registered = False
         deadline = services.time.monotonic() + DSH_TUI_REGISTRATION_TIMEOUT_SECONDS
         while services.time.monotonic() < deadline:
-            status = services._daemon_request("ps")
+            status = services.runtime.request("ps")
             registered = _dsh_session_registered(actor, session_ref, status)
             if registered or carrier_process.poll() is not None:
                 break

@@ -116,6 +116,7 @@ from hyprial.shell.impl.gui.adapter.chat import (
     SessionBinding,
 )
 from hyprial.shell.impl.gui.adapter.envelope import AuthGate
+from hyprial.shell.impl.gui.adapter.operations.client import daemon_request_callable as daemon_request_callable
 from hyprial.shell.impl.gui.adapter.mobile.wiring import build_auth_gate
 from hyprial.shell.impl.gui.adapter.errors import (
     IDENTITY_REJECTED,
@@ -180,32 +181,6 @@ def adapter_from_config(
         if isinstance(session_ref, str) and session_ref
         else None,
     )
-
-
-def daemon_request_callable() -> Callable[[str, dict], Any]:
-    """The production daemon request callable: the CLI's own client.
-
-    Importing the CLI runtime entry registers the service resolver the
-    client needs; the wrapper maps the CLI's definitive refusals
-    (``CliError``) onto the daemon-request error the adapter already
-    understands, so a refused call is a rejection frame, never a lost
-    connection.
-    """
-
-    from hyprial.kernel import DaemonRequestError
-    from hyprial.shell.impl.cli.commands.common.support import (
-        CliError,
-        _daemon_request,
-    )
-    from hyprial.shell.impl.cli.runtime import entry as _entry  # noqa: F401
-
-    def request(method: str, params: dict) -> Any:
-        try:
-            return _daemon_request(method, params)
-        except CliError as error:
-            raise DaemonRequestError(error.code, str(error)) from error
-
-    return request
 
 
 def _session_id(params: Mapping[str, Any]) -> str:
@@ -311,7 +286,7 @@ def handle_request(
             return _error(
                 error.code,
                 error.message,
-                definitive=True,
+                definitive=request.get("operation") != "sessions.send.lookup",
                 details=details,
             )
     operation = request.get("operation")
@@ -334,15 +309,20 @@ def handle_request(
                     "ok": True,
                     "result": adapter.events(_session_id(params), params.get("since")),
                 }
-            if operation == "sessions.send":
+            if operation in ("sessions.send", "sessions.send.lookup"):
+                if operation == "sessions.send.lookup" and set(params) - {"sessionId", "request"}:
+                    raise AppAdapterError(
+                        INVALID_ARGUMENT, "unexpected sessions.send.lookup fields",
+                    )
                 send_request = params.get("request")
                 if not isinstance(send_request, Mapping):
                     raise AppAdapterError(
-                        INVALID_ARGUMENT, "sessions.send needs a request object"
+                        INVALID_ARGUMENT, f"{operation} needs a request object"
                     )
+                send = adapter.send if operation == "sessions.send" else adapter.send_lookup
                 return {
                     "ok": True,
-                    "result": adapter.send(_session_id(params), send_request),
+                    "result": send(_session_id(params), send_request),
                 }
             if operation == "sessions.history":
                 if not isinstance(raw_params, Mapping):
@@ -364,7 +344,7 @@ def handle_request(
                 definitive=True,
             )
     except AppAdapterError as error:
-        return _error(error.code, error.message, definitive=True)
+        return _error(error.code, error.message, definitive=operation != "sessions.send.lookup")
     except AppAdapterUnavailable as error:
         return _error("unavailable", str(error), definitive=False)
 

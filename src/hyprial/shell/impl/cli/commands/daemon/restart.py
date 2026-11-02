@@ -41,7 +41,7 @@ def _restart_status() -> JsonObject | None:
     services = get_services()
 
     try:
-        result = services._daemon_request("ps", restore_wait=0.0)
+        result = services.runtime.request("ps", restore_wait=0.0)
     except ipc_errors.DaemonUnavailableError:
         return None
     if not isinstance(result, dict):
@@ -244,4 +244,4 @@ def restart_command(
             _announce_setup_guidance(result)
         return result
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)

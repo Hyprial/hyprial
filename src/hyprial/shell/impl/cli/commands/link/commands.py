@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from typing import Any
 
 import typer
+from hyprial.shell.impl.cli.commands.common.groups import group
 
 from hyprial.shell.impl.cli.commands.common.services import get_services
 from hyprial.shell.impl.cli.commands.common.support import (
@@ -26,7 +27,7 @@ from hyprial.shell.impl.cli.commands.link.render import (
 from hyprial.shell.impl.cli.commands.message.send import _validate_from_identity
 from hyprial.shell.impl.cli.output import CliResult
 
-link_app = typer.Typer(
+link_app = group(
     help="Inspect and manage this node's send links.", no_args_is_help=True
 )
 
@@ -55,11 +56,11 @@ def link_list(
 
         services = get_services()
         return _result(
-            services._daemon_request(IPC_LINK_LIST, _message_claim_params(source)),
+            services.runtime.request(IPC_LINK_LIST, _message_claim_params(source)),
             render_link_list,
         )
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @link_app.command("stats")
@@ -80,11 +81,11 @@ def link_stats(
 
         services = get_services()
         return _result(
-            services._daemon_request(IPC_LINK_STATS, _message_claim_params(source)),
+            services.runtime.request(IPC_LINK_STATS, _message_claim_params(source)),
             render_link_stats,
         )
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @link_app.command("add")
@@ -115,10 +116,10 @@ def link_add(
             "peer": peer,
         }
         return _result(
-            services._daemon_request(IPC_LINK_ADD, params), render_link_change
+            services.runtime.request(IPC_LINK_ADD, params), render_link_change
         )
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @link_app.command("drop")
@@ -149,7 +150,7 @@ def link_drop(
             "peer": peer,
         }
         return _result(
-            services._daemon_request(IPC_LINK_DROP, params), render_link_change
+            services.runtime.request(IPC_LINK_DROP, params), render_link_change
         )
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)

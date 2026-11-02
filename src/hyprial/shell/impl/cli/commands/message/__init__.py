@@ -5,9 +5,9 @@ observation (``status``/``trajectory``/``inbox``/``outbox``/``targets``) lives
 here; the sending verbs join it in a later slice.
 """
 
-import typer
+from hyprial.shell.impl.cli.commands.common.groups import group
 
 
-message_app = typer.Typer(
+message_app = group(
     help="Send, read, and observe the full message lifecycle."
 )

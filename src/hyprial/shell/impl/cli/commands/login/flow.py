@@ -20,7 +20,7 @@ import json
 from hyprial.kernel import probe_process
 
 from hyprial.shell.impl.cli.commands.common.daemon_start import _CUSTODY_STARTUP_ERROR_SHAPES
-from hyprial.shell.impl.cli.commands.common.support import DAEMON_START_IDLE_BUDGET_SECONDS, JsonObject, _DEVICE_SIGN_IN_HINT, CliError
+from hyprial.shell.impl.cli.commands.common.support import DAEMON_START_IDLE_BUDGET_SECONDS, JsonObject, CliError, device_sign_in_hint
 def _run_login_cli_flow(
     *,
     no_open: bool,
@@ -55,7 +55,7 @@ def _run_login_cli_flow(
                 "  (waiting for authorization; server interval "
                 f"{data.get('interval')}s, expires in "
                 f"{data.get('expiresIn')}s)\n"
-                f"  {_DEVICE_SIGN_IN_HINT}"
+                f"  {device_sign_in_hint(profile.issuer)}"
             )
         elif kind == "binding-device":
             restart = " (fresh code after expiry)" if data.get("restarted") else ""
@@ -692,15 +692,14 @@ def _pickup_org_invites_after_login(home: Path) -> JsonObject:
     services = get_services()
     try:
         from hyprial.shell.impl.invites import pending as pending_module
+        from hyprial.shell.impl.invites.join import request_join
 
         outcome = pending_module.run_pending(
             home,
             accept_all=True,
             confirm=None,
-            ipc_join=lambda link: services._daemon_request(
-                "org.join", {"link": link}
-            ),
-            ipc_list=lambda: services._daemon_request("org.list"),
+            ipc_join=lambda link: request_join(services.runtime, link),
+            ipc_list=lambda: services.runtime.request("org.list"),
             now=None,
         )
     except Exception as error:  # noqa: BLE001 - D12: best effort by ruling

@@ -21,14 +21,14 @@ class TailnetLifecycle:
         try:
             return self._tailnet_raw_call(op, params)
         except ForwardingSidecarError as error:
-            raise OrgNetworkError(error.code, str(error)) from error
+            raise OrgNetworkError(error.code, str(error), error.details) from error
 
     def _ensure_new_tailnet(self, space):
         from ..service import OrgNetworkError
         try:
             self._initialize_new_tailnet(space)
         except ForwardingSidecarError as error:
-            raise OrgNetworkError(error.code, str(error)) from error
+            raise OrgNetworkError(error.code, str(error), error.details) from error
 
     def _initialize_new_tailnet(self, space):
         # An unknown filtered tailnet is MEMBERSHIP_NOT_INITIALIZED in v6.
@@ -57,7 +57,7 @@ class TailnetLifecycle:
         try:
             redeem_once(self._home, parsed.tailnet, self._tailnet_raw_call)
         except ForwardingSidecarError as error:
-            raise OrgNetworkError(error.code, str(error)) from error
+            raise OrgNetworkError(error.code, str(error), error.details) from error
 
     def _announce_tailnet(self, tailnet_id):
         return self._tailnet_call('member-announce', {
@@ -91,7 +91,7 @@ class TailnetLifecycle:
                                   operation_id=operation_id, device_ids=device_ids)
         except ForwardingSidecarError as error:
             from ..service import OrgNetworkError
-            raise OrgNetworkError(error.code, str(error)) from error
+            raise OrgNetworkError(error.code, str(error), error.details) from error
 
     def remove_from_casdoor(self, org, user):
         # Discovery is NOT operator confirmation, including previously-known users.

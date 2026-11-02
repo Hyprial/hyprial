@@ -82,7 +82,7 @@ def message_targets(
         params: JsonObject = {}
         if kind is not None:
             params["kind"] = kind
-        result = services._daemon_request("targets", params)
+        result = services.runtime.request("targets", params)
         if not isinstance(result, dict) or not isinstance(result.get("targets"), list):
             raise services.CliError(
                 "INVALID_RESPONSE", "daemon targets result must contain an array"
@@ -95,4 +95,4 @@ def message_targets(
             json_indent=2,
         )
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)

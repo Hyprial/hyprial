@@ -35,7 +35,6 @@ if TYPE_CHECKING:
     from hyprial.biz.impl.workflow.identity import state_dir as state_dir
     from hyprial.biz.impl.routine.templates import template_text as template_text
     from hyprial.biz.impl.usage import usage_collection_disabled as usage_collection_disabled
-    from hyprial.biz.impl.workflow.identity import worker_binding as worker_binding
 
 _FACADE_EXPORTS = {
     'AgentCreationCompensation': ('hyprial.biz.impl.routine.execution.coordinator.generation', 'AgentCreationCompensation'),
@@ -70,7 +69,6 @@ _FACADE_EXPORTS = {
     'state_dir': ('hyprial.biz.impl.workflow.identity', 'state_dir'),
     'template_text': ('hyprial.biz.impl.routine.templates', 'template_text'),
     'usage_collection_disabled': ('hyprial.biz.impl.usage', 'usage_collection_disabled'),
-    'worker_binding': ('hyprial.biz.impl.workflow.identity', 'worker_binding'),
 }
 
 
@@ -124,5 +122,4 @@ __all__ = [
     'state_dir',
     'template_text',
     'usage_collection_disabled',
-    'worker_binding',
 ]

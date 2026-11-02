@@ -39,6 +39,6 @@ def message_status(
             params["messageId"] = message_id
         if timeout is not None:
             params["timeoutSeconds"] = timeout
-        return services._daemon_request("message.status", params)
+        return services.runtime.request("message.status", params)
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)

@@ -282,8 +282,6 @@ class AgentConfig:
             raise AgentConfigError(f"config.sources[0].path must be a directory: {root}")
         try:
             items = tuple(sorted(_scan_config_tree(root, root), key=lambda item: item.path))
-        except AgentConfigError:
-            raise
         except OSError as error:
             raise AgentConfigError(
                 f"cannot read explicit config source {root}: {error}"
@@ -567,8 +565,12 @@ def build_native_projection(
                 )
             native_path = provider_path if provider == harness else None
         else:
+            target = f"native/{harness}/{item.path}"
+            if parts[:1] == ("skills",) and len(parts) > 1:
+                target = f"shared/skills/{PurePosixPath(*parts[1:])}"
             raise AgentConfigError(
-                f"config item {item.path} is outside the frozen native/shared mapping"
+                f"config item {item.path} is outside the frozen native/shared "
+                f"mapping; move it to config/{target}"
             )
         if native_path is None:
             continue
@@ -949,11 +951,7 @@ def _known_credential_native_path(relative: str) -> str | None:
     if provider not in _SUPPORTED_HARNESSES:
         return None
     native_path = PurePosixPath(*parts[2:]).as_posix()
-    return (
-        native_path
-        if native_path in _KNOWN_NATIVE_CREDENTIAL_PATHS[provider]
-        else None
-    )
+    return native_path if native_path in _KNOWN_NATIVE_CREDENTIAL_PATHS[provider] else None
 
 
 def _validate_absolute_path(value: str, label: str) -> None:

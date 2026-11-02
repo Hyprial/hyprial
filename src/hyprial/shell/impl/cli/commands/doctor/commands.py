@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from hyprial.shell.impl.cli.commands.common.services import get_services
 
+from collections.abc import Mapping
 from hyprial.kernel import ipc_errors
 import json
 import typer
@@ -18,6 +19,10 @@ from hyprial.shell.impl.cli.commands.doctor.dsh_tui import (
 )
 from hyprial.shell.impl.cli.commands.doctor.route_session import (
     _route_session_doctor_check,
+)
+from hyprial.shell.impl.cli.commands.doctor.checks.org_metadata import (
+    org_metadata_doctor_check,
+    routine_health_doctor_check,
 )
 from hyprial.shell.impl.cli.commands.doctor.checks.start_failures import start_failures_doctor_checks
 from hyprial.shell.impl.cli.commands.doctor.zenoh import _zenoh_doctor_check
@@ -153,7 +158,7 @@ def _doctor_result(*, fix: bool = False) -> JsonObject:
     if credential_backups is not None:
         checks.append(credential_backups)
     try:
-        result = services._daemon_request(
+        result = services.runtime.request(
             "ps",
             {},
             timeout=7.0,
@@ -202,10 +207,10 @@ def _doctor_result(*, fix: bool = False) -> JsonObject:
             pac_gc_check = _pac_gc_doctor_check(result)
             if pac_gc_check is not None:
                 checks.append(pac_gc_check)
-            routine_check = _routine_health_doctor_check()
+            routine_check = routine_health_doctor_check()
             if routine_check is not None:
                 checks.append(routine_check)
-            org_metadata_check = _org_metadata_doctor_check()
+            org_metadata_check = org_metadata_doctor_check()
             if org_metadata_check is not None:
                 checks.append(org_metadata_check)
         else:
@@ -232,16 +237,43 @@ def _doctor_result(*, fix: bool = False) -> JsonObject:
                 },
             }
         )
+    # ``unknown`` is a fourth state: a check that could not be asked at all.
+    # It must never be folded into ``ok`` -- an uninspectable machine is not a
+    # healthy one, and silently counting it as a pass is how a probe stops
+    # meaning anything.
     summary = {
         status: sum(item["status"] == status for item in checks)
-        for status in ("ok", "warn", "fail")
+        for status in ("ok", "warn", "fail", "unknown")
     }
+    # Exit semantics (three-way, not two-way):
+    #   fail > 0                  -> 1  (something is broken)
+    #   fail == 0 and unknown > 0 -> 10 (INCOMPLETE: at least one check could not
+    #                                   be asked, so "healthy" is not established)
+    #   otherwise                 -> 0
+    exit_code = _doctor_exit_code(summary)
     return {
-        "ok": summary["fail"] == 0,
+        "ok": exit_code == 0,
         "schemaVersion": 1,
         "checks": checks,
         "summary": summary,
+        "exitCode": exit_code,
     }
+
+
+def _doctor_exit_code(summary: Mapping[str, int]) -> int:
+    """Map a doctor summary to an exit status.
+
+    Three outcomes, in priority order: something failed (1) outranks something
+    that could not be asked (10); a fully answered, fully passing run is 0.
+    Priority matters: reporting 10 while a real failure exists would hide the
+    failure behind an "incomplete" verdict.
+    """
+
+    if summary.get("fail", 0) > 0:
+        return 1
+    if summary.get("unknown", 0) > 0:
+        return 10
+    return 0
 
 
 def _daemon_service_pid() -> int | None:
@@ -256,38 +288,6 @@ def _daemon_service_pid() -> int | None:
     source = daemon if isinstance(daemon, dict) else value
     pid = source.get("pid") if isinstance(source, dict) else None
     return pid if type(pid) is int and pid > 0 else None
-
-
-def _org_metadata_doctor_check() -> JsonObject | None:
-    """Report organization metadata and directory-row data problems."""
-
-    services = get_services()
-    try:
-        network = services._daemon_request("org.network", {}, timeout=2.0)
-    except (services.CliError, ipc_errors.TransientDaemonError):
-        return None
-    if not isinstance(network, dict):
-        return None
-    raw_problems = network.get("dataProblems")
-    if not isinstance(raw_problems, list):
-        return None
-    problems = [problem for problem in raw_problems if isinstance(problem, dict)]
-    if not problems:
-        return {
-            "name": "org-metadata",
-            "status": "ok",
-            "detail": "organization metadata and directory rows are readable",
-        }
-    return {
-        "name": "org-metadata",
-        "status": "warn",
-        "detail": f"{len(problems)} organization data problem(s)",
-        "action": {
-            "command": "hyprial org network --json",
-            "description": "Inspect dataProblems and repair the reported organization data.",
-        },
-        "metrics": {"dataProblems": problems},
-    }
 
 
 def _restore_doctor_check(result: JsonObject) -> JsonObject | None:
@@ -335,73 +335,6 @@ def _restore_doctor_check(result: JsonObject) -> JsonObject | None:
             },
         }
     return {"name": "agent-restore", "status": "ok", "detail": detail}
-
-
-def _routine_health_doctor_check() -> JsonObject | None:
-    """Surface quarantined routines and address migrations (2026-09-14).
-
-    A routine whose stored spec no longer validates (e.g. a legacy bare-name
-    ``escalate_to`` with no unique roster match) is quarantined: it stops
-    scheduling and refuses resume until the spec is fixed. That must be
-    visible from ``hyprial doctor`` -- the incident this fixes was fifteen
-    days of silence. The address-migration ledger is reported as metrics so
-    automatic rewrites are auditable without paging anyone.
-    """
-    services = get_services()
-
-    try:
-        audit = services._daemon_request("routine.audit", {}, timeout=2.0)
-    except (services.CliError, ipc_errors.TransientDaemonError):
-        return None
-    if not isinstance(audit, dict):
-        return None
-    quarantined = [
-        item
-        for item in audit.get("quarantined", [])
-        if isinstance(item, dict) and isinstance(item.get("name"), str)
-    ]
-    migrations = audit.get("addressMigrations", [])
-    migration_list = (
-        [
-            {
-                "routine": m["routine"],
-                "field": m["field"],
-                "before": m["before"],
-                "after": m["after"],
-            }
-            for m in migrations
-            if isinstance(m, dict)
-        ]
-        if isinstance(migrations, list)
-        else []
-    )
-    if not quarantined and not migration_list:
-        return None
-    check: JsonObject = {
-        "name": "routine-addresses",
-        "status": "warn" if quarantined else "ok",
-        "detail": (
-            f"{len(quarantined)} routine(s) quarantined for schema faults "
-            f"(scheduling stopped, resume refused); {len(migration_list)} stored "
-            "address migration(s) applied automatically, resolved against THIS "
-            "machine's agents roster (confirm each rewrite is the intended "
-            "recipient — a same-name agent on another machine would have been "
-            "redirected silently)"
-        ),
-        "metrics": {
-            "quarantined": [item["name"] for item in quarantined],
-            "addressMigrations": migration_list,
-        },
-    }
-    if quarantined:
-        check["action"] = {
-            "command": "hyprial routine status <name> --json",
-            "description": (
-                "Fix the quarantined spec (full agent URI / route: / user: "
-                "addresses only), then remove and re-add the routine."
-            ),
-        }
-    return check
 
 
 def _maintenance_doctor_check(result: JsonObject) -> JsonObject | None:
@@ -997,4 +930,18 @@ def doctor(
     """Run health checks; ``--fix`` reruns pending upgrade steps."""
     services = get_services()
 
-    services._execute(lambda: _doctor_result(fix=fix), json_output=json_output)
+    payload = _doctor_result(fix=fix)
+    try:
+        services.runtime.execute(lambda: payload, json_output=json_output)
+    except typer.Exit:
+        # The shared emitter maps ``ok is False`` to exit 1.  Doctor needs a
+        # third answer: nothing is broken, but at least one check could not be
+        # asked -- that is INCOMPLETE (10), not FAILED (1).
+        summary = payload.get("summary") if isinstance(payload, dict) else None
+        if (
+            isinstance(summary, dict)
+            and summary.get("fail", 0) == 0
+            and summary.get("unknown", 0) > 0
+        ):
+            raise typer.Exit(code=10) from None
+        raise

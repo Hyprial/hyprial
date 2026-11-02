@@ -42,18 +42,20 @@ def gui_command(
         None,
         "--gui-home",
         help=(
-            "GUI npm project root (contains package.json), normally the "
-            "gui/ directory of an independent Git worktree. Overrides "
-            "HYPRIAL_GUI_HOME."
+            "Normal mode: a built GUI directory (dist/index.html or index.html); "
+            "dev mode: an existing Git worktree containing gui/package.json. "
+            "Overrides HYPRIAL_GUI_HOME or HYPRIAL_DEV_GUI_HOME respectively."
         ),
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit one startup JSON record."),
 ) -> None:
-    """Start the shared GUI from its npm project and wait in the foreground.
+    """Start the GUI and wait in the foreground.
 
-    Bare ``hyprial gui`` runs ``npm start``; ``hyprial gui dev`` runs
-    ``npm run dev`` with Vite hot reload.  Both use the same GUI source and the
-    same independent Node placeholder service.  Retired verbs are rejected.
+    Bare ``hyprial gui`` serves verified wheel assets with a Python static
+    server when installed; a source checkout still runs ``npm start``.
+    ``hyprial gui dev`` runs ``npm run dev`` from a verified source worktree.
+    Both keep the independent placeholder boundary.  Retired verbs are
+    rejected.
     """
     services = get_services()
 
@@ -105,7 +107,7 @@ def gui_command(
             return_code = termination.SIGTERM_EXIT_CODE
         raise typer.Exit(code=return_code)
 
-    services._execute(operation, json_output=json_output, allow_missing_home=True)
+    services.runtime.execute(operation, json_output=json_output, allow_missing_home=True)
 
 
 def gui_status(hyprial_home: Path, name: str) -> dict[str, Any]:

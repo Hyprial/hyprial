@@ -1,4 +1,10 @@
-"""Official ``lark-oapi`` SDK boundary used by the adapter."""
+"""Official ``lark-oapi`` SDK boundary used by the adapter.
+
+Decision block — 0.5.5.3 inline-backfill bound (#2213 review 1344 Q1):
+- The SDK client pins an explicit per-request HTTP timeout instead of relying
+  on the vendored default, so history paging cannot hang a caller indefinitely
+  if a future lark-oapi release changes or drops that default.
+"""
 
 from __future__ import annotations
 
@@ -57,6 +63,8 @@ from hyprial.daemon.impl.adapters.lark.outbound.sdk_translate import (
 if TYPE_CHECKING:
     from hyprial.kernel import Logger
 
+SDK_HTTP_TIMEOUT_SECONDS = 30.0
+
 class LarkSdkGateway:
     """Small synchronous facade over generated Lark IM v1 APIs."""
 
@@ -93,6 +101,7 @@ class LarkSdkGateway:
             .app_id(app_id)
             .app_secret(app_secret)
             .domain(lark_base_url())
+            .timeout(SDK_HTTP_TIMEOUT_SECONDS)
             .build()
         )
         return cls(client, logger=logger, gateway_name=gateway_name, app_id=app_id)

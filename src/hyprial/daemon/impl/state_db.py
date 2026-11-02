@@ -44,7 +44,7 @@ _BUSY_TIMEOUT_SECONDS = 2.0
 # after a failed ``BEGIN IMMEDIATE``, so the last attempt can still consume a
 # full ``_BUSY_TIMEOUT_SECONDS``.  Worst-case return is therefore
 # ``_LOCK_ACQUIRE_BUDGET_SECONDS + _BUSY_TIMEOUT_SECONDS`` (~10s).  Keep that
-# sum below the caller's IPC patience (the CLI's
+# sum below the caller's IPC patience (the kernel client's
 # ``_DAEMON_IPC_ROUNDTRIP_SECONDS = 15.0``; the lark worker ``_ipc`` = 15s;
 # the lifecycle operation deadline = 70s).  Raising the budget past that
 # turns a visible ``DAEMON_ERROR`` into a client timeout -- same cause,

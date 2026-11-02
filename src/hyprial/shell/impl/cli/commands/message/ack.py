@@ -24,8 +24,8 @@ def ack(
     """Acknowledge a message without replying."""
     services = get_services()
 
-    services._execute(
-        lambda: services._daemon_request(
+    services.runtime.execute(
+        lambda: services.runtime.request(
             "message.ack",
             {
                 **_message_claim_params(source, on_behalf_of=on_behalf_of),

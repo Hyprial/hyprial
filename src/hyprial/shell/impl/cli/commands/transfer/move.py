@@ -8,6 +8,41 @@ from typing import Any
 
 import typer
 
+from hyprial.shell.impl.cli.commands.common.support import CliError
+
+
+def parse_depends(values: "list[str] | tuple[str, ...]") -> "list[dict[str, object]]":
+    """Parse ``--depends`` into manifest dependency records.
+
+    ``KIND=PATH`` declares a file the bundle carries (``present=True``);
+    ``KIND=!note`` declares something the target must provide.
+    """
+
+    records: list[dict[str, object]] = []
+    for raw in values:
+        kind, sep, value = raw.partition("=")
+        kind = kind.strip()
+        value = value.strip()
+        if not sep or not kind:
+            raise CliError(
+                "depends_invalid",
+                f"--depends needs KIND=PATH or KIND=!note, got {raw!r}",
+            )
+        if value.startswith("!"):
+            note = value[1:].strip()
+            if not note:
+                raise CliError(
+                    "depends_invalid",
+                    f"--depends {raw!r} declares nothing the target must provide",
+                )
+            records.append({"kind": kind, "present": False, "note": note})
+        elif value:
+            records.append({"kind": kind, "present": True, "path": value})
+        else:
+            raise CliError(
+                "depends_invalid", f"--depends {raw!r} names no path"
+            )
+    return records
 
 
 def register_session_commands(app, get_dependencies):
@@ -129,43 +164,7 @@ def register_session_commands(app, get_dependencies):
 
 
 
-    def _parse_depends(values: "list[str] | tuple[str, ...]") -> "list[dict[str, object]]":
-        """Parse ``--depends`` into manifest dependency records.
-
-        ``KIND=PATH`` declares a file the bundle carries (``present=True``);
-        ``KIND=!note`` declares something the target must provide.
-        """
-
-        dependencies = get_dependencies()
-        CliError = dependencies.error_type
-
-        records: list[dict[str, object]] = []
-        for raw in values:
-            kind, sep, value = raw.partition("=")
-            kind = kind.strip()
-            value = value.strip()
-            if not sep or not kind:
-                raise CliError(
-                    "depends_invalid",
-                    f"--depends needs KIND=PATH or KIND=!note, got {raw!r}",
-                )
-            if value.startswith("!"):
-                note = value[1:].strip()
-                if not note:
-                    raise CliError(
-                        "depends_invalid",
-                        f"--depends {raw!r} declares nothing the target must provide",
-                    )
-                records.append({"kind": kind, "present": False, "note": note})
-            elif value:
-                records.append({"kind": kind, "present": True, "path": value})
-            else:
-                raise CliError(
-                    "depends_invalid", f"--depends {raw!r} names no path"
-                )
-        return records
-
     return {
         "transfer": transfer,
-        "_parse_depends": _parse_depends,
+        "_parse_depends": parse_depends,
     }

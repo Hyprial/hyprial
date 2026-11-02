@@ -90,8 +90,8 @@ def agent_grant(
     """
     services = get_services()
     if verb == "add":
-        services._execute(
-            lambda: services._daemon_request("agent.grant", {
+        services.runtime.execute(
+            lambda: services.runtime.request("agent.grant", {
                 "actor": actor,
                 "capability": _required(capability, "--capability"),
                 "scope": _single_scope(scope),
@@ -101,15 +101,15 @@ def agent_grant(
         )
         return
     if verb == "list":
-        services._execute(
-            lambda: services._daemon_request("agent.grants", {
+        services.runtime.execute(
+            lambda: services.runtime.request("agent.grants", {
                 "actor": actor, "audit": audit,
             }), json_output=json_output,
         )
         return
     if verb == "revoke":
-        services._execute(
-            lambda: services._daemon_request(
+        services.runtime.execute(
+            lambda: services.runtime.request(
                 "agent.revoke",
                 {"actor": actor, "grantId": _required(grant_id, "grant id")},
             ),
@@ -229,7 +229,7 @@ def _run_check(
         payload["entryPoints"] = dict(CAPABILITY_ENTRY_POINTS)
         return payload
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 def _run_visibility(
@@ -308,7 +308,7 @@ def _run_visibility(
             "visible": visible,
         }
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @agent_app.command("grants")
@@ -321,7 +321,7 @@ def agent_grants(
     are read with `agent grant <ACTOR> list [--audit]`.
     """
     services = get_services()
-    services._execute(
-        lambda: services._daemon_request("agent.grants", {}),
+    services.runtime.execute(
+        lambda: services.runtime.request("agent.grants", {}),
         json_output=json_output,
     )

@@ -36,6 +36,7 @@ def build_actor_status_snapshot(
     registered_actors: Iterable[str],
     presence_actors: Iterable[str],
     status_for_actor: Callable[[str, frozenset[str]], str],
+    run_states: Mapping[str, JsonObject] | None = None,
 ) -> list[JsonObject]:
     """Build the canonical, deduplicated actor table for one daemon instant.
 
@@ -120,6 +121,8 @@ def build_actor_status_snapshot(
         row = rows[actor]
         status = status_for_actor(actor, canonical_presence)
         row["status"] = status
+        if run_states is not None and actor in run_states:
+            row["runState"] = run_states[actor]
         # An actor without a supervisor-owned process is online/offline, never
         # a stopped process inferred from missing evidence.
         row["state"] = (

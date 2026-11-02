@@ -570,6 +570,7 @@ class DaemonApplication(
         self._interactive_turn_stats: dict[str, InteractiveTurnStats] = {}
         #: Per ``(actor, sessionRef)`` started/ended report receipts (WP5-A §4.2).
         self._carrier_turn_ledgers: dict[tuple[str, str], object] = {}
+        self._carrier_run_ledgers: dict[str, object] = {}
         self._clock: Callable[[], float] = time.monotonic
         self._maintenance_scheduler = GenerationScheduler()
         self._status_refresh = self._construct_or_rollback(CoalescedRefreshAuthority)
@@ -919,9 +920,8 @@ class DaemonApplication(
         self._home_guard = self._construct_or_rollback(lambda: ActiveDaemonHeartbeat(
             self.hyprial_home,
             keepalive_duration=keepalive_duration,
-            ownership_lost=self._stop_request_trace.bind(
-                self.stop_event, "home-ownership-lost"
-            ),
+            ownership_lost=self._stop_request_trace.bind(self.stop_event, "home-ownership-lost"),
+            logger=self._log_trace,
             duplicate_detected=self._on_startup_duplicate_detected,
             duplicate_check_failed=self._on_duplicate_check_failed,
         ))

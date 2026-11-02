@@ -1,0 +1,315 @@
+/*
+ * dev-01 first-run visual layer.
+ *
+ * Scope: only descendants of `.dev01-v17-onboarding`. The shared primitives,
+ * AppShell, global tokens and other pages are not changed. Values follow the
+ * approved v17 first-run reference (brand lock, centered single-step card,
+ * segmented progress, pill buttons) while the product keeps the team's four
+ * steps and real capability boundaries.
+ */
+.dev01-v17-onboarding {
+  width: min(720px, 100%);
+  margin: 0 auto;
+  padding: 36px 0 40px;
+  color: var(--ui-ink-1);
+}
+
+.dev01-v17-brand {
+  display: flex;
+  justify-content: center;
+  margin: 4px 0 30px;
+}
+
+.dev01-v17-brand img {
+  display: block;
+  width: 360px;
+  max-width: 100%;
+  height: auto;
+}
+
+.dev01-v17-notice.ui-notice {
+  margin: 0 0 18px;
+  border-radius: 16px;
+  padding: 12px 14px;
+}
+
+.dev01-v17-notice .ui-notice__body {
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.dev01-v17-steps {
+  margin: 0 0 22px;
+}
+
+.dev01-v17-steps-list {
+  display: flex;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dev01-v17-step {
+  flex: 1 1 0;
+  min-width: 0;
+  border-top: 6px solid var(--ui-neutral-100);
+  padding-top: 10px;
+  color: var(--ui-ink-3);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.35;
+}
+
+.dev01-v17-step__label {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.dev01-v17-step--current {
+  border-color: var(--ui-accent);
+  color: var(--ui-ink-1);
+  font-weight: 700;
+}
+
+.dev01-v17-step[data-status="completed"] {
+  border-color: var(--ui-accent);
+  color: var(--ui-ink-1);
+  font-weight: 700;
+}
+
+.dev01-v17-step[data-status="failed"] {
+  border-color: var(--ui-danger);
+  color: var(--ui-danger);
+}
+
+.dev01-v17-step[data-status="blocked"] {
+  border-color: var(--ui-warning);
+  color: var(--ui-warning);
+}
+
+.dev01-v17-stage {
+  min-width: 0;
+}
+
+.dev01-v17-step-header {
+  margin: 0 0 24px;
+}
+
+.dev01-v17-step-header h2 {
+  margin: 0;
+  font-family: var(--font-brand);
+  font-size: 36px;
+  font-weight: 900;
+  letter-spacing: normal;
+  line-height: 1.08;
+}
+
+.dev01-v17-card.ui-card {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+  padding: 32px;
+  border: 0;
+  border-radius: 28px;
+  background: var(--ui-surface);
+  box-shadow: none;
+}
+
+.dev01-v17-card > p {
+  margin: 0;
+  color: var(--ui-ink-3);
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+.dev01-v17-card .settings-form {
+  gap: 14px;
+}
+
+.dev01-v17-card .settings-form input {
+  min-height: 44px;
+  border-radius: 13px;
+}
+
+.dev01-v17-card .settings-form .ui-button {
+  align-self: auto;
+}
+
+.dev01-v17-card .settings-actions {
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.dev01-v17-card .settings-status-list {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.dev01-v17-card .ui-status-card {
+  padding: 13px 15px;
+  border-radius: 16px;
+  box-shadow: none;
+}
+
+.dev01-v17-card .ui-status-card.ui-card--neutral {
+  border-color: var(--ui-border);
+  background: var(--ui-surface-muted);
+}
+
+.dev01-v17-card .ui-status-card__label {
+  font-size: 10px;
+}
+
+.dev01-v17-card .ui-status-card__value {
+  margin-top: 4px;
+  font-size: 15px;
+  line-height: 1.3;
+}
+
+.dev01-v17-card .ui-status-card__hint {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.dev01-v17-card .settings-footnote {
+  color: var(--ui-ink-3);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.dev01-v17-card .ui-button {
+  min-height: 44px;
+  border-radius: 999px;
+  padding: 0 20px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.dev01-v17-card .ui-button--primary {
+  border-color: var(--ui-accent);
+  background: var(--ui-accent);
+  color: var(--ui-on-accent);
+  box-shadow: none;
+}
+
+.dev01-v17-card .ui-button--primary:hover:not(:disabled) {
+  border-color: var(--ui-accent-hover);
+  background: var(--ui-accent-hover);
+}
+
+.dev01-v17-card .ui-button--secondary {
+  border-color: transparent;
+  background: var(--ui-neutral-100);
+  color: var(--ui-ink-1);
+}
+
+.dev01-v17-card .ui-button--secondary:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--ui-neutral-200);
+}
+
+.dev01-v17-model-panel.ui-card {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.dev01-v17-model-panel .section-heading h3 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.dev01-v17-model-panel .section-heading p {
+  margin: 5px 0 0;
+  color: var(--ui-ink-3);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.dev01-v17-debug {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-top: 26px;
+  padding-top: 16px;
+  border-top: 1px solid var(--ui-border);
+  color: var(--ui-ink-3);
+  font-size: 12px;
+}
+
+.dev01-v17-debug__label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.dev01-v17-debug__scenario {
+  color: var(--ui-ink-2);
+  font-weight: 600;
+}
+
+.dev01-v17-debug__note {
+  flex: 1 1 320px;
+  margin: 0;
+  line-height: 1.55;
+}
+
+.dev01-v17-debug .ui-button {
+  margin-left: auto;
+}
+
+@media (max-width: 640px) {
+  .dev01-v17-onboarding {
+    padding-top: 12px;
+  }
+
+  .dev01-v17-brand {
+    margin-bottom: 22px;
+  }
+
+  .dev01-v17-brand img {
+    width: 260px;
+  }
+
+  .dev01-v17-steps-list {
+    gap: 10px;
+  }
+
+  .dev01-v17-card.ui-card {
+    padding: 32px;
+    border-radius: 28px;
+  }
+
+  .dev01-v17-debug .ui-button {
+    margin-left: 0;
+  }
+}
+
+@media (min-width: 641px) {
+  .dev01-v17-step-header {
+    margin-bottom: 32px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dev01-v17-card .ui-button {
+    transition: none;
+  }
+}
+
+/* Compact first-run key controls only; other SecretField consumers keep their layout. */
+.dev01-v17-onboarding .dev01-model-key-form { display: grid; gap: 16px; }
+.dev01-v17-onboarding .secret-field-inline { position: relative; min-width: 0; }
+.dev01-v17-onboarding .secret-field-inline input { width: 100%; min-height: 48px; padding-right: 52px; box-sizing: border-box; }
+.dev01-v17-onboarding .secret-field-inline__reveal { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); display: grid; place-items: center; width: 44px; height: 40px; padding: 0; border: 0; border-radius: 12px; background: transparent; color: var(--ui-ink-3); cursor: pointer; }
+.dev01-v17-onboarding .secret-field-inline__reveal:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: -3px; }
+.dev01-v17-onboarding .secret-field-inline__reveal:disabled { cursor: default; opacity: .5; }
+.dev01-v17-onboarding .dev01-model-actions { display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 10px; }
+@media (max-width: 420px) { .dev01-v17-onboarding .dev01-model-actions .ui-button { min-width: 0; padding-inline: 14px; } }

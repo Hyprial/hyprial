@@ -1,0 +1,47 @@
+.dev-session-toolbar {
+  display: flex;
+  position: relative;
+  z-index: 2;
+  flex: 1 1 380px;
+  min-width: 0;
+  max-width: 100%;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+  max-height: 26px;
+  padding: 2px 8px;
+  border: 1px solid rgb(120 113 108 / 24%);
+  border-radius: 10px;
+  background: rgb(255 255 255 / 94%);
+  color: #57534e;
+  font-size: 11px;
+}
+
+.dev-session-viewer,
+.dev-session-code {
+  white-space: nowrap;
+}
+
+.dev-session-button {
+  padding: 2px 8px;
+  border: 1px solid rgb(120 113 108 / 32%);
+  border-radius: 8px;
+  background: #fff;
+  color: #292524;
+  font: inherit;
+  cursor: pointer;
+}
+
+.dev-session-button:focus-visible {
+  outline: 2px solid #6d28d9;
+  outline-offset: 2px;
+}
+
+.dev-session-result {
+  color: #3f6212;
+  font-weight: 600;
+}

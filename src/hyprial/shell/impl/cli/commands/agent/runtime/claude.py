@@ -44,12 +44,36 @@ def _reject_claude_session_identity_args(runtime_args: tuple[str, ...]) -> None:
             )
 
 
-def _legacy_pty_admission(
-    creation: JsonObject, environment: dict[str, str], *, name: str, state_dir: Path,
+def _log_credential_source(
+    state_dir: Path, *, name: str, source: str, runtime_mode: str,
 ) -> None:
-    """No new secret transport: admit only this launch's existing auth sources."""
-    from hyprial.daemon import ClaudeRuntimeError, validate_legacy_claude_auth
+    """One launch-time telemetry record per credential-source decision.
+
+    The lazy import keeps ``hyprial.kernel`` off the CLI import path, and one
+    site (instead of one per runtime mode) is one CLI->backend edge, not two.
+    """
     from hyprial.kernel import Logger
+
+    Logger.worker(state_dir, runtime="claude", name=name).info(
+        "worker.claude.credential_source", credentialSource=source, runtimeMode=runtime_mode,
+    )
+
+
+def _legacy_pty_admission(
+    creation: JsonObject,
+    environment: dict[str, str],
+    *,
+    name: str,
+    state_dir: Path,
+    runtime_error: type[Exception],
+) -> None:
+    """No new secret transport: admit only this launch's existing auth sources.
+
+    ``runtime_error`` is the caller's already-imported ``ClaudeRuntimeError``;
+    importing the class here as well would add a second CLI->daemon edge for
+    the same symbol in one file.
+    """
+    from hyprial.daemon import validate_legacy_claude_auth
 
     services = get_services()
     managed = creation.get("agent", {}).get("capabilities", {}).get("creationOrigin") == "managed-launch"
@@ -57,7 +81,7 @@ def _legacy_pty_admission(
     try:
         if managed:
             # Only daemon-verified ownership/home metadata, never a guessed path.
-            receipt = services._daemon_request("agent.ensure-home", {"name": name})
+            receipt = services.runtime.request("agent.ensure-home", {"name": name})
             home = Path(receipt["home"]["path"])
             environment["HYPRIAL_AGENT_DIR"] = str(home)
             native = home / "secrets/native/claude"
@@ -66,15 +90,13 @@ def _legacy_pty_admission(
         candidate = dict(environment)
         try:
             source = validate_legacy_claude_auth(candidate)
-        except ClaudeRuntimeError as error:
+        except runtime_error as error:
             if managed:
                 raise services.CliError(error.code or ipc_errors.INVALID_ARGUMENT, str(error)) from error
         else:
             environment.update(candidate)
     finally:
-        Logger.worker(state_dir, runtime="claude", name=name).info(
-            "worker.claude.credential_source", credentialSource=source, runtimeMode="legacy",
-        )
+        _log_credential_source(state_dir, name=name, source=source, runtime_mode="legacy")
 
 
 def _start_interactive_claude(
@@ -175,7 +197,7 @@ def _start_interactive_claude(
         validate_claude_auth_environment,
     )
 
-    status = services._daemon_request("ps")
+    status = services.runtime.request("ps")
     actor = _interactive_actor(name, status)
     from hyprial.kernel import agent_uri_actor
 
@@ -444,13 +466,15 @@ def _start_interactive_claude(
                     error.code or ipc_errors.INVALID_ARGUMENT, str(error)
                 ) from error
             finally:
-                from hyprial.kernel import Logger
-
-                Logger.worker(state_dir, runtime="claude", name=name).info(
-                    "worker.claude.credential_source", credentialSource=source, runtimeMode="p2",
-                )
+                _log_credential_source(state_dir, name=name, source=source, runtime_mode="p2")
         else:
-            _legacy_pty_admission(creation, launch_environment, name=name, state_dir=state_dir)
+            _legacy_pty_admission(
+                creation,
+                launch_environment,
+                name=name,
+                state_dir=state_dir,
+                runtime_error=ClaudeRuntimeError,
+            )
         # M2: the attached TUI (and every shell it runs) carries the carrier's
         # daemon-bound identity. Build a child-only map; never mutate os.environ.
         _publish_session_ref(session_ref_file, session_ref)
@@ -498,7 +522,7 @@ def _start_interactive_claude(
         registered = False
         deadline = services.time.monotonic() + 60.0
         while services.time.monotonic() < deadline:
-            status = services._daemon_request("ps")
+            status = services.runtime.request("ps")
             sessions = status.get("interactiveSessions", [])
             registered = isinstance(sessions, list) and any(
                 isinstance(item, dict)

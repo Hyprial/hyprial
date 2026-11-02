@@ -5,12 +5,13 @@ without importing the composition root (``hyprial.cli``).
 """
 from __future__ import annotations
 
-import typer
+from hyprial.shell.impl.cli.commands.common.groups import group
+from hyprial.shell.impl.cli.runtime.legacy_paths import MovedPathGroup
 
 
-app = typer.Typer(
+app = group(
     add_completion=False,
+    cls=MovedPathGroup,
     help="Harness Bridge command line interface.",
-    no_args_is_help=False,
     rich_markup_mode="rich",
 )

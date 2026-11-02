@@ -11,6 +11,7 @@ import math
 import re
 import socket
 import typer
+from hyprial.shell.impl.cli.commands.common.groups import group
 
 from hyprial.shell.impl.cli.commands.common.pending_restart import (
     _install_locked_requirement,
@@ -20,7 +21,7 @@ from hyprial.shell.impl.cli.commands.common.pending_restart import (
 from hyprial.shell.impl.cli.commands.common.support import JsonObject, _RESTORE_FOLLOWUP_POLL_INTERVAL_SECONDS, _utc_now
 
 
-upgrade_app = typer.Typer(
+upgrade_app = group(
     help="Upgrade the whole installation and manage automatic upgrades.",
     invoke_without_command=True,
     no_args_is_help=False,
@@ -473,13 +474,36 @@ def _perform_upgrade(
             ) from error
         result["notification"] = notification
 
-    return _restart_daemon_onto_install(
-        result,
-        before=before,
-        installed_version=installed_version,
-        resolution=resolution,
-        resolved=resolved,
-    )
+    try:
+        return _restart_daemon_onto_install(
+            result,
+            before=before,
+            installed_version=installed_version,
+            resolution=resolution,
+            resolved=resolved,
+        )
+    except ImportError as error:
+        # The old process may have lost an import path after replacement,
+        # including after it stopped the daemon. A fresh CLI can use the new
+        # installation; do not leave the operator with only a raw import error.
+        raise services.CliError(
+            "UPGRADE_RESTART_FAILED",
+            f"upgrade installed {installed_version}, but daemon restart failed: "
+            f"{error}. Run `hyprial daemon restart` from a new shell command to restore service.",
+            {
+                **resolved,
+                "upgradeCompleted": True,
+                "upgraded": True,
+                "restartRequired": True,
+                "restart": {
+                    "attempted": True,
+                    "restarted": False,
+                    "supervision": "unsupervised",
+                    "reason": "post-install import failed",
+                    "before": before,
+                },
+            },
+        ) from error
 
 
 def _read_restore_phase() -> str | None:
@@ -492,7 +516,7 @@ def _read_restore_phase() -> str | None:
     """
     services = get_services()
 
-    answer = services._daemon_request("ping", timeout=2.0)
+    answer = services.runtime.request("ping", timeout=2.0)
     if isinstance(answer, dict):
         phase = answer.get("phase")
         if isinstance(phase, str):
@@ -529,7 +553,7 @@ def _pending_connector_count() -> int | None:
     services = get_services()
 
     try:
-        answer = services._daemon_request("ps", timeout=2.0, restore_wait=0.0)
+        answer = services.runtime.request("ps", timeout=2.0, restore_wait=0.0)
     except (services.CliError, ipc_errors.TransientDaemonError):
         # Mid-restore ps is refused as a transient class (#332 F4②); either
         # way there is no count to read, and the message omits N.
@@ -724,4 +748,4 @@ def upgrade(
             result["upgradeSteps"] = _run_upgrade_steps(services)
         return result
 
-    services._execute(operation, json_output=json_output, allow_missing_home=True)
+    services.runtime.execute(operation, json_output=json_output, allow_missing_home=True)

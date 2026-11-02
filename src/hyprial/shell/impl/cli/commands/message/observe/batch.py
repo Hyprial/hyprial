@@ -65,14 +65,14 @@ def message_batch(
         params["afterCursor"] = after_cursor
 
     def operation() -> Any:
-        result = services._daemon_request("message.pending.batch", params)
+        result = services.runtime.request("message.pending.batch", params)
         if isinstance(result, Mapping):
             return CliResult(result, render=_render_batch)
         return result
 
     # The daemon owns the inbox: a missing local home must not refuse to ask
     # it.  The request itself reports an unreachable daemon honestly.
-    services._execute(operation, json_output=json_output, allow_missing_home=True)
+    services.runtime.execute(operation, json_output=json_output, allow_missing_home=True)
 
 
 __all__ = ["message_batch"]

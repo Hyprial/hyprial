@@ -56,7 +56,7 @@ def help_command(
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
     """Show the top-level command inventory registered with Typer."""
-    get_services()._execute(
+    get_services().runtime.execute(
         lambda: CliResult(
             {"ok": True, "usage": render_top_level_help(app)}, render=lambda data: data["usage"]
         ),
@@ -71,6 +71,6 @@ def version(
     """Show the installed version and update source."""
     services = get_services()
 
-    services._execute(
+    services.runtime.execute(
         _version_result, json_output=json_output, allow_missing_home=True
     )

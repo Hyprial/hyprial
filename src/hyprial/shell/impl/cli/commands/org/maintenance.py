@@ -46,4 +46,4 @@ def org_repin(
                        if code == 'REVISION_CONFLICT' else
                        'Offline re-pin failed. Keep networking stopped and retry the same operation.')
             raise services.CliError(code, message) from error
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)

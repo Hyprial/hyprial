@@ -5,12 +5,14 @@ from __future__ import annotations
 from typing import Any
 
 import typer
+from hyprial.shell.impl.cli.commands.common.groups import group
 
 from hyprial.shell.impl.cli.commands.common.services import get_services
-from hyprial.shell.impl.cli.output import confirm
+from hyprial.shell.impl.cli.output import CliResult, confirm
+from hyprial.shell.impl.cli.output.status import render_agent_list
 
 
-agent_app = typer.Typer(
+agent_app = group(
     help=(
         "Create, inspect and destroy the agents registered on this machine. "
         "An agent is an identity plus its configuration; the harness it runs "
@@ -19,21 +21,21 @@ agent_app = typer.Typer(
     )
 )
 
-secret_app = typer.Typer(
+secret_app = group(
     help="Manage explicit per-agent secret grants without exposing values."
 )
 
-migration_app = typer.Typer(
+migration_app = group(
     help="Preflight, execute, and roll back one authorized agent-home migration.",
     no_args_is_help=True,
 )
 
-home_app = typer.Typer(
+home_app = group(
     help="Inspect and migrate the agent home directories on this machine.",
     no_args_is_help=True,
 )
 
-config_app = typer.Typer(
+config_app = group(
     help="Validate, atomically replace, or roll back an existing P2 config root.",
     no_args_is_help=True,
 )
@@ -50,11 +52,15 @@ def agent_list(
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
-    """List this machine's agents with their real online/offline status."""
+    """List local agents, presence and scoped cell run diagnostics.
+
+    Missing runState means unsupported, not idle. Permission coverage=false
+    means the carrier cannot report permission waits, not that none exist.
+    """
     services = get_services()
 
-    services._execute(
-        lambda: services._daemon_request(
+    def operation() -> CliResult:
+        result = services.runtime.request(
             "agent.list",
             {
                 **(
@@ -64,9 +70,18 @@ def agent_list(
                 ),
                 **({"excludeWf": True} if exclude_wf else {}),
             },
-        ),
-        json_output=json_output,
-    )
+        )
+        if (
+            not isinstance(result, dict)
+            or not isinstance(result.get("agents"), list)
+            or not all(isinstance(row, dict) for row in result["agents"])
+        ):
+            raise services.CliError(
+                "INVALID_RESPONSE", "daemon agent.list result must contain agent rows"
+            )
+        return CliResult(result, render=render_agent_list)
+
+    services.runtime.execute(operation, json_output=json_output)
 
 @agent_app.command("unblock")
 def agent_unblock(
@@ -76,8 +91,8 @@ def agent_unblock(
     """Release a durable agent block so its next delivery may proceed."""
     services = get_services()
 
-    services._execute(
-        lambda: services._daemon_request("agent.unblock", {"name": name}),
+    services.runtime.execute(
+        lambda: services.runtime.request("agent.unblock", {"name": name}),
         json_output=json_output,
     )
 
@@ -109,7 +124,7 @@ def agent_destroy(
                     f"destroying agent {name!r} from a non-interactive command "
                     "requires --yes",
                 )
-            preview = services._daemon_request("agent.destroy.preview", {"name": name})
+            preview = services.runtime.request("agent.destroy.preview", {"name": name})
             workspace = preview.get("workspace")
             if not isinstance(workspace, dict):
                 raise services.CliError(
@@ -129,6 +144,6 @@ def agent_destroy(
             )
             if not confirm(prompt):
                 raise services.CliError("CANCELLED", "agent destroy cancelled")
-        return services._daemon_request("agent.destroy", {"name": name})
+        return services.runtime.request("agent.destroy", {"name": name})
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)

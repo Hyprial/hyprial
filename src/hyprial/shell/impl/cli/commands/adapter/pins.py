@@ -27,8 +27,8 @@ def adapter_pin(
     """
     services = get_services()
 
-    services._execute(
-        lambda: services._daemon_request("adapter.pin", {"name": adapter, "actor": actor}),
+    services.runtime.execute(
+        lambda: services.runtime.request("adapter.pin", {"name": adapter, "actor": actor}),
         json_output=json_output,
     )
 
@@ -41,7 +41,7 @@ def adapter_unpin(
     """Remove an adapter's receiver pin from its agent's record."""
     services = get_services()
 
-    services._execute(
-        lambda: services._daemon_request("adapter.unpin", {"name": adapter}),
+    services.runtime.execute(
+        lambda: services.runtime.request("adapter.unpin", {"name": adapter}),
         json_output=json_output,
     )

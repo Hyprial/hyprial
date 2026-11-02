@@ -1,0 +1,76 @@
+.model-service-section {
+  display: grid;
+  gap: 12px;
+}
+
+.model-service-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.model-service-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+  background: var(--ui-surface);
+}
+
+.model-service-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-weight: 600;
+}
+
+.model-service-meta {
+  color: var(--ui-ink-2);
+  font-size: 12px;
+}
+
+.model-service-form form {
+  display: grid;
+  gap: 10px;
+  max-width: 520px;
+}
+
+.model-service-methods {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.model-service-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.message-connection-section {
+  display: grid;
+  gap: 10px;
+}
+
+.message-connection-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.message-connection-agents {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 6px 0 0;
+  padding: 0;
+  border: 0;
+}

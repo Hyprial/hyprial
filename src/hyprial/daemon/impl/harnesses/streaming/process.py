@@ -619,12 +619,11 @@ class SequentialTurnProcess(
                                         time.time_ns() // 1_000_000
                                     )
                             turn_started = True
-                            await client.query(current.model_prompt())
-                            # A selected delivery is not interruptible until the
-                            # harness has accepted it as a native turn.  Publishing
-                            # it before query() returns lets clients with no turn
-                            # ID treat interrupt as a no-op while this process
-                            # reports success and permanently marks the delivery.
+                            query_delivery = getattr(client, "query_delivery", None)
+                            if callable(query_delivery):
+                                await query_delivery(current)
+                            else:
+                                await client.query(current.model_prompt())
                             with self._lock:
                                 self._active_delivery_id = current.delivery_id
                                 stop_interrupt_pending = self._stop_interrupt_pending
@@ -654,6 +653,8 @@ class SequentialTurnProcess(
                                 interruption_reason = self._daemon_interruption_reasons.pop(
                                     current.delivery_id, None
                                 )
+                            if getattr(client, "delivery_skipped", False) is True:
+                                interruption_reason = "delivery-no-longer-fetched"
                             if (
                                 interruption_reason is not None
                                 and result.status is not HarnessResultStatus.COMPLETED
@@ -685,11 +686,6 @@ class SequentialTurnProcess(
                                         "failure": result.error
                                         or result.status.value,
                                         "failureCode": result.failure_code or "",
-                                        # Card 260: when the failure IS the
-                                        # model vendor's own error stop, the log
-                                        # must say so and quote it verbatim --
-                                        # pi's session file is not an acceptable
-                                        # substitute for the worker log.
                                         **(
                                             {
                                                 "reason": "provider stopReason=error",

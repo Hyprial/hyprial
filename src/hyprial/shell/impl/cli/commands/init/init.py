@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:  # deferred annotations only
     from hyprial.identity import IdentityTransactionLock
 
+from hyprial.shell.impl.cli.commands.common.groups import group
 from hyprial.shell.impl.cli.commands.common.services import get_services
 
 from typing import Any
@@ -15,10 +16,17 @@ from hyprial.kernel import DaemonLaunchResult
 from hyprial.kernel import ipc_errors
 import os
 import typer
-
-from hyprial.shell.impl.cli.commands.common.root import app
-from hyprial.shell.impl.cli.output import confirm
 from hyprial.shell.impl.cli.commands.common.support import DAEMON_START_IDLE_BUDGET_SECONDS, JsonObject, _INIT_READY_TIMEOUT_ENV, _announce_setup_guidance, _append_warning, _squire_setup_warning
+
+#: ``init`` is a group because ``onboarding`` lives under it, but a bare
+#: ``hyprial init`` still runs the initialization below (deliberate exception
+#: to the help-on-bare-invocation rule).
+init_app = group(
+    help="Initialize home and daemon, then plan first-run setup.",
+    invoke_without_command=True,
+    no_args_is_help=False,
+)
+
 
 
 def _zenoh_endpoint_warning(result: JsonObject) -> JsonObject | None:
@@ -68,7 +76,7 @@ def _org_init_warning(warning: JsonObject | None) -> JsonObject | None:
     if warning is None:
         return None
     try:
-        result = services._daemon_request(
+        result = services.runtime.request(
             "org.fetch",
             {"requestMode": "neighbors", "timeoutSeconds": 2.0},
             restore_wait=0.0,
@@ -191,8 +199,9 @@ def _complete_initialization(
     return result
 
 
-@app.command()
+@init_app.callback(invoke_without_command=True)
 def init(
+    ctx: typer.Context,
     listen: str | None = typer.Option(
         None,
         "--listen",
@@ -245,6 +254,8 @@ def init(
     tailnet branch.  An existing owner still takes the pre-onboarding path
     unchanged; no login implementation is copied or launched through a shell.
     """
+    if ctx.invoked_subcommand is not None:
+        return
     services = get_services()
 
     def operation() -> JsonObject:
@@ -279,18 +290,31 @@ def init(
         finally:
             for transaction in held_identity_transaction:
                 transaction.close()
-        requested = service
-        if requested is None and not json_output and services._stdin_isatty():
-            requested = confirm("Install the Hyprial daemon as a per-user service?")
+        # Autostart is the default, not an opt-in.  A daemon that is installed
+        # but not supervised comes back only if a human starts it, which is
+        # exactly the failure this call removes -- and a fresh install has no
+        # other way to learn it.  ``--no-service`` stays available for
+        # containers and CI, where a supervisor is someone else's business.
+        requested = True if service is None else service
         if requested:
             from hyprial.shell.impl.cli.commands.daemon.service import (
                 _install_status,
                 _run_service,
             )
 
-            result["service"] = _run_service(_install_status)
+            try:
+                result["service"] = _run_service(_install_status)
+            except services.CliError as error:
+                # The daemon is already serving (that part of init succeeded),
+                # so a supervisor we cannot install must not fail the whole
+                # init: report it where the reader can act on it.
+                result["service"] = {
+                    "ok": False,
+                    "reason": "service-install-failed",
+                    "detail": str(error),
+                }
         if not json_output:
             _announce_setup_guidance(result)
         return result
 
-    services._execute(operation, json_output=json_output, allow_missing_home=True)
+    services.runtime.execute(operation, json_output=json_output, allow_missing_home=True)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import math
 import os
@@ -21,6 +22,15 @@ from hyprial.kernel import lock_exclusive
 
 if TYPE_CHECKING:
     from hyprial.daemon.impl.mcp.channel.ownership import _OwnerProcessStatus
+
+def _describe_failure(error: BaseException) -> str:
+    """Return only the exception type and errno, never private error values."""
+    name = type(error).__name__
+    value = getattr(error, "errno", None)
+    if isinstance(value, int) and not isinstance(value, bool):
+        return f"{name}[{errno.errorcode.get(value, str(value))}]"
+    return name
+
 
 DEFAULT_KEEPALIVE_DURATION = 5.0
 KEEPALIVE_ENV = "HYPRIAL_DAEMON_KEEPALIVE_DURATION"
@@ -218,6 +228,8 @@ class ActiveDaemonHeartbeat:
         self._duplicate_observe_window = duplicate_observe_window
         self._sleeper = sleeper
         self._identity: str | None = None
+        self._read_failure: str | None = None
+        self._last_failure: str | None = None
         self._generation = uuid4().hex
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -327,20 +339,28 @@ class ActiveDaemonHeartbeat:
     def _renew_record(self) -> bool:
         try:
             with self._locked():
-                if not self._owns(self._read_record()):
-                    self._lose_ownership()
+                record = self._read_record()
+                if not self._owns(record):
+                    self._lose_ownership(self._read_failure or (
+                        "record-absent" if record is None else "record-mismatch"
+                    ))
                     return False
                 self._write_record()
             return True
-        except Exception:  # losing the fence stops the daemon
-            self._lose_ownership()
+        except Exception as error:  # losing the fence stops the daemon
+            self._lose_ownership(_describe_failure(error))
             return False
 
-    def _lose_ownership(self) -> None:
+    def _lose_ownership(self, detail: str | None = None) -> None:
         self._claimed = False
+        self._last_failure = detail
         self._stop.set()
         if self._ownership_lost is not None:
             self._ownership_lost()
+
+    def last_failure(self) -> str | None:
+        """The bounded diagnostic token for the most recent ownership loss."""
+        return self._last_failure
 
     def _snapshot_duplicate_candidate(self) -> dict[str, Any] | None:
         """Snapshot the pre-claim record if it names a *live* foreign process.
@@ -518,9 +538,15 @@ class ActiveDaemonHeartbeat:
         )
 
     def _read_record(self) -> dict[str, Any] | None:
+        self._read_failure = None
         try:
             value = json.loads(self.path.read_text(encoding="utf-8"))
-        except (FileNotFoundError, OSError, UnicodeError, json.JSONDecodeError):
+        except FileNotFoundError:
+            return None
+        except OSError as error:
+            self._read_failure = _describe_failure(error)
+            return None
+        except (UnicodeError, json.JSONDecodeError):
             return None
         return value if isinstance(value, dict) else None
 

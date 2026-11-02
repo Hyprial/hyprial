@@ -478,6 +478,7 @@ def main(arguments: list[str] | None = None) -> int:
     def reconnect() -> None:
         # The SDK callback remains non-blocking. Reconnect storms coalesce into
         # one active sweep plus one final pass; every pass owns a hard deadline.
+        adapter.begin_backfill()
         reconnect_sweeps.request()
 
     stream = LarkEventStream(

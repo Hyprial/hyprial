@@ -662,6 +662,8 @@ class _BridgeForwardsMixin(_NoticeRecoveryMixin):
                 )
             except Exception as error:  # noqa: BLE001 - a fault is a failed steer
                 detail = f"{type(error).__name__}: {error}"
+        if accepted:
+            self._release_steered_batch(attempt.worker_name, delivery_id)
         if self._logger is not None:
             self._logger(
                 "info" if accepted else "warn",

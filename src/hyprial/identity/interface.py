@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from hyprial.identity.impl.agents.actor.ports import AgentDestroyReservationCompleted as AgentDestroyReservationCompleted
     from hyprial.identity.impl.agents.actor.ports import AgentDestroySettled as AgentDestroySettled
     from hyprial.identity.impl.agents.registry._base import AgentError as AgentError
+    from hyprial.identity.impl.agents.registry._base import HOSTED_BY_VALUES as HOSTED_BY_VALUES
     from hyprial.identity.impl.agents.actor.ports import AgentEvent as AgentEvent
     from hyprial.identity.impl.agents.home.provisioner import AgentHomeError as AgentHomeError
     from hyprial.identity.impl.agents.actor.ports import AgentLifecycleReceiptCompleted as AgentLifecycleReceiptCompleted
@@ -152,6 +153,7 @@ if TYPE_CHECKING:
     from hyprial.identity.impl.pac_errors import PacError as PacError
     from hyprial.identity.impl.agents.actor.ports import PinAgentAdapterCommand as PinAgentAdapterCommand
     from hyprial.identity.impl.agents.registry._base import PinConflictError as PinConflictError
+    from hyprial.identity.impl.agents.registry._base import PinStateConflictError as PinStateConflictError
     from hyprial.identity.impl.users.profile import PreferredReceiver as PreferredReceiver
     from hyprial.identity.impl.agents.runtime.enforcement import Principal as Principal
     from hyprial.identity.impl.provider_auth.actor._authority import ProviderAuthAuthority as ProviderAuthAuthority
@@ -276,6 +278,8 @@ if TYPE_CHECKING:
     from hyprial.identity.impl.agents.runtime.context import shared_credential_status as shared_credential_status
     from hyprial.identity.impl.agents.home.provisioner import snapshot_home_payload as snapshot_home_payload
     from hyprial.identity.impl.agents.runtime.context import validate_shared_credential_binding as validate_shared_credential_binding
+    from hyprial.identity.impl.worker_session import WorkerSessionBinding as WorkerSessionBinding
+    from hyprial.identity.impl.worker_session import worker_session_binding as worker_session_binding
     from hyprial.identity.impl.agents.runtime.context import validate_shared_credential_environment as validate_shared_credential_environment
     from hyprial.identity.impl.agents.home.config import verify_native_projection as verify_native_projection
     from hyprial.identity.impl.agents.runtime.visibility import visible_targets as visible_targets
@@ -310,6 +314,7 @@ _FACADE_EXPORTS = {
     'AgentDestroyReservationCompleted': ('hyprial.identity.impl.agents.actor.ports', 'AgentDestroyReservationCompleted'),
     'AgentDestroySettled': ('hyprial.identity.impl.agents.actor.ports', 'AgentDestroySettled'),
     'AgentError': ('hyprial.identity.impl.agents.registry._base', 'AgentError'),
+    'HOSTED_BY_VALUES': ('hyprial.identity.impl.agents.registry._base', 'HOSTED_BY_VALUES'),
     'AgentEvent': ('hyprial.identity.impl.agents.actor.ports', 'AgentEvent'),
     'AgentHomeError': ('hyprial.identity.impl.agents.home.provisioner', 'AgentHomeError'),
     'AgentLifecycleReceiptCompleted': ('hyprial.identity.impl.agents.actor.ports', 'AgentLifecycleReceiptCompleted'),
@@ -434,6 +439,7 @@ _FACADE_EXPORTS = {
     'PacError': ('hyprial.identity.impl.pac_errors', 'PacError'),
     'PinAgentAdapterCommand': ('hyprial.identity.impl.agents.actor.ports', 'PinAgentAdapterCommand'),
     'PinConflictError': ('hyprial.identity.impl.agents.registry._base', 'PinConflictError'),
+    'PinStateConflictError': ('hyprial.identity.impl.agents.registry._base', 'PinStateConflictError'),
     'PreferredReceiver': ('hyprial.identity.impl.users.profile', 'PreferredReceiver'),
     'Principal': ('hyprial.identity.impl.agents.runtime.enforcement', 'Principal'),
     'ProviderAuthAuthority': ('hyprial.identity.impl.provider_auth.actor._authority', 'ProviderAuthAuthority'),
@@ -558,6 +564,8 @@ _FACADE_EXPORTS = {
     'shared_credential_status': ('hyprial.identity.impl.agents.runtime.context', 'shared_credential_status'),
     'snapshot_home_payload': ('hyprial.identity.impl.agents.home.provisioner', 'snapshot_home_payload'),
     'validate_shared_credential_binding': ('hyprial.identity.impl.agents.runtime.context', 'validate_shared_credential_binding'),
+    'WorkerSessionBinding': ('hyprial.identity.impl.worker_session', 'WorkerSessionBinding'),
+    'worker_session_binding': ('hyprial.identity.impl.worker_session', 'worker_session_binding'),
     'validate_shared_credential_environment': ('hyprial.identity.impl.agents.runtime.context', 'validate_shared_credential_environment'),
     'verify_native_projection': ('hyprial.identity.impl.agents.home.config', 'verify_native_projection'),
     'visible_targets': ('hyprial.identity.impl.agents.runtime.visibility', 'visible_targets'),
@@ -611,6 +619,7 @@ __all__ = [
     'AgentDestroyReservationCompleted',
     'AgentDestroySettled',
     'AgentError',
+    'HOSTED_BY_VALUES',
     'AgentEvent',
     'AgentHomeError',
     'AgentLifecycleReceiptCompleted',
@@ -735,6 +744,7 @@ __all__ = [
     'PacError',
     'PinAgentAdapterCommand',
     'PinConflictError',
+    'PinStateConflictError',
     'PreferredReceiver',
     'Principal',
     'ProviderAuthAuthority',
@@ -859,6 +869,8 @@ __all__ = [
     'shared_credential_status',
     'snapshot_home_payload',
     'validate_shared_credential_binding',
+    'WorkerSessionBinding',
+    'worker_session_binding',
     'validate_shared_credential_environment',
     'verify_native_projection',
     'visible_targets',

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from hyprial.identity.impl.agents.registry._base import PinStateConflictError
+
 from hyprial.identity.impl.agents.actor.ports import AcquireAgentRuntimeLaunchCommand
 from hyprial.kernel import AdmissionResult
 from hyprial.identity.impl.agents.registry._base import Agent
@@ -554,8 +556,13 @@ class _GenerationOpsMixin:
         if not self._reserve_pin_state(command):
             return
         try:
-            self.registry.pin(command.adapter, agent.actor)
+            options = {"expected_actor": command.expected_actor} if command.strict_compare else {}
+            before = self.registry.pin(command.adapter, agent.actor, **options)
             self._submit_pin_state(command, before=before, actor=agent.actor)
+        except PinStateConflictError:
+            _refresh_projection(self.projection, self.registry, self.liveness, self.version.bump())
+            self._cancel_pin_state(command)
+            raise
         except BaseException:
             self._cancel_pin_state(command)
             raise
@@ -574,8 +581,13 @@ class _GenerationOpsMixin:
         if not self._reserve_pin_state(command):
             return
         try:
-            self.registry.unpin(command.adapter)
+            options = {"expected_actor": command.expected_actor} if command.strict_compare else {}
+            before = self.registry.unpin(command.adapter, **options)
             self._submit_pin_state(command, before=before, actor=actor)
+        except PinStateConflictError:
+            _refresh_projection(self.projection, self.registry, self.liveness, self.version.bump())
+            self._cancel_pin_state(command)
+            raise
         except BaseException:
             self._cancel_pin_state(command)
             raise

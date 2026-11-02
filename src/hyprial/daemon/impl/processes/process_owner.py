@@ -18,6 +18,7 @@ from hyprial.kernel  import (
     ProcessLivenessProbeError,
 )
 from hyprial.kernel import ProcessLiveness, ProcessLivenessState
+from hyprial.daemon.impl.cells.observability.model import RunFacts
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +97,8 @@ class ProcessFacts:
     queue_depth: int | None
     liveness: ProcessLiveness | None
     startup_warnings: tuple[str, ...] = ()
+    run_facts: RunFacts = field(default_factory=RunFacts)
+    run_observed_monotonic_ms: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,7 +214,17 @@ class ProcessOwner:
             integer("queue_depth"),
             liveness() if callable(liveness) else None,
             tuple(getattr(process, "startup_warnings", ())),
+            self._read_run_observation(),
+            time.monotonic_ns() // 1_000_000,
         )
+
+    def _read_run_observation(self):
+        read = getattr(self._process, "read_run_facts", None)
+        try:
+            facts = read() if callable(read) else RunFacts()
+        except Exception:
+            return RunFacts()
+        return facts if isinstance(facts, RunFacts) else RunFacts()
 
     def _execute(self, operation):
         try:
@@ -401,6 +414,12 @@ class ProcessOwner:
     def facts(self):
         with self._guard:
             return self._facts
+
+    def read_run_facts(self):
+        facts = self.facts()
+        if time.monotonic_ns() // 1_000_000 - facts.run_observed_monotonic_ms > 5000:
+            return replace(facts.run_facts, known=False, contact_current=False)
+        return facts.run_facts
 
     @property
     def running(self):

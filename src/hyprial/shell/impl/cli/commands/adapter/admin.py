@@ -13,10 +13,12 @@ import json
 import os
 import sys
 import typer
+from hyprial.shell.impl.cli.commands.common.groups import group
 
 from hyprial.shell.impl.cli.commands.common.support import JsonObject
-adapter_app = typer.Typer(help="Manage external-platform adapters.")
-scopes_app = typer.Typer(help="Inspect and authorize Lark App tenant scopes.")
+
+adapter_app = group(help="Manage external-platform adapters.")
+scopes_app = group(help="Inspect and authorize Lark App tenant scopes.")
 
 
 @adapter_app.command("downgrade-state")
@@ -24,16 +26,20 @@ def adapter_downgrade_state(
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
     """Offline: restore pre-migration schema 2 before installing an older binary."""
-    from hyprial.daemon import downgrade_adapter_state, DaemonOwnershipBusy
-    from hyprial.kernel import DesiredStateError
+    from hyprial.daemon import downgrade_adapter_state_result
 
     services = get_services()
+
     def operation():
-        try:
-            return downgrade_adapter_state(services._state_dir())
-        except (DesiredStateError, DaemonOwnershipBusy) as error:
-            raise services.CliError("ADAPTER_DOWNGRADE_REFUSED", str(error)) from error
-    services._execute(operation, json_output=json_output)
+        result = downgrade_adapter_state_result(services._state_dir())
+        if result.get("ok") is not True:
+            raise services.CliError(
+                str(result.get("code") or "ADAPTER_DOWNGRADE_REFUSED"),
+                str(result.get("error") or "adapter downgrade refused"),
+            )
+        return {key: value for key, value in result.items() if key != "ok"}
+
+    services.runtime.execute(operation, json_output=json_output)
 
 
 def _parse_adapter_routes(raw_routes: list[str]) -> tuple[Any, ...]:
@@ -188,7 +194,7 @@ def _adapter_add_existing(
         result["daemonReload"] = _best_effort_adapter_reload()
         return result
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 def _best_effort_adapter_reload() -> Any:
@@ -196,7 +202,7 @@ def _best_effort_adapter_reload() -> Any:
 
     services = get_services()
     try:
-        return services._daemon_request(
+        return services.runtime.request(
             "adapter.reload", {}, timeout=5.0, restore_wait=0.0
         )
     except (services.CliError, ipc_errors.TransientDaemonError):
@@ -379,7 +385,7 @@ def _adapter_onboard(
             ),
         }
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @adapter_app.command("add")
@@ -445,7 +451,7 @@ def adapter_add(
                 "--secret-file requires --app-id; omit both to onboard an App",
             )
 
-        services._execute(invalid_secret_file, json_output=json_output)
+        services.runtime.execute(invalid_secret_file, json_output=json_output)
         return
     _adapter_onboard(
         name=name,
@@ -472,7 +478,7 @@ def _confirm_adapter_stopped(name: str, *, force: bool) -> None:
     services = get_services()
 
     try:
-        status = services._daemon_request("adapter.status", {"name": name})
+        status = services.runtime.request("adapter.status", {"name": name})
     # PR #332 F4②: the transient half of the old mixed set is the registered
     # class; ADAPTER_NOT_FOUND (permanent) keeps its code comparison.
     except ipc_errors.DaemonUnavailableError:
@@ -495,7 +501,7 @@ def _confirm_adapter_stopped(name: str, *, force: bool) -> None:
             f"adapter {name!r} is still running; run 'hyprial adapter stop {name}' "
             "first, or pass --force to stop it as part of the removal",
         )
-    stopped = services._daemon_request("adapter.stop", {"name": name})
+    stopped = services.runtime.request("adapter.stop", {"name": name})
     after = stopped.get("adapter", {}) if isinstance(stopped, dict) else {}
     if (
         "pid" in after
@@ -534,13 +540,14 @@ def adapter_remove(
             AdapterNotFoundError,
             remove_lark_gateway,
         )
-        from hyprial.kernel import DesiredStateError
         from hyprial.daemon import DaemonOwnershipBusy
-        from hyprial.kernel import PersistentConfigError
+        from hyprial.kernel import DesiredStateError, PersistentConfigError
 
         _confirm_adapter_stopped(name, force=force)
         try:
-            removed = services._daemon_request("management.adapter.remove", {"name": name})
+            removed = services.runtime.request(
+                "management.adapter.remove", {"name": name}
+            )
         except ipc_errors.DaemonUnavailableError:
             pass
         else:
@@ -568,7 +575,7 @@ def adapter_remove(
         except DaemonOwnershipBusy as error:
             raise services.CliError(error.code, str(error)) from error
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @adapter_app.command("start")
@@ -579,8 +586,8 @@ def adapter_start(
     """Start an external-platform adapter."""
     services = get_services()
 
-    services._execute(
-        lambda: services._daemon_request("adapter.start", {"name": name}),
+    services.runtime.execute(
+        lambda: services.runtime.request("adapter.start", {"name": name}),
         json_output=json_output,
     )
 
@@ -593,8 +600,8 @@ def adapter_stop(
     """Stop an external-platform adapter."""
     services = get_services()
 
-    services._execute(
-        lambda: services._daemon_request("adapter.stop", {"name": name}), json_output=json_output
+    services.runtime.execute(
+        lambda: services.runtime.request("adapter.stop", {"name": name}), json_output=json_output
     )
 
 
@@ -606,8 +613,8 @@ def adapter_status(
     """Show one adapter; nextRetryAt is a daemon-monotonic deadline, not Unix time."""
     services = get_services()
 
-    services._execute(
-        lambda: services._daemon_request("adapter.status", {"name": name}),
+    services.runtime.execute(
+        lambda: services.runtime.request("adapter.status", {"name": name}),
         json_output=json_output,
     )
 
@@ -619,7 +626,7 @@ def adapter_reload(
     """Reload adapter configs into the running daemon (incremental)."""
     services = get_services()
 
-    services._execute(lambda: services._daemon_request("adapter.reload", {}), json_output=json_output)
+    services.runtime.execute(lambda: services.runtime.request("adapter.reload", {}), json_output=json_output)
 
 
 @adapter_app.command("list")
@@ -629,7 +636,7 @@ def adapter_list(
     """List external-platform adapters."""
     services = get_services()
 
-    services._execute(lambda: services._daemon_request("adapter.list", {}), json_output=json_output)
+    services.runtime.execute(lambda: services.runtime.request("adapter.list", {}), json_output=json_output)
 
 
 @scopes_app.command("check")
@@ -653,4 +660,4 @@ def adapter_doctor(
         except PersistentConfigError as error:
             raise services.CliError(ipc_errors.ADAPTER_NOT_FOUND, str(error)) from error
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)

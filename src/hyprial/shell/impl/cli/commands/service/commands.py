@@ -8,6 +8,7 @@ chooses a human renderer for the shared result.
 from __future__ import annotations
 
 import typer
+from hyprial.shell.impl.cli.commands.common.groups import group
 
 from hyprial.shell.impl.cli.commands.common.services import get_services
 from hyprial.shell.impl.cli.output import CliResult
@@ -20,26 +21,12 @@ from .presentation import (
 )
 
 
-service_app = typer.Typer(
+service_app = group(
     help=(
         "Publish local services on the org network and connect to named "
         "services through the daemon."
     ),
-    no_args_is_help=False,
 )
-
-
-@service_app.callback(invoke_without_command=True)
-def service(ctx: typer.Context) -> None:
-    """Show service help when no subcommand is selected."""
-    if ctx.invoked_subcommand is not None:
-        return
-    services = get_services()
-    services._execute(
-        lambda: CliResult({"ok": True}, render=lambda _data: ctx.get_help()),
-        json_output=False,
-        allow_missing_home=True,
-    )
 
 
 @service_app.command("connect")
@@ -51,10 +38,10 @@ def connect(
     services = get_services()
 
     def operation() -> CliResult:
-        result = services._daemon_request("service.connect", {"name": name})
+        result = services.runtime.request("service.connect", {"name": name})
         return CliResult(result, render=render_connect)
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @service_app.command("disconnect")
@@ -66,10 +53,10 @@ def disconnect(
     services = get_services()
 
     def operation() -> CliResult:
-        result = services._daemon_request("service.disconnect", {"name": name})
+        result = services.runtime.request("service.disconnect", {"name": name})
         return CliResult(result, render=render_disconnect)
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @service_app.command("list")
@@ -80,10 +67,10 @@ def list_services(
     services = get_services()
 
     def operation() -> CliResult:
-        result = services._daemon_request("service.list", {})
+        result = services.runtime.request("service.list", {})
         return CliResult(result, render=render_list)
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @service_app.command("guide")
@@ -96,10 +83,10 @@ def guide(
     services = get_services()
 
     def operation() -> CliResult:
-        result = services._daemon_request("service.guide", {"name": name})
+        result = services.runtime.request("service.guide", {"name": name})
         return CliResult(result, render=lambda data: render_guide(data, full=full))
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
-__all__ = ["connect", "disconnect", "guide", "list_services", "service", "service_app"]
+__all__ = ["connect", "disconnect", "guide", "list_services", "service_app"]

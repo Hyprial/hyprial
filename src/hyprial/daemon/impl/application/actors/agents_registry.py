@@ -22,7 +22,7 @@ from hyprial.identity import (
 )
 from hyprial.kernel import ipc_errors
 from hyprial.kernel import DaemonRequestError
-from hyprial.daemon.impl.status import build_actor_status_snapshot
+from .status_projection import actor_status_snapshot
 from hyprial.daemon.impl.desired_state  import (
     DesiredState,
     InteractiveSession,
@@ -704,59 +704,7 @@ class _AgentsRegistryMixin:
 
     def _actor_status_snapshot(self) -> list[JsonObject]:
         """One canonical actor table for top, targets, and future consumers."""
-
-        assert self._harnesses is not None
-        assert self._presence is not None
-        # One load per request: the ps/agent handlers install a worker
-        # snapshot that already loaded the state (intg U2); reuse it, and load
-        # only when this is called bare (card 259 P1 on dev did the load here).
-        snapshot = self._current_worker_snapshot()
-        desired = (
-            snapshot.desired
-            if snapshot is not None and snapshot.desired is not None
-            else self.desired_state.load()
-        )
-        sessions = {
-            session.actor: session for session in desired.interactive_sessions
-        }
-        if snapshot is not None:
-            # The request snapshot already holds this supervisor read; a
-            # second live status() per request is what made targets N x.
-            connectors = snapshot.statuses
-        else:
-            report_connectors = getattr(self._harnesses, "status", None)
-            connectors = report_connectors() if callable(report_connectors) else ()
-
-        def status_for_actor(actor: str, online: frozenset[str]) -> str:
-            session = sessions.get(actor)
-            if (
-                session is not None
-                and session.source == "claude-channel"
-                and session.channel_lease_digest is not None
-                and not self._channel_alive(session, self._clock())
-            ):
-                return "offline"
-            agent = self.agents.get(actor)
-            if agent is not None:
-                return self._registered_agent_status(agent, desired)
-            return self._agent_target_status(actor, online, desired)
-
-        return build_actor_status_snapshot(
-            owner=self.owner,
-            node_id=self.node_id,
-            connectors=connectors,
-            interactive_sessions=(
-                {
-                    "actor": session.actor,
-                    "runtime": session.runtime,
-                    "source": session.source,
-                }
-                for session in desired.interactive_sessions
-            ),
-            registered_actors=(agent.uri for agent in self.agents.list()),
-            presence_actors=self._presence.online_actors(),
-            status_for_actor=status_for_actor,
-        )
+        return actor_status_snapshot(self)
 
     @staticmethod
     def _agent_is_inactive(
@@ -821,6 +769,7 @@ class _AgentsRegistryMixin:
             ),
             **self._agent_liveness.snapshot(spelling),
             "status": self._registered_agent_status(agent),
+            **self._cell_run_state_field(agent.uri),
             **self._restore_agent_projection(
                 agent, now_ms=self._restore_now_ms()
             ),

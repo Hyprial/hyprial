@@ -51,7 +51,7 @@ def agent_config_rebind(
                 ipc_errors.AGENT_CONFIG_REBIND_INVALID_SOURCE,
                 "--source must be an absolute path",
             )
-        return services._daemon_request(
+        return services.runtime.request(
             "agent.config.rebind",
             {
                 "name": name,
@@ -64,4 +64,4 @@ def agent_config_rebind(
             },
         )
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)

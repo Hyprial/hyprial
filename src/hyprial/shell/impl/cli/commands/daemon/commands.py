@@ -10,6 +10,7 @@ from hyprial.shell.impl.cli.commands.common.services import get_services
 from hyprial.kernel import ipc_errors
 import os
 import typer
+from hyprial.shell.impl.cli.commands.common.groups import group
 
 from hyprial.shell.impl.cli.commands.common.daemon_stop import _stop_daemon_for_operator
 from hyprial.shell.impl.cli.commands.common.support import (
@@ -18,7 +19,7 @@ from hyprial.shell.impl.cli.commands.common.support import (
 )
 
 
-daemon_app = typer.Typer(help="Run, stop, start, and inspect the Harness daemon.")
+daemon_app = group(help="Run, stop, start, and inspect the Harness daemon.")
 
 
 @daemon_app.command("status")
@@ -30,7 +31,7 @@ def daemon_status(
 
     def operation() -> JsonObject:
         try:
-            result = services._daemon_request("ps", restore_wait=0.0)
+            result = services.runtime.request("ps", restore_wait=0.0)
         except ipc_errors.DaemonRestoringError:
             probe = services._daemon_probe(timeout=2.0)
             daemon = {
@@ -73,7 +74,7 @@ def daemon_status(
             "daemon": daemon,
         }
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @daemon_app.command("start")
@@ -94,7 +95,7 @@ def daemon_start(
         )
         return launched.to_payload()
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 def _acquire_daemon_fence(
@@ -181,6 +182,15 @@ def daemon_run(
     """Run the daemon in the foreground until SIGINT or SIGTERM (debug/process manager)."""
     services = get_services()
 
+    # A service manager (launchd, systemd) appends this process's stdout/stderr
+    # to one file that outlives every restart, so each record has to name both
+    # when it was written and which daemon wrote it (M-hq-adjutant-0002).
+    # Installed around the whole launch: the result envelope, progress lines,
+    # startup failures and daemon-internal ``print`` calls all leave here.
+    from hyprial.shell.impl.daemon_wiring import daemon_stdio_stamp
+
+    stamp, stamped_stdio = daemon_stdio_stamp()
+
     def operation() -> JsonObject:
         from hyprial.identity import IdentityTransactionBusy
         services = get_services()
@@ -210,6 +220,9 @@ def daemon_run(
                     state_dir=state_dir, socket_path=services._socket_path(),
                     usage_factory=usage_factory, **daemon_dependencies(),
                 )
+                # From here on a line can name the daemon instance, not just the
+                # operating-system process a supervisor happened to launch.
+                stamp.bind_epoch(runtime.epoch)
                 # This interpreter exists to be the daemon, so the daemon is
                 # allowed to end it if shutdown leaves a thread that will not join.
                 runtime.owns_process_exit()
@@ -219,7 +232,10 @@ def daemon_run(
                 )
         return {"ok": True, "stopped": True}
 
-    services._execute(operation, json_output=json_output, allow_missing_home=True)
+    with stamped_stdio:
+        services.runtime.execute(
+            operation, json_output=json_output, allow_missing_home=True
+        )
 
 
 @daemon_app.command("stop")
@@ -236,4 +252,4 @@ def daemon_stop(
         _stop_daemon_for_operator if expected_epoch is None
         else lambda: _stop_daemon_for_operator(expected_epoch=expected_epoch)
     )
-    services._execute(action, json_output=json_output)
+    services.runtime.execute(action, json_output=json_output)

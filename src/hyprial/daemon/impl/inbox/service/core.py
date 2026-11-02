@@ -58,6 +58,7 @@ class InboxServiceCoreMixin:
         alarm_human_delivery: AlarmDelivery | None = None,
         interactive_recipient: Callable[[str], bool] | None = None,
         link_admission: LinkAdmission | None = None,
+        notice_recipient_resolver: Callable[[str], str | None] | None = None,
         _serialized_by_actor: bool = False,
     ) -> None:
         database.parent.mkdir(parents=True, exist_ok=True)
@@ -99,6 +100,8 @@ class InboxServiceCoreMixin:
             retention_ms=self.hold_policy.status_retention_ms,
         )
         self._logger = logger or Logger.daemon(database.parent, name=node_id)
+        self._notice_recipient_resolver = notice_recipient_resolver
+        self._initialize_system_notices()
         self._alarm = AlarmEmitter(
             self._logger,
             deliver_human=alarm_human_delivery,

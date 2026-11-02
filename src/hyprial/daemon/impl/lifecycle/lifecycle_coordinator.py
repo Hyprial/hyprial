@@ -17,7 +17,10 @@ from typing import Callable, cast
 from uuid import uuid4
 
 from hyprial.kernel import ActorRuntime, ActorSpec, AdmissionResult
-from hyprial.kernel import PortAdmission
+from hyprial.kernel import PortAdmission, LifecycleTarget
+from .observation import LifecycleObservationOwner
+from .observation.actor_reader import ActorLifecycleObservationReader
+from .observation.operations import capture_operation
 from hyprial.kernel import (
     LIFECYCLE_OPERATION_DEADLINE_SECONDS, LIFECYCLE_WAIT_MARGIN_SECONDS,
 )
@@ -434,7 +437,7 @@ class _Mailbox:
                 else:
                     assert command.state is not None
                     if command.state in {LifecycleState.RUNNING, LifecycleState.COMPENSATING}:
-                        owner._retain_operation_locked(command.operation)
+                        owner._retain_operation_locked(command.operation, observe=True)
                         owner._dispatch_locked()
                     owner._answer_locked(command.request_id, PortAdmission.ACCEPTED)
             elif isinstance(command, DomainCompleted):
@@ -448,6 +451,7 @@ class _Mailbox:
                     if command.result.state not in {LifecycleState.RUNNING, LifecycleState.COMPENSATING}:
                         owner._pending.pop(command.operation_id, None)
                         owner._active.pop(command.operation_id, None)
+                        owner._operation_observations.pop(command.operation_id, None)
                         owner._owned.discard(command.operation_id)
                         if operation is not None:
                             owner._held.difference_update(_resources(operation))
@@ -480,6 +484,8 @@ class LifecycleCoordinator:
         combined_shared_receipts: bool = False,
         event_sink: Callable[..., None] | None = None,
         live_resource: Callable[[str, str], bool] | None = None,
+        observation_host_id: str = "local",
+        observation_fence: Callable[[str], tuple | None] | None = None,
     ) -> None:
         if capacity < 1 or effect_workers < 1:
             raise ValueError("capacity and effect_workers must be positive")
@@ -489,6 +495,14 @@ class LifecycleCoordinator:
             state if isinstance(state, StateDatabase) else StateDatabase(Path(state))
         )
         generation = self._store.next_generation()
+        self.lifecycle_observations = LifecycleObservationOwner()
+        self.lifecycle_target = LifecycleTarget(
+            observation_host_id, "lifecycle.coordinator", "lifecycle-coordinator",
+        )
+        self._observation_epoch = uuid4().hex
+        self.lifecycle_observations.bind(
+            self.lifecycle_target, "coordinator", self._observation_epoch,
+        )
         self._store.interrupt_running_operations(
             "saga did not finish in its daemon generation; restart compensates instead of resuming",
             "SAGA_INTERRUPTED_BY_RESTART",
@@ -499,6 +513,8 @@ class LifecycleCoordinator:
         self._condition = threading.Condition()
         self._pending: dict[str, LifecycleOperation] = {}
         self._active: dict[str, LifecycleOperation] = {}
+        self._observation_fence = observation_fence
+        self._operation_observations: dict[str, tuple] = {}
         self._owned: set[str] = set()
         self._incoming: set[str] = set()
         self._running: set[str] = set()
@@ -524,6 +540,10 @@ class LifecycleCoordinator:
             name="lifecycle-coordinator", handler_factory=lambda: _Mailbox(self),
             mailbox_capacity=capacity,
         ))
+        self.lifecycle_observations.reader = ActorLifecycleObservationReader(
+            self.lifecycle_observations, self._runtime, self._handle,
+            "coordinator", self._observation_epoch,
+        )
         self._workers = tuple(threading.Thread(
             target=self._work, name=f"lifecycle-effect-{index}", daemon=True
         ) for index in range(effect_workers))
@@ -532,7 +552,15 @@ class LifecycleCoordinator:
         self._recover_thread = threading.Thread(
             target=self._recover_loop, name="lifecycle-recover", daemon=True
         )
+        self._publish_observation("running", "coordinator-started")
         self._recover_thread.start()
+
+    def _publish_observation(self, state: str, cause: str) -> None:
+        # Aggregate dependency only: never publish to harness.lifecycle keys.
+        self.lifecycle_observations.publish(
+            "coordinator", self._observation_epoch, state=state, cause=cause,
+            available=state == "running",
+        )
 
     @property
     def state_db(self) -> StateDatabase:
@@ -551,6 +579,13 @@ class LifecycleCoordinator:
     def last_error(self) -> str | None:
         with self._condition:
             return self._last_error
+
+    def read_run_operations(self):
+        """One cache-only read of accepted operations in this owner instance."""
+        with self._condition:
+            if self._closing or self._crashed:
+                return ()
+            return tuple(row for rows in self._operation_observations.values() for row in rows)
 
     def stats(self) -> dict[str, int]:
         with self._condition:
@@ -657,6 +692,7 @@ class LifecycleCoordinator:
         return result
 
     def drain(self, timeout: float) -> bool:
+        self.lifecycle_observations.close()
         deadline = time.monotonic() + max(0.0, timeout)
         with self._condition:
             self._closing = True
@@ -685,7 +721,7 @@ class LifecycleCoordinator:
             self._store.close()
         return complete
 
-    def _retain_operation_locked(self, operation: LifecycleOperation) -> None:
+    def _retain_operation_locked(self, operation: LifecycleOperation, *, observe=False) -> None:
         operation_id = operation.operation_id
         result = self._results.get(operation_id)
         # Recovery reads and durable reservation replies can cross in flight.
@@ -697,6 +733,8 @@ class LifecycleCoordinator:
         ):
             return
         self._owned.add(operation_id)
+        if observe:
+            self._operation_observations[operation_id] = capture_operation(operation, self._observation_fence)
         self._pending.setdefault(operation_id, operation)
 
     def _dispatch_locked(self) -> None:
@@ -788,6 +826,7 @@ class LifecycleCoordinator:
                     self._last_error = f"recover: {type(error).__name__}: {error}"
                     self._errors += 1
                     self._crashed = True
+                    self._publish_observation("down", "coordinator-failed")
                     self._condition.notify_all()
                 return
             for _ in range(10):

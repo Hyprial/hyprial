@@ -251,7 +251,7 @@ class ForwardingEndpoints:
             raise ValueError(f"slot {slot} locator is not a unix slot: {locator!r}")
         return locator[len(prefix):]
 
-    def bind(self, peer: str, address: str, slot: int) -> bool:
+    def bind(self, peer: str, address: str, slot: int, *, timeout: float | None = None) -> bool:
         """``map-peer`` onto a slot; True when a wire call was made.
 
         Idempotent per sidecar incarnation: re-asserting the same
@@ -264,7 +264,8 @@ class ForwardingEndpoints:
 
         if self._bound.get(peer) == (address, slot):
             return False
-        result = self._controller.map_peer(peer, address, self._slot_wire_id(slot))
+        kwargs = {} if timeout is None else {"timeout": timeout}
+        result = self._controller.map_peer(peer, address, self._slot_wire_id(slot), **kwargs)
         if self._slot_transport == "tcp":
             # A growth bind's answer is the new slot's resolved id; a
             # rebind echoes the known one.  Either way the table holds

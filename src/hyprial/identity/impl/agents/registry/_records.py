@@ -1,25 +1,18 @@
 from __future__ import annotations
 
-from hyprial.identity.impl.agents.home.provisioner import AgentHomeError
-from typing import Any
-from hyprial.identity.impl.agents.runtime.grants import CapabilityGrant
-from hyprial.identity.impl.agents.runtime.grants import GrantJournalEntry
-from hyprial.identity.impl.agents.home.provisioner import HomeReceipt
+from hyprial.identity.impl.agents.home.provisioner import AgentHomeError, HomeReceipt
+from typing import Any, TYPE_CHECKING
+from hyprial.identity.impl.agents.runtime.grants import CapabilityGrant, GrantJournalEntry, principal, single_line
 from collections.abc import Iterable
 import json
-from hyprial.identity.impl.agents.runtime.grants import principal
 from dataclasses import replace
-from hyprial.identity.impl.agents.runtime.grants import single_line
 import sqlite3
 import uuid
 
 from hyprial.kernel import canonical_user_uri
 
-from typing import TYPE_CHECKING
-
 if TYPE_CHECKING:
-    from hyprial.identity.impl.agents.runtime.secrets import SecretGrant
-    from hyprial.identity.impl.agents.runtime.secrets import SecretSource
+    from hyprial.identity.impl.agents.runtime.secrets import SecretGrant, SecretSource
 
 from ._base import (
     AGENT_ACTIVITY_WRITE_INTERVAL_MS,
@@ -31,6 +24,8 @@ from ._base import (
     AgentNotFoundError,
     HandoverNotice,
     PinConflictError,
+    PinStateConflictError,
+    _UNCONDITIONAL_PIN,
     RestoreDisposition,
 )
 
@@ -924,7 +919,7 @@ class _RegistryRecordsMixin:
                 f"agent-record:{agent.actor}", True, replacement.to_json()
             )
         return replacement
-    def pin(self, adapter: str, actor: str) -> str | None:
+    def pin(self, adapter: str, actor: str, *, expected_actor: object = _UNCONDITIONAL_PIN) -> str | None:
         """Bind ``adapter`` to ``actor`` one-to-one; return the previous URI.
 
         Idempotent for the same pair; re-pinning the adapter to a different
@@ -937,11 +932,13 @@ class _RegistryRecordsMixin:
 
         name = self.normalize_actor(actor)
         with self._lock:
-            previous = self._pin_of_locked(adapter)
-            if previous is not None and previous[0] == name:
-                return previous[1]
             try:
                 with self._db:
+                    self._db.execute("BEGIN IMMEDIATE")
+                    previous = self._pin_of_locked(adapter)
+                    self._check_pin_expectation(adapter, previous, expected_actor)
+                    if previous is not None and previous[0] == name:
+                        return previous[1]
                     self._db.execute(
                         "DELETE FROM pins WHERE adapter = ?", (adapter,)
                     )
@@ -964,18 +961,24 @@ class _RegistryRecordsMixin:
                     holder["adapter"] if holder is not None else "(unknown)",
                 ) from error
             return None if previous is None else previous[1]
-    def unpin(self, adapter: str) -> str | None:
+    def unpin(self, adapter: str, *, expected_actor: object = _UNCONDITIONAL_PIN) -> str | None:
         """Remove ``adapter``'s pin; return the URI it pointed at, if any."""
 
-        with self._lock:
+        with self._lock, self._db:
+            self._db.execute("BEGIN IMMEDIATE")
             previous = self._pin_of_locked(adapter)
+            self._check_pin_expectation(adapter, previous, expected_actor)
             if previous is None:
                 return None
-            with self._db:
-                self._db.execute(
-                    "DELETE FROM pins WHERE adapter = ?", (adapter,)
-                )
+            self._db.execute("DELETE FROM pins WHERE adapter = ?", (adapter,))
             return previous[1]
+
+    @staticmethod
+    def _check_pin_expectation(adapter: str, previous: Any, expected: object) -> None:
+        current = None if previous is None else previous[1]
+        if expected is not _UNCONDITIONAL_PIN and expected != current:
+            raise PinStateConflictError(adapter, expected, current)
+
     def pins(self) -> dict[str, str]:
         """Every pin, as ``{adapter: canonical agent URI}``, adapter-sorted."""
 

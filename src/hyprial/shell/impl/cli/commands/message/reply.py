@@ -41,7 +41,7 @@ def reply(
         # Validated inside the operation, before any IPC: a refused local
         # check must never reach message.reply.
         summary_value = _require_summary(summary)
-        return services._daemon_request(
+        return services.runtime.request(
             "message.reply",
             {
                 **_message_claim_params(source, on_behalf_of=on_behalf_of),
@@ -51,4 +51,4 @@ def reply(
             },
         )
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)

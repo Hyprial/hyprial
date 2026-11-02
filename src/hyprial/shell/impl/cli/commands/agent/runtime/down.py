@@ -65,7 +65,7 @@ def agent_stop(
         # Outlast the daemon-side lifecycle wait (deadline + wait margin) so a
         # stuck operation returns its coded failure here instead of an
         # IPC_TIMEOUT (card 104164aa (c)).
-        return services._daemon_request(
+        return services.runtime.request(
             "down",
             params,
             timeout=(
@@ -75,4 +75,4 @@ def agent_stop(
             ),
         )
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)

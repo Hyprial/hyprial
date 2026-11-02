@@ -2,7 +2,6 @@
 from __future__ import annotations
 import hashlib
 import os
-import time
 from typing import Any
 from hyprial import __version__
 from hyprial.daemon.impl.autoupdate import SCHEDULE
@@ -10,15 +9,13 @@ from hyprial.identity import (
     AgentError,
     AgentHomeError as RegistryHomeError,
 )
-from hyprial.kernel import ipc_errors
-from hyprial.kernel import DaemonRequestError
+from hyprial.kernel import DaemonRequestError, ipc_errors
 from hyprial.daemon.impl.operations.management import (
     EnsureSquireRegistryCommand,
 )
 from hyprial.kernel import (
     canonical_user_uri,
     DEFAULT_PEER_PORT,
-    parse_agent_uri,
 )
 from hyprial.daemon.impl.forwarding  import (
     ForwardingSidecarError,
@@ -38,11 +35,12 @@ from hyprial.daemon.impl.ipc.params import (
     JsonObject,
     _required_string,
 )
+from hyprial.daemon.impl.request_catalog import METHOD_REGISTRY, MIGRATED_FAMILIES
 from hyprial.daemon.impl.links.ports import (
     IPC_MESSAGE_READ_BODY,
     IPC_MESSAGE_SETTLE_HINT,
 )
-_RESTORE_GATE_LIGHT_METHODS = frozenset({"ping", "shutdown"})
+_RESTORE_GATE_LIGHT_METHODS = frozenset({"ping", "shutdown", "daemon.catalog"})
 _IPC_STATS_METHODS = frozenset(
     {
         "worker.channel.request",
@@ -91,6 +89,7 @@ _IPC_STATS_METHODS = frozenset(
         "autoupdate.notify",
         "autoupdate.status",
         "autoupdate.trigger",
+        "daemon.catalog",
         "dispatch.matrix.resolve",
         "down",
         "hosts",
@@ -120,7 +119,7 @@ _IPC_STATS_METHODS = frozenset(
         "message.query",
         IPC_MESSAGE_READ_BODY,
         "message.reply",
-        "message.send",
+        "message.send", "message.send.lookup",
         IPC_MESSAGE_SETTLE_HINT,
         "message.status",
         "network.expose",
@@ -406,6 +405,17 @@ class _IpcDispatchMixin:
                 "daemon is restoring its connectors; only the light methods "
                 "(ping, shutdown) are served until restore completes"
             )
+        if method == "daemon.catalog":
+            # Read-only meta dispatch: it must answer during restore, before
+            # the business-object assertions below, and it never reads inbox,
+            # harness or presence state.  Keeping it here (not folded into the
+            # registry gate) is what allows /readyz to explain "restoring".
+            return METHOD_REGISTRY.invoke(
+                self,
+                method,
+                params,
+                trusted_message_origin=_trusted_message_origin,
+            )
         if method in {
             "service.connect",
             "service.disconnect",
@@ -421,9 +431,18 @@ class _IpcDispatchMixin:
         assert self._inbox is not None
         assert self._harnesses is not None
         assert self._presence is not None
-        if method in (IPC_LINK_LIST, IPC_LINK_STATS, IPC_LINK_ADD, IPC_LINK_DROP):
-            return self._ipc_link(
-                method, params, _trusted_message_origin=_trusted_message_origin
+        if method in METHOD_REGISTRY:
+            return METHOD_REGISTRY.invoke(
+                self,
+                method,
+                params,
+                trusted_message_origin=_trusted_message_origin,
+            )
+        if method.split(".", 1)[0] in MIGRATED_FAMILIES:
+            # A migrated-family name that is not declared must not fall through
+            # to a legacy branch: the family has no compatibility chain.
+            raise DaemonRequestError(
+                ipc_errors.METHOD_NOT_FOUND, f"unknown daemon method {method}"
             )
         if method == "worker.channel.request":
             return self._ipc_worker_channel_request(params)
@@ -684,63 +703,6 @@ class _IpcDispatchMixin:
         if method == "shutdown":
             return self._ipc_shutdown(params)
         raise DaemonRequestError(ipc_errors.METHOD_NOT_FOUND, f"unknown daemon method {method}")
-
-    def _ipc_link(
-        self,
-        method: str,
-        params: JsonObject,
-        *,
-        _trusted_message_origin: str | None = None,
-    ) -> Any:
-        """``link.*``: WP2's service, reached only through its own protocols.
-
-        ``list``/``stats`` are local-socket observations with the same trust
-        level as ``top.snapshot``.  ``add``/``drop`` mutate the link files, so
-        they pass the shared message-caller fence first; the shell's ``--from``
-        is only an actor selector, and only a canonical agent of THIS node may
-        own a link file.  The clock is read here, at the daemon boundary, and
-        handed to the service -- the controller never reads a clock.
-        """
-
-        service = getattr(self, "_link_service", None)
-        if service is None:
-            raise DaemonRequestError(
-                ipc_errors.DAEMON_NOT_READY, "link service is not wired"
-            )
-        if method in (IPC_LINK_LIST, IPC_LINK_STATS):
-            actor = self._canonical_interactive_actor(
-                _required_string(params.get("from"), "from")
-            )
-            mapping = (
-                service.list_links(actor)
-                if method == IPC_LINK_LIST
-                else service.stats(actor)
-            )
-            return {"ok": True, **mapping}
-        caller = self._authenticated_message_caller(
-            params, method=method, trusted_origin=_trusted_message_origin
-        )
-        actor = self._link_actor(caller.subject)
-        peer = _required_string(params.get("peer"), "peer")
-        now_ms = int(time.time() * 1000)
-        mapping = (
-            service.add(actor=actor, peer=peer, now_ms=now_ms)
-            if method == IPC_LINK_ADD
-            else service.drop(actor=actor, peer=peer, now_ms=now_ms)
-        )
-        return {"ok": True, **mapping}
-
-    def _link_actor(self, subject: str) -> str:
-        """Refuse a link-file owner that is not this node's canonical agent."""
-
-        parsed = parse_agent_uri(subject)
-        if parsed is None or parsed[0] != self.owner or parsed[1] != self.node_id:
-            raise DaemonRequestError(
-                ipc_errors.CALLER_NOT_AUTHORIZED,
-                "link administration requires a canonical agent identity of this node",
-                {"claimedIdentity": subject},
-            )
-        return subject
 
     def _ipc_worker_channel_request(self, params) -> Any:
         from hyprial.kernel import WorkerBinding, bound_request

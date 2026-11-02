@@ -16,7 +16,7 @@ import typer
 
 from hyprial.shell.impl.cli.output import warn
 from hyprial.shell.impl.cli.commands.agent.admin import agent_app
-from hyprial.shell.impl.cli.commands.common.support import JsonObject, _daemon_ipc_roundtrip_seconds, _resolved_agent_cwd, _resolved_interactive_resume_cwd, _user_proxy_launch_params
+from hyprial.shell.impl.cli.commands.common.support import JsonObject, _resolved_agent_cwd, _resolved_interactive_resume_cwd, _user_proxy_launch_params
 
 
 @agent_app.command(
@@ -88,11 +88,7 @@ def start(
         services = get_services()
         nonlocal harness_kind, model_provider, model, headless
 
-        from hyprial.daemon import (
-            ModelProviderError,
-            validate_model_selection,
-            with_reasoning_effort,
-        )
+        from hyprial.daemon import ModelProviderError, validate_model_selection
 
         from hyprial.kernel import TIERS
 
@@ -103,7 +99,7 @@ def start(
             if harness_kind != "codex" or not headless or tmux or tier is not None:
                 raise services.CliError(ipc_errors.INVALID_ARGUMENT, "--smolvm-spec requires explicit headless Codex")
             execution_runtime = SmolvmRuntimeSpec.from_json(json.loads(_regular_read(smolvm_spec.absolute())))
-            capabilities = services._daemon_request("ps", {})
+            capabilities = services.runtime.request("ps", {})
             if "smolvm-v1" not in capabilities.get("executionRuntimes", []):
                 raise services.CliError(ipc_errors.INVALID_ARGUMENT, "Daemon does not support smolvm; no agent created")
         runtime_args = tuple(ctx.args)
@@ -150,9 +146,10 @@ def start(
             # configuration, so this is one ordinary IPC round-trip: the
             # request no longer waits on any liveness probe (2026-09-21).
             # Availability recorded by `agent tiers probe` never enters this path.
-            resolved = services._daemon_request(
+            # No per-candidate probe budget is passed: the request port applies
+            # its single ordinary round-trip default.
+            resolved = services.runtime.request(
                 "dispatch.matrix.resolve", {"tier": tier, "name": name},
-                timeout=_daemon_ipc_roundtrip_seconds(),
             )
             choice = resolved["selected"]
             harness_kind, model_provider, model = choice["harness"], choice["provider"], choice["model"]
@@ -219,13 +216,16 @@ def start(
                 )
             headless = True
         try:
-            runtime_args = with_reasoning_effort(harness_kind, runtime_args, effort)
-            validate_model_selection(
+            encoded_args = validate_model_selection(
                 harness_kind, model_provider, model,
                 context=f"hyprial agent start --name {name}",
+                effort=effort,
+                args=runtime_args,
             )
         except ModelProviderError as error:
             raise services.CliError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
+        if not headless:
+            runtime_args = encoded_args
         for option, explicit in (("--provider", model_provider), ("--model", model)):
             if explicit is not None and any(
                 value == option or value.startswith(f"{option}=")
@@ -413,6 +413,8 @@ def start(
             params["modelProvider"] = model_provider
         if model is not None and harness_kind not in {"jev", "user-proxy"}:
             params["model"] = model
+        if effort is not None:
+            params["effort"] = effort
         if replace_interactive:
             params["replaceInteractive"] = True
         if resume is not None:
@@ -424,7 +426,7 @@ def start(
             # Native transcript validation is read-only and must precede the
             # reusable Agent write.  A daemon without this dedicated method
             # fails closed with METHOD_NOT_FOUND before agent.create.
-            preflight = services._daemon_request("lifecycle.resume.preflight", params)
+            preflight = services.runtime.request("lifecycle.resume.preflight", params)
             preflight_snapshot = preflight.get("agentSnapshot")
             if not isinstance(preflight_snapshot, dict):
                 raise services.CliError(
@@ -467,7 +469,7 @@ def start(
         # (2026-09-14 production).  Same derivation as `down`; the three
         # waits are composed from one deadline, never chosen independently.
         try:
-            started = services._daemon_request(
+            started = services.runtime.request(
                 (
                     "lifecycle.start-smolvm"
                     if execution_runtime is not None
@@ -505,7 +507,7 @@ def start(
                 # original code/message as the primary failure and attach the
                 # rollback failure as extra context the operator can read.
                 try:
-                    services._daemon_request(
+                    services.runtime.request(
                         "agent.resume.restore",
                         {
                             "name": name,
@@ -545,4 +547,4 @@ def start(
                     warn(warning, json_output=json_output)
         return started
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)

@@ -9,16 +9,13 @@ from hyprial.shell.impl.cli.output import emit_error, emit_value, json_failure, 
 
 from typing import Any, NoReturn
 from collections.abc import Callable
-from hyprial.kernel import RequestPortError
+from hyprial.kernel import RequestPortError, daemon_request, daemon_socket_path
 from pathlib import Path
 from datetime import UTC, datetime
 from hyprial.kernel import canonical_user_uri, parse_agent_uri
-import errno
 from hyprial.kernel import ipc_errors
 import json
-import math
 import os
-import socket
 import subprocess
 import sys
 
@@ -71,7 +68,7 @@ def _resolved_interactive_resume_cwd(actor: str, cwd: Path | None) -> Path:
 
     services = get_services()
     if cwd is None:
-        result = services._daemon_request("agent.get", {"name": actor})
+        result = services.runtime.request("agent.get", {"name": actor})
         raw_agent = result.get("agent")
         registered = raw_agent.get("cwd") if isinstance(raw_agent, dict) else None
         if not isinstance(registered, str) or not registered:
@@ -129,15 +126,10 @@ def _socket_path() -> Path:
     # An explicit state/home root is an isolation boundary.  Agent runtimes may
     # inject HARNESS_SOCKET_PATH for their own production daemon; allowing it
     # to override a test-owned state root would silently escape isolation.
+    # Endpoint selection (including the "explicit socket never evaluates the
+    # state root" rule) lives in the kernel client.
     services = get_services()
-    if "HARNESS_STATE_DIR" in os.environ or "HYPRIAL_HOME" in os.environ:
-        return services._state_dir() / "daemon.sock"
-    configured = os.environ.get("HARNESS_SOCKET_PATH")
-    return (
-        Path(configured).expanduser().resolve()
-        if configured
-        else services._state_dir() / "daemon.sock"
-    )
+    return daemon_socket_path(services._state_dir, env=os.environ)
 
 
 def _json_failure(error: Exception) -> JsonObject:
@@ -168,158 +160,7 @@ def _execute(
     )
 
 
-_PEER_GONE_ERRNOS = frozenset(
-    {
-        # EPIPE: the peer is gone at write time (macOS).  ECONNRESET: the
-        # peer is gone at write OR read time (Linux).  Same fact, different
-        # platforms -- discriminate by errno, not by exception class, so the
-        # next platform cannot leak a third spelling.
-        errno.EPIPE,
-        errno.ECONNRESET,
-    }
-)
-
-
-_CONNECT_BACKLOG_ERRNOS = frozenset(
-    {
-        # Linux answers connect() to a full AF_UNIX accept queue with an
-        # immediate EAGAIN -- even a timeout socket never waits for a slot
-        # there (CPython surfaces that EAGAIN as BlockingIOError after its
-        # one select() round), so a patient caller must retry within its
-        # budget or a healthy request looks starved whenever the dispatcher
-        # is briefly slower than its clients.  EWOULDBLOCK is the same value
-        # on POSIX but is listed so the intent survives a platform where the
-        # two diverge.
-        errno.EAGAIN,
-        errno.EWOULDBLOCK,
-    }
-)
-
-
-_CONNECT_BACKLOG_RETRY_INTERVAL = 0.01
-
-
-def _connect_daemon_socket(socket_path: Path, timeout: float) -> socket.socket:
-    """Connect to the daemon, waiting out a momentarily full listen backlog.
-
-    The retry budget is the request's own ``timeout``: the kernel only parks
-    a connect() against a full AF_UNIX accept queue for fully blocking
-    sockets, and this caller always runs with a timeout, so patience has to
-    be explicit.  Only the full-backlog spelling (EAGAIN/EWOULDBLOCK) is
-    retried -- ECONNREFUSED still fails fast because it also describes a
-    stale socket file whose daemon is gone, which must not take the whole
-    budget to report.
-    """
-    services = get_services()
-
-    if os.name == "nt":
-        from hyprial.kernel import connect_named_pipe as connect
-
-        return connect(socket_path, timeout)
-    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    client.settimeout(timeout)
-    deadline = services.time.monotonic() + timeout
-    try:
-        while True:
-            try:
-                client.connect(str(socket_path))
-            except OSError as error:
-                if (
-                    error.errno in _CONNECT_BACKLOG_ERRNOS
-                    and services.time.monotonic() < deadline
-                ):
-                    services.time.sleep(_CONNECT_BACKLOG_RETRY_INTERVAL)
-                    continue
-                raise
-            return client
-    except BaseException:
-        client.close()
-        raise
-
-
-def _peer_gone(
-    socket_path: Path, error: OSError | None = None
-) -> ipc_errors.DaemonDisconnectedError:
-    detail = f" ({error})" if error is not None else ""
-    # PR #332 F4②: transport mints use the registered transient classes so
-    # every daemon-request failure is catchable as TransientDaemonError
-    # without a second string-comparison system.
-    return ipc_errors.DaemonDisconnectedError(
-        f"connection closed by the Harness daemon at {socket_path} "
-        f"before any answer{detail}"
-    )
-
-
-_RESTORE_WAIT_POLL_SECONDS = 0.25
-
-
-_RESTORE_WAIT_DEFAULT_SECONDS = 120.0
-
-
-_RESTORE_WAIT_MAX_SECONDS = 900.0
-
-
-_DAEMON_IPC_ROUNDTRIP_SECONDS = 15.0
-
-
-#: Upper bound for ``HYPRIAL_IPC_ROUNDTRIP_SECONDS``.  Raising the client's
-#: patience must not turn a visible DAEMON_ERROR into an invisible wait: the
-#: daemon's own worst case (lock budget 8s + busy timeout, see
-#: ``daemon/impl/state_db.py``) is far below this, so anything above it only
-#: hides a hang.
-_DAEMON_IPC_ROUNDTRIP_MAX_SECONDS = 300.0
-
-
-def _daemon_ipc_roundtrip_seconds() -> float:
-    """Effective per-request IPC patience, in seconds.
-
-    Default ``_DAEMON_IPC_ROUNDTRIP_SECONDS`` (15s).
-    ``HYPRIAL_IPC_ROUNDTRIP_SECONDS`` overrides it so that a delay
-    *distribution* can be measured at all: with a fixed deadline every
-    observation slower than it is indistinguishable from a hang, and the
-    successes are right-censored (their true latency is unobservable).  That
-    makes "raise the deadline to see the tail" a measurement need, not a
-    tuning knob.
-
-    Unparseable or out-of-range values fall back to the default rather than
-    failing the command: a debugging override must never be able to make the
-    CLI unusable.  ``0`` is rejected on purpose -- a zero-timeout client
-    would report every call as a timeout.
-    """
-
-    raw = os.environ.get("HYPRIAL_IPC_ROUNDTRIP_SECONDS")
-    try:
-        value = _DAEMON_IPC_ROUNDTRIP_SECONDS if raw is None else float(raw)
-    except ValueError:
-        return _DAEMON_IPC_ROUNDTRIP_SECONDS
-    if not math.isfinite(value) or not 0.0 < value <= _DAEMON_IPC_ROUNDTRIP_MAX_SECONDS:
-        return _DAEMON_IPC_ROUNDTRIP_SECONDS
-    return value
-
-
 _RESTORE_FOLLOWUP_POLL_INTERVAL_SECONDS = 2.0
-
-
-def _restore_wait_budget() -> float:
-    """Bounded seconds a user command waits out a DAEMON_RESTORING refusal.
-
-    PR #332 F4①: while the daemon's restore gate is closed, heavy methods
-    answer DAEMON_RESTORING at dispatch -- BEFORE any side effect -- so a
-    refused mutation never executed and waiting the refusal out is safe.
-    The default covers a derived restore round (F1:
-    (ceil(targets/width)+1) x per-start timeout) for typical fleets;
-    HYPRIAL_DAEMON_RESTORE_WAIT_SECONDS=0 restores the fail-fast behaviour for
-    scripts that prefer it.
-    """
-
-    raw = os.environ.get("HYPRIAL_DAEMON_RESTORE_WAIT_SECONDS")
-    try:
-        value = _RESTORE_WAIT_DEFAULT_SECONDS if raw is None else float(raw)
-    except ValueError:
-        return _RESTORE_WAIT_DEFAULT_SECONDS
-    if not math.isfinite(value) or not 0.0 <= value <= _RESTORE_WAIT_MAX_SECONDS:
-        return _RESTORE_WAIT_DEFAULT_SECONDS
-    return value
 
 
 def _daemon_request(
@@ -329,7 +170,12 @@ def _daemon_request(
     timeout: float | None = None,
     restore_wait: float | None = None,
 ) -> Any:
-    """Call the daemon's version-1 newline-delimited JSON IPC protocol.
+    """Call the kernel client through the CLI's request port.
+
+    Framing, connect/backlog patience, timeout, and error classification live
+    only in :mod:`hyprial.kernel.impl.ipc.client`; this function supplies the
+    CLI's endpoint/clock/id bindings and translates a non-transient port
+    refusal into the CLI's user-facing ``CliError``.
 
     ``restore_wait`` bounds how long a DAEMON_RESTORING refusal is waited
     out before it surfaces as a CliError (None: the
@@ -339,121 +185,55 @@ def _daemon_request(
     out the budget just to swallow or re-render the same error.
     """
     services = get_services()
-
-    if timeout is None:
-        timeout = _daemon_ipc_roundtrip_seconds()
-    budget = _restore_wait_budget() if restore_wait is None else restore_wait
-    deadline = services.time.monotonic() + budget
-    while True:
-        try:
-            return _daemon_request_once(method, params, timeout=timeout)
-        # PR #332 F4②: the restore-wait judgment is the registered class,
-        # not a code comparison.  The other transient classes (transport
-        # blips) propagate untouched, exactly as the old ``code !=
-        # DAEMON_RESTORING`` raise did.
-        except ipc_errors.DaemonRestoringError:
-            if services.time.monotonic() >= deadline:
-                raise
-            services.time.sleep(_RESTORE_WAIT_POLL_SECONDS)
-
-
-def _daemon_request_once(
-    method: str,
-    params: JsonObject | None = None,
-    *,
-    timeout: float | None = None,
-) -> Any:
-    """Call the daemon's version-1 newline-delimited JSON IPC protocol."""
-    services = get_services()
-
-    if timeout is None:
-        timeout = _daemon_ipc_roundtrip_seconds()
-    request_id = str(services.uuid4())
-    frame: JsonObject = {"version": 1, "id": request_id, "method": method}
-    if params is not None:
-        frame["params"] = params
-    client: socket.socket | None = None
     try:
-        try:
-            client = _connect_daemon_socket(services._socket_path(), timeout)
-        except OSError as error:
-            # Report only what happened: which socket, and why the connect
-            # failed.  The cause (never started / mid-restart / hijacked
-            # HYPRIAL_HOME / permissions) cannot be told apart from here, so no
-            # remedy is embedded -- guidance belongs to skills and docs,
-            # which can be updated; a string constant cannot.
-            raise ipc_errors.DaemonUnavailableError(
-                f"cannot connect to the Harness daemon socket "
-                f"{services._socket_path()}: {error}"
-            ) from error
-        try:
-            client.sendall(json.dumps(frame, separators=(",", ":")).encode() + b"\n")
-        except OSError as error:
-            if error.errno in _PEER_GONE_ERRNOS:
-                raise _peer_gone(services._socket_path(), error) from error
-            raise
-        buffer = bytearray()
-        while len(buffer) <= 8 * 1024 * 1024:
-            try:
-                chunk = client.recv(64 * 1024)
-            except OSError as error:
-                if error.errno in _PEER_GONE_ERRNOS:
-                    raise _peer_gone(services._socket_path(), error) from error
-                raise
-            if not chunk:
-                raise _peer_gone(services._socket_path())
-            buffer.extend(chunk)
-            while b"\n" in buffer:
-                line, _, remainder = buffer.partition(b"\n")
-                buffer = bytearray(remainder)
-                if not line.strip():
-                    continue
-                try:
-                    response = json.loads(line)
-                except (UnicodeDecodeError, json.JSONDecodeError) as error:
-                    raise services.CliError(
-                        "INVALID_JSON", f"invalid daemon IPC response: {error}"
-                    ) from error
-                if not isinstance(response, dict) or response.get("version") != 1:
-                    raise services.CliError(
-                        ipc_errors.VERSION_MISMATCH, "unsupported daemon IPC version"
-                    )
-                if response.get("id") != request_id:
-                    # Event frames and responses for other request IDs are not
-                    # the result of this one-shot request.
-                    continue
-                failure = response.get("error")
-                if isinstance(failure, dict):
-                    code = str(failure.get("code", ipc_errors.DAEMON_ERROR))
-                    message = str(failure.get("message", "daemon request failed"))
-                    # PR #332 F4②: transient envelope codes deserialise
-                    # through the shared registry into the SAME class the
-                    # daemon minted; every other code stays a CliError (the
-                    # CLI's user-facing surface).
-                    transient = ipc_errors.transient_error_from_code(
-                        code, message, failure.get("data")
-                    )
-                    if transient is not None:
-                        raise transient
-                    raise services.CliError(
-                        code,
-                        message,
-                        failure.get("data"),
-                    )
-                if "result" not in response:
-                    raise services.CliError(
-                        "INVALID_RESPONSE", "daemon response is missing result"
-                    )
-                return response["result"]
-        raise services.CliError("IPC_RESPONSE_TOO_LARGE", "daemon IPC response exceeded 8 MiB")
-    except TimeoutError as error:
-        raise ipc_errors.IpcTimeoutError(
-            f"timed out after {timeout:g}s waiting for the Harness daemon at "
-            f"{services._socket_path()} to answer method {method!r}",
-        ) from error
-    finally:
-        if client is not None:
-            client.close()
+        # ``socket_path`` and ``clock`` are passed as CALLABLES: the kernel
+        # client re-resolves both on every restore-wait retry, so a daemon
+        # that moved its socket (or a test that swapped the service
+        # bindings) between attempts is followed rather than frozen.  The
+        # endpoint resolver reads the SAME composition-root binding daemon
+        # commands use (``CliServices._socket_path``), never a second copy.
+        return daemon_request(
+            method,
+            params,
+            socket_path=_service_socket_path,
+            timeout=timeout,
+            restore_wait=restore_wait,
+            clock=_service_clock,
+            uuid4=_service_uuid4,
+        )
+    except RequestPortError as error:
+        # The cause shape is per code, because the base client raised the two
+        # paths differently: a malformed frame chained the decode error
+        # (``from error``), every other refusal was raised bare. A single
+        # "clean" mapping would change one of them.
+        if error.code == "INVALID_JSON" and isinstance(error.__cause__, BaseException):
+            raise services.CliError(error.code, str(error), error.data) from error.__cause__
+        raise services.CliError(error.code, str(error), error.data)
+
+
+def _service_clock() -> object:
+    """Live clock binding: re-read the composition root on every attempt."""
+
+    return get_services().time
+
+
+def _service_socket_path() -> Path:
+    """Live endpoint binding: the same one daemon commands consume.
+
+    Reading ``get_services()._socket_path`` (rather than calling this
+    module's ``_socket_path`` directly) keeps the request and the other
+    daemon-backed commands on one injected endpoint: when the composition
+    root rebinds ``_socket_path``, both follow it -- and the kernel client
+    re-resolves it on every restore retry.
+    """
+
+    return get_services()._socket_path()
+
+
+def _service_uuid4() -> Any:
+    """Live request-id factory: re-read the composition root on every attempt."""
+
+    return get_services().uuid4()
 
 
 def _wait_for_daemon(
@@ -609,7 +389,7 @@ def _daemon_probe(timeout: float = 0.5) -> JsonObject:
     deadline = services.time.monotonic() + budget
 
     try:
-        result = services._daemon_request("ping", timeout=budget)
+        result = services.runtime.request("ping", timeout=budget)
     except services.CliError as error:
         if error.code != ipc_errors.METHOD_NOT_FOUND:
             raise
@@ -619,7 +399,7 @@ def _daemon_probe(timeout: float = 0.5) -> JsonObject:
                 f"daemon probe exhausted its {budget:g}s timeout before "
                 "the legacy ps fallback"
             ) from error
-        result = services._daemon_request("ps", timeout=remaining)
+        result = services.runtime.request("ps", timeout=remaining)
     if not isinstance(result, dict):
         raise services.CliError("INVALID_RESPONSE", "daemon probe result must be an object")
     return result
@@ -641,11 +421,23 @@ _SQUIRE_SETUP_PARTS = (
 )
 
 
-_DEVICE_SIGN_IN_HINT = (
-    "on the sign-in page choose \"sign in with an existing account\" "
-    "(使用已有账户登录); signing in with Feishu (使用飞书登录) currently does not "
-    "approve this device, and this command would wait until the code expires"
-)
+def device_sign_in_hint(issuer: str) -> str:
+    """The device-flow hint, including where a person without an account goes.
+
+    The device flow's sign-in page has no sign-up entry of its own, so a new
+    user has nowhere to go and the device code simply expires.  Shown by
+    ``login`` next to the device hint (infra-ops, 2026-10-20).  The signup
+    page shares the login issuer's origin; the caller passes the issuer it
+    already resolved, so the auth domain stays declared exactly once (T9).
+    """
+
+    signup_url = f"{issuer}/signup/app-hyprial"
+    return (
+        "on the sign-in page choose \"sign in with an existing account\" "
+        "(使用已有账户登录); signing in with Feishu (使用飞书登录) currently does not "
+        "approve this device, and this command would wait until the code expires. "
+        f"No account yet? Create one first: {signup_url}"
+    )
 
 
 def _squire_setup_warning() -> JsonObject | None:
@@ -724,7 +516,7 @@ def _user_proxy_setup_warning(owner: str, profile: Any) -> JsonObject | None:
     if profile.delivery_agent is not None or not _setup_hint_enabled("userProxy"):
         return None
     machine = profile.preferred_receiver.machine
-    next_step = "hyprial user-proxy setup --adapter <your-adapter> --route <route>"
+    next_step = "hyprial user proxy setup --adapter <your-adapter> --route <route>"
     return {
         "code": "SQUIRE_USER_PROXY_NOT_CONFIGURED",
         "message": (
@@ -828,16 +620,26 @@ def _overview_table(
     return tables.render_table(title, headers, cells, truncate_column=truncate_column)
 
 
+_UNRESOLVED_BINDING = object()
+
+
 def _message_claim_params(
-    source: str, *, on_behalf_of: str | None = None
+    source: str,
+    *,
+    on_behalf_of: str | None = None,
+    binding: object = _UNRESOLVED_BINDING,
 ) -> JsonObject:
-    """Attach an agent session's opaque fence only to its own actor claim."""
+    """Attach an agent session's opaque fence only to its own actor claim.
 
-    from hyprial.biz import worker_binding
+    Callers that already resolved the one per-operation binding pass it in;
+    other callers retain the lazy read.  No process-wide cache is used.
+    """
 
+    if binding is _UNRESOLVED_BINDING:
+        binding = get_services().runtime.worker_session_binding()
+    worker_actor = binding.actor if binding is not None else None
+    worker_session = binding.session_ref if binding is not None else None
     params: JsonObject = {"from": source}
-    binding = worker_binding()
-    worker_actor, worker_session = binding if binding is not None else (None, None)
     parsed = parse_agent_uri(worker_actor) if worker_actor else None
     same_actor = bool(
         worker_actor

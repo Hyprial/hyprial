@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 import typer
+from hyprial.shell.impl.cli.commands.common.groups import group
 
 from hyprial.kernel import ipc_errors
 from hyprial.shell.impl.cli.output import warn
@@ -131,7 +132,7 @@ PI_AGENT_DIR_ENV = "PI_CODING_AGENT_DIR"
 _WORKER_ACTOR_ENV = "HYPRIAL_WORKER_ACTOR"
 
 
-provider_app = typer.Typer(
+provider_app = group(
     help="Seed an agent's native credential from this host's own CLI login."
 )
 
@@ -248,7 +249,7 @@ def agent_provider_login(
             if (len(raw) > 16385 or not token or len(token) > 16384
                     or "\x00" in token or any(char.isspace() for char in token)):
                 raise services.CliError(ipc_errors.INVALID_ARGUMENT, "stdin must contain one non-empty setup token")
-            return services._daemon_request("agent.provider.login", {
+            return services.runtime.request("agent.provider.login", {
                 "actor": target, "provider": provider, "setupToken": token,
                 "force": force, "makeDefault": make_default,
             })
@@ -257,7 +258,7 @@ def agent_provider_login(
         if target is not None:
             return seed_agent(services, provider, target, documents, force=force, make_default=make_default)
         if make_default:
-            recorded = services._daemon_request(
+            recorded = services.runtime.request(
                 "agent.provider.default", {"provider": provider}
             )
             result["default"] = {
@@ -266,7 +267,7 @@ def agent_provider_login(
             }
         return result
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 def read_provider_documents(
@@ -302,7 +303,7 @@ def seed_agent(
     force: bool = False,
     make_default: bool = False,
 ) -> dict[str, Any]:
-    seeded = services._daemon_request(
+    seeded = services.runtime.request(
         "agent.provider.login",
         {
             "actor": actor,
@@ -340,7 +341,7 @@ def agent_provider_default(
         services = get_services()
         if clear:
             _refuse_in_worker_shell(services)
-        result = services._daemon_request(
+        result = services.runtime.request(
             "agent.provider.default", {"clear": True} if clear else {}
         )
         if result.get("provider") == "claude" and not result.get("defaultCredential"):
@@ -348,7 +349,7 @@ def agent_provider_default(
             warn(result["hint"], json_output=json_output)
         return result
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 @provider_app.command("logout")
@@ -373,11 +374,11 @@ def agent_provider_logout(
     def operation() -> Any:
         services = get_services()
         target = actor or _addressed_actor(services)
-        return services._daemon_request(
+        return services.runtime.request(
             "agent.provider.logout", {"actor": target, "provider": provider}
         )
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 def revoke_command(provider: str, actor: str) -> str:

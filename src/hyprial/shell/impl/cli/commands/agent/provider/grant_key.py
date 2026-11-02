@@ -103,7 +103,7 @@ def agent_provider_grant_key(
                         f"{held.get('entryId')}/{held.get('fieldName')}; pass "
                         "--replace with a higher --revision to replace it",
                     )
-                services._daemon_request(
+                services.runtime.request(
                     "agent.secret.grant",
                     {"actor": actor, "grantId": grant_id, **wanted, "revision": revision},
                 )
@@ -126,11 +126,11 @@ def agent_provider_grant_key(
             "revoke": _revoke_lines(_holding(outcome, actors), grant_id),
         }
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 
 def _held_grant(services: Any, actor: str, grant_id: str) -> dict[str, Any] | None:
-    listed = services._daemon_request("agent.secret.list", {"actor": actor})
+    listed = services.runtime.request("agent.secret.list", {"actor": actor})
     grants = listed.get("grants", []) if isinstance(listed, dict) else []
     for grant in grants:
         if isinstance(grant, dict) and grant.get("grantId") == grant_id:

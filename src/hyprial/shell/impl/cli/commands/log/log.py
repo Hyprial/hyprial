@@ -105,7 +105,7 @@ def log_command(
     """Query all structured daemon, adapter, and worker JSONL history."""
     services = get_services()
 
-    services._execute(
+    services.runtime.execute(
         lambda: _log_result(
             component=component,
             name=name,

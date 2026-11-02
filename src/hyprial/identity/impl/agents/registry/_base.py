@@ -109,6 +109,24 @@ class PinConflictError(AgentError):
         self.agent_uri = agent_uri
         self.adapter = adapter
         self.holder = holder
+
+
+_UNCONDITIONAL_PIN = object()
+
+
+class PinStateConflictError(AgentError):
+    """A pin changed after the caller observed it; no write was performed."""
+
+    code = "PIN_STATE_CONFLICT"
+
+    def __init__(self, adapter: str, expected_actor: object, current_actor: str | None) -> None:
+        super().__init__(f"adapter {adapter!r} binding changed; read it again before confirming")
+        self.adapter = adapter
+        self.expected_actor = expected_actor
+        self.current_actor = current_actor
+        self.details = {"adapter": adapter, "expectedActor": expected_actor, "currentActor": current_actor}
+
+
 def _now_ms() -> int:
     return time.time_ns() // 1_000_000
 def _is_compensating_attempt(attempt_token: str) -> bool:

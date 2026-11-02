@@ -8,7 +8,7 @@ from typing import Any
 
 import typer
 
-from hyprial.biz import actor_owner, check_actor_claim, state_dir, worker_binding
+from hyprial.biz import actor_owner, check_actor_claim, state_dir
 from hyprial.shell.impl.cli.commands.common.services import get_services
 from hyprial.shell.impl.cli.commands.common.support import JsonObject
 from hyprial.shell.impl.cli.commands.workflow.internal.expansion import (
@@ -35,14 +35,14 @@ class _WorkflowNotificationSender:
     ) -> str:
         services = get_services()
 
-        binding = worker_binding()
+        binding = get_services().runtime.worker_session_binding()
         identity = (
-            {"from": sender, "sessionRef": binding[1]}
-            if binding is not None and sender == binding[0]
+            {"from": sender, "sessionRef": binding.session_ref}
+            if binding is not None and sender == binding.actor
             else {"from": actor_owner(), "onBehalfOf": sender}
         )
 
-        result = services._daemon_request(
+        result = services.runtime.request(
             "message.send",
             {
                 **identity,
@@ -70,13 +70,12 @@ def reset(
     """Withdraw one current request for explicit rework."""
 
     def operation() -> JsonObject:
-        binding = worker_binding()
+        binding = get_services().runtime.worker_session_binding()
         if binding is not None:
-            actor, session_ref = binding
             return _call_result(
                 "pac.flag.reset",
-                {"graphId": graph_id, "nodeId": node_id, "reasonRef": reason_ref, "sessionRef": session_ref},
-                claimed=actor,
+                {"graphId": graph_id, "nodeId": node_id, "reasonRef": reason_ref, "sessionRef": binding.session_ref},
+                claimed=binding.actor,
             )
         from hyprial.daemon import PacReactor, planned_to_json
         from hyprial.daemon import PacGraphStore
@@ -96,7 +95,7 @@ def reset(
             "notifications": [planned_to_json(item) for item in outcome.planned],
         }
 
-    get_services()._execute(operation, json_output=json_output)
+    get_services().runtime.execute(operation, json_output=json_output)
 
 @worker_app.command("stop")
 def worker_stop(
@@ -133,7 +132,7 @@ def notify_resend(
             store.close()
         return {"ok": True, **result}
 
-    get_services()._execute(operation, json_output=json_output)
+    get_services().runtime.execute(operation, json_output=json_output)
 
 @migration_app.command("status")
 def migration_status(
@@ -169,7 +168,7 @@ def migration_status(
             }
         )
 
-    get_services()._execute(operation, json_output=json_output)
+    get_services().runtime.execute(operation, json_output=json_output)
 
 @workflow_app.command("complete")
 def complete(
@@ -217,7 +216,7 @@ def complete(
             )
         )
 
-    services._execute(operation, json_output=json_output)
+    services.runtime.execute(operation, json_output=json_output)
 
 @workflow_app.command("fail")
 def fail(

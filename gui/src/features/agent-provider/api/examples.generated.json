@@ -1,0 +1,367 @@
+{
+  "agent.list": [
+    {
+      "description": "one registered agent is returned",
+      "kind": "success",
+      "name": "one-agent",
+      "params": {},
+      "result": {
+        "agents": [
+          {
+            "activityHints": {
+              "agentHomeMtimeMs": null,
+              "createdAtMs": 1760000000000,
+              "hasLastSessionId": false
+            },
+            "actor": "worker",
+            "capabilities": {},
+            "config": null,
+            "createdAtMs": 1760000000000,
+            "cwd": "/work/worker",
+            "harness": "claude",
+            "harnessArgs": {},
+            "heartbeatAgeSeconds": null,
+            "hosted": false,
+            "hostedBy": null,
+            "lastActiveAtMs": null,
+            "lastHarness": "claude",
+            "lastSessionId": null,
+            "machine": "node-1",
+            "model": null,
+            "owner": "acme",
+            "pinnedAdapters": [],
+            "preferredHarness": "claude",
+            "provider": "claude",
+            "runtime": null,
+            "sessionId": null,
+            "status": "ready",
+            "uri": "agent:acme:node-1:worker"
+          }
+        ],
+        "agentsWithoutRoutine": [],
+        "ok": true
+      }
+    },
+    {
+      "description": "no agents are registered on this machine",
+      "kind": "empty",
+      "name": "empty-registry",
+      "params": {
+        "inactiveSince": null
+      },
+      "reason": "an empty agent registry is a legal successful read",
+      "result": {
+        "agents": [],
+        "agentsWithoutRoutine": [],
+        "ok": true
+      }
+    },
+    {
+      "description": "a boolean is not a duration",
+      "error": {
+        "code": "INVALID_ARGUMENT",
+        "message": "inactiveSince must be a duration, not a boolean"
+      },
+      "kind": "invalid-params",
+      "name": "boolean-duration",
+      "params": {
+        "inactiveSince": true
+      }
+    },
+    {
+      "description": "the legacy handler rejects a non-positive duration",
+      "error": {
+        "code": "INVALID_ARGUMENT",
+        "message": "inactiveSince must be positive, got 0.0s"
+      },
+      "kind": "semantic-param-error",
+      "name": "zero-duration",
+      "params": {
+        "inactiveSince": 0
+      }
+    },
+    {
+      "description": "the agent registry cannot be read",
+      "error": {
+        "code": "AGENT_ERROR",
+        "message": "the agent registry could not be read"
+      },
+      "kind": "domain-error",
+      "name": "registry-unavailable",
+      "params": {}
+    }
+  ],
+  "agent.provider.default": [
+    {
+      "description": "a provider is the current default",
+      "kind": "success",
+      "name": "configured",
+      "params": {},
+      "result": {
+        "ok": true,
+        "previous": null,
+        "provider": "claude"
+      }
+    },
+    {
+      "description": "no default provider has been configured",
+      "kind": "unconfigured",
+      "name": "not-configured",
+      "params": {},
+      "reason": "a node with no default provider is a legal unconfigured state",
+      "result": {
+        "ok": true,
+        "previous": null,
+        "provider": null
+      }
+    },
+    {
+      "description": "the universal object schema still rejects a non-object body",
+      "error": {
+        "code": "INVALID_ARGUMENT",
+        "message": "params must be a JSON object"
+      },
+      "kind": "invalid-params",
+      "name": "non-object-body",
+      "params": []
+    },
+    {
+      "description": "the handler validates a schema-admitted provider value",
+      "error": {
+        "code": "INVALID_ARGUMENT",
+        "message": "provider must be a non-empty string"
+      },
+      "kind": "semantic-param-error",
+      "name": "provider-wrong-shape",
+      "params": {
+        "provider": 5
+      }
+    },
+    {
+      "description": "the named provider is not supported on this machine",
+      "error": {
+        "code": "PROVIDER_UNSUPPORTED",
+        "message": "the provider is not supported on this machine"
+      },
+      "kind": "domain-error",
+      "name": "provider-unsupported",
+      "params": {
+        "provider": "unsupported-provider"
+      }
+    }
+  ],
+  "agent.provider.login": [
+    {
+      "description": "one synthetic provider file is installed",
+      "kind": "success",
+      "name": "file-receipt",
+      "params": {
+        "actor": "worker",
+        "files": [
+          {
+            "contentBase64": "ZXhhbXBsZS1ub3QtYS1jcmVkZW50aWFs",
+            "filename": ".credentials.json"
+          }
+        ],
+        "provider": "claude"
+      },
+      "result": {
+        "actor": "worker",
+        "files": [
+          {
+            "bytes": 24,
+            "path": "/tmp/hyprial-example/.credentials.json",
+            "replaced": false,
+            "unchanged": false
+          }
+        ],
+        "ok": true,
+        "provider": "claude"
+      }
+    },
+    {
+      "description": "the universal object schema still rejects a non-object body",
+      "error": {
+        "code": "INVALID_ARGUMENT",
+        "message": "params must be a JSON object"
+      },
+      "kind": "invalid-params",
+      "name": "non-object-body",
+      "params": []
+    },
+    {
+      "description": "the handler requires a non-empty file list",
+      "error": {
+        "code": "INVALID_ARGUMENT",
+        "message": "files must be a non-empty array"
+      },
+      "kind": "semantic-param-error",
+      "name": "empty-file-list",
+      "params": {
+        "actor": "worker",
+        "files": [],
+        "provider": "claude"
+      }
+    },
+    {
+      "description": "the caller may not install a credential for that agent",
+      "error": {
+        "code": "TARGET_NOT_AUTHORIZED",
+        "message": "the target agent is not authorized"
+      },
+      "kind": "domain-error",
+      "name": "target-not-authorized",
+      "params": {
+        "actor": "worker",
+        "files": [
+          {
+            "contentBase64": "ZXhhbXBsZS1ub3QtYS1jcmVkZW50aWFs",
+            "filename": ".credentials.json"
+          }
+        ],
+        "provider": "claude"
+      }
+    }
+  ],
+  "agent.provider.logout": [
+    {
+      "description": "the agent's synthetic provider file is removed",
+      "kind": "success",
+      "name": "removed",
+      "params": {
+        "actor": "worker",
+        "provider": "claude"
+      },
+      "result": {
+        "absent": [],
+        "actor": "worker",
+        "ok": true,
+        "provider": "claude",
+        "removed": [
+          "/tmp/hyprial-example/.credentials.json"
+        ]
+      }
+    },
+    {
+      "description": "the agent has no provider file to remove",
+      "kind": "empty",
+      "name": "already-absent",
+      "params": {
+        "actor": "worker",
+        "provider": "claude"
+      },
+      "reason": "removing an already-absent credential is a legal empty removal",
+      "result": {
+        "absent": [
+          "/tmp/hyprial-example/.credentials.json"
+        ],
+        "actor": "worker",
+        "ok": true,
+        "provider": "claude",
+        "removed": []
+      }
+    },
+    {
+      "description": "the actor selector must be a string",
+      "error": {
+        "code": "INVALID_ARGUMENT",
+        "message": "actor must be a non-empty string"
+      },
+      "kind": "invalid-params",
+      "name": "actor-wrong-type",
+      "params": {
+        "actor": 5
+      }
+    },
+    {
+      "description": "the handler requires a provider after the actor",
+      "error": {
+        "code": "INVALID_ARGUMENT",
+        "message": "provider must be a non-empty string"
+      },
+      "kind": "semantic-param-error",
+      "name": "provider-missing",
+      "params": {
+        "actor": "worker"
+      }
+    },
+    {
+      "description": "the caller may not revoke that agent's credential",
+      "error": {
+        "code": "TARGET_NOT_AUTHORIZED",
+        "message": "the target agent is not authorized"
+      },
+      "kind": "domain-error",
+      "name": "target-not-authorized",
+      "params": {
+        "actor": "worker",
+        "provider": "claude"
+      }
+    }
+  ],
+  "agent.secret.list": [
+    {
+      "description": "one grant is visible for the selected agent",
+      "kind": "success",
+      "name": "one-grant",
+      "params": {
+        "actor": "worker"
+      },
+      "result": {
+        "grants": [
+          {
+            "actor": "worker",
+            "entryId": "entry-0001",
+            "environmentNames": [
+              "ANTHROPIC_API_KEY"
+            ],
+            "fieldName": "ANTHROPIC_API_KEY",
+            "grantId": "grant-0001",
+            "ownerActor": null,
+            "ownerEntityToken": null,
+            "revision": 1,
+            "source": "agent-private"
+          }
+        ],
+        "ok": true
+      }
+    },
+    {
+      "description": "the selected agent has no grants",
+      "kind": "empty",
+      "name": "no-grants",
+      "params": {
+        "actor": "worker"
+      },
+      "reason": "an agent with no grant rows is a legal successful read",
+      "result": {
+        "grants": [],
+        "ok": true
+      }
+    },
+    {
+      "description": "the actor selector must be a string or null",
+      "error": {
+        "code": "INVALID_ARGUMENT",
+        "message": "actor must be null or a non-empty agent name"
+      },
+      "kind": "invalid-params",
+      "name": "actor-wrong-type",
+      "params": {
+        "actor": 5
+      }
+    },
+    {
+      "description": "the selected agent is not registered",
+      "error": {
+        "code": "AGENT_NOT_FOUND",
+        "message": "no agent with that name is registered on this machine"
+      },
+      "kind": "domain-error",
+      "name": "unknown-agent",
+      "params": {
+        "actor": "missing-agent"
+      }
+    }
+  ]
+}

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass
 
 from hyprial.kernel import (
@@ -44,6 +44,7 @@ class CarrierDeliverySnapshot:
     #: Per-shard injection attempt.  A re-offer of the same delivery id gets a
     #: new attempt, so a delayed turn-start fact cannot attach to it.
     attempt: int = 0
+    recovered: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +101,15 @@ class CarrierStatusUnknown:
     generation: int
     delivery_id: str
     attempts: int
+    expected_stage: str | None = None
+    attempt: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CarrierFetchedSettled:
+    generation: int
+    delivery_id: str
+    attempt: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +134,7 @@ CarrierCommand = (
     | CarrierKept
     | CarrierStatusUnknown
     | CarrierRemoved
+    | CarrierFetchedSettled
     | CarrierReconcileError
 )
 @dataclass(frozen=True, slots=True)
@@ -165,6 +176,7 @@ class _State:
     last_reconcile_error: str | None = None
     version: int = 0
     attempt: int = 0
+    recovered: bool = False
 
 
 class _Projection:
@@ -218,8 +230,30 @@ class _CarrierShard:
             if self._current(command.generation, command.delivery_id) is not None:
                 self._kept(command)
         elif isinstance(command, CarrierStatusUnknown):
-            if self._current(command.generation, command.delivery_id) is not None:
+            state = self._current(command.generation, command.delivery_id)
+            if (
+                state is not None
+                and (command.expected_stage is None or state.stage == command.expected_stage)
+                and (command.attempt is None or state.attempt == command.attempt)
+            ):
                 self._status_unknown(command)
+        elif isinstance(command, CarrierFetchedSettled):
+            state = self._current(command.generation, command.delivery_id)
+            if (
+                state is not None
+                and state.stage == FETCHED
+                and state.attempt == command.attempt
+                and self._store.delete_in_state(self._actor, command.delivery_id, FETCHED)
+            ):
+                self._states.pop(command.delivery_id, None)
+                with self._projection.lock:
+                    self._projection.rows.pop(command.delivery_id, None)
+                self._log_transition(state, FETCHED, SETTLED)
+                self._log(
+                    "info", "worker.carrier.fetched_removed", self._snapshot(state),
+                    {"reason": "all-members-settled", "generation": self._generation,
+                     "attempt": state.attempt},
+                )
         elif isinstance(command, CarrierRemoved):
             if self._current(command.generation, command.delivery_id) is not None:
                 self._remove(command.delivery_id)
@@ -277,7 +311,7 @@ class _CarrierShard:
 
     def _final(self, command: CarrierFinalObserved) -> None:
         state = self._states[command.delivery_id]
-        if state.stage == SETTLED:
+        if state.stage in {SETTLED, STATUS_UNKNOWN}:
             return
         self._store.record_final(self._actor, command.delivery_id, command.output)
         previous = state.stage
@@ -363,6 +397,7 @@ class _CarrierShard:
             next_settlement_at=state.next_settlement_at,
             last_reconcile_error=state.last_reconcile_error,
             attempt=state.attempt,
+            recovered=state.recovered,
         )
 
     def _log_transition(
@@ -401,7 +436,8 @@ class _CarrierShard:
             self._projection.effects.append(effect)
 
     def _recover(self) -> None:
-        for stored in self._store.load(self._actor, self._session_ref):
+        stored_rows = self._store.load(self._actor, self._session_ref)
+        for stored in stored_rows:
             if stored.state == SETTLED:
                 self._store.delete(self._actor, stored.delivery.delivery_id)
                 continue
@@ -452,6 +488,7 @@ class _CarrierShard:
                     stage=FETCHED,
                     version=1,
                     attempt=self._next_attempt(),
+                    recovered=True,
                 )
                 self._states[state.delivery.delivery_id] = state
                 self._publish(state)
@@ -493,6 +530,7 @@ class _CarrierShard:
                 settlement_attempts=stored.settlement_attempts,
                 version=1,
                 attempt=self._next_attempt(),
+                recovered=True,
             )
             self._states[state.delivery.delivery_id] = state
             self._publish(state)
@@ -502,6 +540,12 @@ class _CarrierShard:
                 self._snapshot(state),
                 {"recoveredState": state.stage},
             )
+        self._log(
+            "info", "worker.carrier.recovery_summary", None,
+            {"rowCount": len(stored_rows),
+             "stateCounts": dict(Counter(row.state for row in stored_rows)),
+             "activeRowCount": len(self._states), "generation": self._generation},
+        )
 
 
 class InteractiveCarrierRuntime:

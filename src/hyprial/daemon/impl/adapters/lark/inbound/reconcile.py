@@ -1,9 +1,28 @@
-"""Lark event conversion, routing, acknowledgement, and receipt correlation."""
+"""Lark event conversion, routing, acknowledgement, and receipt correlation.
+
+Decision block — 0.5.5.3 bounded inline backfill + sweep anchor (#2213
+review 1344 Q1/Q2, Q1 rule revised per R&D lead addendum):
+- The inline (live-message-triggered) backfill pulls history off the serial
+  inbound effect lane and waits on it at most ``DEFAULT_INLINE_BACKFILL_SECONDS``
+  (adapter.py); on expiry the chat pauses -- the live message is held as a
+  ``backfill-unavailable`` dead letter with the ack refused (checkpoint not
+  advanced) and never injected ahead of the unsettled history. The detached
+  finisher replays the fetch's batch on the lane via ``ordered`` and then
+  injects the held messages in arrival order, so the chat resumes in order
+  while every other chat keeps flowing. ``fetch`` lets the sweep replay an
+  already-pulled batch (or its error) instead of calling the SDK again; the
+  scheduled path still fetches on the lane via ``reconcile_recent``.
+- The sweep window anchors to ``chat_reconciliations`` (last cleanly swept
+  point) in addition to ``chat_observations``, so a same-epoch gap older than
+  the lookback survives later live messages advancing the observation mark.
+"""
 
 from __future__ import annotations
 
+import heapq
 import json
 import time
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
@@ -25,12 +44,14 @@ from hyprial.daemon.impl.adapters.lark.outbound.sdk_base import LARK_HISTORY_COD
 from hyprial.daemon.impl.adapters.lark.state.records import (
     DeadLetter,
 )
+from hyprial.daemon.impl.adapters.lark.state.recovery import PENDING_RECOVERY_MAX_FAILURES
 # Feishu returns either code when an app without broad group-history access
 # attempts to list a chat's messages. Keep this allowlist specific to that one
 # endpoint: any other Lark API failure must remain reconciliation-fatal.
 _HISTORY_SCOPE_FORBIDDEN_CODES = frozenset({230002, 230027})
 DEFAULT_DEAD_LETTER_ALERT_THRESHOLD = 10
 DEAD_LETTER_ALERT_WINDOW_SECONDS = 60 * 60
+MAX_BACKFILL_LOOKBACK_SECONDS = 24 * 60 * 60
 PENDING_SUBMISSION_REPLAY_BATCH = 16
 PENDING_SUBMISSION_REPLAY_BUDGET_SECONDS = 5.0
 # Platform codes meaning "this chat is not readable, and no retry changes
@@ -97,8 +118,41 @@ def _create_time_ms(value: str | None) -> int:
 
     try:
         return int(value) if value else 0
-    except ValueError:
+    except (TypeError, ValueError):
         return 0
+
+
+_HistoryCandidate = tuple[int, str, LarkInboundMessage | None]
+
+
+def _ordered_candidates(
+    candidates: dict[str, _HistoryCandidate],
+    parents: dict[str, str | None],
+) -> list[_HistoryCandidate]:
+    """Use platform time, with parent-before-reply ordering for equal times."""
+    children: dict[str, list[str]] = {}
+    waiting: set[str] = set()
+    for message_id, (created, _, message) in candidates.items():
+        parent = (
+            message.reply_to if message is not None else
+            parents.get(message_id)
+        )
+        if parent in candidates:
+            if candidates[parent][0] > created:
+                raise ValueError("inconsistent history timestamps")
+            waiting.add(message_id)
+            children.setdefault(parent, []).append(message_id)
+    ready = [(row[0], key) for key, row in candidates.items() if key not in waiting]
+    heapq.heapify(ready)
+    ordered: list[_HistoryCandidate] = []
+    while ready:
+        _, message_id = heapq.heappop(ready)
+        ordered.append(candidates[message_id])
+        for child in children.get(message_id, ()):
+            heapq.heappush(ready, (candidates[child][0], child))
+    if len(ordered) != len(candidates):
+        raise ValueError("cyclic history replies")
+    return ordered
 
 
 class _ReconcileDeadLetterMixin:
@@ -154,6 +208,7 @@ class _ReconcileDeadLetterMixin:
             return InboundOutcome(status="duplicate")
         pending = self._state.pending_inbound_submission_record(message_id)
         if pending is not None:
+            self._state.resume_pending_inbound(message_id)
             return self._recover_pending_submission(pending)
         message = self._lark.get_inbound_message(message_id)
         if message is None:
@@ -163,7 +218,24 @@ class _ReconcileDeadLetterMixin:
         )
 
     def _recover_pending_submission(
-        self, pending: tuple[str, str, str], *, deadline: float | None = None
+        self, pending: tuple[str, str, str], *, deadline: float | None = None,
+        ordered: bool = False,
+    ) -> InboundOutcome:
+        outcome = self._try_recover_pending_submission(pending, deadline=deadline, ordered=ordered)
+        if (outcome.status not in {"error", "submission-held"}
+                or outcome.ack_error in {"inbound-closing", "recovery-deadline"}):
+            return outcome
+        attempts = self._state.fail_pending_inbound(pending, now=self._utcnow())
+        if attempts >= PENDING_RECOVERY_MAX_FAILURES:
+            self._log_backfill("lark.backfill.dead-lettered", reason="submission-retry-exhausted",
+                               attempts=attempts, acceptance="unconfirmed")
+            return InboundOutcome(status="submission-dead-lettered", new_dead_letter=True)
+        self._log_backfill("lark.backfill.deferred", reason="submission-recovery-failed", attempts=attempts)
+        return outcome
+
+    def _try_recover_pending_submission(
+        self, pending: tuple[str, str, str], *, deadline: float | None = None,
+        ordered: bool = False,
     ) -> InboundOutcome:
         if self._closing.is_set():
             return InboundOutcome(status="error", ack_error="inbound-closing")
@@ -192,6 +264,11 @@ class _ReconcileDeadLetterMixin:
         remaining = 30.0 if deadline is None else max(0.0, deadline - time.monotonic())
         if remaining <= 0:
             return InboundOutcome(status="error", ack_error="recovery-deadline")
+        if ordered:
+            return self._handle_inbound(
+                message, suppress_guidance=True, frozen_recovery=True,
+                recovery_deadline=deadline,
+            )
         return self._inbound.process(
             message, suppress_guidance=True, timeout=remaining,
             frozen_recovery=True, recovery_deadline=deadline,
@@ -254,58 +331,129 @@ class _ReconcileDeadLetterMixin:
         lookback_seconds: int = DEFAULT_RECONCILE_LOOKBACK_SECONDS,
         now_ms: int | None = None,
     ) -> ReconcileReport:
+        if self._closing.is_set():
+            return ReconcileReport(0, 0, 0, 0, 0, retryable_errors=("adapter: closing",))
+        timeout = (
+            PENDING_SUBMISSION_REPLAY_BUDGET_SECONDS
+            if self._state.pending_inbound_submission_count() else 30.0
+        )
+        try:
+            return self._inbound.ordered(
+                lambda: self._reconcile_recent_ordered(
+                    lookback_seconds=lookback_seconds, now_ms=now_ms,
+                ), timeout=timeout,
+            )
+        except TimeoutError:
+            return ReconcileReport(
+                0, 0, 0, 0, 0, retryable_errors=("adapter: recovery-deadline",),
+                pending_remaining=self._state.pending_inbound_submission_count(),
+            )
+
+    def _history_window(
+        self, chat_id: str, *, now_ms: int, lookback_seconds: int,
+    ) -> tuple[int, int]:
+        """Request and clamped window start for one chat's history pull.
+
+        The window reaches back to the earlier of the configured lookback and
+        the chat's durable progress points (last observation, last fully
+        reconciled point), clamped to the 24-hour maximum lookback.
+        """
+
+        floor_ms = max(0, now_ms - MAX_BACKFILL_LOOKBACK_SECONDS * 1000)
+        bounds = [now_ms - max(0, lookback_seconds) * 1000]
+        observed = self._state.chat_observed_ms(chat_id)
+        reconciled = self._state.chat_reconciled_ms(chat_id)
+        if observed is not None:
+            bounds.append(observed)
+        if reconciled is not None:
+            bounds.append(reconciled)
+        requested_start = min(bounds)
+        return requested_start, max(floor_ms, requested_start)
+
+    def _reconcile_recent_ordered(
+        self, *, lookback_seconds: int = DEFAULT_RECONCILE_LOOKBACK_SECONDS,
+        now_ms: int | None = None, chat_ids: tuple[str, ...] | None = None,
+        fetch: Callable[[str, str], Any] | None = None,
+    ) -> ReconcileReport:
         """Replay messages a websocket outage dropped, per chat, idempotently.
 
-        Scans chats with prior inbound activity (correlations + dead letters)
-        for messages inside the lookback window and feeds anything unseen
-        through the normal inbound path.  Dedup by native message id makes
-        repeat sweeps safe; guidance replies are suppressed so a still-
+        Scans durable chat observations, correlations, dead letters and pending
+        submissions. The checkpoint expands the overlap window up to 24 hours.
+        History replay runs on the same effect lane as live inbound work; when
+        ``fetch`` is supplied it produces the batch for one chat from off-lane
+        (the bounded inline leg replays an already-pulled batch this way),
+        otherwise the SDK is called on the lane as before.
+        Native message ID dedup makes repeat sweeps safe; guidance replies
+        are suppressed so a still-
         unaddressed message is not re-answered on every reconnect.
         """
 
         if self._closing.is_set():
             return ReconcileReport(0, 0, 0, 0, 0, retryable_errors=("adapter: closing",))
-        now_ms = int(time.time() * 1000) if now_ms is None else now_ms
-        window_start_ms = now_ms - lookback_seconds * 1000
-        start_time = str(window_start_ms // 1000)
+        now_ms = int(self._utcnow().timestamp() * 1000) if now_ms is None else now_ms
+        epoch = self._backfill_epoch
+        floor_ms = max(0, now_ms - MAX_BACKFILL_LOOKBACK_SECONDS * 1000)
+        window_starts: list[int] = []
+        truncated = 0
         errors: list[str] = []
         blocked: list[str] = []
         retired: list[str] = []
         scanned = forwarded = duplicates = dead_lettered = 0
         pending_attempted = pending_held = 0
         attempted_ids: set[str] = set()
+        headers = self._state.pending_inbound_headers()
+        deferred_chats = {chat for _, chat, _, _ in headers if isinstance(chat, str) and chat
+                          and self._state.retired_chat_code(chat) is None}
         deadline = time.monotonic() + PENDING_SUBMISSION_REPLAY_BUDGET_SECONDS
         for pending in self._state.pending_inbound_submission_page(limit=PENDING_SUBMISSION_REPLAY_BATCH):
             if self._closing.is_set() or time.monotonic() >= deadline:
                 break
-            # Advance only attempted items, before their bounded call. A slow
-            # first item cannot monopolize the next sweep, even after restart.
+            try:
+                pending_chat = json.loads(pending[2])["request"]["provider_metadata"]["chatId"]
+            except (KeyError, TypeError, ValueError):
+                pending_chat = None
+            if chat_ids is not None and pending_chat not in chat_ids:
+                continue
+            if (isinstance(pending_chat, str) and pending_chat
+                    and self._state.retired_chat_code(pending_chat) is None):
+                continue
             self._state.advance_pending_inbound_cursor(pending[0])
             attempted_ids.add(pending[0])
             pending_attempted += 1
             scanned += 1
-            outcome = self._recover_pending_submission(pending, deadline=deadline)
+            outcome = self._recover_pending_submission(pending, deadline=deadline, ordered=True)
             forwarded += outcome.status == "forwarded"
             duplicates += outcome.status == "duplicate"
             dead_lettered += outcome.new_dead_letter
             pending_held += outcome.status == "submission-held"
-        pending_remaining = self._state.pending_inbound_submission_count()
-        if self._logger is not None and (pending_attempted or pending_remaining):
-            try:
-                self._logger.info("adapter.reconcile.pending", attempted=pending_attempted,
-                                  remaining=pending_remaining, held=pending_held)
-            except (NameError, ImportError):
-                raise
-            except Exception:
-                pass
-        chats = self._state.recent_chats()
+            if outcome.status in {"error", "submission-held"}:
+                errors.append("adapter: submission-recovery-failed")
+        chats = (
+            tuple(sorted(set(self._state.recent_chats()) | deferred_chats))
+            if chat_ids is None else chat_ids
+        )
         self._log_sweep_started(len(chats))
         for chat_id in chats:
+            requested_start, window_start_ms = self._history_window(
+                chat_id, now_ms=now_ms, lookback_seconds=lookback_seconds,
+            )
+            window_starts.append(window_start_ms)
+            if requested_start < floor_ms:
+                truncated += 1
+                self._log_backfill("lark.backfill.truncated", windowStartMs=window_start_ms,
+                                   observedMs=self._state.chat_observed_ms(chat_id),
+                                   maxLookbackSeconds=MAX_BACKFILL_LOOKBACK_SECONDS)
+            start_time = str(window_start_ms // 1000)
+            errors_before = len(errors)
             try:
-                batch = self._lark.list_chat_messages(
-                    chat_id,
-                    start_time=start_time,
-                    chat_type=self._state.chat_type(chat_id),
+                batch = (
+                    fetch(chat_id, start_time)
+                    if fetch is not None
+                    else self._lark.list_chat_messages(
+                        chat_id,
+                        start_time=start_time,
+                        chat_type=self._state.chat_type(chat_id),
+                    )
                 )
             except (NameError, ImportError):
                 raise
@@ -368,14 +516,44 @@ class _ReconcileDeadLetterMixin:
                 continue
             if not getattr(batch, "complete", True):
                 errors.append(f"{chat_id}: history-incomplete")
-            for message in batch:
-                if (message.message_id in attempted_ids
-                        or self._state.pending_inbound_submission(message.message_id) is not None):
-                    continue  # Frozen requests belong to the bounded replay pass.
-                if _create_time_ms(message.create_time) < window_start_ms:
+                continue
+            candidates = {
+                item.message_id: (_create_time_ms(item.create_time), item.message_id, item)
+                for item in batch if window_start_ms <= _create_time_ms(item.create_time) <= now_ms
+            }
+            parents = {}
+            for message_id, pending_chat, created, parent in headers:
+                if pending_chat == chat_id:
+                    candidates[message_id] = (_create_time_ms(created), message_id, None)
+                    parents[message_id] = parent
+            try:
+                ordered = _ordered_candidates(candidates, parents)
+            except ValueError:
+                errors.append(f"{chat_id}: history-order-invalid")
+                continue
+            for _, message_id, message in ordered:
+                if message_id in attempted_ids:
                     continue
+                if self._state.pending_inbound_dead_lettered(message_id):
+                    continue
+                pending = self._state.pending_inbound_submission_record(message_id)
+                if pending is not None:
+                    if pending_attempted >= PENDING_SUBMISSION_REPLAY_BATCH or time.monotonic() >= deadline:
+                        errors.append(f"{chat_id}: pending-recovery-budget")
+                        self._log_backfill("lark.backfill.deferred", reason="pending-recovery-budget", attempts=pending_attempted)
+                        break
+                    self._state.advance_pending_inbound_cursor(message_id)
+                    attempted_ids.add(message_id)
+                    pending_attempted += 1
+                    outcome = self._recover_pending_submission(pending, deadline=deadline, ordered=True)
+                    pending_held += outcome.status == "submission-held"
+                else:
+                    outcome = self._handle_inbound(message, suppress_guidance=True)
                 scanned += 1
-                outcome = self.handle_inbound(message, suppress_guidance=True)
+                if outcome.status in {"error", "submission-held"}:
+                    errors.append(f"{chat_id}: inbound-recovery-incomplete")
+                    dead_lettered += outcome.new_dead_letter
+                    break
                 if outcome.status == "forwarded":
                     forwarded += 1
                 elif outcome.status == "duplicate":
@@ -393,8 +571,29 @@ class _ReconcileDeadLetterMixin:
                     # remains operator-visible, but is not a newly missed
                     # websocket message and must not churn the subscription.
                     pass
-                elif outcome.status not in {"ignored"}:
-                    errors.append(f"{message.message_id}: {outcome.status}")
+                elif outcome.status not in {"ignored", "submission-dead-lettered"}:
+                    errors.append(f"{message_id}: {outcome.status}")
+                    break
+            if len(errors) == errors_before and self._state.has_pending_inbound_chat(chat_id):
+                errors.append(f"{chat_id}: pending-recovery-incomplete")
+            if len(errors) == errors_before:
+                self._state.observe_chat(chat_id, now_ms)
+                self._state.mark_chat_reconciled(chat_id, now_ms)
+                self._backfilled_chats[chat_id] = epoch
+        pending_remaining = self._state.pending_inbound_submission_count()
+        if (chat_ids is None and pending_remaining and not pending_attempted
+                and not errors and not blocked):
+            errors.append("adapter: pending-recovery-budget")
+            self._log_backfill("lark.backfill.deferred", reason="pending-recovery-budget", attempts=0)
+        if pending_attempted or pending_remaining:
+            self._log_backfill("adapter.reconcile.pending", attempted=pending_attempted,
+                               remaining=pending_remaining, held=pending_held)
+        self._log_backfill(
+            "lark.backfill.sweep", chatsScanned=len(chats),
+            windowStartMs=min(window_starts, default=now_ms), windowEndMs=now_ms,
+            forwarded=forwarded, duplicates=duplicates, truncated=truncated,
+            retryableErrors=len(errors), blockedChats=len(blocked),
+        )
         return ReconcileReport(
             chats_scanned=len(chats),
             messages_scanned=scanned,
@@ -408,6 +607,13 @@ class _ReconcileDeadLetterMixin:
             pending_remaining=self._state.pending_inbound_submission_count(),
             pending_held=pending_held,
         )
+
+    def _log_backfill(self, event: str, **fields: object) -> None:
+        if self._logger is not None:
+            try:
+                self._logger.info(event, **fields)
+            except Exception:
+                pass
 
     def _log_sweep_started(self, chat_count: int) -> None:
         """Mark that the sweep reached the loop, and over how many chats.

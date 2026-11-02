@@ -3,24 +3,21 @@
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from hyprial.daemon.impl.adapters.lark.credentials.authorization import create_lark_authorization_service as create_lark_authorization_service
+    from hyprial.daemon.impl.cells import observability as cell_observation
     from hyprial.daemon.impl.correlation.alarm import ALARM_THROTTLE_WINDOW_MS as ALARM_THROTTLE_WINDOW_MS
     from hyprial.daemon.impl.owner_migration.vocabulary import ARCHIVAL_COLUMNS as ARCHIVAL_COLUMNS
-    from hyprial.daemon.impl.autoupdate import AUTOUPDATE_CHILD_ENV as AUTOUPDATE_CHILD_ENV
-    from hyprial.daemon.impl.autoupdate import AUTOUPDATE_TRIGGER_ENV as AUTOUPDATE_TRIGGER_ENV
-    from hyprial.daemon.impl.bootstrap.adapter_registration import AdapterConfigConflictError as AdapterConfigConflictError
-    from hyprial.daemon.impl.bootstrap.adapter_registration import AdapterExistsError as AdapterExistsError
-    from hyprial.daemon.impl.bootstrap.adapter_registration import AdapterNotFoundError as AdapterNotFoundError
-    from hyprial.daemon.impl.correlation.alarm import Alarm as Alarm
-    from hyprial.daemon.impl.correlation.alarm import AlarmDelivery as AlarmDelivery
-    from hyprial.daemon.impl.correlation.alarm import AlarmEmitter as AlarmEmitter
-    from hyprial.daemon.impl.correlation.alarm import AlarmResult as AlarmResult
+    from hyprial.daemon.impl.autoupdate import AUTOUPDATE_CHILD_ENV as AUTOUPDATE_CHILD_ENV, AUTOUPDATE_TRIGGER_ENV as AUTOUPDATE_TRIGGER_ENV
+    from hyprial.daemon.impl.bootstrap.adapter_registration import AdapterConfigConflictError as AdapterConfigConflictError, AdapterExistsError as AdapterExistsError, AdapterNotFoundError as AdapterNotFoundError
+    from hyprial.daemon.impl.correlation.alarm import Alarm as Alarm, AlarmDelivery as AlarmDelivery
+    from hyprial.daemon.impl.correlation.alarm import AlarmEmitter as AlarmEmitter, AlarmResult as AlarmResult
     from hyprial.daemon.impl.correlation.availability_loud import AttemptIdentity as AttemptIdentity
     from hyprial.daemon.impl.transfer.archive.bundle import BundleError as BundleError
     from hyprial.daemon.impl.service_connect.models import CatalogEntry as CatalogEntry
     from hyprial.daemon.impl.service_connect.models import ServiceConnectError as ServiceConnectError
-    from hyprial.daemon.impl.operations.service import ServiceConfig as ServiceConfig
-    from hyprial.daemon.impl.operations.service import ServiceManager as ServiceManager
+    from hyprial.daemon.impl.operations.service import ServiceConfig as ServiceConfig, ServiceManager as ServiceManager
     from hyprial.daemon.impl.operations.service import ServiceOwnershipError as ServiceOwnershipError
+    from hyprial.daemon.impl.bootstrap.user_bus import USER_BUS_ADDRESS_UNREACHABLE_REASON as USER_BUS_ADDRESS_UNREACHABLE_REASON, USER_BUS_UNAVAILABLE_REASON as USER_BUS_UNAVAILABLE_REASON
     from hyprial.daemon.impl.operations.service import ServiceStatus as ServiceStatus
     from hyprial.daemon.impl.harnesses.claude.runtime import CLAUDE_RUNTIME_ENVIRONMENT as CLAUDE_RUNTIME_ENVIRONMENT
     from hyprial.daemon.impl.harnesses.claude.runtime import ClaudeRuntimeError as ClaudeRuntimeError
@@ -59,8 +56,7 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.transfer.archive.envelope import EnvelopeError as EnvelopeError
     from hyprial.daemon.impl.forwarding_config import FORWARDING_SETTINGS_KEY as FORWARDING_SETTINGS_KEY
     from hyprial.daemon.impl.forwarding_config import ForwardingConfigurationError as ForwardingConfigurationError
-    from hyprial.daemon.impl.adapters.lark.state.records import IDENTITY_KINDS as IDENTITY_KINDS
-    from hyprial.daemon.impl.adapters.lark.state.records import Identity as Identity
+    from hyprial.daemon.impl.adapters.lark.state.records import IDENTITY_KINDS as IDENTITY_KINDS, Identity as Identity
     from hyprial.daemon.impl.adapters.lark.credentials.onboarding import LARK_ONBOARDING_REQUIRED_EVENTS as LARK_ONBOARDING_REQUIRED_EVENTS
     from hyprial.daemon.impl.adapters.lark.credentials.onboarding import LarkOnboardingError as LarkOnboardingError
     from hyprial.daemon.impl.owner_migration.vocabulary import MIGRATION_DATABASES as MIGRATION_DATABASES
@@ -72,8 +68,7 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.configuration.network_profile import NetworkProfile as NetworkProfile
     from hyprial.daemon.impl.orgfs.webserver.identity import NodekeyOwnerResolver as NodekeyOwnerResolver
     from hyprial.daemon.impl.operations.management import OfflineManagementLease as OfflineManagementLease
-    from hyprial.daemon.impl.org.store import OrgContextStore as OrgContextStore
-    from hyprial.daemon.impl.org.store import OrgStoreError as OrgStoreError
+    from hyprial.daemon.impl.org.store import OrgContextStore as OrgContextStore, OrgStoreError as OrgStoreError
     from hyprial.daemon.impl.owner_migration.vocabulary import OwnerMigrationAborted as OwnerMigrationAborted
     from hyprial.daemon.impl.owner_migration.vocabulary import OwnerMigrationHostedConflict as OwnerMigrationHostedConflict
     from hyprial.daemon.impl.mcp.channel.ownership import _OwnerProcessStatus as OwnerProcessStatus
@@ -115,8 +110,7 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.network.tailcat import TAILCAT_COMMIT as TAILCAT_COMMIT
     from hyprial.daemon.impl.network.tailcat import TailcatSidecarError as TailcatSidecarError
     from hyprial.daemon.impl.transfer.orchestrator import TransferError as TransferError
-    from hyprial.daemon.impl.transfer.archive.trust import TrustStore as TrustStore
-    from hyprial.daemon.impl.transfer.archive.trust import TrustStoreError as TrustStoreError
+    from hyprial.daemon.impl.transfer.archive.trust import TrustStore as TrustStore, TrustStoreError as TrustStoreError
     from hyprial.daemon.impl.transfer.archive.trust import add_trusted_source_key as add_trusted_source_key
     from hyprial.daemon.impl.transfer.archive.trust import load_trust_store as load_trust_store
     from hyprial.daemon.impl.transfer.archive.trust import retire_trusted_source_key as retire_trusted_source_key
@@ -129,8 +123,7 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.autoupdate.alert import UPGRADE_UNCONFIRMED as UPGRADE_UNCONFIRMED
     from hyprial.daemon.impl.mcp.unix import UnixDaemonConnectionFactory as UnixDaemonConnectionFactory
     from hyprial.daemon.impl.adapters.lark.credentials.onboarding import UserActionRequiredError as UserActionRequiredError
-    from hyprial.identity import UserProfileError as UserProfileError
-    from hyprial.identity import UserProfileStore as UserProfileStore
+    from hyprial.identity import UserProfileError as UserProfileError, UserProfileStore as UserProfileStore
     from hyprial.daemon.impl.orgfs.webserver.config import WebServiceConfig as WebServiceConfig
     from hyprial.daemon.impl.pac.contracts.workflow import WorkflowSchemaError as WorkflowSchemaError
     from hyprial.daemon.impl.pac.contracts.workflow import WorkflowSpec as WorkflowSpec
@@ -163,6 +156,8 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.pac.graphs.edits import create_graph as create_graph
     import hyprial.daemon.impl.adapters.lark.credentials.reauth as credentials_reauth
     from hyprial.daemon.impl.forwarding_config import daemon_forwarding_environment as daemon_forwarding_environment
+    from hyprial.daemon.impl.request_catalog.registry import daemon_catalog as daemon_catalog
+    from hyprial.daemon.impl.request_catalog.registry import daemon_openapi as daemon_openapi
     from hyprial.daemon.impl.harnesses.capabilities import declare as declare
     from hyprial.daemon.impl.pac.storage.store import default_database_path as default_database_path
     from hyprial.daemon.impl.squire.setup import derive_setup_identity as derive_setup_identity
@@ -173,6 +168,7 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.org.document import document_summary as document_summary
     from hyprial.daemon.impl.transfer.landing.runtime import downgrade_state as downgrade_state
     from hyprial.daemon.impl.adapters.rollback import downgrade_adapter_state as downgrade_adapter_state
+    from hyprial.daemon.impl.adapters.rollback import downgrade_adapter_state_result as downgrade_adapter_state_result
     from hyprial.daemon.impl.network.tailcat import ensure_device_key as ensure_device_key
     from hyprial.daemon.impl.links.ports import HOLD_REASON_KEY as HOLD_REASON_KEY
     from hyprial.daemon.impl.dispatch.matrix import ensure_dispatch_policy as ensure_dispatch_policy
@@ -180,21 +176,16 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.pac.graphs.subscription import events_since as events_since
     from hyprial.daemon.impl.transfer.cleanup import execute_cleanup as execute_cleanup
     import hyprial.daemon.impl.transfer.execution.container as execution_container
-    from hyprial.daemon.impl.links.ports import HOLD_REASONS as HOLD_REASONS
-    from hyprial.daemon.impl.links.ports import IPC_LINK_ADD as IPC_LINK_ADD
-    from hyprial.daemon.impl.links.ports import IPC_LINK_DROP as IPC_LINK_DROP
-    from hyprial.daemon.impl.links.ports import IPC_LINK_LIST as IPC_LINK_LIST
-    from hyprial.daemon.impl.links.ports import IPC_LINK_STATS as IPC_LINK_STATS
-    from hyprial.daemon.impl.links.ports import LinkAdmin as LinkAdmin
+    from hyprial.daemon.impl.links.ports import HOLD_REASONS as HOLD_REASONS, IPC_LINK_ADD as IPC_LINK_ADD
+    from hyprial.daemon.impl.links.ports import IPC_LINK_DROP as IPC_LINK_DROP, IPC_LINK_LIST as IPC_LINK_LIST
+    from hyprial.daemon.impl.links.ports import IPC_LINK_STATS as IPC_LINK_STATS, LinkAdmin as LinkAdmin
     from hyprial.daemon.impl.links.ports import IPC_MESSAGE_READ_BODY as IPC_MESSAGE_READ_BODY
     from hyprial.daemon.impl.links.ports import IPC_MESSAGE_SETTLE_HINT as IPC_MESSAGE_SETTLE_HINT
     from hyprial.daemon.impl.transfer.archive.bundle import export_bundle as export_bundle
     from hyprial.daemon.impl.adapters.lark.media.media import fetch_media as fetch_media
     from hyprial.daemon.impl.adapters.lark.credentials.reauth import find_lark_cli as find_lark_cli
-    from hyprial.daemon.impl.links.ports import LinkGate as LinkGate
-    from hyprial.daemon.impl.links.ports import LinkQueries as LinkQueries
-    from hyprial.daemon.impl.links.ports import LinkChangeSource as LinkChangeSource
-    from hyprial.daemon.impl.links.ports import LinkSendObserver as LinkSendObserver
+    from hyprial.daemon.impl.links.ports import LinkGate as LinkGate, LinkQueries as LinkQueries
+    from hyprial.daemon.impl.links.ports import LinkChangeSource as LinkChangeSource, LinkSendObserver as LinkSendObserver
     from hyprial.daemon.impl.harnesses.pi.loader import find_pi_package_root as find_pi_package_root
     from hyprial.daemon.impl.pac.graphs.events import follow_lifetime as follow_lifetime
     from hyprial.daemon.impl.harnesses.runtime.ports import harness_desired_generation as harness_desired_generation
@@ -224,8 +215,7 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.mcp.channel.ownership import _owner_process_status as owner_process_status
     import hyprial.daemon.impl.pac.views.missions as pac_missions
     import hyprial.daemon.impl.pac.views.overview as pac_overview
-    from hyprial.daemon.impl.org.document import parse_document as parse_document
-    from hyprial.daemon.impl.org.document import validate_document as validate_document
+    from hyprial.daemon.impl.org.document import parse_document as parse_document, validate_document as validate_document
     from hyprial.daemon.impl.adapters.lark.media.media import parse_media_ref as parse_media_ref
     from hyprial.daemon.impl.harnesses.model_provider import pi_model_args as pi_model_args
     from hyprial.daemon.impl.harnesses.model_provider import pi_provider_environment as pi_provider_environment
@@ -250,8 +240,7 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.bootstrap.adapter_registration import remove_lark_gateway as remove_lark_gateway
     from hyprial.daemon.impl.adapters.lark.state.readers import replied_chats as replied_chats
     from hyprial.daemon.impl.adapters.lark.credentials.scopes import request_scope_authorization as request_scope_authorization
-    from hyprial.daemon.impl.dispatch.matrix import active_profile as active_profile
-    from hyprial.daemon.impl.dispatch.matrix import diagnose as diagnose
+    from hyprial.daemon.impl.dispatch.matrix import active_profile as active_profile, diagnose as diagnose
     from hyprial.daemon.impl.dispatch.matrix import probe_profile as probe_profile
     from hyprial.daemon.impl.dispatch.matrix import recorded_candidate_json as recorded_candidate_json
     from hyprial.daemon.impl.dispatch.matrix import resolve as resolve
@@ -329,6 +318,7 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.dispatch.matrix import write_workflow_reminder as write_workflow_reminder
 
 _FACADE_EXPORTS = {
+    'cell_observation': ('hyprial.daemon.impl.cells.observability', None),
     'ALARM_THROTTLE_WINDOW_MS': ('hyprial.daemon.impl.correlation.alarm', 'ALARM_THROTTLE_WINDOW_MS'),
     'ARCHIVAL_COLUMNS': ('hyprial.daemon.impl.owner_migration.vocabulary', 'ARCHIVAL_COLUMNS'),
     'AUTOUPDATE_CHILD_ENV': ('hyprial.daemon.impl.autoupdate', 'AUTOUPDATE_CHILD_ENV'),
@@ -477,12 +467,15 @@ _FACADE_EXPORTS = {
     'with_reasoning_effort': ('hyprial.daemon.impl.harnesses.model_provider', 'with_reasoning_effort'),
     'codex_provider_configuration': ('hyprial.daemon.impl.harnesses.model_provider', 'codex_provider_configuration'),
     'configured_app_id': ('hyprial.daemon.impl.adapters.lark.credentials.scopes', 'configured_app_id'),
+    'create_lark_authorization_service': ('hyprial.daemon.impl.adapters.lark.credentials.authorization', 'create_lark_authorization_service'),
     'configured_identity_gateway': ('hyprial.daemon.impl.adapters.lark.credentials.identities', 'configured_identity_gateway'),
     'configured_scope_client': ('hyprial.daemon.impl.adapters.lark.credentials.scopes', 'configured_scope_client'),
     'contracts_lifecycle': ('hyprial.daemon.impl.adapters.lark.contracts.lifecycle', None),
     'create_graph': ('hyprial.daemon.impl.pac.graphs.edits', 'create_graph'),
     'credentials_reauth': ('hyprial.daemon.impl.adapters.lark.credentials.reauth', None),
+    'daemon_catalog': ('hyprial.daemon.impl.request_catalog.registry', 'daemon_catalog'),
     'daemon_forwarding_environment': ('hyprial.daemon.impl.forwarding_config', 'daemon_forwarding_environment'),
+    'daemon_openapi': ('hyprial.daemon.impl.request_catalog.registry', 'daemon_openapi'),
     'declare': ('hyprial.daemon.impl.harnesses.capabilities', 'declare'),
     'default_database_path': ('hyprial.daemon.impl.pac.storage.store', 'default_database_path'),
     'derive_setup_identity': ('hyprial.daemon.impl.squire.setup', 'derive_setup_identity'),
@@ -493,6 +486,7 @@ _FACADE_EXPORTS = {
     'document_summary': ('hyprial.daemon.impl.org.document', 'document_summary'),
     'downgrade_state': ('hyprial.daemon.impl.transfer.landing.runtime', 'downgrade_state'),
     'downgrade_adapter_state': ('hyprial.daemon.impl.adapters.rollback', 'downgrade_adapter_state'),
+    'downgrade_adapter_state_result': ('hyprial.daemon.impl.adapters.rollback', 'downgrade_adapter_state_result'),
     'ensure_device_key': ('hyprial.daemon.impl.network.tailcat', 'ensure_device_key'),
     'ensure_dispatch_policy': ('hyprial.daemon.impl.dispatch.matrix', 'ensure_dispatch_policy'),
     'ensure_lark_gateway_addable': ('hyprial.daemon.impl.bootstrap.adapter_registration', 'ensure_lark_gateway_addable'),
@@ -613,6 +607,8 @@ _FACADE_EXPORTS = {
     'TOP_FIELD_CAPACITY_W': ('hyprial.daemon.impl.links.ports', 'TOP_FIELD_CAPACITY_W'),
     'TOP_FIELD_INBOUND_AWAITING_INJECTION': ('hyprial.daemon.impl.links.ports', 'TOP_FIELD_INBOUND_AWAITING_INJECTION'),
     'TOP_FIELD_OUTBOUND_IN_FLIGHT': ('hyprial.daemon.impl.links.ports', 'TOP_FIELD_OUTBOUND_IN_FLIGHT'),
+    'USER_BUS_ADDRESS_UNREACHABLE_REASON': ('hyprial.daemon.impl.bootstrap.user_bus', 'USER_BUS_ADDRESS_UNREACHABLE_REASON'),
+    'USER_BUS_UNAVAILABLE_REASON': ('hyprial.daemon.impl.bootstrap.user_bus', 'USER_BUS_UNAVAILABLE_REASON'),
     'sign_exported_bundle': ('hyprial.daemon.impl.transfer.archive.attribution', 'sign_exported_bundle'),
     'silence_broken_pipe': ('hyprial.daemon.impl.pac.graphs.events', 'silence_broken_pipe'),
     'smolvm_regular_read': ('hyprial.daemon.impl.transfer.execution.smolvm', '_regular_read'),
@@ -672,6 +668,7 @@ def __dir__() -> list[str]:
 
 
 __all__ = [
+    'cell_observation',
     'ALARM_THROTTLE_WINDOW_MS',
     'ARCHIVAL_COLUMNS',
     'AUTOUPDATE_CHILD_ENV',
@@ -820,11 +817,14 @@ __all__ = [
     'with_reasoning_effort',
     'codex_provider_configuration',
     'configured_app_id',
+    'create_lark_authorization_service',
     'configured_identity_gateway',
     'configured_scope_client',
     'contracts_lifecycle',
     'create_graph',
     'credentials_reauth',
+    'daemon_catalog',
+    'daemon_openapi',
     'daemon_forwarding_environment',
     'declare',
     'default_database_path',
@@ -836,6 +836,7 @@ __all__ = [
     'document_summary',
     'downgrade_state',
     'downgrade_adapter_state',
+    'downgrade_adapter_state_result',
     'ensure_device_key',
     'ensure_dispatch_policy',
     'ensure_lark_gateway_addable',
@@ -967,6 +968,8 @@ __all__ = [
     'TOP_FIELD_CAPACITY_W',
     'TOP_FIELD_INBOUND_AWAITING_INJECTION',
     'TOP_FIELD_OUTBOUND_IN_FLIGHT',
+    'USER_BUS_ADDRESS_UNREACHABLE_REASON',
+    'USER_BUS_UNAVAILABLE_REASON',
     'trust_policy_for',
     'trust_store_path',
     'unavailable_notice',

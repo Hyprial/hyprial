@@ -27,6 +27,7 @@ from hyprial.daemon.impl.inbox.contracts.settlement import settle_hint_for
 from hyprial.daemon.impl.inbox.contracts.summary import body_bytes, body_text
 from hyprial.daemon.impl.inbox import batch as inbox_batch
 from hyprial.daemon.impl.inbox import AckResult
+from hyprial.daemon.impl.application.messaging.inbox_surface.lookup import _MessageSendLookupMixin
 
 from hyprial.daemon.impl.application.messaging.delivery.sends import (
     _undeliverable_outbox_recipient,
@@ -81,7 +82,7 @@ def new_message_wait_slots() -> threading.BoundedSemaphore:
     return threading.BoundedSemaphore(MESSAGE_WAIT_CAPACITY)
 
 
-class _MessageQueriesMixin:
+class _MessageQueriesMixin(_MessageSendLookupMixin):
     """Application cluster mixin; the state owner is DaemonApplication."""
 
     def _running_actor_uris(self) -> frozenset[str]:
@@ -542,11 +543,18 @@ class _MessageQueriesMixin:
         actor = caller.subject
         self._queue_agent_activity(actor)
         message_id = _required_string(params.get("messageId"), "messageId")
-        result = self._inbox.ack(actor, message_id)
+        # Only an authenticated operator may settle the node-keyed notices.
+        keys = tuple(key for key in self._message_consumer_keys(params, actor=actor)
+                     if key != self.node_id)
+        if caller.via == "operator":
+            keys = (*keys, self.node_id)
+        result = AckResult(message_id, False, ipc_errors.MESSAGE_ACK_UNAVAILABLE)
+        if keys:
+            result = self._inbox.ack(keys[0], message_id)
         if not result.acknowledged:
             # Rows written before the canonicalizing boundary carry the
             # verbatim key; try the fallback spellings before failing.
-            for key in self._message_consumer_keys(params, actor=actor)[1:]:
+            for key in keys[1:]:
                 result = self._inbox.ack(key, message_id)
                 if result.acknowledged:
                     break
@@ -556,11 +564,8 @@ class _MessageQueriesMixin:
             # rows.  One id, one recipient, no drain, no other message moved.
             dismiss = getattr(self._inbox, "dismiss_system_notice", None)
             if callable(dismiss):
-                for key in self._message_consumer_keys(params, actor=actor):
-                    try:
-                        dismissed = dismiss(message_id, recipient=key)
-                    except TypeError:
-                        dismissed = dismiss(message_id)
+                for key in keys:
+                    dismissed = dismiss(message_id, recipient=key)
                     if dismissed:
                         result = AckResult(message_id, True)
                         break

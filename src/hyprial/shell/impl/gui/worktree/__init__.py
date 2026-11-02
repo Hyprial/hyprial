@@ -1,8 +1,8 @@
 """Create or restore the automatic sparse GUI development worktree.
 
 This module is the only part of the GUI launcher that writes to Git and to a
-GUI checkout.  It is used exclusively by ``hyprial gui dev`` when the caller
-did not provide ``--gui-home`` or ``HYPRIAL_GUI_HOME``.  It creates a linked
+GUI checkout.  It is used by ``hyprial gui dev`` when the caller did not
+provide ``--gui-home`` or ``HYPRIAL_DEV_GUI_HOME``.  It creates a linked
 worktree with a stable branch and a cone sparse checkout containing only
 ``gui``; later invocations restore that same worktree without resetting,
 cleaning, force-checking-out, rebasing, stashing, committing, or pushing it.
@@ -23,6 +23,7 @@ import subprocess
 from typing import Any
 
 from ..errors import GuiError
+from ..install.resources import redact_remote
 
 AUTO_WORKTREE_RELATIVE = Path(".worktrees") / "gui-dev-auto"
 AUTO_BRANCH = "work/gui-dev-auto"
@@ -61,10 +62,18 @@ class AutoGuiWorktree:
     home: Path
     created: bool
     install: DependencyInstall
+    managed: bool = False
+    dirty: bool = False
+    remote: str | None = None
 
 
 def auto_worktree_payload(auto: AutoGuiWorktree | None) -> dict[str, Any] | None:
-    """Startup metadata for the automatic worktree, or ``None`` when unused."""
+    """Startup metadata for the automatic worktree, or ``None`` when unused.
+
+    The remote is display metadata and is always redacted here, not by the
+    caller, so every consumer of the startup payload gets the same treatment as
+    the manifest and explicit-dev paths.
+    """
     if auto is None:
         return None
     return {
@@ -73,6 +82,9 @@ def auto_worktree_payload(auto: AutoGuiWorktree | None) -> dict[str, Any] | None
         "branch": auto.branch,
         "base": auto.base,
         "created": auto.created,
+        "managed": auto.managed,
+        "dirty": auto.dirty,
+        "remote": redact_remote(auto.remote or ""),
         "install": {
             "command": list(auto.install.command),
             "cwd": str(auto.install.cwd),
@@ -227,11 +239,11 @@ def discover_source_repo(
     raise GuiError(
         SOURCE_CODE,
         "cannot find a source Git repository whose HEAD contains gui/package.json; "
-        "pass --gui-home or HYPRIAL_GUI_HOME to select an existing GUI checkout",
+        "pass --gui-home or HYPRIAL_DEV_GUI_HOME to select an existing GUI checkout",
         {
             "cwd": str(current),
             "rejectedRepositories": rejected[:20],
-            "hint": "run from the repository root or set HYPRIAL_GUI_HOME",
+            "hint": "run from the repository root or set HYPRIAL_DEV_GUI_HOME",
         },
     )
 
