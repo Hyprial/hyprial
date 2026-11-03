@@ -33,6 +33,18 @@ Decisions (2026-11-03, infra-ops/release-0.5.5.3.2, brief ``publish-gui``):
   intranet ``remote.origin.url`` would leak infrastructure naming into the
   wheel's ``release.json``, which no publish gate scans.  The hook enforces
   the same no-credentials rule as the product manifest reader.
+
+Decisions (2026-11-03, infra-ops/release-0.5.5.3.3, brief ``wheel-release``):
+
+* ``.forgejo/workflows/wheel-release.yml`` stamps the disposable build copy
+  of ``VERSION`` to ``<base>+g<short sha>`` before ``uv build --wheel``,
+  which the clean-source check rejected and red every wheel-release run
+  since 10-30.  The git-checkout path now tolerates exactly one tracked
+  modification -- ``VERSION`` whose content is exactly the committed value
+  plus ``+g`` and a prefix of HEAD's full sha (>= 7 hex chars, any abbrev
+  length git may produce).  Any other tracked change, and any other VERSION
+  content, still fails; the ``gui/`` untracked-file rules are unchanged;
+  the snapshot-stamp path never sees a checkout and is untouched.
 """
 
 from __future__ import annotations
@@ -71,6 +83,28 @@ _GENERATED_GUI_DIRS = frozenset({"node_modules", "dist"})
 _TRACKED_GUI_INPUTS = ("gui/package.json", "gui/package-lock.json")
 SNAPSHOT_STAMP_SCHEMA = "hyprial.gui-snapshot/v1"
 SNAPSHOT_STAMP_NAME = "gui-source.json"
+_VERSION_WHITESPACE = re.compile(r"\s")
+_HEX_ABBREV = re.compile(r"[0-9a-f]+")
+# Every clean-source probe runs with fixed, trusted semantics: a checkout's
+# local config must not be able to hide edits from them (fsmonitor-valid
+# bits are dropped when fsmonitor is off; fileMode=false would hide chmod).
+_TRUSTED_GIT_CONFIG = (
+    "-c", "core.fsmonitor=false",
+    "-c", "core.fileMode=true",
+    "-c", "core.untrackedCache=false",
+    "-c", "diff.external=",
+)
+
+
+def _trusted_git_env() -> dict[str, str]:
+    """The caller's environment minus GIT_* (GIT_INDEX_FILE, GIT_DIR, ...).
+
+    Threat model: these probes catch accidental dirt and the index/config
+    states that hide it in ordinary checkouts.  A party that can rewrite the
+    build host's git config, attributes or filters already controls the build
+    and is out of scope.
+    """
+    return {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
 _STAMP_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 _STAMP_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -389,11 +423,13 @@ class CustomBuildHook(BuildHookInterface):
             )
 
     def _require_clean_source(self, root: Path, gui: Path) -> None:
+        self._reject_hidden_index_state(root)
         if not self._git_ok(root, ["diff", "--quiet", "HEAD", "--"]):
-            raise GuiWheelError(
-                "the source tree has tracked modifications; a wheel GUI snapshot "
-                "must identify the exact clean Git tree"
-            )
+            if not self._wheel_release_stamp_is_only_change(root):
+                raise GuiWheelError(
+                    "the source tree has tracked modifications; a wheel GUI "
+                    "snapshot must identify the exact clean Git tree"
+                )
         output = self._git_output(
             root,
             ["status", "--porcelain=v1", "-z", "--untracked-files=all",
@@ -407,6 +443,74 @@ class CustomBuildHook(BuildHookInterface):
                 f"({path or '(empty path)'}); a wheel GUI snapshot must contain "
                 "only the committed source plus generated node_modules/dist"
             )
+
+    def _reject_hidden_index_state(self, root: Path) -> None:
+        """Refuse index state that ``git diff HEAD`` cannot see.
+
+        assume-unchanged / skip-worktree entries hide worktree edits from the
+        diff, and index-only mode or type changes (chmod, gitlink) are not
+        visible in a HEAD-vs-worktree diff.  The only index change tolerated
+        is a content-only (same mode) update of VERSION, which the stamp
+        check below then validates against the worktree bytes.
+        """
+        flags = self._git_output(root, ["ls-files", "-v", "-z"])
+        for entry in (item for item in flags.split("\0") if item):
+            tag, _, path = entry.partition(" ")
+            if tag.islower() or tag == "S":
+                raise GuiWheelError(
+                    "the source tree has tracked modifications; index entry "
+                    f"{path!r} is marked assume-unchanged or skip-worktree"
+                )
+        raw = self._git_output(
+            root, ["diff", "--cached", "--raw", "--no-renames", "-z", "HEAD", "--"]
+        )
+        parts = [item for item in raw.split("\0") if item]
+        for header, path in zip(parts[0::2], parts[1::2]):
+            fields = header.lstrip(":").split(" ")
+            same_mode = len(fields) >= 2 and fields[0] == fields[1]
+            if path != "VERSION" or not same_mode or fields[0] not in ("100644", "100755"):
+                raise GuiWheelError(
+                    "the source tree has tracked modifications; a wheel GUI "
+                    "snapshot must identify the exact clean Git tree"
+                )
+
+    def _wheel_release_stamp_is_only_change(self, root: Path) -> bool:
+        output = self._git_output(
+            root,
+            ["diff", "--name-only", "--no-renames", "-z", "HEAD", "--"],
+        )
+        modified = [name for name in output.split("\0") if name]
+        if modified != ["VERSION"]:
+            return False
+        # Content only: a mode change (e.g. chmod 0755) on VERSION is not the
+        # wheel-release stamp and must stay a tracked modification.
+        raw = self._git_output(
+            root, ["diff", "--raw", "--no-renames", "-z", "HEAD", "--", "VERSION"]
+        )
+        modes = raw.split("\0", 1)[0].lstrip(":").split(" ")
+        if len(modes) < 2 or modes[0] != modes[1]:
+            return False
+        try:
+            committed_raw = self._git(root, ["show", "HEAD:VERSION"])
+        except GuiWheelError:
+            return False
+        # Byte-exact: wheel-release writes ``printf '%s\n' "<base>+g<sha>"``
+        # where <base> is the committed value with whitespace removed.  No
+        # stripping here, so whitespace variants of a valid stamp are refused.
+        committed = committed_raw[:-1] if committed_raw.endswith("\n") else committed_raw
+        if not committed or _VERSION_WHITESPACE.search(committed):
+            return False
+        stamped = (root / "VERSION").read_bytes()
+        head = self._git(root, ["rev-parse", "HEAD"]).strip()
+        prefix = f"{committed}+g".encode("ascii", "strict")
+        if not (stamped.startswith(prefix) and stamped.endswith(b"\n")):
+            return False
+        abbrev = stamped[len(prefix):-1].decode("ascii", "replace")
+        return (
+            len(abbrev) >= 7
+            and _HEX_ABBREV.fullmatch(abbrev) is not None
+            and head.startswith(abbrev)
+        )
 
     def _reject_symlinks(self, root: Path, *, skip_generated: bool) -> None:
         if root.is_symlink():
@@ -484,7 +588,8 @@ class CustomBuildHook(BuildHookInterface):
     def _git_result(self, root: Path, args: list[str]):
         try:
             return subprocess.run(
-                ["git", "-C", str(root), *args],
+                ["git", "-C", str(root), *_TRUSTED_GIT_CONFIG, *args],
+                env=_trusted_git_env(),
                 check=False,
                 capture_output=True,
                 text=True,
