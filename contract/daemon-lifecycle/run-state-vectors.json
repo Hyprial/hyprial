@@ -1,0 +1,19 @@
+[
+  {"name":"unavailable-is-not-idle","facts":{},"state":"unknown","reason":"source-unavailable"},
+  {"name":"idle-current-complete","facts":{"known":true,"running":true},"state":"idle","reason":"no-open-turn"},
+  {"name":"turn-open","facts":{"known":true,"running":true,"open_count":1,"since_monotonic_ms":900},"state":"in-turn","reason":"turn-open"},
+  {"name":"warning-not-deadline","facts":{"known":true,"running":true,"open_count":1,"since_monotonic_ms":0},"policy":{"turnLongAfterMs":10},"state":"suspected-stuck","reason":"turn-over-budget"},
+  {"name":"disabled-age","facts":{"known":true,"running":true,"open_count":1,"since_monotonic_ms":0},"policy":{"turnLongAfterMs":null},"state":"in-turn","reason":"turn-open"},
+  {"name":"quiet-producer","facts":{"known":true,"running":true,"open_count":1,"activity_supported":true,"quiet":true},"state":"suspected-stuck","reason":"producer-quiet"},
+  {"name":"quiet-unsupported","facts":{"known":true,"running":true,"open_count":1,"quiet":true},"state":"in-turn","reason":"turn-open"},
+  {"name":"permission-with-coverage","facts":{"known":true,"running":true,"open_count":1,"permission_supported":true,"waits":[["w",0]]},"state":"blocked","reason":"permission-wait"},
+  {"name":"permission-without-coverage","facts":{"known":true,"running":true,"open_count":1,"waits":[["w",0]]},"state":"in-turn","reason":"turn-open"},
+  {"name":"provider-separate","facts":{"known":true,"running":true,"provider_block":true},"state":"blocked","reason":"provider-block"},
+  {"name":"stale-even-with-provider-block","facts":{"known":true,"running":true,"provider_block":true,"contact_current":false},"state":"unknown","reason":"carrier-stale"},
+  {"name":"lost-completeness","facts":{"resync_required":true},"state":"unknown","reason":"observation-gap"},
+  {"name":"conflict","facts":{"known":true,"running":true,"conflict":true},"state":"unknown","reason":"conflicting-facts"},
+  {"name":"partial-not-whole-session-idle","facts":{"known":true,"running":true,"scope":"carrier-deliveries"},"state":"unknown","reason":"partial-turn-coverage"},
+  {"name":"exit-precedence","facts":{"exit_verified":true,"operation":"stopping","contact_current":false},"state":"not-running","reason":"process-exited"},
+  {"name":"start-precedence","facts":{"operation":"starting","contact_current":false},"state":"starting","reason":"start-pending"},
+  {"name":"stop-precedence","facts":{"operation":"stopping","contact_current":false},"state":"stopping","reason":"stop-pending"}
+]

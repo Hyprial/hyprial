@@ -1,0 +1,2744 @@
+[
+  {
+    "route": "agent move",
+    "hidden": false,
+    "help": "Move a managed headless worker to another machine (P0 cold migration).\n\nstop -> ship (worktree + harness session file + identity) -> resume on\nthe target with the transferred sessionRef.  The resume is STRICT: if\nthe session does not come back on the target, the transfer fails and\nthe source is rolled back rather than silently cold-starting.",
+    "callback": "transfer",
+    "signature": [
+      [
+        "name",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'str'>",
+        "ArgumentInfo"
+      ],
+      [
+        "to",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'str'>",
+        "OptionInfo"
+      ],
+      [
+        "harness",
+        "POSITIONAL_OR_KEYWORD",
+        "str | None",
+        "OptionInfo"
+      ],
+      [
+        "cwd",
+        "POSITIONAL_OR_KEYWORD",
+        "str | None",
+        "OptionInfo"
+      ],
+      [
+        "dry_run",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'bool'>",
+        "OptionInfo"
+      ],
+      [
+        "yes",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'bool'>",
+        "OptionInfo"
+      ],
+      [
+        "strict_timeout",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'float'>",
+        "OptionInfo"
+      ],
+      [
+        "remote_hyprial",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'str'>",
+        "OptionInfo"
+      ],
+      [
+        "containerized",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'bool'>",
+        "OptionInfo"
+      ],
+      [
+        "image",
+        "POSITIONAL_OR_KEYWORD",
+        "str | None",
+        "OptionInfo"
+      ],
+      [
+        "with_credentials",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'bool'>",
+        "OptionInfo"
+      ],
+      [
+        "json_output",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'bool'>",
+        "OptionInfo"
+      ]
+    ],
+    "parameters": [
+      {
+        "name": "name",
+        "kind": "TyperArgument",
+        "opts": [
+          "name"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": null,
+        "flag_value": null,
+        "help": "Managed headless worker name.",
+        "hidden": false
+      },
+      {
+        "name": "to",
+        "kind": "TyperOption",
+        "opts": [
+          "--to"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "SSH destination: [user@]<exact nodeId from this home's hyprial host list>.",
+        "hidden": false
+      },
+      {
+        "name": "harness",
+        "kind": "TyperOption",
+        "opts": [
+          "--harness"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Disambiguate when several harnesses share the name.",
+        "hidden": false
+      },
+      {
+        "name": "cwd",
+        "kind": "TyperOption",
+        "opts": [
+          "--cwd"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Target directory; required across SSH login users (same-path default only for the same user).",
+        "hidden": false
+      },
+      {
+        "name": "dry_run",
+        "kind": "TyperOption",
+        "opts": [
+          "--dry-run"
+        ],
+        "secondary_opts": [],
+        "default": false,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "BoolParamType",
+        "type_name": "boolean",
+        "path_type": null,
+        "is_flag": true,
+        "flag_value": null,
+        "help": "Validate and print the plan; change nothing (requires --yes).",
+        "hidden": false
+      },
+      {
+        "name": "yes",
+        "kind": "TyperOption",
+        "opts": [
+          "--yes"
+        ],
+        "secondary_opts": [],
+        "default": false,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "BoolParamType",
+        "type_name": "boolean",
+        "path_type": null,
+        "is_flag": true,
+        "flag_value": null,
+        "help": "Confirm the reported remote command, daemon.socket and actor.",
+        "hidden": false
+      },
+      {
+        "name": "strict_timeout",
+        "kind": "TyperOption",
+        "opts": [
+          "--strict-timeout"
+        ],
+        "secondary_opts": [],
+        "default": 90.0,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "FloatParamType",
+        "type_name": "float",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Seconds the target waits for the resumed worker to come ready.",
+        "hidden": false
+      },
+      {
+        "name": "remote_hyprial",
+        "kind": "TyperOption",
+        "opts": [
+          "--remote-hyprial"
+        ],
+        "secondary_opts": [],
+        "default": "hyprial",
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Remote command (default: hyprial). Non-default values are rehearsal-only and require a non-default source HYPRIAL_HOME override, e.g. 'HYPRIAL_HOME=/tmp/hyprial-tgt /home/me/transfer-p0/.venv/bin/hyprial'.",
+        "hidden": false
+      },
+      {
+        "name": "containerized",
+        "kind": "TyperOption",
+        "opts": [
+          "--containerized"
+        ],
+        "secondary_opts": [],
+        "default": false,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "BoolParamType",
+        "type_name": "boolean",
+        "path_type": null,
+        "is_flag": true,
+        "flag_value": null,
+        "help": "Land the worker inside a docker container carrying the source owner's credentials (design docs/design/design-transfer-container.md).",
+        "hidden": false
+      },
+      {
+        "name": "image",
+        "kind": "TyperOption",
+        "opts": [
+          "--image"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Worker image reference (default: hyprial-worker:<this hyprial version>).",
+        "hidden": false
+      },
+      {
+        "name": "with_credentials",
+        "kind": "TyperOption",
+        "opts": [
+          "--with-credentials"
+        ],
+        "secondary_opts": [
+          "--no-credentials"
+        ],
+        "default": true,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "BoolParamType",
+        "type_name": "boolean",
+        "path_type": null,
+        "is_flag": true,
+        "flag_value": null,
+        "help": "Ship the source owner's credential bundle (containerized mode only; --no-credentials exists for mutation testing).",
+        "hidden": false
+      },
+      {
+        "name": "json_output",
+        "kind": "TyperOption",
+        "opts": [
+          "--json"
+        ],
+        "secondary_opts": [],
+        "default": false,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "BoolParamType",
+        "type_name": "boolean",
+        "path_type": null,
+        "is_flag": true,
+        "flag_value": null,
+        "help": "Emit JSON only.",
+        "hidden": false
+      }
+    ]
+  },
+  {
+    "route": "agent transfer bundle-export",
+    "hidden": false,
+    "help": "Pack an agent home into a transfer bundle (AT06 transport unit).",
+    "callback": "transfer_bundle_export",
+    "signature": [
+      [
+        "source_dir",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'pathlib.Path'>",
+        "OptionInfo"
+      ],
+      [
+        "bundle_dir",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'pathlib.Path'>",
+        "OptionInfo"
+      ],
+      [
+        "owner",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'str'>",
+        "OptionInfo"
+      ],
+      [
+        "actor",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'str'>",
+        "OptionInfo"
+      ],
+      [
+        "machine",
+        "POSITIONAL_OR_KEYWORD",
+        "str | None",
+        "OptionInfo"
+      ],
+      [
+        "created_at",
+        "POSITIONAL_OR_KEYWORD",
+        "str | None",
+        "OptionInfo"
+      ],
+      [
+        "session_ref",
+        "POSITIONAL_OR_KEYWORD",
+        "list[str] | None",
+        "OptionInfo"
+      ],
+      [
+        "grant",
+        "POSITIONAL_OR_KEYWORD",
+        "list[str] | None",
+        "OptionInfo"
+      ],
+      [
+        "credential_envelope",
+        "POSITIONAL_OR_KEYWORD",
+        "str | None",
+        "OptionInfo"
+      ],
+      [
+        "depends",
+        "POSITIONAL_OR_KEYWORD",
+        "list[str] | None",
+        "OptionInfo"
+      ],
+      [
+        "source_epoch",
+        "POSITIONAL_OR_KEYWORD",
+        "str | None",
+        "OptionInfo"
+      ],
+      [
+        "allow_live",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'bool'>",
+        "OptionInfo"
+      ],
+      [
+        "json_output",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'bool'>",
+        "OptionInfo"
+      ]
+    ],
+    "parameters": [
+      {
+        "name": "source_dir",
+        "kind": "TyperOption",
+        "opts": [
+          "--from"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "TyperPath",
+        "type_name": "path",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Agent home directory to pack (the transfer unit is a copy, not a move).",
+        "hidden": false
+      },
+      {
+        "name": "bundle_dir",
+        "kind": "TyperOption",
+        "opts": [
+          "--to"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "TyperPath",
+        "type_name": "path",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Destination bundle directory: must not exist, or be an empty directory; it must not be the source home, contain it, or sit inside it.",
+        "hidden": false
+      },
+      {
+        "name": "owner",
+        "kind": "TyperOption",
+        "opts": [
+          "--owner"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Owner the bundle belongs to.",
+        "hidden": false
+      },
+      {
+        "name": "actor",
+        "kind": "TyperOption",
+        "opts": [
+          "--actor"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Agent actor name being transported.",
+        "hidden": false
+      },
+      {
+        "name": "machine",
+        "kind": "TyperOption",
+        "opts": [
+          "--machine"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Source machine id (default: HYPRIAL_NODE_ID, else the host name).",
+        "hidden": false
+      },
+      {
+        "name": "created_at",
+        "kind": "TyperOption",
+        "opts": [
+          "--created-at"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "ISO timestamp to record (default: now, local offset).",
+        "hidden": false
+      },
+      {
+        "name": "session_ref",
+        "kind": "TyperOption",
+        "opts": [
+          "--session-ref"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "multiple": true,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Session reference the bundle carries (repeatable).",
+        "hidden": false
+      },
+      {
+        "name": "grant",
+        "kind": "TyperOption",
+        "opts": [
+          "--grant"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "multiple": true,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Capability grant the bundle declares (repeatable).",
+        "hidden": false
+      },
+      {
+        "name": "credential_envelope",
+        "kind": "TyperOption",
+        "opts": [
+          "--credential-envelope"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Bundle-relative path of the sealed credential envelope this bundle carries (e.g. .transfer/envelope.json, so it lands in payload/). A declaration the bundle cannot honour refuses the export.",
+        "hidden": false
+      },
+      {
+        "name": "depends",
+        "kind": "TyperOption",
+        "opts": [
+          "--depends"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "multiple": true,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Declared dependency (repeatable): 'KIND=PATH' for a file the bundle carries, or 'KIND=!note' for one the target must provide (e.g. binary=!ripgrep). A present=true path the bundle lacks is refused.",
+        "hidden": false
+      },
+      {
+        "name": "source_epoch",
+        "kind": "TyperOption",
+        "opts": [
+          "--source-epoch"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Source agent incarnation identifier (entity token / resource id). Only its digest is written into the manifest; the value itself never lands in the bundle. Omit for an offline export.",
+        "hidden": false
+      },
+      {
+        "name": "allow_live",
+        "kind": "TyperOption",
+        "opts": [
+          "--allow-live"
+        ],
+        "secondary_opts": [],
+        "default": false,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "BoolParamType",
+        "type_name": "boolean",
+        "path_type": null,
+        "is_flag": true,
+        "flag_value": null,
+        "help": "Pack even though the source still has a live daemon (best effort, not a snapshot).",
+        "hidden": false
+      },
+      {
+        "name": "json_output",
+        "kind": "TyperOption",
+        "opts": [
+          "--json"
+        ],
+        "secondary_opts": [],
+        "default": false,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "BoolParamType",
+        "type_name": "boolean",
+        "path_type": null,
+        "is_flag": true,
+        "flag_value": null,
+        "help": "Emit JSON only.",
+        "hidden": false
+      }
+    ]
+  },
+  {
+    "route": "agent transfer bundle-validate",
+    "hidden": false,
+    "help": "Verify a transfer bundle before receiving it (AT06 pre-receive gate).",
+    "callback": "transfer_bundle_validate",
+    "signature": [
+      [
+        "bundle_dir",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'pathlib.Path'>",
+        "ArgumentInfo"
+      ],
+      [
+        "expect_owner",
+        "POSITIONAL_OR_KEYWORD",
+        "str | None",
+        "OptionInfo"
+      ],
+      [
+        "expect_actor",
+        "POSITIONAL_OR_KEYWORD",
+        "str | None",
+        "OptionInfo"
+      ],
+      [
+        "expect_epoch",
+        "POSITIONAL_OR_KEYWORD",
+        "str | None",
+        "OptionInfo"
+      ],
+      [
+        "json_output",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'bool'>",
+        "OptionInfo"
+      ]
+    ],
+    "parameters": [
+      {
+        "name": "bundle_dir",
+        "kind": "TyperArgument",
+        "opts": [
+          "bundle_dir"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "TyperPath",
+        "type_name": "path",
+        "path_type": null,
+        "is_flag": null,
+        "flag_value": null,
+        "help": "Bundle directory to verify.",
+        "hidden": false
+      },
+      {
+        "name": "expect_owner",
+        "kind": "TyperOption",
+        "opts": [
+          "--expect-owner"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Refuse when the bundle carries a different owner than this one.",
+        "hidden": false
+      },
+      {
+        "name": "expect_actor",
+        "kind": "TyperOption",
+        "opts": [
+          "--expect-actor"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Refuse when the bundle carries a different actor than this one.",
+        "hidden": false
+      },
+      {
+        "name": "expect_epoch",
+        "kind": "TyperOption",
+        "opts": [
+          "--expect-epoch"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Source incarnation identifier to require; only its digest is compared. A bundle with no epoch never matches.",
+        "hidden": false
+      },
+      {
+        "name": "json_output",
+        "kind": "TyperOption",
+        "opts": [
+          "--json"
+        ],
+        "secondary_opts": [],
+        "default": false,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "BoolParamType",
+        "type_name": "boolean",
+        "path_type": null,
+        "is_flag": true,
+        "flag_value": null,
+        "help": "Emit JSON only.",
+        "hidden": false
+      }
+    ]
+  },
+  {
+    "route": "agent transfer bundle-receive",
+    "hidden": false,
+    "help": "Land a validated transfer bundle at its target home (AT07 receive gate).",
+    "callback": "transfer_bundle_receive",
+    "signature": [
+      [
+        "bundle_dir",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'pathlib.Path'>",
+        "ArgumentInfo"
+      ],
+      [
+        "destination",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'pathlib.Path'>",
+        "OptionInfo"
+      ],
+      [
+        "expect_actor",
+        "POSITIONAL_OR_KEYWORD",
+        "str | None",
+        "OptionInfo"
+      ],
+      [
+        "dry_run",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'bool'>",
+        "OptionInfo"
+      ],
+      [
+        "json_output",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'bool'>",
+        "OptionInfo"
+      ]
+    ],
+    "parameters": [
+      {
+        "name": "bundle_dir",
+        "kind": "TyperArgument",
+        "opts": [
+          "bundle_dir"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "TyperPath",
+        "type_name": "path",
+        "path_type": null,
+        "is_flag": null,
+        "flag_value": null,
+        "help": "Bundle directory to land.",
+        "hidden": false
+      },
+      {
+        "name": "destination",
+        "kind": "TyperOption",
+        "opts": [
+          "--to"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "TyperPath",
+        "type_name": "path",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Target agent home; refused unless it is absent or an empty directory.",
+        "hidden": false
+      },
+      {
+        "name": "expect_actor",
+        "kind": "TyperOption",
+        "opts": [
+          "--expect-actor"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Refuse when the bundle carries a different actor than this one.",
+        "hidden": false
+      },
+      {
+        "name": "dry_run",
+        "kind": "TyperOption",
+        "opts": [
+          "--dry-run"
+        ],
+        "secondary_opts": [],
+        "default": false,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "BoolParamType",
+        "type_name": "boolean",
+        "path_type": null,
+        "is_flag": true,
+        "flag_value": null,
+        "help": "Validate and report what would land, without writing anything.",
+        "hidden": false
+      },
+      {
+        "name": "json_output",
+        "kind": "TyperOption",
+        "opts": [
+          "--json"
+        ],
+        "secondary_opts": [],
+        "default": false,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "BoolParamType",
+        "type_name": "boolean",
+        "path_type": null,
+        "is_flag": true,
+        "flag_value": null,
+        "help": "Emit JSON only.",
+        "hidden": false
+      }
+    ]
+  },
+  {
+    "route": "agent transfer bundle-land",
+    "hidden": false,
+    "help": "Land a received bundle as one of this node's own agents (AT07).\n\nThe identity half of a receive, and the only half the CLI cannot do by\nitself: the daemon mints the agent row and the home that incarnation owns,\nmoves the payload into it, and materialises the manifest's grants.  A name\nalready in use is refused before a byte moves.  Use\n``transfer-bundle-receive`` only for a destination the registry does not\nmanage.",
+    "callback": "transfer_bundle_land",
+    "signature": [
+      [
+        "bundle_dir",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'pathlib.Path'>",
+        "ArgumentInfo"
+      ],
+      [
+        "actor",
+        "POSITIONAL_OR_KEYWORD",
+        "str | None",
+        "OptionInfo"
+      ],
+      [
+        "dry_run",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'bool'>",
+        "OptionInfo"
+      ],
+      [
+        "json_output",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'bool'>",
+        "OptionInfo"
+      ]
+    ],
+    "parameters": [
+      {
+        "name": "bundle_dir",
+        "kind": "TyperArgument",
+        "opts": [
+          "bundle_dir"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "TyperPath",
+        "type_name": "path",
+        "path_type": null,
+        "is_flag": null,
+        "flag_value": null,
+        "help": "Bundle directory this node has received.",
+        "hidden": false
+      },
+      {
+        "name": "actor",
+        "kind": "TyperOption",
+        "opts": [
+          "--expect-actor"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Refuse a bundle whose actor is not this one.",
+        "hidden": false
+      },
+      {
+        "name": "dry_run",
+        "kind": "TyperOption",
+        "opts": [
+          "--dry-run"
+        ],
+        "secondary_opts": [],
+        "default": false,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "BoolParamType",
+        "type_name": "boolean",
+        "path_type": null,
+        "is_flag": true,
+        "flag_value": null,
+        "help": "Report what a landing would do; change nothing.",
+        "hidden": false
+      },
+      {
+        "name": "json_output",
+        "kind": "TyperOption",
+        "opts": [
+          "--json"
+        ],
+        "secondary_opts": [],
+        "default": false,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "BoolParamType",
+        "type_name": "boolean",
+        "path_type": null,
+        "is_flag": true,
+        "flag_value": null,
+        "help": "Emit JSON only.",
+        "hidden": false
+      }
+    ]
+  },
+  {
+    "route": "agent transfer credential-seal",
+    "hidden": false,
+    "help": "Seal credentials for a transfer bundle (AT06 credential envelope, prototype).",
+    "callback": "transfer_credential_seal",
+    "signature": [
+      [
+        "credentials_file",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'pathlib.Path'>",
+        "OptionInfo"
+      ],
+      [
+        "envelope_file",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'pathlib.Path'>",
+        "OptionInfo"
+      ],
+      [
+        "recipient_public_key",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'str'>",
+        "OptionInfo"
+      ],
+      [
+        "actor",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'str'>",
+        "OptionInfo"
+      ],
+      [
+        "owner",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'str'>",
+        "OptionInfo"
+      ],
+      [
+        "record",
+        "POSITIONAL_OR_KEYWORD",
+        "list[str] | None",
+        "OptionInfo"
+      ],
+      [
+        "host_owner_grant",
+        "POSITIONAL_OR_KEYWORD",
+        "str | None",
+        "OptionInfo"
+      ],
+      [
+        "use_host_credentials",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'bool'>",
+        "OptionInfo"
+      ],
+      [
+        "created_at",
+        "POSITIONAL_OR_KEYWORD",
+        "str | None",
+        "OptionInfo"
+      ],
+      [
+        "prototype",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'bool'>",
+        "OptionInfo"
+      ],
+      [
+        "json_output",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'bool'>",
+        "OptionInfo"
+      ]
+    ],
+    "parameters": [
+      {
+        "name": "credentials_file",
+        "kind": "TyperOption",
+        "opts": [
+          "--from"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "TyperPath",
+        "type_name": "path",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "JSON object mapping credential name to value.",
+        "hidden": false
+      },
+      {
+        "name": "envelope_file",
+        "kind": "TyperOption",
+        "opts": [
+          "--to"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "TyperPath",
+        "type_name": "path",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Sealed envelope to write; readable only by the target's private key.",
+        "hidden": false
+      },
+      {
+        "name": "recipient_public_key",
+        "kind": "TyperOption",
+        "opts": [
+          "--recipient-public-key"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Base64 raw X25519 public key of the target machine.",
+        "hidden": false
+      },
+      {
+        "name": "actor",
+        "kind": "TyperOption",
+        "opts": [
+          "--actor"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Agent actor the credentials belong to.",
+        "hidden": false
+      },
+      {
+        "name": "owner",
+        "kind": "TyperOption",
+        "opts": [
+          "--owner"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Owner the credentials belong to.",
+        "hidden": false
+      },
+      {
+        "name": "record",
+        "kind": "TyperOption",
+        "opts": [
+          "--record"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "multiple": true,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Per-credential risk metadata as JSON; repeatable.",
+        "hidden": false
+      },
+      {
+        "name": "host_owner_grant",
+        "kind": "TyperOption",
+        "opts": [
+          "--host-owner-grant"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Only when the host owner explicitly let this landing use host credentials.",
+        "hidden": false
+      },
+      {
+        "name": "use_host_credentials",
+        "kind": "TyperOption",
+        "opts": [
+          "--use-host-credentials"
+        ],
+        "secondary_opts": [],
+        "default": false,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "BoolParamType",
+        "type_name": "boolean",
+        "path_type": null,
+        "is_flag": true,
+        "flag_value": null,
+        "help": "Request host credentials; refused without an explicit host owner grant.",
+        "hidden": false
+      },
+      {
+        "name": "created_at",
+        "kind": "TyperOption",
+        "opts": [
+          "--created-at"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "ISO timestamp to record (default: now, local offset).",
+        "hidden": false
+      },
+      {
+        "name": "prototype",
+        "kind": "TyperOption",
+        "opts": [
+          "--prototype"
+        ],
+        "secondary_opts": [],
+        "default": false,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "BoolParamType",
+        "type_name": "boolean",
+        "path_type": null,
+        "is_flag": true,
+        "flag_value": null,
+        "help": "Acknowledge this envelope is a replaceable prototype, not a frozen protocol.",
+        "hidden": false
+      },
+      {
+        "name": "json_output",
+        "kind": "TyperOption",
+        "opts": [
+          "--json"
+        ],
+        "secondary_opts": [],
+        "default": false,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "BoolParamType",
+        "type_name": "boolean",
+        "path_type": null,
+        "is_flag": true,
+        "flag_value": null,
+        "help": "Emit JSON only.",
+        "hidden": false
+      }
+    ]
+  },
+  {
+    "route": "agent transfer credential-open",
+    "hidden": false,
+    "help": "Open a sealed credential envelope (AT06 credential envelope, prototype).",
+    "callback": "transfer_credential_open",
+    "signature": [
+      [
+        "envelope_file",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'pathlib.Path'>",
+        "ArgumentInfo"
+      ],
+      [
+        "key_file",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'pathlib.Path'>",
+        "OptionInfo"
+      ],
+      [
+        "prototype",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'bool'>",
+        "OptionInfo"
+      ],
+      [
+        "json_output",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'bool'>",
+        "OptionInfo"
+      ]
+    ],
+    "parameters": [
+      {
+        "name": "envelope_file",
+        "kind": "TyperArgument",
+        "opts": [
+          "envelope_file"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "TyperPath",
+        "type_name": "path",
+        "path_type": null,
+        "is_flag": null,
+        "flag_value": null,
+        "help": "Sealed envelope to open.",
+        "hidden": false
+      },
+      {
+        "name": "key_file",
+        "kind": "TyperOption",
+        "opts": [
+          "--key"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "TyperPath",
+        "type_name": "path",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "File holding this machine's raw 32-byte X25519 private key (or its base64).",
+        "hidden": false
+      },
+      {
+        "name": "prototype",
+        "kind": "TyperOption",
+        "opts": [
+          "--prototype"
+        ],
+        "secondary_opts": [],
+        "default": false,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "BoolParamType",
+        "type_name": "boolean",
+        "path_type": null,
+        "is_flag": true,
+        "flag_value": null,
+        "help": "Acknowledge this envelope is a replaceable prototype, not a frozen protocol.",
+        "hidden": false
+      },
+      {
+        "name": "json_output",
+        "kind": "TyperOption",
+        "opts": [
+          "--json"
+        ],
+        "secondary_opts": [],
+        "default": false,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "BoolParamType",
+        "type_name": "boolean",
+        "path_type": null,
+        "is_flag": true,
+        "flag_value": null,
+        "help": "Emit JSON only.",
+        "hidden": false
+      }
+    ]
+  },
+  {
+    "route": "agent transfer bundle-complete",
+    "hidden": false,
+    "help": "Complete a transfer-out: clean the source by identity fence (AT11).\n\nCleaning the files is only half of \"the agent left this machine\": the\nregistration row, routes and undelivered messages live in the daemon,\nso a completed cleanup also asks the daemon to destroy the source agent\n(``--keep-registration`` opts out).  Without that step the source keeps\nadvertising a delivery target whose home is gone: senders get an\nacknowledgement and nobody answers.",
+    "callback": "transfer_bundle_complete",
+    "signature": [
+      [
+        "home",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'pathlib.Path'>",
+        "ArgumentInfo"
+      ],
+      [
+        "bundle_dir",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'pathlib.Path'>",
+        "OptionInfo"
+      ],
+      [
+        "receipt",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'str'>",
+        "OptionInfo"
+      ],
+      [
+        "actor",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'str'>",
+        "OptionInfo"
+      ],
+      [
+        "owner",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'str'>",
+        "OptionInfo"
+      ],
+      [
+        "staging",
+        "POSITIONAL_OR_KEYWORD",
+        "list[pathlib.Path] | None",
+        "OptionInfo"
+      ],
+      [
+        "credential_volume",
+        "POSITIONAL_OR_KEYWORD",
+        "list[pathlib.Path] | None",
+        "OptionInfo"
+      ],
+      [
+        "private_grant",
+        "POSITIONAL_OR_KEYWORD",
+        "list[pathlib.Path] | None",
+        "OptionInfo"
+      ],
+      [
+        "dry_run",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'bool'>",
+        "OptionInfo"
+      ],
+      [
+        "allow_uncovered",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'bool'>",
+        "OptionInfo"
+      ],
+      [
+        "allow_external",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'bool'>",
+        "OptionInfo"
+      ],
+      [
+        "keep_registration",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'bool'>",
+        "OptionInfo"
+      ],
+      [
+        "json_output",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'bool'>",
+        "OptionInfo"
+      ]
+    ],
+    "parameters": [
+      {
+        "name": "home",
+        "kind": "TyperArgument",
+        "opts": [
+          "home"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "TyperPath",
+        "type_name": "path",
+        "path_type": null,
+        "is_flag": null,
+        "flag_value": null,
+        "help": "Source agent home to clean up once the target holds the agent.",
+        "hidden": false
+      },
+      {
+        "name": "bundle_dir",
+        "kind": "TyperOption",
+        "opts": [
+          "--bundle"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "TyperPath",
+        "type_name": "path",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Bundle that must still validate before anything on the source is removed.",
+        "hidden": false
+      },
+      {
+        "name": "receipt",
+        "kind": "TyperOption",
+        "opts": [
+          "--receipt"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Target confirmation id: the target says it holds the agent.",
+        "hidden": false
+      },
+      {
+        "name": "actor",
+        "kind": "TyperOption",
+        "opts": [
+          "--actor"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Agent actor being handed over.",
+        "hidden": false
+      },
+      {
+        "name": "owner",
+        "kind": "TyperOption",
+        "opts": [
+          "--owner"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Owner the agent belongs to.",
+        "hidden": false
+      },
+      {
+        "name": "staging",
+        "kind": "TyperOption",
+        "opts": [
+          "--staging"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "multiple": true,
+        "type": "TyperPath",
+        "type_name": "path",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Staging directory to clean (repeatable).",
+        "hidden": false
+      },
+      {
+        "name": "credential_volume",
+        "kind": "TyperOption",
+        "opts": [
+          "--credential-volume"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "multiple": true,
+        "type": "TyperPath",
+        "type_name": "path",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Container credential volume to clean (repeatable).",
+        "hidden": false
+      },
+      {
+        "name": "private_grant",
+        "kind": "TyperOption",
+        "opts": [
+          "--private-grant"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "multiple": true,
+        "type": "TyperPath",
+        "type_name": "path",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Private grant file or directory to clean (repeatable).",
+        "hidden": false
+      },
+      {
+        "name": "dry_run",
+        "kind": "TyperOption",
+        "opts": [
+          "--dry-run"
+        ],
+        "secondary_opts": [],
+        "default": false,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "BoolParamType",
+        "type_name": "boolean",
+        "path_type": null,
+        "is_flag": true,
+        "flag_value": null,
+        "help": "List what would be removed, without removing anything.",
+        "hidden": false
+      },
+      {
+        "name": "allow_uncovered",
+        "kind": "TyperOption",
+        "opts": [
+          "--allow-uncovered"
+        ],
+        "secondary_opts": [],
+        "default": false,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "BoolParamType",
+        "type_name": "boolean",
+        "path_type": null,
+        "is_flag": true,
+        "flag_value": null,
+        "help": "Delete files the bundle does not hold. Without this the removal is refused when the home has moved on since the export.",
+        "hidden": false
+      },
+      {
+        "name": "allow_external",
+        "kind": "TyperOption",
+        "opts": [
+          "--allow-external"
+        ],
+        "secondary_opts": [],
+        "default": false,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "BoolParamType",
+        "type_name": "boolean",
+        "path_type": null,
+        "is_flag": true,
+        "flag_value": null,
+        "help": "Delete --staging / --credential-volume / --private-grant paths that are not under a root this actor owns. Without it those paths are refused.",
+        "hidden": false
+      },
+      {
+        "name": "keep_registration",
+        "kind": "TyperOption",
+        "opts": [
+          "--keep-registration"
+        ],
+        "secondary_opts": [],
+        "default": false,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "BoolParamType",
+        "type_name": "boolean",
+        "path_type": null,
+        "is_flag": true,
+        "flag_value": null,
+        "help": "Leave this machine's registration (agent row, routes, undelivered messages) in place after the files are cleaned. Without it a completed transfer-out also deregisters the source, because 'transferred away' means the source no longer holds the identity.",
+        "hidden": false
+      },
+      {
+        "name": "json_output",
+        "kind": "TyperOption",
+        "opts": [
+          "--json"
+        ],
+        "secondary_opts": [],
+        "default": false,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "BoolParamType",
+        "type_name": "boolean",
+        "path_type": null,
+        "is_flag": true,
+        "flag_value": null,
+        "help": "Emit JSON only.",
+        "hidden": false
+      }
+    ]
+  },
+  {
+    "route": "agent transfer trust-source-add",
+    "hidden": false,
+    "help": "Enroll one source machine's signing key (offline and idempotent).\n\nEnrolling the same key again for the same actor and machine is a no-op;\nthe same key id claimed for different material or identity is refused.\nThe pair is a binding, not a label: a landing verifies the signature\nunder this key *and* refuses a bundle whose sealed manifest claims a\ndifferent actor or source machine than the ones enrolled here.",
+    "callback": "transfer_trust_source_add",
+    "signature": [
+      [
+        "actor",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'str'>",
+        "OptionInfo"
+      ],
+      [
+        "source_machine",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'str'>",
+        "OptionInfo"
+      ],
+      [
+        "public_key",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'str'>",
+        "OptionInfo"
+      ],
+      [
+        "key_id",
+        "POSITIONAL_OR_KEYWORD",
+        "str | None",
+        "OptionInfo"
+      ],
+      [
+        "json_output",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'bool'>",
+        "OptionInfo"
+      ]
+    ],
+    "parameters": [
+      {
+        "name": "actor",
+        "kind": "TyperOption",
+        "opts": [
+          "--actor"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Actor this key is enrolled for; a bundle signed by it lands only when its sealed manifest claims the same actor.",
+        "hidden": false
+      },
+      {
+        "name": "source_machine",
+        "kind": "TyperOption",
+        "opts": [
+          "--source-machine"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Machine id the source records as its own (its HYPRIAL_NODE_ID or host name).  A re-registration of the same key must agree on it.",
+        "hidden": false
+      },
+      {
+        "name": "public_key",
+        "kind": "TyperOption",
+        "opts": [
+          "--public-key"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "The source machine's Ed25519 public key: a path to its key record (secrets/transfer/signing-key.json), a file holding just the base64 key, or the base64 text itself.",
+        "hidden": false
+      },
+      {
+        "name": "key_id",
+        "kind": "TyperOption",
+        "opts": [
+          "--key-id"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Assert the exact key id; refuse when it is not the key you passed.",
+        "hidden": false
+      },
+      {
+        "name": "json_output",
+        "kind": "TyperOption",
+        "opts": [
+          "--json"
+        ],
+        "secondary_opts": [],
+        "default": false,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "BoolParamType",
+        "type_name": "boolean",
+        "path_type": null,
+        "is_flag": true,
+        "flag_value": null,
+        "help": "Emit JSON only.",
+        "hidden": false
+      }
+    ]
+  },
+  {
+    "route": "agent transfer trust-source-list",
+    "hidden": false,
+    "help": "List the source keys this target will accept.\n\nA missing store is an empty store, never a wildcard: a target that has\nenrolled nobody refuses every signature rather than trusting anybody.",
+    "callback": "transfer_trust_source_list",
+    "signature": [
+      [
+        "json_output",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'bool'>",
+        "OptionInfo"
+      ]
+    ],
+    "parameters": [
+      {
+        "name": "json_output",
+        "kind": "TyperOption",
+        "opts": [
+          "--json"
+        ],
+        "secondary_opts": [],
+        "default": false,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "BoolParamType",
+        "type_name": "boolean",
+        "path_type": null,
+        "is_flag": true,
+        "flag_value": null,
+        "help": "Emit JSON only.",
+        "hidden": false
+      }
+    ]
+  },
+  {
+    "route": "agent transfer trust-source-retire",
+    "hidden": false,
+    "help": "Mark one enrolled key as retired.\n\nRetirement itself is a record, not a delete.  Whether a bundle signed by\na retired key still lands is the store's ``retirementPolicy`` (warn by\ndefault, refuse on demand); that switch lives in the store file and is\ndeliberately not a CLI backdoor.",
+    "callback": "transfer_trust_source_retire",
+    "signature": [
+      [
+        "key_id",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'str'>",
+        "OptionInfo"
+      ],
+      [
+        "retired_at",
+        "POSITIONAL_OR_KEYWORD",
+        "str | None",
+        "OptionInfo"
+      ],
+      [
+        "json_output",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'bool'>",
+        "OptionInfo"
+      ]
+    ],
+    "parameters": [
+      {
+        "name": "key_id",
+        "kind": "TyperOption",
+        "opts": [
+          "--key-id"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Key id to retire (it is recorded, never deleted: audits need the line).",
+        "hidden": false
+      },
+      {
+        "name": "retired_at",
+        "kind": "TyperOption",
+        "opts": [
+          "--retired-at"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "ISO-8601 instant the key retires (default: now, UTC).",
+        "hidden": false
+      },
+      {
+        "name": "json_output",
+        "kind": "TyperOption",
+        "opts": [
+          "--json"
+        ],
+        "secondary_opts": [],
+        "default": false,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "BoolParamType",
+        "type_name": "boolean",
+        "path_type": null,
+        "is_flag": true,
+        "flag_value": null,
+        "help": "Emit JSON only.",
+        "hidden": false
+      }
+    ]
+  },
+  {
+    "route": "agent transfer precheck",
+    "hidden": true,
+    "help": "Target-side admission check (driven by 'hyprial agent transfer' over SSH).",
+    "callback": "transfer_precheck",
+    "signature": [
+      [
+        "harness",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'str'>",
+        "OptionInfo"
+      ],
+      [
+        "name",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'str'>",
+        "OptionInfo"
+      ],
+      [
+        "json_output",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'bool'>",
+        "OptionInfo"
+      ]
+    ],
+    "parameters": [
+      {
+        "name": "harness",
+        "kind": "TyperOption",
+        "opts": [
+          "--harness"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": null,
+        "hidden": false
+      },
+      {
+        "name": "name",
+        "kind": "TyperOption",
+        "opts": [
+          "--name"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": null,
+        "hidden": false
+      },
+      {
+        "name": "json_output",
+        "kind": "TyperOption",
+        "opts": [
+          "--json"
+        ],
+        "secondary_opts": [],
+        "default": false,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "BoolParamType",
+        "type_name": "boolean",
+        "path_type": null,
+        "is_flag": true,
+        "flag_value": null,
+        "help": "Emit JSON only.",
+        "hidden": false
+      }
+    ]
+  },
+  {
+    "route": "agent transfer receive",
+    "hidden": true,
+    "help": "Adopt a transferred worker; the payload JSON arrives on stdin.",
+    "callback": "transfer_receive",
+    "signature": [
+      [
+        "json_output",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'bool'>",
+        "OptionInfo"
+      ]
+    ],
+    "parameters": [
+      {
+        "name": "json_output",
+        "kind": "TyperOption",
+        "opts": [
+          "--json"
+        ],
+        "secondary_opts": [],
+        "default": false,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "BoolParamType",
+        "type_name": "boolean",
+        "path_type": null,
+        "is_flag": true,
+        "flag_value": null,
+        "help": "Emit JSON only.",
+        "hidden": false
+      }
+    ]
+  },
+  {
+    "route": "agent transfer recipient-key",
+    "hidden": true,
+    "help": "This machine's credential-envelope public key (minted on first use).\n\nThe source machine calls this over SSH before sealing a bundle's\ncredentials: only the public half leaves the machine.  The private\nhalf stays in the daemon's own home and is what the landing uses to\nopen the sealed envelope.",
+    "callback": "transfer_recipient_key",
+    "signature": [
+      [
+        "json_output",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'bool'>",
+        "OptionInfo"
+      ]
+    ],
+    "parameters": [
+      {
+        "name": "json_output",
+        "kind": "TyperOption",
+        "opts": [
+          "--json"
+        ],
+        "secondary_opts": [],
+        "default": false,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "BoolParamType",
+        "type_name": "boolean",
+        "path_type": null,
+        "is_flag": true,
+        "flag_value": null,
+        "help": "Emit JSON only.",
+        "hidden": false
+      }
+    ]
+  },
+  {
+    "route": "agent transfer cred-stage",
+    "hidden": true,
+    "help": "Prepare (or permission-seal) the credential staging dir on the target.\n\nThe orchestrator scp's the credential bundle and the image tar into the\nreturned directory.  ``--finalize`` runs AFTER the uploads: staging\ndirs become 0700 and every staged file 0600 (scp does not preserve\nmodes).  Nothing here reads file contents.",
+    "callback": "transfer_cred_stage",
+    "signature": [
+      [
+        "name",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'str'>",
+        "OptionInfo"
+      ],
+      [
+        "harness",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'str'>",
+        "OptionInfo"
+      ],
+      [
+        "finalize",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'bool'>",
+        "OptionInfo"
+      ],
+      [
+        "json_output",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'bool'>",
+        "OptionInfo"
+      ]
+    ],
+    "parameters": [
+      {
+        "name": "name",
+        "kind": "TyperOption",
+        "opts": [
+          "--name"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": null,
+        "hidden": false
+      },
+      {
+        "name": "harness",
+        "kind": "TyperOption",
+        "opts": [
+          "--harness"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": null,
+        "hidden": false
+      },
+      {
+        "name": "finalize",
+        "kind": "TyperOption",
+        "opts": [
+          "--finalize"
+        ],
+        "secondary_opts": [],
+        "default": false,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "BoolParamType",
+        "type_name": "boolean",
+        "path_type": null,
+        "is_flag": true,
+        "flag_value": null,
+        "help": null,
+        "hidden": false
+      },
+      {
+        "name": "json_output",
+        "kind": "TyperOption",
+        "opts": [
+          "--json"
+        ],
+        "secondary_opts": [],
+        "default": false,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "BoolParamType",
+        "type_name": "boolean",
+        "path_type": null,
+        "is_flag": true,
+        "flag_value": null,
+        "help": "Emit JSON only.",
+        "hidden": false
+      }
+    ]
+  },
+  {
+    "route": "agent transfer container-home",
+    "hidden": true,
+    "help": "Create and return the per-worker container home on the target.",
+    "callback": "transfer_container_home",
+    "signature": [
+      [
+        "name",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'str'>",
+        "OptionInfo"
+      ],
+      [
+        "harness",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'str'>",
+        "OptionInfo"
+      ],
+      [
+        "json_output",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'bool'>",
+        "OptionInfo"
+      ]
+    ],
+    "parameters": [
+      {
+        "name": "name",
+        "kind": "TyperOption",
+        "opts": [
+          "--name"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": null,
+        "hidden": false
+      },
+      {
+        "name": "harness",
+        "kind": "TyperOption",
+        "opts": [
+          "--harness"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": null,
+        "hidden": false
+      },
+      {
+        "name": "json_output",
+        "kind": "TyperOption",
+        "opts": [
+          "--json"
+        ],
+        "secondary_opts": [],
+        "default": false,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "BoolParamType",
+        "type_name": "boolean",
+        "path_type": null,
+        "is_flag": true,
+        "flag_value": null,
+        "help": "Emit JSON only.",
+        "hidden": false
+      }
+    ]
+  },
+  {
+    "route": "agent transfer session-path",
+    "hidden": true,
+    "help": "Resolve (and create the parent of) a session file's target path.",
+    "callback": "transfer_session_path",
+    "signature": [
+      [
+        "harness",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'str'>",
+        "OptionInfo"
+      ],
+      [
+        "cwd",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'str'>",
+        "OptionInfo"
+      ],
+      [
+        "ref",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'str'>",
+        "OptionInfo"
+      ],
+      [
+        "filename",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'str'>",
+        "OptionInfo"
+      ],
+      [
+        "sessions_rel",
+        "POSITIONAL_OR_KEYWORD",
+        "str | None",
+        "OptionInfo"
+      ],
+      [
+        "home",
+        "POSITIONAL_OR_KEYWORD",
+        "str | None",
+        "OptionInfo"
+      ],
+      [
+        "json_output",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'bool'>",
+        "OptionInfo"
+      ]
+    ],
+    "parameters": [
+      {
+        "name": "harness",
+        "kind": "TyperOption",
+        "opts": [
+          "--harness"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": null,
+        "hidden": false
+      },
+      {
+        "name": "cwd",
+        "kind": "TyperOption",
+        "opts": [
+          "--cwd"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": null,
+        "hidden": false
+      },
+      {
+        "name": "ref",
+        "kind": "TyperOption",
+        "opts": [
+          "--ref"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": null,
+        "hidden": false
+      },
+      {
+        "name": "filename",
+        "kind": "TyperOption",
+        "opts": [
+          "--filename"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": null,
+        "hidden": false
+      },
+      {
+        "name": "sessions_rel",
+        "kind": "TyperOption",
+        "opts": [
+          "--sessions-rel"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": null,
+        "hidden": false
+      },
+      {
+        "name": "home",
+        "kind": "TyperOption",
+        "opts": [
+          "--home"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "StringParamType",
+        "type_name": "str",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Resolve under this home instead of the user's (container mode).",
+        "hidden": false
+      },
+      {
+        "name": "json_output",
+        "kind": "TyperOption",
+        "opts": [
+          "--json"
+        ],
+        "secondary_opts": [],
+        "default": false,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "BoolParamType",
+        "type_name": "boolean",
+        "path_type": null,
+        "is_flag": true,
+        "flag_value": null,
+        "help": "Emit JSON only.",
+        "hidden": false
+      }
+    ]
+  },
+  {
+    "route": "agent transfer runtime downgrade-state",
+    "hidden": false,
+    "help": "Offline rollback preparation: retire smolvm intent before installing an older daemon.",
+    "callback": "transfer_runtime_downgrade_state",
+    "signature": [
+      [
+        "output",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'pathlib.Path'>",
+        "OptionInfo"
+      ],
+      [
+        "json_output",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'bool'>",
+        "OptionInfo"
+      ]
+    ],
+    "parameters": [
+      {
+        "name": "output",
+        "kind": "TyperOption",
+        "opts": [
+          "--output"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "TyperPath",
+        "type_name": "path",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "New directory for durable runtime-intent export.",
+        "hidden": false
+      },
+      {
+        "name": "json_output",
+        "kind": "TyperOption",
+        "opts": [
+          "--json"
+        ],
+        "secondary_opts": [],
+        "default": false,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "BoolParamType",
+        "type_name": "boolean",
+        "path_type": null,
+        "is_flag": true,
+        "flag_value": null,
+        "help": "Emit JSON only.",
+        "hidden": false
+      }
+    ]
+  },
+  {
+    "route": "agent transfer runtime probe",
+    "hidden": false,
+    "help": "Run a synthetic, isolated VM mapping probe (no worker or credential test).",
+    "callback": "transfer_runtime_probe",
+    "signature": [
+      [
+        "smolvm",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'pathlib.Path'>",
+        "OptionInfo"
+      ],
+      [
+        "rootfs",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'pathlib.Path'>",
+        "OptionInfo"
+      ],
+      [
+        "resize2fs",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'pathlib.Path'>",
+        "OptionInfo"
+      ],
+      [
+        "output",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'pathlib.Path'>",
+        "OptionInfo"
+      ],
+      [
+        "json_output",
+        "POSITIONAL_OR_KEYWORD",
+        "<class 'bool'>",
+        "OptionInfo"
+      ]
+    ],
+    "parameters": [
+      {
+        "name": "smolvm",
+        "kind": "TyperOption",
+        "opts": [
+          "--smolvm"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "TyperPath",
+        "type_name": "path",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Absolute path to a local smolvm 1.19.0 executable.",
+        "hidden": false
+      },
+      {
+        "name": "rootfs",
+        "kind": "TyperOption",
+        "opts": [
+          "--rootfs"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "TyperPath",
+        "type_name": "path",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Absolute path to an unpacked local Linux rootfs; never downloaded.",
+        "hidden": false
+      },
+      {
+        "name": "resize2fs",
+        "kind": "TyperOption",
+        "opts": [
+          "--resize2fs"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "TyperPath",
+        "type_name": "path",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "Absolute path to host resize2fs, required for the fixed 1 GiB disk.",
+        "hidden": false
+      },
+      {
+        "name": "output",
+        "kind": "TyperOption",
+        "opts": [
+          "--output"
+        ],
+        "secondary_opts": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "multiple": false,
+        "type": "TyperPath",
+        "type_name": "path",
+        "path_type": null,
+        "is_flag": false,
+        "flag_value": null,
+        "help": "New private evidence directory; its parent must already exist.",
+        "hidden": false
+      },
+      {
+        "name": "json_output",
+        "kind": "TyperOption",
+        "opts": [
+          "--json"
+        ],
+        "secondary_opts": [],
+        "default": false,
+        "required": false,
+        "nargs": 1,
+        "multiple": false,
+        "type": "BoolParamType",
+        "type_name": "boolean",
+        "path_type": null,
+        "is_flag": true,
+        "flag_value": null,
+        "help": "Emit JSON only.",
+        "hidden": false
+      }
+    ]
+  }
+]

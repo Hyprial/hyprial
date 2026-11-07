@@ -1,0 +1,33 @@
+{
+  "schema": "2.0",
+  "header": {
+    "event_id": "evt_offline_golden",
+    "event_type": "im.message.receive_v1",
+    "create_time": "1786100000000",
+    "token": "offline-token",
+    "app_id": "cli_offline_golden",
+    "tenant_key": "offline-tenant"
+  },
+  "event": {
+    "sender": {
+      "sender_id": {
+        "union_id": "on_offline_sender",
+        "user_id": "offline-sender",
+        "open_id": "ou_offline_sender"
+      },
+      "sender_type": "user",
+      "tenant_key": "offline-tenant"
+    },
+    "message": {
+      "message_id": "om_offline_golden",
+      "root_id": null,
+      "parent_id": null,
+      "create_time": "1786100000000",
+      "chat_id": "oc_offline_golden",
+      "chat_type": "group",
+      "message_type": "text",
+      "content": "{\"text\":\"OFFLINE_GOLDEN\"}",
+      "mentions": []
+    }
+  }
+}

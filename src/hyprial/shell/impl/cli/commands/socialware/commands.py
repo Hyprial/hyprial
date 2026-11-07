@@ -108,7 +108,7 @@ def _require_installed_commit(
     The restart decision follows the CODE, not the ref's name: an explicit
     movable tag (``--tag internal``) keeps the same requested_revision while
     uv installs a new commit, and comparing names alone left the daemon on
-    the old code (jjkysy-dev, 2026-09-26: b6cd834 -> e9dec894, "resolved tag
+    the old code (devusr-dev, 2026-09-26: b6cd834 -> e9dec894, "resolved tag
     unchanged").  Symmetrically, if uv fetched something other than what was
     resolved (the tag moved again, a stale cache), never report upgraded=true
     for it; restarting onto it would also defeat the downgrade guard, which

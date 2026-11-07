@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "name": "gui-request-http-design-rework-r1",
+  "summary": "H-01 design-only rework of PR #2146; borrow the existing worker; keep A/build/C gates closed.",
+  "on_failure": "hold",
+  "escalate_to": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+  "nodes": [
+    {
+      "id": "revise-design",
+      "owner": "agent:amy.williams@example.com:devusr-dev:wf-474597cc922e4a0e83aaebf557fa9ae4-971eaed090b4",
+      "role": "execute",
+      "timeout": "4h",
+      "first_output_eta": "10m",
+      "task": "继续既有 H-01 方案返工，使用当前 DeepSeek Flash Max，不换模型、不自行委派。只在 /Users/amyws/projects/request-http-h01 的 feat/http-request-entry 工作，同一 Draft PR #2146，base intg/gui-request-http，不另开 PR。先读 /Users/amyws/projects/daemon-request-http/docs/notes/http-h01-design-review-r1-2026-10-30.md（协调者已提交的 R1 判词），并核其所在 Git commit。按 R1-R5 与 D1-D12 修订 docs/design/daemon-request/http-entry-design-2026-10-30.md。必须写清 daemon 权威运行目录而非 HTTP 本地包目录、恢复期 ready 与重启一致性；显式身份/selector 绑定元数据而非猜 from/actor；本片 safe unary read 与 H-02 不做业务确认/幂等/session；dispatch 后超时结果未知不因 HTTP 错误包络变为未执行；有效 HTTP 契约摘要和自洽的状态/HTTP/CORS/测试矩阵。只改方案和准备证据，禁止产品实现、CLI 族迁移、GUI 页面、C、合 A 或改生产配置。不改变主图 a-landed/h01-design-review 旗标，不复用旧 prepare 请求。所有 Python 经 uv；提交身份 devusr <amy.williams@example.com>；可推自己的分支，更新 #2146 正文到实际方案，保留 Draft 与 Submitted-by/Contract-Impact/Skill-Impact/未测项。首次10分钟给可核文件，长任务20分钟检查点；所有问题/结果回协调者。完成当前补充 PAC revise-design 节点时引用精确 SHA 和方案路径，outputText 逐条说明 R1-R5、D1-D12 处置，未解决项直说。设计修订不是实现授权。"
+    },
+    {
+      "id": "done",
+      "kind": "end",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "review",
+      "after": ["revise-design"],
+      "timeout": "24h",
+      "task": "独立检查修订后的 #2146 精确 head。保存审查判词；本节点仅关闭方案返工任务，不表示产品完成，也不修改主图 a-landed。修订实际通过后才单独完成主图 h01-design-review 的当前有效请求；不通过则记录剩余具体问题并保持主图未置位。借用 worker 不由此图回收。"
+    }
+  ]
+}

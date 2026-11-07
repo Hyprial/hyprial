@@ -1,0 +1,3 @@
+{"t":"2026-08-19T10:15:21.179Z","event":"session_start","mode":"tui","hasUI":true}
+{"t":"2026-08-19T10:15:28.169Z","event":"harness_whoami_result","isError":false,"text":"harness tools are unavailable: HYPRIAL_WORKER_ACTOR / HYPRIAL_WORKER_SESSION_REF are not set, so this pi session was not launched as a managed hyprial worker"}
+{"t":"2026-08-19T10:15:34.985Z","event":"agent_settled"}

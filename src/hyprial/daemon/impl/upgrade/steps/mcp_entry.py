@@ -9,6 +9,8 @@ import subprocess
 from pathlib import Path
 from typing import Any, Callable
 
+from hyprial.kernel import fsync_directory
+
 from . import UpgradeContext, UpgradeStep
 
 
@@ -83,11 +85,9 @@ def _atomic_write(path: Path, payload: bytes) -> None:
             os.close(descriptor)
         os.chmod(temporary, 0o600)
         os.replace(temporary, path)
-        directory = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        # Capability-based (no-op where a directory cannot be opened, e.g.
+        # Windows); doctor --fix hit PermissionError here (#1902).
+        fsync_directory(path.parent)
     finally:
         temporary.unlink(missing_ok=True)
 

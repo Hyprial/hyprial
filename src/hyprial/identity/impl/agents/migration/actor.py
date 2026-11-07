@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import json
 import threading
+from collections.abc import Callable
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,12 +30,12 @@ from hyprial.identity.impl.agents.migration.entry  import (
 )
 from hyprial.identity.impl.agents.registry._base  import Agent, AgentError
 from hyprial.identity.impl.agents.home.provisioner  import AgentHomeError
-from hyprial.identity.impl.agents.runtime.context  import DEFAULT_AGENT_TOOL_PROFILE
 from hyprial.identity.impl.agents.config_rebind import (
     ConfigRebindError,
     run_config_rebind,
 )
 from hyprial.identity.impl.agents.home.effects import HomeRuntimePreparer
+from hyprial.identity.impl.agents.runtime.context import AgentRuntimeContext
 from hyprial.kernel import DECLARED_HARNESSES, ipc_errors
 
 
@@ -59,6 +60,7 @@ class MigrationEffect:
     state_dir: Path
     hyprial_home: Path
     runtime_preparers: tuple[tuple[str, HomeRuntimePreparer], ...] = ()
+    notice_reporter: Callable[[AgentRuntimeContext], None] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -413,10 +415,11 @@ def run_migration_effect(effect: MigrationEffect, owner: MigrationOwnerPort) -> 
             bindings = AgentRuntimeMigrationBindings(
                 proxy,
                 harnesses=tuple(dict.fromkeys(key.harness for key in keys)),
-                tool_profile=DEFAULT_AGENT_TOOL_PROFILE,
+                tool_profile=None,
                 base_environment=os.environ,
                 containerized=False,
                 runtime_preparers=dict(effect.runtime_preparers),
+                notice_reporter=effect.notice_reporter,
             )
             plan = coordinator.preflight(
                 authorization, manifest.entries, required_support=keys,
@@ -437,10 +440,11 @@ def run_migration_effect(effect: MigrationEffect, owner: MigrationOwnerPort) -> 
         bindings = AgentRuntimeMigrationBindings(
             proxy,
             harnesses=tuple(dict.fromkeys(key.harness for key in plan.support)),
-            tool_profile=DEFAULT_AGENT_TOOL_PROFILE,
+            tool_profile=None,
             base_environment=os.environ,
             containerized=False,
             runtime_preparers=dict(effect.runtime_preparers),
+            notice_reporter=effect.notice_reporter,
         )
         if request.method == "agent.migrate.execute":
             record = coordinator.execute(plan, bindings=bindings)

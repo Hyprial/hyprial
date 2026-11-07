@@ -1,0 +1,26 @@
+# Keep the E2E-001 Docker build context small (build context is the repo root).
+.git
+.venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+dist
+tests
+docs
+contract/wire
+contract/cli-blackbox
+contract/daemon-lifecycle
+contract/mcp-tools
+contract/pac
+contract/workers
+# The worker entrypoint lives under scripts/ (the 2026-10-01 refactor
+# dissolved docker/ into scripts/build/docker/), so the one file the
+# Dockerfile copies is re-included after the exclusion; the chain below is
+# the documented parent-then-child re-inclusion order Docker requires.
+scripts
+!scripts/build
+scripts/build/*
+!scripts/build/docker
+scripts/build/docker/*
+!scripts/build/docker/container-entrypoint.sh

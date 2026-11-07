@@ -1,0 +1,139 @@
+{
+  "schema": "hyprial-send-links/v1",
+  "summaryMaxBytes": 512,
+  "summaryRequiredDataKeys": ["summaryBytes", "maxBytes"],
+  "errorCodes": [
+    "SUMMARY_REQUIRED",
+    "MESSAGE_BODY_UNAVAILABLE",
+    "LINK_MINTING",
+    "LINK_PEER_FULL",
+    "LINK_SELF_FULL",
+    "LINK_WINDOW_FULL",
+    "LINK_UNKNOWN",
+    "LINK_RECLAIMED"
+  ],
+  "holdReasonKey": "holdReason",
+  "holdReasons": ["LINK_MINTING", "LINK_PEER_FULL", "LINK_SELF_FULL", "LINK_WINDOW_FULL"],
+  "holdDetails": {
+    "minting": ["LINK_MINTING"],
+    "awaiting-peer": ["LINK_MINTING", "LINK_PEER_FULL"],
+    "k": ["LINK_SELF_FULL"],
+    "churn": ["LINK_SELF_FULL"],
+    "org-unavailable": ["LINK_SELF_FULL"],
+    "gate-unavailable": ["LINK_SELF_FULL"],
+    "cwnd": ["LINK_WINDOW_FULL"],
+    "W": ["LINK_WINDOW_FULL"]
+  },
+  "ipc": {
+    "message.read_body": {
+      "params": ["messageId"],
+      "result": ["ok", "messageId", "conversationId", "from", "to", "intent", "summary", "message", "bodyBytes", "origin", "pending", "fetched"]
+    },
+    "message.settle_hint": {
+      "params": ["messageId"],
+      "result": ["ok", "messageId", "hint", "pending"]
+    },
+    "link.list": {
+      "params": ["from"],
+      "result": ["ok", "actor", "orgAvailable", "bypass", "bookkeeping", "k", "W", "inFlight", "owner", "links", "held"]
+    },
+    "link.stats": {
+      "params": ["from"],
+      "result": ["ok", "actor", "nActive", "k", "W", "wTarget", "tMinMs", "tMaxMs", "tBarMs", "muMax", "diff", "grad", "periodMs", "windowObserved", "bypass", "links"]
+    },
+    "link.add": {
+      "params": ["from", "peer"],
+      "result": ["ok", "actor", "peer", "state"]
+    },
+    "link.drop": {
+      "params": ["from", "peer"],
+      "result": ["ok", "actor", "peer", "state", "written"]
+    },
+    "session.turn.started": {
+      "params": ["actor", "sessionRef", "reportId", "deliveryId?"],
+      "result": ["ok", "startedAtMs"]
+    },
+    "session.turn.ended": {
+      "params": ["actor", "sessionRef", "reportIds", "status?", "deliveryId?"],
+      "result": ["ok", "endedAtMs", "turnCount", "turnCountSinceMs", "lastTurnEndedAtMs"]
+    }
+  },
+  "pendingRowKeys": ["messageId", "deliveryId", "conversationId", "from", "to", "intent", "kind", "summary", "bodyBytes", "origin"],
+  "sendResultFields": ["queued", "holdReason", "detail", "evicted", "openRequestsFrom", "resolutionReason"],
+  "deliveryResolutionReasons": ["node-offline", "actor-unknown", "no-route"],
+  "replyHoldFields": ["ok", "messageId", "replyMessageId", "replied", "acknowledged", "queued", "holdReason", "detail"],
+  "outboxListFields": ["holdReason", "failedAttempts"],
+  "topFields": ["capacityW", "outboundInFlight", "inboundAwaitingInjection"],
+  "hookEvents": ["link.minted", "link.reclaimed", "turn.started", "turn.completed", "turn.failed"],
+  "hookPayloads": {
+    "link.minted": ["actor", "atMs", "lifecycle", "mintedAtMs", "peer", "revision", "side", "taskId"],
+    "link.reclaimed": ["actor", "atMs", "cancelled", "drained", "drainedMessageIds", "lifecycle", "peer", "reason", "released", "taskId"]
+  },
+  "logEvents": [
+    "link.apply_failed",
+    "link.bookkeeping_disabled",
+    "link.attach.summary",
+    "link.bypass_admitted",
+    "link.flush_skipped",
+    "link.drain_failed",
+    "link.event_failed",
+    "link.file_conflict",
+    "link.file_rejected",
+    "link.gate_error",
+    "link.gate_unbound",
+    "link.inbound_row_ambiguous",
+    "link.intent_dropped",
+    "link.intent_rejected",
+    "link.lane_failed",
+    "link.local_agents_failed",
+    "link.org_available",
+    "link.org_unavailable",
+    "link.pac_bind_failed",
+    "link.pac_unreadable",
+    "link.service_composed",
+    "link.service_failed",
+    "link.service_skipped",
+    "link.space_ambiguous",
+    "link.space_skipped",
+    "link.space_unwritable",
+    "link.spaces_changed",
+    "link.subscriber_failed",
+    "link.tick_failed",
+    "link.window_observed",
+    "harness.settle.deferred",
+    "harness.mechanism_answer.deferred",
+    "harness.stranded_sweep_deferred",
+    "message.settle_hint.invalid"
+  ],
+  "serviceStages": ["orgfs", "construct", "start", "binder", "describe", "bind", "callback"],
+  "orgSpaceSkipReasons": ["creating", "deleted", "partial", "state-data-problem", "state-unreadable", "unknown-state"],
+  "workerChannelMethods": ["message.read_body", "message.settle_hint"],
+  "reservedActorNames": ["dispatch-coordinator", "_turn-hooks"],
+  "reservedNameText": "is reserved for a daemon internal actor",
+  "mechanismReplyPrefixes": ["hyprial-turn-hook-reply:", "hyprial-mechanism-reply:"],
+  "injectionFormat": {
+    "version": "summary-v1",
+    "golden": "tests/daemon/harnesses/carrier/injection_golden.json"
+  },
+  "linkFile": {
+    "dir": "link",
+    "name": "<canonical actor uri>.json"
+  },
+  "retired": [
+    "hyprial-agent-sdk-reply:",
+    "harness.reply.deferred",
+    "harness.reply.already_answered",
+    "worker.carrier.settlement.reply_lost",
+    "link.e2e_permissive_gate"
+  ],
+  "retiredPromptPhrases": [
+    "sends your final reply back",
+    "your final reply is sent back"
+  ],
+  "pendingRulings": [
+    "ruling 7: a PAC task-bound link does not count against k (in force until Allen rules)",
+    "ruling 50: with several org spaces the link file is mirrored into each joined space (default a)",
+    "wp2-composition G7: after an owner change the old link stops being effective; the new owner re-mints",
+    "X5: local and remote workflow-request summaries are not guaranteed to agree"
+  ]
+}

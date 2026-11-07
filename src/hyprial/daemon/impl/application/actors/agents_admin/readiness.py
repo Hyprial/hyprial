@@ -17,6 +17,7 @@ from hyprial.identity import (
     agent_home_mode,
     assess_agent_readiness,
     parse_tool_declaration,
+    resolve_agent_tool_profile,
 )
 from hyprial.kernel import DaemonRequestError, ipc_errors
 
@@ -108,6 +109,7 @@ class _AgentReadinessMixin:
                 entity_token=agent.entity_token,
                 running=running,
                 environ=os.environ,
+                tool_profile=resolve_agent_tool_profile(agent),
                 declared_tools=declared_tools,
                 work_paths=tuple(work_paths),
                 forgejo_identity=forgejo_identity,

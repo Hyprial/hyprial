@@ -25,6 +25,7 @@ from hyprial.shell.impl.cli.commands.doctor.checks.org_metadata import (
     routine_health_doctor_check,
 )
 from hyprial.shell.impl.cli.commands.doctor.checks.start_failures import start_failures_doctor_checks
+from hyprial.shell.impl.cli.commands.doctor.checks.redemption import redemption_doctor_check
 from hyprial.shell.impl.cli.commands.doctor.zenoh import _zenoh_doctor_check
 from hyprial.shell.impl.cli.commands.doctor.upgrade_steps import _upgrade_steps_doctor_check
 
@@ -148,6 +149,11 @@ def _doctor_result(*, fix: bool = False) -> JsonObject:
     checks.append(_tailcat_sidecar_doctor_check())
     checks.append(_device_key_doctor_check())
     checks.extend(start_failures_doctor_checks(services._state_dir()))
+    redemption_check = redemption_doctor_check(services._hyprial_home())
+    if redemption_check is not None:
+        checks.append(redemption_check)
+    from .checks.delivery_paths import delivery_paths_doctor_check
+    checks.append(delivery_paths_doctor_check())
     from .checks.names import name_collision_check
     collision = name_collision_check()
     if collision is not None:

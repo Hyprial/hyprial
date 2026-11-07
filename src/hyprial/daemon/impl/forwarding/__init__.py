@@ -5,7 +5,7 @@ from __future__ import annotations
 from .policy import (  # noqa: F401
     FORWARD_PROTOCOL_VERSION,
     ForwardingSidecarError,
-    _PROXY_KEYS,
+    _UNSUPPORTED_PROXY_KEYS,
     _normalize_exposure,
     validate_exposure_target,
     validate_peer_key_address,

@@ -1,0 +1,174 @@
+[
+  {
+    "id": "A-01",
+    "title": "A-01 公共 request client 接回与旧包装清理",
+    "depends": [],
+    "scope": "从 #1967 移植公共 kernel IPC client 到当前 intg/cli-command-surface；保留现有 endpoint/预算/错误语义，同步所有受影响调用方与测试，删除 shell 旧传输副本和兼容 shim；不恢复已退役 GUI 或 post_install_surface.json。",
+    "items": [
+      "kernel 公开 client 是唯一传输实现，生产调用方及测试不再依赖旧 helper/shim。",
+      "隔离 socket/daemon 的帧、显式 endpoint、逐次解析、超时、断线和错误语义测试通过；写操作无盲重试。",
+      "当前目标基线的结构/边界、焦点、全套、Ruff 与适用契约检查有实测证据；失败已修复或由协调者明确判定阻塞。",
+      "一个 PR 指向 intg/cli-command-surface，源码来源/验证命令/实际结果/Contract-Impact/Skill-Impact 完整，经协调者独立验收。"
+    ],
+    "kanbanUuid": "7955c51b-a0d9-49f9-aa98-3c7cfe4e68f0",
+    "orgWorkId": "M-codex-daemon-request-0001",
+    "branch": "refactor/a01-public-request-client",
+    "worktree": "/Users/amyws/projects/cli-command-surface-a-01",
+    "status": "done",
+    "executor": {
+      "harness": "pi",
+      "provider": "deepseek",
+      "model": "deepseek-flash",
+      "args": [
+        "--thinking",
+        "max",
+        "--approve"
+      ]
+    },
+    "graphId": "wf-19ff5a8b1e0140fb9a2d367241165ad9",
+    "pr": 2016,
+    "acceptedHead": "4ebcb5f98ec0a5811080450e384ad5a7b60f1fe9",
+    "review": "docs/evidence/cli-command-surface/a01-review-r2-4ebcb5f98.md"
+  },
+  {
+    "id": "A-02",
+    "title": "A-02 CLI 公共注册 DI 与唯一输出接线",
+    "depends": [
+      "A-01"
+    ],
+    "scope": "明确公共注册与 request client 注入，收敛 CliServices/entry 耦合；返回经 CliResult/CliStream 的唯一输出通路，更新受影响安装/测试消费者，不逐组迁移业务、不新增测试重导出。",
+    "items": [
+      "公共 entry/DI 提供 B/C 同一个可用接入点，受影响消费者同步更新且无新兼容层。",
+      "现有命令注册、帮助、stdout/stderr/退出码保持一致；输出只走既有唯一 output 层。",
+      "后端无 CLI 反向 import，结构/边界、焦点、全套、Ruff 与适用契约检查通过并记录证据。",
+      "单独 PR 指向 intg/cli-command-surface，当前 head 由协调者验收通过。"
+    ],
+    "kanbanUuid": "2188b4ed-b5c5-4fe7-a9ba-d1fe9577a393",
+    "orgWorkId": "M-codex-daemon-request-0002",
+    "branch": "refactor/a02-cli-composition",
+    "worktree": "/Users/amyws/projects/cli-command-surface-a-02",
+    "status": "done",
+    "executor": {
+      "harness": "pi",
+      "provider": "deepseek",
+      "model": "deepseek-flash",
+      "args": [
+        "--thinking",
+        "max",
+        "--approve"
+      ]
+    },
+    "graphId": "wf-19ff5a8b1e0140fb9a2d367241165ad9",
+    "pr": 2017,
+    "acceptedHead": "d86c47cd20c961250c3c718537d789deae4b6b2c",
+    "review": "docs/evidence/cli-command-surface/a02-review-b702e5414.md",
+    "completeSuite": "FAIL: 20 baseline/environment failures retained; scope review PASS, final integration gate open"
+  },
+  {
+    "id": "A-03",
+    "title": "A-03 MethodSpec OpenAPI 棘轮与 link 样板",
+    "depends": [
+      "A-02"
+    ],
+    "scope": "同一骨架 PR 交付纯 MethodSpec、完整 schema/错误/流式/preview 元数据、真实 handler 绑定及确定性 OpenAPI；新增/迁移方法必须登记；导入棘轮精确旧引用只减不增。link list/stats 为主样板，同组 add/drop 必要接线收齐。",
+    "items": [
+      "参数/结果/错误/流式/幂等/确认声明可校验并确定性导出，已登记方法与真实 handler 对应，不用空 schema 或假 handler。",
+      "import 棘轮及未登记方法/非法参数/错误 schema 负控可明确失败，后端不反向依赖 CLI。",
+      "link 同组真实隔离 daemon 调用通过，固定环境的 text/JSON stdout、stderr、退出码与基线逐字节一致。",
+      "焦点、全套、Ruff、结构/边界及适用 contract 检查有证据；单独 PR 经协调者验收。"
+    ],
+    "kanbanUuid": "a3365354-71bd-4b2b-bd45-c0a714064b23",
+    "orgWorkId": "M-codex-daemon-request-0003",
+    "branch": "feat/a03-request-contracts",
+    "pr": 2020,
+    "review": "docs/evidence/cli-command-surface/a03-review-2d217e207.md",
+    "worktree": "/Users/amyws/projects/cli-command-surface-a-03",
+    "status": "done",
+    "executor": {
+      "harness": "pi",
+      "provider": "deepseek",
+      "model": "deepseek-flash",
+      "args": [
+        "--thinking",
+        "max",
+        "--approve"
+      ]
+    },
+    "graphId": "wf-19ff5a8b1e0140fb9a2d367241165ad9",
+    "acceptedHead": "20269c960c98ba5def5abe65d3948a60ea8f8550",
+    "completeSuite": "FAIL at52cf:33 failed/15844 passed/3 errors;11 exact test repairs independently pass,16 baselineFAIL and6 UNKNOWN retained final gate"
+  },
+  {
+    "id": "A-04",
+    "title": "A-04 命令清单 参数规则与公共 CI",
+    "depends": [
+      "A-02",
+      "A-03"
+    ],
+    "scope": "复用既有 help inventory/输出/边界门，核对25源码族当前实际注册、参数、隐藏入口、生成物；梳理 host 目标术语映射；接入 A03 契约/OpenAPI CI，未实现 move 不冒充可用，GUI 只获得公共接口自查。A02后可准备清单，A03后完成真实接入。",
+    "items": [
+      "完整实际命令注册/帮助/参数及生成清单一致，旧盘点只作基线，新增/退役有逐项出处。",
+      "命令漂移、参数互斥错误、生成物漂移及契约导出问题被负控捕获，不放宽门禁。",
+      "已退役入口无 alias；未实现 move 不进入可用目录；host 目标映射明确所属迁移组，无整仓抢改。",
+      "接入 A03 后焦点/全套/Ruff/结构边界及契约检查通过，单独 PR 经协调者验收。"
+    ],
+    "kanbanUuid": "17b9dbb6-7401-487c-856b-eb53067edbfb",
+    "orgWorkId": "M-codex-daemon-request-0004",
+    "branch": "ci/a04-command-surface",
+    "worktree": "/Users/amyws/projects/cli-command-surface-a-04",
+    "status": "done",
+    "executor": {
+      "harness": "pi",
+      "provider": "deepseek",
+      "model": "deepseek-flash",
+      "args": [
+        "--thinking",
+        "max",
+        "--approve"
+      ]
+    },
+    "graphId": "wf-19ff5a8b1e0140fb9a2d367241165ad9",
+    "pr": 2018,
+    "acceptedHead": "45a7d613577d022c5cb04412940caf9cb6549b11",
+    "review": "docs/evidence/cli-command-surface/a04-build-review-5e25bbf0a.md",
+    "completeSuite": "FAIL b919:17failed15898passed2errors; A04 owned regressions closed;15baseline+2OrgFS UNKNOWN retained finalgate"
+  },
+  {
+    "id": "A-05",
+    "title": "A-05 安装产物验证与公共基线交付",
+    "depends": [
+      "A-03",
+      "A-04"
+    ],
+    "scope": "补安装后 console script、公开 client/声明包资源和隔离 daemon 的可复现验收路径，固定 B/C 消费的接口快照/接入说明；在同步 dev 后确切 intg head 验收，不改产品业务掩盖失败。",
+    "items": [
+      "安装产物的 console script、公共 client 导入、包资源和 OpenAPI 导出实际可用。",
+      "安装产物连接隔离 daemon 的 link 样板、输出与错误行为通过，不用 mock 声称产品验收。",
+      "最终 intg head 的适用全套、Ruff、结构/边界及 contract 隔离语料通过，记录产物/提交/事件和实测证据。",
+      "交付准确可消费 SHA/产物/契约和B/C接入说明；全部卡满足验收后由协调者交独立质检合入 dev。"
+    ],
+    "kanbanUuid": "1b3c8264-f0ad-43a0-be35-1b1bf04dbce8",
+    "orgWorkId": "M-codex-daemon-request-0005",
+    "branch": "test/a05-installed-request-baseline",
+    "worktree": "/Users/amyws/projects/cli-command-surface-a-05",
+    "status": "doing",
+    "executor": {
+      "harness": "pi",
+      "provider": "deepseek",
+      "model": "deepseek-flash",
+      "args": [
+        "--thinking",
+        "max",
+        "--approve"
+      ]
+    },
+    "graphId": "wf-19ff5a8b1e0140fb9a2d367241165ad9",
+    "pr": 2028,
+    "integrationStatus": "merged",
+    "integratedHead": "0d3c8b63a35f5ab847db3866171bf30930902721",
+    "integratedWorkerHead": "2fd98903a703c9263bbb96f02be14ede0f23adcb",
+    "review": "docs/evidence/cli-command-surface/a05-scope-review-final-069.md",
+    "integrationEvidence": "docs/evidence/cli-command-surface/a05-intg-merge-0d3c8b63a.json",
+    "finalAcceptance": "PENDING: dev release QA; internal integration completed by user instruction"
+  }
+]

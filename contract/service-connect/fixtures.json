@@ -1,0 +1,159 @@
+{
+  "schemaVersion": 1,
+  "catalogEntryFields": [
+    "name",
+    "deviceId",
+    "remotePort",
+    "protocol",
+    "localPort",
+    "usage",
+    "env",
+    "auth",
+    "guide"
+  ],
+  "protectedRecordFields": [
+    "deviceId",
+    "serverPublic",
+    "address",
+    "generation",
+    "ports",
+    "enabled"
+  ],
+  "protocol": {
+    "version": 3,
+    "capability": "service-connect-v1",
+    "requests": {
+      "map-service": [
+        "v",
+        "op",
+        "requestId",
+        "name",
+        "deviceId",
+        "address",
+        "serverPublic",
+        "remotePort",
+        "recordGeneration",
+        "localPort"
+      ],
+      "unmap-service": [
+        "v",
+        "op",
+        "requestId",
+        "name"
+      ],
+      "service-status": [
+        "v",
+        "op",
+        "requestId"
+      ]
+    },
+    "responses": {
+      "service-mapped": [
+        "v",
+        "event",
+        "requestId",
+        "service"
+      ],
+      "service-unmapped": [
+        "v",
+        "event",
+        "requestId",
+        "name",
+        "removed"
+      ],
+      "service-status": [
+        "v",
+        "event",
+        "requestId",
+        "services"
+      ],
+      "service-failed": [
+        "v",
+        "event",
+        "requestId",
+        "op",
+        "name",
+        "code",
+        "message"
+      ]
+    }
+  },
+  "mappingFields": [
+    "name",
+    "deviceId",
+    "remotePort",
+    "recordGeneration",
+    "localPort",
+    "activeConnections",
+    "path",
+    "pathDetail",
+    "observedAtMs",
+    "lastDialState",
+    "lastDialMs",
+    "lastError",
+    "lastErrorAtMs"
+  ],
+  "resultFields": [
+    "state",
+    "errorCode"
+  ],
+  "durableFields": [
+    "serviceConnections",
+    "serviceRegistry"
+  ],
+  "errors": {
+    "serviceCodes": [
+      "SERVICE_INVALID_TARGET",
+      "SERVICE_PORT_IN_USE",
+      "SERVICE_NAME_CONFLICT",
+      "SERVICE_UNAVAILABLE",
+      "SERVICE_NOT_REGISTERED",
+      "SERVICE_SIDECAR_UNSUPPORTED",
+      "SERVICE_REGISTRY_INVALID",
+      "SERVICE_DEVICE_UNAVAILABLE",
+      "SERVICE_NOT_AUTHORIZED"
+    ],
+    "goServiceFailedCodes": [
+      "BAD_REQUEST",
+      "NOT_UP",
+      "ALREADY_UP",
+      "KEY_FILE_INVALID",
+      "START_FAILED",
+      "PEER_UNKNOWN",
+      "DIAL_FAILED",
+      "PORT_IN_USE",
+      "INTERNAL"
+    ],
+    "goToService": {
+      "BAD_REQUEST": "SERVICE_INVALID_TARGET",
+      "NOT_UP": "SERVICE_UNAVAILABLE",
+      "ALREADY_UP": "SERVICE_UNAVAILABLE",
+      "KEY_FILE_INVALID": "SERVICE_UNAVAILABLE",
+      "START_FAILED": "SERVICE_UNAVAILABLE",
+      "PEER_UNKNOWN": "SERVICE_DEVICE_UNAVAILABLE",
+      "DIAL_FAILED": "SERVICE_UNAVAILABLE",
+      "PORT_IN_USE": "SERVICE_PORT_IN_USE",
+      "INTERNAL": "SERVICE_UNAVAILABLE"
+    },
+    "invalidParameterCode": "INVALID_ARGUMENT",
+    "transientServiceCodes": []
+  },
+  "budgets": {
+    "pythonControlSeconds": 3.0,
+    "registryReadSeconds": 1.0,
+    "reconcileIntervalSeconds": 5.0,
+    "goServiceDialSeconds": 5.0,
+    "streamLifetimeSeconds": null,
+    "hostShutdownBounded": true
+  },
+  "daemonLogEvents": [
+    "service.connect.access.invalid",
+    "service.connect.mapping.closed",
+    "service.connect.mapping.failed",
+    "service.connect.reconcile.completed",
+    "service.connect.reconcile.failed",
+    "service.connect.registry.fallback",
+    "service.connect.registry.updated",
+    "service.connect.restore.failed"
+  ]
+}

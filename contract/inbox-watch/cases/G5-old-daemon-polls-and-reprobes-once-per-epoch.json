@@ -1,0 +1,180 @@
+{
+  "id": "G5",
+  "title": "METHOD_NOT_FOUND turns the wait off until the daemon epoch changes",
+  "steps": [
+    {
+      "at": 0,
+      "lane": "poll",
+      "expect": {
+        "op": "register"
+      }
+    },
+    {
+      "at": 0,
+      "lane": "poll",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e1"
+        }
+      }
+    },
+    {
+      "at": 0,
+      "lane": "poll",
+      "expect": {
+        "op": "list"
+      }
+    },
+    {
+      "at": 0,
+      "lane": "poll",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e1",
+          "messages": []
+        }
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "wait",
+        "knownMessageIds": []
+      }
+    },
+    {
+      "lane": "poll",
+      "respond": {
+        "rejected": "METHOD_NOT_FOUND"
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "sleep",
+        "ms": 500
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "list"
+      },
+      "at": 500
+    },
+    {
+      "lane": "poll",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e1",
+          "messages": []
+        }
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "sleep",
+        "ms": 500
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "list"
+      },
+      "at": 1000
+    },
+    {
+      "lane": "poll",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e2",
+          "messages": []
+        }
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "refresh"
+      }
+    },
+    {
+      "lane": "poll",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e2"
+        }
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "list"
+      }
+    },
+    {
+      "lane": "poll",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e2",
+          "messages": []
+        }
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "wait",
+        "knownMessageIds": []
+      }
+    },
+    {
+      "lane": "poll",
+      "respond": {
+        "rejected": "METHOD_NOT_FOUND"
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "sleep",
+        "ms": 500
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "list"
+      },
+      "at": 1500
+    },
+    {
+      "lane": "poll",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e2",
+          "messages": []
+        }
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "sleep",
+        "ms": 500
+      }
+    }
+  ],
+  "counters": {
+    "method_not_found": 2
+  }
+}

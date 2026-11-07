@@ -394,6 +394,7 @@ class _StatusViewsMixin:
                     # moment, so two ps snapshots reconcile the
                     # counters against process CPU (ipc_stats docstring).
                     "ipcStats": self._ipc_stats_snapshot(),
+                    "degradedRedemption": self._membership_redemption_projection(),
                     # Additive: the single state writer's queue and latency
                     # (lifecycle root-fix plan S1).  Round trip minus
                     # execution is time queued behind other commands.

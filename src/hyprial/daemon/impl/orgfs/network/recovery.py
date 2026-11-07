@@ -774,7 +774,7 @@ class MeshRecovery:
         """Coalesce one bounded worker job per retained blob digest."""
 
         replica = self.replica_store
-        if replica is None or self.blob_store is None:
+        if replica is None or self.blob_store is None or not self._replica_serving:
             return
         if replica.pinned_reason(digest) is not None:
             return
@@ -823,7 +823,7 @@ class MeshRecovery:
                         "fetched blob did not match requested digest",
                     )
             replica = self.replica_store
-            if replica is not None:
+            if self._replica_serving and replica is not None:
                 replica.store_blob(digest, content)
                 self.blob_store.pin(self.store.space_id, digest, "replica")
         except Exception as exc:  # noqa: BLE001 - bounded repair is retried by sync

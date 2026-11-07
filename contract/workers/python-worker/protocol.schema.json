@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hyprial.com/hyprial/python-worker/v1/protocol.schema.json",
+  "title": "hyprial python worker protocol v1",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "op", "id", "payload"],
+      "properties": {
+        "v": {"const": 1},
+        "op": {"const": "call"},
+        "id": {"type": "string", "minLength": 1},
+        "payload": {"type": "object"}
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "op"],
+      "properties": {"v": {"const": 1}, "op": {"const": "stop"}}
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "kind", "pid", "effectiveConfig", "hyprialCommit", "typesafeSdkVersion", "scriptSha256", "startupHash", "credentialSource"],
+      "properties": {
+        "v": {"const": 1}, "type": {"const": "ready"}, "kind": {"const": "jev"},
+        "pid": {"type": "integer", "minimum": 1},
+        "effectiveConfig": {"type": "object"},
+        "hyprialCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "typesafeSdkVersion": {"const": "0.7.0"},
+        "scriptSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "startupHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "credentialSource": {"enum": ["environment", "file", null]}
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "id", "segment", "durationMs", "ok", "inFlight", "queueDepth"],
+      "properties": {
+        "v": {"const": 1}, "type": {"const": "metric"},
+        "id": {"type": "string", "minLength": 1},
+        "segment": {"enum": ["decode", "call", "send"]},
+        "durationMs": {"type": "integer", "minimum": 0}, "ok": {"type": "boolean"}, "skipped": {"type": "boolean"},
+        "inFlight": {"type": "integer", "minimum": 0}, "queueDepth": {"type": "integer", "minimum": 0}
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "id", "ok", "output"],
+      "properties": {"v": {"const": 1}, "type": {"const": "result"}, "id": {"type": "string", "minLength": 1}, "ok": {"const": true}, "output": {"type": "object"}}
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "id", "ok", "stage", "code", "message", "retryable"],
+      "properties": {
+        "v": {"const": 1}, "type": {"const": "error"}, "id": {"type": "string", "minLength": 1}, "ok": {"const": false},
+        "stage": {"enum": ["decode", "call", "send", "protocol"]}, "code": {"type": "string", "minLength": 1}, "message": {"type": "string", "maxLength": 500}, "retryable": {"type": "boolean"}
+      }
+    }
+  ]
+}

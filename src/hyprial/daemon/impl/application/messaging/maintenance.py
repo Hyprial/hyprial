@@ -38,7 +38,6 @@ from hyprial.daemon.impl.application.messaging.instrumentation.orgfs_announce im
     note_forwarding_timer_tick,
 )
 
-
 _INBOX_WATCH_INTERVAL_MS = 60_000
 
 class _BoundedRecipientWakes:
@@ -393,7 +392,8 @@ class _MaintenanceMixin:
                 item=item,
                 items=[{"item": name, "ms": ms} for name, ms in top],
             )
-        status = {row.get("id"): row for row in self._harnesses.status()}
+        report = getattr(self._harnesses, "status", None)
+        status = {row.get("id"): row for row in report()} if callable(report) else {}
         for failed in getattr(outcome, "harness_failed", ()):
             report = harness_failure_report(failed, status.get(failed, {}).get("error"))
             self._log("error", "daemon", report.event, harness=failed, detail=report.detail)

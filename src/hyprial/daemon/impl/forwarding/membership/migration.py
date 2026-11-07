@@ -1,9 +1,45 @@
+# Decision record (brief degraded-start, 2026-11-03): the startup resume of a
+# pending invite redemption must not abort daemon start. A receipt with
+# ``redemption`` and ``state != 'complete'`` whose ``initialize_once`` fails
+# against the invite authority is recorded durably and retried by the
+# forwarding reconcile tick with bounded backoff (30s base, 600s cap);
+# every other resume/import failure on this path stays fatal.
+#
+# Decision record (release 0.5.5.3.4, combining #2319 with #2484): a pending
+# redemption whose receipt ``lastError.code`` is permanent for that invite
+# (PERMANENT_REDEMPTION_CODES: the sidecar refuses the same request forever)
+# is stale. Startup and the reconcile retry no longer replay it; the degraded
+# record keeps the code with ``retryable: false`` and ``nextAttemptAtMs: null``
+# so doctor/ps say a fresh invite is needed. Only an explicit ``org join``
+# (redeem_once) sends an invite again; a different inviteId replaces the stale
+# request and clears that tailnet's degraded record, and so does a completed
+# redemption. Transient codes keep #2319's bounded-backoff retry.
+#
+# Decision record (release 0.5.5.3.4 review follow-up): the degraded record
+# stays a single file, with a precedence rule instead of per-tailnet keys. A
+# stale (``retryable: false``) record never replaces another tailnet's record;
+# a retryable one replaces another tailnet's stale one; attempts and firstAt
+# are only inherited from the same tailnet's record. Receipts are resumed in
+# tailnetId order and stale ones are held after every resume, so restarts
+# converge on the same record whatever the receipt glob order. A pending
+# redemption that completes at startup clears its tailnet's record. A
+# non-retryable record makes the reconcile tick return before any disk read.
+# A retryable record whose receipt has since become stale (an explicit join of
+# the same inviteId refused permanently) is rewritten as stale by the next tick
+# or start, and a record written before ``retryable`` existed derives it from
+# its code on read. A stale receipt found without a record (upgrade path) gets
+# stage-tagged text rebuilt from lastError.code (identical to the first degrade
+# for INVITE_EXPIRED), because the receipt's lastError keeps {code, at}.
+# Known limit: with two transient tailnets only one holds the record; the other
+# is retried at the next start, not by the tick.
 """One-time OFFLINE directory import. Never a runtime admission fallback."""
 from __future__ import annotations
 
 import hashlib
 from datetime import UTC, datetime
 import json
+import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -59,6 +95,10 @@ def receipt_path(home: Path, tailnet_id: str) -> Path:
     return Path(home) / 'tailnet' / 'migration' / (digest + '.json')
 
 
+EXPIRED_REDEMPTION_TEXT = ('The recorded invite expired (stage=invite-redemption); '
+                           'retry with a fresh invite from the same authority.')
+
+
 def initialize_once(home: Path, params: dict, rpc, *, initialized: bool, diagnostics=None) -> None:
     path = receipt_path(home, params['tailnetId'])
     try:
@@ -82,13 +122,37 @@ def initialize_once(home: Path, params: dict, rpc, *, initialized: bool, diagnos
         else:
             rpc('membership-init', receipt['params'])
     except ForwardingSidecarError as error:
-        # The sidecar's code is the only diagnostic the operator gets; keep it.
         receipt['lastError'] = {'code': error.code, 'at': datetime.now(UTC).isoformat(timespec='seconds')}
         atomic_json_write(path, receipt)
+        if 'redemption' in receipt and error.code == 'INVITE_EXPIRED':
+            raise ForwardingSidecarError(
+                EXPIRED_REDEMPTION_TEXT, code=error.code, details=error.details,
+            ) from error
         raise
     receipt.pop('lastError', None)
     receipt['state'] = 'complete'
     atomic_json_write(path, receipt)
+
+
+PERMANENT_REDEMPTION_CODES = frozenset({
+    'INVITE_EXPIRED', 'INVITE_INVALID', 'INVITE_CONSUMED', 'INVITE_VERSION_UNSUPPORTED',
+})
+
+
+def stale_redemption_code(receipt: dict) -> str | None:
+    """The permanent failure code of a pending redemption receipt, or None when it may be replayed."""
+    if receipt.get('state') == 'complete' or 'redemption' not in receipt:
+        return None
+    code = (receipt.get('lastError') or {}).get('code')
+    return code if code in PERMANENT_REDEMPTION_CODES else None
+
+
+def stale_redemption_error(code: str) -> str:
+    """The degraded-record text for a stale receipt, matching what the first failed resume records."""
+    if code == 'INVITE_EXPIRED':
+        return EXPIRED_REDEMPTION_TEXT
+    return (f'The recorded invite was refused with {code} (stage=invite-redemption); '
+            'retry with a fresh invite from the same authority.')
 
 
 def redeem_once(home: Path, invite: dict, rpc) -> None:
@@ -102,30 +166,29 @@ def redeem_once(home: Path, invite: dict, rpc) -> None:
         previous = json.loads(path.read_text())
     except FileNotFoundError:
         previous = None
-    new_invite = (previous is None or (previous['state'] == 'complete'
-        and previous.get('redemption', {}).get('invite', {}).get('inviteId') != invite['inviteId']))
     if previous is not None and previous['state'] == 'complete' and not initialized:
         raise ForwardingSidecarError('Restore the missing membership store before rejoining.', code='MEMBERSHIP_NOT_INITIALIZED')
+    new_invite = (previous is None
+        or previous.get('redemption', {}).get('invite', {}).get('inviteId') != invite['inviteId'])
+    if previous is not None and previous['params']['authority'] != invite['authority']:
+        explicit_repin = (previous['state'] == 'complete' and new_invite
+            and tailnet_settings(home)['authorities'].get(tailnet_id) == invite['authority'])
+        if not explicit_repin:
+            raise ForwardingSidecarError('Explicit re-pin required.', code='AUTHORITY_PIN_MISMATCH')
     if new_invite:
         pin_authority(home, tailnet_id, invite['authority'])
         atomic_json_write(path, {'state': 'pending', 'params': params,
             'redemption': {'operationId': 'redeem-' + invite['inviteId'], 'invite': invite},
             'diagnostics': {'source': 'invite-v2'}})
-    elif previous['params']['authority'] != invite['authority']:
-        raise ForwardingSidecarError('Explicit re-pin required.', code='AUTHORITY_PIN_MISMATCH')
+        clear_degraded_redemption(home, tailnet_id=tailnet_id)
     initialize_once(home, params, rpc, initialized=initialized)
+    clear_degraded_redemption(home, tailnet_id=tailnet_id)
 
 
 def offline_rows(fs, space) -> tuple[list[dict], dict]:
     accepted, rejected, sources = [], [], []
     current = {member.user.removeprefix('user:') for member in fs.members(space.space_id)}
-    try:
-        owners = fs.listdir(space.space_id, 'directory/devices')
-    except Exception as error:
-        if getattr(error, 'code', None) == 'unknown-doc':
-            owners = []
-        else:
-            raise
+    owners = fs.listdir(space.space_id, 'directory/devices')
     for owner in owners:
         if owner.kind != 'dir':
             continue
@@ -222,6 +285,182 @@ def plan_migrations(app: Any) -> list[dict]:
     return plans
 
 
+DEGRADED_REDEMPTION_FILE = 'redemption-degraded.json'
+RETRY_BASE_MS = 30_000
+RETRY_MAX_MS = 600_000
+_REDEMPTION_LOCK = threading.Lock()
+
+
+def degraded_redemption_path(home: Path) -> Path:
+    return Path(home) / 'tailnet' / DEGRADED_REDEMPTION_FILE
+
+
+def redemption_retry_delay_ms(attempts: int) -> int:
+    return min(RETRY_BASE_MS * 2 ** max(attempts - 1, 0), RETRY_MAX_MS)
+
+
+def read_degraded_redemption(home: Path) -> dict | None:
+    """The durable degraded-redemption record, or None when absent/unreadable."""
+    try:
+        record = json.loads(degraded_redemption_path(home).read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(record, dict) or not isinstance(record.get('tailnetId'), str):
+        return None
+    if not isinstance(record.get('attempts'), int) or record['attempts'] < 1:
+        return None
+    if 'retryable' not in record:
+        record['retryable'] = record.get('code') not in PERMANENT_REDEMPTION_CODES
+        if not record['retryable']:
+            record['nextAttemptAtMs'] = None
+    return record
+
+
+def record_degraded_redemption(home: Path, *, tailnet_id: str, invite_id: str | None,
+                               code: str, error: str) -> dict:
+    """Count one more failed redemption attempt and arm the next bounded-backoff retry.
+
+    A permanent code (PERMANENT_REDEMPTION_CODES) arms no retry: the record says
+    ``retryable: false`` with ``nextAttemptAtMs: null``. Another tailnet's record
+    is kept (and the returned record not written) unless it is stale and this
+    one is retryable.
+    """
+    now = datetime.now(UTC).isoformat(timespec='seconds')
+    retryable = code not in PERMANENT_REDEMPTION_CODES
+    with _REDEMPTION_LOCK:
+        previous = read_degraded_redemption(home)
+        other = previous is not None and previous['tailnetId'] != tailnet_id
+        same = previous if previous is not None and not other else None
+        attempts = (same['attempts'] if same else 0) + 1
+        record = {'tailnetId': tailnet_id, 'inviteId': invite_id, 'code': code, 'error': error[:500],
+                  'attempts': attempts,
+                  'firstAt': same['firstAt'] if same and same.get('firstAt') else now,
+                  'lastAt': now, 'retryable': retryable,
+                  'nextAttemptAtMs': (time.time_ns() // 1_000_000 + redemption_retry_delay_ms(attempts)
+                                      if retryable else None)}
+        if not other or (retryable and previous.get('retryable') is False):
+            atomic_json_write(degraded_redemption_path(home), record)
+    return record
+
+
+def clear_degraded_redemption(home: Path, *, tailnet_id: str | None = None) -> dict | None:
+    """Remove the degraded record (only ``tailnet_id``'s when given); return what was removed."""
+    with _REDEMPTION_LOCK:
+        previous = read_degraded_redemption(home)
+        if tailnet_id is not None and (previous is None or previous['tailnetId'] != tailnet_id):
+            return None
+        try:
+            degraded_redemption_path(home).unlink()
+        except OSError:
+            pass
+    return previous
+
+
+def degrade_pending_redemption(app: Any, tailnet_id: str, receipt: dict,
+                               error: ForwardingSidecarError) -> None:
+    """Record one failed startup resume of a pending redemption; the daemon keeps serving."""
+    invite = receipt.get('redemption', {}).get('invite', {})
+    record = record_degraded_redemption(app.hyprial_home, tailnet_id=tailnet_id,
+                                        invite_id=invite.get('inviteId') if isinstance(invite, dict) else None,
+                                        code=error.code, error=str(error))
+    log = getattr(app, '_log', None)
+    if log is not None:
+        log('warn', 'zenoh', 'membership.redemption.degraded', tailnetId=tailnet_id,
+            code=error.code, error=str(error)[:300], attempts=record['attempts'],
+            nextRetryAtMs=record['nextAttemptAtMs'], retryable=record['retryable'],
+            detail=DEGRADED_DETAIL if record['retryable'] else STALE_DETAIL)
+
+
+DEGRADED_DETAIL = ('pending org invite redemption is degraded; the daemon serves and the '
+                   'redemption retries with bounded backoff until the authority is reachable')
+STALE_DETAIL = ('the recorded org invite cannot be redeemed; the daemon serves and does not '
+                'replay it; join again with a fresh invite from the same authority')
+
+
+def hold_stale_redemption(app: Any, tailnet_id: str, receipt: dict, code: str) -> None:
+    """Startup skip of a stale pending redemption: no RPC, the degraded record stays observable."""
+    invite = receipt.get('redemption', {}).get('invite', {})
+    invite_id = invite.get('inviteId') if isinstance(invite, dict) else None
+    record = read_degraded_redemption(app.hyprial_home)
+    if (record is None or record['tailnetId'] != tailnet_id or record.get('inviteId') != invite_id
+            or record.get('retryable') is not False):
+        record = record_degraded_redemption(app.hyprial_home, tailnet_id=tailnet_id, invite_id=invite_id,
+                                            code=code, error=stale_redemption_error(code))
+    log = getattr(app, '_log', None)
+    if log is not None:
+        log('warn', 'zenoh', 'membership.redemption.degraded', tailnetId=tailnet_id, code=code,
+            attempts=record['attempts'], nextRetryAtMs=None, retryable=False, replayed=False,
+            detail=STALE_DETAIL)
+
+
+def hold_stale_redemptions(app: Any, receipts: dict[str, dict]) -> None:
+    """Hold every stale pending redemption, in tailnetId order."""
+    for tailnet_id, receipt in sorted(receipts.items()):
+        code = stale_redemption_code(receipt)
+        if code is not None:
+            hold_stale_redemption(app, tailnet_id, receipt, code)
+
+
+def retry_degraded_redemption(app: Any) -> None:
+    """Maintenance-tick hook: finish a degraded redemption once its backoff window elapsed.
+
+    Best effort and throttled by the durable record's ``nextAttemptAtMs``; a
+    completed redemption clears the record and logs ``membership.redemption
+    .completed`` so status and doctor go quiet without a restart.
+    """
+    home = getattr(app, 'hyprial_home', None)
+    if home is None:
+        return
+    record = read_degraded_redemption(home)
+    if record is None or record.get('retryable') is False:
+        return
+    if time.time_ns() // 1_000_000 < (record.get('nextAttemptAtMs') or 0):
+        return
+    supervisor = getattr(app, '_forwarding_supervisor', None)
+    if supervisor is None:
+        return
+    tailnet_id = record['tailnetId']
+    receipt = read_receipts(home).get(tailnet_id)
+    if receipt is None or receipt.get('state') == 'complete' or 'redemption' not in receipt:
+        clear_degraded_redemption(home)
+        hold_stale_redemptions(app, read_receipts(home))
+        return
+    stale_code = stale_redemption_code(receipt)
+    if stale_code is not None:
+        hold_stale_redemption(app, tailnet_id, receipt, stale_code)
+        return
+    log = getattr(app, '_log', None)
+    started_ms = time.time_ns() // 1_000_000
+    try:
+        initialize_once(home, receipt['params'], supervisor.membership_request, initialized=False)
+    except ForwardingSidecarError as error:
+        updated = record_degraded_redemption(home, tailnet_id=tailnet_id,
+                                             invite_id=record.get('inviteId'),
+                                             code=error.code, error=str(error))
+        if log is not None:
+            log('warn', 'zenoh', 'membership.redemption.retry-failed', tailnetId=tailnet_id,
+                code=error.code, error=str(error)[:300], attempts=updated['attempts'],
+                nextRetryAtMs=updated['nextAttemptAtMs'], retryable=updated['retryable'])
+        return
+    except Exception as error:  # noqa: BLE001 - the retry must never kill the tick
+        # An unexpected failure is still a failed attempt: arm the same bounded
+        # backoff so the tick never hot-loops on a due record.
+        updated = record_degraded_redemption(home, tailnet_id=tailnet_id,
+                                             invite_id=record.get('inviteId'),
+                                             code=type(error).__name__, error=str(error))
+        if log is not None:
+            log('warn', 'zenoh', 'membership.redemption.retry-failed', tailnetId=tailnet_id,
+                errorType=type(error).__name__, error=str(error)[:300],
+                attempts=updated['attempts'], nextRetryAtMs=updated['nextAttemptAtMs'])
+        return
+    previous = clear_degraded_redemption(home)
+    if log is not None:
+        log('info', 'zenoh', 'membership.redemption.completed', tailnetId=tailnet_id,
+            attempts=previous['attempts'] if previous else None,
+            elapsedMs=time.time_ns() // 1_000_000 - started_ms)
+    hold_stale_redemptions(app, read_receipts(home))
+
+
 def read_receipts(home: Path) -> dict[str, dict]:
     receipts = {}
     for path in (Path(home) / 'tailnet' / 'migration').glob('*.json'):
@@ -264,11 +503,22 @@ def migrate_for_app(app: Any, plans: list[dict] | None = None) -> None:
     # invite redemptions, and pending imports whose table the sidecar already
     # holds (a lost reply; the sidecar replays by operationId). Pending
     # directory imports without a table were recomputed into `plans`.
-    for tailnet_id, receipt in read_receipts(app.hyprial_home).items():
-        if receipt.get('state') == 'skipped':
+    receipts = read_receipts(app.hyprial_home)
+    for tailnet_id, receipt in sorted(receipts.items()):
+        if receipt.get('state') == 'skipped' or stale_redemption_code(receipt) is not None:
             continue
+        pending_redemption = receipt.get('state') != 'complete' and 'redemption' in receipt
         if receipt.get('state') == 'complete' or 'redemption' in receipt or tailnet_id in statuses:
-            initialize_once(app.hyprial_home, receipt['params'], rpc, initialized=tailnet_id in statuses)
+            try:
+                initialize_once(app.hyprial_home, receipt['params'], rpc, initialized=tailnet_id in statuses)
+            except ForwardingSidecarError as error:
+                if not pending_redemption:
+                    raise
+                degrade_pending_redemption(app, tailnet_id, receipt, error)
+                continue
+            if pending_redemption:
+                clear_degraded_redemption(app.hyprial_home, tailnet_id=tailnet_id)
+    hold_stale_redemptions(app, receipts)
     for plan in plans:
         tailnet_id = plan['tailnetId']
         receipt = read_receipts(app.hyprial_home).get(tailnet_id)

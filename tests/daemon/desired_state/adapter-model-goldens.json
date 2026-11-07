@@ -1,0 +1,254 @@
+{
+  "baseSha": "ee383f80c1505805ea1bb128157ed09896604eca",
+  "evidence": "HYPRIAL_SCHEMA2_EVIDENCE=1 uv run pytest tests/daemon/desired_state/test_adapter_rollback.py tests/integration/smolvm/runtime/test_smolvm_runtime_state.py -q",
+  "generate": "uv run python scripts/verify/regenerate_adapter_model_goldens.py",
+  "pinsRowsJson": "[[\"X\",\"X\"]]",
+  "schema1": {
+    "asMailbox": false,
+    "channelPins": {
+      "X": "agent:owner:node:X"
+    },
+    "deprecatedSharedChannels": [],
+    "interactiveSessions": [],
+    "providers": [
+      {
+        "args": [],
+        "headless": true,
+        "name": "X",
+        "ownership": "managed",
+        "provider": "pi"
+      },
+      {
+        "args": [],
+        "headless": true,
+        "name": "X",
+        "nickname": "old-adapter",
+        "ownership": "managed",
+        "pinnedOwner": "old-owner",
+        "provider": "lark"
+      },
+      {
+        "args": [],
+        "headless": true,
+        "name": "Y",
+        "ownership": "managed",
+        "provider": "codex"
+      },
+      {
+        "args": [],
+        "headless": true,
+        "name": "other",
+        "ownership": "managed",
+        "provider": "lark"
+      }
+    ],
+    "schemaVersion": 1,
+    "zenoh": {
+      "connect": [],
+      "listen": []
+    }
+  },
+  "schema1AfterRuntimeDowngrade": {
+    "asMailbox": false,
+    "channelPins": {
+      "X": "agent:owner:node:X"
+    },
+    "deprecatedSharedChannels": [],
+    "interactiveSessions": [],
+    "providers": [
+      {
+        "args": [],
+        "headless": true,
+        "name": "X",
+        "ownership": "managed",
+        "provider": "pi"
+      },
+      {
+        "args": [],
+        "headless": true,
+        "name": "Y",
+        "ownership": "managed",
+        "provider": "codex"
+      },
+      {
+        "args": [],
+        "headless": true,
+        "name": "X",
+        "nickname": "old-adapter",
+        "ownership": "managed",
+        "pinnedOwner": "old-owner",
+        "provider": "lark"
+      },
+      {
+        "args": [],
+        "headless": true,
+        "name": "other",
+        "ownership": "managed",
+        "provider": "lark"
+      }
+    ],
+    "schemaVersion": 1,
+    "zenoh": {
+      "connect": [],
+      "listen": []
+    }
+  },
+  "schema2": {
+    "asMailbox": false,
+    "channelPins": {
+      "X": "agent:owner:node:X"
+    },
+    "deprecatedSharedChannels": [],
+    "interactiveSessions": [],
+    "providers": [
+      {
+        "args": [],
+        "headless": true,
+        "name": "X",
+        "ownership": "managed",
+        "provider": "pi"
+      },
+      {
+        "args": [],
+        "headless": true,
+        "name": "X",
+        "nickname": "old-adapter",
+        "ownership": "managed",
+        "pinnedOwner": "old-owner",
+        "provider": "lark"
+      },
+      {
+        "args": [],
+        "headless": true,
+        "name": "Y",
+        "ownership": "managed",
+        "provider": "codex"
+      },
+      {
+        "args": [],
+        "headless": true,
+        "name": "other",
+        "ownership": "managed",
+        "provider": "lark"
+      }
+    ],
+    "schemaVersion": 2,
+    "zenoh": {
+      "connect": [],
+      "listen": []
+    }
+  },
+  "schema2Restored": {
+    "asMailbox": false,
+    "channelPins": {
+      "X": "agent:owner:node:X"
+    },
+    "deprecatedSharedChannels": [],
+    "interactiveSessions": [],
+    "providers": [
+      {
+        "args": [],
+        "headless": true,
+        "name": "X",
+        "ownership": "managed",
+        "provider": "pi"
+      },
+      {
+        "args": [],
+        "headless": true,
+        "name": "Y",
+        "ownership": "managed",
+        "provider": "codex"
+      },
+      {
+        "args": [],
+        "headless": true,
+        "name": "X",
+        "nickname": "old-adapter",
+        "ownership": "managed",
+        "pinnedOwner": "old-owner",
+        "provider": "lark"
+      },
+      {
+        "args": [],
+        "headless": true,
+        "name": "other",
+        "ownership": "managed",
+        "provider": "lark"
+      }
+    ],
+    "schemaVersion": 2,
+    "zenoh": {
+      "connect": [],
+      "listen": []
+    }
+  },
+  "schema2WithRuntime": {
+    "asMailbox": false,
+    "channelPins": {
+      "X": "agent:owner:node:X"
+    },
+    "deprecatedSharedChannels": [],
+    "interactiveSessions": [],
+    "providers": [
+      {
+        "args": [],
+        "headless": true,
+        "name": "X",
+        "ownership": "managed",
+        "provider": "pi"
+      },
+      {
+        "args": [],
+        "headless": true,
+        "name": "X",
+        "nickname": "old-adapter",
+        "ownership": "managed",
+        "pinnedOwner": "old-owner",
+        "provider": "lark"
+      },
+      {
+        "args": [],
+        "headless": true,
+        "name": "Y",
+        "ownership": "managed",
+        "provider": "codex"
+      },
+      {
+        "args": [],
+        "headless": true,
+        "name": "other",
+        "ownership": "managed",
+        "provider": "lark"
+      },
+      {
+        "args": [],
+        "executionRuntime": {
+          "guestCommand": [
+            "/usr/local/bin/codex"
+          ],
+          "guestPython": "/usr/bin/python3",
+          "kind": "smolvm",
+          "resize2fsPath": "/private/bin/resize2fs",
+          "resize2fsSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "rootfsDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "rootfsPath": "/private/rootfs",
+          "smolvmBundleDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "smolvmPath": "/private/bundle/smolvm",
+          "smolvmSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "version": 1
+        },
+        "headless": true,
+        "name": "vm-worker",
+        "ownership": "managed",
+        "provider": "codex"
+      }
+    ],
+    "schemaVersion": 2,
+    "zenoh": {
+      "connect": [],
+      "listen": []
+    }
+  },
+  "schema3Error": "unsupported desired-state schema version 3"
+}

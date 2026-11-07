@@ -10,6 +10,7 @@ from hyprial.kernel import ManagedHarnessProcess
 from hyprial.kernel import HarnessLaunchSpec
 
 from hyprial.daemon.impl.harnesses.agent_sdk  import ClaudeAgentSdkProcess
+from hyprial.daemon.impl.correlation.readiness_budget import START_TIMEOUT_SECONDS_DEFAULT
 from hyprial.daemon.impl.harnesses.capabilities  import CapabilitySupport, support
 from hyprial.kernel import SupportLevel
 from hyprial.kernel import Capability
@@ -94,6 +95,7 @@ class HarnessLauncher:
             APP_SERVER_STARTUP_TIMEOUT_SECONDS_DEFAULT
         ),
         dsh_startup_timeout_seconds: float = DSH_STARTUP_TIMEOUT_SECONDS_DEFAULT,
+        last_session_id_reader: Callable[[HarnessLaunchSpec], str | None] | None = None,
         agent_sdk_factory: Callable[[HarnessLaunchSpec], ManagedHarnessProcess]
         | None = None,
         pi_rpc_factory: Callable[[HarnessLaunchSpec], ManagedHarnessProcess]
@@ -114,6 +116,7 @@ class HarnessLauncher:
         turn_failure_observer: TurnFailureSpecObserver | None = None,
         turn_completed_observer: TurnCompletedObserver | None = None,
     ) -> None:
+        self._last_session_id_reader = last_session_id_reader
         configured = commands or {}
         self._claude_command_overridden = "claude" in configured
         self._pi_command_overridden = "pi" in configured
@@ -191,6 +194,10 @@ class HarnessLauncher:
             on_turn_failure_for_spec=self._turn_failure_observer,
             on_turn_completed=self._turn_completed_observer,
             runtime_launch_custody=self._runtime_launch_custody,
+            last_session_id=(
+                self._last_session_id_reader(spec)
+                if self._last_session_id_reader is not None else None
+            ),
         )
 
     def _make_codex_process(self, spec: HarnessLaunchSpec) -> "CodexAppServerProcess":
@@ -286,7 +293,18 @@ class HarnessLauncher:
             declared = _headless_exec(spec.harness)
             if declared is not None and declared.level is SupportLevel.NATIVE:
                 if declared.mechanism == "agent_sdk":
-                    return self._agent_sdk_factory(spec)
+                    process = self._agent_sdk_factory(spec)
+                    wait_ready = getattr(process, "wait_ready", None)
+                    if not callable(wait_ready) or not wait_ready(
+                        timeout=START_TIMEOUT_SECONDS_DEFAULT
+                    ):
+                        detail = getattr(process, "last_error", None)
+                        process.stop()
+                        raise HarnessStartError(
+                            "claude", spec.command,
+                            str(detail or "Claude SDK worker did not become ready"),
+                        )
+                    return process
                 if declared.mechanism == "rpc":
                     process = self._pi_rpc_factory(spec)
                     # Same readiness gate the codex/dsh/python-worker branches

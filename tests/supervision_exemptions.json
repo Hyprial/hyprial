@@ -1,0 +1,607 @@
+{
+  "schema_version": 1,
+  "policy": "shrinking-only",
+  "note": "标准 docs/notes/supervision-consolidation-standard-2026-08-29.md §1 的六项受管能力。只许缩不许长;删条目前必须读代码确认站点真的没了(门看不见的站点与迁移完成长得一样)。2026-09-02:harness quarantine 政策整体删除(retrying/failed 两态,failed 终结、无 cooldown 自愈),其符号随之移除或改名为 failure_budget/failed 系列;留下的 quarantined 仅是 ps wire 兼容别名。",
+  "exemptions": [
+    {
+      "path": "src/hyprial/daemon/impl/adapters/lark/credentials/authorization/service.py",
+      "symbol": "startup_timeout",
+      "kind": "parameter",
+      "owner": "gui-dev-03",
+      "card": "feat/gui-dev03-channel-backend (210920ee4)",
+      "reason": "Scanner false-positive classification for a request-response budget; the shrinking-only allowance for legacy supervision is unchanged. LarkAuthorizationService._monitor bounds one register_app init/begin exchange until the SDK returns a browser verification URL; worker.run publishes no process-ready signal. The operation then uses platform URL expiry and an independent scope-query bound. Source audit 2026-10-29: public ActorRuntime exposes start/tell/snapshot/stop/reset/drain; ActorSpec has no request deadline; SupervisionPolicy controls actor restarts; EffectLane owns capacity/completion and GenerationScheduler schedules callbacks but neither defines this SDK response/expiry protocol. Unknown authorization is never restarted. Explicit child termination/reaping composes kernel.create_owned_process_group; parent-loss detection composes kernel.bind_current_process_to_parent. Contract: contract/lark-authorization/README.md cites the unchanged original classification rule. Evidence: authorization/test_service.py::test_inventory_and_startup_deadlines_close_hung_effects proves timeout closes its effect before service.close and reuses the same unknown ID without a second authorization; authorization/test_process.py proves SDK loopback, cancellation/reaping and host-crash custody, with a disabled-binding control that leaves the orphan alive. Keep this exact symbol visible; do not rename it to evade the gate."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/composition/events.py",
+      "symbol": "wait_settled",
+      "kind": "function",
+      "owner": "alicesmith",
+      "card": "PR #892 shared custody contract",
+      "reason": "Caller-side CorrelatedDomainEvents join for one reserved and accepted Agent correlation. The Condition releases its lock while waiting; no native start/readiness or restart policy runs here. The reservation preserves exact runtime-launch/destroy completion until settlement."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/processes/process_owner.py",
+      "symbol": "WaitReady",
+      "kind": "class",
+      "owner": "alicesmith",
+      "card": "PR #892 audit 23",
+      "reason": "Frozen per-process I/O command for one driver readiness observation. The ProcessOwner mailbox submits it to process-native-io; the EffectLane executes the native wait. It carries the caller method budget and defines no restart, backoff or quarantine policy."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/processes/process_owner.py",
+      "symbol": "wait_ready",
+      "kind": "function",
+      "owner": "alicesmith",
+      "card": "PR #892 audit 23",
+      "reason": "ProcessOwner facade submits exactly one WaitReady command. A reply timeout leaves the pending operation owned until late EffectCompleted updates facts, and detach remains incomplete while pending. This port observes readiness without launching or retrying a process."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/python_worker/__init__.py",
+      "symbol": "startup_timeout_seconds",
+      "kind": "parameter",
+      "owner": "hyprial-developer",
+      "card": "python-harness-kind",
+      "reason": "Packaged Jev ready-frame startup budget; parent validates the child ready contract before accepting turns."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/python_worker/__init__.py",
+      "symbol": "wait_ready",
+      "kind": "function",
+      "owner": "hyprial-developer",
+      "card": "python-harness-kind",
+      "reason": "Launcher readiness seam for the packaged worker; no second daemon lifecycle is introduced."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/adapters/lark/runtime/handler.py",
+      "symbol": "start_deadline",
+      "kind": "parameter",
+      "owner": "alicesmith",
+      "card": "fd73140a",
+      "reason": "G2 STARTING 时限:从 2026-09-04 15:19 实测取(单个 adapter 就绪通常<60s,全舰队 2.3-10min;N=900s=最慢 10min×1.5)。依据写在本模块 lifecycle.py docstring。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/adapters/lark/runtime/runtime.py",
+      "symbol": "start_deadline_seconds",
+      "kind": "parameter",
+      "owner": "alicesmith",
+      "card": "fd73140a",
+      "reason": "G2 STARTING 时限的 AdapterRuntime 参数(默认 lifecycle.START_DEADLINE_SECONDS);同上。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/adapters/lark/contracts/lifecycle.py",
+      "symbol": "START_DEADLINE_SECONDS",
+      "kind": "module constant",
+      "owner": "alicesmith",
+      "card": "fd73140a",
+      "reason": "G2 一次 transition 写入到 pop 的 age 上限;取自 2026-09-04 15:19 实测单 episode 分布(单 adapter 就绪通常<60s,效果侧界~10-15s,4-6x 余量);舰队 2.3-10min 是多 episode 路径不适用,docstring 在本文件。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/adapters/lark/runtime/runtime.py",
+      "symbol": "start_confirm_timeout",
+      "kind": "parameter",
+      "owner": "hyprial-developer",
+      "card": "5c8743093ff5",
+      "reason": "lark actor 域自建 startup_timeout 与 start_confirm_timeout。hq-adjutant 手工清单未覆盖。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/adapters/lark/runtime/commands.py",
+      "symbol": "startup_timeout",
+      "kind": "field",
+      "owner": "hyprial-developer",
+      "card": "5c8743093ff5",
+      "reason": "lark actor 域自建 startup_timeout 与 start_confirm_timeout。hq-adjutant 手工清单未覆盖。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/adapters/lark/runtime/commands.py",
+      "symbol": "wait_ready",
+      "kind": "function",
+      "owner": "hyprial-developer",
+      "card": "5c8743093ff5",
+      "reason": "lark actor 域自建 startup_timeout 与 start_confirm_timeout。hq-adjutant 手工清单未覆盖。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/adapters/lark/runtime/health.py",
+      "symbol": "RECOVERY_RESTART_MARGIN_SECONDS",
+      "kind": "module constant",
+      "owner": "hyprial-developer",
+      "card": "5c8743093ff5",
+      "reason": "RECOVERY_RESTART_MARGIN_SECONDS:自建重启节流边界。hq-adjutant 手工清单未覆盖。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/adapters/lark/worker/process.py",
+      "symbol": "_ReadyTimeout",
+      "kind": "class",
+      "owner": "hyprial-developer",
+      "card": "5c8743093ff5",
+      "reason": "launcher 自建 worker ready 信号与 startup_timeout(_wait_readable/_read_ready)。应改为 core 的 ready 汇报契约。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/adapters/lark/worker/process.py",
+      "symbol": "_wait_readable",
+      "kind": "function",
+      "owner": "hyprial-developer",
+      "card": "5c8743093ff5",
+      "reason": "launcher 自建 worker ready 信号与 startup_timeout(_wait_readable/_read_ready)。应改为 core 的 ready 汇报契约。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/adapters/lark/worker/process.py",
+      "symbol": "startup_timeout",
+      "kind": "parameter",
+      "owner": "hyprial-developer",
+      "card": "5c8743093ff5",
+      "reason": "launcher 自建 worker ready 信号与 startup_timeout(_wait_readable/_read_ready)。应改为 core 的 ready 汇报契约。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/adapters/lark/worker/process.py",
+      "symbol": "wait_ready",
+      "kind": "function",
+      "owner": "hyprial-developer",
+      "card": "5c8743093ff5",
+      "reason": "launcher 自建 worker ready 信号与 startup_timeout(_wait_readable/_read_ready)。应改为 core 的 ready 汇报契约。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/adapters/lark/credentials/scopes.py",
+      "symbol": "_quarantine",
+      "kind": "function",
+      "owner": "hyprial-developer",
+      "card": "5c8743093ff5",
+      "reason": "⚠️ 已知误报:_quarantine 是把损坏文件改名隔离,与监管无关。保留词表广度换召回,此条不需迁移,只需在词表收窄时一并删除。"
+    },
+    {
+      "path": "src/hyprial/biz/impl/routine/contracts/ports.py",
+      "symbol": "quarantine_reason",
+      "kind": "field",
+      "owner": "hyprial-developer",
+      "card": "5a7a4fdc5cb8",
+      "reason": "⚠️ 已知误报(非监管):routine 数据面的隔离标记——存量 spec 含裸名地址加载失败时停止调度、拒 resume。与 actor_runtime 的子 actor 启动隔离是两回事,不迁移。"
+    },
+    {
+      "path": "src/hyprial/biz/impl/routine/storage/store.py",
+      "symbol": "quarantine_reason",
+      "kind": "field",
+      "owner": "hyprial-developer",
+      "card": "5a7a4fdc5cb8",
+      "reason": "⚠️ 已知误报(非监管):routines 表隔离列,同 ports.py 的 quarantine_reason,数据面隔离而非监督能力。"
+    },
+    {
+      "path": "src/hyprial/biz/impl/routine/execution/registry/events.py",
+      "symbol": "_quarantine",
+      "kind": "function",
+      "owner": "hyprial-developer",
+      "card": "5a7a4fdc5cb8",
+      "reason": "⚠️ 已知误报(非监管):把 schema 失效的存储 routine 隔离(停调度、拒 resume),非子 actor 启动隔离。"
+    },
+    {
+      "path": "src/hyprial/biz/impl/routine/storage/store.py",
+      "symbol": "set_quarantine",
+      "kind": "function",
+      "owner": "hyprial-developer",
+      "card": "5a7a4fdc5cb8",
+      "reason": "⚠️ 已知误报(非监管):设置/清除 routine 隔离标记,数据面操作,非监督能力。"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/common/support.py",
+      "symbol": "DAEMON_START_HARD_CAP_SECONDS",
+      "kind": "module constant",
+      "owner": "hyprial-cli-developer",
+      "card": "AZ-progress-based-daemon-ready-wait",
+      "reason": "Daemon launch absolute ceiling: 120s is 8x the measured 14.2s CI startup path. Progress never resets this cap."
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/common/support.py",
+      "symbol": "DAEMON_START_IDLE_BUDGET_SECONDS",
+      "kind": "module constant",
+      "owner": "hyprial-cli-developer",
+      "card": "AZ-progress-based-daemon-ready-wait",
+      "reason": "Daemon launch no-progress budget: 30s is more than 2x the measured 14.2s CI startup path and resets only on named phase progress."
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/common/daemon_start.py",
+      "symbol": "ready_timeout",
+      "kind": "parameter",
+      "owner": "hyprial-developer",
+      "card": "5c8743093ff5",
+      "reason": "_launch_daemon_process 的 ready_timeout,标准 §3.2 点名的三个散落值之一。2026-09-02 起取值降为 15s(① serving 边界,不含 restore),init 与 upgrade 重启同一面值。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/composition/harness_ports.py",
+      "symbol": "wait_ready",
+      "kind": "function",
+      "owner": "hyprial-developer",
+      "card": "5c8743093ff5",
+      "reason": "装配处透传 wait_ready;迁移后应随 core 契约消失,不单独实现。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/actor/behaviors/process_events.py",
+      "symbol": "_cancel_start_timer",
+      "kind": "function",
+      "owner": "hyprial-developer",
+      "card": "5c8743093ff5",
+      "reason": "harness actor 自建第二套 start timer 与失败预算(与 supervisor 并存)。迁移时须保住 test_daemon_reconcile_watchdog.py 的既有变异契约。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/actor/behaviors/delivery.py",
+      "symbol": "_on_start_timeout",
+      "kind": "function",
+      "owner": "hyprial-developer",
+      "card": "5c8743093ff5",
+      "reason": "harness actor 自建第二套 start timer 与失败预算(与 supervisor 并存)。迁移时须保住 test_daemon_reconcile_watchdog.py 的既有变异契约。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/actor/behaviors/reconcile.py",
+      "symbol": "_on_wait_ready",
+      "kind": "function",
+      "owner": "hyprial-developer",
+      "card": "5c8743093ff5",
+      "reason": "harness actor 自建第二套 start timer 与失败预算(与 supervisor 并存)。迁移时须保住 test_daemon_reconcile_watchdog.py 的既有变异契约。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/actor/behaviors/lifecycle.py",
+      "symbol": "_starts_in_flight",
+      "kind": "function",
+      "owner": "hyprial-developer",
+      "card": "5c8743093ff5",
+      "reason": "harness actor 自建第二套 start timer 与失败预算(与 supervisor 并存)。迁移时须保住 test_daemon_reconcile_watchdog.py 的既有变异契约。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/actor/actor.py",
+      "symbol": "restart_backoff_seconds",
+      "kind": "parameter",
+      "owner": "hyprial-developer",
+      "card": "5c8743093ff5",
+      "reason": "harness actor 自建第二套 start timer 与失败预算(与 supervisor 并存)。迁移时须保住 test_daemon_reconcile_watchdog.py 的既有变异契约。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/actor/actor.py",
+      "symbol": "start_backoff_max_seconds",
+      "kind": "parameter",
+      "owner": "hyprial-developer",
+      "card": "5c8743093ff5",
+      "reason": "harness actor 自建第二套 start timer 与失败预算(与 supervisor 并存)。迁移时须保住 test_daemon_reconcile_watchdog.py 的既有变异契约。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/actor/actor.py",
+      "symbol": "start_max_workers",
+      "kind": "parameter",
+      "owner": "hyprial-developer",
+      "card": "5c8743093ff5",
+      "reason": "harness actor 自建第二套 start timer 与失败预算(与 supervisor 并存)。迁移时须保住 test_daemon_reconcile_watchdog.py 的既有变异契约。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/actor/actor.py",
+      "symbol": "start_timeout",
+      "kind": "function",
+      "owner": "hyprial-developer",
+      "card": "5c8743093ff5",
+      "reason": "harness actor 自建第二套 start timer 与失败预算(与 supervisor 并存)。迁移时须保住 test_daemon_reconcile_watchdog.py 的既有变异契约。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/actor/actor.py",
+      "symbol": "start_timeout_seconds",
+      "kind": "parameter",
+      "owner": "hyprial-developer",
+      "card": "5c8743093ff5",
+      "reason": "harness actor 自建第二套 start timer 与失败预算(与 supervisor 并存)。迁移时须保住 test_daemon_reconcile_watchdog.py 的既有变异契约。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/actor/facade.py",
+      "symbol": "wait_ready",
+      "kind": "function",
+      "owner": "hyprial-developer",
+      "card": "5c8743093ff5",
+      "reason": "harness actor 自建第二套 start timer 与失败预算(与 supervisor 并存)。迁移时须保住 test_daemon_reconcile_watchdog.py 的既有变异契约。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/runtime/ports.py",
+      "symbol": "HarnessStartTimerElapsedCommand",
+      "kind": "class",
+      "owner": "hyprial-developer",
+      "card": "5c8743093ff5",
+      "reason": "HarnessStartTimerElapsedCommand 等 start 端口类型的定义处。hq-adjutant 把它记在 harness_actor.py 名下,实际定义在这里。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/runtime/ports.py",
+      "symbol": "WaitHarnessReadyCommand",
+      "kind": "class",
+      "owner": "hyprial-developer",
+      "card": "5c8743093ff5",
+      "reason": "HarnessStartTimerElapsedCommand 等 start 端口类型的定义处。hq-adjutant 把它记在 harness_actor.py 名下,实际定义在这里。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/runtime/ports.py",
+      "symbol": "quarantined",
+      "kind": "function",
+      "owner": "hyprial-developer",
+      "card": "5c8743093ff5",
+      "reason": "HarnessStatusProjection.quarantined:deprecated wire 兼容别名,等价于 state == \"failed\",为 ps connectors[] 既有消费者保留一个版本,下个大版本删。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/processes/supervisor.py",
+      "symbol": "_start_backoff_max_seconds",
+      "kind": "function",
+      "owner": "hyprial-developer",
+      "card": "5c8743093ff5",
+      "reason": "止血前就存在的主监管器:自建 start timeout / backoff / 失败预算全套。迁移到 actor_runtime 的 start+ready 契约。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/processes/supervisor.py",
+      "symbol": "_start_timeout_seconds",
+      "kind": "function",
+      "owner": "hyprial-developer",
+      "card": "5c8743093ff5",
+      "reason": "止血前就存在的主监管器:自建 start timeout / backoff / 失败预算全套。迁移到 actor_runtime 的 start+ready 契约。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/processes/supervisor.py",
+      "symbol": "restart_backoff_seconds",
+      "kind": "parameter",
+      "owner": "hyprial-developer",
+      "card": "5c8743093ff5",
+      "reason": "止血前就存在的主监管器:自建 start timeout / backoff / 失败预算全套。迁移到 actor_runtime 的 start+ready 契约。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/processes/supervisor.py",
+      "symbol": "start_backoff_max_seconds",
+      "kind": "parameter",
+      "owner": "hyprial-developer",
+      "card": "5c8743093ff5",
+      "reason": "止血前就存在的主监管器:自建 start timeout / backoff / 失败预算全套。迁移到 actor_runtime 的 start+ready 契约。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/processes/supervisor.py",
+      "symbol": "start_max_workers",
+      "kind": "parameter",
+      "owner": "hyprial-developer",
+      "card": "5c8743093ff5",
+      "reason": "止血前就存在的主监管器:自建 start timeout / backoff / 失败预算全套。迁移到 actor_runtime 的 start+ready 契约。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/processes/supervisor.py",
+      "symbol": "start_timeout_seconds",
+      "kind": "parameter",
+      "owner": "hyprial-developer",
+      "card": "5c8743093ff5",
+      "reason": "止血前就存在的主监管器:自建 start timeout / backoff / 失败预算全套。迁移到 actor_runtime 的 start+ready 契约。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/processes/supervisor.py",
+      "symbol": "wait_ready",
+      "kind": "function",
+      "owner": "hyprial-developer",
+      "card": "5c8743093ff5",
+      "reason": "止血前就存在的主监管器:自建 start timeout / backoff / 失败预算全套。迁移到 actor_runtime 的 start+ready 契约。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/agent_sdk/__init__.py",
+      "symbol": "startup_timeout_seconds",
+      "kind": "parameter",
+      "owner": "hyprial-developer",
+      "card": "5c8743093ff5",
+      "reason": "harness 家族自建 startup_timeout_seconds。整个 harnesses/ 家族是 hq-adjutant 手工清单完全未覆盖的第六簇。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/codex/app_server.py",
+      "symbol": "startup_timeout_seconds",
+      "kind": "parameter",
+      "owner": "hyprial-developer",
+      "card": "5c8743093ff5",
+      "reason": "harness 家族自建 startup_timeout_seconds。同上。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/protocol/common.py",
+      "symbol": "startup_probe_seconds",
+      "kind": "field",
+      "owner": "hyprial-developer",
+      "card": "5c8743093ff5",
+      "reason": "startup_probe_seconds:harness 家族共用的自建启动探测预算。同上。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/runtime/launcher.py",
+      "symbol": "codex_startup_timeout_seconds",
+      "kind": "parameter",
+      "owner": "hyprial-developer",
+      "card": "5c8743093ff5",
+      "reason": "startup_probe_seconds + codex_startup_timeout_seconds:两个并存的启动预算。同上。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/runtime/launcher.py",
+      "symbol": "startup_probe_seconds",
+      "kind": "parameter",
+      "owner": "hyprial-developer",
+      "card": "5c8743093ff5",
+      "reason": "startup_probe_seconds + codex_startup_timeout_seconds:两个并存的启动预算。同上。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/pi/rpc_client.py",
+      "symbol": "settle_grace_seconds",
+      "kind": "parameter",
+      "owner": "hyprial-developer",
+      "card": "5c8743093ff5",
+      "reason": "startup_timeout_seconds + settle_grace_seconds。同上。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/pi/rpc_client.py",
+      "symbol": "startup_timeout_seconds",
+      "kind": "parameter",
+      "owner": "hyprial-developer",
+      "card": "5c8743093ff5",
+      "reason": "startup_timeout_seconds + settle_grace_seconds。同上。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/pi/rpc_process.py",
+      "symbol": "PI_RPC_STARTUP_TIMEOUT_SECONDS_DEFAULT",
+      "kind": "module constant",
+      "owner": "hyprial-developer",
+      "card": "pi-p2-launch-trust",
+      "reason": "P2 pi launcher 的声明式启动预算:与 codex app_server/dsh/python-worker 同构,launcher 等 ready 再返回,否则 actor 在 pump spawn 之前捕获身份(pid 恒 null),且 trust 之外的异步启动失败会被当成成功。取 30s 覆盖 SDK bridge 的 get_state ready 往返与冷启动;actor_runtime 只有 stop/drain/shutdown timeout 与重启预算,没有请求级 deadline/ready 原语,组合不出来。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/streaming/process.py",
+      "symbol": "wait_ready",
+      "kind": "function",
+      "owner": "hyprial-developer",
+      "card": "5c8743093ff5",
+      "reason": "wait_ready:自建 ready 等待循环(标准 §2 明确点名的形状)。同上。"
+    },
+    {
+      "path": "src/hyprial/shell/impl/cli/commands/upgrade/commands.py",
+      "symbol": "start_timeout_seconds",
+      "kind": "parameter",
+      "owner": "hyprial-developer",
+      "card": "3c116ad2",
+      "reason": "卡 3c116ad2:F1 派生公式的共享纯模块(harness_actor 与 CLI 共调)——不是自建 start timer,只做 ceil(rows/width) 轮次算术,取值即 actor 构造器默认常量本身;迁移归宿是 #332 监督合并线(F1 把 actor 的预算也迁入 actor_runtime 时一并消失)。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/correlation/readiness_budget.py",
+      "symbol": "START_TIMEOUT_SECONDS_DEFAULT",
+      "kind": "module constant",
+      "owner": "hyprial-developer",
+      "card": "3c116ad2",
+      "reason": "卡 3c116ad2:F1 派生公式的共享纯模块(harness_actor 与 CLI 共调)——不是自建 start timer,只做 ceil(rows/width) 轮次算术,取值即 actor 构造器默认常量本身;迁移归宿是 #332 监督合并线(F1 把 actor 的预算也迁入 actor_runtime 时一并消失)。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/correlation/readiness_budget.py",
+      "symbol": "start_timeout_seconds",
+      "kind": "parameter",
+      "owner": "hyprial-developer",
+      "card": "3c116ad2",
+      "reason": "卡 3c116ad2:F1 派生公式的共享纯模块(harness_actor 与 CLI 共调)——不是自建 start timer,只做 ceil(rows/width) 轮次算术,取值即 actor 构造器默认常量本身;迁移归宿是 #332 监督合并线(F1 把 actor 的预算也迁入 actor_runtime 时一并消失)。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/codex/app_server.py",
+      "symbol": "THREAD_START_TIMEOUT_SECONDS_DEFAULT",
+      "kind": "module constant",
+      "owner": "alicesmith",
+      "card": "54158b16",
+      "reason": "thread/start、thread/resume 是 codex app-server 的 session start,hq 实测 9–43s(2026-09-05/06 每轮三样本,卡 54158b16),而同一客户端里的普通 RPC 仍该 15s 兜住 ⇒ 需要「同一客户端内按方法不同的请求上限」。为何组合不了(2026-09-06 读 src/hyprial/actor_runtime):它的超时面只有 stop/drain/shutdown 的 timeout 与 SupervisionPolicy 的重启预算(max_restarts/restart_window/backoff),没有请求级 deadline 原语,表达不了一次 RPC 的上限。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/codex/client.py",
+      "symbol": "thread_start_timeout_seconds",
+      "kind": "parameter",
+      "owner": "alicesmith",
+      "card": "54158b16",
+      "reason": "thread/start、thread/resume 是 codex app-server 的 session start,hq 实测 9–43s(2026-09-05/06 每轮三样本,卡 54158b16),而同一客户端里的普通 RPC 仍该 15s 兜住 ⇒ 需要「同一客户端内按方法不同的请求上限」。为何组合不了(2026-09-06 读 src/hyprial/actor_runtime):它的超时面只有 stop/drain/shutdown 的 timeout 与 SupervisionPolicy 的重启预算(max_restarts/restart_window/backoff),没有请求级 deadline 原语,表达不了一次 RPC 的上限。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/codex/app_server.py",
+      "symbol": "APP_SERVER_STARTUP_TIMEOUT_SECONDS_DEFAULT",
+      "kind": "module constant",
+      "owner": "alicesmith",
+      "card": "54158b16",
+      "reason": "headless codex restore 的外层启动预算,由内层【两段顺序 stdio 等待】组合而成:initialize 请求(REQUEST_TIMEOUT_SECONDS_DEFAULT=15)+ thread/start·resume(THREAD_START_TIMEOUT_SECONDS_DEFAULT=60)+ 余量15 = 90;headless 路径无 unix-socket 等待(那 30s 属交互式 CodexAppServer)。为何 actor_runtime 组合不了:它只有 stop/drain/shutdown 的 timeout 与 SupervisionPolicy 的重启预算,没有请求级 deadline 原语,更没有「把若干请求 deadline 相加成一个启动窗口」的表达;而独立拍一个 20s 外层(< 实测 thread/start 9–43s)正是 5091 codex.restart-restore 真红的根,所以外层必须【由内层组合】而不是自选一个数。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/codex/app_server.py",
+      "symbol": "APP_SERVER_STARTUP_MARGIN_SECONDS",
+      "kind": "module constant",
+      "owner": "alicesmith",
+      "card": "54158b16",
+      "reason": "外层启动预算的余量项(见 APP_SERVER_STARTUP_TIMEOUT_SECONDS_DEFAULT):覆盖两段内层等待【之外】的非超时开销 —— 进程 spawn、birth-identity 探测(本身被 _process_birth_identity 的 ps 1.0s 超时钉住)、initialized notify、asyncio 调度;实测量级几秒,15s 为保守 slack。为何 actor_runtime 给不了:同上,无请求级 deadline 原语。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/dsh/process.py",
+      "symbol": "DSH_STARTUP_TIMEOUT_SECONDS_DEFAULT",
+      "kind": "module constant",
+      "owner": "hyprial-developer",
+      "card": "NO-CARD (hyprial-developer to file; PR #496 review r2)",
+      "reason": "DSH 的声明式启动预算(launcher 等 ready 再返回,与 codex app_server 同构;否则 actor 在 pump spawn 之前捕获身份,pid 恒为 null)。真实的 ready 在 DshApiClient.__aenter__ 返回之后,其就绪路径是【六个顺序的请求上界】:banner 读取、host.describe、agentPreset.copy(worker channel 时)、session.create/session.history、session.models、session.selectModel —— 六个 DSH_REQUEST_TIMEOUT_SECONDS(15) + 余量 15 = 105。为何 actor_runtime 组合不了:它只有 stop/drain/shutdown 的 timeout 与重启预算,没有请求级 deadline 原语(与 codex APP_SERVER_STARTUP_TIMEOUT_SECONDS_DEFAULT 同一理由)。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/python_worker/__init__.py",
+      "symbol": "PYTHON_WORKER_STARTUP_TIMEOUT_SECONDS_DEFAULT",
+      "kind": "module constant",
+      "owner": "hyprial-cli-developer",
+      "card": "NO-CARD (2026-09-26 jev/user-proxy start failures on production)",
+      "reason": "Packaged python worker (jev, user-proxy) ready-frame startup budget; was a hard 10 s that production starts exceeded under load. Generous until re-sized from the logged spawn->emit / emit->processed split; the lifecycle deadline still bounds a start."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/dsh/process.py",
+      "symbol": "DSH_STARTUP_REAP_SECONDS",
+      "kind": "module constant",
+      "owner": "hyprial-developer",
+      "card": "NO-CARD (hyprial-developer to file; PR #496 review r2)",
+      "reason": "启动/停止握手的一部分:force_close 后等一个被关闭或被拒的 generation 进程组被收尸的上界。它限制的是回收等待,不是一次请求;登记在 manifest 里,以免以后被当成“gate 看不见的等待”而漂移。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/runtime/launcher.py",
+      "symbol": "dsh_startup_timeout_seconds",
+      "kind": "parameter",
+      "owner": "hyprial-developer",
+      "card": "NO-CARD (hyprial-developer to file; PR #496 review r2)",
+      "reason": "HarnessLauncher 的 DSH 启动等待参数,默认 DSH_STARTUP_TIMEOUT_SECONDS_DEFAULT;测试用它把等待缩短为毫秒级。与 codex_startup_timeout_seconds 同一形状。"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/dsh_tui/carrier.py",
+      "symbol": "CARRIER_READY_TIMEOUT_SECONDS",
+      "kind": "module constant",
+      "owner": "alicesmith",
+      "card": "PR #1577 dsh-tui interactive connector",
+      "reason": "Launch-scoped bound on one dsh-tui Cordis plugin becoming ready. It observes the plugin control socket the launcher owns; it starts no lifecycle, retry policy, or background work, and the carrier withdraws the registration when the bound expires."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/dsh_tui/carrier.py",
+      "symbol": "ready_timeout",
+      "kind": "parameter",
+      "owner": "alicesmith",
+      "card": "PR #1577 dsh-tui interactive connector",
+      "reason": "Test seam for that same single readiness observation (run_dsh_carrier passes it to wait_ready); it is not a second policy and is not used by the launcher."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/dsh_tui/carrier.py",
+      "symbol": "wait_ready",
+      "kind": "function",
+      "owner": "alicesmith",
+      "card": "PR #1577 dsh-tui interactive connector",
+      "reason": "Pings the launch-scoped plugin until it reports a live DSH agent, once, before registering. Same shape as streaming/process.py wait_ready: the caller owns the deadline; no native harness readiness or restart policy is composed here."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/network/peer_reachability.py",
+      "symbol": "PEER_CONNECT_START_TIMEOUT_SECONDS",
+      "kind": "module constant",
+      "owner": "hyprial-cli-developer",
+      "card": "peer-reachability-pr1",
+      "reason": "On-demand doctor raw TCP connect bound. It classifies one questioned peer as open, refused, or timeout and starts no lifecycle, retry loop, or background work."
+    },
+    {
+      "path": "src/hyprial/shell/impl/gui/launcher.py",
+      "symbol": "BACKEND_READY_TIMEOUT_SECONDS",
+      "kind": "module constant",
+      "owner": "hyprial-cli-developer",
+      "card": "GUI-FRESHESTART-20261027 cli-dev-entry",
+      "reason": "Foreground source-mode launcher bound on one npm stub printing its ready line and serving /healthz. It starts no daemon lifecycle, retry policy, or background work; a timeout stops only this invocation's child process group."
+    },
+    {
+      "path": "src/hyprial/shell/impl/gui/launcher.py",
+      "symbol": "FRONTEND_READY_TIMEOUT_SECONDS",
+      "kind": "module constant",
+      "owner": "hyprial-cli-developer",
+      "card": "GUI-FRESHESTART-20261027 cli-dev-entry",
+      "reason": "Foreground source-mode launcher bound on one Vite/npm frontend serving /__gui/healthz. It is a single readiness observation for the user-visible command, not a daemon/agent start policy or restart loop."
+    },
+    {
+      "path": "src/hyprial/shell/impl/gui/launcher.py",
+      "symbol": "STUB_READY_POLL_SECONDS",
+      "kind": "module constant",
+      "owner": "hyprial-cli-developer",
+      "card": "GUI-FRESHESTART-20261027 cli-dev-entry",
+      "reason": "Poll interval while reading the one HYPRIAL_STUB_READY line from the child stub pipe. It is not a retry/backoff budget and does not launch or restart anything."
+    },
+    {
+      "path": "src/hyprial/shell/impl/gui/launcher.py",
+      "symbol": "_wait_for_stub_ready",
+      "kind": "function",
+      "owner": "hyprial-cli-developer",
+      "card": "GUI-FRESHESTART-20261027 cli-dev-entry",
+      "reason": "Reads the single launch-scoped placeholder-stub handshake before the CLI starts the frontend. The caller owns the only deadline; there is no retry, restart, quarantine, or background supervision."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/application/actors/lifecycle_ops.py",
+      "symbol": "START_FAILURE_OBSERVATION_SECONDS",
+      "kind": "module constant",
+      "owner": "hyprial-developer",
+      "card": "PR #2048 agent start rc",
+      "reason": "Upper bound (1s) for the single post-start readiness/error observation after lifecycle.start. It is not a retry, restart, backoff or quarantine policy; the caller waits once for the already-recorded outcome and returns readiness=unconfirmed when neither settles."
+    }
+  ]
+}

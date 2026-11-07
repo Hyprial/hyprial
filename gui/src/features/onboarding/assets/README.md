@@ -8,7 +8,7 @@ Provenance:
 
 - Read-only approved prototype: `/mnt/d/Users/nity/Downloads/Hyprial-mvp-desktop-v17.html`
 - Byte-identical operator/vendor copy used for extraction:
-  `/home/huangjiajia/HyprialOS/gui-fix-records/2026-10-25-prototype-v17/vendor/Hyprial-mvp-desktop-v17.html`
+  `/home/chloemartin/HyprialOS/gui-fix-records/2026-10-25-prototype-v17/vendor/Hyprial-mvp-desktop-v17.html`
 - Prototype SHA256 (from the vendor copy; `cmp` confirmed the source copy is
   byte-identical): `c7e5ae80067c29dfe773f394bb95fa3fb9f2883c11504c012c28201013017348`
 - Extraction source: the `V5_LOCK_FULL` PNG data URI in that file.

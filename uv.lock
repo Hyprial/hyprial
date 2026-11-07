@@ -391,6 +391,15 @@ wheels = [
 ]
 
 [[package]]
+name = "filelock"
+version = "4.2.9"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/a3/1d/d730c664fcb4f1d264a722722a3134cf0881854f73c1fd58abf87572f232/filelock-4.2.9.tar.gz", hash = "sha256:96530b7c538d4ea08493ab067247aab7948c54d8cd622cce711c97cccc5d9896", size = 663116, upload-time = "2026-11-04T18:37:10.014Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/00/05/76184fe08339723d643ab47887a8e4de8f2921ca4e008617ab7490af7857/filelock-4.2.9-py3-none-any.whl", hash = "sha256:a379c50a729e5b68c8519a4d26489f755d9769960a236ecd838190e2a78db2e9", size = 164734, upload-time = "2026-11-04T18:37:08.273Z" },
+]
+
+[[package]]
 name = "h11"
 version = "0.16.0"
 source = { registry = "https://pypi.org/simple" }
@@ -559,6 +568,7 @@ dependencies = [
     { name = "cryptography" },
     { name = "eclipse-zenoh" },
     { name = "fastapi" },
+    { name = "filelock" },
     { name = "httptools" },
     { name = "jsonschema" },
     { name = "lark-oapi" },
@@ -567,6 +577,7 @@ dependencies = [
     { name = "pycasbin" },
     { name = "pycrdt" },
     { name = "pykka" },
+    { name = "pywin32", marker = "sys_platform == 'win32'" },
     { name = "pyyaml" },
     { name = "rich" },
     { name = "typer" },
@@ -586,6 +597,7 @@ requires-dist = [
     { name = "cryptography" },
     { name = "eclipse-zenoh", specifier = "==1.9.0" },
     { name = "fastapi", specifier = "==0.162.0" },
+    { name = "filelock", specifier = "==4.2.9" },
     { name = "httptools", specifier = "==0.9.0" },
     { name = "jsonschema", specifier = ">=4.26,<5" },
     { name = "lark-oapi" },
@@ -596,6 +608,7 @@ requires-dist = [
     { name = "pykka", specifier = ">=4.2,<5" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.4,<9" },
     { name = "pytest-xdist", marker = "extra == 'test'", specifier = ">=3.8,<4" },
+    { name = "pywin32", marker = "sys_platform == 'win32'", specifier = "==312" },
     { name = "pyyaml" },
     { name = "rich" },
     { name = "ruff", marker = "extra == 'test'", specifier = ">=0.12,<1" },

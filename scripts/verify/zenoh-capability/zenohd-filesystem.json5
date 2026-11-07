@@ -1,0 +1,35 @@
+{
+  mode: "router",
+  listen: {
+    endpoints: [__HYPRIAL_LISTEN_ENDPOINT__],
+  },
+  scouting: {
+    multicast: { enabled: false },
+    gossip: { enabled: false },
+  },
+  transport: {
+    shared_memory: { enabled: false },
+  },
+  plugins_loading: {
+    enabled: true,
+  },
+  plugins: {
+    storage_manager: {
+      __path__: [__HYPRIAL_STORAGE_MANAGER_PLUGIN__],
+      backend_search_dirs: [__HYPRIAL_BACKEND_SEARCH_DIR__],
+      volumes: {
+        fs: {},
+      },
+      storages: {
+        hyprial_inbox: {
+          key_expr: "hyprial/v1/inbox/**",
+          strip_prefix: "hyprial/v1/inbox",
+          volume: {
+            id: "fs",
+            dir: "inbox",
+          },
+        },
+      },
+    },
+  },
+}

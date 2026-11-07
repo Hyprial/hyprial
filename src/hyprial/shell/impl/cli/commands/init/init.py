@@ -2,11 +2,6 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:  # deferred annotations only
-    from hyprial.identity import IdentityTransactionLock
-
 from hyprial.shell.impl.cli.commands.common.groups import group
 from hyprial.shell.impl.cli.commands.common.services import get_services
 
@@ -104,7 +99,7 @@ def _complete_initialization(
     connect: str | None,
     org_warning: JsonObject | None,
     login_when_missing: Callable[[], JsonObject] | None,
-    held_identity_transaction: list[IdentityTransactionLock] | None = None,
+    committed_identity_generation: list[int] | None = None,
 ) -> JsonObject:
     """Ensure owner and daemon after home creation, without command recursion."""
     services = get_services()
@@ -161,14 +156,36 @@ def _complete_initialization(
         # legacy fast path and is validated by the daemon itself.
         resolve_node_owner()
 
-    launched = services._launch_daemon_process(
-        ready_timeout=ready_timeout,
-        listen=listen,
-        connect=connect,
-        identity_transaction=(
-            held_identity_transaction[0] if held_identity_transaction else None
-        ),
+    # A login that just committed passes its generation so the daemon can
+    # refuse to serve if a later login slipped in after the lock was released;
+    # that later login wins and this one is reported superseded.
+    from hyprial.shell.impl.login.generation import superseded_error
+
+    committed = (
+        committed_identity_generation[-1] if committed_identity_generation else None
     )
+
+    def superseded(cause: str) -> Exception | None:
+        return superseded_error(
+            services.CliError, services._hyprial_home(), committed, cause,
+            {"nextSteps": ["hyprial login"]},
+        )
+
+    try:
+        launched = services._launch_daemon_process(
+            ready_timeout=ready_timeout,
+            listen=listen,
+            connect=connect,
+            expected_identity_generation=committed,
+        )
+    except Exception as error:
+        lost = superseded("the daemon launched for it exited as stale")
+        if lost is not None:
+            raise lost from error
+        raise
+    lost = superseded("the serving daemon does not carry it")
+    if lost is not None:
+        raise lost
     if launched.already_running:
         # The launcher's own optimistic probe won the race; re-wrap its
         # answer through the same already-running branch as the probe
@@ -260,9 +277,31 @@ def init(
 
     def operation() -> JsonObject:
         services = get_services()
+        from hyprial.shell.impl.cli.commands.daemon.service import (
+            ServicePlatformUnsupported,
+            _install_status,
+            _run_service,
+            _service_platform,
+        )
+
+        try:
+            _service_platform()
+        except ServicePlatformUnsupported as error:
+            unsupported: ServicePlatformUnsupported | None = error
+        else:
+            unsupported = None
+        if service is True and unsupported is not None:
+            # Asked for explicitly: refuse before touching the home rather
+            # than report a half-done init.
+            raise services.CliError(
+                "SERVICE_PLATFORM_UNSUPPORTED",
+                f"{unsupported}; rerun without --service and start the daemon "
+                "with `hyprial daemon start`",
+                {"platform": unsupported.platform},
+            )
         services.initialize_hyprial_home()
         org_warning = services._initialize_org_context()
-        held_identity_transaction: list[IdentityTransactionLock] = []
+        committed_identity_generation: list[int] = []
 
         def login_when_missing() -> JsonObject:
             services = get_services()
@@ -275,33 +314,37 @@ def init(
                 switch_account=False,
                 no_daemon=True,
                 first_time_setup=True,
-                held_identity_transaction=held_identity_transaction,
+                committed_identity_generation=committed_identity_generation,
             )
 
-        try:
-            result = services._complete_initialization(
-                ready_timeout=ready_timeout,
-                listen=listen,
-                connect=connect,
-                org_warning=org_warning,
-                login_when_missing=login_when_missing,
-                held_identity_transaction=held_identity_transaction,
-            )
-        finally:
-            for transaction in held_identity_transaction:
-                transaction.close()
+        result = services._complete_initialization(
+            ready_timeout=ready_timeout,
+            listen=listen,
+            connect=connect,
+            org_warning=org_warning,
+            login_when_missing=login_when_missing,
+            committed_identity_generation=committed_identity_generation,
+        )
         # Autostart is the default, not an opt-in.  A daemon that is installed
         # but not supervised comes back only if a human starts it, which is
         # exactly the failure this call removes -- and a fresh install has no
         # other way to learn it.  ``--no-service`` stays available for
         # containers and CI, where a supervisor is someone else's business.
         requested = True if service is None else service
-        if requested:
-            from hyprial.shell.impl.cli.commands.daemon.service import (
-                _install_status,
-                _run_service,
-            )
-
+        if requested and unsupported is not None:
+            # Default registration on a platform without a supported per-user
+            # supervisor (Windows in 0.5.5.3.4): a skip, not a failure.
+            result["service"] = {
+                "ok": True,
+                "skipped": True,
+                "reason": "service-platform-unsupported",
+                "platform": unsupported.platform,
+                "hint": (
+                    "no autostart is registered on this platform: after a "
+                    "reboot or logout start the daemon with `hyprial daemon start`"
+                ),
+            }
+        elif requested:
             try:
                 result["service"] = _run_service(_install_status)
             except services.CliError as error:

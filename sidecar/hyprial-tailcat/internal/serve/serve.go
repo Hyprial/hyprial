@@ -123,9 +123,8 @@ func handle(ctx context.Context, eng *engine.Engine, command proto.Command, writ
 		event := proto.Event{V: proto.Version, Event: "membership-result", RequestID: command.RequestID, Op: command.Op, Data: data}
 		if err != nil {
 			event.Event = "error"
-			event.Data = nil
+			event.Data, event.Message = membership.Diagnostic(err)
 			event.Code = codeFor(err, proto.CodeInternal)
-			event.Message = "Membership operation failed."
 		}
 		return writer.Write(event)
 	}

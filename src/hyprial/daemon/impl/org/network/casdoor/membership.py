@@ -128,7 +128,7 @@ class CasdoorMembershipMixin:
                 raise _org_error(
                     "CASDOOR_USER_NOT_FOUND",
                     f"Casdoor has no user {casdoor_user(member)}; the name must be "
-                    "the user's login identity, e.g. name@hyprial.com",
+                    "the user's login identity, e.g. name@example.com",
                 ) from error
             raise _org_error(
                 "CASDOOR_GROUP_WRITE_FAILED",

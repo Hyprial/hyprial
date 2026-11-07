@@ -1,0 +1,64 @@
+{
+  "version": 2,
+  "name": "a-dev-thaw-sync-20261030",
+  "summary": "Prepare current dev into fixed A after release thaw; independent review and #1434 ordering before actual A landing. H keeps developing.",
+  "on_failure": "hold",
+  "escalate_to": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+  "workers": {
+    "sync": {
+      "harness": "pi",
+      "provider": "deepseek",
+      "model": "deepseek-flash",
+      "args": [
+        "--thinking",
+        "max",
+        "--approve"
+      ],
+      "cwd": "/Users/amyws/projects/a-dev-thaw-sync-20261030",
+      "cwdPolicy": "require"
+    }
+  },
+  "nodes": [
+    {
+      "id": "prepare-sync",
+      "worker": "sync",
+      "role": "execute",
+      "timeout": "24h",
+      "first_output_eta": "10m",
+      "task": "在 /Users/amyws/projects/a-dev-thaw-sync-20261030 的 fix/a-dev-thaw-sync-20261030 工作。读 AGENTS.md、.agents/skills/forgejo-ops/SKILL.md 和 docs/notes/a-dev-thaw-sync-start-2026-10-30.md。负责人已解冻，当前实际dev cf37bf43fc5b554f99a07d1dda300e6137620d01，A 4ad16740b38b374c1608bae974db1482e204ae57。本任务只把dev同步到A的候选分支，解决真实冲突并验证，不能改共享A/dev、不能自合PR、不能force、不能发版或启动H/C业务。\n先fetch显式内网SSH到自己的远端ref，记录actual dev/A及#1434状态；若#1434已落dev，直接用实际新头，否则先基于cf37准备。在自己分支merge-forward dev，8处冲突须按两侧语义解决：A公共request、MethodSpec、CLI输出/归组/退役布局不可回退；dev release/CI hardening、GUI installed/dev provenance、安全验证及headless systemd bus等修复不可丢。不要整文件盲选ours/theirs。H早期兼容提交f97a39c52可只读参考7处旧冲突，但它基于release105，未含cf37新GUI/service内容，不能盲复制，也不能引入HTTP产品。docs/notes为WORM不改旧证据。\n每处处置写新证据；单独提交同步/必要修复，实测现有重点：router请求/restore gate、provider默认/凭据、doctor输出、GUI installed与dev来源/布局/生命周期、systemd bus、CI路由/退役工作流/安全负控、post-install清单及request-contract/registry/import gates。先结构/模块边界，再焦点红绿，按AGENTS全量tests/、Ruff与跨实现契约；所有Python经uv，Node24，所有home/socket/cache/端口隔离，绝不动生产daemon/凭据/用户配置。PASS/FAIL/BLOCKED/UNKNOWN分清，真实失败逐nodeid保留。\n在交付前再取实际dev与#1434状态；若新dev前进可普通merge-forward且重核受影响测试，不绕#1434先落地的顺序。无法及时取得#1434合入则提交有明确base的准备候选与待同步项，不盲等无限轮询，也不声称满足最终FF。\n固定source/tree/parents、is-ancestor(actualdev,candidate)的结果、全套命令与环境/日志hash/原始failed集写docs/notes；完整输出不要被终端截断。首次10分钟内给启动+首个可核产出，长任务每20分钟给检查点，仅向协调者报告。执行使用DeepSeek Flash Max不切模型，不再委派。显式设置GIT_AUTHOR_NAME/GIT_COMMITTER_NAME=devusr、EMAIL=amy.williams@example.com。git只用ssh://git@git.internal.example.com/HyprialOS/harness-bridge.git，必要时单次SSH HostName=100.64.30.2/HostKeyAlias=git.internal.example.com，不写网络配置。\n完成后推自己的fix分支，开一个Draft同步PR到intg/cli-command-surface，包含Submitted-by实际actor URI、Contract-Impact、Skill-Impact及真实验证。不得直接更新#2015 head或去WIP。用当前workflow requestId显式complete，reasonRef给证据与精确sha，outputText给候选/PR/实际base/冲突/验证/残项。"
+    },
+    {
+      "id": "review",
+      "kind": "approval",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "review",
+      "after": [
+        "prepare-sync"
+      ],
+      "timeout": "72h",
+      "task": "独立审候选两父diff、8处兼容与实测，固定SHA/tree；取得e2e-verifier五条判据。检查#1434先落地及actual dev，若需要返工记录具体问题并保持交接未通过，不以候选绿替代实际新树。必要返工用显式PAC流程，不自合。"
+    },
+    {
+      "id": "handoff",
+      "kind": "report",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "dispatch",
+      "after": [
+        "review"
+      ],
+      "timeout": "72h",
+      "task": "只有独立审查PASS才交e2e-verifier同步PR/新树/五条证据。同步PR实际入A后再重核#2015 actual head与dev，按#1434之后顺序由独立执行者合入；root不自合。H与codex-sw只在实际A/dev坐标更新后通知，不传播预测SHA。"
+    },
+    {
+      "id": "done",
+      "kind": "end",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "review",
+      "after": [
+        "handoff"
+      ],
+      "timeout": "72h",
+      "task": "服务器确认#2015实际merged且dev包含最终A，记录PR/source/tree/actualdev与tag解冻证据，再归档A-MERGE卡并通知H、codex-sw同步/rebase；未合不能complete。H最终去WIP仍需独立验收，不自动开始C。"
+    }
+  ]
+}

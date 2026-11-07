@@ -1,0 +1,127 @@
+{
+  "id": "G8b",
+  "title": "STALE_DAEMON_GENERATION on the heartbeat owes the same refresh and re-wake",
+  "steps": [
+    {
+      "at": 0,
+      "lane": "poll",
+      "expect": {
+        "op": "register"
+      }
+    },
+    {
+      "at": 0,
+      "lane": "poll",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e1"
+        }
+      }
+    },
+    {
+      "at": 0,
+      "lane": "poll",
+      "expect": {
+        "op": "list"
+      }
+    },
+    {
+      "at": 0,
+      "lane": "poll",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e1",
+          "messages": [
+            {
+              "messageId": "m1",
+              "deliveryId": "m1"
+            }
+          ]
+        }
+      },
+      "emit": {
+        "new": [
+          "m1"
+        ]
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "wait",
+        "knownMessageIds": [
+          "m1"
+        ]
+      }
+    },
+    {
+      "lane": "heartbeat",
+      "expect": {
+        "op": "heartbeat"
+      },
+      "at": 1000
+    },
+    {
+      "lane": "heartbeat",
+      "respond": {
+        "rejected": "STALE_DAEMON_GENERATION"
+      }
+    },
+    {
+      "lane": "heartbeat",
+      "expect": {
+        "op": "refresh"
+      }
+    },
+    {
+      "lane": "heartbeat",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e2"
+        }
+      }
+    },
+    {
+      "lane": "poll",
+      "at": 5000,
+      "respond": {
+        "ok": {
+          "ok": true,
+          "changed": false,
+          "held": true,
+          "daemonEpoch": "e2"
+        }
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "list"
+      }
+    },
+    {
+      "lane": "poll",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e2",
+          "messages": [
+            {
+              "messageId": "m1",
+              "deliveryId": "m1"
+            }
+          ]
+        }
+      },
+      "emit": {
+        "rewake": [
+          "m1"
+        ],
+        "rewakeReason": "epoch"
+      }
+    }
+  ]
+}

@@ -29,6 +29,7 @@ from hyprial.daemon import url_opener
 from hyprial.daemon.impl.bootstrap.discovery import DISCOVERY_TIMEOUT_SECONDS
 from hyprial.identity import (
     BINDING_ASSERTION_OWNER,
+    binding_assertion_audience_matches,
     binding_numeric_date,
     identity_slug,
 )
@@ -67,6 +68,8 @@ class VerifiedOrgBinding:
 
 _ROW_KEYS = frozenset({"user", "larkUnionId", "proof", "publishedAt"})
 _CACHE_ROW_KEYS = frozenset({"user", "userKey", "unionId", "issuedAtMs"})
+
+
 ORG_BINDING_CACHE_FILENAME = "verified-org-bindings.json"
 _HTTP_TIMEOUT_S = DISCOVERY_TIMEOUT_SECONDS
 _USER_AGENT = user_agent("daemon")
@@ -273,7 +276,7 @@ class OrgBindingSource:
             raise ValueError("binding proof signature is invalid") from error
         if claims.get("iss") != self._issuer:
             raise ValueError("binding proof issuer does not match")
-        if claims.get("aud") != self._client_id:
+        if not binding_assertion_audience_matches(claims, self._client_id):
             raise ValueError("binding proof audience does not match")
         if claims.get("owner") != BINDING_ASSERTION_OWNER:
             raise ValueError("binding proof owner does not match")

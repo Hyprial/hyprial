@@ -86,6 +86,8 @@ from hyprial.daemon.impl.orgfs.network.protocol import _unb64 as _unb64
 class OrgFsMesh(SupplierSyncMixin, MeshRecovery, MeshIngress, MeshQueries, MeshSync):
     """Broadcast, query, import, and probe one local orgfs space."""
 
+    _replica_ready = False
+
 
     def __init__(
         self,
@@ -136,6 +138,9 @@ class OrgFsMesh(SupplierSyncMixin, MeshRecovery, MeshIngress, MeshQueries, MeshS
         self._announce_instrumentation_enabled = announce_instrumentation_enabled
         self._keys = keys or KeySpace()
         self.replica_store = replica_store
+        self._replica_ready = replica_store is not None
+        self._replica_attach_pending: list[bytes] = []
+        self._replica_attach_overflow = False
         self.space_authority = space_authority
         self._closed = False
         self._worker_lock = Lock()
@@ -250,6 +255,12 @@ class OrgFsMesh(SupplierSyncMixin, MeshRecovery, MeshIngress, MeshQueries, MeshS
             self.close()
             raise
 
+
+    @property
+    def _replica_serving(self) -> bool:
+        """True only while the attached replica is complete and ready to serve."""
+
+        return self.replica_store is not None and self._replica_ready
 
     def _log(self, level: str, event: str, **fields: object) -> None:
         if self._logger is not None:

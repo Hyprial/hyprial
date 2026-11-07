@@ -1,0 +1,27 @@
+{
+  "ok": true,
+  "identity": "user",
+  "data": {
+    "items": [
+      {
+        "body": {
+          "content": "{\"title\": \"\", \"content\": [[{\"tag\": \"text\", \"text\": \"回复文件能收到吗？\", \"style\": []}]], \"content_v2\": [[{\"tag\": \"text\", \"text\": \"回复文件能收到吗？\", \"style\": []}]], \"files\": [{\"file_key\": \"file_v3_fixture_key_1174\", \"file_name\": \"path-authz-check-return.txt\", \"is_folder\": false}]}"
+        },
+        "chat_id": "oc_fixture_p2p_chat",
+        "create_time": "1791273496980",
+        "deleted": false,
+        "message_id": "om_fixture_post_files_1174",
+        "message_position": "247",
+        "msg_type": "post",
+        "sender": {
+          "id": "ou_fixture_sender",
+          "id_type": "open_id",
+          "sender_type": "user",
+          "tenant_key": "tenant_fixture"
+        },
+        "update_time": "1791273496980",
+        "updated": false
+      }
+    ]
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "defaults": {
+    "baseState": "in-turn", "certainty": "observed", "scope": "whole-session",
+    "turnAgeMs": 120000, "observationHealth": "current",
+    "coverage": {"permissionWait": false}, "suspicions": [], "providerBlocked": false
+  },
+  "cases": [
+    {"name":"busy", "runState":{"state":"in-turn","reason":"turn-open"}, "display":"in-turn (turn-open) turn-age=2m base=in-turn certainty=observed scope=whole-session health=current permission=unsupported"},
+    {"name":"idle", "runState":{"state":"idle","baseState":"idle","reason":"no-open-turn","turnAgeMs":null}, "display":"idle (no-open-turn) turn-age=- base=idle certainty=observed scope=whole-session health=current permission=unsupported"},
+    {"name":"permission", "runState":{"state":"blocked","reason":"permission-wait","coverage":{"permissionWait":true},"suspicions":["permission-wait-long"]}, "display":"blocked (permission-wait) turn-age=2m base=in-turn certainty=observed scope=whole-session health=current permission=supported suspicions=permission-wait-long"},
+    {"name":"provider", "runState":{"state":"blocked","baseState":"idle","reason":"provider-block","turnAgeMs":null,"providerBlocked":true}, "display":"blocked (provider-block) turn-age=- base=idle certainty=observed scope=whole-session health=current permission=unsupported provider-blocked=true"},
+    {"name":"suspected", "runState":{"state":"suspected-stuck","reason":"turn-over-budget","certainty":"inferred","turnAgeMs":1800001,"suspicions":["turn-over-budget","producer-quiet"]}, "display":"suspected-stuck (turn-over-budget) turn-age=30m base=in-turn certainty=inferred scope=whole-session health=current permission=unsupported suspicions=turn-over-budget,producer-quiet"},
+    {"name":"starting", "runState":{"state":"starting","baseState":"starting","reason":"start-pending","turnAgeMs":null}, "display":"starting (start-pending) turn-age=- base=starting certainty=observed scope=whole-session health=current permission=unsupported"},
+    {"name":"stopping", "runState":{"state":"stopping","baseState":"stopping","reason":"stop-pending","turnAgeMs":null}, "display":"stopping (stop-pending) turn-age=- base=stopping certainty=observed scope=whole-session health=current permission=unsupported"},
+    {"name":"exited-provider", "runState":{"state":"not-running","baseState":"not-running","reason":"process-exited","turnAgeMs":null,"providerBlocked":true}, "display":"not-running (process-exited) turn-age=- base=not-running certainty=observed scope=whole-session health=current permission=unsupported provider-blocked=true"},
+    {"name":"unavailable", "runState":{"state":"unknown","baseState":"unknown","reason":"source-unavailable","certainty":"unknown","observationHealth":"unavailable","turnAgeMs":null}, "display":"unknown (source-unavailable) turn-age=- base=unknown certainty=unknown scope=whole-session health=unavailable permission=unsupported"},
+    {"name":"partial", "runState":{"state":"unknown","baseState":"unknown","reason":"partial-turn-coverage","scope":"carrier-deliveries","certainty":"unknown","observationHealth":"partial","turnAgeMs":null}, "display":"unknown (partial-turn-coverage) turn-age=- base=unknown certainty=unknown scope=carrier-deliveries health=partial permission=unsupported"},
+    {"name":"stale-history-not-current", "runState":{"state":"unknown","baseState":"unknown","reason":"carrier-stale","certainty":"unknown","observationHealth":"stale","turnAgeMs":null,"lastKnown":{"state":"idle","observedAtMs":1},"sinceMs":1,"observedAtMs":900000}, "display":"unknown (carrier-stale) turn-age=- base=unknown certainty=unknown scope=whole-session health=stale permission=unsupported"},
+    {"name":"zero-age", "runState":{"state":"in-turn","reason":"turn-open","turnAgeMs":0}, "display":"in-turn (turn-open) turn-age=0s base=in-turn certainty=observed scope=whole-session health=current permission=unsupported"},
+    {"name":"old-daemon", "runState":null, "display":"unknown (unsupported) turn-age=- permission=unknown"}
+  ]
+}

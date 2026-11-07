@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "policy": "shrinking-only",
+  "exemptions": [
+    {
+      "path": "src/hyprial/identity/impl/agents/registry/_core.py",
+      "symbol": "AgentRegistry",
+      "reason": "Pre-cutover agent registry owner; remove this entry when actor ownership replaces it."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/application/__init__.py",
+      "symbol": "DaemonApplication",
+      "reason": "Pre-cutover daemon orchestration owner; remove this entry when actor ownership replaces it."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/inbox/service/__init__.py",
+      "symbol": "InboxService",
+      "reason": "Pre-cutover inbox state owner; remove this entry when actor ownership replaces it."
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "name": "gui-request-http-design-rework-r2",
+  "summary": "H-01 same-PR design-only final corrections: audience, epoch, dispatch, CORS; no implementation release.",
+  "on_failure": "hold",
+  "escalate_to": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+  "nodes": [
+    {
+      "id": "revise-design",
+      "owner": "agent:amy.williams@example.com:devusr-dev:wf-474597cc922e4a0e83aaebf557fa9ae4-971eaed090b4",
+      "role": "execute",
+      "timeout": "4h",
+      "first_output_eta": "10m",
+      "task": "沿用 /Users/amyws/projects/request-http-h01、feat/http-request-entry、同一 Draft PR #2146 和 DeepSeek Flash Max。独立复审未通过，精确起点765bd761e526fb14ef1c8c23a6c176fc317b65ac。先读 /Users/amyws/projects/daemon-request-http/docs/notes/http-h01-design-review-r2-2026-10-30.md。只按其中4项完成方案收尾（audience必要过滤和摘要；无连接错误重启/epoch一致性；按来源和阶段处理dispatch而不是code；CORS路径/ready例子/无敏感日志/digest包络/restore分发位置）。不要扩范围、另开PR、实现产品、迁移CLI/C、接页面、合A、改板、改主图旗标、动生产或用户配置。所有Python经uv。提交时显式设置GIT_AUTHOR_NAME=devusr GIT_AUTHOR_EMAIL=amy.williams@example.com GIT_COMMITTER_NAME=devusr GIT_COMMITTER_EMAIL=amy.williams@example.com，避免继承环境覆盖git -c。更新同PR文档正文并推自己的分支。首个可核产出10分钟，长任务20分钟记录。只向协调者报告。完成本图当前revise-design请求，reasonRef给精确SHA/路径，outputText逐项定位修改；未解决直说。不要复用其它图请求；本轮只文档，不是实现授权。"
+    },
+    {
+      "id": "done",
+      "kind": "end",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "review",
+      "after": [
+        "revise-design"
+      ],
+      "timeout": "24h",
+      "task": "独立复核R2固定候选，保存判词。完成此节点只关闭文档返工；若方案已无阻断，另行完成主图h01-design-review当前请求。a-landed保持由真实发布/合入证据控制；产品和C不得越门。"
+    }
+  ]
+}

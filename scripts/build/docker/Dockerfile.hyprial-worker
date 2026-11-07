@@ -1,0 +1,134 @@
+# hyprial worker image for containerized transfer (docs/design-transfer-container.md).
+#
+# The image is IDENTITY-LESS: no credentials, no worktree, no session
+# files, no owner information.  Everything owner-specific arrives at
+# `docker run` time as mounts (decision: credentials never bake into image
+# layers).  Build via docker/build-worker-image.sh, which also tags the
+# image hyprial-worker:<hyprial version>.
+ARG UV_VERSION=0.8.15
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
+
+# The tailnet sidecar is precompiled here and never inside the runtime image
+# (the worker runs headless; the sidecar is supplied by a builder stage).  It
+# has to exist at run time all the same: the release rule forbids a published
+# wheel without the sidecar, so the artifact the installed package resolves
+# must be present even though the worker wheel itself stages neither the GUI
+# bundle nor the sidecar.  The builder runs on the build host's architecture
+# and cross-compiles with CGO_ENABLED=0, so nothing is emulated.  go.mod and
+# go.sum are the checkout of the pinned engine: the tailcat commit lives in
+# the module version, and the verify step below refuses a binary that does not
+# embed the commit this daemon's protocol-v3 client is built for.
+FROM --platform=$BUILDPLATFORM golang:1.27.1 AS tailcat
+ARG TARGETARCH
+WORKDIR /src
+COPY sidecar/hyprial-tailcat/go.mod sidecar/hyprial-tailcat/go.sum ./
+RUN go mod download
+COPY sidecar/hyprial-tailcat/cmd ./cmd
+COPY sidecar/hyprial-tailcat/internal ./internal
+# One engine, one pin: the module version in go.mod and the commit the binary
+# reports (internal/buildinfo.TailcatCommit) must be the same checkout.  The
+# verify step at the end of the runtime stage then ties those two to the commit
+# this daemon's protocol-v3 client accepts, so a drifting engine fails the
+# image build (SIDECAR_INVALID) instead of surfacing at a worker start.
+RUN set -e; \
+    engine="$(awk '$1 == "github.com/tailscale/tailcat" { print $2 }' go.mod)"; \
+    test -n "$engine"; \
+    grep -q "TailcatCommit = \"${engine##*-}" internal/buildinfo/buildinfo.go; \
+    echo "tailcat engine pin: $engine"
+RUN CGO_ENABLED=0 GOOS=linux GOARCH="${TARGETARCH}" \
+      go build -trimpath -ldflags='-s -w' -o /out/hyprial-tailcat ./cmd/hyprial-tailcat
+
+FROM node:22-bookworm-slim
+
+ARG CLAUDE_VERSION=2.1.241
+ARG CODEX_VERSION=0.147.0
+ARG PI_VERSION=0.84.3
+ARG AGENT_SDK_VERSION=0.2.125
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates git python3 python3-venv util-linux \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=uv /uv /uvx /usr/local/bin/
+
+# uv-managed tooling paths (fixed, world-writable so the unprivileged
+# worker uid reuses the pre-warmed caches -- P0 lesson: a cold uv cache
+# eats the strict resume timeout).
+# UV_PYTHON_INSTALL_MIRROR / UV_INDEX_URL: build-time escape hatches for
+# networks where github.com / pypi.org are unreachable (e.g. the npmmirror
+# python-build-standalone mirror and a regional PyPI mirror).
+# No empty defaults: uv 0.8.15 parses an exported empty value as a URL.
+# RUN also unsets explicit --build-arg KEY= values before invoking uv.
+ARG UV_PYTHON_INSTALL_MIRROR
+ARG UV_INDEX_URL
+
+# The three harness CLIs, version-pinned to the transfer verification
+# matrix (claude 2.1.235+, pi >=0.84 for assertSessionCwdExists, codex
+# 0.147/0.148 line).
+RUN npm install -g \
+      "@anthropic-ai/claude-code@${CLAUDE_VERSION}" \
+      "@openai/codex@${CODEX_VERSION}" \
+      "@earendil-works/pi-coding-agent@${PI_VERSION}" \
+    && npm cache clean --force
+
+# hyprial inside the image: the claude worker's MCP agent-channel server runs
+# `python -m hyprial.cli mcp agent-channel` inside the container, and the pi
+# bridge extension / claude SDK worker file live at fixed image paths
+# (src/hyprial/transfer/container.py constants).  hyprial requires Python >=3.12
+# while bookworm ships 3.11, so the venv uses a uv-managed CPython.
+COPY pyproject.toml README.md VERSION /tmp/hyprial-src/
+COPY src /tmp/hyprial-src/src
+# The wheel installed here is the THIN worker wheel
+# (HYPRIAL_BUILD_WORKER_WHEEL=1, src/hyprial/gui_build_hook.py): this image is
+# a local runtime that talks to the target machine's daemon over the
+# container's local IPC, so it carries no GUI payload, and the sidecar arrives
+# from the builder stage above instead of a Go toolchain in this stage.  The
+# escape hatch (HYPRIAL_TAILCAT_ALLOW_MISSING) is deliberately NOT set: a build
+# that loses the switch fails loudly instead of quietly installing a wheel
+# whose package cannot resolve a sidecar, and the pinning step below refuses a
+# sidecar from the wrong engine commit.
+# Published wheels keep carrying the sidecar (scripts/ci/verify_tailcat_wheels.py).
+RUN set -e; \
+    export HYPRIAL_BUILD_WORKER_WHEEL=1; \
+    if [ -n "${UV_PYTHON_INSTALL_MIRROR:-}" ]; then export UV_PYTHON_INSTALL_MIRROR; else unset UV_PYTHON_INSTALL_MIRROR; fi; \
+    if [ -n "${UV_INDEX_URL:-}" ]; then export UV_INDEX_URL; else unset UV_INDEX_URL; fi; \
+    uv venv --python 3.12 /opt/hyprial/venv \
+    && uv pip install --python /opt/hyprial/venv/bin/python --no-cache /tmp/hyprial-src \
+    || { rc=$?; echo 'uv setup failed: check UV_PYTHON_INSTALL_MIRROR and UV_INDEX_URL build args (empty values are unset)' >&2; exit "$rc"; }; \
+    rm -rf /tmp/hyprial-src
+# Landing the sidecar where the package looks for it: the thin wheel stages no
+# hyprial/_bin payload, so the builder's binary is copied into the installed
+# package's WHEEL_BIN_DIR (src/hyprial/daemon/impl/network/tailcat/binary.py),
+# the first path that resolver consults after HYPRIAL_TAILCAT_BINARY.  The
+# same resolver then pins the engine in this stage -- it runs
+# `<sidecar> version` and refuses anything that is not a protocol-v3 record
+# embedding the pinned tailcat commit, so a wrong or stale build fails the
+# image build instead of surfacing at a worker start.
+COPY --from=tailcat /out/hyprial-tailcat /opt/hyprial/tailcat-build/hyprial-tailcat
+RUN set -e; \
+    bindir="$(/opt/hyprial/venv/bin/python -c 'import pathlib, hyprial; print(pathlib.Path(hyprial.__file__).parent / "_bin")')"; \
+    mkdir -p "$bindir"; \
+    cp /opt/hyprial/tailcat-build/hyprial-tailcat "$bindir/hyprial-tailcat"; \
+    chmod 755 "$bindir/hyprial-tailcat"; \
+    rm -rf /opt/hyprial/tailcat-build; \
+    /opt/hyprial/venv/bin/python -c \
+      "from pathlib import Path; from hyprial.daemon.impl.network.tailcat.binary import verify_tailcat_sidecar; print(verify_tailcat_sidecar(Path('/root')))"
+COPY src/hyprial/daemon/impl/harnesses/agent_sdk/_agent_sdk_worker.py /opt/hyprial/_agent_sdk_worker.py
+COPY src/hyprial/daemon/impl/harnesses/pi/resources/pi_harness_bridge.ts /opt/hyprial/pi_harness_bridge.ts
+COPY scripts/build/docker/container-entrypoint.sh /opt/hyprial/container-entrypoint.sh
+RUN chmod 755 /opt/hyprial/container-entrypoint.sh
+
+# Pre-install the claude Agent SDK into a persistent venv: inside a
+# container the isolation `uv run --isolated` buys is already inherent,
+# and a runtime uv resolve would need network on EVERY worker start (P0
+# docker verification lesson #3: it ate the strict resume timeout).
+RUN set -e; \
+    if [ -n "${UV_PYTHON_INSTALL_MIRROR:-}" ]; then export UV_PYTHON_INSTALL_MIRROR; else unset UV_PYTHON_INSTALL_MIRROR; fi; \
+    if [ -n "${UV_INDEX_URL:-}" ]; then export UV_INDEX_URL; else unset UV_INDEX_URL; fi; \
+    uv venv --python 3.12 /opt/hyprial/sdk-venv \
+    && uv pip install --python /opt/hyprial/sdk-venv/bin/python --no-cache \
+       "claude-agent-sdk==${AGENT_SDK_VERSION}" \
+    || { rc=$?; echo 'uv setup failed: check UV_PYTHON_INSTALL_MIRROR and UV_INDEX_URL build args (empty values are unset)' >&2; exit "$rc"; }; \
+    chmod -R a+rX /opt/hyprial
+
+ENTRYPOINT ["/opt/hyprial/container-entrypoint.sh"]

@@ -15,9 +15,16 @@ from typing import Any
 from uuid import uuid4
 
 from hyprial.identity.impl.agents.registry._core  import AgentRegistry
+from hyprial.identity.impl.agents.registry._base import Agent
 from hyprial.identity.impl.agents.runtime.grants  import CapabilityGrant, GrantJournalEntry
 from hyprial.identity.impl.agents.home.provisioner  import HomeReceipt, WorkspaceSummary
 from hyprial.identity.impl.agents.runtime.secrets  import SecretGrant
+
+
+@dataclass(frozen=True, slots=True)
+class ReadAgentRecord:
+    correlation_id: str
+    actor: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,7 +86,7 @@ class AgentActivityHints:
 ReadCommand = (
     ValidateHome | ReadCapabilityGrants | ReadSecretInventory
     | ReadGrantJournal | ReadWorkspaceSummary | ResolveWorkspacePath
-    | ReadAgentActivityHints
+    | ReadAgentActivityHints | ReadAgentRecord
 )
 
 
@@ -131,6 +138,9 @@ class AgentReadEffectPort:
         )
         for worker in self._workers:
             worker.start()
+
+    def agent_record(self, actor: str) -> Agent | None:
+        return self._call(ReadAgentRecord(f"agent-record-{uuid4().hex}", actor))
 
     def validate_home(self, actor: str) -> HomeReceipt:
         return self._call(ValidateHome(f"agent-home-{uuid4().hex}", actor))
@@ -198,7 +208,9 @@ class AgentReadEffectPort:
                 return
             captured_error: Exception | None = None
             try:
-                if isinstance(command, ValidateHome):
+                if isinstance(command, ReadAgentRecord):
+                    value = self.registry.get(command.actor)
+                elif isinstance(command, ValidateHome):
                     value = self.registry.home_receipt(command.actor)
                 elif isinstance(command, ReadCapabilityGrants):
                     value = self.registry.capability_grants(command.actor)

@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     from hyprial.identity.impl.agents.migration._bindings import AgentRuntimeMigrationBindings as AgentRuntimeMigrationBindings
     from hyprial.identity.impl.agents.actor.ports import AgentSecretGrantCompleted as AgentSecretGrantCompleted
     from hyprial.identity.impl.agents.runtime.context import AgentToolProfile as AgentToolProfile
+    from hyprial.identity.impl.agents.runtime.tool_profile import GitAuthorUnresolvedError as GitAuthorUnresolvedError
     from hyprial.identity.impl.org_directory import AllowAllPolicy as AllowAllPolicy
     from hyprial.identity.impl.users.store._base import Ambiguous as Ambiguous
     from hyprial.identity.impl.org_directory import BOOTSTRAP_STEP_KINDS as BOOTSTRAP_STEP_KINDS
@@ -62,12 +63,12 @@ if TYPE_CHECKING:
     from hyprial.identity.impl.agents.actor.ports import CreateAgentCommand as CreateAgentCommand
     from hyprial.identity.impl.agents.actor.ports import CreateHostInvitedAgentCommand as CreateHostInvitedAgentCommand
     from hyprial.identity.impl.agents.actor.ports import CreateTransferHostedAgentCommand as CreateTransferHostedAgentCommand
-    from hyprial.identity.impl.agents.runtime.context import DEFAULT_AGENT_TOOL_PROFILE as DEFAULT_AGENT_TOOL_PROFILE
     from hyprial.identity.impl.device import DEVICE_KEY_RELPATH as DEVICE_KEY_RELPATH
     from hyprial.identity.impl.device import DEVICE_RECORD_RELPATH as DEVICE_RECORD_RELPATH
     from hyprial.identity.impl.org_directory import DIRECTORY_DIR as DIRECTORY_DIR
     from hyprial.identity.impl.org_directory import BINDING_ASSERTION_CLIENT_ID as BINDING_ASSERTION_CLIENT_ID
     from hyprial.identity.impl.org_directory import BINDING_ASSERTION_OWNER as BINDING_ASSERTION_OWNER
+    from hyprial.identity.impl.org_directory import binding_assertion_audience_matches as binding_assertion_audience_matches
     from hyprial.identity.impl.org_directory import binding_assertion_claims_unverified as binding_assertion_claims_unverified
     from hyprial.identity.impl.org_directory import binding_assertion_publish_after as binding_assertion_publish_after
     from hyprial.identity.impl.org_directory import binding_numeric_date as binding_numeric_date
@@ -98,7 +99,7 @@ if TYPE_CHECKING:
     from hyprial.identity.impl.agents.registry._base import HandoverNotice as HandoverNotice
     from hyprial.identity.impl.agents.home.provisioner import HomePayloadFile as HomePayloadFile
     from hyprial.identity.impl.agents.home.effects import HomeRuntimePreparer as HomeRuntimePreparer
-    from hyprial.identity.impl.identity_transaction import IDENTITY_TRANSACTION_FD_ENV as IDENTITY_TRANSACTION_FD_ENV
+    from hyprial.identity.impl.identity_transaction import EXPECTED_IDENTITY_GENERATION_ENV as EXPECTED_IDENTITY_GENERATION_ENV
     from hyprial.identity.impl.org_directory import INVITES_DIR as INVITES_DIR
     from hyprial.identity.impl.org_directory import INVITE_SCHEME as INVITE_SCHEME
     from hyprial.identity.impl.identity_transaction import IdentityTransactionBusy as IdentityTransactionBusy
@@ -226,6 +227,7 @@ if TYPE_CHECKING:
     from hyprial.identity.impl.agents.home.readiness import assess_agent_readiness as assess_agent_readiness
     from hyprial.identity.impl.agents.home.readiness import parse_tool_declaration as parse_tool_declaration
     from hyprial.identity.impl.agents.runtime.context import resolve_agent_runtime_context as resolve_agent_runtime_context
+    from hyprial.identity.impl.agents.runtime.tool_profile import resolve_agent_tool_profile as resolve_agent_tool_profile
     from hyprial.identity.impl.agents.home.environment import resolve_agent_secrets as resolve_agent_secrets
     from hyprial.identity.impl.agents.home.native_credential import NativeCredentialError as NativeCredentialError
     from hyprial.identity.impl.agents.home.native_credential import NATIVE_CREDENTIAL_FILES as NATIVE_CREDENTIAL_FILES
@@ -329,6 +331,7 @@ _FACADE_EXPORTS = {
     'AgentRuntimeMigrationBindings': ('hyprial.identity.impl.agents.migration._bindings', 'AgentRuntimeMigrationBindings'),
     'AgentSecretGrantCompleted': ('hyprial.identity.impl.agents.actor.ports', 'AgentSecretGrantCompleted'),
     'AgentToolProfile': ('hyprial.identity.impl.agents.runtime.context', 'AgentToolProfile'),
+    'GitAuthorUnresolvedError': ('hyprial.identity.impl.agents.runtime.tool_profile', 'GitAuthorUnresolvedError'),
     'AllowAllPolicy': ('hyprial.identity.impl.org_directory', 'AllowAllPolicy'),
     'Ambiguous': ('hyprial.identity.impl.users.store._base', 'Ambiguous'),
     'BOOTSTRAP_STEP_KINDS': ('hyprial.identity.impl.org_directory', 'BOOTSTRAP_STEP_KINDS'),
@@ -348,12 +351,12 @@ _FACADE_EXPORTS = {
     'CreateAgentCommand': ('hyprial.identity.impl.agents.actor.ports', 'CreateAgentCommand'),
     'CreateHostInvitedAgentCommand': ('hyprial.identity.impl.agents.actor.ports', 'CreateHostInvitedAgentCommand'),
     'CreateTransferHostedAgentCommand': ('hyprial.identity.impl.agents.actor.ports', 'CreateTransferHostedAgentCommand'),
-    'DEFAULT_AGENT_TOOL_PROFILE': ('hyprial.identity.impl.agents.runtime.context', 'DEFAULT_AGENT_TOOL_PROFILE'),
     'DEVICE_KEY_RELPATH': ('hyprial.identity.impl.device', 'DEVICE_KEY_RELPATH'),
     'DEVICE_RECORD_RELPATH': ('hyprial.identity.impl.device', 'DEVICE_RECORD_RELPATH'),
     'DIRECTORY_DIR': ('hyprial.identity.impl.org_directory', 'DIRECTORY_DIR'),
     'BINDING_ASSERTION_CLIENT_ID': ('hyprial.identity.impl.org_directory', 'BINDING_ASSERTION_CLIENT_ID'),
     'BINDING_ASSERTION_OWNER': ('hyprial.identity.impl.org_directory', 'BINDING_ASSERTION_OWNER'),
+    'binding_assertion_audience_matches': ('hyprial.identity.impl.org_directory', 'binding_assertion_audience_matches'),
     'binding_assertion_claims_unverified': ('hyprial.identity.impl.org_directory', 'binding_assertion_claims_unverified'),
     'binding_assertion_publish_after': ('hyprial.identity.impl.org_directory', 'binding_assertion_publish_after'),
     'binding_numeric_date': ('hyprial.identity.impl.org_directory', 'binding_numeric_date'),
@@ -384,7 +387,7 @@ _FACADE_EXPORTS = {
     'HandoverNotice': ('hyprial.identity.impl.agents.registry._base', 'HandoverNotice'),
     'HomePayloadFile': ('hyprial.identity.impl.agents.home.provisioner', 'HomePayloadFile'),
     'HomeRuntimePreparer': ('hyprial.identity.impl.agents.home.effects', 'HomeRuntimePreparer'),
-    'IDENTITY_TRANSACTION_FD_ENV': ('hyprial.identity.impl.identity_transaction', 'IDENTITY_TRANSACTION_FD_ENV'),
+    'EXPECTED_IDENTITY_GENERATION_ENV': ('hyprial.identity.impl.identity_transaction', 'EXPECTED_IDENTITY_GENERATION_ENV'),
     'INVITES_DIR': ('hyprial.identity.impl.org_directory', 'INVITES_DIR'),
     'INVITE_SCHEME': ('hyprial.identity.impl.org_directory', 'INVITE_SCHEME'),
     'IdentityTransactionBusy': ('hyprial.identity.impl.identity_transaction', 'IdentityTransactionBusy'),
@@ -512,6 +515,7 @@ _FACADE_EXPORTS = {
     'assess_agent_readiness': ('hyprial.identity.impl.agents.home.readiness', 'assess_agent_readiness'),
     'parse_tool_declaration': ('hyprial.identity.impl.agents.home.readiness', 'parse_tool_declaration'),
     'resolve_agent_runtime_context': ('hyprial.identity.impl.agents.runtime.context', 'resolve_agent_runtime_context'),
+    'resolve_agent_tool_profile': ('hyprial.identity.impl.agents.runtime.tool_profile', 'resolve_agent_tool_profile'),
     'resolve_agent_secrets': ('hyprial.identity.impl.agents.home.environment', 'resolve_agent_secrets'),
     'NativeCredentialError': ('hyprial.identity.impl.agents.home.native_credential', 'NativeCredentialError'),
     'NATIVE_CREDENTIAL_FILES': ('hyprial.identity.impl.agents.home.native_credential', 'NATIVE_CREDENTIAL_FILES'),
@@ -634,6 +638,7 @@ __all__ = [
     'AgentRuntimeMigrationBindings',
     'AgentSecretGrantCompleted',
     'AgentToolProfile',
+    'GitAuthorUnresolvedError',
     'AllowAllPolicy',
     'Ambiguous',
     'BOOTSTRAP_STEP_KINDS',
@@ -653,12 +658,12 @@ __all__ = [
     'CreateAgentCommand',
     'CreateHostInvitedAgentCommand',
     'CreateTransferHostedAgentCommand',
-    'DEFAULT_AGENT_TOOL_PROFILE',
     'DEVICE_KEY_RELPATH',
     'DEVICE_RECORD_RELPATH',
     'DIRECTORY_DIR',
     'BINDING_ASSERTION_CLIENT_ID',
     'BINDING_ASSERTION_OWNER',
+    'binding_assertion_audience_matches',
     'binding_assertion_claims_unverified',
     'binding_assertion_publish_after',
     'binding_numeric_date',
@@ -689,7 +694,7 @@ __all__ = [
     'HandoverNotice',
     'HomePayloadFile',
     'HomeRuntimePreparer',
-    'IDENTITY_TRANSACTION_FD_ENV',
+    'EXPECTED_IDENTITY_GENERATION_ENV',
     'INVITES_DIR',
     'INVITE_SCHEME',
     'IdentityTransactionBusy',
@@ -817,6 +822,7 @@ __all__ = [
     'assess_agent_readiness',
     'parse_tool_declaration',
     'resolve_agent_runtime_context',
+    'resolve_agent_tool_profile',
     'resolve_agent_secrets',
     'NativeCredentialError',
     'NATIVE_CREDENTIAL_FILES',

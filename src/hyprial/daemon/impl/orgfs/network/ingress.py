@@ -1,3 +1,41 @@
+# Attach-window decision record (2026-11-03, brief-replica.md Round 2, R&D lead
+# decision: fix direction 1).
+#
+# Defect: OrgFsMesh.attach_replica primed the replica before assigning it, so
+# envelopes applied to the store during the prime were dropped by
+# _store_replica_envelope (replica_store was still None), while serving
+# preferred the replica once assigned. A doc that landed only in the store in
+# that window was permanently invisible to clone/catch-up serving
+# (unknown-doc; tests/daemon/orgfs/replication/test_orgfs_replica_mesh.py
+# flake family).
+#
+# Chosen design: assign the replica first in a NOT-READY state; prime from the
+# store; backfill the store-journal delta with a second idempotent prime pass;
+# drain the bounded mirror queue accumulated during the window; only then mark
+# it ready. Until ready, serving keeps the store path (queries.py gates on
+# _replica_serving) and mirror writes are enqueued under _ingress_guard instead
+# of being put on the replica actor, so the broadcaster never serializes behind
+# the prime (a reordered attach without this gate blocked the broadcaster put
+# ~10s on the single replica actor). Queue overflow (bound:
+# ORGFS_LOG_INGRESS_CAPACITY) sets an overflow flag that forces one extra
+# delta scan before readiness; a failed attach detaches back to the pre-attach
+# state (serving store path, mirror drops covered by the next attach's scan),
+# and _create_or_reuse_replica's reuse branch runs the same delta check and
+# re-attaches a detached replica.
+#
+# Round 3 (2026-11-03, RM2 review REJECT 8e6a2d7701): the reuse branch primed
+# the already-serving replica directly on the replica actor while the mesh
+# stayed ready, so ready-path mirror puts blocked behind the prime — the same
+# serialization Round 2 forbids, on the re-serve path. `refresh_replica` now
+# routes the reuse delta check through the identical NOT-READY window (gate,
+# prime, queue drain, delta backfill, readiness), and the lifecycle reuse
+# branch calls it whenever the mesh already serves that replica. Refresh
+# failure restores the pre-refresh ready state and flushes the window queue
+# through the normal mirror path (the replica was complete before the
+# refresh; prime and mirror puts are idempotent), unlike attach failure,
+# which detaches to store-path serving. Refresh does not announce: serving
+# availability does not change.
+
 from __future__ import annotations
 
 
@@ -37,7 +75,12 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.orgfs.storage.replica  import ReplicaStore
 
 
-from hyprial.daemon.impl.orgfs.network.protocol import _LogIngress, _READ_DIRECT, _decode_update_header, _json_bytes
+from hyprial.daemon.impl.orgfs.network.protocol import (
+    ORGFS_LOG_INGRESS_CAPACITY,
+    _LogIngress,
+    _READ_DIRECT,
+    _decode_update_header,
+    _json_bytes)
 from hyprial.daemon.impl.orgfs.instrumentation import emit_announce_event
 
 class MeshIngress:
@@ -237,22 +280,100 @@ class MeshIngress:
 
 
     def attach_replica(self, replica_store: ReplicaStore) -> None:
-        """Attach and prime the resident backend from the admitted journal."""
+        """Attach, backfill, and only then serve from the resident replica."""
 
         if replica_store.space_id != self.store.space_id:
             raise ValueError("replica store belongs to another space")
-        replica_store.prime_from(self.store, self.blob_store)
-        self.replica_store = replica_store
-        self.durable = replica_store.durable()
+        with self._ingress_guard:
+            self.replica_store = replica_store
+            self._replica_ready = False
+            self._replica_attach_pending = []
+            self._replica_attach_overflow = False
+        try:
+            replica_store.prime_from(self.store, self.blob_store)
+            self._complete_replica_attach(replica_store)
+        except BaseException:
+            with self._ingress_guard:
+                if self.replica_store is replica_store:
+                    self.replica_store = None
+                    self._replica_ready = False
+                    self._replica_attach_pending = []
+                    self._replica_attach_overflow = False
+            raise
         if self.blob_store is not None:
             for digest in replica_store.pinned_blobs():
                 self.blob_store.pin(self.store.space_id, digest, "replica")
+        self.durable = replica_store.durable()
         self.announce()
 
 
+    def refresh_replica(self, replica_store: ReplicaStore) -> None:
+        """Re-backfill an already-serving replica through the NOT-READY window."""
+
+        if replica_store.space_id != self.store.space_id:
+            raise ValueError("replica store belongs to another space")
+        with self._ingress_guard:
+            if self.replica_store is not replica_store:
+                raise ValueError("replica is not attached to this mesh")
+            self._replica_ready = False
+            self._replica_attach_pending = []
+            self._replica_attach_overflow = False
+        try:
+            replica_store.prime_from(self.store, self.blob_store)
+            self._complete_replica_attach(replica_store)
+        except BaseException:
+            with self._ingress_guard:
+                recover = self.replica_store is replica_store and not self._replica_ready
+                pending = self._replica_attach_pending if recover else []
+                self._replica_attach_pending = []
+                self._replica_attach_overflow = False
+                if recover:
+                    self._replica_ready = True
+            for envelope in pending:
+                self._mirror_replica_envelope(envelope, replica_store)
+            raise
+        self.durable = replica_store.durable()
+
+    def _complete_replica_attach(self, replica_store: ReplicaStore) -> None:
+        """Backfill the attach window before the replica starts serving."""
+
+        replica_store.prime_from(self.store, self.blob_store)
+        while True:
+            with self._ingress_guard:
+                if self.replica_store is not replica_store:
+                    return
+                pending = self._replica_attach_pending
+                self._replica_attach_pending = []
+                overflow = self._replica_attach_overflow
+                self._replica_attach_overflow = False
+                if not pending and not overflow:
+                    self._replica_ready = True
+                    return
+            for envelope in pending:
+                self._mirror_replica_envelope(envelope, replica_store)
+            if overflow:
+                replica_store.prime_from(self.store, self.blob_store)
+
+
     def _store_replica_envelope(self, envelope: bytes) -> None:
-        if self.replica_store is None:
-            return
+        while True:
+            with self._ingress_guard:
+                replica = self.replica_store
+                if replica is None:
+                    return
+                if not self._replica_ready:
+                    if len(self._replica_attach_pending) >= ORGFS_LOG_INGRESS_CAPACITY:
+                        self._replica_attach_overflow = True
+                    else:
+                        self._replica_attach_pending.append(envelope)
+                    return
+            self._mirror_replica_envelope(envelope, replica)
+            with self._ingress_guard:
+                if self.replica_store is replica and self._replica_ready:
+                    return
+
+
+    def _mirror_replica_envelope(self, envelope: bytes, replica: ReplicaStore) -> None:
         try:
             value = _decode_update_header(envelope, space_id=self.store.space_id)
             origin = value["origin"]
@@ -260,10 +381,10 @@ class MeshIngress:
                 f"log/{self.store.space_id}/{value['docId']}/"
                 f"{origin['writer']}/{value['seq']}"
             )
-            self.replica_store.store_envelope(key, envelope)
+            replica.store_envelope(key, envelope)
             digest = value.get("updateBlob")
             if isinstance(digest, str) and self.blob_store is not None:
-                self.replica_store.store_blob(
+                replica.store_blob(
                     digest, self.blob_store.get(self.store.space_id, digest)
                 )
                 self.blob_store.pin(self.store.space_id, digest, "replica")

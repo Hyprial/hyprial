@@ -15,6 +15,10 @@ func Directory(path string) error {
 	if err != nil {
 		return err
 	}
+	return directoryInfo(info)
+}
+
+func directoryInfo(info os.FileInfo) error {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok || !info.IsDir() || info.Mode().Perm() != 0700 || stat.Uid != uint32(os.Getuid()) {
 		return errors.New("private directory required")

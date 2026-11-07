@@ -1,0 +1,6 @@
+{
+  "defaultProvider": "openai",
+  "defaultModel": "gpt-4o-mini",
+  "defaultProjectTrust": "ask",
+  "enableInstallTelemetry": false
+}

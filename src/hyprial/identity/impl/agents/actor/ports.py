@@ -138,6 +138,7 @@ class UpdateAgentCommand:
     last_session_id: str | None = None
     expected_version: int | None = None
     expected_entity_token: str | None = None
+    preserve_harness_args: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(

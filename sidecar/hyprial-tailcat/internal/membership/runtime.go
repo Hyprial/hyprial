@@ -1,12 +1,18 @@
+// Control frames require a newline. Deadline/EOF fragments are transport failures;
+// diagnostics retain only the received byte count, never the partial payload.
 package membership
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net"
 	"sync"
 	"time"
+
+	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tailcat/internal/outbound"
 )
 
 func response(r Request, data json.RawMessage, err error) Response {
@@ -20,17 +26,39 @@ func response(r Request, data json.RawMessage, err error) Response {
 	return out
 }
 
+func readControlFrame(reader io.Reader) ([]byte, int, error) {
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 4096), MaxFrame+1)
+	received := 0
+	scanner.Split(func(data []byte, atEOF bool) (int, []byte, error) {
+		received = len(data)
+		if index := bytes.IndexByte(data, '\n'); index >= 0 {
+			return index + 1, data[:index], nil
+		}
+		if atEOF {
+			return 0, nil, io.ErrUnexpectedEOF
+		}
+		return 0, nil, nil
+	})
+	if scanner.Scan() {
+		return scanner.Bytes(), len(scanner.Bytes()), nil
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, received, err
+	}
+	return nil, received, io.EOF
+}
+
 // ServeControl handles exactly one bounded frame. The engine owns the listener
 // and resolves peer from the actual Tailcat transport, never request JSON.
 func (m *Manager) ServeControl(conn net.Conn, peer string) {
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(Timeout))
-	scanner := bufio.NewScanner(conn)
-	scanner.Buffer(make([]byte, 4096), MaxFrame)
-	if !scanner.Scan() {
+	frame, _, err := readControlFrame(conn)
+	if err != nil {
 		return
 	}
-	r, err := Parse(scanner.Bytes(), true)
+	r, err := Parse(frame, true)
 	var data json.RawMessage
 	if err == nil {
 		m.mu.Lock()
@@ -65,6 +93,9 @@ func (m *Manager) exchange(ctx context.Context, pin Authority, r Request, self S
 	defer cancel()
 	conn, err := m.dial(ctx, pin)
 	if err != nil {
+		if Code(err) == "AUTHORITY_UNREACHABLE" {
+			return nil, err
+		}
 		return nil, fail("AUTHORITY_UNREACHABLE")
 	}
 	defer conn.Close()
@@ -77,13 +108,17 @@ func (m *Manager) exchange(ctx context.Context, pin Authority, r Request, self S
 	if err := json.NewEncoder(conn).Encode(r); err != nil {
 		return nil, fail("AUTHORITY_UNREACHABLE")
 	}
-	scanner := bufio.NewScanner(conn)
-	scanner.Buffer(make([]byte, 4096), MaxFrame)
-	if !scanner.Scan() {
-		return nil, fail("AUTHORITY_UNREACHABLE")
+	frame, received, readErr := readControlFrame(conn)
+	if readErr != nil {
+		if ctx.Err() != nil {
+			readErr = ctx.Err()
+		}
+		detail := outbound.ControlFailure(readErr)
+		detail.BytesReceived = &received
+		return nil, &Error{Value: "AUTHORITY_UNREACHABLE", Detail: &detail}
 	}
 	var result Response
-	if Decode(scanner.Bytes(), &result) != nil {
+	if Decode(frame, &result) != nil {
 		return nil, fail("BAD_REQUEST")
 	}
 	if result.V != 1 {

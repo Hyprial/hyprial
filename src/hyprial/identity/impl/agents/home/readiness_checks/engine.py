@@ -39,7 +39,6 @@ from hyprial.identity.impl.agents.home.readiness_checks.probes import (
     _wsl_interop_check,
 )
 from hyprial.identity.impl.agents.runtime.context import (
-    DEFAULT_AGENT_TOOL_PROFILE,
     AgentToolProfile,
     derive_runtime_roots,
     runtime_environment_for_roots,
@@ -80,7 +79,7 @@ def assess_agent_readiness(
     entity_token: str | None,
     running: bool,
     environ: Mapping[str, str],
-    tool_profile: AgentToolProfile = DEFAULT_AGENT_TOOL_PROFILE,
+    tool_profile: AgentToolProfile | None,
     declared_tools: Sequence[ToolDeclaration] = (),
     work_paths: Sequence[str] = (),
     forgejo_identity: bool = False,
@@ -126,6 +125,11 @@ def assess_agent_readiness(
 
     checks: list[ReadinessCheck] = []
     p2 = mode == "agent-home-p2"
+
+    if p2 and tool_profile is None:
+        raise ReadinessError(
+            "agent-home-p2 readiness needs the agent's resolved tool profile"
+        )
 
     if p2:
         checks.append(_home_check(agent_home))

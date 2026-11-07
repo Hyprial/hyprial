@@ -33,14 +33,11 @@ import (
 
 	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tailcat/internal/keys"
 	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tailcat/internal/membership"
+	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tailcat/internal/outbound"
 	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tailcat/internal/privatefs"
 )
 
 const dialTimeout = 5 * time.Second
-
-// quiet discards Tailcat's internal debug logs so secrets (node keys in
-// URLs, ConnInfo material) can never leak through the logging path.
-func quiet(string, ...any) {}
 
 // DERPOverride selects a local test relay instead of the default DERP
 // map (design doc §3.3, up.derp; test-only).
@@ -140,6 +137,7 @@ type exposedPort struct {
 // Engine is the sidecar's single Tailcat server plus its mapped peers
 // and exposures. The zero value is down; call Up.
 type Engine struct {
+	network       outbound.Diagnostics
 	mu            sync.Mutex
 	up            bool
 	server        *tailcat.Server
@@ -160,6 +158,7 @@ type Engine struct {
 	mapped       map[string]*mappedPeer
 	services     map[string]*mappedService
 	clients      map[string]*pooledClient
+	regionHints  outbound.RegionHints
 	exposed      map[int]*exposedPort
 	deniedCount  atomic.Int64
 	disconnected atomic.Int64
@@ -200,6 +199,9 @@ func regionFromOverride(d *DERPOverride) *tailcfg.DERPRegion {
 // set, writes the Tailcat address to addressFile (0600), and, when an
 // inboundTarget is configured, listens on PeerPort and proxies to it.
 func (e *Engine) Up(ctx context.Context, cfg UpConfig) (serverPublic, clientPublic string, err error) {
+	if err := outbound.Validate(); err != nil {
+		return "", "", err
+	}
 	e.mu.Lock()
 	if e.up {
 		e.mu.Unlock()
@@ -226,7 +228,7 @@ func (e *Engine) Up(ctx context.Context, cfg UpConfig) (serverPublic, clientPubl
 	server := &tailcat.Server{
 		Key:          material.ServerPrivate,
 		PresharedKey: material.PresharedKey,
-		Logf:         logger.Logf(quiet),
+		Logf:         logger.Logf(e.network.Logf),
 	}
 	if cfg.DERPMapURL != "" {
 		var cache tailcat.DERPMapCache
@@ -293,6 +295,7 @@ func (e *Engine) Up(ctx context.Context, cfg UpConfig) (serverPublic, clientPubl
 	e.mapped = make(map[string]*mappedPeer)
 	e.services = make(map[string]*mappedService)
 	e.clients = make(map[string]*pooledClient)
+	e.regionHints.Clear()
 	e.exposed = make(map[int]*exposedPort)
 	e.mu.Unlock()
 

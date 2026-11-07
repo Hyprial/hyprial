@@ -1,7 +1,11 @@
-"""RoutineRegistry command, timer and recovery handling (mixin)."""
+"""RoutineRegistry command, timer and recovery handling (mixin).
+
+in_flight 结算的决策与根因见 docs/notes/routine-inflight-settle-2026-11-04.md。
+"""
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import replace
 from uuid import uuid4
@@ -35,6 +39,9 @@ from hyprial.biz.impl.routine.execution.registry.effects import (
     _ActiveRoutine,
 )
 
+_SETTLED_GRAPH_STATES = frozenset({"done", "escalated"})
+
+
 class _RegistryCore:
     """Serial handler for schedule, breaker, in-flight and Store mutation."""
 
@@ -46,12 +53,14 @@ class _RegistryCore:
         publish: Callable[[RegistryOutput], None],
         clock_ms: Callable[[], int],
         migrate_address: Callable[[str], str | None] | None = None,
+        graph_state: Callable[[str], str] | None = None,
         logger: Logger | None = None,
     ) -> None:
         self._store = store
         self._generation = generation
         self._publish = publish
         self._clock_ms = clock_ms
+        self._graph_state = graph_state
         # Resolve one bare agent name to its canonical local URI, or None
         # when the name is not uniquely known on this node.  Used ONLY for
         # stored-spec migration; new submissions are rejected at schema load.
@@ -304,16 +313,24 @@ class _RegistryCore:
                 f"routine {command.name!r} has a reserved removal",
             )
             return
-        snapshot = self._store.snapshot(command.name)
-        if (snapshot is not None and bool(snapshot.in_flight)) or (
-            self._store.cycle_for_routine(command.name) is not None
-        ):
+        if self._store.cycle_for_routine(command.name) is not None:
             self._reject(
                 command.correlation_id,
                 "ROUTINE_BUSY",
                 f"routine {command.name!r} has an active cycle; replace it after the cycle settles",
             )
             return
+        self._record_finished_runs(command.name)
+        snapshot = self._store.snapshot(command.name)
+        if snapshot is not None and bool(snapshot.in_flight):
+            self._reject(
+                command.correlation_id,
+                "ROUTINE_BUSY",
+                f"routine {command.name!r} has an active cycle; replace it after the cycle settles",
+            )
+            return
+        refreshed = self._store.get_routine(command.name)
+        row = row if refreshed is None else refreshed
         try:
             spec = load_routine_text(command.yaml_text)
         except RoutineSchemaError as error:
@@ -347,6 +364,44 @@ class _RegistryCore:
         self._publish_mutation(
             command.correlation_id, updated, enabled=updated.enabled
         )
+
+    def _record_finished_runs(self, routine: str) -> None:
+        rows = self._store.in_flight(routine=routine)
+        row = self._store.get_routine(routine)
+        active = self._active.get(routine)
+        if not rows or row is None or active is None or self._graph_state is None:
+            return
+        settled: dict[str, str] = {}
+        for item in rows:
+            state = self._probe_settled(item.run_id)
+            if state is not None:
+                settled[item.task_uuid] = state
+        if not settled:
+            return
+        outcomes = list(json.loads(row.outcomes))
+        outcomes.extend(settled.values())
+        window = active.spec.limits.circuit_breaker.window_runs
+        updated = replace(
+            row,
+            outcomes=json.dumps(outcomes[-window:]),
+            version=self._next_version(),
+        )
+        self._store.apply(
+            routine=updated,
+            remove_in_flight=tuple((routine, task_uuid) for task_uuid in settled),
+        )
+        self._log(
+            "info", "routine.in_flight_settled", routine=routine, outcomes=tuple(settled.values())
+        )
+
+    def _probe_settled(self, run_id: str) -> str | None:
+        if self._graph_state is None:
+            return None
+        try:
+            state = self._graph_state(run_id)
+        except Exception:  # noqa: BLE001
+            return None
+        return state if state in _SETTLED_GRAPH_STATES else None
 
     def _pause(self, command: PauseRoutineCommand) -> None:
         row = self._require(command.correlation_id, command.name)
@@ -418,14 +473,15 @@ class _RegistryCore:
         reserved = self._store.reserved_removals()
         for row in self._store.list_routines():
             if (
-                not row.enabled
-                or row.name in reserved
+                row.name in reserved
                 or row.quarantine_reason is not None
-                or command.observed_at_ms < row.next_due_ms
             ):
                 continue
             active = self._active.get(row.name)
             if active is None:
+                continue
+            if not row.enabled or command.observed_at_ms < row.next_due_ms:
+                self._poll_in_flight(row, active)
                 continue
             interval_ms = int(active.spec.interval_seconds * 1000)
             slot = row.next_due_ms

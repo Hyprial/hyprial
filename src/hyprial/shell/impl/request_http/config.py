@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-import errno
-import fcntl
 import json
 import os
 from pathlib import Path
@@ -14,7 +12,12 @@ import stat
 from typing import Any
 from urllib.parse import urlsplit
 
-from hyprial.kernel import canonical_agent_uri, parse_agent_uri
+from hyprial.kernel import (
+    FileLockBusy,
+    ProcessFileLock,
+    canonical_agent_uri,
+    parse_agent_uri,
+)
 
 CONFIG_KEYS = frozenset(
     {"schemaVersion", "backend", "principal", "listen", "security", "budgets", "runtime"}
@@ -306,38 +309,29 @@ class RuntimeLock:
 
     def __init__(self, directory: Path) -> None:
         self.path = directory / "server.lock"
-        self._fd: int | None = None
+        self._lock: ProcessFileLock | None = None
 
     def acquire(self) -> None:
+        lock = ProcessFileLock(self.path)
         try:
-            fd = os.open(self.path, os.O_CREAT | os.O_RDWR, 0o600)
-        except OSError as error:
+            lock.acquire(0.0)
+        except FileLockBusy as error:
             raise ConfigFailure(
-                "RUNTIME_UNAVAILABLE", f"cannot open server lock: {error.strerror}", exit_code=4
+                "RUNTIME_UNAVAILABLE",
+                "another request-http server owns this runtime dir",
+                exit_code=4,
             ) from error
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as error:
-            os.close(fd)
-            if error.errno in (errno.EACCES, errno.EAGAIN):
-                raise ConfigFailure(
-                    "RUNTIME_UNAVAILABLE",
-                    "another request-http server owns this runtime dir",
-                    exit_code=4,
-                ) from error
             raise ConfigFailure(
                 "RUNTIME_UNAVAILABLE", f"cannot lock server.lock: {error.strerror}", exit_code=4
             ) from error
-        self._fd = fd
+        self._lock = lock
 
     def release(self) -> None:
-        if self._fd is None:
-            return
-        try:
-            fcntl.flock(self._fd, fcntl.LOCK_UN)
-        finally:
-            os.close(self._fd)
-            self._fd = None
+        lock = self._lock
+        self._lock = None
+        if lock is not None:
+            lock.release()
 
 
 def server_json_path(directory: Path) -> Path:

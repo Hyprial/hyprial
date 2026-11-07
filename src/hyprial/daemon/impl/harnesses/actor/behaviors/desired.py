@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import uuid
+from dataclasses import replace
 from hyprial.kernel import AdmissionResult
 from hyprial.kernel import capped_exponential
 from hyprial.daemon.impl.desired_state_io  import (
@@ -653,6 +654,13 @@ class _DesiredBehavior:
                     if record is not None
                     else _launch_spec(request.payload.spec)
                 )
+                if (
+                    confirmed_spec.harness == "claude" and confirmed_spec.headless
+                    and record is not None and record.process is not None
+                ):
+                    native_ref = getattr(record.process, "session_ref", None)
+                    if isinstance(native_ref, str) and native_ref:
+                        confirmed_spec = replace(confirmed_spec, session_ref=native_ref)
                 operation = DesiredStateOperation.CONFIRM_HARNESS_LIFECYCLE
                 args = (
                     request.attempt_token,

@@ -1,43 +1,72 @@
-"""Home-scoped OS lock for identity commit and daemon generation handoff."""
+"""Home-scoped OS lock for identity commit and daemon identity read.
+
+The lock is never handed to another process.  A CLI commits identity under it
+and releases; the daemon it starts acquires the lock itself before reading
+identity and releases it once ready.  The CLI passes the committed identity
+generation (``EXPECTED_IDENTITY_GENERATION_ENV``) so a daemon that loses the
+gap to a later login exits as stale instead of serving the wrong owner.  The
+env value is a check, never an authorization.
+
+One legacy exception, kept for exactly one release: a ``<=0.5.5.3.3``
+interpreter finishing ``hyprial upgrade`` (or the autoupdate child) still
+launches the new ``daemon run`` holding the lock and passing its descriptor in
+``LEGACY_TRANSACTION_FD_ENV``.  :meth:`IdentityTransactionLock.adopt_legacy`
+takes that descriptor over instead of contending with it -- a second open file
+description can never acquire a lock its own inherited descriptor holds, so
+without the adoption the upgraded daemon would wait out its lock budget and
+exit busy.  Remove in 0.5.5.4.
+"""
 
 from __future__ import annotations
 
 import os
-import time
 from pathlib import Path
-from typing import IO, MutableMapping
 
-from hyprial.kernel import lock_exclusive
+from typing import MutableMapping, Protocol
 
-if os.name != "nt":
-    import fcntl
+from hyprial.kernel import FileLockBusy, ProcessFileLock, lock_exclusive
 
 IDENTITY_TRANSACTION_LOCK = ".identity-transaction.lock"
-IDENTITY_TRANSACTION_FD_ENV = "HYPRIAL_IDENTITY_TRANSACTION_FD"
+EXPECTED_IDENTITY_GENERATION_ENV = "HYPRIAL_EXPECTED_IDENTITY_GENERATION"
+# Set only by a <=0.5.5.3.3 launcher (upgrade tail); read by adopt_legacy.
+LEGACY_TRANSACTION_FD_ENV = "HYPRIAL_IDENTITY_TRANSACTION_FD"
 
 
 class IdentityTransactionBusy(RuntimeError):
     code = "IDENTITY_TRANSACTION_BUSY"
 
 
-class IdentityTransactionLock:
-    """A held ``flock`` transferable to the daemon child by descriptor.
+class _HeldLock(Protocol):
+    def release(self) -> None: ...
 
-    The environment carries only the descriptor number.  Adoption verifies
-    that the descriptor is the expected lock inode *and* that an independently
-    opened descriptor cannot acquire the lock.  An environment string alone
-    is therefore not an authorization bypass.
-    """
+    def close(self) -> None: ...
 
-    def __init__(self, path: Path, stream: IO[bytes]):
-        self.path = path
-        self._stream: IO[bytes] | None = stream
+
+class _InheritedLegacyLock:
+    """The descriptor a legacy launcher handed over; closing it releases."""
+
+    def __init__(self, descriptor: int) -> None:
+        self._descriptor: int | None = descriptor
 
     @property
-    def fileno(self) -> int:
-        if self._stream is None:
-            raise RuntimeError("identity transaction lock is closed")
-        return self._stream.fileno()
+    def held(self) -> bool:
+        return self._descriptor is not None
+
+    def release(self) -> None:
+        descriptor = self._descriptor
+        self._descriptor = None
+        if descriptor is not None:
+            os.close(descriptor)
+
+    close = release
+
+
+class IdentityTransactionLock:
+    """One held identity-transaction lock, owned by this process only."""
+
+    def __init__(self, path: Path, lock: _HeldLock):
+        self.path = path
+        self._lock: _HeldLock | None = lock
 
     @classmethod
     def acquire(
@@ -46,98 +75,69 @@ class IdentityTransactionLock:
         home = Path(home)
         home.mkdir(parents=True, exist_ok=True, mode=0o700)
         path = home / IDENTITY_TRANSACTION_LOCK
-        stream = path.open("a+b")
-        os.chmod(path, 0o600)
-        deadline = time.monotonic() + max(timeout, 0.0)
-        while True:
-            try:
-                lock_exclusive(stream.fileno(), blocking=False)
-                return cls(path, stream)
-            except BlockingIOError as error:
-                if time.monotonic() >= deadline:
-                    stream.close()
-                    raise IdentityTransactionBusy(
-                        f"identity transaction already owns {path}"
-                    ) from error
-                time.sleep(max(0.001, poll_interval))
+        lock = ProcessFileLock(path)
+        try:
+            lock.acquire(timeout=timeout, poll_interval=poll_interval)
+        except FileLockBusy as error:
+            raise IdentityTransactionBusy(
+                f"identity transaction already owns {path}"
+            ) from error
+        try:
+            os.chmod(path, 0o600)
+        except BaseException:
+            lock.release()
+            raise
+        return cls(path, lock)
 
     @classmethod
-    def acquire_or_adopt(
-        cls,
-        home: Path,
-        environ: MutableMapping[str, str],
-        *,
-        timeout: float = 15.0,
-    ) -> IdentityTransactionLock:
-        raw = environ.get(IDENTITY_TRANSACTION_FD_ENV)
-        if raw is None:
-            return cls.acquire(home, timeout=timeout)
-        if os.name == "nt":
-            raise RuntimeError(
-                "inherited identity transaction descriptors are not supported on Windows"
-            )
+    def adopt_legacy(
+        cls, home: Path, environ: MutableMapping[str, str]
+    ) -> IdentityTransactionLock | None:
+        """Adopt a ``<=0.5.5.3.3`` launcher's inherited lock, else ``None``.
+
+        The variable is popped first so no descendant inherits it.  Adoption
+        requires the descriptor to name the home lock file (``fstat`` inode)
+        and a non-blocking ``lock_exclusive`` on that very descriptor to
+        succeed -- which it does only for the holding open file description
+        (or a free lock, which this process then holds).  Anything else is
+        ignored and the caller acquires normally.  Legacy launchers never
+        passed a descriptor on Windows (``pass_fds`` is POSIX-only there).
+        """
+
+        raw = environ.pop(LEGACY_TRANSACTION_FD_ENV, None)
+        if raw is None or os.name == "nt":
+            return None
         try:
             descriptor = int(raw)
-        except ValueError as error:
-            raise RuntimeError("invalid inherited identity transaction descriptor") from error
+        except ValueError:
+            return None
         path = Path(home) / IDENTITY_TRANSACTION_LOCK
         try:
             expected = path.stat()
             actual = os.fstat(descriptor)
-        except OSError as error:
-            raise RuntimeError("inherited identity transaction descriptor is unreadable") from error
+        except OSError:
+            return None
         if (actual.st_dev, actual.st_ino) != (expected.st_dev, expected.st_ino):
-            raise RuntimeError(
-                "inherited identity transaction descriptor is not the home lock"
-            )
-        verifier = path.open("a+b")
+            return None
         try:
-            try:
-                fcntl.flock(verifier.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                pass
-            else:
-                fcntl.flock(verifier.fileno(), fcntl.LOCK_UN)
-                raise RuntimeError(
-                    "inherited identity transaction descriptor does not hold the OS lock"
-                )
-        finally:
-            verifier.close()
-        # The verifier proves *someone* holds the lock; only re-locking this
-        # very descriptor proves *this* open file description is the holder.
-        # flock re-acquisition on the holding description succeeds, while a
-        # description that merely names the same inode blocks — so without
-        # this half, an unrelated inherited descriptor to the lock file
-        # would adopt a transaction somebody else holds.  The residual race
-        # is the true holder releasing between the two probes, which the
-        # handoff contract forbids (the parent holds through post-launch
-        # verification).
-        try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as error:
-            raise RuntimeError(
-                "inherited identity transaction descriptor is not the lock holder"
-            ) from error
-        stream = os.fdopen(descriptor, "a+b", closefd=True)
-        # The variable's only job was this handoff.  Leaving it in the
-        # daemon's environment leaks it to every descendant, and a
-        # grandchild that starts its own daemon would try to adopt a
-        # descriptor number that means nothing in its process.
-        environ.pop(IDENTITY_TRANSACTION_FD_ENV, None)
-        return cls(path, stream)
+            lock_exclusive(descriptor, blocking=False)
+        except OSError:
+            return None
+        return cls(path, _InheritedLegacyLock(descriptor))
 
-    def detach(self) -> IO[bytes]:
-        stream = self._stream
-        if stream is None:
+    def detach(self) -> _HeldLock:
+        """Move the held lock (``close()`` releases it) to an in-process owner."""
+        lock = self._lock
+        if lock is None:
             raise RuntimeError("identity transaction lock is already detached")
-        self._stream = None
-        return stream
+        self._lock = None
+        return lock
 
     def close(self) -> None:
-        stream = self._stream
-        self._stream = None
-        if stream is not None:
-            stream.close()
+        lock = self._lock
+        self._lock = None
+        if lock is not None:
+            lock.release()
 
     def __enter__(self) -> IdentityTransactionLock:
         return self

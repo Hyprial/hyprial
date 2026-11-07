@@ -1,0 +1,17 @@
+{
+  "request": {
+    "v": 1,
+    "op": "call",
+    "id": "msg-redacted-1",
+    "payload": {
+      "state": {"ticket": "redacted"},
+      "questions": {"urgent": {"type": "noul", "instructions": "redacted"}},
+      "model": "jev-latest"
+    }
+  },
+  "responses": [
+    {"v": 1, "type": "metric", "id": "msg-redacted-1", "segment": "decode", "durationMs": 0, "ok": true, "inFlight": 1, "queueDepth": 0},
+    {"v": 1, "type": "metric", "id": "msg-redacted-1", "segment": "call", "durationMs": 1, "ok": true, "inFlight": 1, "queueDepth": 0},
+    {"v": 1, "type": "result", "id": "msg-redacted-1", "ok": true, "output": {"model": "jev-latest", "answers": {"urgent": {"type": "noul", "noul": 0.5}}, "usage": {"inputTokens": null, "outputTokens": null}}}
+  ]
+}

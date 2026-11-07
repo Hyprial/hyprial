@@ -1,0 +1,39 @@
+version: 2
+name: daemon-request-final-dev-handoff
+on_failure: hold
+nodes:
+  - id: installed-candidate
+    owner: agent:amy.williams@example.com:devusr-dev:wf-19ff5a8b1e0140fb9a2d367241165ad9-6258b2d776bd
+    role: execute
+    timeout: 1h
+    task: >-
+      A 已合入 intg，用户要求推进 PR2015 状态。协调者已将 devf165 干净合入
+      source 278a53a8cae67a73ff664d720aad069033e97ea7，37 Python launcher、114 GUI、
+      typecheck/build、Ruff/structure/boundary/request-contract PASS。
+      仅补这个冻结 source 的一次标准 wheel build + installed acceptance/必要负控，
+      在独立 worktree/venv 中操作，不改产品、tests、scripts、gate、ledger，不合入独立 daemon
+      liveness 补丁，不重复全套或689/217。不追逐后续 dev。证据 docs/evidence/cli-command-surface/
+      a05-dev-sync-278a53a8.md；旧069 wheel仅保留历史。以当前图新请求完成，勿重置旧A图。
+      产物SHA/安装结果/源码/运行平台写入独立 docs 证据提交并回传，不更新PR状态、不自验收。
+  - id: readiness-review
+    owner: agent:amy.williams@example.com:devusr-dev:cc-daemon-request-review
+    role: review
+    after: [installed-candidate]
+    timeout: 1h
+    task: >-
+      独立评估 PR2015 当前A范围是否可移除Draft交质检，并给出 PASS/FAIL/具体阻塞依据。
+      固定代码 source278a53a8（devf165 已是祖先）；从 intg/cli-command-surface 读取
+      a05-dev-sync-278a53a8.md、a05-scope-review-final-069.md、a05-independent-full-069.json
+      及上游输入的最终安装证据。两项daemon内部失败已在devd717同因复现；OrgFS full-only
+      unknown-doc head/base各两次PASS但根因UNKNOWN。保持原始全套FAIL，不能用skip冒充PASS。
+      检查A自身回归是否关闭，明确已知失败/UNKNOWN在A验收中的处理依据，不能默认豁免。
+      不扩展A业务、不重跑整套、不改代码/断言/门禁、不操作PR或合并dev。
+      判词落独立docs提交，绑定source/dev/产物SHA，以本图当前请求完成。若不足，列出最小缺口。
+  - id: report
+    owner: agent:amy.williams@example.com:devusr-dev:codex-daemon-request
+    role: dispatch
+    after: [readiness-review]
+    timeout: 1h
+    task: >-
+      根据独立判词收尾PR2015与A05状态，保持原始全套结果及已知业务范围边界。
+      满足验收才移除Draft，交独立质检处理dev合入；不得自合并或绕保护。

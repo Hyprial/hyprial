@@ -101,6 +101,7 @@ class AgentSessionDomains:
         clock: Callable[[], float],
         persistence_late_result: Callable[[str], object | None] | None = None,
         session_desired_state: object | None = None,
+        agent_runtime_notice_reporter: Callable[[object], None] | None = None,
     ) -> None:
         cell_policies = RunPolicies.load(hyprial_home)
         registry = AgentRegistry(
@@ -142,6 +143,7 @@ class AgentSessionDomains:
                 "claude": prepare_claude_runtime_context,
                 "codex": prepare_codex_runtime_context,
             },
+            home_notice_reporter=agent_runtime_notice_reporter,
         )
         self.session = SessionActor(
             desired_state if session_desired_state is None else session_desired_state,

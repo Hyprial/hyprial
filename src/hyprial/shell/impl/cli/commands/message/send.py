@@ -10,13 +10,17 @@ from typing import Any
 from collections.abc import Mapping
 from pathlib import Path
 from hyprial.kernel import ipc_errors
+import json
 import mimetypes
+import os
+import time
 import typer
 
 from hyprial.shell.impl.cli.commands.message import message_app
 from hyprial.shell.impl.cli.commands.common.support import (
     CliError,
     JsonObject,
+    _local_operator_identity,
     _message_claim_params,
 )
 
@@ -303,3 +307,136 @@ def send(
         return result
 
     services.runtime.execute(operation, json_output=json_output)
+
+
+PROBE_TAG = "hyprial-probe"
+_PROBE_FAMILIES = ("agent", "user", "route")
+
+
+def _probe_send(services: Any, source: str, target: str) -> dict[str, Any]:
+    text = f"{PROBE_TAG} delivery-path {target}"
+    try:
+        result = services.runtime.request(
+            "message.send",
+            {
+                **_message_claim_params(source),
+                "to": [target],
+                "message": text,
+                "summary": f"{PROBE_TAG} delivery-path probe",
+            },
+            timeout=15.0,
+        )
+    except Exception as error:  # noqa: BLE001 - the probe records every failure
+        return {
+            "target": target,
+            "accepted": False,
+            "error": f"{type(error).__name__}: {error}"[:300],
+        }
+    rows = result.get("deliveries") if isinstance(result, Mapping) else None
+    row = rows[0] if isinstance(rows, list) and rows and isinstance(rows[0], Mapping) else {}
+    return {
+        "target": target,
+        "accepted": row.get("accepted") is True,
+        "messageId": row.get("messageId"),
+        **({"queued": row.get("queued")} if row.get("queued") is not None else {}),
+        **({"code": row.get("code")} if isinstance(row.get("code"), str) else {}),
+    }
+
+
+@message_app.command("probe-delivery-paths")
+def probe_delivery_paths(
+    source: str | None = typer.Option(
+        None,
+        "--from",
+        callback=_validate_from_identity,
+        help="Local sending actor; defaults to the verified worker binding.",
+    ),
+    route: str | None = typer.Option(
+        None,
+        "--route",
+        help="Configured route:<adapter>:<route> for the route-family probe.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Send one explicitly tagged probe through each delivery family."""
+
+    services = get_services()
+
+    def operation() -> Any:
+        services = get_services()
+        binding = services.runtime.worker_session_binding()
+        if source is None:
+            if binding is None:
+                raise services.CliError(
+                    ipc_errors.INVALID_ARGUMENT,
+                    "--from is required outside a verified agent session",
+                )
+            source_value = binding.actor
+        else:
+            source_value = source
+        resolved = source_value
+        if ":" not in resolved:
+            answer = services.runtime.request(
+                "agent.resolve", {"name": source_value}, timeout=1.0
+            )
+            if isinstance(answer, Mapping) and answer.get("known") is True:
+                resolved = str(answer.get("resolved") or resolved)
+        # The CLI may not grow backend imports (A-03 ratchet) nor hand-build
+        # user URIs: the agent family is the daemon-resolved canonical URI,
+        # and the user family is this node's operator (the owner of every
+        # local --from actor), built by the existing support helper.  The
+        # agent target is not re-parsed here: the daemon's message.send
+        # judges it and a rejection is recorded as accepted=false.
+        try:
+            user_target: str | None = _local_operator_identity()
+        except Exception:  # noqa: BLE001 - recorded below as a failed family
+            user_target = None
+        targets = {
+            "agent": resolved,
+            "user": user_target,
+            "route": route,
+        }
+        per_family: dict[str, Any] = {}
+        for family in _PROBE_FAMILIES:
+            target = targets[family]
+            if target is None:
+                per_family[family] = {
+                    "target": None,
+                    "accepted": False,
+                    "error": (
+                        "route target not supplied; create one with `hyprial "
+                        "adapter route add <adapter> <route>=<native-chat-id>` "
+                        "and pass --route route:<adapter>:<route>"
+                        if family == "route"
+                        else f"cannot derive {family} target from {resolved!r}"
+                    ),
+                }
+                continue
+            per_family[family] = _probe_send(services, source_value, target)
+        payload = {
+            "ok": all(item.get("accepted") is True for item in per_family.values()),
+            "tag": PROBE_TAG,
+            "epoch": int(time.time()),
+            "per_family": per_family,
+        }
+        state_dir = Path(services._hyprial_home()) / "state"
+        state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path = state_dir / "delivery-paths-probe.json"
+        temporary = path.with_name(path.name + ".tmp")
+        temporary.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+        return CliResult(payload, render=_render_probe)
+
+    services.runtime.execute(operation, json_output=json_output)
+
+
+def _render_probe(data: Mapping[str, Any]) -> str:
+    lines = [f"delivery-path probe {data.get('tag', PROBE_TAG)}"]
+    per_family = data.get("per_family")
+    if isinstance(per_family, Mapping):
+        for family, item in per_family.items():
+            if isinstance(item, Mapping):
+                state = "accepted" if item.get("accepted") is True else "FAILED"
+                lines.append(f"{family}: {state} {item.get('target') or '-'}")
+    return "\n".join(lines)

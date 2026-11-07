@@ -1,0 +1,198 @@
+{
+  "version": 2,
+  "name": "gui-request-http-20261030",
+  "summary": "只有H-01/H-02；tag解冻→A合入→H完成→HTTP集成合入→再C。当前只准备H-01。",
+  "on_failure": "hold",
+  "escalate_to": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+  "defaults": {
+    "launch": {
+      "harness": "pi",
+      "provider": "deepseek",
+      "model": "deepseek-flash",
+      "args": [
+        "--thinking",
+        "max",
+        "--approve"
+      ],
+      "cwd": "/Users/amyws/projects/request-http-h01",
+      "cwdPolicy": "require"
+    },
+    "timeout": "24h",
+    "first_output_eta": "10m",
+    "human_gates": "none"
+  },
+  "workers": {
+    "h01": {
+      "harness": "pi",
+      "provider": "deepseek",
+      "model": "deepseek-flash",
+      "args": [
+        "--thinking",
+        "max",
+        "--approve"
+      ],
+      "cwd": "/Users/amyws/projects/request-http-h01",
+      "cwdPolicy": "require"
+    },
+    "h02": {
+      "harness": "pi",
+      "provider": "deepseek",
+      "model": "deepseek-flash",
+      "args": [
+        "--thinking",
+        "max",
+        "--approve"
+      ],
+      "cwd": "/Users/amyws/projects/request-http-h02",
+      "cwdPolicy": "require"
+    }
+  },
+  "nodes": [
+    {
+      "id": "h01-prepare",
+      "worker": "h01",
+      "role": "execute",
+      "after": [],
+      "task": "只在指定 worktree/branch 工作，不自行委派、不改板、不合并。读 AGENTS.md 和 docs/design/daemon-request/http-integration-2026-10-30.md。只做 H 范围，不做 C 或页面接线。所有 Python 经 uv，Node 使用24。测试隔离 home/socket/cache，不动生产 daemon、凭据或用户配置。提交使用 devusr <amy.williams@example.com>。实现与返工保持 DeepSeek Flash Max。首次10分钟内给可核文件和进度，长任务每20分钟记录。所有进度/问题/最终结果仅回协调者，不直接联系其他人。完成后用当前 PAC requestId 和仓库证据引用显式 complete（可附 outputText）；ACK/普通消息不完成节点。只推自己的分支，PR base=intg/gui-request-http；正文含 Submitted-by 真实URI、Contract-Impact、Skill-Impact、验证与未测项。禁止取token、绕保护。返工只用当前有效请求，不重用旧requestId。\n阶段限制：只做方案和现状核对，不改产品代码，不把 A 合入本分支。工作树 /Users/amyws/projects/request-http-h01，分支 feat/http-request-entry。可 git show 4ad16740b38b374c1608bae974db1482e204ae57:... 只读 A 声明/client；A 尚未落dev。写 docs/design/daemon-request/http-entry-design-2026-10-30.md：实际公共接口/可信身份路径/HTTP运行进程与生命周期/显式backend和principal配置/来源与大小预算/运行时可用目录来源/TS消费契约/错误重试取消/模块边界与CI路径，列真实测试方案与未决项。只一份H-01 PR，准备和后续实现沿用同分支；此节点只交方案供审核，禁止开始CLI族迁移。Kanban c08692e3-8b75-4c42-93ad-a442869b167c。"
+    },
+    {
+      "id": "a-landed",
+      "kind": "approval",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "review",
+      "after": [],
+      "timeout": "72h",
+      "task": "用户严格前置门：先核新版tag发布及负责人解冻，再服务器确认#2015 merged且实际dev包含A。记录tag/PR/actualdevSHA；由协调者把实际dev同步到intg/gui-request-http，记录同步后SHA/tree/冲突处置与必要验证。未满足保持未置位，不用旧A已审或本地分支代替dev合入。此门不授权自行合A、发版、绕保护或启动C。"
+    },
+    {
+      "id": "h01-design-review",
+      "kind": "approval",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "review",
+      "after": [
+        "h01-prepare"
+      ],
+      "timeout": "72h",
+      "task": "独立核H-01方案的实际代码坐标、可信身份和进程边界、可用目录定义、测试面及H-02契约。未决安全/产品契约先给具体改进判词；PASS才置位。方案准备不等于产品完成。"
+    },
+    {
+      "id": "h01-build",
+      "worker": "h01",
+      "role": "execute",
+      "after": [
+        "a-landed",
+        "h01-design-review"
+      ],
+      "task": "只在指定 worktree/branch 工作，不自行委派、不改板、不合并。读 AGENTS.md 和 docs/design/daemon-request/http-integration-2026-10-30.md。只做 H 范围，不做 C 或页面接线。所有 Python 经 uv，Node 使用24。测试隔离 home/socket/cache，不动生产 daemon、凭据或用户配置。提交使用 devusr <amy.williams@example.com>。实现与返工保持 DeepSeek Flash Max。首次10分钟内给可核文件和进度，长任务每20分钟记录。所有进度/问题/最终结果仅回协调者，不直接联系其他人。完成后用当前 PAC requestId 和仓库证据引用显式 complete（可附 outputText）；ACK/普通消息不完成节点。只推自己的分支，PR base=intg/gui-request-http；正文含 Submitted-by 真实URI、Contract-Impact、Skill-Impact、验证与未测项。禁止取token、绕保护。返工只用当前有效请求，不重用旧requestId。\n工作树 /Users/amyws/projects/request-http-h01 分支 feat/http-request-entry。先fetch并merge-forward已接入实际dev/A的intg/gui-request-http；按已审H-01方案实现真实HTTP入口/认证/运行时目录。不得回退任意旧router，不以body自报身份，不迁移C命令族，不接GUI页面。保留一份H-01实现PR，完善所有验收。先结构/模块边界，再焦点红绿、适用全量tests/、Ruff与契约；真实隔离daemon/HTTP证据不可用mock替代。每次记录source/base/tree/环境/命令/退出码/nodeid，已有FAIL与UNKNOWN不冒充PASS。"
+    },
+    {
+      "id": "h01-review",
+      "kind": "approval",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "review",
+      "after": [
+        "h01-build"
+      ],
+      "timeout": "72h",
+      "task": "独立检查H-01候选diff和实测，复跑关键正反例。判词绑定worker与容器SHA；complete表示判词落仓，PASS选择accept，FAIL选择reject，两者不同时置位。"
+    },
+    {
+      "id": "h01-reject",
+      "kind": "approval",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "review",
+      "after": [
+        "h01-review"
+      ],
+      "timeout": "72h",
+      "task": "只在H-01不合格时以固定判词完成并触发显式back-edge；按PAC reset规则清除自己旧review/reject旗标，原worker重置自己的build并用新请求返工。"
+    },
+    {
+      "id": "h01-accept",
+      "kind": "approval",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "review",
+      "after": [
+        "h01-review"
+      ],
+      "timeout": "72h",
+      "task": "只在H-01独立验收PASS且实现PR实际进入intg/gui-request-http后置位，记录PR/source/tree/merge与检查点并更新卡；不得只凭候选交审释放H-02。"
+    },
+    {
+      "id": "h02-build",
+      "worker": "h02",
+      "role": "execute",
+      "after": [
+        "h01-accept"
+      ],
+      "task": "只在指定 worktree/branch 工作，不自行委派、不改板、不合并。读 AGENTS.md 和 docs/design/daemon-request/http-integration-2026-10-30.md。只做 H 范围，不做 C 或页面接线。所有 Python 经 uv，Node 使用24。测试隔离 home/socket/cache，不动生产 daemon、凭据或用户配置。提交使用 devusr <amy.williams@example.com>。实现与返工保持 DeepSeek Flash Max。首次10分钟内给可核文件和进度，长任务每20分钟记录。所有进度/问题/最终结果仅回协调者，不直接联系其他人。完成后用当前 PAC requestId 和仓库证据引用显式 complete（可附 outputText）；ACK/普通消息不完成节点。只推自己的分支，PR base=intg/gui-request-http；正文含 Submitted-by 真实URI、Contract-Impact、Skill-Impact、验证与未测项。禁止取token、绕保护。返工只用当前有效请求，不重用旧requestId。\n工作树 /Users/amyws/projects/request-http-h02 分支 feat/http-request-client。先fetch并merge-forwardintg/gui-request-http；按已落地H-01契约实现独立TypeScript HTTP client、可用目录消费、预算/取消/类型化错误、版本拒绝、用法文档和真实独立消费者验证。不要页面业务、React state或fixture耦合，不复制schema/手工白名单，不自动重试结果未知写请求。Kanban a70564dd-d0fb-4be2-a177-970e632a241e。先结构/模块边界，再焦点红绿、适用全量tests/、Ruff与契约；真实隔离daemon/HTTP证据不可用mock替代。每次记录source/base/tree/环境/命令/退出码/nodeid，已有FAIL与UNKNOWN不冒充PASS。"
+    },
+    {
+      "id": "h02-review",
+      "kind": "approval",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "review",
+      "after": [
+        "h02-build"
+      ],
+      "timeout": "72h",
+      "task": "独立核H-02及真实消费者证据，不把build/unit当真实贯通。固定判词后PASS选accept、FAIL选reject。"
+    },
+    {
+      "id": "h02-reject",
+      "kind": "approval",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "review",
+      "after": [
+        "h02-review"
+      ],
+      "timeout": "72h",
+      "task": "仅H-02不合格时完成，显式back-edge原worker返工，按当前请求reset旧旗标。"
+    },
+    {
+      "id": "h02-accept",
+      "kind": "approval",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "review",
+      "after": [
+        "h02-review"
+      ],
+      "timeout": "72h",
+      "task": "H-02独立验收PASS且实现PR实际进入容器后置位；更新卡、记录PR和真实合入SHA。"
+    },
+    {
+      "id": "report",
+      "kind": "report",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "dispatch",
+      "after": [
+        "h02-accept"
+      ],
+      "timeout": "72h",
+      "task": "在同步actualdev后的固定intg/gui-request-http head完成两项统一验收，保存完整证据与剩余FAIL/UNKNOWN。满足条件再移除WIP并交独立验收者普通FF，不自合；向产品提供client和真实可用目录，不代做页面。"
+    },
+    {
+      "id": "done",
+      "kind": "end",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "review",
+      "after": [
+        "report"
+      ],
+      "timeout": "72h",
+      "task": "服务器确认HTTP容器实际合入dev，记录PR/mergedSHA/actualdev、归档H卡。此时才具备用户规定的C开工前置；本图不自动派发C任务。未合保持未完成。"
+    }
+  ],
+  "edges": [
+    {
+      "from": "h01-reject",
+      "to": "h01-build",
+      "kind": "back"
+    },
+    {
+      "from": "h02-reject",
+      "to": "h02-build",
+      "kind": "back"
+    }
+  ]
+}

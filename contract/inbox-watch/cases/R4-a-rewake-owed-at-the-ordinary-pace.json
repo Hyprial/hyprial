@@ -1,0 +1,102 @@
+{
+  "id": "R4",
+  "title": "A re-wake requested with now=false waits for the next list that would happen anyway",
+  "config": {
+    "useWait": false
+  },
+  "steps": [
+    {
+      "at": 0,
+      "lane": "poll",
+      "expect": {
+        "op": "register"
+      }
+    },
+    {
+      "at": 0,
+      "lane": "poll",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e1"
+        }
+      }
+    },
+    {
+      "at": 0,
+      "lane": "poll",
+      "expect": {
+        "op": "list"
+      }
+    },
+    {
+      "at": 0,
+      "lane": "poll",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e1",
+          "messages": [
+            {
+              "messageId": "m1",
+              "deliveryId": "m1"
+            }
+          ]
+        }
+      },
+      "emit": {
+        "new": [
+          "m1"
+        ]
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "sleep",
+        "ms": 500
+      }
+    },
+    {
+      "at": 100,
+      "lane": "poll",
+      "rewake": "recovery",
+      "now": false
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "sleep",
+        "ms": 400
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "list"
+      },
+      "at": 500
+    },
+    {
+      "lane": "poll",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e1",
+          "messages": [
+            {
+              "messageId": "m1",
+              "deliveryId": "m1"
+            }
+          ]
+        }
+      },
+      "emit": {
+        "rewake": [
+          "m1"
+        ],
+        "rewakeReason": "recovery"
+      }
+    }
+  ]
+}

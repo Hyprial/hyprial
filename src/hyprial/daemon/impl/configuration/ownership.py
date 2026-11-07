@@ -6,9 +6,8 @@ import os
 import time
 from pathlib import Path
 from collections.abc import Callable
-from typing import IO
 
-from hyprial.kernel import lock_exclusive
+from hyprial.kernel import FileLockBusy, ProcessFileLock
 
 
 class DaemonOwnershipBusy(RuntimeError):
@@ -16,11 +15,15 @@ class DaemonOwnershipBusy(RuntimeError):
 
 
 class DaemonStateOwnershipFence:
-    """One held ``daemon.lock`` flock, transferable to the daemon runtime."""
+    """One held ``daemon.lock``, movable to the in-process daemon runtime.
 
-    def __init__(self, path: Path, stream: IO[str]) -> None:
+    Backed by the kernel :class:`ProcessFileLock`; it is never handed to
+    another process (the next owner acquires after this one exits).
+    """
+
+    def __init__(self, path: Path, lock: ProcessFileLock) -> None:
         self.path = path
-        self._stream: IO[str] | None = stream
+        self._lock: ProcessFileLock | None = lock
 
     @classmethod
     def acquire(
@@ -33,34 +36,33 @@ class DaemonStateOwnershipFence:
         state_dir = Path(state_dir)
         state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         path = state_dir / "daemon.lock"
-        stream = path.open("a+", encoding="utf-8")
-        os.chmod(path, 0o600)
-        deadline = time.monotonic() + max(0.0, timeout)
-        while True:
-            try:
-                lock_exclusive(stream.fileno(), blocking=False)
-                return cls(path, stream)
-            except BlockingIOError as error:
-                if time.monotonic() >= deadline:
-                    stream.close()
-                    raise DaemonOwnershipBusy(
-                        "daemon state ownership is held by a running or "
-                        "starting daemon"
-                    ) from error
-                time.sleep(max(0.001, poll_interval))
+        lock = ProcessFileLock(path)
+        try:
+            lock.acquire(timeout=timeout, poll_interval=poll_interval)
+        except FileLockBusy as error:
+            raise DaemonOwnershipBusy(
+                "daemon state ownership is held by a running or "
+                "starting daemon"
+            ) from error
+        try:
+            os.chmod(path, 0o600)
+        except BaseException:
+            lock.release()
+            raise
+        return cls(path, lock)
 
-    def detach(self) -> IO[str]:
-        stream = self._stream
-        if stream is None:
+    def detach(self) -> ProcessFileLock:
+        lock = self._lock
+        if lock is None:
             raise RuntimeError("daemon ownership fence is already detached")
-        self._stream = None
-        return stream
+        self._lock = None
+        return lock
 
     def close(self) -> None:
-        stream = self._stream
-        self._stream = None
-        if stream is not None:
-            stream.close()
+        lock = self._lock
+        self._lock = None
+        if lock is not None:
+            lock.release()
 
     def __enter__(self) -> DaemonStateOwnershipFence:
         return self

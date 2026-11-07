@@ -1,0 +1,16 @@
+{
+  "sourceCommit": "17de00f65b73468a985a78e3ce66b8e16319a406",
+  "sourceSha256": {
+    "src/hyprial/pac/errors.py": "4044a244d5ac658acbedc1213e6d53ddee520079920a4121047f1e7066d8795f",
+    "src/hyprial/pac/store.py": "df5919472bfd9f7cc26af481e4ea2bd7d8d154101462d76773c07a1508a6b195",
+    "src/hyprial/pac/graph.py": "bf53aef6ffcabe51c2ec11f877dbc0af362c400ab3dc246f28484a28aa665295",
+    "src/hyprial/pac/reactor.py": "9d913cb925311e992a37579dbe3632bc5f6675c3e6064b19c9937809c9597ff7",
+    "src/hyprial/pac/projection.py": "776a96628b87dfa96617030353dfef3e423c4505fdda89a34820ef13bf759a87"
+  },
+  "graphId": "legacy-generated-d3c31828",
+  "dumpSha256": "8909d200ca5ed924e11f516993caab051d7618ccbde83f5d65f135b2874755e4",
+  "userVersion": 0,
+  "generator": "generate-slice-1-real.py --late-edit",
+  "description": "Original store/graph/reactor; task set/reset/set/completion + clock tick; no sender; then real old add_node v5->v6; late receipts remain v5",
+  "databaseSha256": "78d388be71c98d9f45bc8a196864668107efd68348b56442c50caa41412a9168"
+}

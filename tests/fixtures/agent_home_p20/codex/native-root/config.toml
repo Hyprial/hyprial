@@ -1,0 +1,6 @@
+model = "p20-codex-user-sentinel"
+cli_auth_credentials_store = "file"
+check_for_update_on_startup = false
+
+[features]
+memories = false

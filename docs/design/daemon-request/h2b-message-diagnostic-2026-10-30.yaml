@@ -1,0 +1,39 @@
+{
+  "version": 2,
+  "name": "investigate-silence-and-stale-inbox-20261030",
+  "summary": "用户要求 h2b-monitor 区分静默告警/旧批次展示中的系统缺陷与使用问题；只读诊断，不重启或改生产。",
+  "on_failure": "hold",
+  "escalate_to": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+  "nodes": [
+    {
+      "id": "diagnose",
+      "owner": "agent:amy.williams@example.com:devusr-dev:cc-h2b-monitor",
+      "role": "review",
+      "timeout": "2h",
+      "first_output_eta": "15m",
+      "task": "用户明确要求把本会话大量静默告警和过期消息现象交给 h2b-monitor。先读 /Users/amyws/projects/daemon-request-http/docs/notes/h2b-silence-and-stale-batches-2026-10-30.md 及其证据目录（已在 intg/gui-request-http 保存）。使用你现有 /Users/amyws/projects/harness-bridge checkout 只读调查并记录代码 SHA，不切换/修改在用工作树。重点核四个 delivery 的 silence watchdog、实际 replyTo 关联、普通 send 是否新开等待、ACK 后旧 batch 是否排队快照、ACK 2s 超时后 ALREADY_SETTLED。请给系统缺陷/使用错误/正常行为/UNKNOWN分类，各有可读代码与事件证据；不要把重复展示直接当丢消息或 TTL 过期。15分钟首个可核检查点，2h预算。不重启daemon、不清队列、不改用户配置/超时、不发广播，不启动 A/H/C 新开发。敏感数据不入库；若需实验仅隔离测试环境，Python 一律uv。问题/进展/最终结果只回协调者 codex-daemon-request。使用当前节点 workflow complete/fail 的 reasonRef+outputText 返回，可先 output:diagnose 交由协调者落仓。ACK该通知与完成节点分开；不要重复派任务、不要开启循环催询。"
+    },
+    {
+      "id": "report",
+      "kind": "report",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "dispatch",
+      "after": [
+        "diagnose"
+      ],
+      "timeout": "24h",
+      "task": "核对 monitor 的证据与分类，把诊断落 docs/notes 并向用户说明已证实的系统缺陷/使用问题和下一步；不把诊断或 ACK 当 A/H 完成。"
+    },
+    {
+      "id": "done",
+      "kind": "end",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "review",
+      "after": [
+        "report"
+      ],
+      "timeout": "24h",
+      "task": "确认诊断证据已保存、用户已获结论，再显式关闭本调查。借用 monitor 不回收；修复若需要另立明确任务。"
+    }
+  ]
+}

@@ -1,0 +1,502 @@
+version: 2
+name: send-links-2026-10-14
+on_failure: continue
+defaults:
+  timeout: 2h
+  launch:
+    harness: pi
+    provider: deepseek
+    model: deepseek-flash
+    cwd: /private/tmp/hf-wp1-send-links
+nodes:
+- id: wp1-review
+  role: review
+  timeout: 1h
+  launch:
+    harness: pi
+    provider: openai-codex
+    model: gpt-6.1-sol
+    cwd: /private/tmp/hf-wp1-send-links
+  task: '【WP1 评审】仓库 cwd 即你的 worktree（分支 wp<N>/send-links，base 为集成分支 refactor/org-structure-constrain）。先读 docs/design/design-send-links-2026-10-14.md 与 docs/design/send-links-impl/README.md，再读 src/hyprial/daemon/impl/links/ports.py（缝，不得改名）。规则：禁止裸跑 python，一律 uv run；测试命令 PYTHONPATH=$PWD/src uv run --extra test pytest <焦点路径> -q；改产品或测试结构后跑 uv run --no-project --python 3.12 python scripts/ci/check_structural_limits.py 与 check_module_boundaries.py；交付前 uv run --with ruff ruff check <改动文件>。每目录最多 7 个直接文件、每文件最多 1000 行。只 git add 具体文件，不用 -a。提交用 conventional commit，只在本地提交，不要 push、不要开 PR、不要给任何 agent 发消息（全网静默）。完成用 hyprial workflow complete 并把结论写在 --output-text；失败用 workflow fail。
+
+    评审 docs/design/send-links-impl/wp1.md（已由设计节点提交在本分支）：对照 docs/design/design-send-links-2026-10-14.md，找出与设计矛盾处、漏掉的测试（尤其设计 §5.6 的劣化条件与 §4 的边界）、越层依赖（kernel→identity→daemon→biz→shell 单向；links 不得 import inbox service）、与 ports.py 不一致处。把意见追加到该文件末尾的「评审」节，每条标 阻断/建议，并对每条阻断项直接写出修正后的规格文字（实施节点会照规格加评审节执行）。提交后 complete；--output-text 第一行写 BLOCKING:<n> 与 ADVISORY:<n>。'
+- id: wp1-implement
+  role: execute
+  timeout: 6h
+  launch:
+    harness: pi
+    provider: deepseek
+    model: deepseek-flash
+    cwd: /private/tmp/hf-wp1-send-links
+  after:
+  - wp1-review
+  task: '【WP1 实施】仓库 cwd 即你的 worktree（分支 wp<N>/send-links，base 为集成分支 refactor/org-structure-constrain）。先读 docs/design/design-send-links-2026-10-14.md 与 docs/design/send-links-impl/README.md，再读 src/hyprial/daemon/impl/links/ports.py（缝，不得改名）。规则：禁止裸跑 python，一律 uv run；测试命令 PYTHONPATH=$PWD/src uv run --extra test pytest <焦点路径> -q；改产品或测试结构后跑 uv run --no-project --python 3.12 python scripts/ci/check_structural_limits.py 与 check_module_boundaries.py；交付前 uv run --with ruff ruff check <改动文件>。每目录最多 7 个直接文件、每文件最多 1000 行。只 git add 具体文件，不用 -a。提交用 conventional commit，只在本地提交，不要 push、不要开 PR、不要给任何 agent 发消息（全网静默）。完成用 hyprial workflow complete 并把结论写在 --output-text；失败用 workflow fail。
+
+    严格按 docs/design/send-links-impl/wp1.md（含评审节的修正）实现。先写测试清单里的测试并运行确认先红，再实现到绿。每个提交可读可测。不要扩大范围，规格没写的不做；规格有歧义时在 --output-text 里写明你的取舍。完成时 --output-text 写：改动文件列表、焦点测试命令与结果（含先红证据）、结构门与 ruff 结果、未做项与原因。'
+- id: wp1-accept
+  role: review
+  timeout: 2h
+  launch:
+    harness: claude
+    model: claude-opus-5-5
+    cwd: /private/tmp/hf-wp1-send-links
+  after:
+  - wp1-implement
+  task: '【WP1 验收】仓库 cwd 即你的 worktree（分支 wp<N>/send-links，base 为集成分支 refactor/org-structure-constrain）。先读 docs/design/design-send-links-2026-10-14.md 与 docs/design/send-links-impl/README.md，再读 src/hyprial/daemon/impl/links/ports.py（缝，不得改名）。规则：禁止裸跑 python，一律 uv run；测试命令 PYTHONPATH=$PWD/src uv run --extra test pytest <焦点路径> -q；改产品或测试结构后跑 uv run --no-project --python 3.12 python scripts/ci/check_structural_limits.py 与 check_module_boundaries.py；交付前 uv run --with ruff ruff check <改动文件>。每目录最多 7 个直接文件、每文件最多 1000 行。只 git add 具体文件，不用 -a。提交用 conventional commit，只在本地提交，不要 push、不要开 PR、不要给任何 agent 发消息（全网静默）。完成用 hyprial workflow complete 并把结论写在 --output-text；失败用 workflow fail。
+
+    逐条对 docs/design/send-links-impl/wp1.md 的验收标准核实施：复跑其焦点测试、结构门与 ruff；核先红证据（git log 与测试输出）；检查越层依赖与 7 文件/1000 行限制；检查没有偷改 ports.py 的名字。不符合则 fail 并在 --output-text 列出不符项；符合则 complete，--output-text 写 ACCEPTED 与验证命令及结果。你不合并分支。'
+- id: wp1-merge
+  owner: agent:bob.smith@example.com:node-hq-01.example-tailnet.ts.net:emergent-org-structure-refactor
+  role: dispatch
+  timeout: 24h
+  after:
+  - wp1-accept
+  task: 【WP1 合并】集成者把 wp1/send-links 合进 refactor/org-structure-constrain 并推送。
+- id: wp2-design
+  role: plan
+  timeout: 2h
+  launch:
+    harness: claude
+    model: claude-opus-5-5
+    cwd: /private/tmp/hf-wp2-send-links
+  task: '【WP2 设计】范围：links/store.py 与 links/service.py：在 OrgFs 协议上读写 org 空间 link/ 目录下每 agent 一份的文件（两份互引才有效）；订阅 hook bus 喂控制器样本；实现 ports.LinkGate 与 LinkQueries；维护 outbox 中 hold 消息的重评与放行；在 daemon/impl/composition 接线。不 import inbox service。
+
+    仓库 cwd 即你的 worktree（分支 wp<N>/send-links，base 为集成分支 refactor/org-structure-constrain）。先读 docs/design/design-send-links-2026-10-14.md 与 docs/design/send-links-impl/README.md，再读 src/hyprial/daemon/impl/links/ports.py（缝，不得改名）。规则：禁止裸跑 python，一律 uv run；测试命令 PYTHONPATH=$PWD/src uv run --extra test pytest <焦点路径> -q；改产品或测试结构后跑 uv run --no-project --python 3.12 python scripts/ci/check_structural_limits.py 与 check_module_boundaries.py；交付前 uv run --with ruff ruff check <改动文件>。每目录最多 7 个直接文件、每文件最多 1000 行。只 git add 具体文件，不用 -a。提交用 conventional commit，只在本地提交，不要 push、不要开 PR、不要给任何 agent 发消息（全网静默）。完成用 hyprial workflow complete 并把结论写在 --output-text；失败用 workflow fail。
+
+    产物：写 docs/design/send-links-impl/wp2.md，内容依次为：改哪些文件（含新建）、公共面与接口怎么变（必须与 ports.py 一致）、测试清单（每条写测什么、先红时的失败形状、放在 tests/ 哪个路径）、验收标准（可机检）、要留的证据。不写实现代码。提交该文件后 complete，--output-text 写规格路径与一段摘要。'
+  after:
+  - wp1-merge
+- id: wp2-review
+  role: review
+  timeout: 1h
+  launch:
+    harness: pi
+    provider: openai-codex
+    model: gpt-6.1-sol
+    cwd: /private/tmp/hf-wp2-send-links
+  task: '【WP2 评审】仓库 cwd 即你的 worktree（分支 wp<N>/send-links，base 为集成分支 refactor/org-structure-constrain）。先读 docs/design/design-send-links-2026-10-14.md 与 docs/design/send-links-impl/README.md，再读 src/hyprial/daemon/impl/links/ports.py（缝，不得改名）。规则：禁止裸跑 python，一律 uv run；测试命令 PYTHONPATH=$PWD/src uv run --extra test pytest <焦点路径> -q；改产品或测试结构后跑 uv run --no-project --python 3.12 python scripts/ci/check_structural_limits.py 与 check_module_boundaries.py；交付前 uv run --with ruff ruff check <改动文件>。每目录最多 7 个直接文件、每文件最多 1000 行。只 git add 具体文件，不用 -a。提交用 conventional commit，只在本地提交，不要 push、不要开 PR、不要给任何 agent 发消息（全网静默）。完成用 hyprial workflow complete 并把结论写在 --output-text；失败用 workflow fail。
+
+    评审 docs/design/send-links-impl/wp2.md（已由设计节点提交在本分支）：对照 docs/design/design-send-links-2026-10-14.md，找出与设计矛盾处、漏掉的测试（尤其设计 §5.6 的劣化条件与 §4 的边界）、越层依赖（kernel→identity→daemon→biz→shell 单向；links 不得 import inbox service）、与 ports.py 不一致处。把意见追加到该文件末尾的「评审」节，每条标 阻断/建议，并对每条阻断项直接写出修正后的规格文字（实施节点会照规格加评审节执行）。提交后 complete；--output-text 第一行写 BLOCKING:<n> 与 ADVISORY:<n>。'
+  after:
+  - wp2-design
+- id: wp2-implement
+  role: execute
+  timeout: 6h
+  launch:
+    harness: pi
+    provider: deepseek
+    model: deepseek-flash
+    cwd: /private/tmp/hf-wp2-send-links
+  after:
+  - wp2-review
+  task: '【WP2 实施】仓库 cwd 即你的 worktree（分支 wp<N>/send-links，base 为集成分支 refactor/org-structure-constrain）。先读 docs/design/design-send-links-2026-10-14.md 与 docs/design/send-links-impl/README.md，再读 src/hyprial/daemon/impl/links/ports.py（缝，不得改名）。规则：禁止裸跑 python，一律 uv run；测试命令 PYTHONPATH=$PWD/src uv run --extra test pytest <焦点路径> -q；改产品或测试结构后跑 uv run --no-project --python 3.12 python scripts/ci/check_structural_limits.py 与 check_module_boundaries.py；交付前 uv run --with ruff ruff check <改动文件>。每目录最多 7 个直接文件、每文件最多 1000 行。只 git add 具体文件，不用 -a。提交用 conventional commit，只在本地提交，不要 push、不要开 PR、不要给任何 agent 发消息（全网静默）。完成用 hyprial workflow complete 并把结论写在 --output-text；失败用 workflow fail。
+
+    严格按 docs/design/send-links-impl/wp2.md（含评审节的修正）实现。先写测试清单里的测试并运行确认先红，再实现到绿。每个提交可读可测。不要扩大范围，规格没写的不做；规格有歧义时在 --output-text 里写明你的取舍。完成时 --output-text 写：改动文件列表、焦点测试命令与结果（含先红证据）、结构门与 ruff 结果、未做项与原因。'
+- id: wp2-accept
+  role: review
+  timeout: 2h
+  launch:
+    harness: claude
+    model: claude-opus-5-5
+    cwd: /private/tmp/hf-wp2-send-links
+  after:
+  - wp2-implement
+  task: '【WP2 验收】仓库 cwd 即你的 worktree（分支 wp<N>/send-links，base 为集成分支 refactor/org-structure-constrain）。先读 docs/design/design-send-links-2026-10-14.md 与 docs/design/send-links-impl/README.md，再读 src/hyprial/daemon/impl/links/ports.py（缝，不得改名）。规则：禁止裸跑 python，一律 uv run；测试命令 PYTHONPATH=$PWD/src uv run --extra test pytest <焦点路径> -q；改产品或测试结构后跑 uv run --no-project --python 3.12 python scripts/ci/check_structural_limits.py 与 check_module_boundaries.py；交付前 uv run --with ruff ruff check <改动文件>。每目录最多 7 个直接文件、每文件最多 1000 行。只 git add 具体文件，不用 -a。提交用 conventional commit，只在本地提交，不要 push、不要开 PR、不要给任何 agent 发消息（全网静默）。完成用 hyprial workflow complete 并把结论写在 --output-text；失败用 workflow fail。
+
+    逐条对 docs/design/send-links-impl/wp2.md 的验收标准核实施：复跑其焦点测试、结构门与 ruff；核先红证据（git log 与测试输出）；检查越层依赖与 7 文件/1000 行限制；检查没有偷改 ports.py 的名字。不符合则 fail 并在 --output-text 列出不符项；符合则 complete，--output-text 写 ACCEPTED 与验证命令及结果。你不合并分支。'
+- id: wp2-merge
+  owner: agent:bob.smith@example.com:node-hq-01.example-tailnet.ts.net:emergent-org-structure-refactor
+  role: dispatch
+  timeout: 24h
+  after:
+  - wp2-accept
+  task: 【WP2 合并】集成者把 wp2/send-links 合进 refactor/org-structure-constrain 并推送。
+- id: wp3-review
+  role: review
+  timeout: 1h
+  launch:
+    harness: pi
+    provider: openai-codex
+    model: gpt-6.1-sol
+    cwd: /private/tmp/hf-wp3-send-links
+  task: '【WP3 评审】仓库 cwd 即你的 worktree（分支 wp<N>/send-links，base 为集成分支 refactor/org-structure-constrain）。先读 docs/design/design-send-links-2026-10-14.md 与 docs/design/send-links-impl/README.md，再读 src/hyprial/daemon/impl/links/ports.py（缝，不得改名）。规则：禁止裸跑 python，一律 uv run；测试命令 PYTHONPATH=$PWD/src uv run --extra test pytest <焦点路径> -q；改产品或测试结构后跑 uv run --no-project --python 3.12 python scripts/ci/check_structural_limits.py 与 check_module_boundaries.py；交付前 uv run --with ruff ruff check <改动文件>。每目录最多 7 个直接文件、每文件最多 1000 行。只 git add 具体文件，不用 -a。提交用 conventional commit，只在本地提交，不要 push、不要开 PR、不要给任何 agent 发消息（全网静默）。完成用 hyprial workflow complete 并把结论写在 --output-text；失败用 workflow fail。
+
+    评审 docs/design/send-links-impl/wp3.md（已由设计节点提交在本分支）：对照 docs/design/design-send-links-2026-10-14.md，找出与设计矛盾处、漏掉的测试（尤其设计 §5.6 的劣化条件与 §4 的边界）、越层依赖（kernel→identity→daemon→biz→shell 单向；links 不得 import inbox service）、与 ports.py 不一致处。把意见追加到该文件末尾的「评审」节，每条标 阻断/建议，并对每条阻断项直接写出修正后的规格文字（实施节点会照规格加评审节执行）。提交后 complete；--output-text 第一行写 BLOCKING:<n> 与 ADVISORY:<n>。'
+- id: wp3-implement
+  role: execute
+  timeout: 6h
+  launch:
+    harness: pi
+    provider: deepseek
+    model: deepseek-flash
+    cwd: /private/tmp/hf-wp3-send-links
+  after:
+  - wp3-review
+  task: '【WP3 实施】仓库 cwd 即你的 worktree（分支 wp<N>/send-links，base 为集成分支 refactor/org-structure-constrain）。先读 docs/design/design-send-links-2026-10-14.md 与 docs/design/send-links-impl/README.md，再读 src/hyprial/daemon/impl/links/ports.py（缝，不得改名）。规则：禁止裸跑 python，一律 uv run；测试命令 PYTHONPATH=$PWD/src uv run --extra test pytest <焦点路径> -q；改产品或测试结构后跑 uv run --no-project --python 3.12 python scripts/ci/check_structural_limits.py 与 check_module_boundaries.py；交付前 uv run --with ruff ruff check <改动文件>。每目录最多 7 个直接文件、每文件最多 1000 行。只 git add 具体文件，不用 -a。提交用 conventional commit，只在本地提交，不要 push、不要开 PR、不要给任何 agent 发消息（全网静默）。完成用 hyprial workflow complete 并把结论写在 --output-text；失败用 workflow fail。
+
+    严格按 docs/design/send-links-impl/wp3.md（含评审节的修正）实现。先写测试清单里的测试并运行确认先红，再实现到绿。每个提交可读可测。不要扩大范围，规格没写的不做；规格有歧义时在 --output-text 里写明你的取舍。完成时 --output-text 写：改动文件列表、焦点测试命令与结果（含先红证据）、结构门与 ruff 结果、未做项与原因。'
+- id: wp3-accept
+  role: review
+  timeout: 2h
+  launch:
+    harness: claude
+    model: claude-opus-5-5
+    cwd: /private/tmp/hf-wp3-send-links
+  after:
+  - wp3-implement
+  task: '【WP3 验收】仓库 cwd 即你的 worktree（分支 wp<N>/send-links，base 为集成分支 refactor/org-structure-constrain）。先读 docs/design/design-send-links-2026-10-14.md 与 docs/design/send-links-impl/README.md，再读 src/hyprial/daemon/impl/links/ports.py（缝，不得改名）。规则：禁止裸跑 python，一律 uv run；测试命令 PYTHONPATH=$PWD/src uv run --extra test pytest <焦点路径> -q；改产品或测试结构后跑 uv run --no-project --python 3.12 python scripts/ci/check_structural_limits.py 与 check_module_boundaries.py；交付前 uv run --with ruff ruff check <改动文件>。每目录最多 7 个直接文件、每文件最多 1000 行。只 git add 具体文件，不用 -a。提交用 conventional commit，只在本地提交，不要 push、不要开 PR、不要给任何 agent 发消息（全网静默）。完成用 hyprial workflow complete 并把结论写在 --output-text；失败用 workflow fail。
+
+    逐条对 docs/design/send-links-impl/wp3.md 的验收标准核实施：复跑其焦点测试、结构门与 ruff；核先红证据（git log 与测试输出）；检查越层依赖与 7 文件/1000 行限制；检查没有偷改 ports.py 的名字。不符合则 fail 并在 --output-text 列出不符项；符合则 complete，--output-text 写 ACCEPTED 与验证命令及结果。你不合并分支。'
+- id: wp3-merge
+  owner: agent:bob.smith@example.com:node-hq-01.example-tailnet.ts.net:emergent-org-structure-refactor
+  role: dispatch
+  timeout: 24h
+  after:
+  - wp3-accept
+  task: 【WP3 合并】集成者把 wp3/send-links 合进 refactor/org-structure-constrain 并推送。
+- id: wp4-review
+  role: review
+  timeout: 1h
+  launch:
+    harness: pi
+    provider: openai-codex
+    model: gpt-6.1-sol
+    cwd: /private/tmp/hf-wp4-send-links
+  task: '【WP4 评审】仓库 cwd 即你的 worktree（分支 wp<N>/send-links，base 为集成分支 refactor/org-structure-constrain）。先读 docs/design/design-send-links-2026-10-14.md 与 docs/design/send-links-impl/README.md，再读 src/hyprial/daemon/impl/links/ports.py（缝，不得改名）。规则：禁止裸跑 python，一律 uv run；测试命令 PYTHONPATH=$PWD/src uv run --extra test pytest <焦点路径> -q；改产品或测试结构后跑 uv run --no-project --python 3.12 python scripts/ci/check_structural_limits.py 与 check_module_boundaries.py；交付前 uv run --with ruff ruff check <改动文件>。每目录最多 7 个直接文件、每文件最多 1000 行。只 git add 具体文件，不用 -a。提交用 conventional commit，只在本地提交，不要 push、不要开 PR、不要给任何 agent 发消息（全网静默）。完成用 hyprial workflow complete 并把结论写在 --output-text；失败用 workflow fail。
+
+    评审 docs/design/send-links-impl/wp4.md（已由设计节点提交在本分支）：对照 docs/design/design-send-links-2026-10-14.md，找出与设计矛盾处、漏掉的测试（尤其设计 §5.6 的劣化条件与 §4 的边界）、越层依赖（kernel→identity→daemon→biz→shell 单向；links 不得 import inbox service）、与 ports.py 不一致处。把意见追加到该文件末尾的「评审」节，每条标 阻断/建议，并对每条阻断项直接写出修正后的规格文字（实施节点会照规格加评审节执行）。提交后 complete；--output-text 第一行写 BLOCKING:<n> 与 ADVISORY:<n>。'
+- id: wp4-implement
+  role: execute
+  timeout: 6h
+  launch:
+    harness: pi
+    provider: deepseek
+    model: deepseek-flash
+    cwd: /private/tmp/hf-wp4-send-links
+  after:
+  - wp4-review
+  task: '【WP4 实施】仓库 cwd 即你的 worktree（分支 wp<N>/send-links，base 为集成分支 refactor/org-structure-constrain）。先读 docs/design/design-send-links-2026-10-14.md 与 docs/design/send-links-impl/README.md，再读 src/hyprial/daemon/impl/links/ports.py（缝，不得改名）。规则：禁止裸跑 python，一律 uv run；测试命令 PYTHONPATH=$PWD/src uv run --extra test pytest <焦点路径> -q；改产品或测试结构后跑 uv run --no-project --python 3.12 python scripts/ci/check_structural_limits.py 与 check_module_boundaries.py；交付前 uv run --with ruff ruff check <改动文件>。每目录最多 7 个直接文件、每文件最多 1000 行。只 git add 具体文件，不用 -a。提交用 conventional commit，只在本地提交，不要 push、不要开 PR、不要给任何 agent 发消息（全网静默）。完成用 hyprial workflow complete 并把结论写在 --output-text；失败用 workflow fail。
+
+    严格按 docs/design/send-links-impl/wp4.md（含评审节的修正）实现。先写测试清单里的测试并运行确认先红，再实现到绿。每个提交可读可测。不要扩大范围，规格没写的不做；规格有歧义时在 --output-text 里写明你的取舍。完成时 --output-text 写：改动文件列表、焦点测试命令与结果（含先红证据）、结构门与 ruff 结果、未做项与原因。'
+- id: wp4-accept
+  role: review
+  timeout: 2h
+  launch:
+    harness: claude
+    model: claude-opus-5-5
+    cwd: /private/tmp/hf-wp4-send-links
+  after:
+  - wp4-implement
+  task: '【WP4 验收】仓库 cwd 即你的 worktree（分支 wp<N>/send-links，base 为集成分支 refactor/org-structure-constrain）。先读 docs/design/design-send-links-2026-10-14.md 与 docs/design/send-links-impl/README.md，再读 src/hyprial/daemon/impl/links/ports.py（缝，不得改名）。规则：禁止裸跑 python，一律 uv run；测试命令 PYTHONPATH=$PWD/src uv run --extra test pytest <焦点路径> -q；改产品或测试结构后跑 uv run --no-project --python 3.12 python scripts/ci/check_structural_limits.py 与 check_module_boundaries.py；交付前 uv run --with ruff ruff check <改动文件>。每目录最多 7 个直接文件、每文件最多 1000 行。只 git add 具体文件，不用 -a。提交用 conventional commit，只在本地提交，不要 push、不要开 PR、不要给任何 agent 发消息（全网静默）。完成用 hyprial workflow complete 并把结论写在 --output-text；失败用 workflow fail。
+
+    逐条对 docs/design/send-links-impl/wp4.md 的验收标准核实施：复跑其焦点测试、结构门与 ruff；核先红证据（git log 与测试输出）；检查越层依赖与 7 文件/1000 行限制；检查没有偷改 ports.py 的名字。不符合则 fail 并在 --output-text 列出不符项；符合则 complete，--output-text 写 ACCEPTED 与验证命令及结果。你不合并分支。'
+- id: wp4-merge
+  owner: agent:bob.smith@example.com:node-hq-01.example-tailnet.ts.net:emergent-org-structure-refactor
+  role: dispatch
+  timeout: 24h
+  after:
+  - wp4-accept
+  task: 【WP4 合并】集成者把 wp4/send-links 合进 refactor/org-structure-constrain 并推送。
+- id: wp5-design
+  role: plan
+  timeout: 2h
+  launch:
+    harness: claude
+    model: claude-opus-5-5
+    cwd: /private/tmp/hf-wp5-send-links
+  task: '【WP5 设计】范围：三个载体改到设计 §8.1 的契约：pi_harness_attach.ts、harnesses/turn_delivery 的 headless 连接器、codex settlement.py。注入只带 发送者/意图/messageId/summary/body 字节数；不再自动回复最终文本；上报 turn 开始与结束；轮末对每条注入过的消息调 message.settle_hint 并照做。
+
+    仓库 cwd 即你的 worktree（分支 wp<N>/send-links，base 为集成分支 refactor/org-structure-constrain）。先读 docs/design/design-send-links-2026-10-14.md 与 docs/design/send-links-impl/README.md，再读 src/hyprial/daemon/impl/links/ports.py（缝，不得改名）。规则：禁止裸跑 python，一律 uv run；测试命令 PYTHONPATH=$PWD/src uv run --extra test pytest <焦点路径> -q；改产品或测试结构后跑 uv run --no-project --python 3.12 python scripts/ci/check_structural_limits.py 与 check_module_boundaries.py；交付前 uv run --with ruff ruff check <改动文件>。每目录最多 7 个直接文件、每文件最多 1000 行。只 git add 具体文件，不用 -a。提交用 conventional commit，只在本地提交，不要 push、不要开 PR、不要给任何 agent 发消息（全网静默）。完成用 hyprial workflow complete 并把结论写在 --output-text；失败用 workflow fail。
+
+    产物：写 docs/design/send-links-impl/wp5.md，内容依次为：改哪些文件（含新建）、公共面与接口怎么变（必须与 ports.py 一致）、测试清单（每条写测什么、先红时的失败形状、放在 tests/ 哪个路径）、验收标准（可机检）、要留的证据。不写实现代码。提交该文件后 complete，--output-text 写规格路径与一段摘要。'
+  after:
+  - wp3-merge
+- id: wp5-review
+  role: review
+  timeout: 1h
+  launch:
+    harness: pi
+    provider: openai-codex
+    model: gpt-6.1-sol
+    cwd: /private/tmp/hf-wp5-send-links
+  task: '【WP5 评审】仓库 cwd 即你的 worktree（分支 wp<N>/send-links，base 为集成分支 refactor/org-structure-constrain）。先读 docs/design/design-send-links-2026-10-14.md 与 docs/design/send-links-impl/README.md，再读 src/hyprial/daemon/impl/links/ports.py（缝，不得改名）。规则：禁止裸跑 python，一律 uv run；测试命令 PYTHONPATH=$PWD/src uv run --extra test pytest <焦点路径> -q；改产品或测试结构后跑 uv run --no-project --python 3.12 python scripts/ci/check_structural_limits.py 与 check_module_boundaries.py；交付前 uv run --with ruff ruff check <改动文件>。每目录最多 7 个直接文件、每文件最多 1000 行。只 git add 具体文件，不用 -a。提交用 conventional commit，只在本地提交，不要 push、不要开 PR、不要给任何 agent 发消息（全网静默）。完成用 hyprial workflow complete 并把结论写在 --output-text；失败用 workflow fail。
+
+    评审 docs/design/send-links-impl/wp5.md（已由设计节点提交在本分支）：对照 docs/design/design-send-links-2026-10-14.md，找出与设计矛盾处、漏掉的测试（尤其设计 §5.6 的劣化条件与 §4 的边界）、越层依赖（kernel→identity→daemon→biz→shell 单向；links 不得 import inbox service）、与 ports.py 不一致处。把意见追加到该文件末尾的「评审」节，每条标 阻断/建议，并对每条阻断项直接写出修正后的规格文字（实施节点会照规格加评审节执行）。提交后 complete；--output-text 第一行写 BLOCKING:<n> 与 ADVISORY:<n>。'
+  after:
+  - wp5-design
+- id: wp5-implement
+  role: execute
+  timeout: 6h
+  launch:
+    harness: pi
+    provider: deepseek
+    model: deepseek-flash
+    cwd: /private/tmp/hf-wp5-send-links
+  after:
+  - wp5-review
+  task: '【WP5 实施】仓库 cwd 即你的 worktree（分支 wp<N>/send-links，base 为集成分支 refactor/org-structure-constrain）。先读 docs/design/design-send-links-2026-10-14.md 与 docs/design/send-links-impl/README.md，再读 src/hyprial/daemon/impl/links/ports.py（缝，不得改名）。规则：禁止裸跑 python，一律 uv run；测试命令 PYTHONPATH=$PWD/src uv run --extra test pytest <焦点路径> -q；改产品或测试结构后跑 uv run --no-project --python 3.12 python scripts/ci/check_structural_limits.py 与 check_module_boundaries.py；交付前 uv run --with ruff ruff check <改动文件>。每目录最多 7 个直接文件、每文件最多 1000 行。只 git add 具体文件，不用 -a。提交用 conventional commit，只在本地提交，不要 push、不要开 PR、不要给任何 agent 发消息（全网静默）。完成用 hyprial workflow complete 并把结论写在 --output-text；失败用 workflow fail。
+
+    严格按 docs/design/send-links-impl/wp5.md（含评审节的修正）实现。先写测试清单里的测试并运行确认先红，再实现到绿。每个提交可读可测。不要扩大范围，规格没写的不做；规格有歧义时在 --output-text 里写明你的取舍。完成时 --output-text 写：改动文件列表、焦点测试命令与结果（含先红证据）、结构门与 ruff 结果、未做项与原因。'
+- id: wp5-accept
+  role: review
+  timeout: 2h
+  launch:
+    harness: claude
+    model: claude-opus-5-5
+    cwd: /private/tmp/hf-wp5-send-links
+  after:
+  - wp5-implement
+  task: '【WP5 验收】仓库 cwd 即你的 worktree（分支 wp<N>/send-links，base 为集成分支 refactor/org-structure-constrain）。先读 docs/design/design-send-links-2026-10-14.md 与 docs/design/send-links-impl/README.md，再读 src/hyprial/daemon/impl/links/ports.py（缝，不得改名）。规则：禁止裸跑 python，一律 uv run；测试命令 PYTHONPATH=$PWD/src uv run --extra test pytest <焦点路径> -q；改产品或测试结构后跑 uv run --no-project --python 3.12 python scripts/ci/check_structural_limits.py 与 check_module_boundaries.py；交付前 uv run --with ruff ruff check <改动文件>。每目录最多 7 个直接文件、每文件最多 1000 行。只 git add 具体文件，不用 -a。提交用 conventional commit，只在本地提交，不要 push、不要开 PR、不要给任何 agent 发消息（全网静默）。完成用 hyprial workflow complete 并把结论写在 --output-text；失败用 workflow fail。
+
+    逐条对 docs/design/send-links-impl/wp5.md 的验收标准核实施：复跑其焦点测试、结构门与 ruff；核先红证据（git log 与测试输出）；检查越层依赖与 7 文件/1000 行限制；检查没有偷改 ports.py 的名字。不符合则 fail 并在 --output-text 列出不符项；符合则 complete，--output-text 写 ACCEPTED 与验证命令及结果。你不合并分支。'
+- id: wp5-merge
+  owner: agent:bob.smith@example.com:node-hq-01.example-tailnet.ts.net:emergent-org-structure-refactor
+  role: dispatch
+  timeout: 24h
+  after:
+  - wp5-accept
+  task: 【WP5 合并】集成者把 wp5/send-links 合进 refactor/org-structure-constrain 并推送。
+- id: wp6-review
+  role: review
+  timeout: 1h
+  launch:
+    harness: pi
+    provider: openai-codex
+    model: gpt-6.1-sol
+    cwd: /private/tmp/hf-wp6-send-links
+  task: '【WP6 评审】仓库 cwd 即你的 worktree（分支 wp<N>/send-links，base 为集成分支 refactor/org-structure-constrain）。先读 docs/design/design-send-links-2026-10-14.md 与 docs/design/send-links-impl/README.md，再读 src/hyprial/daemon/impl/links/ports.py（缝，不得改名）。规则：禁止裸跑 python，一律 uv run；测试命令 PYTHONPATH=$PWD/src uv run --extra test pytest <焦点路径> -q；改产品或测试结构后跑 uv run --no-project --python 3.12 python scripts/ci/check_structural_limits.py 与 check_module_boundaries.py；交付前 uv run --with ruff ruff check <改动文件>。每目录最多 7 个直接文件、每文件最多 1000 行。只 git add 具体文件，不用 -a。提交用 conventional commit，只在本地提交，不要 push、不要开 PR、不要给任何 agent 发消息（全网静默）。完成用 hyprial workflow complete 并把结论写在 --output-text；失败用 workflow fail。
+
+    评审 docs/design/send-links-impl/wp6.md（已由设计节点提交在本分支）：对照 docs/design/design-send-links-2026-10-14.md，找出与设计矛盾处、漏掉的测试（尤其设计 §5.6 的劣化条件与 §4 的边界）、越层依赖（kernel→identity→daemon→biz→shell 单向；links 不得 import inbox service）、与 ports.py 不一致处。把意见追加到该文件末尾的「评审」节，每条标 阻断/建议，并对每条阻断项直接写出修正后的规格文字（实施节点会照规格加评审节执行）。提交后 complete；--output-text 第一行写 BLOCKING:<n> 与 ADVISORY:<n>。'
+- id: wp6-implement
+  role: execute
+  timeout: 6h
+  launch:
+    harness: pi
+    provider: deepseek
+    model: deepseek-flash
+    cwd: /private/tmp/hf-wp6-send-links
+  after:
+  - wp6-review
+  task: '【WP6 实施】仓库 cwd 即你的 worktree（分支 wp<N>/send-links，base 为集成分支 refactor/org-structure-constrain）。先读 docs/design/design-send-links-2026-10-14.md 与 docs/design/send-links-impl/README.md，再读 src/hyprial/daemon/impl/links/ports.py（缝，不得改名）。规则：禁止裸跑 python，一律 uv run；测试命令 PYTHONPATH=$PWD/src uv run --extra test pytest <焦点路径> -q；改产品或测试结构后跑 uv run --no-project --python 3.12 python scripts/ci/check_structural_limits.py 与 check_module_boundaries.py；交付前 uv run --with ruff ruff check <改动文件>。每目录最多 7 个直接文件、每文件最多 1000 行。只 git add 具体文件，不用 -a。提交用 conventional commit，只在本地提交，不要 push、不要开 PR、不要给任何 agent 发消息（全网静默）。完成用 hyprial workflow complete 并把结论写在 --output-text；失败用 workflow fail。
+
+    严格按 docs/design/send-links-impl/wp6.md（含评审节的修正）实现。先写测试清单里的测试并运行确认先红，再实现到绿。每个提交可读可测。不要扩大范围，规格没写的不做；规格有歧义时在 --output-text 里写明你的取舍。完成时 --output-text 写：改动文件列表、焦点测试命令与结果（含先红证据）、结构门与 ruff 结果、未做项与原因。'
+- id: wp6-accept
+  role: review
+  timeout: 2h
+  launch:
+    harness: claude
+    model: claude-opus-5-5
+    cwd: /private/tmp/hf-wp6-send-links
+  after:
+  - wp6-implement
+  task: '【WP6 验收】仓库 cwd 即你的 worktree（分支 wp<N>/send-links，base 为集成分支 refactor/org-structure-constrain）。先读 docs/design/design-send-links-2026-10-14.md 与 docs/design/send-links-impl/README.md，再读 src/hyprial/daemon/impl/links/ports.py（缝，不得改名）。规则：禁止裸跑 python，一律 uv run；测试命令 PYTHONPATH=$PWD/src uv run --extra test pytest <焦点路径> -q；改产品或测试结构后跑 uv run --no-project --python 3.12 python scripts/ci/check_structural_limits.py 与 check_module_boundaries.py；交付前 uv run --with ruff ruff check <改动文件>。每目录最多 7 个直接文件、每文件最多 1000 行。只 git add 具体文件，不用 -a。提交用 conventional commit，只在本地提交，不要 push、不要开 PR、不要给任何 agent 发消息（全网静默）。完成用 hyprial workflow complete 并把结论写在 --output-text；失败用 workflow fail。
+
+    逐条对 docs/design/send-links-impl/wp6.md 的验收标准核实施：复跑其焦点测试、结构门与 ruff；核先红证据（git log 与测试输出）；检查越层依赖与 7 文件/1000 行限制；检查没有偷改 ports.py 的名字。不符合则 fail 并在 --output-text 列出不符项；符合则 complete，--output-text 写 ACCEPTED 与验证命令及结果。你不合并分支。'
+- id: wp6-merge
+  owner: agent:bob.smith@example.com:node-hq-01.example-tailnet.ts.net:emergent-org-structure-refactor
+  role: dispatch
+  timeout: 24h
+  after:
+  - wp6-accept
+  task: 【WP6 合并】集成者把 wp6/send-links 合进 refactor/org-structure-constrain 并推送。
+- id: wp7-review
+  role: review
+  timeout: 1h
+  launch:
+    harness: pi
+    provider: openai-codex
+    model: gpt-6.1-sol
+    cwd: /private/tmp/hf-wp7-send-links
+  task: '【WP7 评审】仓库 cwd 即你的 worktree（分支 wp<N>/send-links，base 为集成分支 refactor/org-structure-constrain）。先读 docs/design/design-send-links-2026-10-14.md 与 docs/design/send-links-impl/README.md，再读 src/hyprial/daemon/impl/links/ports.py（缝，不得改名）。规则：禁止裸跑 python，一律 uv run；测试命令 PYTHONPATH=$PWD/src uv run --extra test pytest <焦点路径> -q；改产品或测试结构后跑 uv run --no-project --python 3.12 python scripts/ci/check_structural_limits.py 与 check_module_boundaries.py；交付前 uv run --with ruff ruff check <改动文件>。每目录最多 7 个直接文件、每文件最多 1000 行。只 git add 具体文件，不用 -a。提交用 conventional commit，只在本地提交，不要 push、不要开 PR、不要给任何 agent 发消息（全网静默）。完成用 hyprial workflow complete 并把结论写在 --output-text；失败用 workflow fail。
+
+    评审 docs/design/send-links-impl/wp7.md（已由设计节点提交在本分支）：对照 docs/design/design-send-links-2026-10-14.md，找出与设计矛盾处、漏掉的测试（尤其设计 §5.6 的劣化条件与 §4 的边界）、越层依赖（kernel→identity→daemon→biz→shell 单向；links 不得 import inbox service）、与 ports.py 不一致处。把意见追加到该文件末尾的「评审」节，每条标 阻断/建议，并对每条阻断项直接写出修正后的规格文字（实施节点会照规格加评审节执行）。提交后 complete；--output-text 第一行写 BLOCKING:<n> 与 ADVISORY:<n>。'
+- id: wp7-implement
+  role: execute
+  timeout: 6h
+  launch:
+    harness: pi
+    provider: deepseek
+    model: deepseek-flash
+    cwd: /private/tmp/hf-wp7-send-links
+  after:
+  - wp7-review
+  task: '【WP7 实施】仓库 cwd 即你的 worktree（分支 wp<N>/send-links，base 为集成分支 refactor/org-structure-constrain）。先读 docs/design/design-send-links-2026-10-14.md 与 docs/design/send-links-impl/README.md，再读 src/hyprial/daemon/impl/links/ports.py（缝，不得改名）。规则：禁止裸跑 python，一律 uv run；测试命令 PYTHONPATH=$PWD/src uv run --extra test pytest <焦点路径> -q；改产品或测试结构后跑 uv run --no-project --python 3.12 python scripts/ci/check_structural_limits.py 与 check_module_boundaries.py；交付前 uv run --with ruff ruff check <改动文件>。每目录最多 7 个直接文件、每文件最多 1000 行。只 git add 具体文件，不用 -a。提交用 conventional commit，只在本地提交，不要 push、不要开 PR、不要给任何 agent 发消息（全网静默）。完成用 hyprial workflow complete 并把结论写在 --output-text；失败用 workflow fail。
+
+    严格按 docs/design/send-links-impl/wp7.md（含评审节的修正）实现。先写测试清单里的测试并运行确认先红，再实现到绿。每个提交可读可测。不要扩大范围，规格没写的不做；规格有歧义时在 --output-text 里写明你的取舍。完成时 --output-text 写：改动文件列表、焦点测试命令与结果（含先红证据）、结构门与 ruff 结果、未做项与原因。'
+- id: wp7-accept
+  role: review
+  timeout: 2h
+  launch:
+    harness: claude
+    model: claude-opus-5-5
+    cwd: /private/tmp/hf-wp7-send-links
+  after:
+  - wp7-implement
+  task: '【WP7 验收】仓库 cwd 即你的 worktree（分支 wp<N>/send-links，base 为集成分支 refactor/org-structure-constrain）。先读 docs/design/design-send-links-2026-10-14.md 与 docs/design/send-links-impl/README.md，再读 src/hyprial/daemon/impl/links/ports.py（缝，不得改名）。规则：禁止裸跑 python，一律 uv run；测试命令 PYTHONPATH=$PWD/src uv run --extra test pytest <焦点路径> -q；改产品或测试结构后跑 uv run --no-project --python 3.12 python scripts/ci/check_structural_limits.py 与 check_module_boundaries.py；交付前 uv run --with ruff ruff check <改动文件>。每目录最多 7 个直接文件、每文件最多 1000 行。只 git add 具体文件，不用 -a。提交用 conventional commit，只在本地提交，不要 push、不要开 PR、不要给任何 agent 发消息（全网静默）。完成用 hyprial workflow complete 并把结论写在 --output-text；失败用 workflow fail。
+
+    逐条对 docs/design/send-links-impl/wp7.md 的验收标准核实施：复跑其焦点测试、结构门与 ruff；核先红证据（git log 与测试输出）；检查越层依赖与 7 文件/1000 行限制；检查没有偷改 ports.py 的名字。不符合则 fail 并在 --output-text 列出不符项；符合则 complete，--output-text 写 ACCEPTED 与验证命令及结果。你不合并分支。'
+- id: wp7-merge
+  owner: agent:bob.smith@example.com:node-hq-01.example-tailnet.ts.net:emergent-org-structure-refactor
+  role: dispatch
+  timeout: 24h
+  after:
+  - wp7-accept
+  task: 【WP7 合并】集成者把 wp7/send-links 合进 refactor/org-structure-constrain 并推送。
+- id: wp8-design
+  role: plan
+  timeout: 2h
+  launch:
+    harness: claude
+    model: claude-opus-5-5
+    cwd: /private/tmp/hf-wp8-send-links
+  task: '【WP8 设计】范围：收尾：hyprial-ops skill 的发送章节与 MCP 工具说明按新机制改写（Skill-Impact: updated）；contract/ 同步（wire golden 的 summary 字段、新错误码、新 IPC 方法、send 返回字段）；一个隔离 E2E 场景：两个 agent 首次发送自动铸造、hold 放行、summary 注入、reply-to 闭合。
+
+    仓库 cwd 即你的 worktree（分支 wp<N>/send-links，base 为集成分支 refactor/org-structure-constrain）。先读 docs/design/design-send-links-2026-10-14.md 与 docs/design/send-links-impl/README.md，再读 src/hyprial/daemon/impl/links/ports.py（缝，不得改名）。规则：禁止裸跑 python，一律 uv run；测试命令 PYTHONPATH=$PWD/src uv run --extra test pytest <焦点路径> -q；改产品或测试结构后跑 uv run --no-project --python 3.12 python scripts/ci/check_structural_limits.py 与 check_module_boundaries.py；交付前 uv run --with ruff ruff check <改动文件>。每目录最多 7 个直接文件、每文件最多 1000 行。只 git add 具体文件，不用 -a。提交用 conventional commit，只在本地提交，不要 push、不要开 PR、不要给任何 agent 发消息（全网静默）。完成用 hyprial workflow complete 并把结论写在 --output-text；失败用 workflow fail。
+
+    产物：写 docs/design/send-links-impl/wp8.md，内容依次为：改哪些文件（含新建）、公共面与接口怎么变（必须与 ports.py 一致）、测试清单（每条写测什么、先红时的失败形状、放在 tests/ 哪个路径）、验收标准（可机检）、要留的证据。不写实现代码。提交该文件后 complete，--output-text 写规格路径与一段摘要。'
+  after:
+  - wp1-merge
+  - wp2-merge
+  - wp3-merge
+  - wp4-merge
+  - wp5-merge
+  - wp6-merge
+  - wp7-merge
+  - wp3b-merge
+- id: wp8-review
+  role: review
+  timeout: 1h
+  launch:
+    harness: pi
+    provider: openai-codex
+    model: gpt-6.1-sol
+    cwd: /private/tmp/hf-wp8-send-links
+  task: '【WP8 评审】仓库 cwd 即你的 worktree（分支 wp<N>/send-links，base 为集成分支 refactor/org-structure-constrain）。先读 docs/design/design-send-links-2026-10-14.md 与 docs/design/send-links-impl/README.md，再读 src/hyprial/daemon/impl/links/ports.py（缝，不得改名）。规则：禁止裸跑 python，一律 uv run；测试命令 PYTHONPATH=$PWD/src uv run --extra test pytest <焦点路径> -q；改产品或测试结构后跑 uv run --no-project --python 3.12 python scripts/ci/check_structural_limits.py 与 check_module_boundaries.py；交付前 uv run --with ruff ruff check <改动文件>。每目录最多 7 个直接文件、每文件最多 1000 行。只 git add 具体文件，不用 -a。提交用 conventional commit，只在本地提交，不要 push、不要开 PR、不要给任何 agent 发消息（全网静默）。完成用 hyprial workflow complete 并把结论写在 --output-text；失败用 workflow fail。
+
+    评审 docs/design/send-links-impl/wp8.md（已由设计节点提交在本分支）：对照 docs/design/design-send-links-2026-10-14.md，找出与设计矛盾处、漏掉的测试（尤其设计 §5.6 的劣化条件与 §4 的边界）、越层依赖（kernel→identity→daemon→biz→shell 单向；links 不得 import inbox service）、与 ports.py 不一致处。把意见追加到该文件末尾的「评审」节，每条标 阻断/建议，并对每条阻断项直接写出修正后的规格文字（实施节点会照规格加评审节执行）。提交后 complete；--output-text 第一行写 BLOCKING:<n> 与 ADVISORY:<n>。'
+  after:
+  - wp8-design
+- id: wp8-implement
+  role: execute
+  timeout: 6h
+  launch:
+    harness: pi
+    provider: deepseek
+    model: deepseek-flash
+    cwd: /private/tmp/hf-wp8-send-links
+  after:
+  - wp8-review
+  task: '【WP8 实施】仓库 cwd 即你的 worktree（分支 wp<N>/send-links，base 为集成分支 refactor/org-structure-constrain）。先读 docs/design/design-send-links-2026-10-14.md 与 docs/design/send-links-impl/README.md，再读 src/hyprial/daemon/impl/links/ports.py（缝，不得改名）。规则：禁止裸跑 python，一律 uv run；测试命令 PYTHONPATH=$PWD/src uv run --extra test pytest <焦点路径> -q；改产品或测试结构后跑 uv run --no-project --python 3.12 python scripts/ci/check_structural_limits.py 与 check_module_boundaries.py；交付前 uv run --with ruff ruff check <改动文件>。每目录最多 7 个直接文件、每文件最多 1000 行。只 git add 具体文件，不用 -a。提交用 conventional commit，只在本地提交，不要 push、不要开 PR、不要给任何 agent 发消息（全网静默）。完成用 hyprial workflow complete 并把结论写在 --output-text；失败用 workflow fail。
+
+    严格按 docs/design/send-links-impl/wp8.md（含评审节的修正）实现。先写测试清单里的测试并运行确认先红，再实现到绿。每个提交可读可测。不要扩大范围，规格没写的不做；规格有歧义时在 --output-text 里写明你的取舍。完成时 --output-text 写：改动文件列表、焦点测试命令与结果（含先红证据）、结构门与 ruff 结果、未做项与原因。'
+- id: wp8-accept
+  role: review
+  timeout: 2h
+  launch:
+    harness: claude
+    model: claude-opus-5-5
+    cwd: /private/tmp/hf-wp8-send-links
+  after:
+  - wp8-implement
+  task: '【WP8 验收】仓库 cwd 即你的 worktree（分支 wp<N>/send-links，base 为集成分支 refactor/org-structure-constrain）。先读 docs/design/design-send-links-2026-10-14.md 与 docs/design/send-links-impl/README.md，再读 src/hyprial/daemon/impl/links/ports.py（缝，不得改名）。规则：禁止裸跑 python，一律 uv run；测试命令 PYTHONPATH=$PWD/src uv run --extra test pytest <焦点路径> -q；改产品或测试结构后跑 uv run --no-project --python 3.12 python scripts/ci/check_structural_limits.py 与 check_module_boundaries.py；交付前 uv run --with ruff ruff check <改动文件>。每目录最多 7 个直接文件、每文件最多 1000 行。只 git add 具体文件，不用 -a。提交用 conventional commit，只在本地提交，不要 push、不要开 PR、不要给任何 agent 发消息（全网静默）。完成用 hyprial workflow complete 并把结论写在 --output-text；失败用 workflow fail。
+
+    逐条对 docs/design/send-links-impl/wp8.md 的验收标准核实施：复跑其焦点测试、结构门与 ruff；核先红证据（git log 与测试输出）；检查越层依赖与 7 文件/1000 行限制；检查没有偷改 ports.py 的名字。不符合则 fail 并在 --output-text 列出不符项；符合则 complete，--output-text 写 ACCEPTED 与验证命令及结果。你不合并分支。'
+- id: wp8-merge
+  owner: agent:bob.smith@example.com:node-hq-01.example-tailnet.ts.net:emergent-org-structure-refactor
+  role: dispatch
+  timeout: 24h
+  after:
+  - wp8-accept
+  task: 【WP8 合并】集成者把 wp8/send-links 合进 refactor/org-structure-constrain 并推送。
+- id: wp3b-review
+  role: review
+  timeout: 1h
+  launch:
+    harness: pi
+    provider: openai-codex
+    model: gpt-6.1-sol
+    cwd: /private/tmp/hf-wp3b-send-links
+  after:
+  - wp3-merge
+  - wp5-merge
+  - wp6-merge
+  task: '【WP3-B 评审】仓库 cwd 即你的 worktree（分支 wp3b/send-links，base 为集成分支 refactor/org-structure-constrain）。先读 docs/design/design-send-links-2026-10-14.md 与 docs/design/send-links-impl/README.md，再读 src/hyprial/daemon/impl/links/ports.py（缝，不得改名）。规则：禁止裸跑 python，一律 uv run；测试命令 PYTHONPATH=$PWD/src uv run --extra test pytest <焦点路径> -q；改产品或测试结构后跑 uv run --no-project --python 3.12 python scripts/ci/check_structural_limits.py 与 check_module_boundaries.py；交付前 uv run --with ruff ruff check <改动文件>。每目录最多 7 个直接文件、每文件最多 1000 行。只 git add 具体文件，不用 -a。提交用 conventional commit，只在本地提交，不要 push、不要开 PR、不要给任何 agent 发消息（全网静默）。完成用 hyprial workflow complete 并把结论写在 --output-text；失败用 workflow fail。
+
+    评审 docs/design/send-links-impl/wp3.md 的 Stage B（硬切：缺 summary 即 SUMMARY_REQUIRED；pending 行去掉 message 正文）。此时 WP3-A、WP5、WP6 已合入集成分支，请核对 Stage B 规格里列出的受影响测试与调用方是否已被它们修好，列出仍会红的清单并给修正后的规格文字。意见追加到该文件末尾「评审 Stage B」节，每条标 阻断/建议。提交后 complete；--output-text 第一行写 BLOCKING:<n> 与 ADVISORY:<n>。'
+- id: wp3b-implement
+  role: execute
+  timeout: 6h
+  launch:
+    harness: pi
+    provider: deepseek
+    model: deepseek-flash
+    cwd: /private/tmp/hf-wp3b-send-links
+  after:
+  - wp3b-review
+  task: '【WP3-B 实施】仓库 cwd 即你的 worktree（分支 wp3b/send-links，base 为集成分支 refactor/org-structure-constrain）。先读 docs/design/design-send-links-2026-10-14.md 与 docs/design/send-links-impl/README.md，再读 src/hyprial/daemon/impl/links/ports.py（缝，不得改名）。规则：禁止裸跑 python，一律 uv run；测试命令 PYTHONPATH=$PWD/src uv run --extra test pytest <焦点路径> -q；改产品或测试结构后跑 uv run --no-project --python 3.12 python scripts/ci/check_structural_limits.py 与 check_module_boundaries.py；交付前 uv run --with ruff ruff check <改动文件>。每目录最多 7 个直接文件、每文件最多 1000 行。只 git add 具体文件，不用 -a。提交用 conventional commit，只在本地提交，不要 push、不要开 PR、不要给任何 agent 发消息（全网静默）。完成用 hyprial workflow complete 并把结论写在 --output-text；失败用 workflow fail。
+
+    严格按 docs/design/send-links-impl/wp3.md 的 Stage B（含评审 Stage B 节的修正）实现硬切。先写测试确认先红，再实现到绿；把 Stage B 规格列出的既有测试改到新形状。完成时 --output-text 写：改动文件列表、焦点测试命令与结果（含先红证据）、结构门与 ruff 结果、未做项与原因。'
+- id: wp3b-accept
+  role: review
+  timeout: 2h
+  launch:
+    harness: claude
+    model: claude-opus-5-5
+    cwd: /private/tmp/hf-wp3b-send-links
+  after:
+  - wp3b-implement
+  task: '【WP3-B 验收】仓库 cwd 即你的 worktree（分支 wp3b/send-links，base 为集成分支 refactor/org-structure-constrain）。先读 docs/design/design-send-links-2026-10-14.md 与 docs/design/send-links-impl/README.md，再读 src/hyprial/daemon/impl/links/ports.py（缝，不得改名）。规则：禁止裸跑 python，一律 uv run；测试命令 PYTHONPATH=$PWD/src uv run --extra test pytest <焦点路径> -q；改产品或测试结构后跑 uv run --no-project --python 3.12 python scripts/ci/check_structural_limits.py 与 check_module_boundaries.py；交付前 uv run --with ruff ruff check <改动文件>。每目录最多 7 个直接文件、每文件最多 1000 行。只 git add 具体文件，不用 -a。提交用 conventional commit，只在本地提交，不要 push、不要开 PR、不要给任何 agent 发消息（全网静默）。完成用 hyprial workflow complete 并把结论写在 --output-text；失败用 workflow fail。
+
+    逐条对 docs/design/send-links-impl/wp3.md Stage B 的验收标准核实施：复跑其焦点测试、结构门与 ruff；核先红证据；检查没有偷改 ports.py 的名字。不符合则 fail 并列出不符项；符合则 complete，--output-text 写 ACCEPTED 与验证命令及结果。你不合并分支。'
+- id: wp3b-merge
+  owner: agent:bob.smith@example.com:node-hq-01.example-tailnet.ts.net:emergent-org-structure-refactor
+  role: dispatch
+  timeout: 24h
+  after:
+  - wp3b-accept
+  task: 【WP3-B 合并】集成者把 wp3b/send-links 合进 refactor/org-structure-constrain 并推送。
+- id: done
+  kind: end
+  owner: agent:bob.smith@example.com:node-hq-01.example-tailnet.ts.net:emergent-org-structure-refactor
+  timeout: 24h
+  after:
+  - wp8-merge
+  task: '全部包已合入集成分支且 CI（除 dev 上已点名的红之外）绿：去掉 #1457 的 WIP，通知 hq-adjutant 转告 Allen 合并。'
+edges:
+- from: wp1-accept
+  to: wp1-implement
+  kind: back
+- from: wp2-review
+  to: wp2-design
+  kind: back
+- from: wp2-accept
+  to: wp2-implement
+  kind: back
+- from: wp3-accept
+  to: wp3-implement
+  kind: back
+- from: wp4-accept
+  to: wp4-implement
+  kind: back
+- from: wp5-review
+  to: wp5-design
+  kind: back
+- from: wp5-accept
+  to: wp5-implement
+  kind: back
+- from: wp6-accept
+  to: wp6-implement
+  kind: back
+- from: wp7-accept
+  to: wp7-implement
+  kind: back
+- from: wp8-review
+  to: wp8-design
+  kind: back
+- from: wp8-accept
+  to: wp8-implement
+  kind: back
+- from: wp3b-accept
+  to: wp3b-implement
+  kind: back
+

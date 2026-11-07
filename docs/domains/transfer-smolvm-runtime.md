@@ -1,0 +1,66 @@
+# Experimental persisted smolvm runtime
+
+**Before binary rollback, explicitly downgrade schema 2 state with the new binary. An old binary refuses the entire daemon restore, including host/Docker workers.**
+
+AT08.2b supports local Darwin arm64, smolvm 1.19.0, and a P2 headless Codex worker. It persists an explicit execution choice instead of silently replacing a host worker. Failed or unsupported restore never falls back to host/Docker. AT08.2c fixes crashed-generation resource reclamation and verifies missing-session refusal. AT08.2d verifies authorized model turns and successful same-thread resume for the pinned combination below; cross-machine receive remains refused until AT07. Other harness carriers are not implemented here; this does not reverse the Pi/Kimi admission decision.
+
+## Compatibility evidence (2026-09-28)
+
+This is an experimental evidence inventory, not the global admission/support matrix. PASS applies only to the listed journey and versions. NOT_IMPLEMENTED means this smolvm carrier is absent; NOT_RUN means there is no executed evidence for that cell. Host and guest architectures are separate; ordinary Linux unit CI does not execute these VM/model journeys.
+
+| Harness | Host OS / architecture | Guest OS / architecture | Carrier | VM / model / same-thread resume | Evidence |
+| --- | --- | --- | --- | --- | --- |
+| Codex 0.157.0 | Darwin / arm64, local devusr-dev | Alpine 3.22.6 Linux / aarch64 | Implemented; smolvm 1.19.0, bubblewrap 0.12.0 | PASS / PASS / PASS, authorized DeepSeek | AT08.2b native/mount evidence and AT08.2d `0181d66c`, independent review `82e4e9a4`; origins below |
+| Codex | Darwin / arm64, second physical host | Linux / aarch64 | Same carrier, not exercised there | NOT_RUN / NOT_RUN / NOT_RUN | Host use authorization, operator/window and reviewer evidence access pending |
+| Codex | Darwin / x86_64; Linux / aarch64 or x86_64; Windows / arm64 or x86_64 | Untested guest OS / architecture combinations | NOT_IMPLEMENTED for these host platforms in this adapter | NOT_RUN / NOT_RUN / NOT_RUN | `validate_materials` currently accepts Darwin arm64 only; no cross-OS/architecture claim |
+| Claude | Darwin / arm64; other host OS / architectures untested | Linux / aarch64; other guest combinations untested | NOT_IMPLEMENTED | NOT_RUN / NOT_RUN / NOT_RUN | Upstream documentation (2026-09-28, not tested in this carrier); capability context below |
+| Pi | Darwin / arm64; other host OS / architectures untested | Linux / aarch64; other guest combinations untested | NOT_IMPLEMENTED | NOT_RUN / NOT_RUN / NOT_RUN | Upstream documentation (2026-09-28, not tested in this carrier); capability context below |
+| Kimi | Darwin / arm64; other host OS / architectures untested | Linux / aarch64; other guest combinations untested | NOT_IMPLEMENTED | NOT_RUN / NOT_RUN / NOT_RUN | Upstream documentation (2026-09-28, not tested in this carrier); capability context below |
+
+Codex origins: the development model worktree retains `.artifacts/at08-2d/model-run-03` and `.artifacts/at08-2d-fixture-fix/review-packet.md`; the independent archive retains `review/evidence/at08-2d/ccr-2d-model-r2`. Each successful journey used two distinct, settled messages, one initial thread/start, a successful same-thread thread/resume after VM cleanup/new daemon epoch, and each turn's actual input. The prior `45362b10` model-run-02 does **not** establish the second-prompt criterion; its corrected history remains retained. These archives are local evidence, not bundled test assets. Guest filesystem smoke and mount evidence come from AT08.2b `95b311a7` / review `c3953b8d`; host writeback mode/uid comes from [AT08.1](../notes/evidence-agent-transfer-at08-1-2026-09-28.md).
+
+## Native sandbox capability and remaining risks
+
+| Harness | Capability evidence | Boundary and risk |
+| --- | --- | --- |
+| Codex | Pinned guest native read-only filesystem sentinel smoke PASS | This proves denial of the tested shell overwrite, not every model tool, network policy or approval mode. The adapter runs this independent smoke before returning the worker launch command. |
+| Claude | Upstream describes Bash sandboxing with Seatbelt on macOS and bubblewrap on Linux | Bash confinement does not certify every tool. Upstream also documents optional unsandboxed retries and unavailable-sandbox fallback; a future pinned carrier must verify its actual enforcement/settings. No Claude guest smoke here. [Source](https://code.claude.com/docs/en/sandboxing) |
+| Pi | Upstream describes permission/path gates and sandbox execution as extensions, and warns packages have full system access | No native OS confinement is established for this carrier. Optional extensions or confirmation flows cannot be assumed installed or equivalent to confinement. Authorized writable mounts remain exposed to the worker's tools. [Source](https://github.com/earendil-works/pi/tree/main/packages/coding-agent) |
+| Kimi | Upstream documents tool approvals and YOLO/AFK modes which auto-approve actions | Approval is not proof of OS confinement. Native confinement for this carrier is unverified; unrestricted tool execution can modify authorized writable mounts. This is not a claim that every Kimi build lacks sandboxing. [Source](https://github.com/MoonshotAI/kimi-cli/blob/main/docs/en/guides/interaction.md) |
+
+For a future carrier with absent or unverified native sandbox capability, report **native NOT_RUN** and warn about the writable-mount risk; do not invent a native PASS or reject solely because the compatibility matrix has no entry. Q9 still allows Pi/Kimi admission. Separately smoke-test the promised VM/mount/IPC boundaries (unmounted host data unavailable, only bound actor/session requests accepted); an observed boundary violation must refuse startup and clean up. Passing those checks does not establish native confinement. This is the design requirement for future carriers, not an implemented Pi/Kimi path, an extra outer sandbox, or a permission bypass. Current Codex smoke failure remains a hard refusal.
+
+`tests/test_smolvm_worker_runtime.py::test_native_sandbox_smoke_failure_refuses_worker_and_cleans` exercises that refusal with a fake administrative command: VM creation/start succeed, the smoke fails, start raises, the relay is fenced, machine delete runs, and engine/owner/pointer are removed. It is a unit cleanup regression; it does not replace the real guest smoke evidence.
+
+## Materials and launch
+
+Use a private, pinned smolvm release bundle, a Linux aarch64 rootfs with Codex, bubblewrap, Python 3.12+ and the matching hyprial agent-channel dependencies, and an explicit host resize2fs. No global installation or implicit PATH lookup occurs. The guest needs the MCP/CLI client dependencies; it does not run daemon/Zenoh. Bundle, executable and rootfs digests are rechecked on every launch/restore. Verify upstream download signatures/checksums before selecting the materials; local tree digests record the selected content and are not upstream attestations.
+
+`hyprial agent start codex --headless --name NAME --smolvm-spec /absolute/runtime.json`
+
+The JSON has exactly these keys: `version: 1`, `kind: "smolvm"`, `smolvmPath`, `smolvmSha256`, `smolvmBundleDigest`, `rootfsPath`, `rootfsDigest`, `resize2fsPath`, `resize2fsSha256`, `guestCommand` (nonempty argv, first item an absolute guest Codex path), `guestPython` (absolute guest Python path). SHA256 strings are lowercase hexadecimal. Paths must be canonical absolute paths. `smolvmBundleDigest` covers the binary's parent directory, including adjacent libraries and agent-rootfs. `rootfsDigest` and the bundle digest use `snapshot-json-v1`: SHA256 of sorted compact ASCII JSON from `hyprial.transfer.smolvm._snapshot`, recording modes, uid, sizes, hashes and literal symlink targets without following links. Input JSON paths are never persisted or reread during restore.
+
+For a P2 DeepSeek launch, a missing or already revoked provider grant causes a permanent startup refusal before a native worker or VM starts. Supply an authorized agent-owned grant and explicitly start again; reconnecting cannot repair the previously composed environment. No host key fallback is permitted. This checks authorization at startup; it does not add revocation of credentials already delivered to a running worker. Legacy HOME credential-read failures retain their existing retry behavior.
+
+Only an explicit P2 context works. Selected agent home, config source and cwd retain their absolute paths inside the guest; parent directories are guest-only skeletons. External symlinks/shared host login links and external git worktree metadata are refused. Reauthenticate in the selected agent home as needed. Host HOME, other agent homes, Keychain, SSH capabilities and the production daemon socket are not exposed. Secret values enter only the exec environment via named `--secret-env`, not argv or persistent VM config.
+
+Resources are fixed to 2 CPUs, 1024 MiB memory, and 1 GiB each for storage and overlay. The adapter owns a private engine HOME and one `worker` VM under `/private/tmp/hvUID/HASH`; marker and per-actor flock prevent two generations from owning it. Cleanup fences the relay first, deletes only this private VM and verifies managers have exited. Failures retain the ownership marker and state pointer for inspection; a replacement must reclaim that generation before starting. Never run global stop/prune/kill.
+
+Replacement reuses private directories only under the matching actor/state/spec ownership fence. Engine and environment directories must be canonical, owned by the current uid and mode 0700. Unexpected permissions or links fail closed and retain ownership evidence; directories from earlier experimental builds with weaker modes require operator inspection. Cleanup cannot discard the marker merely because environment construction failed: any remaining engine keeps the marker and state pointer.
+
+Matrix absence produces a warning. A separate native Codex read-only sandbox smoke checks an outside-workspace sentinel: external writes before/after succeed, sandboxed overwrite is denied, content and identity remain unchanged. Failure refuses startup. This is a native filesystem smoke, not a claim about every model tool, approval mode or network policy.
+
+## Rollback
+
+1. Keep the new binary and the same owner. Stop/fence smolvm workers; resolve incomplete cleanup and lifecycle compensation. Stop the daemon through the normal operations procedure.
+2. Run `hyprial agent transfer runtime downgrade-state --output /absolute/new-export-dir --json`. It takes the existing daemon ownership fence and refuses active runtime pointers, unretired receipts or unfinished operations.
+3. The tool durably exports removed runtime intent/references and retained terminal history before one SQLite transaction removes the new executable intent and changes root to schema 1. Agent identity, home files, sessions, grants and normal host/Docker intent remain. Terminal journal rows stay historical; no automatic reimport/start is offered.
+4. Only after successful verification may operations install the old binary and restore host workers. Keep the export and a consistent operations backup. Do not combine downgrade with owner migration.
+
+## Reproducible smoke
+
+Run `tests/test_smolvm_runtime_vm.py` through `contract/e2e/with-machine-lock.py` with `AT08_RUNTIME_SPEC`, a new `AT08_RUNTIME_OUTPUT`, and an explicit read-only `AT08_HEALTH_SOCKET`. Obtain the monitor resource window first. It uses an isolated daemon fixture, real Codex app-server/P2 projection and real guest MCP, a synthetic noncredential value and a guest-loopback model endpoint, and sends no turn. Evidence includes pre/post production pid/epoch/adapters, native load, relay identity, mount table, APK verification and private cleanup. Linux CI leaves this opt-in VM test **NOT_RUN/skip**; ordinary unit tests exercise persistence, refusal and cleanup without a VM.
+
+For missing-session refusal, also set `AT08_INVALID_SESSION_REF` to a nonexistent native thread id. For managed crash recovery, run `tests/test_smolvm_daemon_vm.py` under the same lock/window with `AT08_RUNTIME_SPEC`, a fresh `AT08_DAEMON_OUTPUT` and `AT08_HEALTH_SOCKET`. It starts a real isolated daemon through a fixture with protocol observers, invokes the public CLI, kills only that test daemon, and restarts it on the same private state. It records raw VM commands, ownership generations and manager liveness. Both tests send no model turn; no-turn threads have no durable native rollout, so rejecting that ref after restart is expected and is not a successful conversation-resume claim.
+
+The crash fixture waits for the native thread ID to be committed to the matching desired-state harness row before SIGKILL. For a revoked-grant refusal using the pinned materials and public CLI, set `AT08_REJECT_OUTPUT` to a fresh directory and select `test_daemon_rejects_ungranted_provider_before_worker[materials-revoked]`. This uses a synthetic key, verifies a failed start with completed compensation and zero native/VM calls, and does not invoke a model. The missing/revoked cases without materials exercise the real isolated lifecycle handler on CI without requiring a host Codex installation.

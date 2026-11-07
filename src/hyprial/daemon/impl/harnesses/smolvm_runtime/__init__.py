@@ -131,7 +131,7 @@ def runtime_directory(state_dir: Path, actor: str) -> Path:
 
 # A successful close removes the engine and owner.json but keeps the private
 # directory and its runtime.lock. Those husks are unreachable through the public
-# entry points, so they only accumulate (measured on jjkysy-dev 2026-09-29: 37
+# entry points, so they only accumulate (measured on devusr-dev 2026-09-29: 37
 # lock-only directories under /private/tmp/hv501, newest lock written
 # 16:24:22Z). A minimum age keeps the reaper away from a generation that is
 # starting or still writing evidence right now.

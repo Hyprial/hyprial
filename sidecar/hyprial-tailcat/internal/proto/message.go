@@ -17,11 +17,13 @@ import (
 	"fmt"
 	"io"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 
 	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tailcat/internal/membership"
+	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tailcat/internal/privatefs"
 )
 
 // Version is the only accepted protocol version. v5 adds deterministic
@@ -651,6 +653,9 @@ func optionalRequestID(raw map[string]json.RawMessage) (string, error) {
 	return requestID, nil
 }
 
+// exposureLstat is a stat seam for private-target validation tests.
+var exposureLstat = os.Lstat
+
 // ValidateExposure checks a port/target/proxyProtocol/admission tuple.
 func ValidateExposure(port int, target, proxyProtocol, admission string) error {
 	if port <= 0 || port > 65535 {
@@ -661,6 +666,11 @@ func ValidateExposure(port int, target, proxyProtocol, admission string) error {
 	}
 	if admission != AdmissionAllow {
 		return ProtocolError("admission must be allow")
+	}
+	if proxyProtocol == "v2" {
+		if err := privatefs.ProxyTarget(target, exposureLstat); err != nil {
+			return ProtocolError(err.Error())
+		}
 	}
 	switch {
 	case strings.HasPrefix(target, "unix:"):
@@ -698,7 +708,7 @@ var eventFields = map[string][]string{
 	"service-unmapped":   {"requestId", "name", "removed"},
 	"service-status":     {"requestId", "services"},
 	"service-failed":     {"requestId", "op", "name", "code", "message"},
-	"error":              {"code", "message", "requestId", "op"},
+	"error":              {"code", "message", "requestId", "op", "data"},
 	"membership-result":  {"requestId", "op", "data"},
 	"membership-changed": {"tailnetId", "revision", "code"},
 	"readiness":          {"readiness"},
@@ -743,6 +753,11 @@ func ParseEvent(line []byte) (Event, error) {
 		}
 	} else if _, err := optionalRequestID(raw); err != nil {
 		return Event{}, err
+	}
+	if name == "error" && event.Data != nil {
+		if event.RequestID == "" || !membership.IsOp(event.Op) || !membership.ValidateDiagnostic(event.Data) {
+			return Event{}, ProtocolError("invalid transport diagnostic")
+		}
 	}
 	if name == "membership-result" {
 		if event.RequestID == "" || membership.ValidateResult(event.Op, event.Data) != nil {

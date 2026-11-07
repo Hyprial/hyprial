@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "status": "C2-draft",
+  "source_custody_query_seconds": 10.0,
+  "source_custody_projection_capacity": 10000,
+  "authority_close_seconds": 5.0,
+  "inherited_harness_bounds": {
+    "hold_capacity": "restore_eligibility_capacity",
+    "hold_waiters_total": "mailbox_capacity",
+    "unsettled_native_attempts": "start_admission_width * 4"
+  },
+  "timeout_semantics": "unknown; never cancel accepted custody or infer absence",
+  "supervision_exemptions": "unchanged; declarations are not exemptions",
+  "source_quiesce_deadline_seconds": 70.0,
+  "p2_quiesce_wait_seconds": 100.0,
+  "p2_admission_wait_seconds": 10.0,
+  "p2_wait_derivation": "p2_quiesce_wait_seconds = source_quiesce_deadline_seconds + 30 (the caller outlasts the effect's own budget, so a timeout here is the effect's verdict and never ours); p2_admission_wait_seconds = source_custody_query_seconds (the mailbox admission wait is the custody query budget). Both are caller-side waits: they bound waiting, never custody or execution.",
+  "source_effect_capacity": 32,
+  "source_effect_workers": 1,
+  "source_custody_retry_attempts": 3,
+  "source_custody_retry_batch": 32,
+  "source_custody_deferred_capacity": 10000,
+  "source_custody_fleet_seconds": 10.0
+}

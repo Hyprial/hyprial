@@ -1,22 +1,26 @@
 """Resolved agent-home P2 roots and non-secret tool environment profiles.
 
 This shared boundary resolves one durable Agent identity into immutable launch roots.
+
+Decision (agent-git-identity, 2026-11-03): the built-in person tool profile
+constant and its personal literals were removed; the git
+author is resolved at runtime by runtime.tool_profile in the mandated order
+(per-agent pair, owner profile fields, owner global git config, agent identity,
+stable GIT_AUTHOR_UNRESOLVED error) and profile value types live in
+runtime.tool_profile, re-exported here for established import paths.
 """
 
 from __future__ import annotations
 
 import hashlib
 import os
-import re
 import shlex
 import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
-from urllib.parse import urlsplit, urlunsplit
 
 from hyprial.kernel import (
-    DEFAULT_GIT_URL,
     PrivateAccessUnsupported,
     harden_private_path,
     ipc_errors,
@@ -38,11 +42,18 @@ from hyprial.identity.impl.agents.runtime.notices import AgentRuntimeNotice
 from hyprial.identity.impl.agents.runtime.private_paths import (
     ensure_private_directory,
 )
+from hyprial.identity.impl.agents.runtime.tool_profile import (
+    AgentRuntimeError,
+    AgentToolProfile,
+    SshToolAuthorization,
+    resolve_agent_tool_profile,
+    retire_legacy_tool_profile,
+)
 
 __all__ = [
     "AgentRuntimeContext", "AgentRuntimeError", "AgentRuntimeNotice",
     "AgentRuntimeRoots", "AgentRuntimePreparation", "AgentToolProfile",
-    "DEFAULT_AGENT_TOOL_PROFILE", "SHARED_CREDENTIAL_DIVERGED",
+    "SHARED_CREDENTIAL_DIVERGED",
     "SHARED_CREDENTIAL_CONFLICT", "SHARED_CREDENTIAL_INVALID",
     "SHARED_CREDENTIAL_UNSUPPORTED", "SharedCredentialBinding",
     "SshToolAuthorization", "agent_home_mode", "derive_runtime_roots",
@@ -59,8 +70,6 @@ _NATIVE_ROOT_ENV = {
     "codex": "CODEX_HOME",
     "pi": "PI_CODING_AGENT_DIR",
 }
-_PROFILE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
-_SSH_TOKEN = re.compile(r"[A-Za-z0-9._@:-]+\Z")
 _NATIVE_CREDENTIAL_NAME = {
     "claude": ".credentials.json",
     "codex": "auth.json",
@@ -85,104 +94,6 @@ def agent_home_mode(agent: Any, harness: str | None) -> tuple[str, str | None]:
     if harness not in _P2_HARNESSES:
         return "legacy", "harness_not_p2"
     return "p2", None
-
-
-class AgentRuntimeError(ValueError):
-    """A P2 root/profile combination cannot be represented safely."""
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        code: str | None = None,
-        data: dict[str, object] | None = None,
-    ) -> None:
-        super().__init__(message)
-        self.code = code
-        self.data = data
-
-
-def _default_git_endpoint() -> tuple[str, str]:
-    parsed = urlsplit(DEFAULT_GIT_URL)
-    if parsed.hostname is None:
-        raise AgentRuntimeError("default Git URL must name a host")
-    return parsed.hostname, urlunsplit((parsed.scheme, parsed.netloc, "/", "", ""))
-
-
-_DEFAULT_GIT_HOSTNAME, _DEFAULT_GIT_REWRITE_TARGET = _default_git_endpoint()
-
-
-@dataclass(frozen=True, slots=True)
-class SshToolAuthorization:
-    """Explicit non-secret selection metadata for one approved SSH signer."""
-
-    auth_sock: str
-    identity_file: str
-    known_hosts_file: str
-    host: str = "code.hyprial.com"
-    hostname: str = _DEFAULT_GIT_HOSTNAME
-    user: str = "git"
-
-    def __post_init__(self) -> None:
-        for label, value in (
-            ("auth_sock", self.auth_sock),
-            ("identity_file", self.identity_file),
-            ("known_hosts_file", self.known_hosts_file),
-        ):
-            if not value or "\n" in value or not Path(value).is_absolute():
-                raise AgentRuntimeError(f"SSH {label} must be an absolute path")
-        if any(
-            not value or _SSH_TOKEN.fullmatch(value) is None
-            for value in (self.host, self.hostname, self.user)
-        ):
-            raise AgentRuntimeError("SSH host, hostname, and user must not be blank")
-
-
-@dataclass(frozen=True, slots=True)
-class AgentToolProfile:
-    """Approved, non-secret tool identity and optional SSH capability."""
-
-    profile_id: str
-    git_author_name: str
-    git_author_email: str
-    git_rewrite_source: str = "https://code.hyprial.com/"
-    git_rewrite_target: str = _DEFAULT_GIT_REWRITE_TARGET
-    tea_login: str = "code.hyprial.com"
-    ssh: SshToolAuthorization | None = None
-
-    def __post_init__(self) -> None:
-        values = (
-            self.profile_id,
-            self.git_author_name,
-            self.git_author_email,
-            self.git_rewrite_source,
-            self.git_rewrite_target,
-            self.tea_login,
-        )
-        if any(not value for value in values):
-            raise AgentRuntimeError("tool profile fields must not be blank")
-        if "\n" in "".join(values):
-            raise AgentRuntimeError("tool profile fields must be single-line values")
-        if _PROFILE_ID.fullmatch(self.profile_id) is None:
-            raise AgentRuntimeError("tool profile id contains an unsafe path character")
-        if any(character in self.git_rewrite_target for character in '\"]'):
-            raise AgentRuntimeError("Git rewrite target contains an unsafe config character")
-        if (
-            self.git_rewrite_source != "https://code.hyprial.com/"
-            or self.git_rewrite_target != _DEFAULT_GIT_REWRITE_TARGET
-            or self.tea_login != "code.hyprial.com"
-        ):
-            raise AgentRuntimeError(
-                "tool profile may not widen the approved Forgejo endpoints"
-            )
-
-
-DEFAULT_AGENT_TOOL_PROFILE = AgentToolProfile(
-    profile_id="agent-home-p2-allen-v1",
-    git_author_name="Allen Woods",
-    git_author_email="allenwoods@users.noreply.code.hyprial.com",
-)
-
 
 @dataclass(frozen=True, slots=True)
 class AgentRuntimeRoots:
@@ -625,7 +536,7 @@ def build_agent_runtime_preparation(
     agent_name: str,
     harness: str,
     cwd: str | None,
-    tool_profile: AgentToolProfile,
+    tool_profile: AgentToolProfile | None,
     containerized: bool = False,
     credential_preflight: bool = False,
     validate_home: bool = True,
@@ -645,6 +556,8 @@ def build_agent_runtime_preparation(
         if legacy_reporter is not None:
             legacy_reporter(agent.uri, legacy_reason)
         return None
+    if tool_profile is None:
+        tool_profile = resolve_agent_tool_profile(agent)
     receipt = registry.home_receipt(
         agent.actor, validate_mirror=validate_home
     )
@@ -669,7 +582,7 @@ def resolve_agent_runtime_context(
     agent_name: str,
     harness: str,
     cwd: str | None,
-    tool_profile: AgentToolProfile,
+    tool_profile: AgentToolProfile | None = None,
     containerized: bool = False,
     credential_preflight: bool = False,
     legacy_reporter: Callable[[str, str], None] | None = None,
@@ -679,6 +592,8 @@ def resolve_agent_runtime_context(
     An explicit Agent config opts that identity into P2 for the three supported
     harnesses.  DSH/residents without an explicit C stay untouched.  A P2
     context never silently falls back when its entry cannot carry the contract.
+    A ``None`` tool profile resolves the agent's git author at launch time via
+    runtime.tool_profile; an explicit profile pins it (tests, readiness).
     """
 
     preparation = build_agent_runtime_preparation(
@@ -888,6 +803,11 @@ def materialize_agent_runtime_context(
         incumbent=incumbent,
     )
     _materialize_tool_profile(tool_profile_root, preparation.tool_profile)
+    migration_notice = retire_legacy_tool_profile(
+        config_root=agent_home / "state" / "config" / preparation.entity_token,
+        actor=preparation.actor_name,
+        resolved_profile_id=preparation.tool_profile.profile_id,
+    )
     environment = runtime_environment_for_roots(
         roots, preparation.harness, preparation.tool_profile
     )
@@ -909,6 +829,7 @@ def materialize_agent_runtime_context(
             None if shared_target is None else Path(shared_target)
         ),
         home_resource_token=receipt.resource_token,
+        notices=(migration_notice,) if migration_notice is not None else (),
     )
     if shared_credential is not None:
         validate_shared_credential_binding(shared_credential)

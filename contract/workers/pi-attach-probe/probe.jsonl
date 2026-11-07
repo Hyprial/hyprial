@@ -1,0 +1,10 @@
+{"t":"2026-08-19T10:11:07.359Z","event":"session_start","mode":"tui","hasUI":true,"sessionId":"01a01980-cf11-7588-b670-d452cb94e646","isIdle":true,"workerActor":null,"workerSessionRef":null}
+{"t":"2026-08-19T10:11:09.360Z","event":"inject_idle_attempt","isIdle":true}
+{"t":"2026-08-19T10:11:09.360Z","event":"input","source":"extension","streamingBehavior":null,"text":"Reply with the single word PONG and nothing else."}
+{"t":"2026-08-19T10:11:09.361Z","event":"agent_start","isIdle":false}
+{"t":"2026-08-19T10:11:09.662Z","event":"inject_streaming_attempts","isIdle":false}
+{"t":"2026-08-19T10:11:09.662Z","event":"input","source":"extension","streamingBehavior":null,"text":"PROBE-NO-DELIVERAS"}
+{"t":"2026-08-19T10:11:09.662Z","event":"input","source":"extension","streamingBehavior":"followUp","text":"Reply with the single word DONE and nothing else."}
+{"t":"2026-08-19T10:11:17.658Z","event":"agent_end"}
+{"t":"2026-08-19T10:11:17.659Z","event":"agent_settled","count":1,"isIdle":true,"seenNoDeliverasProbe":true,"seenFollowUpProbe":true}
+{"t":"2026-08-19T10:16:36.246Z","event":"session_shutdown","settled":1}

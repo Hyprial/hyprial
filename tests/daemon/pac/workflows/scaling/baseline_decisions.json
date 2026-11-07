@@ -1,0 +1,2758 @@
+{
+  "baselineHead": "90d5c535b719567661ab74125ff7648fba1d0440",
+  "productSource": "/private/tmp/hyprial-daemon-algorithms-intg-base/src/hyprial/daemon/impl/pac/workflows/runtime/operations.py",
+  "scenarioSha256": "13bf391ed569dc077cc45ba44e45b2eae10888bcab75e2129103f58266261792",
+  "decisions": [
+    {
+      "name": "requested",
+      "graphs": [
+        {
+          "label": "deadline",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 2000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "held",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 2000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "inputs",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "first",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 3601000,
+              "generation": 1,
+              "requested": 1
+            },
+            {
+              "node_id": "second",
+              "state": "pending",
+              "reason_ref": null,
+              "deadline_ms": null,
+              "generation": 0,
+              "requested": 0
+            }
+          ]
+        },
+        {
+          "label": "manual-close",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 3601000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "restart-input",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 3601000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        }
+      ],
+      "notifications": [
+        {
+          "graph": "deadline",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "held",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "manual-close",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "restart-input",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        }
+      ],
+      "sendAttemptsByRecipient": {
+        "agent:tick-test:machine:worker": 5
+      }
+    },
+    {
+      "name": "stable",
+      "graphs": [
+        {
+          "label": "deadline",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 2000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "held",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 2000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "inputs",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "first",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 3601000,
+              "generation": 1,
+              "requested": 1
+            },
+            {
+              "node_id": "second",
+              "state": "pending",
+              "reason_ref": null,
+              "deadline_ms": null,
+              "generation": 0,
+              "requested": 0
+            }
+          ]
+        },
+        {
+          "label": "manual-close",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 3601000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "restart-input",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 3601000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        }
+      ],
+      "notifications": [
+        {
+          "graph": "deadline",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "held",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "manual-close",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "restart-input",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        }
+      ],
+      "sendAttemptsByRecipient": {
+        "agent:tick-test:machine:worker": 5
+      }
+    },
+    {
+      "name": "downstream-requested",
+      "graphs": [
+        {
+          "label": "deadline",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 2000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "held",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 2000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "inputs",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "first",
+              "state": "done",
+              "reason_ref": "test:accepted",
+              "deadline_ms": 3601000,
+              "generation": 1,
+              "requested": 1
+            },
+            {
+              "node_id": "second",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 3601610,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "manual-close",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 3601000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "restart-input",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 3601000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        }
+      ],
+      "notifications": [
+        {
+          "graph": "deadline",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "held",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "manual-close",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "restart-input",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "actor_alert",
+          "recipient": "user:tick-test",
+          "at": 1600,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1610,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        }
+      ],
+      "sendAttemptsByRecipient": {
+        "agent:tick-test:machine:worker": 6,
+        "user:tick-test": 1
+      }
+    },
+    {
+      "name": "withdrawn-and-reissued",
+      "graphs": [
+        {
+          "label": "deadline",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 2000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "held",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 2000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "inputs",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "first",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 3601000,
+              "generation": 2,
+              "requested": 1
+            },
+            {
+              "node_id": "second",
+              "state": "pending",
+              "reason_ref": null,
+              "deadline_ms": 3601610,
+              "generation": 1,
+              "requested": 0
+            }
+          ]
+        },
+        {
+          "label": "manual-close",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 3601000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "restart-input",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 3601000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        }
+      ],
+      "notifications": [
+        {
+          "graph": "deadline",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "held",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "manual-close",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "restart-input",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "actor_alert",
+          "recipient": "user:tick-test",
+          "at": 1600,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1610,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1710,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        }
+      ],
+      "sendAttemptsByRecipient": {
+        "agent:tick-test:machine:worker": 7,
+        "user:tick-test": 1
+      }
+    },
+    {
+      "name": "stable-after-reset",
+      "graphs": [
+        {
+          "label": "deadline",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 2000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "held",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 2000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "inputs",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "first",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 3601000,
+              "generation": 2,
+              "requested": 1
+            },
+            {
+              "node_id": "second",
+              "state": "pending",
+              "reason_ref": null,
+              "deadline_ms": 3601610,
+              "generation": 1,
+              "requested": 0
+            }
+          ]
+        },
+        {
+          "label": "manual-close",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 3601000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "restart-input",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 3601000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        }
+      ],
+      "notifications": [
+        {
+          "graph": "deadline",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "held",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "manual-close",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "restart-input",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "actor_alert",
+          "recipient": "user:tick-test",
+          "at": 1600,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1610,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1710,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        }
+      ],
+      "sendAttemptsByRecipient": {
+        "agent:tick-test:machine:worker": 7,
+        "user:tick-test": 1
+      }
+    },
+    {
+      "name": "new-downstream-request",
+      "graphs": [
+        {
+          "label": "deadline",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 2000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "held",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 2000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "inputs",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "first",
+              "state": "done",
+              "reason_ref": "test:accepted",
+              "deadline_ms": 3601000,
+              "generation": 2,
+              "requested": 1
+            },
+            {
+              "node_id": "second",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 3601610,
+              "generation": 2,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "manual-close",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 3601000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "restart-input",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 3601000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        }
+      ],
+      "notifications": [
+        {
+          "graph": "deadline",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "held",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "manual-close",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "restart-input",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "actor_alert",
+          "recipient": "user:tick-test",
+          "at": 1600,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1610,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1710,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "actor_alert",
+          "recipient": "user:tick-test",
+          "at": 1800,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1810,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        }
+      ],
+      "sendAttemptsByRecipient": {
+        "agent:tick-test:machine:worker": 8,
+        "user:tick-test": 2
+      }
+    },
+    {
+      "name": "accepted-close",
+      "graphs": [
+        {
+          "label": "deadline",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 2000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "held",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 2000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "inputs",
+          "version": 1,
+          "state": "completed",
+          "reason": "pac:workflow-settled",
+          "closedAt": 1910,
+          "nodes": [
+            {
+              "node_id": "first",
+              "state": "done",
+              "reason_ref": "test:accepted",
+              "deadline_ms": 3601000,
+              "generation": 2,
+              "requested": 1
+            },
+            {
+              "node_id": "second",
+              "state": "done",
+              "reason_ref": "test:accepted",
+              "deadline_ms": 3601610,
+              "generation": 2,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "manual-close",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 3601000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "restart-input",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 3601000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        }
+      ],
+      "notifications": [
+        {
+          "graph": "deadline",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "held",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "manual-close",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "restart-input",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "actor_alert",
+          "recipient": "user:tick-test",
+          "at": 1600,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1610,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1710,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "actor_alert",
+          "recipient": "user:tick-test",
+          "at": 1800,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1810,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "actor_alert",
+          "recipient": "user:tick-test",
+          "at": 1900,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        }
+      ],
+      "sendAttemptsByRecipient": {
+        "agent:tick-test:machine:worker": 8,
+        "user:tick-test": 3
+      }
+    },
+    {
+      "name": "external-close",
+      "graphs": [
+        {
+          "label": "deadline",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 2000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "held",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 2000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "inputs",
+          "version": 1,
+          "state": "completed",
+          "reason": "pac:workflow-settled",
+          "closedAt": 1910,
+          "nodes": [
+            {
+              "node_id": "first",
+              "state": "done",
+              "reason_ref": "test:accepted",
+              "deadline_ms": 3601000,
+              "generation": 2,
+              "requested": 1
+            },
+            {
+              "node_id": "second",
+              "state": "done",
+              "reason_ref": "test:accepted",
+              "deadline_ms": 3601610,
+              "generation": 2,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "manual-close",
+          "version": 1,
+          "state": "cancelled",
+          "reason": "pac:graph-closed",
+          "closedAt": 1950,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "cancelled",
+              "reason_ref": "pac:graph-closed",
+              "deadline_ms": 3601000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "restart-input",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 3601000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        }
+      ],
+      "notifications": [
+        {
+          "graph": "deadline",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "held",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "manual-close",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "restart-input",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "actor_alert",
+          "recipient": "user:tick-test",
+          "at": 1600,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1610,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1710,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "actor_alert",
+          "recipient": "user:tick-test",
+          "at": 1800,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1810,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "actor_alert",
+          "recipient": "user:tick-test",
+          "at": 1900,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        }
+      ],
+      "sendAttemptsByRecipient": {
+        "agent:tick-test:machine:worker": 8,
+        "user:tick-test": 3
+      }
+    },
+    {
+      "name": "deadline-equality",
+      "graphs": [
+        {
+          "label": "deadline",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 2000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "held",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 2000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "inputs",
+          "version": 1,
+          "state": "completed",
+          "reason": "pac:workflow-settled",
+          "closedAt": 1910,
+          "nodes": [
+            {
+              "node_id": "first",
+              "state": "done",
+              "reason_ref": "test:accepted",
+              "deadline_ms": 3601000,
+              "generation": 2,
+              "requested": 1
+            },
+            {
+              "node_id": "second",
+              "state": "done",
+              "reason_ref": "test:accepted",
+              "deadline_ms": 3601610,
+              "generation": 2,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "manual-close",
+          "version": 1,
+          "state": "cancelled",
+          "reason": "pac:graph-closed",
+          "closedAt": 1950,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "cancelled",
+              "reason_ref": "pac:graph-closed",
+              "deadline_ms": 3601000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "restart-input",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 3601000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        }
+      ],
+      "notifications": [
+        {
+          "graph": "deadline",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "held",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "manual-close",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "restart-input",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "actor_alert",
+          "recipient": "user:tick-test",
+          "at": 1600,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1610,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1710,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "actor_alert",
+          "recipient": "user:tick-test",
+          "at": 1800,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1810,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "actor_alert",
+          "recipient": "user:tick-test",
+          "at": 1900,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        }
+      ],
+      "sendAttemptsByRecipient": {
+        "agent:tick-test:machine:worker": 8,
+        "user:tick-test": 3
+      }
+    },
+    {
+      "name": "deadline-expired-alert-pending",
+      "graphs": [
+        {
+          "label": "deadline",
+          "version": 1,
+          "state": "failed",
+          "reason": "pac:node-failed:work",
+          "closedAt": 2001,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "failed",
+              "reason_ref": "pac:deadline-expired",
+              "deadline_ms": 2000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "held",
+          "version": 1,
+          "state": "held",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "failed",
+              "reason_ref": "pac:deadline-expired",
+              "deadline_ms": 2000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "inputs",
+          "version": 1,
+          "state": "completed",
+          "reason": "pac:workflow-settled",
+          "closedAt": 1910,
+          "nodes": [
+            {
+              "node_id": "first",
+              "state": "done",
+              "reason_ref": "test:accepted",
+              "deadline_ms": 3601000,
+              "generation": 2,
+              "requested": 1
+            },
+            {
+              "node_id": "second",
+              "state": "done",
+              "reason_ref": "test:accepted",
+              "deadline_ms": 3601610,
+              "generation": 2,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "manual-close",
+          "version": 1,
+          "state": "cancelled",
+          "reason": "pac:graph-closed",
+          "closedAt": 1950,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "cancelled",
+              "reason_ref": "pac:graph-closed",
+              "deadline_ms": 3601000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "restart-input",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 3601000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        }
+      ],
+      "notifications": [
+        {
+          "graph": "deadline",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "held",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "manual-close",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "restart-input",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "actor_alert",
+          "recipient": "user:tick-test",
+          "at": 1600,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1610,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1710,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "actor_alert",
+          "recipient": "user:tick-test",
+          "at": 1800,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1810,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "actor_alert",
+          "recipient": "user:tick-test",
+          "at": 1900,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "deadline",
+          "kind": "actor_alert",
+          "recipient": "user:deadline",
+          "at": 2001,
+          "delivered": false,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "held",
+          "kind": "actor_alert",
+          "recipient": "user:held",
+          "at": 2001,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        }
+      ],
+      "sendAttemptsByRecipient": {
+        "agent:tick-test:machine:worker": 8,
+        "user:deadline": 1,
+        "user:held": 1,
+        "user:tick-test": 3
+      }
+    },
+    {
+      "name": "closed-alert-retried",
+      "graphs": [
+        {
+          "label": "deadline",
+          "version": 1,
+          "state": "failed",
+          "reason": "pac:node-failed:work",
+          "closedAt": 2001,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "failed",
+              "reason_ref": "pac:deadline-expired",
+              "deadline_ms": 2000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "held",
+          "version": 1,
+          "state": "held",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "failed",
+              "reason_ref": "pac:deadline-expired",
+              "deadline_ms": 2000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "inputs",
+          "version": 1,
+          "state": "completed",
+          "reason": "pac:workflow-settled",
+          "closedAt": 1910,
+          "nodes": [
+            {
+              "node_id": "first",
+              "state": "done",
+              "reason_ref": "test:accepted",
+              "deadline_ms": 3601000,
+              "generation": 2,
+              "requested": 1
+            },
+            {
+              "node_id": "second",
+              "state": "done",
+              "reason_ref": "test:accepted",
+              "deadline_ms": 3601610,
+              "generation": 2,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "manual-close",
+          "version": 1,
+          "state": "cancelled",
+          "reason": "pac:graph-closed",
+          "closedAt": 1950,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "cancelled",
+              "reason_ref": "pac:graph-closed",
+              "deadline_ms": 3601000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "restart-input",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 3601000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        }
+      ],
+      "notifications": [
+        {
+          "graph": "deadline",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "held",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "manual-close",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "restart-input",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "actor_alert",
+          "recipient": "user:tick-test",
+          "at": 1600,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1610,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1710,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "actor_alert",
+          "recipient": "user:tick-test",
+          "at": 1800,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1810,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "actor_alert",
+          "recipient": "user:tick-test",
+          "at": 1900,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "deadline",
+          "kind": "actor_alert",
+          "recipient": "user:deadline",
+          "at": 2001,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "held",
+          "kind": "actor_alert",
+          "recipient": "user:held",
+          "at": 2001,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        }
+      ],
+      "sendAttemptsByRecipient": {
+        "agent:tick-test:machine:worker": 8,
+        "user:deadline": 2,
+        "user:held": 1,
+        "user:tick-test": 3
+      }
+    },
+    {
+      "name": "stable-held",
+      "graphs": [
+        {
+          "label": "deadline",
+          "version": 1,
+          "state": "failed",
+          "reason": "pac:node-failed:work",
+          "closedAt": 2001,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "failed",
+              "reason_ref": "pac:deadline-expired",
+              "deadline_ms": 2000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "held",
+          "version": 1,
+          "state": "held",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "failed",
+              "reason_ref": "pac:deadline-expired",
+              "deadline_ms": 2000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "inputs",
+          "version": 1,
+          "state": "completed",
+          "reason": "pac:workflow-settled",
+          "closedAt": 1910,
+          "nodes": [
+            {
+              "node_id": "first",
+              "state": "done",
+              "reason_ref": "test:accepted",
+              "deadline_ms": 3601000,
+              "generation": 2,
+              "requested": 1
+            },
+            {
+              "node_id": "second",
+              "state": "done",
+              "reason_ref": "test:accepted",
+              "deadline_ms": 3601610,
+              "generation": 2,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "manual-close",
+          "version": 1,
+          "state": "cancelled",
+          "reason": "pac:graph-closed",
+          "closedAt": 1950,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "cancelled",
+              "reason_ref": "pac:graph-closed",
+              "deadline_ms": 3601000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "restart-input",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 3601000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        }
+      ],
+      "notifications": [
+        {
+          "graph": "deadline",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "held",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "manual-close",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "restart-input",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "actor_alert",
+          "recipient": "user:tick-test",
+          "at": 1600,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1610,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1710,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "actor_alert",
+          "recipient": "user:tick-test",
+          "at": 1800,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1810,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "actor_alert",
+          "recipient": "user:tick-test",
+          "at": 1900,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "deadline",
+          "kind": "actor_alert",
+          "recipient": "user:deadline",
+          "at": 2001,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "held",
+          "kind": "actor_alert",
+          "recipient": "user:held",
+          "at": 2001,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        }
+      ],
+      "sendAttemptsByRecipient": {
+        "agent:tick-test:machine:worker": 8,
+        "user:deadline": 2,
+        "user:held": 1,
+        "user:tick-test": 3
+      }
+    },
+    {
+      "name": "journal-less-restart",
+      "graphs": [
+        {
+          "label": "deadline",
+          "version": 1,
+          "state": "failed",
+          "reason": "pac:node-failed:work",
+          "closedAt": 2001,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "failed",
+              "reason_ref": "pac:deadline-expired",
+              "deadline_ms": 2000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "held",
+          "version": 1,
+          "state": "held",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "failed",
+              "reason_ref": "pac:deadline-expired",
+              "deadline_ms": 2000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "inputs",
+          "version": 1,
+          "state": "completed",
+          "reason": "pac:workflow-settled",
+          "closedAt": 1910,
+          "nodes": [
+            {
+              "node_id": "first",
+              "state": "done",
+              "reason_ref": "test:accepted",
+              "deadline_ms": 3601000,
+              "generation": 2,
+              "requested": 1
+            },
+            {
+              "node_id": "second",
+              "state": "done",
+              "reason_ref": "test:accepted",
+              "deadline_ms": 3601610,
+              "generation": 2,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "manual-close",
+          "version": 1,
+          "state": "cancelled",
+          "reason": "pac:graph-closed",
+          "closedAt": 1950,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "cancelled",
+              "reason_ref": "pac:graph-closed",
+              "deadline_ms": 3601000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "restart-input",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 3601000,
+              "generation": 2,
+              "requested": 1
+            }
+          ]
+        }
+      ],
+      "notifications": [
+        {
+          "graph": "deadline",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "held",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "manual-close",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "restart-input",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "actor_alert",
+          "recipient": "user:tick-test",
+          "at": 1600,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1610,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1710,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "actor_alert",
+          "recipient": "user:tick-test",
+          "at": 1800,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1810,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "actor_alert",
+          "recipient": "user:tick-test",
+          "at": 1900,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "deadline",
+          "kind": "actor_alert",
+          "recipient": "user:deadline",
+          "at": 2001,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "held",
+          "kind": "actor_alert",
+          "recipient": "user:held",
+          "at": 2001,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "restart-input",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 2301,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        }
+      ],
+      "sendAttemptsByRecipient": {
+        "agent:tick-test:machine:worker": 9,
+        "user:deadline": 2,
+        "user:held": 1,
+        "user:tick-test": 3
+      }
+    },
+    {
+      "name": "stable-after-restart",
+      "graphs": [
+        {
+          "label": "deadline",
+          "version": 1,
+          "state": "failed",
+          "reason": "pac:node-failed:work",
+          "closedAt": 2001,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "failed",
+              "reason_ref": "pac:deadline-expired",
+              "deadline_ms": 2000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "held",
+          "version": 1,
+          "state": "held",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "failed",
+              "reason_ref": "pac:deadline-expired",
+              "deadline_ms": 2000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "inputs",
+          "version": 1,
+          "state": "completed",
+          "reason": "pac:workflow-settled",
+          "closedAt": 1910,
+          "nodes": [
+            {
+              "node_id": "first",
+              "state": "done",
+              "reason_ref": "test:accepted",
+              "deadline_ms": 3601000,
+              "generation": 2,
+              "requested": 1
+            },
+            {
+              "node_id": "second",
+              "state": "done",
+              "reason_ref": "test:accepted",
+              "deadline_ms": 3601610,
+              "generation": 2,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "manual-close",
+          "version": 1,
+          "state": "cancelled",
+          "reason": "pac:graph-closed",
+          "closedAt": 1950,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "cancelled",
+              "reason_ref": "pac:graph-closed",
+              "deadline_ms": 3601000,
+              "generation": 1,
+              "requested": 1
+            }
+          ]
+        },
+        {
+          "label": "restart-input",
+          "version": 1,
+          "state": "running",
+          "reason": null,
+          "closedAt": null,
+          "nodes": [
+            {
+              "node_id": "work",
+              "state": "requested",
+              "reason_ref": null,
+              "deadline_ms": 3601000,
+              "generation": 2,
+              "requested": 1
+            }
+          ]
+        }
+      ],
+      "notifications": [
+        {
+          "graph": "deadline",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "held",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "manual-close",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "restart-input",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1000,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "actor_alert",
+          "recipient": "user:tick-test",
+          "at": 1600,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1610,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1710,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "actor_alert",
+          "recipient": "user:tick-test",
+          "at": 1800,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 1810,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "inputs",
+          "kind": "actor_alert",
+          "recipient": "user:tick-test",
+          "at": 1900,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "deadline",
+          "kind": "actor_alert",
+          "recipient": "user:deadline",
+          "at": 2001,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "held",
+          "kind": "actor_alert",
+          "recipient": "user:held",
+          "at": 2001,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        },
+        {
+          "graph": "restart-input",
+          "kind": "turn",
+          "recipient": "agent:tick-test:machine:worker",
+          "at": 2301,
+          "delivered": true,
+          "failedAt": null,
+          "failureCode": null
+        }
+      ],
+      "sendAttemptsByRecipient": {
+        "agent:tick-test:machine:worker": 9,
+        "user:deadline": 2,
+        "user:held": 1,
+        "user:tick-test": 3
+      }
+    }
+  ]
+}

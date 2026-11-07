@@ -1,0 +1,7 @@
+{
+  "model": "p20-claude-user-sentinel",
+  "permissions": {
+    "allow": [],
+    "deny": []
+  }
+}

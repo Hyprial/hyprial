@@ -60,7 +60,7 @@ ALLOWED_RESIDUALS: tuple[ResidualForm, ...] = (
         template="{old}mac-studio",
         why=(
             "this node was renamed on 2026-08-17 and its own history still "
-            "spells it h2oslabsmac-studio.orkhon-bee.ts.net -- the old owner "
+            "spells it studio-node-mac-01.example-tailnet.ts.net -- the old owner "
             "is a PREFIX of a machine segment, and rewriting it would falsify "
             "the record of what this machine was called at the time"
         ),
@@ -69,7 +69,7 @@ ALLOWED_RESIDUALS: tuple[ResidualForm, ...] = (
         name="connector / Lark app name under the <owner>-hyprial-<purpose> convention",
         template="{old}-hyprial",
         why=(
-            "the E2E Lark app is named allenwoods-hyprial-e2e and its bot "
+            "the E2E Lark app is named alicesmith-hyprial-e2e and its bot "
             "display name is the same string truncated by Lark; adapters.sqlite3 "
             "identities.adapter / display_name carry them.  The owner login is a "
             "naming convention inside an EXTERNAL identifier: the app name "

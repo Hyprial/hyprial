@@ -1,0 +1,106 @@
+{
+  "add_json": {
+    "argv": [
+      "link",
+      "add",
+      "agent:a03-owner:a03-node:bob",
+      "--from",
+      "user:a03-owner",
+      "--on-behalf-of",
+      "agent:a03-owner:a03-node:alice",
+      "--json"
+    ],
+    "exitCode": 0,
+    "stderr": "",
+    "stdout": "{\"ok\":true,\"actor\":\"agent:a03-owner:a03-node:alice\",\"peer\":\"agent:a03-owner:a03-node:bob\",\"state\":\"absent\",\"written\":false,\"queued\":false,\"holdReason\":\"LINK_SELF_FULL\",\"detail\":\"org-unavailable\"}\n"
+  },
+  "add_text": {
+    "argv": [
+      "link",
+      "add",
+      "agent:a03-owner:a03-node:bob",
+      "--from",
+      "user:a03-owner",
+      "--on-behalf-of",
+      "agent:a03-owner:a03-node:alice"
+    ],
+    "exitCode": 0,
+    "stderr": "",
+    "stdout": "held    agent:a03-owner:a03-node:bob   LINK_SELF_FULL: org-unavailable\nthe daemon re-evaluates this queued message; do not resend (the wait is bounded by the message TTL)\n"
+  },
+  "drop_json": {
+    "argv": [
+      "link",
+      "drop",
+      "agent:a03-owner:a03-node:bob",
+      "--from",
+      "user:a03-owner",
+      "--on-behalf-of",
+      "agent:a03-owner:a03-node:alice",
+      "--json"
+    ],
+    "exitCode": 0,
+    "stderr": "",
+    "stdout": "{\"ok\":true,\"actor\":\"agent:a03-owner:a03-node:alice\",\"peer\":\"agent:a03-owner:a03-node:bob\",\"state\":\"absent\"}\n"
+  },
+  "drop_text": {
+    "argv": [
+      "link",
+      "drop",
+      "agent:a03-owner:a03-node:bob",
+      "--from",
+      "user:a03-owner",
+      "--on-behalf-of",
+      "agent:a03-owner:a03-node:alice"
+    ],
+    "exitCode": 0,
+    "stderr": "",
+    "stdout": "link agent:a03-owner:a03-node:alice -> agent:a03-owner:a03-node:bob: absent\n"
+  },
+  "list_json": {
+    "argv": [
+      "link",
+      "list",
+      "--from",
+      "agent:a03-owner:a03-node:alice",
+      "--json"
+    ],
+    "exitCode": 0,
+    "stderr": "",
+    "stdout": "{\"ok\":true,\"actor\":\"agent:a03-owner:a03-node:alice\",\"orgAvailable\":false,\"bypass\":false,\"bookkeeping\":true,\"k\":2,\"W\":2,\"inFlight\":0,\"owner\":{},\"links\":[],\"held\":[]}\n"
+  },
+  "list_text": {
+    "argv": [
+      "link",
+      "list",
+      "--from",
+      "agent:a03-owner:a03-node:alice"
+    ],
+    "exitCode": 0,
+    "stderr": "",
+    "stdout": "agent:a03-owner:a03-node:alice   k 2   W 2   in-flight 0/2   agent links 0/2\nPEER  STATE  CWND  IN-FLIGHT  LIFECYCLE  LAST USED\n—     owner  —     —          —          —\nNo links recorded.\n"
+  },
+  "stats_json": {
+    "argv": [
+      "link",
+      "stats",
+      "--from",
+      "agent:a03-owner:a03-node:alice",
+      "--json"
+    ],
+    "exitCode": 0,
+    "stderr": "",
+    "stdout": "{\"ok\":true,\"actor\":\"agent:a03-owner:a03-node:alice\",\"nActive\":0,\"k\":2,\"W\":2,\"windowObserved\":0,\"bypass\":false,\"wTarget\":null,\"tMinMs\":null,\"tMaxMs\":null,\"tBarMs\":null,\"muMax\":null,\"diff\":null,\"grad\":null,\"periodMs\":null,\"links\":[]}\n"
+  },
+  "stats_text": {
+    "argv": [
+      "link",
+      "stats",
+      "--from",
+      "agent:a03-owner:a03-node:alice"
+    ],
+    "exitCode": 0,
+    "stderr": "",
+    "stdout": "agent:a03-owner:a03-node:alice\nN_active 0   k 2   W 2\nT_min —   T_bar —   mu_max —   diff —   grad —\nPEER  RTT_MIN  RTT  CWND  IN-FLIGHT\n"
+  }
+}

@@ -71,9 +71,12 @@ def _stop_daemon_for_operator(*, expected_epoch: str | None = None) -> JsonObjec
     """
     services = get_services()
 
-    if expected_epoch is not None:
+    # With the per-user service installed the stop goes through the supervisor.
+    supervisor = _installed_supervisor()
+    if expected_epoch is not None or supervisor is not None:
         return _stop_daemon_with_proof(
             require_exit=False, require_known_pid=False, expected_epoch=expected_epoch,
+            supervisor=supervisor,
         )
     return services._stop_daemon_gracefully(require_exit=False)
 
@@ -87,19 +90,23 @@ def _stop_daemon_gracefully(*, require_exit: bool = True) -> JsonObject:
 def _stop_daemon_for_identity_switch() -> JsonObject:
     """Stop only when the old PID is known and its exit can be proven."""
 
-    return _stop_daemon_with_proof(require_exit=True, require_known_pid=True)
+    supervisor = _installed_supervisor()
+    return _stop_daemon_with_proof(require_exit=True, require_known_pid=True, supervisor=supervisor)
 
 
 def _stop_daemon_with_proof(
-    *, require_exit: bool, require_known_pid: bool, expected_epoch: str | None = None
+    *, require_exit: bool, require_known_pid: bool, expected_epoch: str | None = None,
+    supervisor: Any | None = None,
 ) -> JsonObject:
+    from hyprial.daemon import read_process_identity as _read_process_identity
+
     services = get_services()
-    if expected_epoch is None:
-        result = services.runtime.request("shutdown", timeout=2.0)
-    else:
-        result = services.runtime.request(
-            "shutdown", {"expectedEpoch": expected_epoch}, timeout=2.0,
-        )
+    result = _request_shutdown(
+        expected_epoch,
+        supervisor,
+        require_known_pid=require_known_pid,
+        read_identity=_read_process_identity,
+    )
     old_pid = (
         result.get("pid")
         if isinstance(result, dict)
@@ -115,9 +122,13 @@ def _stop_daemon_with_proof(
             {"oldPid": None, "teardownCompleted": False},
         )
     old_identity: str | None = None
-    if old_pid is not None:
-        from hyprial.daemon import read_process_identity as _read_process_identity
-
+    if isinstance(result, dict) and "processIdentity" in result:
+        # Read by the supervisor stop before it signalled the process; an
+        # internal fence fact, not part of the stop answer.
+        result = dict(result)
+        recorded = result.pop("processIdentity")
+        old_identity = recorded if isinstance(recorded, str) else None
+    elif old_pid is not None:
         old_identity = _read_process_identity(old_pid)
     # ⚠️ Derived, not chosen. This was `10.0`, a number smaller than the
     # daemon's own exit backstop -- so a shutdown that needed the backstop
@@ -135,6 +146,51 @@ def _stop_daemon_with_proof(
         require_exit=require_exit,
     )
     return {"ok": True, **(result if isinstance(result, dict) else {}), **observed}
+
+
+def _installed_supervisor() -> Any | None:
+    """The installed per-user service, when stop must go through it.
+
+    ``hyprial daemon stop`` and the identity switch need the daemon to *stay*
+    down; with ``KeepAlive``/``Restart=always`` an IPC shutdown is undone in
+    seconds.  Other stops (service install handoff, stray repair, unsupervised
+    upgrade) keep the IPC shutdown: they stop a daemon outside the supervisor.
+    """
+
+    from hyprial.shell.impl.cli.commands.daemon.service import installed_supervisor
+
+    return installed_supervisor()
+
+
+def _request_shutdown(
+    expected_epoch: str | None,
+    supervisor: Any | None,
+    *,
+    require_known_pid: bool = False,
+    read_identity: Any = None,
+) -> Any:
+    """IPC ``shutdown``, or the supervisor's stop when the service is installed.
+
+    Through the supervisor the daemon stays down (``KeepAlive`` /
+    ``Restart=always`` cannot undo it); the answer carries the same
+    ``pid``/``epoch``/``stateDir``/``lockPath`` facts as the IPC reply.
+    """
+
+    if supervisor is not None:
+        from hyprial.shell.impl.cli.commands.daemon.service import stop_supervised_daemon
+
+        return stop_supervised_daemon(
+            supervisor,
+            expected_epoch=expected_epoch,
+            require_known_pid=require_known_pid,
+            read_identity=read_identity,
+        )
+    services = get_services()
+    if expected_epoch is None:
+        return services.runtime.request("shutdown", timeout=2.0)
+    return services.runtime.request(
+        "shutdown", {"expectedEpoch": expected_epoch}, timeout=2.0,
+    )
 
 
 def _wait_daemon_teardown_receipt(

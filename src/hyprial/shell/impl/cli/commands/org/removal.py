@@ -11,9 +11,14 @@ def confirmed_removal(services, method, params, *, yes: bool):
     if preview.get('phase') == 'complete':
         return preview  # A fresh preview found no new targets; no confirmation is needed.
     binding = {'operationId': preview['operationId'], 'deviceIds': list(preview['deviceIds'])}
-    notice(f"Cut off owner {params.get('user', 'self')}; devices {preview.get('deviceIds', [])}; "
-           f"tailnet {preview.get('tailnetId')}; authority {preview.get('authorityDeviceId')}. "
-           'Affected business connections will close; global propagation is lease-bounded (300 seconds).')
+    if preview.get('membershipAction') == 'preserved':
+        notice(f"Revoke selected devices {preview['deviceIds']}; retain user memberships; "
+               f"remaining active devices {preview.get('remainingDeviceIds', [])}. "
+               'Affected business connections will close; global propagation is lease-bounded (300 seconds).')
+    else:
+        notice(f"Cut off owner {params.get('user', 'self')}; devices {preview.get('deviceIds', [])}; "
+               f"tailnet {preview.get('tailnetId')}; authority {preview.get('authorityDeviceId')}. "
+               'Affected business connections will close; global propagation is lease-bounded (300 seconds).')
     refresh = preview.get('revisionRefresh')
     if isinstance(refresh, dict):
         notice(f"Revision changed {refresh.get('oldRevision')} → {refresh.get('newRevision')}; "

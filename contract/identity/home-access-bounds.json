@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "path": "src/hyprial/identity/impl/agents/actor/_home_calls.py",
+  "symbol": "HomeCallRegistry",
+  "owner": "hyprial-cli-developer",
+  "card": "f6e2219e-e611-42e0-807a-ad2dd0c6e08f",
+  "pending_capacity": 32,
+  "settled_capacity": 128,
+  "retention_seconds": 300.0,
+  "meaning": "Memory bounds only. Pending calls never expire. Settled age starts at completion, reads do not renew it; lazy eviction on access. No retry, cancellation or permission to release custody. This does not add or alter a supervision exemption."
+}

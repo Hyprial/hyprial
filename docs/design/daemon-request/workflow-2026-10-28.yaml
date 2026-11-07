@@ -1,0 +1,340 @@
+{
+  "version": 2,
+  "name": "cli-command-surface-20261028",
+  "summary": "用户授权 intg-a 五卡，所有开发和返工 DeepSeek Flash Max，Codex独立验收；A04准备与A03可并行。",
+  "on_failure": "hold",
+  "escalate_to": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+  "defaults": {
+    "launch": {
+      "harness": "pi",
+      "provider": "deepseek",
+      "model": "deepseek-flash",
+      "args": [
+        "--thinking",
+        "max",
+        "--approve"
+      ],
+      "cwd": "/Users/amyws/projects/cli-command-surface-a-01",
+      "cwdPolicy": "require"
+    },
+    "timeout": "24h",
+    "first_output_eta": "10m",
+    "human_gates": "none"
+  },
+  "workers": {
+    "a01": {
+      "harness": "pi",
+      "provider": "deepseek",
+      "model": "deepseek-flash",
+      "args": [
+        "--thinking",
+        "max",
+        "--approve"
+      ],
+      "cwd": "/Users/amyws/projects/cli-command-surface-a-01",
+      "cwdPolicy": "require"
+    },
+    "a02": {
+      "harness": "pi",
+      "provider": "deepseek",
+      "model": "deepseek-flash",
+      "args": [
+        "--thinking",
+        "max",
+        "--approve"
+      ],
+      "cwd": "/Users/amyws/projects/cli-command-surface-a-02",
+      "cwdPolicy": "require"
+    },
+    "a03": {
+      "harness": "pi",
+      "provider": "deepseek",
+      "model": "deepseek-flash",
+      "args": [
+        "--thinking",
+        "max",
+        "--approve"
+      ],
+      "cwd": "/Users/amyws/projects/cli-command-surface-a-03",
+      "cwdPolicy": "require"
+    },
+    "a04": {
+      "harness": "pi",
+      "provider": "deepseek",
+      "model": "deepseek-flash",
+      "args": [
+        "--thinking",
+        "max",
+        "--approve"
+      ],
+      "cwd": "/Users/amyws/projects/cli-command-surface-a-04",
+      "cwdPolicy": "require"
+    },
+    "a05": {
+      "harness": "pi",
+      "provider": "deepseek",
+      "model": "deepseek-flash",
+      "args": [
+        "--thinking",
+        "max",
+        "--approve"
+      ],
+      "cwd": "/Users/amyws/projects/cli-command-surface-a-05",
+      "cwdPolicy": "require"
+    }
+  },
+  "nodes": [
+    {
+      "id": "a01-build",
+      "worker": "a01",
+      "role": "execute",
+      "after": [],
+      "task": "你是用户指定的 DeepSeek Flash Max 实现者，协调者 Codex 独立审核。只在本任务 worktree/branch 工作，不自行委派、不改板、不合并。先 git fetch origin 并 merge --no-edit origin/intg/cli-command-surface，再完整读 AGENTS.md、docs/design/daemon-request/{execution-2026-10-28.md,cli-surface.md,design.md,work-packages.json}；这些是本次授权与验收要求。所有 Python 经 uv；凭据/生产状态隔离，不重设 HOME、不读写认证文件。所有提交使用 env GIT_AUTHOR_NAME=devusr GIT_AUTHOR_EMAIL=amy.williams@example.com GIT_COMMITTER_NAME=devusr GIT_COMMITTER_EMAIL=amy.williams@example.com git commit ...。不得静默切换模型。新代码无旧 import/alias/shim/测试重导出，后端不能反向依赖 CLI；本批不恢复旧 GUI。先结构/边界，再焦点、全套 tests/、Ruff 和适用 contract 隔离验证；行为变化给红绿证据。不能把 BLOCKED/skip 说成 PASS，不删测/改锁/宽松门禁消红。第一检查点10分钟内、持续工作每20分钟给协调者证据路径。PR一个，base=intg/cli-command-surface，正文 Submitted-by 写你的真实URI，动机/改动/每条命令与实际结果/UNKNOWN或BLOCKED/Contract-Impact/Skill-Impact 齐全；push自身分支即可，fj无认证时将标题/正文文件交协调者代开，禁止拷贝token。证据写 docs/evidence/cli-command-surface/。所有进度与问题仅发协调者，不发用户/Allen/其他开发线。完成提交后 inspect 当前graph/node，再以当前 requestId 和证据引用显式 workflow complete；候选交审不是验收通过。收到显式back-edge返工先reset你自己的旧build flag并inspect取得新请求，按仓库review判词修复，不能用旧requestId完成。\nA-01 公共 request client 接回与旧包装清理\n从 #1967 移植公共 kernel IPC client 到当前 intg/cli-command-surface；保留现有 endpoint/预算/错误语义，同步所有受影响调用方与测试，删除 shell 旧传输副本和兼容 shim；不恢复已退役 GUI 或 post_install_surface.json。\n来源 #1967 head aa014fd80db9ac1e69fd626fc7bef23ab1264ca2（主实现791e4078b）。机械移植可用client，不整分支合入：当前dev已退役GUI及post_install_surface.json，禁止复活。旧PR为了219个monkeypatch缝保留shell副本/entry重导出，本任务必须同步所有消费者/测试并清掉旧层。端点显式socket不能触发state_dir解析；非peer-gone OSError错误分类不丢失；DAEMON_RESTORING按安全原语每次重解endpoint/服务/时钟，写操作不能盲重试；Windows命名管道延迟导入；cause链不伪造。验证传输socketpair/隔离daemon、超时/断线/帧/错误和旧入口清零。Windows真实系统未测必须UNKNOWN。开工读#1967差异，先发消费者清单和验证方案。\nKanban=7955c51b-a0d9-49f9-aa98-3c7cfe4e68f0 OrgFS=M-codex-daemon-request-0001 branch=refactor/a01-public-request-client\n验收：kernel 公开 client 是唯一传输实现，生产调用方及测试不再依赖旧 helper/shim。；隔离 socket/daemon 的帧、显式 endpoint、逐次解析、超时、断线和错误语义测试通过；写操作无盲重试。；当前目标基线的结构/边界、焦点、全套、Ruff 与适用契约检查有实测证据；失败已修复或由协调者明确判定阻塞。；一个 PR 指向 intg/cli-command-surface，源码来源/验证命令/实际结果/Contract-Impact/Skill-Impact 完整，经协调者独立验收。"
+    },
+    {
+      "id": "a01-review",
+      "kind": "approval",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "review",
+      "after": [
+        "a01-build"
+      ],
+      "task": "A-01独立review：检查diff、真实依赖/无shim、重点测试与证据，并复跑适用验证。判词落仓库，绑定worker SHA与目标intg SHA。complete仅表示判词发布；PASS才选accept，FAIL只选reject，不能同时放行。"
+    },
+    {
+      "id": "a01-reject",
+      "kind": "approval",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "review",
+      "after": [
+        "a01-review"
+      ],
+      "task": "A-01仅在review不合格时完成此节点，reason-ref为固定判词；backedge发起返工。重置自己的旧review/reject旗标，worker重置自己的build旗标；检查重新激活的requestId。合格时保持本节点不置位，不把未选reject当失败。"
+    },
+    {
+      "id": "a01-accept",
+      "kind": "approval",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "review",
+      "after": [
+        "a01-review"
+      ],
+      "task": "A-01只有独立验收PASS并实现PR合入intg后置位；记录PR/head/merge SHA和测试实测，逐项回填Kanban/OrgFS，再释放后继。未测或不合格不得置位。"
+    },
+    {
+      "id": "a02-build",
+      "worker": "a02",
+      "role": "execute",
+      "after": [
+        "a01-accept"
+      ],
+      "task": "你是用户指定的 DeepSeek Flash Max 实现者，协调者 Codex 独立审核。只在本任务 worktree/branch 工作，不自行委派、不改板、不合并。先 git fetch origin 并 merge --no-edit origin/intg/cli-command-surface，再完整读 AGENTS.md、docs/design/daemon-request/{execution-2026-10-28.md,cli-surface.md,design.md,work-packages.json}；这些是本次授权与验收要求。所有 Python 经 uv；凭据/生产状态隔离，不重设 HOME、不读写认证文件。所有提交使用 env GIT_AUTHOR_NAME=devusr GIT_AUTHOR_EMAIL=amy.williams@example.com GIT_COMMITTER_NAME=devusr GIT_COMMITTER_EMAIL=amy.williams@example.com git commit ...。不得静默切换模型。新代码无旧 import/alias/shim/测试重导出，后端不能反向依赖 CLI；本批不恢复旧 GUI。先结构/边界，再焦点、全套 tests/、Ruff 和适用 contract 隔离验证；行为变化给红绿证据。不能把 BLOCKED/skip 说成 PASS，不删测/改锁/宽松门禁消红。第一检查点10分钟内、持续工作每20分钟给协调者证据路径。PR一个，base=intg/cli-command-surface，正文 Submitted-by 写你的真实URI，动机/改动/每条命令与实际结果/UNKNOWN或BLOCKED/Contract-Impact/Skill-Impact 齐全；push自身分支即可，fj无认证时将标题/正文文件交协调者代开，禁止拷贝token。证据写 docs/evidence/cli-command-surface/。所有进度与问题仅发协调者，不发用户/Allen/其他开发线。完成提交后 inspect 当前graph/node，再以当前 requestId 和证据引用显式 workflow complete；候选交审不是验收通过。收到显式back-edge返工先reset你自己的旧build flag并inspect取得新请求，按仓库review判词修复，不能用旧requestId完成。\nA-02 CLI 公共注册 DI 与唯一输出接线\n明确公共注册与 request client 注入，收敛 CliServices/entry 耦合；返回经 CliResult/CliStream 的唯一输出通路，更新受影响安装/测试消费者，不逐组迁移业务、不新增测试重导出。\n集中处理 shell/impl/cli/runtime/entry.py 与 CliServices 注册/依赖注入/output。公开层只提供组合和通用request调用，不承载move业务，也不暴露新的旧回调兼容层。必须核真实安装消费者、现有帮助快照、输出纪律测试；CLI仍只返回CliResult/CliStream，由唯一output层渲染。B未来提供move handler/薄CLI；此时不注册不可执行占位命令。明确后续B/C可以直接使用的接入点并写最小用法。\nKanban=2188b4ed-b5c5-4fe7-a9ba-d1fe9577a393 OrgFS=M-codex-daemon-request-0002 branch=refactor/a02-cli-composition\n验收：公共 entry/DI 提供 B/C 同一个可用接入点，受影响消费者同步更新且无新兼容层。；现有命令注册、帮助、stdout/stderr/退出码保持一致；输出只走既有唯一 output 层。；后端无 CLI 反向 import，结构/边界、焦点、全套、Ruff 与适用契约检查通过并记录证据。；单独 PR 指向 intg/cli-command-surface，当前 head 由协调者验收通过。"
+    },
+    {
+      "id": "a02-review",
+      "kind": "approval",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "review",
+      "after": [
+        "a02-build"
+      ],
+      "task": "A-02独立review：检查diff、真实依赖/无shim、重点测试与证据，并复跑适用验证。判词落仓库，绑定worker SHA与目标intg SHA。complete仅表示判词发布；PASS才选accept，FAIL只选reject，不能同时放行。"
+    },
+    {
+      "id": "a02-reject",
+      "kind": "approval",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "review",
+      "after": [
+        "a02-review"
+      ],
+      "task": "A-02仅在review不合格时完成此节点，reason-ref为固定判词；backedge发起返工。重置自己的旧review/reject旗标，worker重置自己的build旗标；检查重新激活的requestId。合格时保持本节点不置位，不把未选reject当失败。"
+    },
+    {
+      "id": "a02-accept",
+      "kind": "approval",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "review",
+      "after": [
+        "a02-review"
+      ],
+      "task": "A-02只有独立验收PASS并实现PR合入intg后置位；记录PR/head/merge SHA和测试实测，逐项回填Kanban/OrgFS，再释放后继。未测或不合格不得置位。"
+    },
+    {
+      "id": "a03-build",
+      "worker": "a03",
+      "role": "execute",
+      "after": [
+        "a02-accept"
+      ],
+      "task": "你是用户指定的 DeepSeek Flash Max 实现者，协调者 Codex 独立审核。只在本任务 worktree/branch 工作，不自行委派、不改板、不合并。先 git fetch origin 并 merge --no-edit origin/intg/cli-command-surface，再完整读 AGENTS.md、docs/design/daemon-request/{execution-2026-10-28.md,cli-surface.md,design.md,work-packages.json}；这些是本次授权与验收要求。所有 Python 经 uv；凭据/生产状态隔离，不重设 HOME、不读写认证文件。所有提交使用 env GIT_AUTHOR_NAME=devusr GIT_AUTHOR_EMAIL=amy.williams@example.com GIT_COMMITTER_NAME=devusr GIT_COMMITTER_EMAIL=amy.williams@example.com git commit ...。不得静默切换模型。新代码无旧 import/alias/shim/测试重导出，后端不能反向依赖 CLI；本批不恢复旧 GUI。先结构/边界，再焦点、全套 tests/、Ruff 和适用 contract 隔离验证；行为变化给红绿证据。不能把 BLOCKED/skip 说成 PASS，不删测/改锁/宽松门禁消红。第一检查点10分钟内、持续工作每20分钟给协调者证据路径。PR一个，base=intg/cli-command-surface，正文 Submitted-by 写你的真实URI，动机/改动/每条命令与实际结果/UNKNOWN或BLOCKED/Contract-Impact/Skill-Impact 齐全；push自身分支即可，fj无认证时将标题/正文文件交协调者代开，禁止拷贝token。证据写 docs/evidence/cli-command-surface/。所有进度与问题仅发协调者，不发用户/Allen/其他开发线。完成提交后 inspect 当前graph/node，再以当前 requestId 和证据引用显式 workflow complete；候选交审不是验收通过。收到显式back-edge返工先reset你自己的旧build flag并inspect取得新请求，按仓库review判词修复，不能用旧requestId完成。\nA-03 MethodSpec OpenAPI 棘轮与 link 样板\n同一骨架 PR 交付纯 MethodSpec、完整 schema/错误/流式/preview 元数据、真实 handler 绑定及确定性 OpenAPI；新增/迁移方法必须登记；导入棘轮精确旧引用只减不增。link list/stats 为主样板，同组 add/drop 必要接线收齐。\n先依cli-surface.md骨架要求定义纯声明，字段参数/结果/错误/stream/idempotency/preview元数据可校验，绑定真实handler，OpenAPI导出确定性（不是新增HTTP网关）。preview确认必须携带operationId且绑定caller/操作/参数摘要/过期，不能把moveId当previewId；本批若无适用写样板可通过边界测试验证通用契约，但不得造假业务。精确旧import边棘轮，只减不增；新增/迁移方法不得未登记、空schema/Any兜底或无handler。link list/stats 为2个简单样板，同组add/drop如需同步完整收齐；固定环境隔离daemon证明text/JSON stdout/stderr/退出码逐字节不变，不能仅测mock。先把当前实际方法名/路径和baseline输出证据列出再改。\nKanban=a3365354-71bd-4b2b-bd45-c0a714064b23 OrgFS=M-codex-daemon-request-0003 branch=feat/a03-request-contracts\n验收：参数/结果/错误/流式/幂等/确认声明可校验并确定性导出，已登记方法与真实 handler 对应，不用空 schema 或假 handler。；import 棘轮及未登记方法/非法参数/错误 schema 负控可明确失败，后端不反向依赖 CLI。；link 同组真实隔离 daemon 调用通过，固定环境的 text/JSON stdout、stderr、退出码与基线逐字节一致。；焦点、全套、Ruff、结构/边界及适用 contract 检查有证据；单独 PR 经协调者验收。"
+    },
+    {
+      "id": "a03-review",
+      "kind": "approval",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "review",
+      "after": [
+        "a03-build"
+      ],
+      "task": "A-03独立review：检查diff、真实依赖/无shim、重点测试与证据，并复跑适用验证。判词落仓库，绑定worker SHA与目标intg SHA。complete仅表示判词发布；PASS才选accept，FAIL只选reject，不能同时放行。"
+    },
+    {
+      "id": "a03-reject",
+      "kind": "approval",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "review",
+      "after": [
+        "a03-review"
+      ],
+      "task": "A-03仅在review不合格时完成此节点，reason-ref为固定判词；backedge发起返工。重置自己的旧review/reject旗标，worker重置自己的build旗标；检查重新激活的requestId。合格时保持本节点不置位，不把未选reject当失败。"
+    },
+    {
+      "id": "a03-accept",
+      "kind": "approval",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "review",
+      "after": [
+        "a03-review"
+      ],
+      "task": "A-03只有独立验收PASS并实现PR合入intg后置位；记录PR/head/merge SHA和测试实测，逐项回填Kanban/OrgFS，再释放后继。未测或不合格不得置位。"
+    },
+    {
+      "id": "a04-prepare",
+      "worker": "a04",
+      "role": "execute",
+      "after": [
+        "a02-accept"
+      ],
+      "task": "你是用户指定的 DeepSeek Flash Max 实现者，协调者 Codex 独立审核。只在本任务 worktree/branch 工作，不自行委派、不改板、不合并。先 git fetch origin 并 merge --no-edit origin/intg/cli-command-surface，再完整读 AGENTS.md、docs/design/daemon-request/{execution-2026-10-28.md,cli-surface.md,design.md,work-packages.json}；这些是本次授权与验收要求。所有 Python 经 uv；凭据/生产状态隔离，不重设 HOME、不读写认证文件。所有提交使用 env GIT_AUTHOR_NAME=devusr GIT_AUTHOR_EMAIL=amy.williams@example.com GIT_COMMITTER_NAME=devusr GIT_COMMITTER_EMAIL=amy.williams@example.com git commit ...。不得静默切换模型。新代码无旧 import/alias/shim/测试重导出，后端不能反向依赖 CLI；本批不恢复旧 GUI。先结构/边界，再焦点、全套 tests/、Ruff 和适用 contract 隔离验证；行为变化给红绿证据。不能把 BLOCKED/skip 说成 PASS，不删测/改锁/宽松门禁消红。第一检查点10分钟内、持续工作每20分钟给协调者证据路径。PR一个，base=intg/cli-command-surface，正文 Submitted-by 写你的真实URI，动机/改动/每条命令与实际结果/UNKNOWN或BLOCKED/Contract-Impact/Skill-Impact 齐全；push自身分支即可，fj无认证时将标题/正文文件交协调者代开，禁止拷贝token。证据写 docs/evidence/cli-command-surface/。所有进度与问题仅发协调者，不发用户/Allen/其他开发线。完成提交后 inspect 当前graph/node，再以当前 requestId 和证据引用显式 workflow complete；候选交审不是验收通过。收到显式back-edge返工先reset你自己的旧build flag并inspect取得新请求，按仓库review判词修复，不能用旧requestId完成。\nA-04先行准备：同一个PR涵盖命令树inventory/参数/生成物CI。先读现有help inventory工具/fixture与输出纪律/结构边界，不另建第二份真相。当前实际入口由代码核查；227/195是旧设计基线，move 8动作不可当已实现注册。参数/隐藏入口/host目标用词逐项映射，避免侵入别组整仓改名。A03真实schema/OpenAPI接入后才完成build。负控应验证命令/参数/生成物漂移失败。\n只做不依赖A03实现的清单、真实消费者核对、负控与CI准备，保留同一分支/PR，不造假schema。此节点不表示A04卡完成。提交prepare证据后complete，等待a04-build；随后先合入A03已验收intg，再完成最终接线。"
+    },
+    {
+      "id": "a04-build",
+      "worker": "a04",
+      "role": "execute",
+      "after": [
+        "a02-accept",
+        "a03-accept",
+        "a04-prepare"
+      ],
+      "task": "你是用户指定的 DeepSeek Flash Max 实现者，协调者 Codex 独立审核。只在本任务 worktree/branch 工作，不自行委派、不改板、不合并。先 git fetch origin 并 merge --no-edit origin/intg/cli-command-surface，再完整读 AGENTS.md、docs/design/daemon-request/{execution-2026-10-28.md,cli-surface.md,design.md,work-packages.json}；这些是本次授权与验收要求。所有 Python 经 uv；凭据/生产状态隔离，不重设 HOME、不读写认证文件。所有提交使用 env GIT_AUTHOR_NAME=devusr GIT_AUTHOR_EMAIL=amy.williams@example.com GIT_COMMITTER_NAME=devusr GIT_COMMITTER_EMAIL=amy.williams@example.com git commit ...。不得静默切换模型。新代码无旧 import/alias/shim/测试重导出，后端不能反向依赖 CLI；本批不恢复旧 GUI。先结构/边界，再焦点、全套 tests/、Ruff 和适用 contract 隔离验证；行为变化给红绿证据。不能把 BLOCKED/skip 说成 PASS，不删测/改锁/宽松门禁消红。第一检查点10分钟内、持续工作每20分钟给协调者证据路径。PR一个，base=intg/cli-command-surface，正文 Submitted-by 写你的真实URI，动机/改动/每条命令与实际结果/UNKNOWN或BLOCKED/Contract-Impact/Skill-Impact 齐全；push自身分支即可，fj无认证时将标题/正文文件交协调者代开，禁止拷贝token。证据写 docs/evidence/cli-command-surface/。所有进度与问题仅发协调者，不发用户/Allen/其他开发线。完成提交后 inspect 当前graph/node，再以当前 requestId 和证据引用显式 workflow complete；候选交审不是验收通过。收到显式back-edge返工先reset你自己的旧build flag并inspect取得新请求，按仓库review判词修复，不能用旧requestId完成。\nA-04 命令清单 参数规则与公共 CI\n复用既有 help inventory/输出/边界门，核对25源码族当前实际注册、参数、隐藏入口、生成物；梳理 host 目标术语映射；接入 A03 契约/OpenAPI CI，未实现 move 不冒充可用，GUI 只获得公共接口自查。A02后可准备清单，A03后完成真实接入。\n同一个PR涵盖命令树inventory/参数/生成物CI。先读现有help inventory工具/fixture与输出纪律/结构边界，不另建第二份真相。当前实际入口由代码核查；227/195是旧设计基线，move 8动作不可当已实现注册。参数/隐藏入口/host目标用词逐项映射，避免侵入别组整仓改名。A03真实schema/OpenAPI接入后才完成build。负控应验证命令/参数/生成物漂移失败。\nKanban=17b9dbb6-7401-487c-856b-eb53067edbfb OrgFS=M-codex-daemon-request-0004 branch=ci/a04-command-surface\n验收：完整实际命令注册/帮助/参数及生成清单一致，旧盘点只作基线，新增/退役有逐项出处。；命令漂移、参数互斥错误、生成物漂移及契约导出问题被负控捕获，不放宽门禁。；已退役入口无 alias；未实现 move 不进入可用目录；host 目标映射明确所属迁移组，无整仓抢改。；接入 A03 后焦点/全套/Ruff/结构边界及契约检查通过，单独 PR 经协调者验收。"
+    },
+    {
+      "id": "a04-review",
+      "kind": "approval",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "review",
+      "after": [
+        "a04-build"
+      ],
+      "task": "A-04独立review：检查diff、真实依赖/无shim、重点测试与证据，并复跑适用验证。判词落仓库，绑定worker SHA与目标intg SHA。complete仅表示判词发布；PASS才选accept，FAIL只选reject，不能同时放行。"
+    },
+    {
+      "id": "a04-reject",
+      "kind": "approval",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "review",
+      "after": [
+        "a04-review"
+      ],
+      "task": "A-04仅在review不合格时完成此节点，reason-ref为固定判词；backedge发起返工。重置自己的旧review/reject旗标，worker重置自己的build旗标；检查重新激活的requestId。合格时保持本节点不置位，不把未选reject当失败。"
+    },
+    {
+      "id": "a04-accept",
+      "kind": "approval",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "review",
+      "after": [
+        "a04-review"
+      ],
+      "task": "A-04只有独立验收PASS并实现PR合入intg后置位；记录PR/head/merge SHA和测试实测，逐项回填Kanban/OrgFS，再释放后继。未测或不合格不得置位。"
+    },
+    {
+      "id": "a05-build",
+      "worker": "a05",
+      "role": "execute",
+      "after": [
+        "a03-accept",
+        "a04-accept"
+      ],
+      "task": "你是用户指定的 DeepSeek Flash Max 实现者，协调者 Codex 独立审核。只在本任务 worktree/branch 工作，不自行委派、不改板、不合并。先 git fetch origin 并 merge --no-edit origin/intg/cli-command-surface，再完整读 AGENTS.md、docs/design/daemon-request/{execution-2026-10-28.md,cli-surface.md,design.md,work-packages.json}；这些是本次授权与验收要求。所有 Python 经 uv；凭据/生产状态隔离，不重设 HOME、不读写认证文件。所有提交使用 env GIT_AUTHOR_NAME=devusr GIT_AUTHOR_EMAIL=amy.williams@example.com GIT_COMMITTER_NAME=devusr GIT_COMMITTER_EMAIL=amy.williams@example.com git commit ...。不得静默切换模型。新代码无旧 import/alias/shim/测试重导出，后端不能反向依赖 CLI；本批不恢复旧 GUI。先结构/边界，再焦点、全套 tests/、Ruff 和适用 contract 隔离验证；行为变化给红绿证据。不能把 BLOCKED/skip 说成 PASS，不删测/改锁/宽松门禁消红。第一检查点10分钟内、持续工作每20分钟给协调者证据路径。PR一个，base=intg/cli-command-surface，正文 Submitted-by 写你的真实URI，动机/改动/每条命令与实际结果/UNKNOWN或BLOCKED/Contract-Impact/Skill-Impact 齐全；push自身分支即可，fj无认证时将标题/正文文件交协调者代开，禁止拷贝token。证据写 docs/evidence/cli-command-surface/。所有进度与问题仅发协调者，不发用户/Allen/其他开发线。完成提交后 inspect 当前graph/node，再以当前 requestId 和证据引用显式 workflow complete；候选交审不是验收通过。收到显式back-edge返工先reset你自己的旧build flag并inspect取得新请求，按仓库review判词修复，不能用旧requestId完成。\nA-05 安装产物验证与公共基线交付\n补安装后 console script、公开 client/声明包资源和隔离 daemon 的可复现验收路径，固定 B/C 消费的接口快照/接入说明；在同步 dev 后确切 intg head 验收，不改产品业务掩盖失败。\n只在A03+A04已验收合入基线后完成。安装发布产物（wheel/console script）到隔离环境，验证公开client和方法声明可导入、包资源在产物里、OpenAPI可导出，真实隔离daemon样板成功/错误/输出。补最小可复现验收脚本和真实证据；独立安装不能偷偷从源树PYTHONPATH加载。确认所用commit/产物hash，B/C消费方法快照和接入说明。全套tests、Ruff、结构边界、contract --isolated-only实跑；最终容器更新后由协调者复验。不得为了让安装验证通过改无关业务，发现产品问题向协调者报证据并回对应worker返工。\nKanban=1b3c8264-f0ad-43a0-be35-1b1bf04dbce8 OrgFS=M-codex-daemon-request-0005 branch=test/a05-installed-request-baseline\n验收：安装产物的 console script、公共 client 导入、包资源和 OpenAPI 导出实际可用。；安装产物连接隔离 daemon 的 link 样板、输出与错误行为通过，不用 mock 声称产品验收。；最终 intg head 的适用全套、Ruff、结构/边界及 contract 隔离语料通过，记录产物/提交/事件和实测证据。；交付准确可消费 SHA/产物/契约和B/C接入说明；全部卡满足验收后由协调者交独立质检合入 dev。"
+    },
+    {
+      "id": "a05-review",
+      "kind": "approval",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "review",
+      "after": [
+        "a05-build"
+      ],
+      "task": "A-05独立review：检查diff、真实依赖/无shim、重点测试与证据，并复跑适用验证。判词落仓库，绑定worker SHA与目标intg SHA。complete仅表示判词发布；PASS才选accept，FAIL只选reject，不能同时放行。"
+    },
+    {
+      "id": "a05-reject",
+      "kind": "approval",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "review",
+      "after": [
+        "a05-review"
+      ],
+      "task": "A-05仅在review不合格时完成此节点，reason-ref为固定判词；backedge发起返工。重置自己的旧review/reject旗标，worker重置自己的build旗标；检查重新激活的requestId。合格时保持本节点不置位，不把未选reject当失败。"
+    },
+    {
+      "id": "a05-accept",
+      "kind": "approval",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "review",
+      "after": [
+        "a05-review"
+      ],
+      "task": "A-05只有独立验收PASS并实现PR合入intg后置位；记录PR/head/merge SHA和测试实测，逐项回填Kanban/OrgFS，再释放后继。未测或不合格不得置位。"
+    },
+    {
+      "id": "report",
+      "kind": "report",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "dispatch",
+      "after": [
+        "a05-accept"
+      ],
+      "task": "汇总5张卡的PR、最终SHA、全部适用验证与未测环境，写最终交付证据。向B/C回传可用公共client/MethodSpec/注册/output契约和接入点。对同步dev后的确切容器head检查CI与产物，通过后移除WIP并交独立质检，不自行合入dev。"
+    },
+    {
+      "id": "done",
+      "kind": "end",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "review",
+      "after": [
+        "report"
+      ],
+      "task": "确认A五卡验收闭环、记录最终容器PR与真实状态，完成本图。不得以排队/候选提交/UNKNOWN冒充交付成功。"
+    }
+  ],
+  "edges": [
+    {
+      "from": "a01-reject",
+      "to": "a01-build",
+      "kind": "back"
+    },
+    {
+      "from": "a02-reject",
+      "to": "a02-build",
+      "kind": "back"
+    },
+    {
+      "from": "a03-reject",
+      "to": "a03-build",
+      "kind": "back"
+    },
+    {
+      "from": "a04-reject",
+      "to": "a04-build",
+      "kind": "back"
+    },
+    {
+      "from": "a05-reject",
+      "to": "a05-build",
+      "kind": "back"
+    }
+  ]
+}

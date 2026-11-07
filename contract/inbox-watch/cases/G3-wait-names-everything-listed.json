@@ -1,0 +1,68 @@
+{
+  "id": "G3",
+  "title": "The wait names every id the last list returned, system notices included",
+  "config": {
+    "holdMs": 2000
+  },
+  "steps": [
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "register"
+      },
+      "at": 0
+    },
+    {
+      "lane": "poll",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e1"
+        }
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "list"
+      }
+    },
+    {
+      "lane": "poll",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e1",
+          "messages": [
+            {
+              "messageId": "m1",
+              "deliveryId": "m1"
+            },
+            {
+              "messageId": "notice-1",
+              "deliveryId": "notice-1",
+              "intent": "system"
+            }
+          ]
+        }
+      },
+      "emit": {
+        "new": [
+          "m1",
+          "notice-1"
+        ]
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "wait",
+        "knownMessageIds": [
+          "m1",
+          "notice-1"
+        ],
+        "holdMs": 2000
+      }
+    }
+  ]
+}

@@ -22,8 +22,8 @@ _YAML_FENCE = re.compile(
 )
 #: The one person-name predicate for the org-context format.  A publisher
 #: is a person named by their login: the legacy bare short name
-#: (``allenwoods``) or the tailnet login shape (``lin.yilun@hyprial.com``,
-#: ``jjkysy@github``) -- the same owner spelling a PAC ``user:<owner>``
+#: (``alicesmith``) or the tailnet login shape (``bob.smith@example.com``,
+#: ``devusr@github``) -- the same owner spelling a PAC ``user:<owner>``
 #: principal stores verbatim.  There is deliberately no second copy of this
 #: judgment: the repo's other owner boundaries either accept more than a
 #: curated document should (the login/URI owner grammar is only "non-empty,

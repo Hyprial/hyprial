@@ -220,6 +220,12 @@ def validate_model_selection(
         if effort is not None
         else tuple(args)
     )
+    from hyprial.kernel import merge_harness_launch_args
+
+    try:
+        encoded_args = merge_harness_launch_args((), encoded_args, harness=harness)
+    except ValueError as error:
+        raise ModelProviderError(str(error)) from error
     if provider is None:
         return encoded_args
     if harness == "claude" and provider not in {
@@ -536,7 +542,7 @@ def claude_provider_environment(
 ) -> dict[str, str]:
     """Return the per-process Claude environment delta for ``spec``."""
 
-    validate_model_selection(spec.harness, spec.model_provider, spec.model)
+    validate_model_selection(spec.harness, spec.model_provider, spec.model, args=spec.args)
     _, effort = split_effort_args("claude", spec.args)
     if spec.model_provider in {None, "anthropic"}:
         return {"CLAUDE_CODE_EFFORT_LEVEL": effort} if effort is not None else {}

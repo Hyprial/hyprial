@@ -1,0 +1,258 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hyprial.com/hyprial/user-proxy/v1/protocol.schema.json",
+  "title": "hyprial user-proxy protocol v1",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "op",
+        "id",
+        "payload"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "op": {
+          "const": "call"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "from",
+            "message"
+          ],
+          "properties": {
+            "from": {
+              "type": "string",
+              "minLength": 1
+            },
+            "message": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "op"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "op": {
+          "const": "stop"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "type",
+        "kind",
+        "pid",
+        "hyprialCommit",
+        "scriptSha256"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "type": {
+          "const": "ready"
+        },
+        "kind": {
+          "const": "user-proxy"
+        },
+        "pid": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "hyprialCommit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "scriptSha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "type",
+        "id",
+        "segment",
+        "durationMs",
+        "ok"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "type": {
+          "const": "metric"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "segment": {
+          "enum": [
+            "decode",
+            "call",
+            "send"
+          ]
+        },
+        "durationMs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "skipped": {
+          "type": "boolean"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "type",
+        "id",
+        "ok",
+        "output"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "type": {
+          "const": "result"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ok": {
+          "const": true
+        },
+        "output": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "message"
+          ],
+          "properties": {
+            "message": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "type",
+        "id",
+        "ok",
+        "to",
+        "message"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "type": {
+          "const": "forward"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ok": {
+          "const": true
+        },
+        "to": {
+          "type": "string",
+          "minLength": 1
+        },
+        "message": {
+          "type": "string"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "type",
+        "id",
+        "ok",
+        "stage",
+        "code",
+        "message",
+        "retryable"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "type": {
+          "const": "error"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ok": {
+          "const": false
+        },
+        "stage": {
+          "enum": [
+            "decode",
+            "call",
+            "send",
+            "protocol"
+          ]
+        },
+        "code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "message": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      }
+    }
+  ]
+}

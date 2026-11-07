@@ -46,7 +46,7 @@ def prime_post_install_imports() -> frozenset[str]:
         write_last_run,
     )
     from hyprial.identity import (
-        IDENTITY_TRANSACTION_FD_ENV,
+        EXPECTED_IDENTITY_GENERATION_ENV,
         IdentityTransactionBusy,
         IdentityTransactionLock,
         UserProfileError,
@@ -54,6 +54,7 @@ def prime_post_install_imports() -> frozenset[str]:
     )
     from hyprial.kernel import DaemonLaunchResult, HarnessLaunchSpec, parse_channel_uri
     from hyprial.shell.impl.gui import runtime as gui_runtime
+    from hyprial.shell.impl.login import generation as login_generation
     from hyprial.shell.impl.gui.apps import upgrade as unpack_gui
 
     _ = (
@@ -86,7 +87,7 @@ def prime_post_install_imports() -> frozenset[str]:
         start_failure_line,
         tcp_probe,
         write_last_run,
-        IDENTITY_TRANSACTION_FD_ENV,
+        EXPECTED_IDENTITY_GENERATION_ENV,
         IdentityTransactionBusy,
         IdentityTransactionLock,
         UserProfileError,
@@ -96,6 +97,7 @@ def prime_post_install_imports() -> frozenset[str]:
         parse_channel_uri,
         unpack_gui,
         gui_runtime,
+        login_generation,
     )
     prime_upgrade_alert_imports()
     return frozenset(

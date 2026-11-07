@@ -8,6 +8,8 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tailcat/internal/outbound"
 )
 
 const MaxFrame = 1 << 20
@@ -15,10 +17,29 @@ const MaxNumber = 1<<53 - 1
 const Lease = 300 * time.Second
 const Timeout = 30 * time.Second
 
-type Error struct{ Value string }
+type Error struct {
+	Value  string
+	Detail *outbound.Detail
+}
 
 func (e *Error) Error() string { return e.Value }
-func fail(code string) error   { return &Error{code} }
+func fail(code string) error   { return &Error{Value: code} }
+func ValidateDiagnostic(data json.RawMessage) bool {
+	var detail outbound.Detail
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(data, &fields) != nil || string(fields["bytesReceived"]) == "null" {
+		return false
+	}
+	return DecodeFields(data, &detail) == nil && detail.Valid()
+}
+func Diagnostic(err error) (json.RawMessage, string) {
+	var e *Error
+	if errors.As(err, &e) && e.Detail != nil {
+		data, _ := json.Marshal(e.Detail)
+		return data, e.Detail.Message()
+	}
+	return nil, "Membership operation failed."
+}
 func Code(err error) string {
 	var e *Error
 	if errors.As(err, &e) {

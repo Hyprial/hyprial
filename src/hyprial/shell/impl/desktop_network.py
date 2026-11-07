@@ -84,9 +84,24 @@ def onboard(home: Path, action: str, emit: Callable[[str, dict], None]) -> dict:
     home.mkdir(parents=True, exist_ok=True, mode=0o700)
     profile, source = resolve_profile(hyprial_home=home)
     if action == "login":
-        run_login(profile, profile_source=source, hyprial_home=home,
-                  state_dir=home / "state", identity_mode="casdoor",
-                  identity_issuer=profile.issuer, open_browser=False, emit=emit)
+        # The commit (credential + identityGeneration) happens under the same
+        # identity lock every other writer takes, so the generation is a
+        # read-modify-write no concurrent login or refresh can interleave.
+        from hyprial.identity import IdentityTransactionLock
+
+        held: list[IdentityTransactionLock] = []
+
+        def before_commit(*_identity: object) -> None:
+            held.append(IdentityTransactionLock.acquire(home))
+
+        try:
+            run_login(profile, profile_source=source, hyprial_home=home,
+                      state_dir=home / "state", identity_mode="casdoor",
+                      identity_issuer=profile.issuer, open_browser=False, emit=emit,
+                      before_commit=before_commit)
+        finally:
+            for transaction in held:
+                transaction.close()
     current = status(home)
     if not current["authenticated"]:
         return {"ok": False, "code": "NOT_LOGGED_IN", "state": current}

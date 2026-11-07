@@ -37,10 +37,7 @@ class _AgentMigrationMixin:
         return True if self._agent_liveness.binding(agent_uri) is None else None
 
     def _agent_migration_bindings(self, support: Any) -> Any:
-        from hyprial.identity import (
-            DEFAULT_AGENT_TOOL_PROFILE,
-            AgentRuntimeMigrationBindings,
-        )
+        from hyprial.identity import AgentRuntimeMigrationBindings
 
         harnesses = tuple(dict.fromkeys(key.harness for key in support))
         from hyprial.daemon.impl.harnesses.claude.runtime import (
@@ -53,7 +50,7 @@ class _AgentMigrationMixin:
         return AgentRuntimeMigrationBindings(
             self._agent_registry,
             harnesses=harnesses,
-            tool_profile=DEFAULT_AGENT_TOOL_PROFILE,
+            tool_profile=None,
             base_environment=os.environ,
             containerized=False,
             runtime_preparers={

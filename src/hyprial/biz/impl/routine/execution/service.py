@@ -2,6 +2,8 @@
 
 The facade may wait at the daemon boundary and execute external effects. It
 never mutates routine state; Store writes are serialized by ``RoutineRegistry``.
+
+见 docs/notes/routine-inflight-settle-2026-11-04.md。
 """
 
 from __future__ import annotations
@@ -192,6 +194,7 @@ class RoutineFacade:
                 publish=self._publish,
                 clock_ms=self._clock_ms,
                 migrate_address=self._migrate_address,
+                graph_state=self._probe_graph_state,
                 logger=self._logger,
             )
 
@@ -762,6 +765,10 @@ class RoutineFacade:
             code,
             detail,
         )
+
+    def _probe_graph_state(self, run_id: str) -> str:
+        result = self._pac.status(graph_id=run_id)
+        return str(result.get("state"))
 
     @staticmethod
     def _correlation() -> str:

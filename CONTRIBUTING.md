@@ -41,6 +41,22 @@ daemon，也不恢复旧 Python Web/backend。操作契约见
 测试产生的 home、socket、端口和缓存必须与日常环境隔离。不要读取、改写或清理
 生产 daemon、Lark App、凭据与用户级配置。
 
+## 分支模型
+
+| 分支 | 用途 | 接受的 PR 来源 |
+| --- | --- | --- |
+| `main` | 正式发布；合入后打 `v<VERSION>` tag 并推进 `stable` 轨道 | `dev` |
+| `dev` | 集成主线；每次通过 `unit` 门后推进 `internal` 轨道 | 仅 `release/v*` 与 `hotfix/*` |
+| `release/v<版本>` | 当前版本的集成分支（release train） | 功能分支与 `intg/*` |
+| `intg/<主题>` | 多个 PR 组成的组件集成线 | 该主题的功能分支 |
+| `hotfix/<slug>` | 直接修复 `dev` 的小改动 | — |
+
+功能分支命名为 `<type>/<slug>`（如 `feat/…`、`fix/…`、`docs/…`）。目标为 `release/**`
+的 PR 必须改动 `CHANGELOG.md` 中对应版本的小节。规则来源见
+[发布规则](docs/guides/release-rules.md) 与 [dev 来源分支规则](docs/guides/dev-source-branch-rule.md)。
+
+公网 GitHub 仓库 `Hyprial/hyprial` 是只读发布镜像，不接受 PR；补丁请在内部 Forgejo 提交。
+
 ## 提交与 Pull Request
 
 1. 从目标分支的新 head 建立短分支，保持每个提交可读、可测试。

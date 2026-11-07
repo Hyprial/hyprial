@@ -27,6 +27,7 @@ from ._base import (
     PinStateConflictError,
     _UNCONDITIONAL_PIN,
     RestoreDisposition,
+    normalize_harness_args,
 )
 
 
@@ -48,8 +49,6 @@ class _RegistryRecordsMixin:
                 raise AgentEntityConflict(
                     f"agent {actor!r} changed while its session was registered"
                 )
-            # Delete+insert deliberately advances history_id for a repeated ref:
-            # the bound is on the newest distinct registrations, not lexical refs.
             self._db.execute(
                 "DELETE FROM agent_session_ref_history "
                 "WHERE actor = ? AND entity_token = ? AND session_ref = ?",
@@ -84,10 +83,6 @@ class _RegistryRecordsMixin:
             if evicted:
                 # A ref dropped from the history would escape the next destroy
                 # and could later resurrect the agent, so eviction retires it.
-                # It is never the live session: every register re-inserts its
-                # ref as the newest row, and any other register takes over.
-                # Tagged with its own attempt so a destroy rollback (which
-                # deletes by destroy attempt) never releases it.
                 self._db.executemany(
                     "INSERT INTO retired_session_refs"
                     "(actor, entity_token, session_ref, retired_at_ms, reason, "
@@ -144,8 +139,8 @@ class _RegistryRecordsMixin:
             self._refresh_retired_session_refs_locked()
         return changed > 0
 
-    def save(self, agent: Agent) -> Agent:
-        """Write the record; the caller owns the merge.
+    def save(self, agent: Agent, *, preserve_harness_args: bool = False) -> Agent:
+        """Write a caller-merged record, preserving stored args for runtime bookkeeping.
 
         ``pinned_adapters`` is deliberately not written here — pins change
         only through :meth:`pin`/:meth:`unpin`, so a stale copy of the record
@@ -156,7 +151,7 @@ class _RegistryRecordsMixin:
         self._validate_config_location(agent)
         with self._lock, self._db:
             existing = self._db.execute(
-                "SELECT owner, machine, uri, hosted_by, entity_token, last_active_at_ms "
+                "SELECT owner, machine, uri, hosted_by, entity_token, last_active_at_ms, harness_args "
                 "FROM agents WHERE actor = ?",
                 (agent.actor,),
             ).fetchone()
@@ -186,6 +181,10 @@ class _RegistryRecordsMixin:
             if existing is not None:
                 agent = replace(
                     agent,
+                    harness_args=(
+                        normalize_harness_args(json.loads(existing["harness_args"]))
+                        if preserve_harness_args else agent.harness_args
+                    ),
                     last_active_at_ms=(
                         None
                         if existing["last_active_at_ms"] is None
@@ -215,6 +214,7 @@ class _RegistryRecordsMixin:
                         "created_at_ms",
                         "hosted_by",
                     )
+                    if column != "harness_args" or not preserve_harness_args
                 ),
                 values,
             )

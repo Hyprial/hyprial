@@ -1,0 +1,4 @@
+interface:
+  display_name: "Run hyprial E2E"
+  short_description: "Run release-grade hyprial end-to-end tests"
+  default_prompt: "Use $hyprial-e2e to run and report the hyprial release E2E gate."

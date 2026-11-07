@@ -1,0 +1,788 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hyprial.invalid/schemas/refactor-manifest-v1.json",
+  "title": "Hyprial deep-module refactor manifest",
+  "description": "Staged S1-S6 refactor rules. Approval status lives per rule; apply refuses anything that is not 'approved'.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "baseline_commit",
+    "rules"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "baseline_commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$",
+      "description": "Product baseline commit the rules were authored against."
+    },
+    "description": {
+      "type": "string"
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "approved_by": {
+          "type": "string"
+        },
+        "approved_at": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "references_path": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        }
+      }
+    },
+    "architecture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "layer_order"
+      ],
+      "properties": {
+        "layer_order": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z_]+$"
+          }
+        },
+        "layer_of_module": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "public_faces": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/verification_check"
+        }
+      }
+    },
+    "rules": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/rule"
+      }
+    }
+  },
+  "$defs": {
+    "rule": {
+      "type": "object",
+      "required": [
+        "rule_id",
+        "kind",
+        "stage",
+        "status",
+        "expected_matches",
+        "reason"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "rule_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._:-]*$"
+        },
+        "kind": {
+          "enum": [
+            "import_module",
+            "import_symbol",
+            "symbol_extract",
+            "class_member_extract",
+            "facade_export",
+            "reference_rule",
+            "layout_move"
+          ]
+        },
+        "stage": {
+          "enum": [
+            "S1",
+            "S2",
+            "S3",
+            "S4",
+            "S5",
+            "S6"
+          ]
+        },
+        "status": {
+          "enum": [
+            "draft",
+            "approved"
+          ]
+        },
+        "expected_matches": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_path": {
+          "type": "string"
+        },
+        "source_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "old_module": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_.]*$"
+        },
+        "new_module": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_.]*$"
+        },
+        "old_symbol": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        "new_symbol": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        "symbols": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "class_name": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        "new_class_name": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        "host_attribute": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        "shim_methods": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "target_path": {
+          "type": "string"
+        },
+        "target_mode": {
+          "enum": [
+            "create",
+            "append"
+          ]
+        },
+        "facade_path": {
+          "type": "string"
+        },
+        "facade_module": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_.]*$"
+        },
+        "provider_module": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_.]*$"
+        },
+        "mode": {
+          "enum": [
+            "lazy",
+            "eager"
+          ]
+        },
+        "registration": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "wrapper"
+          ],
+          "properties": {
+            "wrapper": {
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+            },
+            "parameter": {
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+            }
+          }
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/dependency"
+          }
+        },
+        "wiring": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "code"
+          ],
+          "properties": {
+            "method": {
+              "type": "string"
+            },
+            "code": {
+              "type": "string"
+            },
+            "imports": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "format": {
+          "enum": [
+            "python",
+            "json",
+            "toml",
+            "text"
+          ]
+        },
+        "operations": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/reference_operation"
+          }
+        },
+        "moves": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "from",
+              "to"
+            ],
+            "properties": {
+              "from": {
+                "type": "string"
+              },
+              "to": {
+                "type": "string"
+              },
+              "worm": {
+                "type": "boolean"
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              }
+            }
+          }
+        },
+        "sync_imports": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "old_module",
+              "new_module"
+            ],
+            "properties": {
+              "old_module": {
+                "type": "string"
+              },
+              "new_module": {
+                "type": "string"
+              },
+              "expected_matches": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "reference_updates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reference_rule_inline"
+          }
+        },
+        "manifest_updates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "operations"
+            ],
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "operations": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "$ref": "#/$defs/reference_operation"
+                }
+              }
+            }
+          }
+        },
+        "verification": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "convert_pin": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "content_sha256"
+          ],
+          "properties": {
+            "content_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "import_module"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "old_module",
+              "new_module"
+            ],
+            "properties": {
+              "old_symbol": {
+                "const": null
+              },
+              "new_symbol": {
+                "const": null
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "import_symbol"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "old_module",
+              "new_module",
+              "old_symbol",
+              "new_symbol"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "symbol_extract"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "source_path",
+              "source_sha256",
+              "symbols",
+              "target_path",
+              "dependencies"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "class_member_extract"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "source_path",
+              "source_sha256",
+              "class_name",
+              "symbols",
+              "new_class_name",
+              "target_path",
+              "dependencies",
+              "wiring"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "facade_export"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "facade_path",
+              "facade_module",
+              "provider_module",
+              "symbol"
+            ],
+            "properties": {
+              "symbol": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "reference_rule"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "source_path",
+              "format",
+              "operations"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "layout_move"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "moves"
+            ]
+          }
+        }
+      ]
+    },
+    "dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "provision"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "provision": {
+          "enum": [
+            "import",
+            "companion",
+            "wrapper_param",
+            "field",
+            "host",
+            "class_attr"
+          ]
+        },
+        "module": {
+          "type": "string"
+        },
+        "symbol": {
+          "type": "string"
+        },
+        "asname": {
+          "type": "string"
+        },
+        "class": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        }
+      }
+    },
+    "reference_operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "op"
+      ],
+      "properties": {
+        "op": {
+          "enum": [
+            "module_string",
+            "parents_depth_shift",
+            "json_field",
+            "json_entry_path",
+            "toml_key",
+            "text_span"
+          ]
+        },
+        "old": {
+          "type": "string"
+        },
+        "new": {
+          "type": "string"
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "delta": {
+          "type": "integer"
+        },
+        "field": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "key": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "match_path": {
+          "type": "string"
+        },
+        "new_path": {
+          "type": "string"
+        }
+      }
+    },
+    "reference_rule_inline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_path",
+        "format",
+        "operations"
+      ],
+      "properties": {
+        "source_path": {
+          "type": "string"
+        },
+        "format": {
+          "enum": [
+            "python",
+            "json",
+            "toml",
+            "text"
+          ]
+        },
+        "expected_matches": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "operations": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/reference_operation"
+          }
+        }
+      }
+    },
+    "verification_check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "check"
+      ],
+      "properties": {
+        "check": {
+          "enum": [
+            "boundary_direction",
+            "public_face_gate",
+            "authority_manifests",
+            "resource_present",
+            "command"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "roots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "layer_order": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "layer_of_module": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "public_faces": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "manifests": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path"
+            ],
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "expected_entries": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "preserved_from": {
+                "type": "string"
+              },
+              "allowed_moves": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "from",
+                    "to"
+                  ],
+                  "properties": {
+                    "from": {
+                      "type": "string"
+                    },
+                    "to": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "timeout_s": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "expect_exit": {
+          "type": "integer"
+        }
+      }
+    }
+  }
+}

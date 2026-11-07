@@ -318,6 +318,7 @@ class IsolatedAgentSdkClient:
         startup_timeout_seconds: float = 300.0,
         session_id: str | None = None,
         resume: str | None = None,
+        last_session_id: str | None = None,
         on_session_established: Callable[[str], None] | None = None,
         process_group: _OwnedProcessGroup | None = None,
         complete_launch: "ChildEnvironmentLaunch | None" = None,
@@ -338,6 +339,7 @@ class IsolatedAgentSdkClient:
             else (_sdk_process_group() if os.name == "nt" else None)
         )
         self._on_session_established = on_session_established
+        self._last_session_id = last_session_id
         self.command = (
             tuple(worker_command)
             if worker_command
@@ -365,12 +367,6 @@ class IsolatedAgentSdkClient:
             "model": spec.model or _option_value(spec.args, "--model"),
             "extraArgs": _extra_args(spec.args),
         }
-        # Session persistence, owned by the daemon: a stored ref resumes the
-        # conversation after a daemon restart; a fresh mint pins the id so
-        # the conversation can be resumed later.  The worker reports the
-        # effective id in its ready message.  A dead P2 resume target fails
-        # startup rather than silently becoming a fresh conversation; legacy
-        # launches retain their historical one-shot fresh-session fallback.
         if resume is not None:
             self.options["resume"] = resume
         elif session_id is not None:
@@ -525,6 +521,12 @@ class IsolatedAgentSdkClient:
             if ready.get("type") != "ready":
                 raise ConnectionError(f"Agent SDK worker failed to start: {ready!r}")
             session_id = ready.get("sessionId")
+            expected_ref = self.options.get("resume") or self.options.get("sessionId")
+            if expected_ref is not None and session_id != expected_ref:
+                raise ConnectionError(
+                    f"Claude session {expected_ref!r} was not established: "
+                    f"worker reported {session_id!r}"
+                )
             if (
                 isinstance(session_id, str)
                 and session_id
@@ -532,7 +534,14 @@ class IsolatedAgentSdkClient:
             ):
                 self._on_session_established(session_id)
             if self._logger is not None:
-                self._logger.info("worker.ready", pid=self._process.pid)
+                self._logger.info(
+                    "worker.ready",
+                    pid=self._process.pid,
+                    last_session_id=self._last_session_id,
+                    **{"spec.session_ref": self.spec.session_ref},
+                    session_decision="resume" if "resume" in self.options else "fresh-mint",
+                    sessionId=session_id,
+                )
             return self
         except BaseException as error:
             if isinstance(error, TimeoutError) and self._logger is not None:
@@ -548,6 +557,11 @@ class IsolatedAgentSdkClient:
                     stderrTail=_startup_stderr_tail(bytes(self._stderr_tail)),
                 )
             await self._close_process()
+            resume_ref = self.options.get("resume")
+            if resume_ref is not None and isinstance(error, Exception):
+                raise ConnectionError(
+                    f"Claude resume target {resume_ref!r} failed: {error}"
+                ) from error
             raise
 
     async def __aexit__(self, *args: object) -> bool:
@@ -720,6 +734,7 @@ def create_claude_sdk_client(
     worker_channel: WorkerChannel | None = None,
     session_id: str | None = None,
     resume: str | None = None,
+    last_session_id: str | None = None,
     on_session_established: Callable[[str], None] | None = None,
     process_group: _OwnedProcessGroup | None = None,
     complete_launch: "ChildEnvironmentLaunch | None" = None,
@@ -739,6 +754,7 @@ def create_claude_sdk_client(
         logger=logger,
         session_id=session_id,
         resume=resume,
+        last_session_id=last_session_id,
         on_session_established=on_session_established,
         process_group=process_group,
         complete_launch=complete_launch,
@@ -760,6 +776,7 @@ class ClaudeAgentSdkProcess(StreamingTurnProcess):
         reconnect_delay_seconds: float = 0.25,
         on_turn_failure_for_spec: TurnFailureSpecObserver | None = None,
         on_turn_completed: TurnCompletedObserver | None = None,
+        last_session_id: str | None = None,
         runtime_launch_custody: (
             Callable[[AgentRuntimeContext], AbstractContextManager[None]] | None
         ) = None,
@@ -767,15 +784,9 @@ class ClaudeAgentSdkProcess(StreamingTurnProcess):
         if spec.harness != "claude" or not spec.headless:
             raise ValueError("Claude Agent SDK requires a managed headless spec")
         self.spec = spec
-        # Session identity, pinned by the daemon so a restart can resume the
-        # conversation: a spec that carries a ref is a RESUME of a session a
-        # previous daemon run persisted; a fresh worker mints its id here and
-        # passes it as session_id until the first connect establishes it.
-        # Reconnects then resume the established id.  A dead P2 resume target
-        # is a loud startup failure; legacy workers retain their pre-P2
-        # fresh-session replacement contract.
         self._session_id = spec.session_ref or str(uuid4())
         self._established = spec.session_ref is not None
+        self._last_session_id = last_session_id
         self._env = env
         self._complete_launch = complete_launch
         self._runtime_launch_custody = runtime_launch_custody
@@ -846,6 +857,7 @@ class ClaudeAgentSdkProcess(StreamingTurnProcess):
             worker_channel=self.worker_channel,
             session_id=None if self._established else self._session_id,
             resume=self._session_id if self._established else None,
+            last_session_id=self._last_session_id,
             on_session_established=self._session_established,
             process_group=self._process_group,
             complete_launch=self._complete_launch,

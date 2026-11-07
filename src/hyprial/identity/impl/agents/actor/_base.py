@@ -200,7 +200,7 @@ class _PrepareRuntimeCommand:
     actor: str
     harness: str
     cwd: str | None
-    tool_profile: AgentToolProfile
+    tool_profile: AgentToolProfile | None
     containerized: bool
     expected_entity_token: str | None = None
     credential_preflight: bool = False

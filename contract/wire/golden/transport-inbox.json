@@ -1,0 +1,40 @@
+{
+  "schema": "hyprial-wire-golden-scope/v1",
+  "owner": "transport-inbox",
+  "cases": [
+    "WG-001",
+    "WG-003",
+    "WG-007",
+    "WG-008",
+    "WG-009",
+    "WG-010",
+    "WG-011",
+    "WG-012",
+    "WG-013",
+    "WG-014",
+    "WG-015",
+    "WG-016",
+    "WG-028",
+    "WG-029",
+    "WG-030",
+    "WG-031",
+    "WG-032",
+    "WG-033",
+    "WG-034",
+    "WG-035",
+    "WG-037"
+  ],
+  "boundary": {
+    "input": "Opaque proto-encoded bytes plus transport-neutral delivery metadata",
+    "output": "Durable submission, FIFO consumption, acknowledgement, retry and DLQ results",
+    "excluded": [
+      "IRC parsing and envelope mapping (proto owner)",
+      "target resolution and provider lifecycle (daemon/providers owner)",
+      "historical quote and fallback routing WG-020..WG-025 (adapter owner)"
+    ]
+  },
+  "sources": [
+    "docs/design/design.md section 3",
+    "contract/wire/golden/expectations.json"
+  ]
+}

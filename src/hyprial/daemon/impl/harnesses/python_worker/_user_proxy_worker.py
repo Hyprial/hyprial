@@ -15,6 +15,11 @@ The rule (§3), a pure function of the delivery and ``--route``:
 * from anyone else -- forwarded to the person's DM route unchanged; the daemon
   attributes the post to the original sender.
 
+A person's recipient is accepted only in a canonical address form.  Markdown
+link scaffolding is removed once and the target is accepted only when the
+unwrapped value is canonical; otherwise the person gets a result that names the
+captured value and the accepted forms.
+
 Deliberately independent of ``_python_worker``: the ready frame's
 ``scriptSha256`` then covers every line of the forwarding rule.  Address
 grammar comes from the leaf ``hyprial.uri`` module, the one reader for it.
@@ -32,14 +37,25 @@ import sys
 import time
 from pathlib import Path
 
-from hyprial.kernel import ADAPTER_URI_PREFIX, parse_route_uri
+from hyprial.identity import AgentError, AgentRegistry
+from hyprial.kernel import (
+    ADAPTER_URI_PREFIX,
+    parse_agent_uri,
+    parse_route_uri,
+    parse_user_uri,
+)
 
 PROTOCOL_VERSION = 1
 KIND = "user-proxy"
 MAX_LINE_BYTES = 8 * 1024 * 1024
 RECIPIENT_MARKER = "@"
 _ADDRESSED = re.compile(r"\s*@(\S+)\s+(\S.*)", re.DOTALL)
+_MARKDOWN_LINK = re.compile(r"!?\[([^\[\]\n]*)\]\([^()\n]*\)")
 _HEX40 = set("0123456789abcdef")
+RECIPIENT_FORMS = (
+    "agent 名、agent URI (agent:<owner>:<machine>:<actor>)、"
+    "user:<owner> 或 route:<adapter>:<route>"
+)
 
 #: Sent back to the person when they did not say who the message is for.  The
 #: cost Allen accepted on 2026-09-23: replies must name their recipient.
@@ -95,6 +111,43 @@ def split_recipient(message: str) -> tuple[str, str] | None:
     return match.group(1), match.group(2).strip()
 
 
+def canonical_recipient(value: str) -> str | None:
+    """Return the canonical forward target, or ``None`` when one is not present."""
+
+    if parse_agent_uri(value) is not None:
+        try:
+            AgentRegistry.normalize_actor(value)
+        except AgentError:
+            return None
+        return value
+    if parse_user_uri(value) is not None:
+        return value
+    if parse_route_uri(value) is not None:
+        return value
+    try:
+        return AgentRegistry.normalize_actor(value)
+    except AgentError:
+        return None
+
+
+def unwrap_markdown_recipient(value: str) -> str | None:
+    """Remove one layer of Markdown links, but only when the result is canonical."""
+
+    unwrapped = _MARKDOWN_LINK.sub(lambda match: match.group(1), value)
+    if unwrapped == value:
+        return None
+    return canonical_recipient(unwrapped)
+
+
+def invalid_recipient_hint(captured: str) -> str:
+    """Tell the person what arrived and which target forms the worker accepts."""
+
+    return (
+        f"没有转发:捕获的收件人是 {captured!r},不是合法目标。"
+        f"收件人必须是 {RECIPIENT_FORMS}。"
+    )
+
+
 def decide(sender: str, message: str, *, route: str) -> dict[str, object]:
     """The frame fields (minus envelope) for one delivery."""
 
@@ -104,7 +157,14 @@ def decide(sender: str, message: str, *, route: str) -> dict[str, object]:
         if split is None:
             return {"type": "result", "ok": True, "output": {"message": MISSING_RECIPIENT_HINT}}
         recipient, body = split
-        return {"type": "forward", "ok": True, "to": recipient, "message": body}
+        target = canonical_recipient(recipient) or unwrap_markdown_recipient(recipient)
+        if target is None:
+            return {
+                "type": "result",
+                "ok": True,
+                "output": {"message": invalid_recipient_hint(recipient)},
+            }
+        return {"type": "forward", "ok": True, "to": target, "message": body}
     return {"type": "forward", "ok": True, "to": route, "message": message}
 
 

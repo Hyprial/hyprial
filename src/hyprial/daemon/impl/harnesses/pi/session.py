@@ -5,8 +5,8 @@ any other character (colons included) at launch.  The session ref is OUR
 identity key -- daemon state, fencing and desired-state all key on the raw
 value -- so pi's charset rule must not back-pollute our key space.  The
 boundary translation happens only when the ref becomes a pi argument: every
-disallowed character maps deterministically to '.' (squire:alw:zyli ->
-squire.alw.zyli).  Allowed characters pass through byte-for-byte, so a clean
+disallowed character maps deterministically to '.' (squire:alw:usrb ->
+squire.alw.usrb).  Allowed characters pass through byte-for-byte, so a clean
 ref is never rewritten and the sanitized value is still stable across
 reconnects.
 

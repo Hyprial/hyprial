@@ -34,6 +34,7 @@ __all__ = [
     "DirectoryDevice",
     "directory_device_path",
     "directory_binding_path",
+    "binding_assertion_audience_matches",
     "binding_assertion_claims_unverified",
     "binding_numeric_date",
     "binding_assertion_publish_after",
@@ -125,6 +126,33 @@ def binding_assertion_claims_unverified(proof: str) -> dict[str, object]:
     if not isinstance(claims, dict):
         raise ValueError("binding proof claims are not an object")
     return claims
+
+
+def binding_assertion_audience_matches(
+    claims: dict[str, object] | Mapping[str, object], client_id: str
+) -> bool:
+    """True when the assertion is addressed to ``client_id`` (RFC 7519 aud).
+
+    ``aud`` may be a string or an array of strings (Casdoor signs the array
+    form), so a plain string comparison rejects every otherwise valid proof.
+    A multi-element array must also name ``client_id`` as the authorized party
+    (``azp``); otherwise the assertion was minted for several relying parties
+    and cannot by itself bind this one.  Every audience check in the tree goes
+    through this function so the shapes cannot drift apart again.
+    """
+
+    audience = claims.get("aud")
+    if isinstance(audience, str):
+        return audience == client_id
+    if isinstance(audience, list):
+        if not audience or not all(isinstance(item, str) for item in audience):
+            return False
+        if client_id not in audience:
+            return False
+        if len(audience) == 1:
+            return True
+        return claims.get("azp") == client_id
+    return False
 
 
 def binding_assertion_publish_after(proof: str) -> float:

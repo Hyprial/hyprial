@@ -38,6 +38,47 @@ from hyprial.biz.impl.routine.execution.registry.effects import (
 )
 
 class _RegistryEvents:
+    def _status_effects(
+        self, row: RoutineRow, active: _ActiveRoutine, cycle: RoutineCycleRow
+    ) -> tuple[RoutinePacEffect, ...]:
+        return tuple(
+            RoutinePacEffect(
+                effect_id=f"routine-io-{uuid4().hex}",
+                parent_correlation_id=cycle.correlation_id,
+                generation=self._generation,
+                version=cycle.version,
+                routine_name=row.name,
+                task_uuid=item.task_uuid,
+                operation="pac.status",
+                graph_id=item.run_id,
+                target=item.target,
+                sender=active.owner,
+            )
+            for item in self._store.in_flight(routine=row.name)
+        )
+
+    def _poll_in_flight(self, row: RoutineRow, active: _ActiveRoutine) -> None:
+        """Reconcile accepted graphs without dispatching or advancing cadence."""
+        if self._store.cycle_for_routine(row.name) is not None:
+            return
+        if not self._store.in_flight(routine=row.name):
+            return
+        cycle = RoutineCycleRow(
+            correlation_id=f"routine-cycle-{uuid4().hex}",
+            routine_name=row.name,
+            generation=self._generation,
+            version=self._next_version(),
+            outcomes_json=row.outcomes,
+        )
+        effects = self._status_effects(row, active, cycle)
+        self._store.apply(
+            routine=replace(row, version=cycle.version),
+            cycle=replace(cycle, pending_status=len(effects)),
+            add_effects=tuple(self.effect_row(item) for item in effects),
+        )
+        for effect in effects:
+            self._publish(effect)
+
     def _source_completed(self, event: RoutineSourceQueryCompleted) -> None:
         effect_row = self._store.effect(event.correlation_id)
         if effect_row is None:
@@ -55,23 +96,7 @@ class _RegistryEvents:
         tasks = tuple(
             SourceTask(item.uuid, item.description, item.tags) for item in event.tasks
         )
-        status_effects = tuple(
-            RoutinePacEffect(
-                effect_id=f"routine-io-{uuid4().hex}",
-                parent_correlation_id=cycle.correlation_id,
-                generation=self._generation,
-                version=cycle.version,
-                routine_name=row.name,
-                task_uuid=item.task_uuid,
-                operation="pac.status",
-                graph_id=item.run_id,
-                target=item.target,
-                # The graph's creator: closing a settled graph authorizes
-                # against created_by, so the projection call carries it.
-                sender=active.owner,
-            )
-            for item in self._store.in_flight(routine=row.name)
-        )
+        status_effects = self._status_effects(row, active, cycle)
         cycle = replace(
             cycle,
             tasks_json=self._encode_tasks(tasks),
@@ -172,7 +197,8 @@ class _RegistryEvents:
                 if event.code is not None or event.state in {None, "escalated"}
                 else "done"
             )
-            removals = ((row.name, effect.task_uuid),)
+            if event.code is None and event.state in {"done", "escalated"}:
+                removals = ((row.name, effect.task_uuid),)
         remaining = max(0, cycle.pending_status - 1)
         cycle = replace(
             cycle,
@@ -414,15 +440,18 @@ class _RegistryEvents:
         window = active.spec.limits.circuit_breaker.window_runs
         outcomes = outcomes[-window:]
         pause = (
-            len(outcomes) >= window
+            row.enabled
+            and len(outcomes) >= window
             and sum(item == "escalated" for item in outcomes) / len(outcomes)
             >= active.spec.limits.circuit_breaker.escalate_ratio
             and active.spec.limits.circuit_breaker.action == "pause+alarm"
         )
         updated = replace(
             row,
-            enabled=not pause,
-            source_error_streak=0,
+            enabled=row.enabled and not pause,
+            source_error_streak=(
+                row.source_error_streak if cycle.occurrence_slot_ms is None else 0
+            ),
             outcomes=json.dumps(outcomes),
             version=self._next_version(),
         )
@@ -457,7 +486,7 @@ class _RegistryEvents:
             row is None
             or active is None
             or cycle is None
-            or not row.enabled
+            or (not row.enabled and effect.operation != "pac.status")
             or effect.generation != self._generation
             or cycle.generation != self._generation
             or effect.version != cycle.version

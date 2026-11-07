@@ -13,7 +13,6 @@ import os
 import sys
 import threading
 from typing import Any
-from uuid import uuid4
 
 try:
     from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, ResultMessage
@@ -521,27 +520,11 @@ async def _serve() -> None:
         client = await _connect(ClaudeAgentOptions(**kwargs))
     except Exception as error:
         resume = kwargs.get("resume")
-        if runtime_context_mode == _P2_RUNTIME_CONTEXT_MODE or not (
-            isinstance(resume, str) and resume
-        ):
-            # P2 has an explicit authorized session root.  A missing or
-            # unreadable target there is terminal: replacing it would
-            # report success while silently discarding the conversation.
-            raise
-        # Legacy workers retain their historical recovery contract: a
-        # stale daemon-owned session id is retried exactly once as a fresh,
-        # pinned session.  The replacement id is reported in ready so the
-        # daemon can persist it.
-        print(
-            f"Agent SDK worker: stored session {resume} could not be "
-            f"resumed ({type(error).__name__}: {error}); starting a "
-            "fresh session",
-            file=sys.stderr,
-            flush=True,
-        )
-        kwargs.pop("resume", None)
-        kwargs["session_id"] = str(uuid4())
-        client = await _connect(ClaudeAgentOptions(**kwargs))
+        if isinstance(resume, str) and resume:
+            raise RuntimeError(
+                f"Claude resume target {resume!r} failed: {type(error).__name__}: {error}"
+            ) from error
+        raise
     try:
         ready: dict[str, object] = {"type": "ready"}
         effective_session = kwargs.get("resume") or kwargs.get("session_id")

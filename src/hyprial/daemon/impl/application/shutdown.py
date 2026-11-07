@@ -955,3 +955,30 @@ class _ShutdownMixin:
             actor=actor,
             reason=reason,
         )
+
+    def _report_agent_runtime_notices(self, context: Any) -> None:
+        """Emit each P2 runtime-context notice once per actor/code/path.
+
+        Headless launch, transfer, and admin-create paths otherwise surface
+        runtime notices only through the returned context JSON; the daemon
+        log line is the durable operator surface (agent-git-identity review,
+        2026-11-03).  The migration notice itself is one-shot by
+        construction (the legacy directory is renamed aside), so the dedup
+        key only guards repeated logging of the same context object.
+        """
+
+        for notice in tuple(getattr(context, "notices", ()) or ()):
+            key = (notice.actor, notice.code, notice.path)
+            lock, logged = self._agent_runtime_notice_log
+            with lock:
+                if key in logged:
+                    continue
+                logged.add(key)
+            self._log(
+                "warn",
+                "daemon",
+                notice.code,
+                actor=notice.actor,
+                path=notice.path,
+                message=notice.message,
+            )

@@ -267,6 +267,32 @@ ROUTE_URI_PREFIX = "route:"
 USER_URI_PREFIX = "user:"
 
 
+@dataclass(frozen=True, slots=True)
+class AddressFamily:
+    name: str
+    grammar: str
+    usage: str | None
+    setup: str | None
+    escalation_supported: bool
+    escalation_addresses: tuple[str, ...]
+
+
+ADDRESS_FAMILIES: dict[str, AddressFamily] = {
+    "agent": AddressFamily(
+        "agent", "agent:<owner>:<machine>:<actor>", None, None, True, ()
+    ),
+    "user": AddressFamily("user", "user:<owner>", None, None, True, ()),
+    "route": AddressFamily(
+        "route",
+        "route:<adapter>:<route>",
+        "outbound chat sends via hyprial message send --to route:<adapter>:<route>",
+        "hyprial adapter route add <adapter> <route>=<native-chat-id>",
+        False,
+        ("a full agent URI (agent:<owner>:<machine>:<actor>)", "user:<owner>"),
+    ),
+}
+
+
 def parse_route_uri(value: str) -> tuple[str, str] | None:
     """Decompose ``route:<adapter>:<route>``; ``None`` for any other shape."""
 
@@ -298,10 +324,13 @@ def delivery_address_error(value: str) -> str | None:
     if parse_user_uri(candidate) is not None:
         return None
     if parse_route_uri(candidate) is not None:
+        family = ADDRESS_FAMILIES["route"]
+        assert family.usage is not None and family.setup is not None
         return (
-            f"{candidate!r} uses route:<adapter>:<route>, which is not yet "
-            "supported for escalate_to/report_to delivery; use a full agent "
-            "URI (agent:<owner>:<machine>:<actor>) or user:<owner>"
+            f"{candidate!r} is a {family.grammar} target for {family.usage}. "
+            f"Create one with `{family.setup}`. It is not a deliverable "
+            f"escalate_to/report_to address; those require "
+            f"{' or '.join(family.escalation_addresses)}."
         )
     return (
         f"{candidate!r} is not a deliverable address; write a full agent URI "

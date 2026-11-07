@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hyprial.com/contract/daemon-request/http-envelope.schema.json",
+  "title": "Hyprial daemon request HTTP transport envelope",
+  "description": "Temporary M-03 mirror of the H-01 SuccessEnvelope/ErrorEnvelope payload. The Contract Mock validates every response against this file. HM-01 must replace or confirm it against the accepted H projection; until then this file is a pinned development seam, not a second transport authority.",
+  "$defs": {
+    "success": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "ok": { "const": true },
+        "method": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "requestId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "dispatch": { "const": "dispatched" },
+        "result": { "type": "object" }
+      },
+      "required": [
+        "schemaVersion",
+        "ok",
+        "method",
+        "requestId",
+        "dispatch",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    "error": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "ok": { "const": false },
+        "requestId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+        "message": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "dispatch": {
+          "enum": ["not-dispatched", "dispatched", "unknown"]
+        },
+        "method": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "data": { "type": "object" }
+      },
+      "required": [
+        "schemaVersion",
+        "ok",
+        "requestId",
+        "code",
+        "message",
+        "dispatch"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "x-hyprial-http-contract-version": 1,
+  "x-hyprial-source": {
+    "commit": "02b9001fae32bd998a75654c0ea259d94276c7c5",
+    "classes": [
+      "hyprial.shell.impl.request_http.app.SuccessEnvelope",
+      "hyprial.shell.impl.request_http.app.ErrorEnvelope",
+      "hyprial.shell.impl.request_http.server._error_payload"
+    ],
+    "note": "Field shape and status mapping were read from the H-01 candidate on 2026-10-31. This file is the M-side mock seam; HM-01 owns the combined replacement check."
+  },
+  "x-hyprial-status-default": 500,
+  "x-hyprial-status-by-code": {
+    "INVALID_ARGUMENT": 400,
+    "INVALID_REQUEST": 400,
+    "INVALID_PARAMS": 400,
+    "HTTP_HOST_DENIED": 403,
+    "HTTP_ORIGIN_DENIED": 403,
+    "HTTP_UNAUTHORIZED": 401,
+    "METHOD_NOT_FOUND": 404,
+    "HTTP_BODY_TOO_LARGE": 413,
+    "HTTP_URI_TOO_LONG": 414,
+    "HTTP_HEADERS_TOO_LARGE": 431,
+    "HTTP_UNSUPPORTED_MEDIA_TYPE": 415,
+    "HTTP_METHOD_NOT_ALLOWED": 405,
+    "HTTP_BUSY": 429,
+    "HTTP_LENGTH_REQUIRED": 411,
+    "HTTP_TIMEOUT": 408,
+    "HTTP_NOT_READY": 503,
+    "HTTP_IDEMPOTENCY_KEY_UNSUPPORTED": 400,
+    "HTTP_INTERNAL": 500,
+    "PRINCIPAL_MISMATCH": 403,
+    "CATALOG_MISMATCH": 409,
+    "CATALOG_STALE": 503,
+    "VERSION_MISMATCH": 409,
+    "DAEMON_UNAVAILABLE": 503,
+    "DAEMON_RESTORING": 503,
+    "DAEMON_NOT_READY": 503,
+    "DAEMON_DISCONNECTED": 503,
+    "IPC_TIMEOUT": 504,
+    "INVALID_RESPONSE": 502,
+    "IPC_RESPONSE_TOO_LARGE": 502,
+    "DAEMON_ERROR": 500,
+    "CALLER_NOT_AUTHORIZED": 403,
+    "SENDER_NOT_AUTHENTICATED": 403,
+    "SENDER_UNRESOLVED": 403,
+    "TARGET_NOT_AUTHORIZED": 403,
+    "CHANNEL_NOT_AUTHORIZED": 403,
+    "ORG_CONTEXT_NOT_AUTHORIZED": 403,
+    "STALE_SESSION": 403,
+    "SESSION_SUPERSEDED": 403,
+    "INVALID_SESSION_SOURCE": 403
+  }
+}

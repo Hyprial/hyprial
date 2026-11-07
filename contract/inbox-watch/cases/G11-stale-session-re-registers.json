@@ -1,0 +1,130 @@
+{
+  "id": "G11",
+  "title": "STALE_SESSION re-registers (every client) and re-wakes the backlog",
+  "steps": [
+    {
+      "at": 0,
+      "lane": "poll",
+      "expect": {
+        "op": "register"
+      }
+    },
+    {
+      "at": 0,
+      "lane": "poll",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e1"
+        }
+      }
+    },
+    {
+      "at": 0,
+      "lane": "poll",
+      "expect": {
+        "op": "list"
+      }
+    },
+    {
+      "at": 0,
+      "lane": "poll",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e1",
+          "messages": [
+            {
+              "messageId": "m1",
+              "deliveryId": "m1"
+            }
+          ]
+        }
+      },
+      "emit": {
+        "new": [
+          "m1"
+        ]
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "wait",
+        "knownMessageIds": [
+          "m1"
+        ]
+      }
+    },
+    {
+      "lane": "heartbeat",
+      "expect": {
+        "op": "heartbeat"
+      },
+      "at": 1000
+    },
+    {
+      "lane": "heartbeat",
+      "respond": {
+        "rejected": "STALE_SESSION"
+      }
+    },
+    {
+      "lane": "poll",
+      "at": 5000,
+      "respond": {
+        "ok": {
+          "ok": true,
+          "changed": false,
+          "held": true,
+          "daemonEpoch": "e1"
+        }
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "register"
+      }
+    },
+    {
+      "lane": "poll",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e1"
+        }
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "list"
+      }
+    },
+    {
+      "lane": "poll",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e1",
+          "messages": [
+            {
+              "messageId": "m1",
+              "deliveryId": "m1"
+            }
+          ]
+        }
+      },
+      "emit": {
+        "rewake": [
+          "m1"
+        ],
+        "rewakeReason": "start"
+      }
+    }
+  ],
+  "counters": {
+    "rewake.start": 1
+  }
+}

@@ -290,7 +290,7 @@ class ForwardingSidecarSupervisor:
         up_slots: Callable[[], tuple[str, ...]] | None = None,
         on_installed: Callable[[], object] | None = None,
     ) -> None:
-        self._environ = environ
+        self._environ = dict(environ)
         self._event_log = event_log
         self._policy: SupervisionPolicy = (
             DEFAULT_POLICIES[PROCESS_LIFECYCLE] if policy is None else policy

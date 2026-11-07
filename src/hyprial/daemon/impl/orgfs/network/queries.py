@@ -336,7 +336,7 @@ class MeshQueries:
             raise StoreError(
                 "invalid-argument", "maxBytes is outside the allowed range"
             )
-        if self.replica_store is not None:
+        if self._replica_serving:
             return self._replica_sync_page(
                 {
                     **value,
@@ -442,7 +442,7 @@ class MeshQueries:
             raise StoreError(
                 "invalid-argument", "maxBytes is outside the allowed range"
             )
-        if self.replica_store is not None:
+        if self._replica_serving:
             return self._replica_sync_page(
                 value,
                 doc_ids,
@@ -656,7 +656,7 @@ class MeshQueries:
                 "supplier": self.node_id,
                 "durable": (
                     self.replica_store.durable()
-                    if self.replica_store is not None
+                    if self._replica_serving
                     else self.durable
                 ),
                 "frontiers": {
@@ -722,7 +722,7 @@ class MeshQueries:
             writer = str(value.get("writer", ""))
             after = value.get("after")
             limit = value.get("limit", ORGFS_LOG_RANGE_LIMIT)
-            if self.replica_store is not None:
+            if self._replica_serving:
                 rows = self.replica_store.serve_log_range(
                     doc_id, writer, after=after, limit=limit
                 )
@@ -757,7 +757,7 @@ class MeshQueries:
     def _handle_blob(
         self, selector: str, payload: bytes | None
     ) -> Iterable[tuple[str, bytes]]:
-        if self.replica_store is not None:
+        if self._replica_serving:
             try:
                 value = decode_blob_request(payload or b"")
                 if value["spaceId"] != self.store.space_id:

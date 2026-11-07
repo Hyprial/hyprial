@@ -1,0 +1,1450 @@
+{
+  "observedAt": "2026-11-06T06:30:16.568717+00:00",
+  "implementationCommit": "506d81aa8b5b8c5493456347466c8dd74fc7f376",
+  "terminalSummary": "45 failed, 18417 passed, 39 skipped, 7 xfailed, 2 xpassed, 24 warnings, 2 errors in 1574.61s (0:26:14)",
+  "counts": {
+    "passed": 18417,
+    "failed": 45,
+    "skipped": 39,
+    "xfailed": 7,
+    "xpassed": 2,
+    "errors": 2,
+    "warnings": 24
+  },
+  "fullSuiteVerdict": "FAIL",
+  "environment": "permitted sandbox; all proxy variables removed; short isolated basetemp /private/tmp/p5d69s1",
+  "unrestrictedRun": "NOT_RUN: escalation rejected by user",
+  "failures": [
+    {
+      "nodeId": "tests/daemon/upgrade/test_steps.py::test_tmp_or_var_symlink_dotdot_cancellation_is_refused[/var/tmp]",
+      "kind": "failure",
+      "attribution": "BLOCKED(sandbox)",
+      "message": "PermissionError: [Errno 1] Operation not permitted: '/var/tmp/hf-home-cancel-hejdf5_h'",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "PermissionError: [Errno 1] Operation not permitted: '/var/tmp/hf-home-cancel-dn82abvt'"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/daemon/ipc/error/test_ipc_error_code_registry.py::test_no_literal_proto_code_outside_the_registry",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "AssertionError: proto-facing error codes must come from hyprial.contracts.ipc_errors, never a string literal:",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "AssertionError: proto-facing error codes must come from hyprial.contracts.ipc_errors, never a string literal:"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/daemon/links/composition/test_drained_read_back.py::test_r23_a_drained_request_that_was_never_injected_is_not_readable",
+      "kind": "failure",
+      "attribution": "FAIL(UNACCOUNTED); full-suite only, targeted base/candidate pass",
+      "message": "hyprial.kernel.impl.contracts.daemon.ipc_errors.DaemonRequestError: domain command session:register:35ce5054deb444d0b246cb6e75e21e09 did not settle",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "passed"
+          ],
+          "messages": []
+        },
+        {
+          "outcomes": [
+            "passed"
+          ],
+          "messages": []
+        },
+        {
+          "outcomes": [
+            "passed"
+          ],
+          "messages": []
+        }
+      ],
+      "candidateTargetedObservations": [
+        {
+          "outcomes": [
+            "passed"
+          ],
+          "messages": []
+        },
+        {
+          "outcomes": [
+            "passed"
+          ],
+          "messages": []
+        }
+      ]
+    },
+    {
+      "nodeId": "tests/daemon/links/composition/test_drained_read_back.py::test_r23_a_drained_request_that_was_never_injected_is_not_readable",
+      "kind": "error",
+      "attribution": "FAIL(UNACCOUNTED); full-suite only, targeted base/candidate pass",
+      "message": "failed on teardown with \"RuntimeError: daemon log writer did not drain\"",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "passed"
+          ],
+          "messages": []
+        },
+        {
+          "outcomes": [
+            "passed"
+          ],
+          "messages": []
+        },
+        {
+          "outcomes": [
+            "passed"
+          ],
+          "messages": []
+        }
+      ],
+      "candidateTargetedObservations": [
+        {
+          "outcomes": [
+            "passed"
+          ],
+          "messages": []
+        },
+        {
+          "outcomes": [
+            "passed"
+          ],
+          "messages": []
+        }
+      ]
+    },
+    {
+      "nodeId": "tests/daemon/links/composition/test_drained_read_back.py::test_r23_a_processed_settled_row_stays_readable",
+      "kind": "failure",
+      "attribution": "FAIL(UNACCOUNTED); full-suite only, targeted base/candidate pass",
+      "message": "hyprial.kernel.impl.contracts.daemon.ipc_errors.DaemonRequestError: domain command session:register:909bb4f64ae148ca9c89c206d467c20f did not settle",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "passed"
+          ],
+          "messages": []
+        },
+        {
+          "outcomes": [
+            "passed"
+          ],
+          "messages": []
+        },
+        {
+          "outcomes": [
+            "passed"
+          ],
+          "messages": []
+        }
+      ],
+      "candidateTargetedObservations": [
+        {
+          "outcomes": [
+            "passed"
+          ],
+          "messages": []
+        },
+        {
+          "outcomes": [
+            "passed"
+          ],
+          "messages": []
+        }
+      ]
+    },
+    {
+      "nodeId": "tests/integration/hosted/readiness/test_hosted_readiness_timing.py::test_spawn_error_is_recorded_and_reraised",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "subprocess.SubprocessError: Exception occurred in preexec_fn.",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "subprocess.SubprocessError: Exception occurred in preexec_fn."
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/integration/hosted/readiness/test_hosted_start_probe.py::test_sampler_stops_at_cap",
+      "kind": "failure",
+      "attribution": "FAIL(UNACCOUNTED); full-suite only, targeted base/candidate pass",
+      "message": "AssertionError: assert ([{'hookCalls': {'get_data': 63, 'read_text': 0}, 'inflight': [], 'kind': 'sample', 'loadavg': [9.40087890625, 9.998046... ...}, {'hookCalls': {'get_data': 63, 'read_text': 0}, 'inflight': [], 'kind': 'sample', 'mono': 20370.871337166, ...}] and (20370.871337166 - 20369.627533458) <= 1.2)",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "passed"
+          ],
+          "messages": []
+        },
+        {
+          "outcomes": [
+            "passed"
+          ],
+          "messages": []
+        },
+        {
+          "outcomes": [
+            "passed"
+          ],
+          "messages": []
+        }
+      ],
+      "candidateTargetedObservations": [
+        {
+          "outcomes": [
+            "passed"
+          ],
+          "messages": []
+        },
+        {
+          "outcomes": [
+            "passed"
+          ],
+          "messages": []
+        }
+      ]
+    },
+    {
+      "nodeId": "tests/integration/hosted/runtime/test_hosted_suite_precompile.py::test_probe_without_bytecode_reports_source_compiles",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "AssertionError: assert 'reap-failed' == 'ok'",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "AssertionError: assert 'reap-failed' == 'ok'"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/integration/hosted/runtime/test_hosted_suite_precompile.py::test_warm_tree_makes_the_daemon_path_adopt_bytecode",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "AssertionError: assert ('reap-failed' == 'ok'",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "AssertionError: assert ('reap-failed' == 'ok'"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/integration/hosted/runtime/test_hosted_suite_precompile.py::test_stale_bytecode_is_detected_as_source_compile",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "KeyError: 'bootstrap'",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "KeyError: 'bootstrap'"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/integration/hosted/runtime/test_hosted_suite_precompile.py::test_wrong_magic_bytecode_is_detected_as_source_compile",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "KeyError: 'cachePresent'",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "KeyError: 'cachePresent'"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/integration/hosted/runtime/test_hosted_suite_precompile.py::test_runtime_compile_of_a_module_file_is_not_a_source_fallback",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "KeyError: 'import'",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "KeyError: 'import'"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/integration/hosted/runtime/test_hosted_suite_precompile.py::test_inherited_cache_prefix_and_optimize_do_not_leak",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "KeyError: 'import'",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "KeyError: 'import'"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/integration/hosted/runtime/test_hosted_suite_precompile.py::test_run_bounded_timeout_kills_the_whole_group",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "AssertionError: assert ('reap-failed' == 'timeout'",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "AssertionError: assert ('reap-failed' == 'timeout'"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/integration/hosted/runtime/test_hosted_suite_precompile.py::test_run_bounded_spawn_error_and_nonzero",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "AssertionError: assert ('reap-failed' == 'nonzero'",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "AssertionError: assert ('reap-failed' == 'nonzero'"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/integration/hosted/runtime/test_hosted_suite_precompile.py::test_compile_timeout_is_recorded_and_not_effective",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "AssertionError: assert ('reap-failed' == 'timeout'",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "AssertionError: assert ('reap-failed' == 'timeout'"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/integration/hosted/runtime/test_hosted_suite_precompile.py::test_warm_trees_writes_evidence_with_verdict",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "AssertionError: assert {'effective':...unconfirmed']} == {'effective':...problems': []}",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "AssertionError: assert {'effective':...unconfirmed']} == {'effective':...problems': []}"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/integration/hosted/runtime/test_hosted_suite_precompile.py::test_modules_imported_before_the_audit_hook_are_not_counted_as_bytecode",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "AssertionError: assert 'reap-failed' == 'ok'",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "AssertionError: assert 'reap-failed' == 'ok'"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/daemon/channels/identity_cache/test_native.py::test_real_owned_births_keep_full_markers_without_repeated_ps",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "AssertionError: assert ('darwin-starttime:1793945339:353018;darwin-startsec:1793945339' is not None and 'darwin-starttime:' in 'darwin-starttime:1793945339:353018;darwin-startsec:1793945339' and ';ps-lstart:' in 'darwin-starttime:1793945339:353018;darwin-startsec:1793945339')",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "AssertionError: assert ('darwin-starttime:1793946762:789370;darwin-startsec:1793946762' is not None and 'darwin-starttime:' in 'darwin-starttime:1793946762:789370;darwin-startsec:1793946762' and ';ps-lstart:' in 'darwin-starttime:1793946762:789370;darwin-startsec:1793946762')"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/daemon/channels/mcp/lifecycle/supersession/handoff/test_handoff.py::test_orphaned_channel_subprocess_exits_despite_inherited_stdin",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "PermissionError: [Errno 1] Operation not permitted: 'ps'",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure",
+            "error"
+          ],
+          "messages": [
+            "PermissionError: [Errno 1] Operation not permitted: 'ps'",
+            "failed on teardown with \"AssertionError: test leaked 1 file descriptor(s):"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/daemon/channels/mcp/lifecycle/supersession/handoff/test_handoff.py::test_orphaned_channel_subprocess_exits_despite_inherited_stdin",
+      "kind": "error",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "failed on teardown with \"AssertionError: test leaked 1 file descriptor(s):",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure",
+            "error"
+          ],
+          "messages": [
+            "PermissionError: [Errno 1] Operation not permitted: 'ps'",
+            "failed on teardown with \"AssertionError: test leaked 1 file descriptor(s):"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/shell/cli/surface/test_cli_surface_snapshot.py::test_cli_surface_matches_committed_snapshot",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "AssertionError: CLI command surface differs from contract/cli/surface.json.",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "AssertionError: CLI command surface differs from contract/cli/surface.json."
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/integration/request_http/test_gui_reference.py::test_shared_app_against_live_and_contract_mock",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "AssertionError: BLOCKED: DEV01_CHROMIUM_EXECUTABLE required",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "AssertionError: BLOCKED: DEV01_CHROMIUM_EXECUTABLE required"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/daemon/harnesses/codex/native_home/home_contracts/test_fresh_launch_validation.py::test_real_codex_validates_fresh_daemon_agent_home[openai]",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "ConnectionError: Codex app-server exited before its Unix socket became ready",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "ConnectionError: Codex app-server exited before its Unix socket became ready"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/daemon/harnesses/codex/native_home/home_contracts/test_fresh_launch_validation.py::test_real_codex_validates_fresh_daemon_agent_home[deepseek]",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "ConnectionError: Codex app-server exited before its Unix socket became ready",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "ConnectionError: Codex app-server exited before its Unix socket became ready"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/daemon/harnesses/codex/native_home/home_contracts/test_home_contracts.py::test_t04_t05_t07_t13_real_codex_load_and_resume_failure",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "ConnectionError: Codex app-server exited before its Unix socket became ready",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "ConnectionError: Codex app-server exited before its Unix socket became ready"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/integration/transfer/p2/e2e/test_codex_two_daemon_chain.py::test_codex_chain_lands_on_the_target_and_retires_the_source",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "AssertionError: daemon rejected transfer.receive: {'code': 'SANDBOX_SMOKE_FAILED', 'message': 'sandbox-smoke-failed: codex: the target refused the sandbox smoke: codex sandbox smoke exited 71: sandbox-exec: sandbox_apply: Operation not permitted'}",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "AssertionError: daemon rejected transfer.receive: {'code': 'SANDBOX_SMOKE_FAILED', 'message': 'sandbox-smoke-failed: codex: the target refused the sandbox smoke: codex sandbox smoke exited 71: sandbox-exec: sandbox_apply: Operation not permitted'}"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/integration/transfer/p2/e2e/test_codex_two_daemon_chain.py::test_codex_tampered_bundle_refuses_and_leaves_the_source_held",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "AssertionError: assert 'SANDBOX_SMOKE_FAILED' == 'TRANSFER_LANDING_FAILED'",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "AssertionError: assert 'SANDBOX_SMOKE_FAILED' == 'TRANSFER_LANDING_FAILED'"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/integration/transfer/p2/e2e/test_codex_two_daemon_chain.py::test_codex_w2_w3_the_export_boundary_re_enters_after_the_first_step",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "AssertionError: daemon rejected transfer.receive: {'code': 'SANDBOX_SMOKE_FAILED', 'message': 'sandbox-smoke-failed: codex: the target refused the sandbox smoke: codex sandbox smoke exited 71: sandbox-exec: sandbox_apply: Operation not permitted'}",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "AssertionError: daemon rejected transfer.receive: {'code': 'SANDBOX_SMOKE_FAILED', 'message': 'sandbox-smoke-failed: codex: the target refused the sandbox smoke: codex sandbox smoke exited 71: sandbox-exec: sandbox_apply: Operation not permitted'}"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/integration/transfer/p2/e2e/test_codex_two_daemon_chain.py::test_codex_w5_after_the_target_answered_both_daemons_restart_and_the_report_holds",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "AssertionError: daemon rejected transfer.receive: {'code': 'SANDBOX_SMOKE_FAILED', 'message': 'sandbox-smoke-failed: codex: the target refused the sandbox smoke: codex sandbox smoke exited 71: sandbox-exec: sandbox_apply: Operation not permitted'}",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "AssertionError: daemon rejected transfer.receive: {'code': 'SANDBOX_SMOKE_FAILED', 'message': 'sandbox-smoke-failed: codex: the target refused the sandbox smoke: codex sandbox smoke exited 71: sandbox-exec: sandbox_apply: Operation not permitted'}"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/integration/transfer/p2/e2e/test_codex_two_daemon_chain.py::test_codex_w6_before_the_complete_the_chain_closes_on_the_report",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "AssertionError: daemon rejected transfer.receive: {'code': 'SANDBOX_SMOKE_FAILED', 'message': 'sandbox-smoke-failed: codex: the target refused the sandbox smoke: codex sandbox smoke exited 71: sandbox-exec: sandbox_apply: Operation not permitted'}",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "AssertionError: daemon rejected transfer.receive: {'code': 'SANDBOX_SMOKE_FAILED', 'message': 'sandbox-smoke-failed: codex: the target refused the sandbox smoke: codex sandbox smoke exited 71: sandbox-exec: sandbox_apply: Operation not permitted'}"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/shell/squire/setup/test_squire_setup_scaffold.py::test_setup_scaffolds_template_and_preserves_every_file_byte_for_byte",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "ValueError: --machine 'mac-studio' does not match the daemon node id HYPRIAL_NODE_ID='node-hq-01.example-tailnet.ts.net'; user delivery is owned by the profile's preferredReceiver.machine and would never be claimed by this daemon",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "ValueError: --machine 'mac-studio' does not match the daemon node id HYPRIAL_NODE_ID='node-hq-01.example-tailnet.ts.net'; user delivery is owned by the profile's preferredReceiver.machine and would never be claimed by this daemon"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/shell/squire/setup/test_squire_setup_scaffold.py::test_setup_does_not_overwrite_a_custom_skill",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "ValueError: --machine 'mac-studio' does not match the daemon node id HYPRIAL_NODE_ID='node-hq-01.example-tailnet.ts.net'; user delivery is owned by the profile's preferredReceiver.machine and would never be claimed by this daemon",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "ValueError: --machine 'mac-studio' does not match the daemon node id HYPRIAL_NODE_ID='node-hq-01.example-tailnet.ts.net'; user delivery is owned by the profile's preferredReceiver.machine and would never be claimed by this daemon"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/shell/squire/setup/test_squire_setup_scaffold.py::test_setup_creates_agent_and_pins_only_once_through_registry_port",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "ValueError: --machine 'mac-studio' does not match the daemon node id HYPRIAL_NODE_ID='node-hq-01.example-tailnet.ts.net'; user delivery is owned by the profile's preferredReceiver.machine and would never be claimed by this daemon",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "ValueError: --machine 'mac-studio' does not match the daemon node id HYPRIAL_NODE_ID='node-hq-01.example-tailnet.ts.net'; user delivery is owned by the profile's preferredReceiver.machine and would never be claimed by this daemon"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/shell/squire/setup/test_squire_setup_scaffold.py::test_setup_without_adapter_returns_explicit_deferred_onboarding",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "ValueError: --machine 'mac-studio' does not match the daemon node id HYPRIAL_NODE_ID='node-hq-01.example-tailnet.ts.net'; user delivery is owned by the profile's preferredReceiver.machine and would never be claimed by this daemon",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "ValueError: --machine 'mac-studio' does not match the daemon node id HYPRIAL_NODE_ID='node-hq-01.example-tailnet.ts.net'; user delivery is owned by the profile's preferredReceiver.machine and would never be claimed by this daemon"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/shell/squire/setup/test_squire_setup_scaffold.py::test_setup_start_uses_configured_harness_model_provider_and_skill",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "ValueError: --machine 'mac-studio' does not match the daemon node id HYPRIAL_NODE_ID='node-hq-01.example-tailnet.ts.net'; user delivery is owned by the profile's preferredReceiver.machine and would never be claimed by this daemon",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "ValueError: --machine 'mac-studio' does not match the daemon node id HYPRIAL_NODE_ID='node-hq-01.example-tailnet.ts.net'; user delivery is owned by the profile's preferredReceiver.machine and would never be claimed by this daemon"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/tooling/ci/acquisition/test_ci_dependency_caches.py::test_real_tree_denominator_and_family_witnesses",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "assert not ['unaccounted current image contexts']",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "assert not ['unaccounted current image contexts']"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/tooling/ci/execution/test_ci_conditions.py::test_reader_emits_exactly_one_platform_scoped_line",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "AssertionError: assert 'unavailable' != 'unavailable'",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "AssertionError: assert 'unavailable' != 'unavailable'"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/integration/transfer/runtime/test_transfer_sandbox_smoke.py::test_a_real_codex_run_passes_or_is_explicitly_skipped",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "AssertionError: codex sandbox smoke exited 71: sandbox-exec: sandbox_apply: Operation not permitted",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "AssertionError: codex sandbox smoke exited 71: sandbox-exec: sandbox_apply: Operation not permitted"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/tooling/ci/hygiene/test_pr_hygiene_git.py::test_git_env_scopes_the_token_to_one_hardened_command",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "AssertionError: assert 'warning: ign...CONFIG_HOME\\n' == 'warning: ign...CONFIG_HOME\\n'",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "AssertionError: assert 'warning: ign...CONFIG_HOME\\n' == 'warning: ign...CONFIG_HOME\\n'"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/daemon/home/test_home_lease_actor.py::test_stalled_renewal_fences_lease_at_existing_stale_threshold",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "assert False",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "passed"
+          ],
+          "messages": []
+        },
+        {
+          "outcomes": [
+            "passed"
+          ],
+          "messages": []
+        },
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "assert False"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": [
+        {
+          "outcomes": [
+            "passed"
+          ],
+          "messages": []
+        },
+        {
+          "outcomes": [
+            "passed"
+          ],
+          "messages": []
+        }
+      ]
+    },
+    {
+      "nodeId": "tests/kernel/processes/test_owned_process.py::test_darwin_native_birth_identity_matches_ps_without_forking[self]",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "PermissionError: [Errno 1] Operation not permitted: 'ps'",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "PermissionError: [Errno 1] Operation not permitted: 'ps'"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/kernel/processes/test_owned_process.py::test_darwin_native_birth_identity_matches_ps_without_forking[child]",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "PermissionError: [Errno 1] Operation not permitted: 'ps'",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "PermissionError: [Errno 1] Operation not permitted: 'ps'"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/tooling/containers/test_worker_image_build_context.py::test_the_context_really_carries_every_copy_source",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "AssertionError: build context rejects a COPY source:",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "AssertionError: build context rejects a COPY source:"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/tooling/release/homepage/test_public_changelog_sync.py::test_the_candidate_token_travels_only_in_the_hardened_child_git_environment",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "AssertionError: assert 'warning: ign...CONFIG_HOME\\n' == 'warning: ign...CONFIG_HOME\\n'",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "AssertionError: assert 'warning: ign...CONFIG_HOME\\n' == 'warning: ign...CONFIG_HOME\\n'"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/tooling/release/publish/github/test_publication.py::test_publish_token_never_reaches_the_log",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "AssertionError: assert 'ignored inh... environment' not in 'warning: ig... GIT_PAGER\\n'",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "AssertionError: assert 'ignored inh... environment' not in 'warning: ig... GIT_PAGER\\n'"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    },
+    {
+      "nodeId": "tests/tooling/release/publish/github/test_publication.py::test_publish_names_ignored_parent_git_variables_without_values",
+      "kind": "failure",
+      "attribution": "FAIL(COUNTEREXAMPLE); same test also fails on frozen base",
+      "message": "AssertionError: assert 0 == 2",
+      "baselineObservations": [
+        {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "AssertionError: assert 0 == 2"
+          ]
+        }
+      ],
+      "candidateTargetedObservations": []
+    }
+  ],
+  "remoteCI": {
+    "observedHead": "daecf37d5d8887c56256ae21cdbc7b253b512ef7",
+    "runId": 49819,
+    "displayRun": 39677,
+    "jobId": 127594,
+    "url": "https://code.hyprial.com/HyprialOS/harness-bridge/actions/runs/39677/jobs/2",
+    "verdict": "BLOCKED: PyPI/proxy DNS",
+    "error": "Failed to fetch https://pypi.org/simple/pytest/; failed to lookup address information: nodename nor servname provided, or not known",
+    "pytestShards": "SKIPPED after failed prerequisite, not passing evidence",
+    "nodePolicyOnMergeTree": "PASS in CI",
+    "sameTreePytestPairLocal": "237 passed in 0.39s",
+    "mergeTree": "9c8c8c0b0615b3e147e1c44dbfbb8a28f7e8706b"
+  },
+  "uniqueTestNodeIds": 18510,
+  "junitRecords": 18512,
+  "baselineReplay": {
+    "commit": "89de5d013fbcd28e0521ff25dd7589c5ae36703f",
+    "selectedUniqueCases": 45,
+    "summary": "41 failed, 4 passed, 10 warnings, 1 error in 38.15s",
+    "cases": {
+      "tests/integration/hosted/runtime/test_hosted_suite_precompile.py::test_inherited_cache_prefix_and_optimize_do_not_leak": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "KeyError: 'import'"
+        ]
+      },
+      "tests/daemon/upgrade/test_steps.py::test_tmp_or_var_symlink_dotdot_cancellation_is_refused[/var/tmp]": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "PermissionError: [Errno 1] Operation not permitted: '/var/tmp/hf-home-cancel-dn82abvt'"
+        ]
+      },
+      "tests/daemon/harnesses/codex/native_home/home_contracts/test_fresh_launch_validation.py::test_real_codex_validates_fresh_daemon_agent_home[deepseek]": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "ConnectionError: Codex app-server exited before its Unix socket became ready"
+        ]
+      },
+      "tests/shell/squire/setup/test_squire_setup_scaffold.py::test_setup_start_uses_configured_harness_model_provider_and_skill": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "ValueError: --machine 'mac-studio' does not match the daemon node id HYPRIAL_NODE_ID='node-hq-01.example-tailnet.ts.net'; user delivery is owned by the profile's preferredReceiver.machine and would never be claimed by this daemon"
+        ]
+      },
+      "tests/daemon/ipc/error/test_ipc_error_code_registry.py::test_no_literal_proto_code_outside_the_registry": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "AssertionError: proto-facing error codes must come from hyprial.contracts.ipc_errors, never a string literal:"
+        ]
+      },
+      "tests/integration/hosted/runtime/test_hosted_suite_precompile.py::test_run_bounded_timeout_kills_the_whole_group": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "AssertionError: assert ('reap-failed' == 'timeout'"
+        ]
+      },
+      "tests/daemon/harnesses/codex/native_home/home_contracts/test_home_contracts.py::test_t04_t05_t07_t13_real_codex_load_and_resume_failure": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "ConnectionError: Codex app-server exited before its Unix socket became ready"
+        ]
+      },
+      "tests/integration/hosted/runtime/test_hosted_suite_precompile.py::test_run_bounded_spawn_error_and_nonzero": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "AssertionError: assert ('reap-failed' == 'nonzero'"
+        ]
+      },
+      "tests/integration/hosted/runtime/test_hosted_suite_precompile.py::test_compile_timeout_is_recorded_and_not_effective": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "AssertionError: assert ('reap-failed' == 'timeout'"
+        ]
+      },
+      "tests/integration/hosted/runtime/test_hosted_suite_precompile.py::test_warm_trees_writes_evidence_with_verdict": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "AssertionError: assert {'effective':...unconfirmed']} == {'effective':...problems': []}"
+        ]
+      },
+      "tests/integration/hosted/runtime/test_hosted_suite_precompile.py::test_modules_imported_before_the_audit_hook_are_not_counted_as_bytecode": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "AssertionError: assert 'reap-failed' == 'ok'"
+        ]
+      },
+      "tests/daemon/channels/identity_cache/test_native.py::test_real_owned_births_keep_full_markers_without_repeated_ps": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "AssertionError: assert ('darwin-starttime:1793946762:789370;darwin-startsec:1793946762' is not None and 'darwin-starttime:' in 'darwin-starttime:1793946762:789370;darwin-startsec:1793946762' and ';ps-lstart:' in 'darwin-starttime:1793946762:789370;darwin-startsec:1793946762')"
+        ]
+      },
+      "tests/daemon/channels/mcp/lifecycle/supersession/handoff/test_handoff.py::test_orphaned_channel_subprocess_exits_despite_inherited_stdin": {
+        "outcomes": [
+          "failure",
+          "error"
+        ],
+        "messages": [
+          "PermissionError: [Errno 1] Operation not permitted: 'ps'",
+          "failed on teardown with \"AssertionError: test leaked 1 file descriptor(s):"
+        ]
+      },
+      "tests/daemon/links/composition/test_drained_read_back.py::test_r23_a_drained_request_that_was_never_injected_is_not_readable": {
+        "outcomes": [
+          "passed"
+        ],
+        "messages": []
+      },
+      "tests/daemon/links/composition/test_drained_read_back.py::test_r23_a_processed_settled_row_stays_readable": {
+        "outcomes": [
+          "passed"
+        ],
+        "messages": []
+      },
+      "tests/integration/hosted/readiness/test_hosted_readiness_timing.py::test_spawn_error_is_recorded_and_reraised": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "subprocess.SubprocessError: Exception occurred in preexec_fn."
+        ]
+      },
+      "tests/integration/hosted/readiness/test_hosted_start_probe.py::test_sampler_stops_at_cap": {
+        "outcomes": [
+          "passed"
+        ],
+        "messages": []
+      },
+      "tests/shell/cli/surface/test_cli_surface_snapshot.py::test_cli_surface_matches_committed_snapshot": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "AssertionError: CLI command surface differs from contract/cli/surface.json."
+        ]
+      },
+      "tests/tooling/ci/acquisition/test_ci_dependency_caches.py::test_real_tree_denominator_and_family_witnesses": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "assert not ['unaccounted current image contexts']"
+        ]
+      },
+      "tests/tooling/ci/execution/test_ci_conditions.py::test_reader_emits_exactly_one_platform_scoped_line": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "AssertionError: assert 'unavailable' != 'unavailable'"
+        ]
+      },
+      "tests/integration/transfer/runtime/test_transfer_sandbox_smoke.py::test_a_real_codex_run_passes_or_is_explicitly_skipped": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "AssertionError: codex sandbox smoke exited 71: sandbox-exec: sandbox_apply: Operation not permitted"
+        ]
+      },
+      "tests/tooling/ci/hygiene/test_pr_hygiene_git.py::test_git_env_scopes_the_token_to_one_hardened_command": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "AssertionError: assert 'warning: ign...CONFIG_HOME\\n' == 'warning: ign...CONFIG_HOME\\n'"
+        ]
+      },
+      "tests/daemon/home/test_home_lease_actor.py::test_stalled_renewal_fences_lease_at_existing_stale_threshold": {
+        "outcomes": [
+          "passed"
+        ],
+        "messages": []
+      },
+      "tests/kernel/processes/test_owned_process.py::test_darwin_native_birth_identity_matches_ps_without_forking[self]": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "PermissionError: [Errno 1] Operation not permitted: 'ps'"
+        ]
+      },
+      "tests/kernel/processes/test_owned_process.py::test_darwin_native_birth_identity_matches_ps_without_forking[child]": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "PermissionError: [Errno 1] Operation not permitted: 'ps'"
+        ]
+      },
+      "tests/tooling/containers/test_worker_image_build_context.py::test_the_context_really_carries_every_copy_source": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "AssertionError: build context rejects a COPY source:"
+        ]
+      },
+      "tests/tooling/release/homepage/test_public_changelog_sync.py::test_the_candidate_token_travels_only_in_the_hardened_child_git_environment": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "AssertionError: assert 'warning: ign...CONFIG_HOME\\n' == 'warning: ign...CONFIG_HOME\\n'"
+        ]
+      },
+      "tests/tooling/release/publish/github/test_publication.py::test_publish_token_never_reaches_the_log": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "AssertionError: assert 'ignored inh... environment' not in 'warning: ig... GIT_PAGER\\n'"
+        ]
+      },
+      "tests/tooling/release/publish/github/test_publication.py::test_publish_names_ignored_parent_git_variables_without_values": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "AssertionError: assert 0 == 2"
+        ]
+      },
+      "tests/integration/hosted/runtime/test_hosted_suite_precompile.py::test_probe_without_bytecode_reports_source_compiles": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "AssertionError: assert 'reap-failed' == 'ok'"
+        ]
+      },
+      "tests/integration/hosted/runtime/test_hosted_suite_precompile.py::test_warm_tree_makes_the_daemon_path_adopt_bytecode": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "AssertionError: assert ('reap-failed' == 'ok'"
+        ]
+      },
+      "tests/integration/hosted/runtime/test_hosted_suite_precompile.py::test_stale_bytecode_is_detected_as_source_compile": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "KeyError: 'bootstrap'"
+        ]
+      },
+      "tests/integration/hosted/runtime/test_hosted_suite_precompile.py::test_wrong_magic_bytecode_is_detected_as_source_compile": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "KeyError: 'cachePresent'"
+        ]
+      },
+      "tests/integration/hosted/runtime/test_hosted_suite_precompile.py::test_runtime_compile_of_a_module_file_is_not_a_source_fallback": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "KeyError: 'import'"
+        ]
+      },
+      "tests/integration/request_http/test_gui_reference.py::test_shared_app_against_live_and_contract_mock": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "AssertionError: BLOCKED: DEV01_CHROMIUM_EXECUTABLE required"
+        ]
+      },
+      "tests/integration/transfer/p2/e2e/test_codex_two_daemon_chain.py::test_codex_w6_before_the_complete_the_chain_closes_on_the_report": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "AssertionError: daemon rejected transfer.receive: {'code': 'SANDBOX_SMOKE_FAILED', 'message': 'sandbox-smoke-failed: codex: the target refused the sandbox smoke: codex sandbox smoke exited 71: sandbox-exec: sandbox_apply: Operation not permitted'}"
+        ]
+      },
+      "tests/integration/transfer/p2/e2e/test_codex_two_daemon_chain.py::test_codex_chain_lands_on_the_target_and_retires_the_source": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "AssertionError: daemon rejected transfer.receive: {'code': 'SANDBOX_SMOKE_FAILED', 'message': 'sandbox-smoke-failed: codex: the target refused the sandbox smoke: codex sandbox smoke exited 71: sandbox-exec: sandbox_apply: Operation not permitted'}"
+        ]
+      },
+      "tests/integration/transfer/p2/e2e/test_codex_two_daemon_chain.py::test_codex_w2_w3_the_export_boundary_re_enters_after_the_first_step": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "AssertionError: daemon rejected transfer.receive: {'code': 'SANDBOX_SMOKE_FAILED', 'message': 'sandbox-smoke-failed: codex: the target refused the sandbox smoke: codex sandbox smoke exited 71: sandbox-exec: sandbox_apply: Operation not permitted'}"
+        ]
+      },
+      "tests/daemon/harnesses/codex/native_home/home_contracts/test_fresh_launch_validation.py::test_real_codex_validates_fresh_daemon_agent_home[openai]": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "ConnectionError: Codex app-server exited before its Unix socket became ready"
+        ]
+      },
+      "tests/shell/squire/setup/test_squire_setup_scaffold.py::test_setup_creates_agent_and_pins_only_once_through_registry_port": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "ValueError: --machine 'mac-studio' does not match the daemon node id HYPRIAL_NODE_ID='node-hq-01.example-tailnet.ts.net'; user delivery is owned by the profile's preferredReceiver.machine and would never be claimed by this daemon"
+        ]
+      },
+      "tests/shell/squire/setup/test_squire_setup_scaffold.py::test_setup_without_adapter_returns_explicit_deferred_onboarding": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "ValueError: --machine 'mac-studio' does not match the daemon node id HYPRIAL_NODE_ID='node-hq-01.example-tailnet.ts.net'; user delivery is owned by the profile's preferredReceiver.machine and would never be claimed by this daemon"
+        ]
+      },
+      "tests/shell/squire/setup/test_squire_setup_scaffold.py::test_setup_does_not_overwrite_a_custom_skill": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "ValueError: --machine 'mac-studio' does not match the daemon node id HYPRIAL_NODE_ID='node-hq-01.example-tailnet.ts.net'; user delivery is owned by the profile's preferredReceiver.machine and would never be claimed by this daemon"
+        ]
+      },
+      "tests/integration/transfer/p2/e2e/test_codex_two_daemon_chain.py::test_codex_tampered_bundle_refuses_and_leaves_the_source_held": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "AssertionError: assert 'SANDBOX_SMOKE_FAILED' == 'TRANSFER_LANDING_FAILED'"
+        ]
+      },
+      "tests/shell/squire/setup/test_squire_setup_scaffold.py::test_setup_scaffolds_template_and_preserves_every_file_byte_for_byte": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "ValueError: --machine 'mac-studio' does not match the daemon node id HYPRIAL_NODE_ID='node-hq-01.example-tailnet.ts.net'; user delivery is owned by the profile's preferredReceiver.machine and would never be claimed by this daemon"
+        ]
+      },
+      "tests/integration/transfer/p2/e2e/test_codex_two_daemon_chain.py::test_codex_w5_after_the_target_answered_both_daemons_restart_and_the_report_holds": {
+        "outcomes": [
+          "failure"
+        ],
+        "messages": [
+          "AssertionError: daemon rejected transfer.receive: {'code': 'SANDBOX_SMOKE_FAILED', 'message': 'sandbox-smoke-failed: codex: the target refused the sandbox smoke: codex sandbox smoke exited 71: sandbox-exec: sandbox_apply: Operation not permitted'}"
+        ]
+      }
+    }
+  },
+  "interleavedControls": [
+    {
+      "variant": "base",
+      "summary": "4 passed, 10 warnings in 11.85s",
+      "cases": {
+        "tests/daemon/home/test_home_lease_actor.py::test_stalled_renewal_fences_lease_at_existing_stale_threshold": {
+          "outcomes": [
+            "passed"
+          ],
+          "messages": []
+        },
+        "tests/daemon/links/composition/test_drained_read_back.py::test_r23_a_processed_settled_row_stays_readable": {
+          "outcomes": [
+            "passed"
+          ],
+          "messages": []
+        },
+        "tests/daemon/links/composition/test_drained_read_back.py::test_r23_a_drained_request_that_was_never_injected_is_not_readable": {
+          "outcomes": [
+            "passed"
+          ],
+          "messages": []
+        },
+        "tests/integration/hosted/readiness/test_hosted_start_probe.py::test_sampler_stops_at_cap": {
+          "outcomes": [
+            "passed"
+          ],
+          "messages": []
+        }
+      }
+    },
+    {
+      "variant": "candidate",
+      "summary": "4 passed, 10 warnings in 13.24s",
+      "cases": {
+        "tests/daemon/home/test_home_lease_actor.py::test_stalled_renewal_fences_lease_at_existing_stale_threshold": {
+          "outcomes": [
+            "passed"
+          ],
+          "messages": []
+        },
+        "tests/daemon/links/composition/test_drained_read_back.py::test_r23_a_processed_settled_row_stays_readable": {
+          "outcomes": [
+            "passed"
+          ],
+          "messages": []
+        },
+        "tests/daemon/links/composition/test_drained_read_back.py::test_r23_a_drained_request_that_was_never_injected_is_not_readable": {
+          "outcomes": [
+            "passed"
+          ],
+          "messages": []
+        },
+        "tests/integration/hosted/readiness/test_hosted_start_probe.py::test_sampler_stops_at_cap": {
+          "outcomes": [
+            "passed"
+          ],
+          "messages": []
+        }
+      }
+    },
+    {
+      "variant": "base",
+      "summary": "1 failed, 3 passed, 10 warnings in 10.46s",
+      "cases": {
+        "tests/daemon/home/test_home_lease_actor.py::test_stalled_renewal_fences_lease_at_existing_stale_threshold": {
+          "outcomes": [
+            "failure"
+          ],
+          "messages": [
+            "assert False"
+          ]
+        },
+        "tests/daemon/links/composition/test_drained_read_back.py::test_r23_a_processed_settled_row_stays_readable": {
+          "outcomes": [
+            "passed"
+          ],
+          "messages": []
+        },
+        "tests/integration/hosted/readiness/test_hosted_start_probe.py::test_sampler_stops_at_cap": {
+          "outcomes": [
+            "passed"
+          ],
+          "messages": []
+        },
+        "tests/daemon/links/composition/test_drained_read_back.py::test_r23_a_drained_request_that_was_never_injected_is_not_readable": {
+          "outcomes": [
+            "passed"
+          ],
+          "messages": []
+        }
+      }
+    },
+    {
+      "variant": "candidate",
+      "summary": "4 passed, 10 warnings in 10.29s",
+      "cases": {
+        "tests/daemon/home/test_home_lease_actor.py::test_stalled_renewal_fences_lease_at_existing_stale_threshold": {
+          "outcomes": [
+            "passed"
+          ],
+          "messages": []
+        },
+        "tests/daemon/links/composition/test_drained_read_back.py::test_r23_a_drained_request_that_was_never_injected_is_not_readable": {
+          "outcomes": [
+            "passed"
+          ],
+          "messages": []
+        },
+        "tests/daemon/links/composition/test_drained_read_back.py::test_r23_a_processed_settled_row_stays_readable": {
+          "outcomes": [
+            "passed"
+          ],
+          "messages": []
+        },
+        "tests/integration/hosted/readiness/test_hosted_start_probe.py::test_sampler_stops_at_cap": {
+          "outcomes": [
+            "passed"
+          ],
+          "messages": []
+        }
+      }
+    }
+  ],
+  "failureComparison": {
+    "fullSuitePrimaryFailedIds": 45,
+    "alsoFailedOnFrozenBaseAtLeastOnce": 42,
+    "unaccountedPrimaryFailedIds": [
+      "tests/daemon/links/composition/test_drained_read_back.py::test_r23_a_drained_request_that_was_never_injected_is_not_readable",
+      "tests/daemon/links/composition/test_drained_read_back.py::test_r23_a_processed_settled_row_stays_readable",
+      "tests/integration/hosted/readiness/test_hosted_start_probe.py::test_sampler_stops_at_cap"
+    ],
+    "unaccountedProblemReports": 4,
+    "note": "A shared failing test ID is an observation, not a complete causal attribution."
+  }
+}

@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from hyprial.kernel import lock_exclusive, unlock
+from hyprial.kernel import fsync_directory, lock_exclusive, unlock
 
 from .steps import STEPS, UpgradeContext, UpgradeStep
 
@@ -52,11 +52,9 @@ def _write_marker(state_dir: Path, step_id: str, value: dict[str, Any]) -> None:
             os.fsync(stream.fileno())
         os.chmod(temporary, 0o600)
         os.replace(temporary, path)
-        directory = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        # Capability-based (no-op where a directory cannot be opened, e.g.
+        # Windows); doctor --fix hit PermissionError here (#1902).
+        fsync_directory(path.parent)
     finally:
         temporary.unlink(missing_ok=True)
 

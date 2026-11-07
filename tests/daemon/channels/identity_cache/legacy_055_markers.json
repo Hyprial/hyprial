@@ -1,0 +1,297 @@
+{
+  "release": "0.5.5",
+  "syntheticProbes": true,
+  "head": "90d5c535b719567661ab74125ff7648fba1d0440",
+  "source": "/private/tmp/hyprial-daemon-algorithms-intg-base/src/hyprial/daemon/impl/mcp/channel/ownership.py",
+  "sourceSha256": "20c9a6f698b514134e6dd63bf29049413effe1b05b1cbeff107638196b4a5f41",
+  "markers": [
+    {
+      "pid": 1000000000,
+      "start": [
+        1755490000,
+        123
+      ],
+      "psText": "Mon Aug 18 04:06:40 2025",
+      "processIdentity": "darwin-starttime:1755490000:123;darwin-startsec:1755490000;ps-lstart:Mon Aug 18 04:06:40 2025"
+    },
+    {
+      "pid": 1000000001,
+      "start": [
+        1755490001,
+        124
+      ],
+      "psText": "Mon Aug 18 04:06:41 2025",
+      "processIdentity": "darwin-starttime:1755490001:124;darwin-startsec:1755490001;ps-lstart:Mon Aug 18 04:06:41 2025"
+    },
+    {
+      "pid": 1000000002,
+      "start": [
+        1755490002,
+        125
+      ],
+      "psText": "Mon Aug 18 04:06:42 2025",
+      "processIdentity": "darwin-starttime:1755490002:125;darwin-startsec:1755490002;ps-lstart:Mon Aug 18 04:06:42 2025"
+    },
+    {
+      "pid": 1000000003,
+      "start": [
+        1755490003,
+        126
+      ],
+      "psText": "Mon Aug 18 04:06:43 2025",
+      "processIdentity": "darwin-starttime:1755490003:126;darwin-startsec:1755490003;ps-lstart:Mon Aug 18 04:06:43 2025"
+    },
+    {
+      "pid": 1000000004,
+      "start": [
+        1755490004,
+        127
+      ],
+      "psText": "Mon Aug 18 04:06:44 2025",
+      "processIdentity": "darwin-starttime:1755490004:127;darwin-startsec:1755490004;ps-lstart:Mon Aug 18 04:06:44 2025"
+    },
+    {
+      "pid": 1000000005,
+      "start": [
+        1755490005,
+        128
+      ],
+      "psText": "Mon Aug 18 04:06:45 2025",
+      "processIdentity": "darwin-starttime:1755490005:128;darwin-startsec:1755490005;ps-lstart:Mon Aug 18 04:06:45 2025"
+    },
+    {
+      "pid": 1000000006,
+      "start": [
+        1755490006,
+        129
+      ],
+      "psText": "Mon Aug 18 04:06:46 2025",
+      "processIdentity": "darwin-starttime:1755490006:129;darwin-startsec:1755490006;ps-lstart:Mon Aug 18 04:06:46 2025"
+    },
+    {
+      "pid": 1000000007,
+      "start": [
+        1755490007,
+        130
+      ],
+      "psText": "Mon Aug 18 04:06:47 2025",
+      "processIdentity": "darwin-starttime:1755490007:130;darwin-startsec:1755490007;ps-lstart:Mon Aug 18 04:06:47 2025"
+    },
+    {
+      "pid": 1000000008,
+      "start": [
+        1755490008,
+        131
+      ],
+      "psText": "Mon Aug 18 04:06:48 2025",
+      "processIdentity": "darwin-starttime:1755490008:131;darwin-startsec:1755490008;ps-lstart:Mon Aug 18 04:06:48 2025"
+    },
+    {
+      "pid": 1000000009,
+      "start": [
+        1755490009,
+        132
+      ],
+      "psText": "Mon Aug 18 04:06:49 2025",
+      "processIdentity": "darwin-starttime:1755490009:132;darwin-startsec:1755490009;ps-lstart:Mon Aug 18 04:06:49 2025"
+    },
+    {
+      "pid": 1000000010,
+      "start": [
+        1755490010,
+        133
+      ],
+      "psText": "Mon Aug 18 04:06:50 2025",
+      "processIdentity": "darwin-starttime:1755490010:133;darwin-startsec:1755490010;ps-lstart:Mon Aug 18 04:06:50 2025"
+    },
+    {
+      "pid": 1000000011,
+      "start": [
+        1755490011,
+        134
+      ],
+      "psText": "Mon Aug 18 04:06:51 2025",
+      "processIdentity": "darwin-starttime:1755490011:134;darwin-startsec:1755490011;ps-lstart:Mon Aug 18 04:06:51 2025"
+    },
+    {
+      "pid": 1000000012,
+      "start": [
+        1755490012,
+        135
+      ],
+      "psText": "Mon Aug 18 04:06:52 2025",
+      "processIdentity": "darwin-starttime:1755490012:135;darwin-startsec:1755490012;ps-lstart:Mon Aug 18 04:06:52 2025"
+    },
+    {
+      "pid": 1000000013,
+      "start": [
+        1755490013,
+        136
+      ],
+      "psText": "Mon Aug 18 04:06:53 2025",
+      "processIdentity": "darwin-starttime:1755490013:136;darwin-startsec:1755490013;ps-lstart:Mon Aug 18 04:06:53 2025"
+    },
+    {
+      "pid": 1000000014,
+      "start": [
+        1755490014,
+        137
+      ],
+      "psText": "Mon Aug 18 04:06:54 2025",
+      "processIdentity": "darwin-starttime:1755490014:137;darwin-startsec:1755490014;ps-lstart:Mon Aug 18 04:06:54 2025"
+    },
+    {
+      "pid": 1000000015,
+      "start": [
+        1755490015,
+        138
+      ],
+      "psText": "Mon Aug 18 04:06:55 2025",
+      "processIdentity": "darwin-starttime:1755490015:138;darwin-startsec:1755490015;ps-lstart:Mon Aug 18 04:06:55 2025"
+    },
+    {
+      "pid": 1000000016,
+      "start": [
+        1755490016,
+        139
+      ],
+      "psText": "Mon Aug 18 04:06:56 2025",
+      "processIdentity": "darwin-starttime:1755490016:139;darwin-startsec:1755490016;ps-lstart:Mon Aug 18 04:06:56 2025"
+    },
+    {
+      "pid": 1000000017,
+      "start": [
+        1755490017,
+        140
+      ],
+      "psText": "Mon Aug 18 04:06:57 2025",
+      "processIdentity": "darwin-starttime:1755490017:140;darwin-startsec:1755490017;ps-lstart:Mon Aug 18 04:06:57 2025"
+    },
+    {
+      "pid": 1000000018,
+      "start": [
+        1755490018,
+        141
+      ],
+      "psText": "Mon Aug 18 04:06:58 2025",
+      "processIdentity": "darwin-starttime:1755490018:141;darwin-startsec:1755490018;ps-lstart:Mon Aug 18 04:06:58 2025"
+    },
+    {
+      "pid": 1000000019,
+      "start": [
+        1755490019,
+        142
+      ],
+      "psText": "Mon Aug 18 04:06:59 2025",
+      "processIdentity": "darwin-starttime:1755490019:142;darwin-startsec:1755490019;ps-lstart:Mon Aug 18 04:06:59 2025"
+    },
+    {
+      "pid": 1000000020,
+      "start": [
+        1755490020,
+        143
+      ],
+      "psText": "Mon Aug 18 04:07:00 2025",
+      "processIdentity": "darwin-starttime:1755490020:143;darwin-startsec:1755490020;ps-lstart:Mon Aug 18 04:07:00 2025"
+    },
+    {
+      "pid": 1000000021,
+      "start": [
+        1755490021,
+        144
+      ],
+      "psText": "Mon Aug 18 04:07:01 2025",
+      "processIdentity": "darwin-starttime:1755490021:144;darwin-startsec:1755490021;ps-lstart:Mon Aug 18 04:07:01 2025"
+    },
+    {
+      "pid": 1000000022,
+      "start": [
+        1755490022,
+        145
+      ],
+      "psText": "Mon Aug 18 04:07:02 2025",
+      "processIdentity": "darwin-starttime:1755490022:145;darwin-startsec:1755490022;ps-lstart:Mon Aug 18 04:07:02 2025"
+    },
+    {
+      "pid": 1000000023,
+      "start": [
+        1755490023,
+        146
+      ],
+      "psText": "Mon Aug 18 04:07:03 2025",
+      "processIdentity": "darwin-starttime:1755490023:146;darwin-startsec:1755490023;ps-lstart:Mon Aug 18 04:07:03 2025"
+    },
+    {
+      "pid": 1000000024,
+      "start": [
+        1755490024,
+        147
+      ],
+      "psText": "Mon Aug 18 04:07:04 2025",
+      "processIdentity": "darwin-starttime:1755490024:147;darwin-startsec:1755490024;ps-lstart:Mon Aug 18 04:07:04 2025"
+    },
+    {
+      "pid": 1000000025,
+      "start": [
+        1755490025,
+        148
+      ],
+      "psText": "Mon Aug 18 04:07:05 2025",
+      "processIdentity": "darwin-starttime:1755490025:148;darwin-startsec:1755490025;ps-lstart:Mon Aug 18 04:07:05 2025"
+    },
+    {
+      "pid": 1000000026,
+      "start": [
+        1755490026,
+        149
+      ],
+      "psText": "Mon Aug 18 04:07:06 2025",
+      "processIdentity": "darwin-starttime:1755490026:149;darwin-startsec:1755490026;ps-lstart:Mon Aug 18 04:07:06 2025"
+    },
+    {
+      "pid": 1000000027,
+      "start": [
+        1755490027,
+        150
+      ],
+      "psText": "Mon Aug 18 04:07:07 2025",
+      "processIdentity": "darwin-starttime:1755490027:150;darwin-startsec:1755490027;ps-lstart:Mon Aug 18 04:07:07 2025"
+    },
+    {
+      "pid": 1000000028,
+      "start": [
+        1755490028,
+        151
+      ],
+      "psText": "Mon Aug 18 04:07:08 2025",
+      "processIdentity": "darwin-starttime:1755490028:151;darwin-startsec:1755490028;ps-lstart:Mon Aug 18 04:07:08 2025"
+    },
+    {
+      "pid": 1000000029,
+      "start": [
+        1755490029,
+        152
+      ],
+      "psText": "Mon Aug 18 04:07:09 2025",
+      "processIdentity": "darwin-starttime:1755490029:152;darwin-startsec:1755490029;ps-lstart:Mon Aug 18 04:07:09 2025"
+    },
+    {
+      "pid": 1000000030,
+      "start": [
+        1755490030,
+        153
+      ],
+      "psText": "Mon Aug 18 04:07:10 2025",
+      "processIdentity": "darwin-starttime:1755490030:153;darwin-startsec:1755490030;ps-lstart:Mon Aug 18 04:07:10 2025"
+    },
+    {
+      "pid": 1000000031,
+      "start": [
+        1755490031,
+        154
+      ],
+      "psText": "Mon Aug 18 04:07:11 2025",
+      "processIdentity": "darwin-starttime:1755490031:154;darwin-startsec:1755490031;ps-lstart:Mon Aug 18 04:07:11 2025"
+    }
+  ]
+}

@@ -46,9 +46,12 @@ from hyprial.identity.impl.agents.runtime.context import (
     AgentRuntimeNotice,
     AgentRuntimeRoots,
     AgentToolProfile,
-    DEFAULT_AGENT_TOOL_PROFILE,
     SshToolAuthorization,
     resolve_agent_runtime_context,
+)
+from hyprial.identity.impl.agents.runtime.tool_profile import (
+    GitAuthorUnresolvedError,
+    resolve_agent_tool_profile,
 )
 from hyprial.identity.impl.agents.home.provisioner import AgentHomeError, AgentHomeProvisioner, HomeReceipt
 from hyprial.identity.impl.agents.runtime.secrets import (
@@ -164,7 +167,7 @@ __all__ = [
     "MigrationRecord",
     "PinConflictError",
     "RestoreDisposition",
-    "DEFAULT_AGENT_TOOL_PROFILE",
+    "GitAuthorUnresolvedError",
     "ResolvedSecret",
     "RestoreDisposition",
     "SecretCatalogEntry",
@@ -197,6 +200,7 @@ __all__ = [
     "normalize_harness_args",
     "normalize_pinned_adapters",
     "resolve_agent_runtime_context",
+    "resolve_agent_tool_profile",
     "set_default_registry",
     "validate_agent_config_location",
     "verify_fetch_claim",

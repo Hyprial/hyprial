@@ -166,7 +166,11 @@ class _StartupMixin:
         *,
         ownership_stream: Any | None = None,
         identity_transaction_stream: Any | None = None,
+        launch_id: str | None = None,
     ) -> None:
+        # The CLI launcher's per-launch nonce (already popped from the
+        # environment by ``daemon run``); recorded in daemon.json.
+        self._launch_id = launch_id
         if ownership_stream is not None:
             if self._lock_stream is not None:
                 raise RuntimeError("daemon state ownership is already installed")
@@ -297,11 +301,11 @@ class _StartupMixin:
             # progress is observed through the phase-③ readiness reports,
             # never through daemon.json.
             self._start_restore_thread(step)
-            # The inherited identity-transaction descriptor is the daemon's
-            # startup authorization.  Release it only once this generation is
-            # ready to accept ping/shutdown; the parent keeps its duplicate
-            # through post-launch verification.  Direct ``daemon run`` uses
-            # this same path, so it cannot race a login stop/commit window.
+            # ``daemon run`` acquired the identity-transaction lock itself
+            # (never inherited) before identity was read.  Release it only
+            # once this generation is ready to accept ping/shutdown, so a
+            # login cannot commit into the construction window; every
+            # launch path (CLI, supervisor, manual) goes through here.
             if identity_transaction_stream is not None:
                 identity_transaction_stream.close()
                 identity_transaction_stream = None
@@ -789,17 +793,17 @@ class _StartupMixin:
     def _write_pid_file(self) -> None:
         path = self.state_dir / "daemon.json"
         temporary = self.state_dir / f".daemon.json.{os.getpid()}.tmp"
+        marker: dict[str, Any] = {
+            "schemaVersion": 1,
+            "pid": os.getpid(),
+            "nodeId": self.node_id,
+            "socket": str(self.socket_path),
+        }
+        launch_id = getattr(self, "_launch_id", None)
+        if launch_id:
+            marker["launchId"] = launch_id
         temporary.write_text(
-            json.dumps(
-                {
-                    "schemaVersion": 1,
-                    "pid": os.getpid(),
-                    "nodeId": self.node_id,
-                    "socket": str(self.socket_path),
-                },
-                separators=(",", ":"),
-            )
-            + "\n",
+            json.dumps(marker, separators=(",", ":")) + "\n",
             encoding="utf-8",
         )
         os.chmod(temporary, 0o600)

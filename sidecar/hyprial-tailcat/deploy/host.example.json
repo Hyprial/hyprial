@@ -1,0 +1,13 @@
+{
+  "keyFile": "/var/lib/hyprial-tailcat/host.key",
+  "addressFile": "/var/lib/hyprial-tailcat/host.address",
+  "clientPublic": [],
+  "allowAny": false,
+  "exposures": [
+    {
+      "port": 18080,
+      "target": "tcp:127.0.0.1:8080",
+      "proxyProtocol": ""
+    }
+  ]
+}

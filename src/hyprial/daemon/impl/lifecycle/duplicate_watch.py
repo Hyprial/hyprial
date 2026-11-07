@@ -1,6 +1,6 @@
 """Detect duplicate live instances of this node identity on the mesh.
 
-Two daemons sharing one node identity (the 2026-09-14 jjkysy-dev incident:
+Two daemons sharing one node identity (the 2026-09-14 devusr-dev incident:
 a copied home ran a second daemon for 34 hours) previously declared
 byte-identical liveliness keys, so no observer could tell one instance from
 two and nothing alerted.  This component declares a generation-bearing

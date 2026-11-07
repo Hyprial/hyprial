@@ -353,7 +353,7 @@ class _AgentRegistryOpsMixin:
                 _required_string(params.get("name"), "name")
             )
             reuse = params.get("existing") == "reuse"
-            existing = self.agents.get(name)
+            existing = self.agents.current(name)
             if existing is not None and not reuse:
                 raise DaemonRequestError(
                     ipc_errors.AGENT_EXISTS,
@@ -419,7 +419,7 @@ class _AgentRegistryOpsMixin:
                         params.get("includeResumeSnapshot") is True
                         and existing is not None
                     ):
-                        resume_before = self.agents.require(agent.uri)
+                        resume_before = self.agents.current(agent.uri)
                     agent = self._ensure_agent(
                         agent.uri, harness=harness_name,
                         interactive=params.get("runtime") == RUNTIME_INTERACTIVE,
@@ -669,10 +669,7 @@ class _AgentRegistryOpsMixin:
                     ipc_errors.INVALID_ARGUMENT,
                     "credentialPreflight must be a boolean",
                 )
-            from hyprial.identity import (
-                DEFAULT_AGENT_TOOL_PROFILE,
-                AgentRuntimeError,
-            )
+            from hyprial.identity import AgentRuntimeError
             from hyprial.identity import AgentConfigError
 
             try:
@@ -680,7 +677,7 @@ class _AgentRegistryOpsMixin:
                     name,
                     harness,
                     cwd,
-                    DEFAULT_AGENT_TOOL_PROFILE,
+                    None,
                     containerized=False,
                     credential_preflight=(
                         credential_preflight
@@ -702,6 +699,7 @@ class _AgentRegistryOpsMixin:
                 ) from error
             if context is None:
                 return {"ok": True, "mode": "legacy", "environment": {}}
+            self._report_agent_runtime_notices(context)
             return {"ok": True, **context.public_projection()}
         if method == "agent.runtime-launch.acquire":
             launch_token = _required_string(

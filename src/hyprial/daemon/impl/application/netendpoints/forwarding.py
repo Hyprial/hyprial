@@ -321,6 +321,7 @@ class _ForwardingOpsMixin:
         return status
 
     def _reconcile_forwarding_endpoints(self) -> None:
+        self._retry_degraded_redemption_throttled()
         self._publish_org_directory_if_address_changed()
         self._process_org_leave_requests_throttled()
         backend = self._forwarding_backend()
@@ -371,6 +372,29 @@ class _ForwardingOpsMixin:
         from hyprial.daemon.impl.org.network import process_leave_requests_for_app
 
         process_leave_requests_for_app(self)
+
+    def _retry_degraded_redemption_throttled(self) -> None:
+        """Finish a degraded pending invite redemption once its backoff allows.
+
+        The backoff and the durable record live in
+        ``membership.migration``; this only binds them to the app.
+        """
+
+        from hyprial.daemon.impl.forwarding.membership.migration import (
+            retry_degraded_redemption,
+        )
+
+        retry_degraded_redemption(self)
+
+    def _membership_redemption_projection(self) -> dict[str, object] | None:
+        """The degraded-redemption record for the ``ps`` daemon block."""
+
+        from hyprial.daemon.impl.forwarding.membership.migration import (
+            read_degraded_redemption,
+        )
+
+        record = read_degraded_redemption(self.hyprial_home)
+        return dict(record) if record is not None else None
 
     def _publish_org_directory_if_address_changed(self) -> None:
         """Refresh directory address and per-server client-key projections.

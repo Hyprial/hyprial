@@ -17,12 +17,11 @@ import os
 from datetime import UTC, datetime
 from pathlib import Path
 
-from hyprial.kernel import atomic_json_write
+from hyprial.kernel import SERVICE_MANAGED_ENV, atomic_json_write
 
 FAILURES_FILE = 'daemon-start-failures.json'
 BASE_BACKOFF_MS = 5000
 MAX_BACKOFF_MS = 60000
-SERVICE_MANAGED_ENV = 'HYPRIAL_SERVICE_MANAGED'
 _FIELDS = ('count', 'firstAt', 'lastAt', 'lastCode', 'lastPhase')
 
 

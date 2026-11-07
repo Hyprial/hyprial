@@ -8,7 +8,7 @@ import time
 import uuid
 from pathlib import Path
 
-from hyprial.kernel import lock_exclusive, unlock
+from hyprial.kernel import ipc_errors, lock_exclusive, unlock
 from .settings import durable_json_write as atomic_json_write
 from ..policy import ForwardingSidecarError
 
@@ -100,14 +100,41 @@ class RemovalJournal:
         return table
 
     @staticmethod
-    def _targets(table, owner, only_device):
+    def _targets(table, owner, only_device, selected=None):
         return sorted(row['deviceId'] for row in table['members']
                       if row['owner'] == owner and row['state'] == 'active'
-                      and (only_device is None or row['deviceId'] == only_device))
+                      and (only_device is None or row['deviceId'] == only_device)
+                      and (selected is None or row['deviceId'] in selected))
+
+    @staticmethod
+    def _normalize_selection(device_ids):
+        if (not isinstance(device_ids, list) or not device_ids
+                or any(not isinstance(device, str) or not device.strip() for device in device_ids)):
+            raise ForwardingSidecarError('deviceIds must be a non-empty list of device IDs.', code=ipc_errors.INVALID_ARGUMENT)
+        return sorted(set(device_ids))
+
+    def _selection(self, table, owner, device_ids):
+        selected = self._normalize_selection(device_ids)
+        active = self._targets(table, owner, None)
+        missing = sorted(set(selected) - set(active))
+        if missing:
+            raise ForwardingSidecarError(
+                f'Device IDs are not active devices of {owner}: {missing}', code='DEVICE_NOT_FOUND')
+        self._remaining(table, owner, selected)
+        return selected
+
+    def _remaining(self, table, owner, selected):
+        remaining = sorted(set(self._targets(table, owner, None)) - set(selected))
+        if not remaining:
+            raise ForwardingSidecarError(
+                'Cannot remove the last active device with deviceIds; omit the device selection '
+                'to remove the user and their memberships.', code='LAST_DEVICE_REFUSED')
+        return remaining
 
     def _same_targets(self, operation, table, only_device):
         return (operation['authorityDeviceId'] == table['authorityDeviceId']
-                and operation['deviceIds'] == self._targets(table, operation['owner'], only_device)
+                and operation['deviceIds'] == self._targets(
+                    table, operation['owner'], only_device, operation.get('selectedDeviceIds'))
                 and operation['targetIdentityDigests'] == {
                     row['deviceId']: _identity_digest(row) for row in table['members']
                     if row['deviceId'] in operation['deviceIds']})
@@ -118,14 +145,22 @@ class RemovalJournal:
             operation = json.loads(path.read_text())
         except FileNotFoundError:
             operation = None
+        selected = operation.get('selectedDeviceIds') if operation and confirmed else None
+        if not confirmed and only_device is None and device_ids is not None:
+            selected = self._normalize_selection(device_ids)
+            if operation is None or operation['phase'] in ('pending-confirmation', 'pending-authority', 'complete'):
+                selected = self._selection(self._table(tailnet_id), owner, selected)
         if confirmed:
             if (operation is None or operation['operationId'] != operation_id
                     or operation['deviceIds'] != device_ids):
                 self._stale_confirmation()
             if operation['phase'] == 'complete':
-                # Refuse stale confirmation before service-level completion
-                # effects (for example recording self-leave) can run again.
                 self._stale_confirmation()
+        if (not confirmed and operation and operation['phase'] != 'complete'
+                and selected != operation.get('selectedDeviceIds')):
+            if operation['phase'] not in ('pending-confirmation', 'pending-authority'):
+                self._stale_confirmation()
+            operation = None
         if operation and operation['phase'] in ('pending-confirmation', 'pending-authority', 'orgfs-pending'):
             if not self._same_targets(operation, self._table(tailnet_id), only_device):
                 if confirmed or operation['phase'] == 'orgfs-pending':
@@ -133,8 +168,10 @@ class RemovalJournal:
                 operation = None  # A new preview is safe only before upper-layer work.
         if operation is None or operation['phase'] == 'complete':
             tailnet = self._table(tailnet_id)
-            targets = self._targets(tailnet, owner, only_device)
-            if operation is not None and not targets:
+            if selected is not None:
+                selected = self._selection(tailnet, owner, selected)
+            targets = self._targets(tailnet, owner, only_device, selected)
+            if operation is not None and not targets and selected == operation.get('selectedDeviceIds'):
                 return operation
             if tailnet['authorityDeviceId'] in targets:
                 raise ForwardingSidecarError('Authority cannot be removed; use a transfer maintenance procedure.', code='LAST_AUTHORITY_REFUSED')
@@ -148,7 +185,13 @@ class RemovalJournal:
                              for row in tailnet['members'] if row['deviceId'] in targets},
                          'targetKeyDigests': sorted({digest for row in tailnet['members']
                              if row['deviceId'] in targets for digest in _key_digests(row)})}
+            if selected is not None:
+                operation.update(selectedDeviceIds=selected, membershipAction='preserved',
+                                 remainingDeviceIds=self._remaining(tailnet, owner, selected))
             atomic_json_write(path, operation)
+        if selected is not None:
+            remaining = self._remaining(self._table(tailnet_id), owner, operation['deviceIds'])
+            operation['remainingDeviceIds'] = remaining
         if operation['phase'] == 'revision-conflict':
             operation['revisionRefresh'] = self._refresh_revision(operation)
             operation['phase'] = 'revision-confirmation'
@@ -184,8 +227,9 @@ class RemovalJournal:
             operation['phase'] = 'orgfs-pending'
             atomic_json_write(path, operation)
         if operation['phase'] == 'orgfs-pending':
-            upper()  # retryable idempotent mutation; failure prevents revoke
-            operation['upperLayerReceipt'] = 'committed'
+            if selected is None:
+                upper()
+            operation['upperLayerReceipt'] = 'committed' if selected is None else 'preserved'
             operation['zenohDeny'] = 'not-implemented-0.5.5.1'
             operation['phase'] = 'tailnet-pending'
             atomic_json_write(path, operation)

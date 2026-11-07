@@ -1,0 +1,15 @@
+[project]
+name = "hyprial-refactor-tools"
+version = "0.1.0"
+description = "Staged refactor toolchain for the deep-module reconstruction (S1-S6). Separate from the product dependency set."
+requires-python = ">=3.12"
+dependencies = ["libcst==1.9.0"]
+
+[dependency-groups]
+dev = ["ruff==0.16.9", "pytest>=8.4,<9"]
+
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "W605"]

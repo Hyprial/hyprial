@@ -1,0 +1,126 @@
+{
+  "id": "G8c",
+  "title": "The poll lane does not hold a wait while the heartbeat lane refreshes",
+  "steps": [
+    {
+      "at": 0,
+      "lane": "poll",
+      "expect": {
+        "op": "register"
+      }
+    },
+    {
+      "at": 0,
+      "lane": "poll",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e1"
+        }
+      }
+    },
+    {
+      "at": 0,
+      "lane": "poll",
+      "expect": {
+        "op": "list"
+      }
+    },
+    {
+      "at": 0,
+      "lane": "poll",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e1",
+          "messages": [
+            {
+              "messageId": "m1",
+              "deliveryId": "m1"
+            }
+          ]
+        }
+      },
+      "emit": {
+        "new": [
+          "m1"
+        ]
+      }
+    },
+    {
+      "lane": "heartbeat",
+      "expect": {
+        "op": "heartbeat"
+      },
+      "at": 1000
+    },
+    {
+      "lane": "heartbeat",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e2"
+        }
+      }
+    },
+    {
+      "lane": "heartbeat",
+      "expect": {
+        "op": "refresh"
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "sleep",
+        "ms": 500
+      }
+    },
+    {
+      "lane": "heartbeat",
+      "at": 1100,
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e2"
+        }
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "list"
+      }
+    },
+    {
+      "lane": "poll",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e2",
+          "messages": [
+            {
+              "messageId": "m1",
+              "deliveryId": "m1"
+            }
+          ]
+        }
+      },
+      "emit": {
+        "rewake": [
+          "m1"
+        ],
+        "rewakeReason": "epoch"
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "wait",
+        "knownMessageIds": [
+          "m1"
+        ]
+      }
+    }
+  ]
+}

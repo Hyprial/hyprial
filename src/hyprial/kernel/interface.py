@@ -111,7 +111,9 @@ from hyprial.kernel.impl.contracts.daemon.daemon_diagnostics import (
     DaemonStartupPhase,
 )
 from hyprial.kernel.impl.contracts.daemon.daemon_launch import (
+    DAEMON_LAUNCH_ID_ENV,
     DaemonLaunchResult,
+    SERVICE_MANAGED_ENV,
 )
 from hyprial.kernel.impl.contracts.daemon.daemon_teardown import (
     DAEMON_CLOSE_BUDGET_SECONDS,
@@ -256,7 +258,12 @@ from hyprial.kernel.impl.platform.privacy.account import (
     current_uid,
     posix_metadata_enforced,
 )
+from hyprial.kernel.impl.platform.filesystem.durability import (
+    fsync_directory,
+)
 from hyprial.kernel.impl.platform.file_lock import (
+    FileLockBusy,
+    ProcessFileLock,
     lock_exclusive,
     unlock,
 )
@@ -388,6 +395,8 @@ __all__ = [
     "DAEMON_EXIT_BACKSTOP_SECONDS",
     "DAEMON_STARTUP_PHASES",
     "DaemonLaunchResult",
+    "SERVICE_MANAGED_ENV",
+    "DAEMON_LAUNCH_ID_ENV",
     "DaemonRequestError",
     "DaemonStartupPhase",
     "daemon_request",
@@ -484,6 +493,9 @@ __all__ = [
     "listen_named_pipe",
     "linux_group_has_live_members",
     "lock_exclusive",
+    "fsync_directory",
+    "FileLockBusy",
+    "ProcessFileLock",
     "Logger",
     "LogStamp",
     "ManagedHarnessProcess",

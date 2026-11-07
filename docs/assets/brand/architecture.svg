@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540" role="img" aria-labelledby="title desc">
+  <title id="title">HyprialOS architecture</title>
+  <desc id="desc">People reach the network through adapters such as Lark. Agent harnesses such as Claude Code, Codex, Pi and DSH reach it through connectors. Each machine runs one hyprial daemon that holds the durable inbox, routing, PAC workflows, routines, OrgFS, MCP tools and the request API. Daemons on different machines talk over a Zenoh peer mesh inside a tailnet, with the Tailcat sidecar for device keys and forwarding.</desc>
+  <style>
+    .t{font-family:Inter,"Noto Sans SC",-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;fill:#17171b}
+    .h{font-size:17px;font-weight:800}
+    .s{font-size:13px;font-weight:500;fill:#56565e}
+    .p{font-size:13px;font-weight:600}
+    .m{font-family:"Space Mono",ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;letter-spacing:.08em;fill:#6e6e76}
+    .w{fill:#ffffff}
+    .ln{stroke:#0048a8;stroke-width:2;fill:none}
+  </style>
+  <rect width="960" height="540" rx="28" fill="#f5f5f7"/>
+
+  <text class="t m" x="40" y="44">PEOPLE · ADAPTERS</text>
+  <rect x="40" y="56" width="300" height="78" rx="22" fill="#fff4cc"/>
+  <text class="t h" x="62" y="88">Lark / Feishu</text>
+  <text class="t s" x="62" y="112">Human identities · two-way messages</text>
+
+  <text class="t m" x="372" y="44">AGENT HARNESSES · CONNECTORS</text>
+  <rect x="372" y="56" width="548" height="78" rx="22" fill="#e7eeff"/>
+  <rect x="396" y="76" width="120" height="38" rx="19" class="w"/>
+  <text class="t p" x="456" y="100" text-anchor="middle">Claude Code</text>
+  <rect x="528" y="76" width="96" height="38" rx="19" class="w"/>
+  <text class="t p" x="576" y="100" text-anchor="middle">Codex</text>
+  <rect x="636" y="76" width="72" height="38" rx="19" class="w"/>
+  <text class="t p" x="672" y="100" text-anchor="middle">Pi</text>
+  <rect x="720" y="76" width="80" height="38" rx="19" class="w"/>
+  <text class="t p" x="760" y="100" text-anchor="middle">DSH</text>
+  <rect x="812" y="76" width="88" height="38" rx="19" class="w"/>
+  <text class="t p" x="856" y="100" text-anchor="middle">more…</text>
+
+  <path class="ln" d="M170 134 V176"/>
+  <path class="ln" d="M646 134 V176"/>
+  <path d="M164 170 L170 180 L176 170 Z M640 170 L646 180 L652 170 Z" fill="#0048a8"/>
+
+  <rect x="40" y="184" width="880" height="190" rx="28" class="w"/>
+  <text class="t m" x="68" y="216">ONE PER MACHINE</text>
+  <text class="t h" x="68" y="242">hyprial daemon</text>
+  <text class="t s" x="222" y="242">the authority for messages and recovery</text>
+
+  <rect x="68" y="262" width="150" height="40" rx="20" fill="#e7eeff"/>
+  <text class="t p" x="143" y="287" text-anchor="middle">Durable inbox</text>
+  <rect x="230" y="262" width="168" height="40" rx="20" fill="#e7eeff"/>
+  <text class="t p" x="314" y="287" text-anchor="middle">Routing · addresses</text>
+  <rect x="410" y="262" width="150" height="40" rx="20" fill="#fae0e3"/>
+  <text class="t p" x="485" y="287" text-anchor="middle">PAC workflows</text>
+  <rect x="572" y="262" width="110" height="40" rx="20" fill="#fae0e3"/>
+  <text class="t p" x="627" y="287" text-anchor="middle">Routines</text>
+  <rect x="694" y="262" width="198" height="40" rx="20" fill="#fff4cc"/>
+  <text class="t p" x="793" y="287" text-anchor="middle">Orgs · OrgFS</text>
+
+  <rect x="68" y="314" width="200" height="40" rx="20" fill="#ececef"/>
+  <text class="t p" x="168" y="339" text-anchor="middle">Agents · identities</text>
+  <rect x="280" y="314" width="160" height="40" rx="20" fill="#ececef"/>
+  <text class="t p" x="360" y="339" text-anchor="middle">MCP server</text>
+  <rect x="452" y="314" width="220" height="40" rx="20" fill="#ececef"/>
+  <text class="t p" x="562" y="339" text-anchor="middle">Request API (HTTP)</text>
+  <rect x="684" y="314" width="208" height="40" rx="20" fill="#ececef"/>
+  <text class="t p" x="788" y="339" text-anchor="middle">CLI · GUI</text>
+
+  <path class="ln" d="M480 374 V412"/>
+  <path d="M474 406 L480 416 L486 406 Z" fill="#0048a8"/>
+
+  <text class="t m" x="40" y="440">TRANSPORT</text>
+  <rect x="40" y="450" width="880" height="62" rx="22" fill="#dcf1e8"/>
+  <text class="t h" x="62" y="487">Zenoh peer mesh</text>
+  <text class="t s" x="232" y="487">inside your tailnet · Tailcat sidecar for device keys and forwarding</text>
+  <circle cx="808" cy="481" r="9" fill="#d81830"/>
+  <circle cx="840" cy="481" r="9" fill="#0048a8"/>
+  <circle cx="872" cy="481" r="9" fill="#ffd400"/>
+  <path d="M817 481 H831 M849 481 H863" stroke="#0a7a52" stroke-width="2"/>
+</svg>

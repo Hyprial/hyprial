@@ -1,0 +1,30 @@
+{
+  "schemaRejects": {
+    "forwardWithoutTo": {"v": 1, "type": "forward", "id": "x", "ok": true, "message": "m"},
+    "forwardEmptyTo": {"v": 1, "type": "forward", "id": "x", "ok": true, "to": "", "message": "m"},
+    "forwardNotOk": {"v": 1, "type": "forward", "id": "x", "ok": false, "to": "a", "message": "m"},
+    "forwardExtraField": {"v": 1, "type": "forward", "id": "x", "ok": true, "to": "a", "message": "m", "from": "b"},
+    "readyWithTypesafeFields": {"v": 1, "type": "ready", "kind": "user-proxy", "pid": 1, "hyprialCommit": "3137ed2ad92e5bb2c4369661d660815b63ae787b", "scriptSha256": "0000000000000000000000000000000000000000000000000000000000000000", "credentialSource": null},
+    "readyJevKind": {"v": 1, "type": "ready", "kind": "jev", "pid": 1, "hyprialCommit": "3137ed2ad92e5bb2c4369661d660815b63ae787b", "scriptSha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+    "callJevPayload": {"v": 1, "op": "call", "id": "x", "payload": {"state": "s", "questions": {}}},
+    "resultNotText": {"v": 1, "type": "result", "id": "x", "ok": true, "output": {"message": 1}},
+    "boolAsInteger": {"v": 1, "type": "metric", "id": "x", "segment": "call", "durationMs": true, "ok": true}
+  },
+  "rawRejects": {
+    "duplicateKeys": "{\"v\":1,\"v\":1,\"op\":\"stop\"}\n",
+    "nonFinite": "{\"v\":1,\"type\":\"metric\",\"id\":\"x\",\"segment\":\"call\",\"durationMs\":NaN,\"ok\":true}\n",
+    "crlf": "{\"v\":1,\"op\":\"stop\"}\r\n",
+    "noLf": "{\"v\":1,\"op\":\"stop\"}"
+  },
+  "stateRejects": {
+    "callBeforeReady": [{"v": 1, "op": "call", "id": "x", "payload": {"from": "a", "message": "m"}}],
+    "duplicateReady": [{"v": 1, "type": "ready"}, {"v": 1, "type": "ready"}],
+    "secondCallWhileOneIsLive": [{"v": 1, "type": "ready"}, {"v": 1, "op": "call", "id": "a", "payload": {"from": "s", "message": "m"}}, {"v": 1, "op": "call", "id": "b", "payload": {"from": "s", "message": "m"}}],
+    "unknownTerminal": [{"v": 1, "type": "ready"}, {"v": 1, "type": "forward", "id": "missing", "ok": true, "to": "a", "message": "m"}],
+    "duplicateTerminal": [{"v": 1, "type": "ready"}, {"v": 1, "op": "call", "id": "x", "payload": {"from": "s", "message": "m"}}, {"v": 1, "type": "forward", "id": "x", "ok": true, "to": "a", "message": "m"}, {"v": 1, "type": "result", "id": "x", "ok": true, "output": {"message": "m"}}],
+    "reusedId": [{"v": 1, "type": "ready"}, {"v": 1, "op": "call", "id": "x", "payload": {"from": "s", "message": "m"}}, {"v": 1, "type": "forward", "id": "x", "ok": true, "to": "a", "message": "m"}, {"v": 1, "op": "call", "id": "x", "payload": {"from": "s", "message": "m"}}],
+    "callAfterStop": [{"v": 1, "type": "ready"}, {"v": 1, "op": "stop"}, {"v": 1, "op": "call", "id": "late", "payload": {"from": "s", "message": "m"}}],
+    "eofBeforeReady": [],
+    "eofWithActive": [{"v": 1, "type": "ready"}, {"v": 1, "op": "call", "id": "x", "payload": {"from": "s", "message": "m"}}]
+  }
+}

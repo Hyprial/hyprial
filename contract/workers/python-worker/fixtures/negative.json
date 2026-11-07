@@ -1,0 +1,19 @@
+{
+  "rawRejects": {
+    "duplicateKeys": "{\"v\":1,\"v\":1,\"op\":\"stop\"}",
+    "nonFinite": "{\"v\":1,\"op\":\"call\",\"id\":\"x\",\"payload\":{\"n\":NaN}}",
+    "crlf": "{\"v\":1,\"op\":\"stop\"}\r\n",
+    "boolAsInteger": {"v": 1, "type": "metric", "id": "x", "segment": "call", "durationMs": true, "ok": true, "inFlight": 1, "queueDepth": 0},
+    "oversized": {"bytes": 8388609, "includesLf": true}
+  },
+  "stateRejects": {
+    "callBeforeReady": [{"v": 1, "op": "call", "id": "x", "payload": {}}],
+    "duplicateReady": [{"v": 1, "type": "ready"}, {"v": 1, "type": "ready"}],
+    "unknownTerminal": [{"v": 1, "type": "ready"}, {"v": 1, "type": "result", "id": "missing", "ok": true, "output": {}}],
+    "duplicateTerminal": [{"v": 1, "type": "ready"}, {"v": 1, "op": "call", "id": "x", "payload": {}}, {"v": 1, "type": "result", "id": "x", "ok": true, "output": {}}, {"v": 1, "type": "result", "id": "x", "ok": true, "output": {}}],
+    "eleventhCall": [{"v": 1, "type": "ready"}, {"v": 1, "op": "call", "id": "id-0", "payload": {}}, {"v": 1, "op": "call", "id": "id-1", "payload": {}}, {"v": 1, "op": "call", "id": "id-2", "payload": {}}, {"v": 1, "op": "call", "id": "id-3", "payload": {}}, {"v": 1, "op": "call", "id": "id-4", "payload": {}}, {"v": 1, "op": "call", "id": "id-5", "payload": {}}, {"v": 1, "op": "call", "id": "id-6", "payload": {}}, {"v": 1, "op": "call", "id": "id-7", "payload": {}}, {"v": 1, "op": "call", "id": "id-8", "payload": {}}, {"v": 1, "op": "call", "id": "id-9", "payload": {}}, {"v": 1, "op": "call", "id": "id-10", "payload": {}}],
+    "stopAfterCall": [{"v": 1, "type": "ready"}, {"v": 1, "op": "stop"}, {"v": 1, "op": "call", "id": "late", "payload": {}}],
+    "eofBeforeReady": [],
+    "eofWithActive": [{"v": 1, "type": "ready"}, {"v": 1, "op": "call", "id": "x", "payload": {}}]
+  }
+}

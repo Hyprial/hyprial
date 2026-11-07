@@ -214,10 +214,6 @@ class ServiceManager:
         self.sleep = sleep
         self.parent_pid = parent_pid or self._parent_pid
         self.templates = ServiceTemplates()
-        # The environment actually handed to the supervisor command.  The
-        # classification later re-reads os.environ otherwise, which can differ
-        # from what was executed (e.g. a caller that set XDG_RUNTIME_DIR after
-        # import) -- so the probe must classify the same values it used.
         self._bus_environment: dict[str, str] | None = None
 
     @property
@@ -232,20 +228,7 @@ class ServiceManager:
         return self.service_home / ".config" / "systemd" / "user" / "hyprial.service"
 
     def _launchd_jobs(self) -> list[tuple[str, Path]]:
-        """LaunchAgents jobs that run THIS install's daemon, not just our label.
-
-        Production ran an operator-written job named ``com.hyprial.daemon``
-        (``bash -lc "ulimit -n 65536; exec .../hyprial daemon run --json"``)
-        while our own label was never loaded, so keying the supervisor identity
-        to the label made every restart spawn an unsupervised daemon.
-
-        The identity is the parsed argv, matched exactly: the executable resolves
-        to this install's executable and the subcommand is exactly ``daemon run``.
-        A ``bash -lc`` wrapper is unwrapped first (the wrapper exists to raise the
-        descriptor limit, not to run another program). Substring matching would
-        claim ``<exe>-other-install``, ``daemon status run``, or any plist that
-        merely mentions the path in metadata.
-        """
+        """Find jobs whose parsed argv runs this executable's daemon, including wrappers."""
 
         if self.platform != "launchd":
             return []
@@ -423,8 +406,6 @@ class ServiceManager:
         """Combine supervisor, ownership, template, and serving-process facts."""
 
         base = self.status(deadline=deadline)
-        # The loaded job decides which file describes the supervisor: a job the
-        # operator named differently still runs OUR daemon (see _launchd_jobs).
         existing = self._existing_text_at(base.unit_path)
         ownership_reason = self._ownership_reason(
             existing, loaded=base.loaded, path=base.unit_path
@@ -473,6 +454,7 @@ class ServiceManager:
         remaining part of that budget.
         """
 
+        self._require_service_home()
         deadline = (
             time.monotonic() + max(0.0, timeout_seconds)
             if timeout_seconds is not None
@@ -564,6 +546,7 @@ class ServiceManager:
     ) -> ServiceStatus:
         """Repair owned template/custody drift without adopting foreign files."""
 
+        self._require_service_home()
         current = self.inspect(serving_pid=serving_pid())
         self._require_owned_label(current)
         if (current.installed or current.loaded) and not current.attributed:
@@ -591,8 +574,8 @@ class ServiceManager:
         fixed = self.wait_for_custody(serving_pid)
         return self._copy_status(fixed, backup_path=backup)
 
-    def _manageable_status(self) -> ServiceStatus:
-        """Current status, refused when this home may not touch the label."""
+    def _require_service_home(self) -> None:
+        """The fixed user-service label is reserved for the default Hyprial home."""
 
         operating = Path(os.path.realpath(self.service_home))
         home = Path(os.path.realpath(self.config.hyprial_home))
@@ -602,6 +585,15 @@ class ServiceManager:
                 f"outside the operating home {operating}",
                 reason="hyprial-home-outside-operating-home",
             )
+        if home != (operating / ".hyprial").resolve() or self.config.home.resolve() != operating:
+            raise ServiceOwnershipError(
+                "user-service management requires HYPRIAL_HOME=$HOME/.hyprial; "
+                "use init --no-service for a non-default home",
+                reason="service-home-nondefault",
+            )
+
+    def _manageable_status(self) -> ServiceStatus:
+        self._require_service_home()
         current = self.status()
         self._require_owned_label(current)
         return current
@@ -785,10 +777,6 @@ class ServiceManager:
     def _is_attributed(self, text: str, *, label: str | None = None) -> bool:
         executable = str(self.config.executable.resolve())
         if self.platform == "launchd":
-            # Attribution is about WHAT the job runs. A job the operator named
-            # differently but pointed at our executable is still our supervisor;
-            # requiring our own label here is what pushed production into an
-            # unsupervised spawn while launchd idled.
             label_ok = label in (None, LAUNCHD_LABEL) or (
                 f"<string>{label}</string>" in text
             )
@@ -989,6 +977,15 @@ class ServiceManager:
         *,
         timeout: float | None = None,
     ) -> subprocess.CompletedProcess[str]:
+        import pwd
+
+        account_home = Path(pwd.getpwuid(current_uid()).pw_dir).resolve()
+        if self.service_home.resolve() != account_home or self.config.home.resolve() != account_home:
+            raise ServiceOwnershipError(
+                "HOME does not match the supervisor account home; "
+                "changing HOME does not isolate the per-user service manager",
+                reason="service-account-home-mismatch",
+            )
         return subprocess.run(
             command,
             text=True,

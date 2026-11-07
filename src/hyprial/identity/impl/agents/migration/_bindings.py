@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from hyprial.identity.impl.agents.registry._base import Agent
 from hyprial.identity.impl.agents.home.config import AgentConfig
 from hyprial.identity.impl.agents.registry._core import AgentRegistry
@@ -51,11 +53,12 @@ class AgentRuntimeMigrationBindings:
         registry: AgentRegistry,
         *,
         harnesses: Iterable[str],
-        tool_profile: AgentToolProfile,
+        tool_profile: AgentToolProfile | None,
         base_environment: Mapping[str, str],
         cwd: str | None = None,
         containerized: bool = False,
         runtime_preparers: Mapping[str, HomeRuntimePreparer | None] | None = None,
+        notice_reporter: Callable[[AgentRuntimeContext], None] | None = None,
     ) -> None:
         selected = tuple(harnesses)
         if not selected or len(selected) != len(set(selected)):
@@ -69,6 +72,7 @@ class AgentRuntimeMigrationBindings:
         self.cwd = cwd
         self.containerized = containerized
         self._runtime_preparers = RuntimeHomePreparers(runtime_preparers)
+        self._notice_reporter = notice_reporter
         self._contexts: tuple[AgentRuntimeContext, ...] = ()
         self._environments: dict[str, dict[str, str]] = {}
 
@@ -126,6 +130,8 @@ class AgentRuntimeMigrationBindings:
             if harness in self._runtime_preparers:
                 context = self._runtime_preparers.prepare(context)
             self._validate_context(context, agent, Path(receipt.path))
+            if self._notice_reporter is not None:
+                self._notice_reporter(context)
             environment = apply_runtime_environment_profile(
                 self.base_environment,
                 context.environment(),

@@ -156,6 +156,11 @@ class AgentDirectoryFacade:
         projection = self._domains.agent.read_agent(local)
         return None if projection is None else _agent(projection)
 
+    def current(self, actor: str) -> Agent | None:
+        """Read durable launch intent on the bounded registry read lane."""
+        local = self.local_actor(actor)
+        return None if local is None else self._domains.agent.read_current_agent(local)
+
     def resolve_workspace_path(self, actor: str) -> str:
         return self._domains.agent.resolve_workspace_path(actor)
 
@@ -317,7 +322,7 @@ class AgentDirectoryFacade:
         assert event.agent is not None
         return _agent(event.agent)
 
-    def save(self, agent: Agent) -> Agent:
+    def save(self, agent: Agent, *, preserve_harness_args: bool = False) -> Agent:
         command = UpdateAgentCommand(
                 correlation_id=f"agent-command:update:{uuid.uuid4().hex}",
             name=agent.actor,
@@ -332,6 +337,8 @@ class AgentDirectoryFacade:
             preferred_harness=agent.preferred_harness,
             last_harness=agent.last_harness,
             last_session_id=agent.last_session_id,
+            expected_entity_token=agent.entity_token,
+            preserve_harness_args=preserve_harness_args,
         )
         event = self._domains.call_agent(command, AgentMutationCompleted)
         assert event.agent is not None
@@ -401,7 +408,8 @@ class AgentDirectoryFacade:
                 last_harness=harness,
                 last_session_id=session_id,
                 preferred_harness=agent.preferred_harness or harness,
-            )
+            ),
+            preserve_harness_args=True,
         )
         return notice
 

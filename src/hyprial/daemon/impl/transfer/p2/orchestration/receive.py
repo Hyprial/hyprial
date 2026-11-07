@@ -16,12 +16,12 @@ would look healthy on both ledgers and hold forever at ``plan-mismatch``.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
-from hyprial.identity import DEFAULT_AGENT_TOOL_PROFILE, PinConflictError
+from hyprial.identity import PinConflictError
 from hyprial.kernel import DaemonRequestError, canonical_user_uri, ipc_errors
 
 from hyprial.daemon.impl.transfer.archive.bundle import BundleError
@@ -163,6 +163,7 @@ def receive_into_target(
     environment: Mapping[str, str],
     signature: SignaturePolicy,
     entrypoint: str = ENTRYPOINT_HEADLESS,
+    notice_reporter: Callable[[object], None] | None = None,
 ) -> ReceivedTarget:
     """Admit this daemon's half of the chain, then land and activate the bundle.
 
@@ -224,10 +225,11 @@ def receive_into_target(
             activation=RuntimeContextActivation(
                 registry,
                 harnesses=(harness,),
-                tool_profile=DEFAULT_AGENT_TOOL_PROFILE,
+                tool_profile=None,
                 base_environment=environment,
                 cwd=cwd,
                 containerized=bool(getattr(spec, "containerized", False)),
+                notice_reporter=notice_reporter,
             ),
             sandbox_smoke=lambda: run_sandbox_smoke(
                 harness, containerized=bool(getattr(spec, "containerized", False))

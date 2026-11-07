@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Self
 
 from hyprial.kernel.impl.contracts.execution.execution_runtime import (
@@ -88,9 +88,9 @@ def merge_harness_launch_args(
     stored_args = tuple(stored)
     explicit_args = tuple(explicit)
     if not stored_args:
-        return explicit_args
+        return _validated_launch_args(explicit_args, harness)
     if not explicit_args:
-        return stored_args
+        return _validated_launch_args(stored_args, harness)
     stored_groups = _launch_arg_groups(stored_args, harness)
     explicit_groups = _launch_arg_groups(explicit_args, harness)
     explicit_keys = {key for key, _tokens in explicit_groups if key is not None}
@@ -103,7 +103,21 @@ def merge_harness_launch_args(
             continue
         merged.append((key, tokens))
         seen.add(tokens)
-    return tuple(token for _key, tokens in merged for token in tokens)
+    return _validated_launch_args(tuple(token for _key, tokens in merged for token in tokens), harness)
+
+
+def _validated_launch_args(args: tuple[str, ...], harness: str | None) -> tuple[str, ...]:
+    if harness == "claude":
+        for index, value in enumerate(args):
+            if value == "--permission-mode":
+                mode = args[index + 1] if index + 1 < len(args) else None
+            elif value.startswith("--permission-mode="):
+                mode = value.partition("=")[2]
+            else:
+                continue
+            if mode not in {"acceptEdits", "auto", "bypassPermissions", "default", "dontAsk", "plan"}:
+                raise DesiredStateError(f"invalid Claude --permission-mode value: {mode!r}")
+    return args
 
 
 def _launch_option_key(token: str) -> str | None:
@@ -235,6 +249,10 @@ class HarnessLaunchSpec:
     # never succeeded writes NO row at all -- the value lives here only for
     # rows that earned their place.
     status: str = "running"
+
+    def with_default_args(self, stored: tuple[str, ...]) -> Self:
+        """Apply stored defaults while retaining explicit launch precedence."""
+        return replace(self, args=merge_harness_launch_args(stored, self.args, harness=self.harness))
 
     @classmethod
     def from_json(cls, value: object, label: str) -> Self:

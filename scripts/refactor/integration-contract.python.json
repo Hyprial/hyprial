@@ -1,0 +1,334 @@
+{
+  "schema_version": 1,
+  "line": "python-refactor-toolchain",
+  "generated_at": "2026-10-01",
+  "baseline_commit": "ad4ce68b6ccd08bd64dd9fdce448dd91a8329f43",
+  "role": "responses to the GUI line's IR-1..IR-10 plus the five in-service gui_* bridge/build modules. All proposals are DRAFT; the main model owns every domain, ownership and approval decision. This file is produced by the Python line only; the GUI line's IR documents were not edited.",
+  "policy_fingerprint_note": "write-scope policy: docs/notes/ fully read-only (incl. .py); src/gui/ .py frozen for product import rules (gui-python-frozen); src/gui non-Python files not claimed by Python rules. Fingerprint in scripts/refactor/preview/plan.json.",
+  "gui_modules": [
+    {
+      "module": "src/hyprial/gui_apps.py",
+      "candidate_owner": "shell (C0 original mapping; draft, not approved)",
+      "purpose": "GUI lifecycle orchestration (start/status/stop/upgrade), bounded retirement of the legacy Dashboard process",
+      "symbols": [
+        "APPS",
+        "resolve_invocation",
+        "perform",
+        "upgrade",
+        "_retire_dashboard",
+        "_each",
+        "_selected"
+      ],
+      "consumers": [
+        {
+          "path": "src/hyprial/cli.py",
+          "lines": [
+            15590,
+            15671,
+            15740
+          ],
+          "form": "function-local imports (resolve_invocation, perform, upgrade)"
+        },
+        {
+          "path": "tests/test_cli_install.py",
+          "form": "CLI behavior tests"
+        },
+        {
+          "path": "tests/test_gui_apps.py",
+          "form": "module unit tests"
+        }
+      ],
+      "read_write_set": {
+        "reads": [
+          "apps/gui/**/process.json",
+          "apps/gui/runtimes/dashboard/process.json"
+        ],
+        "writes": [
+          "apps/gui/lifecycle/app.lock (flock)",
+          "process.json via gui_runtime"
+        ],
+        "external": [
+          "subprocess via gui_runtime only"
+        ]
+      },
+      "behavior_to_preserve": [
+        "hyprial gui [start|status|stop|upgrade] CLI arguments, JSON shape and exit codes",
+        "retired selectors (dashboard/dsh/all) keep failing with INVALID_ARGUMENT",
+        "Dashboard retirement stops only a verifiably owned process and never deletes its record",
+        "upgrade restores exactly the apps it stopped, under the lifecycle lock"
+      ],
+      "draft_proposal": "Keep single-app internals as-is (the APPS tuple already degenerates to dsh); move under shell/impl/gui together with gui_runtime in one S2 move with consumer rewrite. CLI JSON/exit codes must be snapshotted (S3 verify).",
+      "ir_refs": [
+        "IR-4"
+      ],
+      "unresolved": [
+        "final position inside shell/impl",
+        "public exports list for the shell face"
+      ]
+    },
+    {
+      "module": "src/hyprial/gui_runtime.py",
+      "candidate_owner": "shell (C0 original mapping; draft, not approved)",
+      "purpose": "identity-fenced GUI process lifecycle: readiness wait, stop, status records",
+      "symbols": [
+        "gui_status",
+        "start_gui_background",
+        "stop_gui",
+        "_READY_TIMEOUT",
+        "_STOP_TIMEOUT",
+        "_lifecycle_lock",
+        "_record_status",
+        "_read_record"
+      ],
+      "consumers": [
+        {
+          "path": "src/hyprial/gui_apps.py",
+          "form": "module import incl. private _lifecycle_lock (gui_apps.py:83,90)"
+        },
+        {
+          "path": "src/hyprial/cli.py",
+          "lines": [
+            15698,
+            15704,
+            15710
+          ],
+          "form": "function-local imports"
+        },
+        {
+          "path": "tests/test_gui_runtime.py",
+          "form": "unit tests"
+        },
+        {
+          "path": "tests/test_gui_apps.py",
+          "form": "orchestration tests"
+        },
+        {
+          "path": "tests/test_cli_install.py",
+          "form": "CLI tests"
+        },
+        {
+          "path": "tests/test_cli_onboarding.py",
+          "form": "CLI tests"
+        }
+      ],
+      "authority_records": [
+        {
+          "manifest": "tests/supervision_exemptions.json",
+          "entry": {
+            "path": "src/hyprial/gui_runtime.py",
+            "symbol": "_READY_TIMEOUT",
+            "kind": "module constant",
+            "owner": "hyprial-developer",
+            "card": "5c8743093ff5",
+            "reason": "GUI 后台启动 MVP 自建 30s HTTP readiness 等待；后续应组合 actor_runtime 的受管就绪能力。"
+          },
+          "disposition": "path migrates with the file under an approved move; symbol/kind/owner/card/reason stay byte-identical. No deletion, no reason change, no scope widening (policy: this round keeps all 129 exemptions)."
+        }
+      ],
+      "private_dependency_audit": {
+        "target": "hyprial.mcp.channel private helpers (_OwnerProcessStatus, _owner_process_status, _read_process_identity)",
+        "other_consumers_of_same_helpers": [
+          "src/hyprial/cli.py",
+          "src/hyprial/daemon/application.py",
+          "src/hyprial/daemon/harness_actor.py",
+          "src/hyprial/daemon/home_guard.py",
+          "src/hyprial/mcp/channel.py"
+        ],
+        "draft_proposal": "Extract the process-identity trio into a base process-facts module (candidate: kernel-level platform process facts, e.g. hyprial.platform.process_identity) consumed by both mcp.channel and gui_runtime. This is a capability extraction, not an import-path rename: the trio currently lives inside the MCP channel module but expresses owner-process identity, which predates and outlives MCP. Full GUI lifecycle stays in shell; nothing GUI-specific sinks into kernel.",
+        "unresolved": [
+          "final name/location of the process-facts module",
+          "whether mcp.channel keeps re-export shims during transition"
+        ]
+      },
+      "ir_refs": [
+        "IR-5"
+      ],
+      "unresolved": [
+        "shell face export list",
+        "readiness composition with actor_runtime (per the exemption reason) is a future behavior change, out of scope this round"
+      ]
+    },
+    {
+      "module": "src/hyprial/gui_product.py",
+      "candidate_owner": "shell (C0 original mapping; draft, not approved)",
+      "purpose": "locate and validate the GUI bundled with THIS installed product",
+      "symbols": [
+        "product_source"
+      ],
+      "resource_contract": "Path(__file__).with_name(\"_gui\") — the module and the hyprial/_gui resource directory are position-coupled. Any move must keep gui_product.py as a sibling of _gui inside the installed package, or rewrite the locator together with the wheel layout in the same stage.",
+      "consumers": [
+        {
+          "path": "src/hyprial/cli.py",
+          "lines": [
+            5434,
+            15674,
+            15741
+          ],
+          "form": "function-local imports"
+        },
+        {
+          "path": "tests/test_gui_product.py",
+          "form": "unit tests"
+        },
+        {
+          "path": "tests/test_cli_install.py",
+          "form": "CLI tests"
+        }
+      ],
+      "ir_refs": [
+        "IR-1",
+        "IR-10"
+      ],
+      "unresolved": [
+        "whether gui_product moves at all: if gui_bundle/build hook stay at src/hyprial root (see build-hook proposal), keeping gui_product as their installed-package sibling is the lower-risk draft"
+      ]
+    },
+    {
+      "module": "src/hyprial/gui_bundle.py",
+      "candidate_owner": "build-time tool (separate argument from runtime shell move)",
+      "purpose": "deterministic GUI archive build, provenance stamp (hyprial.gui-source/v1), release manifest",
+      "symbols": [
+        "SOURCE_STAMP",
+        "EXCLUDED",
+        "build_gui",
+        "source_revision",
+        "stamp_snapshot",
+        "_git_executable_modes"
+      ],
+      "consumers": [
+        {
+          "path": "src/hyprial/gui_build_hook.py",
+          "lines": [
+            8
+          ],
+          "form": "runpy.run_path sibling-path load (build_gui, source_revision)"
+        },
+        {
+          "path": "scripts/github_publish.py",
+          "lines": [
+            286,
+            292
+          ],
+          "form": "runpy.run_path on the published tree's src/hyprial/gui_bundle.py, calls stamp_snapshot"
+        },
+        {
+          "path": "tests/test_gui_snapshot_modes.py",
+          "form": "stamp/build mode tests"
+        },
+        {
+          "path": "tests/test_gui_product.py",
+          "form": "bundle/product pairing tests"
+        }
+      ],
+      "build_paths_to_sync_if_moved": [
+        "pyproject.toml [tool.hatch.build.hooks.custom] path (currently src/hyprial/gui_build_hook.py:58)",
+        "gui_build_hook.py runpy sibling Path(__file__).with_name(\"gui_bundle.py\")",
+        "scripts/github_publish.py snapshot stamping path (out/src/hyprial/gui_bundle.py)",
+        "wheel force-include destination hyprial/_gui and sdist destination src/hyprial/_gui",
+        "IR-10: gui-source.json is generated only when constructing a public snapshot; a normal Git checkout does not have it and it is NOT regenerated on every GUI merge"
+      ],
+      "ir_refs": [
+        "IR-1",
+        "IR-7",
+        "IR-10"
+      ],
+      "unresolved": [
+        "move vs stay: draft recommendation is STAY at src/hyprial root for S1-S3 (build-coupled, four synced paths, zero runtime consumers), revisit only if the shell move lands and proves stable"
+      ]
+    },
+    {
+      "module": "src/hyprial/gui_build_hook.py",
+      "candidate_owner": "build-time tool (stays; pinned by pyproject)",
+      "purpose": "Hatch build hook: bundle GUI into wheel/sdist, enforce product-version pairing in sdists",
+      "symbols": [
+        "CustomBuildHook"
+      ],
+      "consumers": [
+        {
+          "path": "pyproject.toml",
+          "line": 58,
+          "form": "[tool.hatch.build.hooks.custom] path"
+        },
+        {
+          "path": "src/hyprial/gui_bundle.py",
+          "form": "runpy sibling load (reverse direction)"
+        }
+      ],
+      "draft_proposal": "KEEP in place this round. Moving it requires a same-commit pyproject.toml edit (root product file — outside this line's write scope), plus wheel/sdist/public-snapshot verification. If the main model approves a move, it must be delivered as a separate integration reference rule targeting pyproject.toml, applied in the same stage as the file move, with wheel build + verify_public_install + snapshot stamping verified together.",
+      "ir_refs": [
+        "IR-1"
+      ]
+    }
+  ],
+  "ir_responses": {
+    "IR-1": {
+      "topic": "packaging closure for gui_bundle / build hook",
+      "python_response": "Updated per review: the existing npm install-time build:static mode is PRESERVED; no new bundler and no artifact-mode change. The wheel/source-archive closure must carry every builder/fragment/style/lock dependency (gui_bundle required-set + EXCLUDED list is the current mechanism). G2a + Python packaging closure + test migration stay one joint checkpoint (G2a+IR-1). No snapshot stamp fabrication; dirty-tree gate untouched. Not an execution authorization this round.",
+      "unresolved": []
+    },
+    "IR-2": {
+      "topic": "receipt preservation",
+      "python_response": "No merge, no reshaping of receipts. Python-side receipt schemas and writers are frozen for this round; any change would be a separate approved rule with contract/ impact check.",
+      "unresolved": []
+    },
+    "IR-3": {
+      "topic": "launch schema and environment boundary",
+      "python_response": "hyprial.gui-launch/v1 and hyprial.gui-process/v1 schemas unchanged; HYPRIAL_GUI_LAUNCH_INFO_FILE / HYPRIAL_GUI_APP / DSH_HYPRIAL_NO_OPEN environment contract unchanged. Historical empty-environment fallbacks may differ between Python and GUI; no forced equalization.",
+      "unresolved": []
+    },
+    "IR-4": {
+      "topic": "CLI command surface for the GUI",
+      "python_response": "S3 keeps hyprial gui command path, arguments, defaults, hidden flags, help text, JSON keys and exit codes byte-stable (help snapshot + JSON/exit-code checks in the S3 verification matrix). The 15 query + 40 action surface and host control entries consumed by the GUI are covered by the existing CLI inventory gate; no GUI-facing command changes are proposed this round.",
+      "unresolved": []
+    },
+    "IR-5": {
+      "topic": "daemon IPC, session/actor identity, authorization, ledger ownership",
+      "python_response": "Frozen. daemon IPC paths, identity semantics and ledger ownership are not touched by any draft rule in this package.",
+      "unresolved": []
+    },
+    "IR-6": {
+      "topic": "src/gui/integration/pac-service.py consumer rule",
+      "python_response": "Option (a) compatibility re-export is NOT the default and is dropped without new evidence. If hyprial.pac.context moves in S2, the exact consumer src/gui/integration/pac-service.py migrates at the SAME S2 checkpoint, coordinated by the GUI owner using reviewed Python CST rule(s); general Python scans keep excluding all of src/gui. If the module does not move, no consumer edit. No standing GUI write exception is granted to the Python line.",
+      "unresolved": [
+        "choice between (a) and (b)",
+        "whether hyprial.pac.context moves at all in S2 (domain decision)"
+      ],
+      "decision": "conditional option b (main model accepted)"
+    },
+    "IR-7": {
+      "topic": "DSH / desktop runtime pin",
+      "python_response": "Unchanged. No draft rule touches DSH or desktop runtime pins.",
+      "unresolved": []
+    },
+    "IR-8": {
+      "topic": "shared CI / ci-scope",
+      "python_response": "Updated per review: the real CI authority lives in src/gui/scripts/ci-scope.mjs (the root scripts/ci-scope.mjs re-exports it) plus scripts/ci-plan.mjs, workflow routing and BOTH fixture sets. This line only REPORTS: any classification change proposal must cover the actual authority files and keep the conservative unknown-input full-validation fallback; the root wrapper alone is never sufficient. Neither line edits shared CI without the main model.",
+      "unresolved": []
+    },
+    "IR-9": {
+      "topic": "environment boundary (home priority, socket/state)",
+      "python_response": "No change: home/state/socket resolution and lock semantics are frozen for this round (gui_runtime behavior contract listed per module).",
+      "unresolved": []
+    },
+    "IR-10": {
+      "topic": "gui-source.json provenance stamp",
+      "python_response": "Confirmed corrected policy: gui-source.json is a public-snapshot pre-build stamp, not a developer-checkout artifact; it is regenerated only through normal snapshot/release flows after approved changes. No stamp creation in development checkouts, no fabricated commits, no drift-check bypass in any tool path (gui_bundle.source_revision falls back to git HEAD).",
+      "unresolved": []
+    }
+  },
+  "round": 4,
+  "gui_module_dispositions_round3": {
+    "gui_apps.py": "Python owns; retain behavior; shell move stays draft",
+    "gui_runtime.py": "Python owns; retain behavior; _READY_TIMEOUT exemption kept byte-identical; process-identity trio extraction remains a separate UNAPPROVED proposal",
+    "gui_product.py": "KEEP_IN_PLACE this round (hyprial/_gui sibling contract)",
+    "gui_bundle.py": "KEEP_IN_PLACE this round (runpy callers, snapshot provenance)",
+    "gui_build_hook.py": "KEEP_IN_PLACE this round (pyproject pin unchanged)"
+  },
+  "route_change": "User decision: build an independent Hyprial GUI (bounded extraction from DSH sources) as a parallel new product. The Python S1-S6 behavior-preserving refactor continues on its own track; src/gui and desktop are frozen; old G2a+IR-1 and G2b schedules are SUSPENDED/SUPERSEDED (never executed, never satisfied). Native dsh worker and CLI untouched; no long-lived compat shims; no session-owner/web-gateway/content-streaming work on this line; contract/ and shared CI untouched.",
+  "schedule_status": {
+    "G2a+IR-1": "SUSPENDED/SUPERSEDED (was 'same-checkpoint required'; not executed, not satisfied)",
+    "G2b": "SUSPENDED/SUPERSEDED (was direction-approved; per-symbol relocations not approved, now moot under the new GUI track)",
+    "IR-4 joint CLI matrix": "DEFERRED to the new GUI track's D3-equivalent checkpoint",
+    "IR-6 option b": "STILL CONDITIONAL on hyprial.pac.context moving in S2 (unchanged)"
+  }
+}

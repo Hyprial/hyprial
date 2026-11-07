@@ -8,6 +8,7 @@ capacity stays reserved until the owner acknowledges the completion token.
 from __future__ import annotations
 
 import collections
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -23,6 +24,28 @@ from hyprial.kernel.impl.facts.cost_counters import (
 RequestT = TypeVar("RequestT")
 ResultT = TypeVar("ResultT")
 
+_ERROR_DETAIL_BYTES = 200
+_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]+")
+_OWNER_EMAIL = re.compile(
+    r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+"
+    r"(?![A-Za-z0-9.-])"
+)
+
+
+def _error_detail(error: BaseException) -> str | None:
+    try:
+        detail = getattr(error, "safe_detail", None)
+    except BaseException:
+        return None
+    if not isinstance(detail, str) or not detail:
+        return None
+    detail = _CONTROL.sub(" ", detail)
+    detail = _OWNER_EMAIL.sub("[REDACTED_EMAIL]", detail)
+    encoded = detail.encode("utf-8")
+    if len(encoded) <= _ERROR_DETAIL_BYTES:
+        return detail
+    return encoded[:_ERROR_DETAIL_BYTES].decode("utf-8", errors="ignore")
+
 
 @dataclass(frozen=True, slots=True)
 class EffectRequest(Generic[RequestT]):
@@ -37,6 +60,7 @@ class EffectCompleted(Generic[ResultT]):
     generation: int
     result: ResultT | None = None
     error: str | None = None
+    detail: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,7 +217,10 @@ class EffectLane(Generic[RequestT, ResultT]):
                 # Native adapters may raise SystemExit/KeyboardInterrupt on
                 # their own worker. Accepted custody must still reach the owner.
                 event = EffectCompleted(
-                    request.operation_id, request.generation, error=type(error).__name__
+                    request.operation_id,
+                    request.generation,
+                    error=type(error).__name__,
+                    detail=_error_detail(error),
                 )
             while not receipt.is_set():
                 try:

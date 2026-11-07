@@ -1,0 +1,179 @@
+{
+  "version": 2,
+  "name": "gui-request-http-parallel-development-20261030",
+  "summary": "User correction: H develops alongside A landing. H01 now, H02 consumes H01, actual A/dev sync and independent acceptance before removing WIP. C stays deferred.",
+  "on_failure": "hold",
+  "escalate_to": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+  "defaults": {
+    "launch": {
+      "harness": "pi",
+      "provider": "deepseek",
+      "model": "deepseek-flash",
+      "args": [
+        "--thinking",
+        "max",
+        "--approve"
+      ],
+      "cwd": "/Users/amyws/projects/request-http-h01",
+      "cwdPolicy": "require"
+    },
+    "timeout": "24h",
+    "first_output_eta": "10m",
+    "human_gates": "none"
+  },
+  "workers": {
+    "h01": {
+      "harness": "pi",
+      "provider": "deepseek",
+      "model": "deepseek-flash",
+      "args": [
+        "--thinking",
+        "max",
+        "--approve"
+      ],
+      "cwd": "/Users/amyws/projects/request-http-h01",
+      "cwdPolicy": "require"
+    },
+    "h02": {
+      "harness": "pi",
+      "provider": "deepseek",
+      "model": "deepseek-flash",
+      "args": [
+        "--thinking",
+        "max",
+        "--approve"
+      ],
+      "cwd": "/Users/amyws/projects/request-http-h02",
+      "cwdPolicy": "require"
+    }
+  },
+  "nodes": [
+    {
+      "id": "h01-build",
+      "worker": "h01",
+      "role": "execute",
+      "after": [],
+      "task": "只在指定 worktree/branch 工作，不自行委派、不改板、不自行合PR；允许任务指定的本工作分支merge-forward。读 AGENTS.md 和 docs/design/daemon-request/http-integration-2026-10-30.md。只做 H 范围，不做 C 或页面接线。所有 Python 经 uv，Node 使用24。测试隔离 home/socket/cache，不动生产 daemon、凭据或用户配置。提交使用 devusr <amy.williams@example.com>。实现与返工保持 DeepSeek Flash Max。首次10分钟内给可核文件和进度，长任务每20分钟记录。所有进度/问题/最终结果仅回协调者，不直接联系其他人。完成后用当前 PAC requestId 和仓库证据引用显式 complete（可附 outputText）；ACK/普通消息不完成节点。只推自己的分支，PR base=intg/gui-request-http；正文含 Submitted-by 真实URI、Contract-Impact、Skill-Impact、验证与未测项。禁止取token、绕保护。返工只用当前有效请求，不重用旧requestId。\n用户最新澄清覆盖旧图/旧方案中的A先合入再开工限制：H与A收尾并行，现在立即实现；不虚填旧a-landed，不等待A/dev合入。先读协调者 /Users/amyws/projects/daemon-request-http/docs/design/daemon-request/http-integration-2026-10-30.md 和 docs/notes/http-parallel-development-correction-2026-10-30.md（均在协调者worktree）。设计已通过：本分支61dc769cfb18bf317c04073503d1fa2da394eb9c，判词docs/notes/http-h01-design-pass-2026-10-30.md@6b514cc55。不重新设计或扩范围。\n沿用 /Users/amyws/projects/request-http-h01、feat/http-request-entry、Draft PR #2146，base=intg/gui-request-http。先通过内网SSH fetch并merge-forward最新容器，再合入固定A 4ad16740b38b374c1608bae974db1482e204ae57到自己的分支（不是共享A/dev）。容器已有release105f45585；预检7冲突见纠正文档。保留双方必要语义：A公共request/GUI退役布局、release实际修复；不整文件盲选ours/theirs，不恢复旧router，不削门禁。基线兼容单独commit，记录双方source/base/tree、7处处置及焦点测试，随后按已审设计实现HTTP入口/安全身份绑定/daemon权威可用目录；同一PR内交审。不要把开发同步声称A已合dev。更新设计中的旧开工时序文字，技术契约保持已审版本。\n所有git传输使用ssh://git@git.internal.example.com/HyprialOS/harness-bridge.git。必要时单次GIT_SSH_COMMAND指定HostName=100.64.30.2及HostKeyAlias=git.internal.example.com，不写用户配置。显式GIT_AUTHOR_NAME=devusr GIT_AUTHOR_EMAIL=amy.williams@example.com GIT_COMMITTER_NAME=devusr GIT_COMMITTER_EMAIL=amy.williams@example.com，防继承环境覆盖。无force push、无自合。\n首个10分钟产出至少包括已启动回执、基线处理进度和可核文件；长任务每20分钟记录。实际行为红绿、结构/模块边界、焦点、全量tests/、Ruff及契约按AGENTS完成，home/socket/cache隔离；真实daemon/HTTP不可由mock替代。读设计中的测试面，保守状态与未知结果不缩减。只安全unary read，不做页面、C或业务session/preview/execute/idempotency。完整交付后用本图当前h01-build request complete，给精确SHA/tree、PR和实测证据。最终容器WIP需A落dev后同步和独立验收才移除。"
+    },
+    {
+      "id": "h01-review",
+      "kind": "approval",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "review",
+      "after": [
+        "h01-build"
+      ],
+      "timeout": "72h",
+      "task": "独立检查H-01候选diff和实测，复跑关键正反例。判词绑定worker与容器SHA；complete表示判词落仓，PASS选择accept，FAIL选择reject，两者不同时置位。"
+    },
+    {
+      "id": "h01-reject",
+      "kind": "approval",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "review",
+      "after": [
+        "h01-review"
+      ],
+      "timeout": "72h",
+      "task": "只在H-01不合格时以固定判词完成并触发显式back-edge；按PAC reset规则清除自己旧review/reject旗标，原worker重置自己的build并用新请求返工。"
+    },
+    {
+      "id": "h01-accept",
+      "kind": "approval",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "review",
+      "after": [
+        "h01-review"
+      ],
+      "timeout": "72h",
+      "task": "只在H-01独立验收PASS且实现PR实际进入intg/gui-request-http后置位，记录PR/source/tree/merge与检查点并更新卡；不得只凭候选交审释放H-02。"
+    },
+    {
+      "id": "h02-build",
+      "worker": "h02",
+      "role": "execute",
+      "after": [
+        "h01-accept"
+      ],
+      "task": "只在指定 worktree/branch 工作，不自行委派、不改板、不自行合PR；允许任务指定的本工作分支merge-forward。读 AGENTS.md 和 docs/design/daemon-request/http-integration-2026-10-30.md。只做 H 范围，不做 C 或页面接线。所有 Python 经 uv，Node 使用24。测试隔离 home/socket/cache，不动生产 daemon、凭据或用户配置。提交使用 devusr <amy.williams@example.com>。实现与返工保持 DeepSeek Flash Max。首次10分钟内给可核文件和进度，长任务每20分钟记录。所有进度/问题/最终结果仅回协调者，不直接联系其他人。完成后用当前 PAC requestId 和仓库证据引用显式 complete（可附 outputText）；ACK/普通消息不完成节点。只推自己的分支，PR base=intg/gui-request-http；正文含 Submitted-by 真实URI、Contract-Impact、Skill-Impact、验证与未测项。禁止取token、绕保护。返工只用当前有效请求，不重用旧requestId。\n工作树 /Users/amyws/projects/request-http-h02 分支 feat/http-request-client。先fetch并merge-forwardintg/gui-request-http；按已落地H-01契约实现独立TypeScript HTTP client、可用目录消费、预算/取消/类型化错误、版本拒绝、用法文档和真实独立消费者验证。不要页面业务、React state或fixture耦合，不复制schema/手工白名单，不自动重试结果未知写请求。Kanban a70564dd-d0fb-4be2-a177-970e632a241e。先结构/模块边界，再焦点红绿、适用全量tests/、Ruff与契约；真实隔离daemon/HTTP证据不可用mock替代。每次记录source/base/tree/环境/命令/退出码/nodeid，已有FAIL与UNKNOWN不冒充PASS。\n用户最新时序：H线与A收尾并行，此节点只依赖H-01真实进入容器，不等待A落dev。已审设计源61dc769cf；读取容器最新计划与 http-parallel-development-correction-2026-10-30.md，旧图开工门已被替换。固定A依赖已由H01进入容器；不改共享A/dev。实际A落dev后的rebase/最终验证由协调者另行组织。所有git使用内网SSH；提交显式GIT_AUTHOR_NAME/GIT_COMMITTER_NAME=devusr及EMAIL=amy.williams@example.com。保持WIP，C不启动。"
+    },
+    {
+      "id": "h02-review",
+      "kind": "approval",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "review",
+      "after": [
+        "h02-build"
+      ],
+      "timeout": "72h",
+      "task": "独立核H-02及真实消费者证据，不把build/unit当真实贯通。固定判词后PASS选accept、FAIL选reject。"
+    },
+    {
+      "id": "h02-reject",
+      "kind": "approval",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "review",
+      "after": [
+        "h02-review"
+      ],
+      "timeout": "72h",
+      "task": "仅H-02不合格时完成，显式back-edge原worker返工，按当前请求reset旧旗标。"
+    },
+    {
+      "id": "h02-accept",
+      "kind": "approval",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "review",
+      "after": [
+        "h02-review"
+      ],
+      "timeout": "72h",
+      "task": "H-02独立验收PASS且实现PR实际进入容器后置位；更新卡、记录PR和真实合入SHA。"
+    },
+    {
+      "id": "a-landed-sync",
+      "kind": "approval",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "review",
+      "after": [
+        "h02-accept"
+      ],
+      "timeout": "72h",
+      "task": "用户澄清后的最终同步门，不是开工门。服务器核发布tag/负责人解冻、#2015实际merged且actual dev包含A；记录实际SHA和证据。协调者将实际dev同步到HTTP集成/必要rebase，固定新source/base/tree，说明冲突处置与受影响验证；不得把旧A已审或本地同步当A已入dev。未满足不去WIP，不影响已经完成的H开发；不授权自行合A、发版或绕保护。"
+    },
+    {
+      "id": "report",
+      "kind": "report",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "dispatch",
+      "after": [
+        "a-landed-sync"
+      ],
+      "timeout": "72h",
+      "task": "在A实际落dev并完成同步/rebase后的固定intg/gui-request-http head，独立复核H01/H02、基线兼容和受影响测试，真实消费者/浏览器及适用全量等证据完整；只认可该新树的验收。满足两项产品标准再由容器owner移除WIP并交第三方合入，不自合、不绕保护。向产品交付通用client/目录，不接页面；UNKNOWN/继承红分别记录。"
+    },
+    {
+      "id": "done",
+      "kind": "end",
+      "owner": "agent:amy.williams@example.com:devusr-dev:codex-daemon-request",
+      "role": "review",
+      "after": [
+        "report"
+      ],
+      "timeout": "72h",
+      "task": "服务器确认HTTP容器实际合入dev，记录PR/mergedSHA/actualdev、归档H卡。此时才具备用户规定的C开工前置；本图不自动派发C任务。未合保持未完成。"
+    }
+  ],
+  "edges": [
+    {
+      "from": "h01-reject",
+      "to": "h01-build",
+      "kind": "back"
+    },
+    {
+      "from": "h02-reject",
+      "to": "h02-build",
+      "kind": "back"
+    }
+  ]
+}

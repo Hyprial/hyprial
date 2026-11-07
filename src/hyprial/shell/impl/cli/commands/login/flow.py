@@ -10,6 +10,11 @@ if TYPE_CHECKING:  # deferred annotations only
     from hyprial.identity import IdentityTransactionLock
 
 from hyprial.shell.impl.cli.commands.common.services import get_services
+from hyprial.shell.impl.login.generation import SUPERSEDED_NEXT_STEP, superseded_error
+from hyprial.shell.impl.cli.commands.login.aftercare import (
+    _pickup_org_invites_after_login,
+    _restart_supervised_after_failed_switch,
+)
 
 from typing import Any
 from collections.abc import Callable
@@ -29,9 +34,13 @@ def _run_login_cli_flow(
     dry_run: bool = False,
     no_daemon: bool = False,
     first_time_setup: bool = False,
-    held_identity_transaction: list[IdentityTransactionLock] | None = None,
+    committed_identity_generation: list[int] | None = None,
 ) -> JsonObject:
-    """Run login's identity and device-key logic without CLI recursion."""
+    """Run login's identity and device-key logic without CLI recursion.
+
+    The identity lock is released before any daemon launch (the daemon takes
+    it itself); ``committed_identity_generation`` receives the generation.
+    """
     services = get_services()
 
     from hyprial.shell.impl.login.flow import LoginError, run_login
@@ -73,6 +82,7 @@ def _run_login_cli_flow(
             warn(f"authenticated as {data['owner']} (issuer {data['issuer']})", json_output=False)
 
     transaction: IdentityTransactionLock | None = None
+    transaction_taken = False
     daemon_before: JsonObject = {"state": "unknown"}
     # No classification has run yet, so a failure report must say the
     # migration was not attempted — the earlier "not-required" default
@@ -91,6 +101,12 @@ def _run_login_cli_flow(
         migration: JsonObject | None = None,
         next_step: str,
     ) -> JsonObject:
+        if not committed and daemon_before.get("stoppedVia") == "supervisor":
+            next_step = (
+                f"{next_step}; the previous daemon was stopped through its "
+                "service supervisor and login asks it to start again -- if "
+                "it is still down, run `hyprial daemon start`"
+            )
         return {
             "failedPhase": phase,
             "identityCommitted": committed,
@@ -165,11 +181,12 @@ def _run_login_cli_flow(
     ) -> None:
         from hyprial.identity import IdentityTransactionBusy, IdentityTransactionLock
         services = get_services()
-        nonlocal transaction, daemon_before, stopped_preview
+        nonlocal transaction, transaction_taken, daemon_before, stopped_preview
         if previous_owner is not None:
             classify(target_owner, "plan-live", allow_retry=True)
         try:
             transaction = IdentityTransactionLock.acquire(home)
+            transaction_taken = True
         except IdentityTransactionBusy as error:
             raise services.CliError(
                 error.code,
@@ -240,8 +257,12 @@ def _run_login_cli_flow(
                         ),
                     )
                 if must_stop:
-                    services._stop_daemon_for_identity_switch()
+                    stopped = services._stop_daemon_for_identity_switch()
                     daemon_before["state"] = "stopped"
+                    if isinstance(stopped, dict) and stopped.get("supervisor"):
+                        # Stopped through launchd/systemd: nothing relaunches
+                        # it on its own if this login then fails uncommitted.
+                        daemon_before["stoppedVia"] = "supervisor"
             if previous_owner is not None:
                 stopped_preview = classify(
                     target_owner, "plan-stopped", allow_retry=False
@@ -295,9 +316,10 @@ def _run_login_cli_flow(
         from hyprial.identity import IdentityTransactionBusy, IdentityTransactionLock
         services = get_services()
 
-        nonlocal transaction
+        nonlocal transaction, transaction_taken
         try:
             transaction = IdentityTransactionLock.acquire(home)
+            transaction_taken = True
         except IdentityTransactionBusy as error:
             raise services.CliError(
                 error.code,
@@ -466,6 +488,20 @@ def _run_login_cli_flow(
                 json_output=json_output,
             )
         post_commit_phase = "start"
+        if transaction is not None:
+            # Released before launch: the daemon acquires it itself (no handoff).
+            transaction.close()
+            transaction = None
+        generation = getattr(result, "identity_generation", None)
+        if committed_identity_generation is not None and isinstance(generation, int):
+            committed_identity_generation.append(generation)
+
+        def superseded(cause: str) -> Exception | None:  # a later login won the gap
+            return superseded_error(services.CliError, home, generation, cause, failure_data(
+                "verify", committed=True, device=device, daemon={"state": "unknown"},
+                migration={"status": "unknown"}, next_step=SUPERSEDED_NEXT_STEP,
+            ))
+
         daemon_result: JsonObject
         migration_result = stopped_preview
         if first_time_setup:
@@ -484,7 +520,7 @@ def _run_login_cli_flow(
                 if result.switched
                 else "start the daemon when ready"
             )
-        elif transaction is None:
+        elif not transaction_taken:
             # Compatibility for protocol-shaped test stubs which predate
             # the before_commit callback (an identity-only run_login).
             # Making this fail loudly forces those shared stubs into
@@ -498,10 +534,13 @@ def _run_login_cli_flow(
             try:
                 launched = services._launch_daemon_process(
                     ready_timeout=DAEMON_START_IDLE_BUDGET_SECONDS,
-                    identity_transaction=transaction,
+                    expected_identity_generation=generation,
                 )
             except Exception as error:
                 code = getattr(error, "code", ipc_errors.DAEMON_START_FAILED)
+                lost = superseded("the daemon launched for it exited as stale")
+                if lost is not None:
+                    raise lost from error
                 if code in _CUSTODY_STARTUP_ERROR_SHAPES:
                     # The switch committed and the old generation is proven
                     # gone, but the new generation refused to start at the
@@ -606,6 +645,9 @@ def _run_login_cli_flow(
                 and (not isinstance(old_epoch, str) or launched.epoch != old_epoch)
             )
             if not verified:
+                lost = superseded("the serving daemon does not carry it")
+                if lost is not None:
+                    raise lost
                 raise services.CliError(
                     "LOGIN_VERIFY_FAILED",
                     "new daemon did not verify the committed identity and migration",
@@ -648,11 +690,6 @@ def _run_login_cli_flow(
             "verificationUri": result.verification_uri,
             "userCode": result.user_code,
         }
-        if held_identity_transaction is not None and transaction is not None:
-            # First-time setup hands the held lock to init's start path,
-            # which launches under it and then closes it.
-            held_identity_transaction.append(transaction)
-            transaction = None
         return response
     except KeyboardInterrupt as error:
         if not identity_committed:
@@ -679,42 +716,13 @@ def _run_login_cli_flow(
     finally:
         if transaction is not None:
             transaction.close()
-
-
-def _pickup_org_invites_after_login(home: Path) -> JsonObject:
-    """One best-effort ``org pending`` run after a verified login (§5.3, D12).
-
-    Any failure — no device record, a refused refresh, an unreachable
-    account server — is reported in the result's ``pending`` field as a
-    warning; it never changes the login result or its exit code.  The
-    join itself is the daemon's (IPC ``org.join``); this only orchestrates.
-    """
-    services = get_services()
-    try:
-        from hyprial.shell.impl.invites import pending as pending_module
-        from hyprial.shell.impl.invites.join import request_join
-
-        outcome = pending_module.run_pending(
-            home,
-            accept_all=True,
-            confirm=None,
-            ipc_join=lambda link: request_join(services.runtime, link),
-            ipc_list=lambda: services.runtime.request("org.list"),
-            now=None,
-        )
-    except Exception as error:  # noqa: BLE001 - D12: best effort by ruling
-        return {
-            "status": "failed",
-            "code": str(getattr(error, "code", "INVITE_PICKUP_FAILED")),
-            "message": str(error),
-        }
-    return {
-        "status": "ok",
-        "joined": outcome.get("joined", []),
-        "failed": outcome.get("failed", []),
-        "skipped": outcome.get("skipped", 0),
-        "warnings": outcome.get("warnings", []),
-    }
+        if not identity_committed and daemon_before.get("stoppedVia") == "supervisor":
+            # The switch stopped the old generation through the supervisor
+            # and then failed before the commit: identity is unchanged, so
+            # bring the old daemon back the way KeepAlive/Restart=always did
+            # before stops went through the supervisor.  Best effort; the
+            # failure's nextStep names `hyprial daemon start` either way.
+            daemon_before["restart"] = _restart_supervised_after_failed_switch()
 
 
 def _login_device_id() -> str:

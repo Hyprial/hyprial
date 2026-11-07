@@ -1,0 +1,524 @@
+Subject: [PATCH] derphttp: bound proxy node dials and expose typed regional rejection
+
+Upstreamable transport API: actual all-node CONNECT rejection, scoped by
+client identity, regional node definitions and subscription generation.
+No log-driven cancellation or new connection identity. Caller owns cancellation.
+
+--- a/derp/derphttp/derphttp_client.go
++++ b/derp/derphttp/derphttp_client.go
+@@ -7,6 +7,16 @@
+ // A server can implement DERP over HTTPS and even if the TLS connection
+ // intercepted using a fake root CA, unless the interceptor knows how to
+ // detect DERP packets, it will look like a web socket.
++//
++// Upstreamable proxy startup boundary: proxied node dialing has the same bounded
++// TCP/TLS/CONNECT lifetime as direct dialing. SubscribeProxyRejections reports
++// actual exhaustion only when all eligible regional nodes return non-200 CONNECT
++// responses. Timeouts and other transient errors keep their existing behavior.
++// Subscriptions match the client's public key, region ID and node definitions, not
++// logs. Probers are excluded. Each subscription is a generation captured when a
++// regional dial starts; unsubscribe invalidates that generation, including delayed
++// results. Subscribe before Ping and always unsubscribe on exit. Channels are
++// buffered, never closed, and carry only status codes. Consumers own cancellation.
+ package derphttp
+ 
+ import (
+@@ -14,8 +24,10 @@
+ 	"cmp"
+ 	"context"
+ 	"crypto/rand"
++	"crypto/sha256"
+ 	"crypto/tls"
+ 	"crypto/x509"
++	"encoding/json"
+ 	"errors"
+ 	"fmt"
+ 	"io"
+@@ -49,6 +61,97 @@
+ 	"tailscale.com/types/logger"
+ )
+ 
++type ProxyConnectError struct {
++	StatusCode int
++}
++
++func (e *ProxyConnectError) Error() string {
++	return fmt.Sprintf("proxy CONNECT rejected with status %d", e.StatusCode)
++}
++
++type ProxyRegionError struct {
++	StatusCodes []int
++}
++
++func (e *ProxyRegionError) Error() string {
++	return fmt.Sprintf("all regional proxy CONNECT requests rejected: %v", e.StatusCodes)
++}
++
++type proxyRejectionScope struct {
++	client key.NodePublic
++	region [32]byte
++}
++
++type proxyRejectionSubscription struct {
++	result chan *ProxyRegionError
++	active bool
++}
++
++var proxyRejectionSubscriptions = struct {
++	sync.Mutex
++	entries map[proxyRejectionScope]map[*proxyRejectionSubscription]bool
++}{entries: make(map[proxyRejectionScope]map[*proxyRejectionSubscription]bool)}
++
++func proxyScope(client key.NodePublic, region *tailcfg.DERPRegion) proxyRejectionScope {
++	encoded, _ := json.Marshal(struct {
++		ID    tailcfg.DERPRegionID
++		Nodes []*tailcfg.DERPNode
++	}{region.RegionID, region.Nodes})
++	return proxyRejectionScope{client, sha256.Sum256(encoded)}
++}
++
++func SubscribeProxyRejections(client key.NodePublic, region *tailcfg.DERPRegion) (<-chan *ProxyRegionError, func()) {
++	if client.IsZero() || region == nil {
++		return nil, func() {}
++	}
++	scope := proxyScope(client, region)
++	sub := &proxyRejectionSubscription{result: make(chan *ProxyRegionError, 1), active: true}
++	registry := &proxyRejectionSubscriptions
++	registry.Lock()
++	if registry.entries[scope] == nil {
++		registry.entries[scope] = make(map[*proxyRejectionSubscription]bool)
++	}
++	registry.entries[scope][sub] = true
++	registry.Unlock()
++	return sub.result, func() {
++		registry.Lock()
++		defer registry.Unlock()
++		sub.active = false
++		delete(registry.entries[scope], sub)
++		if len(registry.entries[scope]) == 0 {
++			delete(registry.entries, scope)
++		}
++	}
++}
++
++func (c *Client) proxyRejectionWaiters(region *tailcfg.DERPRegion) []*proxyRejectionSubscription {
++	if c.IsProber || c.privateKey.IsZero() {
++		return nil
++	}
++	registry := &proxyRejectionSubscriptions
++	registry.Lock()
++	defer registry.Unlock()
++	var result []*proxyRejectionSubscription
++	for sub := range registry.entries[proxyScope(c.privateKey.Public(), region)] {
++		result = append(result, sub)
++	}
++	return result
++}
++
++func publishProxyRejection(waiters []*proxyRejectionSubscription, statuses []int) {
++	registry := &proxyRejectionSubscriptions
++	registry.Lock()
++	defer registry.Unlock()
++	for _, sub := range waiters {
++		if sub.active {
++			select {
++			case sub.result <- &ProxyRegionError{StatusCodes: append([]int(nil), statuses...)}:
++			default:
++			}
++		}
++	}
++}
++
+ // Client is a DERP-over-HTTP client.
+ //
+ // It automatically reconnects on error retry. That is, a failed Send or
+@@ -387,7 +490,7 @@
+ 			if ctx.Err() != nil {
+ 				err = fmt.Errorf("%v: %v", ctx.Err(), err)
+ 			}
+-			err = fmt.Errorf("%s connect to %v: %v", caller, c.targetString(reg), err)
++			err = fmt.Errorf("%s connect to %v: %w", caller, c.targetString(reg), err)
+ 			if tcpConn != nil {
+ 				go tcpConn.Close()
+ 			}
+@@ -638,7 +741,10 @@
+ 	if len(reg.Nodes) == 0 {
+ 		return nil, nil, fmt.Errorf("no nodes for %s", c.targetString(reg))
+ 	}
++	waiters := c.proxyRejectionWaiters(reg)
+ 	var firstErr error
++	var statuses []int
++	attempted := 0
+ 	for _, n := range reg.Nodes {
+ 		if n.STUNOnly {
+ 			if firstErr == nil {
+@@ -646,13 +752,22 @@
+ 			}
+ 			continue
+ 		}
++		attempted++
+ 		c, err := c.dialNode(ctx, n)
+ 		if err == nil {
+ 			return c, n, nil
+ 		}
++		var rejection *ProxyConnectError
++		if errors.As(err, &rejection) {
++			statuses = append(statuses, rejection.StatusCode)
++		}
+ 		if firstErr == nil {
+ 			firstErr = err
+ 		}
++	}
++	if attempted > 0 && len(statuses) == attempted && ctx.Err() == nil {
++		publishProxyRejection(waiters, statuses)
++		return nil, nil, &ProxyRegionError{StatusCodes: statuses}
+ 	}
+ 	return nil, nil, firstErr
+ }
+@@ -846,6 +961,9 @@
+ 
+ // dialNodeUsingProxy connects to n using a CONNECT to the HTTP(s) proxy in proxyURL.
+ func (c *Client) dialNodeUsingProxy(ctx context.Context, n *tailcfg.DERPNode, proxyURL *url.URL) (_ net.Conn, err error) {
++	ctx, cancel := context.WithTimeout(ctx, dialNodeTimeout)
++	defer cancel()
++
+ 	// n.HostName comes from the control-supplied DERP map and is written
+ 	// verbatim into the CONNECT request line and Host header below. Reject
+ 	// anything that isn't a valid host value so a hostname carrying CR/LF (or
+@@ -876,16 +994,8 @@
+ 		return nil, err
+ 	}
+ 
+-	done := make(chan struct{})
+-	defer close(done)
+-	go func() {
+-		select {
+-		case <-done:
+-			return
+-		case <-ctx.Done():
+-			proxyConn.Close()
+-		}
+-	}()
++	stopClose := context.AfterFunc(ctx, func() { proxyConn.Close() })
++	defer stopClose()
+ 
+ 	// Keep port selection in sync with dialNode.
+ 	port := "443"
+@@ -926,7 +1036,7 @@
+ 	}
+ 	c.logf("derphttp: CONNECT dial to %s: %v", target, res.Status)
+ 	if res.StatusCode != 200 {
+-		return nil, fmt.Errorf("invalid response status from HTTP proxy %s on CONNECT to %s: %v", pu, target, res.Status)
++		return nil, &ProxyConnectError{StatusCode: res.StatusCode}
+ 	}
+ 	return proxyConn, nil
+ }
+--- /dev/null
++++ b/derp/derphttp/proxy_deadline_test.go
+@@ -0,0 +1,306 @@
++// Copyright (c) Tailscale Inc & contributors
++// SPDX-License-Identifier: BSD-3-Clause
++
++package derphttp
++
++import (
++	"context"
++	"errors"
++	"io"
++	"net"
++	"net/http"
++	"net/http/httptest"
++	"net/url"
++	"sync"
++	"testing"
++	"time"
++
++	"tailscale.com/feature"
++	"tailscale.com/tailcfg"
++	"tailscale.com/types/key"
++)
++
++func TestProxyDialNodeDeadline(t *testing.T) {
++	for _, mode := range []string{"response-timeout", "parent-cancel", "connected"} {
++		t.Run(mode, func(t *testing.T) {
++			proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				conn, _, err := w.(http.Hijacker).Hijack()
++				if err != nil {
++					t.Error(err)
++					return
++				}
++				defer conn.Close()
++				conn.SetDeadline(time.Now().Add(10 * time.Second))
++				if mode == "connected" {
++					io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n")
++					io.Copy(conn, conn)
++				} else {
++					io.Copy(io.Discard, conn)
++				}
++			}))
++			defer proxy.Close()
++			proxyURL, err := url.Parse(proxy.URL)
++			if err != nil {
++				t.Fatal(err)
++			}
++			budget := 6 * time.Second
++			if mode == "parent-cancel" {
++				budget = 100 * time.Millisecond
++			}
++			ctx, cancel := context.WithTimeout(context.Background(), budget)
++			defer cancel()
++			client := &Client{logf: t.Logf}
++			node := &tailcfg.DERPNode{HostName: "relay.invalid", DERPPort: 443}
++			started := time.Now()
++			conn, err := client.dialNodeUsingProxy(ctx, node, proxyURL)
++			elapsed := time.Since(started)
++			if mode == "connected" {
++				if err != nil {
++					t.Fatal(err)
++				}
++				defer conn.Close()
++				timer := time.NewTimer(dialNodeTimeout + 300*time.Millisecond)
++				defer timer.Stop()
++				select {
++				case <-timer.C:
++				case <-ctx.Done():
++					t.Fatal(ctx.Err())
++				}
++				conn.SetDeadline(time.Now().Add(time.Second))
++				if _, err := io.WriteString(conn, "x"); err != nil {
++					t.Fatal(err)
++				}
++				var reply [1]byte
++				if _, err := io.ReadFull(conn, reply[:]); err != nil || reply[0] != 'x' {
++					t.Fatalf("successful tunnel did not survive dial cancellation: %v", err)
++				}
++				return
++			}
++			if conn != nil {
++				conn.Close()
++			}
++			if err == nil {
++				t.Fatal("hung CONNECT succeeded")
++			}
++			limit := dialNodeTimeout + time.Second
++			if mode == "parent-cancel" {
++				limit = time.Second
++			}
++			if elapsed > limit {
++				t.Fatalf("deadline ignored: %s > %s", elapsed, limit)
++			}
++		})
++	}
++}
++
++func TestProxyDialTLSDeadline(t *testing.T) {
++	ln, err := net.Listen("tcp", "127.0.0.1:0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer ln.Close()
++	done := make(chan struct{})
++	go func() {
++		defer close(done)
++		conn, err := ln.Accept()
++		if err != nil {
++			return
++		}
++		defer conn.Close()
++		conn.SetDeadline(time.Now().Add(8 * time.Second))
++		io.Copy(io.Discard, conn)
++	}()
++	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
++	defer cancel()
++	client := &Client{logf: t.Logf}
++	started := time.Now()
++	conn, err := client.dialNodeUsingProxy(ctx, &tailcfg.DERPNode{HostName: "relay.invalid"}, &url.URL{Scheme: "https", Host: ln.Addr().String()})
++	if conn != nil {
++		conn.Close()
++	}
++	if err == nil || time.Since(started) > dialNodeTimeout+time.Second {
++		t.Fatalf("proxy TLS ignored node deadline: %v after %s", err, time.Since(started))
++	}
++	select {
++	case <-done:
++	case <-time.After(time.Second):
++		t.Fatal("proxy connection not closed")
++	}
++}
++
++func TestProxyRegionRejection(t *testing.T) {
++	for _, status := range []int{403, 407, 503} {
++		for _, healthy := range []bool{false, true} {
++			proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				if healthy && r.Host == "healthy.invalid:443" {
++					w.WriteHeader(200)
++				} else {
++					w.WriteHeader(status)
++				}
++			}))
++			proxyURL, _ := url.Parse(proxy.URL)
++			restore := feature.HookProxyFromEnvironment.SetForTest(func(*http.Request) (*url.URL, error) { return proxyURL, nil })
++			region := &tailcfg.DERPRegion{RegionID: 1, Nodes: []*tailcfg.DERPNode{{HostName: "blocked.invalid"}, {HostName: "healthy.invalid"}}}
++			k := key.NewNode()
++			ch, stop := SubscribeProxyRejections(k.Public(), region)
++			client := &Client{privateKey: k, logf: t.Logf}
++			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
++			started := time.Now()
++			conn, _, err := client.dialRegion(ctx, region)
++			cancel()
++			if conn != nil {
++				conn.Close()
++			}
++			if time.Since(started) > 500*time.Millisecond {
++				t.Error("proxy rejection was not prompt")
++			}
++			if healthy {
++				if err != nil {
++					t.Errorf("healthy later node rejected: %v", err)
++				}
++				select {
++				case <-ch:
++					t.Error("notified before healthy later node")
++				default:
++				}
++			} else {
++				var rejection *ProxyRegionError
++				if !errors.As(err, &rejection) {
++					t.Errorf("not a typed regional rejection: %v", err)
++				}
++				select {
++				case event := <-ch:
++					if len(event.StatusCodes) != 2 || event.StatusCodes[0] != status || event.StatusCodes[1] != status {
++						t.Errorf("wrong statuses: %v", event)
++					}
++				default:
++					t.Error("missing actual region-exhaustion notification")
++				}
++			}
++			stop()
++			restore()
++			proxy.Close()
++		}
++	}
++}
++
++func TestProxyRejectionLateGeneration(t *testing.T) {
++	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
++	defer cancel()
++	entered, release := make(chan struct{}, 1), make(chan struct{})
++	releaseNow := sync.OnceFunc(func() { close(release) })
++	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		entered <- struct{}{}
++		select {
++		case <-release:
++			w.WriteHeader(403)
++		case <-ctx.Done():
++		}
++	}))
++	defer proxy.Close()
++	defer releaseNow()
++	proxyURL, _ := url.Parse(proxy.URL)
++	restore := feature.HookProxyFromEnvironment.SetForTest(func(*http.Request) (*url.URL, error) { return proxyURL, nil })
++	defer restore()
++	region := &tailcfg.DERPRegion{RegionID: 1, Nodes: []*tailcfg.DERPNode{{HostName: "blocked.invalid"}}}
++	k := key.NewNode()
++	old, stopOld := SubscribeProxyRejections(k.Public(), region)
++	defer stopOld()
++	finished := make(chan error, 1)
++	go func() {
++		client := &Client{privateKey: k, logf: t.Logf}
++		_, _, err := client.dialRegion(ctx, region)
++		finished <- err
++	}()
++	select {
++	case <-entered:
++	case <-ctx.Done():
++		t.Fatal(ctx.Err())
++	}
++	stopOld()
++	current, stopCurrent := SubscribeProxyRejections(k.Public(), region)
++	defer stopCurrent()
++	releaseNow()
++	select {
++	case err := <-finished:
++		if err == nil {
++			t.Fatal("expected rejection")
++		}
++	case <-ctx.Done():
++		t.Fatal(ctx.Err())
++	}
++	for _, ch := range []<-chan *ProxyRegionError{old, current} {
++		select {
++		case <-ch:
++			t.Error("late dial notified a cancelled or later Ping generation")
++		default:
++		}
++	}
++}
++
++func TestProxyRejectionConcurrentSubscriptions(t *testing.T) {
++	region := &tailcfg.DERPRegion{RegionID: 1, Nodes: []*tailcfg.DERPNode{{HostName: "blocked.invalid"}}}
++	client := &Client{privateKey: key.NewNode()}
++	var wg sync.WaitGroup
++	for range 100 {
++		wg.Add(1)
++		go func() {
++			defer wg.Done()
++			_, stop := SubscribeProxyRejections(client.privateKey.Public(), region)
++			waiters := client.proxyRejectionWaiters(region)
++			stop()
++			publishProxyRejection(waiters, []int{403})
++		}()
++	}
++	finished := make(chan struct{})
++	go func() { wg.Wait(); close(finished) }()
++	select {
++	case <-finished:
++	case <-time.After(3 * time.Second):
++		t.Fatal("subscription cleanup blocked")
++	}
++	proxyRejectionSubscriptions.Lock()
++	defer proxyRejectionSubscriptions.Unlock()
++	if len(proxyRejectionSubscriptions.entries) != 0 {
++		t.Error("concurrent subscriptions leaked")
++	}
++}
++
++func TestProxyRejectionSubscriptionScope(t *testing.T) {
++	region := &tailcfg.DERPRegion{RegionID: 1, Nodes: []*tailcfg.DERPNode{{HostName: "relay.invalid"}}}
++	other := &tailcfg.DERPRegion{RegionID: 1, Nodes: []*tailcfg.DERPNode{{HostName: "other.invalid"}}}
++	k := key.NewNode()
++	first, stopFirst := SubscribeProxyRejections(k.Public(), region)
++	unrelated, stopUnrelated := SubscribeProxyRejections(key.NewNode().Public(), region)
++	otherRegion, stopOther := SubscribeProxyRejections(k.Public(), other)
++	client := &Client{privateKey: k}
++	old := client.proxyRejectionWaiters(region)
++	stopFirst()
++	second, stopSecond := SubscribeProxyRejections(k.Public(), region)
++	stopFirst()
++	publishProxyRejection(old, []int{403})
++	client.IsProber = true
++	publishProxyRejection(client.proxyRejectionWaiters(region), []int{403})
++	for _, ch := range []<-chan *ProxyRegionError{first, second, unrelated, otherRegion} {
++		select {
++		case <-ch:
++			t.Error("stale, probe, or unrelated notification")
++		default:
++		}
++	}
++	client.IsProber = false
++	publishProxyRejection(client.proxyRejectionWaiters(region), []int{407})
++	select {
++	case <-second:
++	default:
++		t.Error("active generation not notified")
++	}
++	stopSecond()
++	stopUnrelated()
++	stopOther()
++	proxyRejectionSubscriptions.Lock()
++	defer proxyRejectionSubscriptions.Unlock()
++	if len(proxyRejectionSubscriptions.entries) != 0 {
++		t.Error("subscription leaked")
++	}
++}

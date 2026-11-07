@@ -516,7 +516,7 @@ class _AgentsRegistryMixin:
         from hyprial.daemon.impl.harnesses.capabilities import declare
         from hyprial.daemon.impl.pac.actors.marker import retain_managed_creation
 
-        agent = self.agents.get(name)
+        agent = self.agents.current(name)
         same_harness = agent is not None and (
             agent.capabilities.get("harness", agent.preferred_harness) == harness
         )
@@ -574,12 +574,8 @@ class _AgentsRegistryMixin:
         }
         if cwd is not None and agent.cwd != cwd:
             changes["cwd"] = cwd
-        # ``harness_args`` is durable default configuration (agent create /
-        # --harness-args), not a scratchpad for the last launch. Rewriting it
-        # made prior launch flags into defaults and revived them after A -> B -> A;
-        # the last launch's args already live in the desired-state row.
         if changes:
-            agent = self.agents.save(replace(agent, **changes))
+            agent = self.agents.save(replace(agent, **changes), preserve_harness_args=True)
         self._publish_agent_restore_allow(agent)
         return agent
 

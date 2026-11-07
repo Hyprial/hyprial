@@ -1,0 +1,14 @@
+# codex PreToolUse hook —— 与 Claude 共用同一个脚本 .agents/hooks/enforce-uv.py。
+# codex 的 hook 配置在 ~/.codex/config.toml(全局)或经 -c 覆盖。把下面这段并入
+# ~/.codex/config.toml,即让 codex 在本仓也走 uv。脚本契约两 harness 同构。
+[hooks.PreToolUse]
+matcher = "shell"
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "python3 /ABSOLUTE/PATH/TO/harness-bridge/.agents/hooks/enforce-uv.py"
+
+# 分支命名提醒 hook —— 与 Claude 共用同一个脚本 .agents/hooks/branch-name-hint.py。
+# 同样把绝对路径填对后并入 ~/.codex/config.toml；它只往 stderr 提醒，不拦命令。
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "python3 /ABSOLUTE/PATH/TO/harness-bridge/.agents/hooks/branch-name-hint.py"

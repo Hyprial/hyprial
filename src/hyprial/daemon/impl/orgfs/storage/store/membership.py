@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 # orgfs pending-replay fix (2026-11-02, M-emergent-org-structure-refactor-0062):
 # _membership_at replays the meta journal once per token: candidates are
 # trialed on a scratch Doc; only accepted updates reach the probe Doc.  A
@@ -7,6 +5,10 @@ from __future__ import annotations
 # merged baseline; pending failures leave no trace in pycrdt 0.14.9.
 # Unresolvable tokens are memoized in memory keyed by the meta-history head
 # (count, max rowid of meta commits); meta_frontiers stays durable cache.
+# Metadata replay checkpoints yield to the pending-drain deadline and resume
+# only while the immutable journal head remains the same.
+
+from __future__ import annotations
 
 import hashlib
 import json
@@ -14,6 +16,7 @@ import json
 from typing import Any, Iterable, Mapping
 
 from pycrdt import Doc, Map, merge_updates
+from hyprial.daemon.impl.orgfs.storage.store.snapshots import _FrontierSnapshot
 from hyprial.daemon.impl.orgfs.storage.store.vocabulary import DocMutator, PYCRDT_CLIENT_ID_MAX, RetirementRecord, StoreError, _LOG, _MEMBERSHIP_MEMO_LIMIT, _changed_meta_entries, _decode_state_vector, _doc_roots, _empty_meta, _encode_state_vector, _now, _state_covers, _unb64, _wire_doc_id, _writer_is_safe
 _MEMBER_ADD_FRONTIER_SCHEMA_VERSION = 1
 
@@ -690,14 +693,14 @@ class StoreMembership:
     ) -> tuple[str | None, dict[str, dict[str, Any]], Doc] | None:
         if not token:
             return None
+        self._refresh_meta_frontiers()
         row = self._db.execute(
             "SELECT owner, membership_json, meta_update FROM meta_frontiers WHERE token = ?",
             (token,),
         ).fetchone()
         if row is not None and row["meta_update"] is not None:
             try:
-                cached = Doc()
-                cached.apply_update(bytes(row["meta_update"]))
+                cached = _FrontierSnapshot(bytes(row["meta_update"]))
                 membership = json.loads(str(row["membership_json"]))
             except (TypeError, ValueError, json.JSONDecodeError):
                 pass
@@ -714,6 +717,26 @@ class StoreMembership:
             self._membership_memo.clear()
         elif token in self._membership_memo:
             return None
+        result = self._membership_from_baseline(token, head)
+        if result is None:
+            result = self._resume_meta_work(
+                token, head, lambda: self._replay_membership(token)
+            )
+        if result is None:
+            if len(self._membership_memo) >= _MEMBERSHIP_MEMO_LIMIT:
+                self._membership_memo.clear()
+            self._membership_memo.add(token)
+            return None
+        owner, membership, probe = result
+        if row is None:
+            self._db.execute(
+                "INSERT OR REPLACE INTO meta_frontiers(token, owner, membership_json, meta_update) VALUES (?, ?, ?, ?)",
+                (token, owner, json.dumps(membership, sort_keys=True, separators=(",", ":")), probe.get_update()),
+            )
+            self._db.commit()
+        return result
+
+    def _replay_membership(self, token: bytes):
         owner = self._genesis_owner()
         if owner is None:
             return None
@@ -730,6 +753,7 @@ class StoreMembership:
         for commit in self._db.execute(
             "SELECT envelope_bytes FROM commits WHERE doc_id = 'meta' ORDER BY rowid"
         ):
+            yield
             try:
                 envelope = self._decode_envelope(bytes(commit["envelope_bytes"]))
                 update = self._update_bytes(envelope)
@@ -745,7 +769,9 @@ class StoreMembership:
         scratch = Doc()
         for update in selected:
             probe.apply_update(update)
+            yield
             scratch.apply_update(update)
+            yield
         scratch_state = scratch.get_state()
         accepted: list[bytes] = []
         for before, update in candidates:
@@ -753,6 +779,7 @@ class StoreMembership:
                 continue
             try:
                 scratch.apply_update(update)
+                yield
             except (TypeError, ValueError):
                 return None
             trial_state = scratch.get_state()
@@ -760,6 +787,7 @@ class StoreMembership:
             trial_frontier = {client: clock for client, clock in trial.items() if client not in ignored_ids}
             if self._state_map_covers(target, trial_frontier):
                 probe.apply_update(update)
+                yield
                 accepted.append(update)
                 scratch_state = trial_state
             elif trial_state != scratch_state:
@@ -770,6 +798,8 @@ class StoreMembership:
                     except (TypeError, ValueError):
                         for replayed in (*selected, *accepted):
                             scratch.apply_update(replayed)
+                            yield
+                yield
                 scratch_state = scratch.get_state()
         projected = {
             client: clock
@@ -777,51 +807,15 @@ class StoreMembership:
             if client not in ignored_ids
         }
         if projected != target:
-            memo = self._membership_memo
-            if len(memo) >= _MEMBERSHIP_MEMO_LIMIT:
-                memo.clear()
-            memo.add(token)
             return None
         roots = _doc_roots(probe)
         members = roots.get("members")
         membership = members if isinstance(members, dict) else {}
-        if row is None:
-            self._db.execute(
-                "INSERT OR REPLACE INTO meta_frontiers(token, owner, membership_json, meta_update) VALUES (?, ?, ?, ?)",
-                (
-                    token,
-                    owner,
-                    json.dumps(membership, sort_keys=True, separators=(",", ":")),
-                    probe.get_update(),
-                ),
-            )
-            self._db.commit()
+        head = self._meta_history_head()
+        if len(selected) + len(accepted) == head[0]:
+            self._meta_baseline = (head, probe)
+            probe = _FrontierSnapshot(probe.get_update())
         return owner, membership, probe
-
-    def _record_meta_frontier(self, token: bytes) -> None:
-        # A member-authored suffix can cite an older owner frontier without
-        # advancing the current owner projection.  Every cached baseline that
-        # covers that suffix is therefore potentially stale.  Invalidate all
-        # rows and eagerly rematerialize the current token; older tokens stay
-        # lazy and are rebuilt from the immutable journal on their next read.
-        with self._db:
-            self._db.execute("DELETE FROM meta_frontiers")
-        if self._membership_at(token) is None:
-            # The journal is authoritative.  A later admission read derives
-            # this row lazily, and the next meta commit retries the live head.
-            _LOG.warning(
-                "orgfs deferred metadata frontier materialization: space=%s",
-                self.space_id,
-            )
-
-    def _rebuild_meta_frontiers(self) -> None:
-        owner = self._owner()
-        token = self._project_frontier(self._docs["meta"], owner)
-        if token:
-            self._record_meta_frontier(token)
-
-    def _meta_frontier_for_commit(self) -> bytes:
-        return self._project_frontier(self._docs["meta"], self._owner())
 
     def _writer_registered(self, writer: str) -> bool:
         writers = _doc_roots(self._docs["meta"]).get("writers")

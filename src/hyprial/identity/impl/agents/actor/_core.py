@@ -137,12 +137,13 @@ class AgentActor:
         runtime: ActorRuntime | None = None,
         session_originated: Callable[[str], bool] | None = None,
         home_runtime_preparers: Mapping[str, HomeRuntimePreparer | None] | None = None,
+        home_notice_reporter: Callable[[AgentRuntimeContext], None] | None = None,
     ) -> None:
         self._registry = registry
-        # Owned by the actor, not a generation: totals survive restarts.
         self._command_costs = CallCostCounters(_AGENT_COST_KEYS, wall=False)
         self._session_originated = session_originated
         self._home_runtime_preparers = home_runtime_preparers
+        self._home_notice_reporter = home_notice_reporter
         self._machine = registry.machine
         self._liveness = liveness or AgentLiveness(
             node_id=registry.machine,
@@ -307,8 +308,6 @@ class AgentActor:
     def _migration_command_actor(self, command: object) -> str | None:
         """Resolve a typed Agent command's affected local identity."""
 
-        # Retiring an earlier launch/destroy receipt must continue so the
-        # daemon can drain. Migration admission itself checked those lanes.
         if isinstance(command, (
             ReleaseAgentRuntimeLaunchCommand,
             ReleaseAgentDestroyReservationCommand,
@@ -403,6 +402,7 @@ class AgentActor:
                 self._registry.database.parent,
                 self._registry.home_provisioner.hyprial_home,
                 tuple(item for item in (self._home_runtime_preparers or {}).items() if item[1] is not None),
+                self._home_notice_reporter,
             )
             self._migration_effects.submit_reserved(EffectRequest(operation_id, 0, effect))
         except BaseException as error:
@@ -594,9 +594,7 @@ class AgentActor:
                 submit = False
             entry.consumers += 1
         if submit:
-            admission = self._runtime.tell(
-                self._handle, request,
-            )
+            admission = self._runtime.tell(self._handle, request)
             if admission is not AdmissionResult.ACCEPTED:
                 self._finish_migration_waiter(
                     token, MigrationOutcome.failed(AgentError(f"migration admission is {admission.value}"))
@@ -697,6 +695,9 @@ class AgentActor:
     def read_agent(self, name: str) -> AgentProjection | None:
         return self._projection.read_agent(name)
 
+    def read_current_agent(self, name: str) -> Agent | None:
+        return self._read_effects.agent_record(name)
+
     def read_agents(self) -> tuple[AgentProjection, ...]:
         return self._projection.read_agents()
 
@@ -718,9 +719,7 @@ class AgentActor:
         self, actor: str
     ) -> tuple[int, str | None, str | None, str | None]:
         agent = self._projection.read_agent(actor)
-        return self._projection.read_binding_key(
-            actor if agent is None else agent.uri
-        )
+        return self._projection.read_binding_key(actor if agent is None else agent.uri)
 
     def read_local_actor(self, value: str) -> str | None:
         parsed = parse_agent_uri(value)
@@ -794,7 +793,7 @@ class AgentActor:
         actor: str,
         harness: str,
         cwd: str | None,
-        tool_profile: AgentToolProfile,
+        tool_profile: AgentToolProfile | None = None,
         *,
         containerized: bool = False,
         credential_preflight: bool = False,

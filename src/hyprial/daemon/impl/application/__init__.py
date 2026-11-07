@@ -212,9 +212,7 @@ from hyprial.daemon.impl.application.messaging.maintenance import (
     _BoundedRecipientWakes as _BoundedRecipientWakes,
 )
 from hyprial.daemon.impl.alias_resolver import daemon_alias_resolver
-from hyprial.daemon.impl.application.shutdown import (
-    _StopRequestTrace as _StopRequestTrace,
-)
+from hyprial.daemon.impl.application.shutdown import (_StopRequestTrace as _StopRequestTrace)
 from hyprial.daemon.impl.application.wiring.transport import (
     _HarnessActorRegistration as _HarnessActorRegistration,
 )
@@ -633,6 +631,7 @@ class DaemonApplication(
             session_desired_state=getattr(
                 self._state_persistence, "settled_desired", self.desired_state
             ),
+            agent_runtime_notice_reporter=self._report_agent_runtime_notices,
         ))
         self.agents = self._agent_session_domains.agents
         self._alias_resolver = daemon_alias_resolver(
@@ -810,6 +809,7 @@ class DaemonApplication(
             )
         self._legacy_agent_home_log_lock = threading.Lock()
         self._legacy_agent_home_logged: set[str] = set()
+        self._agent_runtime_notice_log = (threading.Lock(), set[tuple[str, str, str]]())
         self._orgfs_runtime: OrgFsRuntime | None = None
         self._org_directory_quarantine = InvalidDeviceQuarantine()
         self._org_identity_binding_projector: Any | None = None

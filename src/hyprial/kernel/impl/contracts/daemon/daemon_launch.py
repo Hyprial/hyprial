@@ -15,6 +15,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+#: Set to ``"1"`` by whatever relaunches ``hyprial daemon run`` on exit
+#: (launchd/systemd unit templates; docker/k8s entrypoints must set it too).
+#: Start backoff and wait-while-healthy key on it; the CLI launcher never does.
+SERVICE_MANAGED_ENV = "HYPRIAL_SERVICE_MANAGED"
+
+#: Per-launch nonce the CLI launcher hands its ``daemon run`` child; the daemon
+#: records it as ``launchId`` in ``daemon.json`` and the launcher's readiness
+#: fence matches on it.  ``Popen.pid`` is not the daemon's identity: a venv /
+#: ``uv tool`` ``python.exe`` on Windows is a redirector that starts the real
+#: interpreter as another process, so ``os.getpid()`` there never equals the
+#: launcher's ``Popen.pid``.  Used on every platform (no ``os.name`` branch).
+DAEMON_LAUNCH_ID_ENV = "HYPRIAL_DAEMON_LAUNCH_ID"
+
 
 def _ping_block(status: Mapping[str, Any]) -> Mapping[str, Any]:
     """See through the legacy ps nest; this build's ping answer is flat.

@@ -1,0 +1,117 @@
+{
+  "id": "G2",
+  "title": "A doorbell ring lists again and delivers only messages not seen before",
+  "steps": [
+    {
+      "at": 0,
+      "lane": "poll",
+      "expect": {
+        "op": "register"
+      }
+    },
+    {
+      "at": 0,
+      "lane": "poll",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e1"
+        }
+      }
+    },
+    {
+      "at": 0,
+      "lane": "poll",
+      "expect": {
+        "op": "list"
+      }
+    },
+    {
+      "at": 0,
+      "lane": "poll",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e1",
+          "messages": [
+            {
+              "messageId": "m1",
+              "deliveryId": "m1"
+            }
+          ]
+        }
+      },
+      "emit": {
+        "new": [
+          "m1"
+        ]
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "wait",
+        "knownMessageIds": [
+          "m1"
+        ]
+      }
+    },
+    {
+      "lane": "poll",
+      "at": 1200,
+      "respond": {
+        "ok": {
+          "ok": true,
+          "changed": true,
+          "held": true,
+          "daemonEpoch": "e1"
+        }
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "list"
+      }
+    },
+    {
+      "lane": "poll",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e1",
+          "messages": [
+            {
+              "messageId": "m1",
+              "deliveryId": "m1"
+            },
+            {
+              "messageId": "m2",
+              "deliveryId": "m2"
+            }
+          ]
+        }
+      },
+      "emit": {
+        "new": [
+          "m2"
+        ]
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "wait",
+        "knownMessageIds": [
+          "m1",
+          "m2"
+        ]
+      }
+    }
+  ],
+  "counters": {
+    "wait.held_changed": 1,
+    "deliver.new": 2,
+    "deliver.dedup": 1
+  }
+}

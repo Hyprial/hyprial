@@ -669,12 +669,6 @@ class _WiringTransportMixin:
             daemon_hooks=daemon_hooks,
             logger=self._log,
         )
-        # Deferred import: hyprial.harnesses eagerly imports .agent_sdk, which
-        # imports hyprial.daemon.impl.api; hyprial.daemon eagerly imports this module, so a
-        # module-level import here would re-enter while hyprial.harnesses is still
-        # partially initialized (import cycle introduced by merging the Agent
-        # SDK driver with the application lifecycle). Both sides stay intact;
-        # by call time every module is fully loaded.
         from hyprial.daemon.impl.harnesses import HarnessLauncher
         from hyprial.daemon.impl.harnesses.worker_channel import WorkerChannel, build_worker_channel
 
@@ -684,16 +678,16 @@ class _WiringTransportMixin:
             # worker's MCP inbox key never drifts from where deliveries land.
             actor = self._canonical_harness_uri(spec.name, spec)
             session_ref = uuid4().hex
-            from hyprial.identity import DEFAULT_AGENT_TOOL_PROFILE
 
             runtime_context = self._agent_session_domains.agent.prepare_runtime_context(
                 actor,
                 spec.harness,
                 spec.cwd,
-                DEFAULT_AGENT_TOOL_PROFILE,
+                None,
                 containerized=spec.containerized,
                 legacy_reporter=self._report_legacy_agent_home,
             )
+            self._report_agent_runtime_notices(runtime_context)
             return build_worker_channel(
                 actor=actor,
                 session_ref=session_ref,
@@ -734,6 +728,7 @@ class _WiringTransportMixin:
         self._provider_auth = provider_auth
         harness_actor = HarnessRuntimeActor(
             HarnessLauncher(
+                last_session_id_reader=lambda spec: self.agents.require(spec.name).last_session_id,
                 worker_channel_factory=worker_channel,
                 daemon_epoch=self.epoch,
                 child_environment_factory=child_environment,

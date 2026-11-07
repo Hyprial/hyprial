@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from hyprial.daemon.impl.orgfs.api import OrgFs, OrgFsError
-from hyprial.daemon.impl.org.network.casdoor import CasdoorGroups, CasdoorMembershipMixin
+from hyprial.daemon.impl.org.network.casdoor import CasdoorGroups, CasdoorMembershipMixin, casdoor_group
 from hyprial.daemon.impl.org.network.binding import resolve_org_acl_space
 from hyprial.daemon.impl.org.network.create import (
     OrgCreateResumeDenied,
@@ -419,7 +419,10 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
                                   operation_id=operation_id, device_ids=device_ids)
         result = {'org': org, 'spaceId': space.space_id, 'user': user, **operation}
         if operation['phase'] == 'complete':
-            result['casdoorGroup'] = self._casdoor_removal_note(org)
+            if operation.get('membershipAction') == 'preserved':
+                result['casdoorGroup'] = 'retained in ' + casdoor_group(org) if self._casdoor else 'not-configured'
+            else:
+                result['casdoorGroup'] = self._casdoor_removal_note(org)
         return result
 
     def delete(self, org: str) -> dict[str, Any]:

@@ -10,14 +10,11 @@ from .context import (
     AgentRuntimeNotice,
     AgentRuntimePreparation,
     AgentRuntimeRoots,
-    AgentToolProfile,
-    DEFAULT_AGENT_TOOL_PROFILE,
     SHARED_CREDENTIAL_CONFLICT,
     SHARED_CREDENTIAL_DIVERGED,
     SHARED_CREDENTIAL_INVALID,
     SHARED_CREDENTIAL_UNSUPPORTED,
     SharedCredentialBinding,
-    SshToolAuthorization,
     agent_home_mode,
     build_agent_runtime_preparation,
     materialize_agent_runtime_context,
@@ -27,6 +24,12 @@ from .context import (
     validate_shared_credential_binding,
     validate_shared_credential_environment,
 )
+from .tool_profile import (
+    AgentToolProfile,
+    GitAuthorUnresolvedError,
+    SshToolAuthorization,
+    resolve_agent_tool_profile,
+)
 
 __all__ = [
     "AgentRuntimeContext",
@@ -35,7 +38,7 @@ __all__ = [
     "AgentRuntimePreparation",
     "AgentRuntimeRoots",
     "AgentToolProfile",
-    "DEFAULT_AGENT_TOOL_PROFILE",
+    "GitAuthorUnresolvedError",
     "SHARED_CREDENTIAL_CONFLICT",
     "SHARED_CREDENTIAL_DIVERGED",
     "SHARED_CREDENTIAL_INVALID",
@@ -47,6 +50,7 @@ __all__ = [
     "materialize_agent_runtime_context",
     "preflight_codex_credential",
     "resolve_agent_runtime_context",
+    "resolve_agent_tool_profile",
     "shared_credential_status",
     "validate_shared_credential_binding",
     "validate_shared_credential_environment",

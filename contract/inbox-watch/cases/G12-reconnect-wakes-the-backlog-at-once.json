@@ -1,0 +1,69 @@
+{
+  "id": "G12",
+  "title": "A reconnecting client wakes an already-signalled backlog on its first list",
+  "steps": [
+    {
+      "at": 2000,
+      "lane": "poll",
+      "expect": {
+        "op": "register"
+      }
+    },
+    {
+      "at": 2000,
+      "lane": "poll",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e1"
+        }
+      }
+    },
+    {
+      "at": 2000,
+      "lane": "poll",
+      "expect": {
+        "op": "list"
+      }
+    },
+    {
+      "at": 2000,
+      "lane": "poll",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e1",
+          "messages": [
+            {
+              "messageId": "m1",
+              "deliveryId": "m1"
+            },
+            {
+              "messageId": "m2",
+              "deliveryId": "m2"
+            }
+          ]
+        }
+      },
+      "emit": {
+        "new": [
+          "m1",
+          "m2"
+        ]
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "wait",
+        "knownMessageIds": [
+          "m1",
+          "m2"
+        ]
+      }
+    }
+  ],
+  "counters": {
+    "first_wake_ms_after_connect": 0
+  }
+}

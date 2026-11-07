@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -14,8 +15,33 @@ from typing import Any, Self
 from hyprial.identity.impl.users._store_lock import json_store_mutation
 
 
+_SAFE_PROFILE_DETAIL = re.compile(
+    r"(?:"
+    r"user profile data contains duplicate owner keys|"
+    r"user profile data must be an object|"
+    r"unsupported user profile data; expected version 1|"
+    r"users\[\d+\]\.(?:agents|notificationRules|runtimeCapabilities) must be an array|"
+    r"users\[\d+\]\.notificationRules\[\d+\]\.keywords must be an array|"
+    r"users\[\d+\]\.squireChannel must be a channel:<owner>:<machine>:<channel> URI|"
+    r"users\[\d+\]\.runtimeCapabilities contains duplicate combinations"
+    r")"
+)
+
+
 class UserProfileError(ValueError):
-    pass
+    @property
+    def safe_detail(self) -> str:
+        cause = self.__cause__
+        if cause is not None:
+            return f"failed to read user profiles: {type(cause).__name__}"
+        message = str(self)
+        if _SAFE_PROFILE_DETAIL.fullmatch(message):
+            return message
+        if re.fullmatch(r"user owner .+ is ambiguous", message):
+            return "user owner <redacted> is ambiguous"
+        if re.fullmatch(r"user profile .+ was not registered", message):
+            return "user profile <redacted> was not registered"
+        return "<redacted>"
 
 
 @dataclass(frozen=True, slots=True)
@@ -361,14 +387,14 @@ class UserProfileStore:
         (``daemon.owner``), which is an **owner key**; a human typing
         ``user:<name>`` usually means the **owner**.  Looking up only one of
         them is what made the upgrade alert unable to find a squire on
-        2026-09-03: ``daemon.owner`` was ``h2oslabs`` while ``profile.owner``
-        was ``allenwoods``, so ``get_by_owner`` returned ``None`` and the
+        2026-09-03: ``daemon.owner`` was ``bobadmin`` while ``profile.owner``
+        was ``alicesmith``, so ``get_by_owner`` returned ``None`` and the
         restart refused fail-closed (``UPGRADE_NOTIFICATION_FAILED``).
 
         ⚠️ Owner key wins, and that is a real decision, not a tie-break of
         convenience: the key is the globally unique anchor, while ``owner`` is
         a display name.  The two vocabularies **share a value space** -- a
-        person's login and their name can both be ``allenwoods`` -- so a value
+        person's login and their name can both be ``alicesmith`` -- so a value
         that is one profile's key and another's owner resolves to the key
         holder.  ``test_owner_key_wins_when_a_value_is_both`` pins that.
 

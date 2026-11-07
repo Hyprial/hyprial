@@ -1,5 +1,5 @@
 {
-  "commit": "b7d56d62ef1efa7ee35cafbc7b1b00ed7c8d94f3",
+  "commit": "6d94236bc93156be1345447fb7415a536333729a",
   "files": [
     {
       "path": ".gitignore",
@@ -599,7 +599,7 @@
     },
     {
       "path": "src/features/onboarding/assets/README.md",
-      "sha256": "5157febd12dd59775b4225aa4801a1e41638e460479256087f66432c973f547b"
+      "sha256": "f8382c15dde09ae7ce8ae57506e010cb54059b1e0c03cd65d2abeb699cd431e9"
     },
     {
       "path": "src/features/onboarding/assets/hyprial-lock-full.png",

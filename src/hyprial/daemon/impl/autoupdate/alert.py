@@ -277,7 +277,7 @@ def _gateway_for_channel(store: PersistentConfigStore, channel: str):
     ⚠️ These two spellings are the same channel, and the first version of this
     file only understood the second:
 
-        users.json     "channel:h2oslabs:hyprial-hq.orkhon-bee.ts.net:allen-squire"
+        users.json     "channel:bobadmin:node-hq-01.example-tailnet.ts.net:allen-squire"
         channels.json  name = "allen-squire"
 
     So every lookup missed, every alert reported "which is not configured", and

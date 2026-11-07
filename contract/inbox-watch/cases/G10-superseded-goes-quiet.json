@@ -1,0 +1,87 @@
+{
+  "id": "G10",
+  "title": "SESSION_SUPERSEDED from any request silences both lanes for good",
+  "steps": [
+    {
+      "at": 0,
+      "lane": "poll",
+      "expect": {
+        "op": "register"
+      }
+    },
+    {
+      "at": 0,
+      "lane": "poll",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e1"
+        }
+      }
+    },
+    {
+      "at": 0,
+      "lane": "poll",
+      "expect": {
+        "op": "list"
+      }
+    },
+    {
+      "at": 0,
+      "lane": "poll",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e1",
+          "messages": [
+            {
+              "messageId": "m1",
+              "deliveryId": "m1"
+            }
+          ]
+        }
+      },
+      "emit": {
+        "new": [
+          "m1"
+        ]
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "wait",
+        "knownMessageIds": [
+          "m1"
+        ]
+      }
+    },
+    {
+      "lane": "poll",
+      "at": 200,
+      "respond": {
+        "rejected": "SESSION_SUPERSEDED"
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "quiet"
+      }
+    },
+    {
+      "lane": "heartbeat",
+      "expect": {
+        "op": "quiet"
+      },
+      "at": 1000
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "quiet"
+      },
+      "at": 60000
+    }
+  ]
+}

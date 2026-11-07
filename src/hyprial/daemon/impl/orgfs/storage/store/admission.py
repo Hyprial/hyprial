@@ -31,7 +31,7 @@ from hyprial.identity import (
     protected_directory_doc_id,
 )
 
-from hyprial.daemon.impl.orgfs.storage.store.vocabulary import AdmissionDecision, CommitRecord, ImportResult, StoreError, _LOG, _b64, _binding_proof_update_is_publishable, _changed_meta_entries, _decode_state_vector, _doc_roots, _now, _tree_node_operation_allowed, _unb64
+from hyprial.daemon.impl.orgfs.storage.store.vocabulary import AdmissionDecision, CommitRecord, ImportResult, StoreError, _LOG, _MembershipBudgetExceeded, _b64, _binding_proof_update_is_publishable, _changed_meta_entries, _decode_state_vector, _doc_roots, _now, _tree_node_operation_allowed, _unb64
 
 class StoreAdmission:
     """Responsibility methods on the sole LocalSpaceStore state host.
@@ -806,7 +806,6 @@ class StoreAdmission:
                 )
                 self._write_member_add_candidates(member_add_candidates)
         except sqlite3.IntegrityError:
-            # A concurrent importer won the key.  Re-enter the idempotency path.
             self._import_docs.pop(doc_id, None)
             return self._apply_import(value, envelope, supplier)
         except BaseException:
@@ -825,20 +824,22 @@ class StoreAdmission:
         )
 
 
-    def _drain_budget_exceeded(self, deadline: float | None) -> bool:
-        if deadline is None or self._monotonic() < deadline:
-            return False
-        now = self._monotonic()
-        if now - self._drain_budget_warning_at >= self._pending_drop_warning_interval_seconds:
-            self._drain_budget_warning_at = now
-            _LOG.warning("orgfs pending drain deferred by budget: space=%s", self.space_id)
-        return True
-
     def _drain_pending(self, deadline: float | None = None) -> tuple[bytes, ...]:
         applied: list[bytes] = []
+        previous = self._membership_deadline
+        self._membership_deadline = deadline
+        try:
+            self._drain_pending_until(applied, deadline)
+        except _MembershipBudgetExceeded:
+            pass
+        finally:
+            self._membership_deadline = previous
+        return tuple(applied)
+
+    def _drain_pending_until(self, applied: list[bytes], deadline: float | None) -> None:
         while True:
             if self._drain_budget_exceeded(deadline):
-                return tuple(applied)
+                return
             self._expire_pending_locked(applied, deadline)
             progressed = False
             after_rowid = 0
@@ -852,11 +853,11 @@ class StoreAdmission:
                     break
                 for row in rows:
                     if self._drain_budget_exceeded(deadline):
-                        return tuple(applied)
+                        return
                     after_rowid = int(row["pending_rowid"])
                     progressed = self._drain_pending_row(row, applied) or progressed
             if not progressed:
-                return tuple(applied)
+                return
 
     def _decode_pending_envelope(self, envelope: bytes) -> dict[str, Any]:
         """Decode one parked body after its stored wait token is covered."""
@@ -910,6 +911,8 @@ class StoreAdmission:
             )
             self._db.commit()
             return True
+        except _MembershipBudgetExceeded:
+            raise
         except Exception:
             self._db.rollback()
             _LOG.exception("orgfs pending drain deferred after durable-trigger failure")

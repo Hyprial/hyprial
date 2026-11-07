@@ -242,6 +242,7 @@ def _wait_for_daemon(
     process: subprocess.Popen[bytes] | None = None,
     startup_progress: Callable[[], JsonObject] | None = None,
     hard_cap: float = DAEMON_START_HARD_CAP_SECONDS,
+    launch_id: str | None = None,
 ) -> JsonObject:
     """Wait for phase ① with a progress-reset idle budget and hard cap.
 
@@ -299,9 +300,15 @@ def _wait_for_daemon(
                 ipc_errors.DAEMON_START_FAILED,
                 f"daemon exited during startup with status {process.returncode}",
             )
-        if process is not None and not services._daemon_ready_for_process(process.pid):
-            # The pid check is still the stale-client fence: an old
-            # generation's socket must not pass this generation's wait.
+        if process is not None and not (
+            services._daemon_ready_for_process(process.pid, launch_id=launch_id)
+            if launch_id is not None
+            else services._daemon_ready_for_process(process.pid)
+        ):
+            # The stale-client fence: an old generation's socket must not
+            # pass this generation's wait.  The CLI launcher fences on its
+            # per-launch nonce (daemon.json ``launchId``) because the pid it
+            # spawned need not be the daemon's own (a Windows venv redirector).
             services.time.sleep(min(0.05, idle_deadline - now, hard_deadline - now))
             continue
         try:
@@ -361,13 +368,19 @@ def _wait_for_daemon(
     )
 
 
-def _daemon_ready_for_process(pid: int) -> bool:
+def _daemon_ready_for_process(pid: int, *, launch_id: str | None = None) -> bool:
+    """daemon.json names this launch: by its nonce when given, else by pid."""
+
     services = get_services()
     try:
         marker = json.loads((services._state_dir() / "daemon.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
-    return isinstance(marker, dict) and marker.get("pid") == pid
+    if not isinstance(marker, dict):
+        return False
+    if launch_id is not None:
+        return marker.get("launchId") == launch_id and type(marker.get("pid")) is int
+    return marker.get("pid") == pid
 
 
 def _daemon_probe(timeout: float = 0.5) -> JsonObject:
@@ -628,11 +641,15 @@ def _message_claim_params(
     *,
     on_behalf_of: str | None = None,
     binding: object = _UNRESOLVED_BINDING,
+    query: bool = False,
 ) -> JsonObject:
     """Attach an agent session's opaque fence only to its own actor claim.
 
     Callers that already resolved the one per-operation binding pass it in;
     other callers retain the lazy read.  No process-wide cache is used.
+    ``query=True`` serves read-only queries: their strict schemas declare
+    ``from`` alone, so the mutation-only ``sessionRef`` fence is not sent and
+    an actor mismatch is refused as ``SENDER_NOT_AUTHENTICATED``.
     """
 
     if binding is _UNRESOLVED_BINDING:
@@ -649,17 +666,34 @@ def _message_claim_params(
     if binding is not None and not same_actor:
         from hyprial.identity import PAC_PRINCIPAL_UNVERIFIED, PacError
 
+        message = (
+            f"--from {source!r} disagrees with the verified acting principal "
+            f"{worker_actor!r}"
+        )
+        if query:
+            raise get_services().CliError(
+                ipc_errors.SENDER_NOT_AUTHENTICATED,
+                message,
+                {"claimedIdentity": source},
+            )
         raise PacError(
             PAC_PRINCIPAL_UNVERIFIED,
-            f"--from {source!r} disagrees with the verified acting principal "
-            f"{worker_actor!r}",
+            message,
             {"claimed": source, "verified": worker_actor},
         )
+    if query:
+        return params
     if same_actor:
         params["sessionRef"] = worker_session
     if on_behalf_of is not None:
         params["onBehalfOf"] = on_behalf_of
     return params
+
+
+def _message_query_params(source: str) -> JsonObject:
+    """The actor-checked ``{"from": ...}`` params of a read-only query."""
+
+    return _message_claim_params(source, query=True)
 
 
 def _local_operator_identity() -> str:

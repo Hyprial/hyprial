@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.ci-cache/
+dist/
+.hyprial-test-home/
+.agents/skills/forgejo-ops/.forgejo-token
+.agents/skills/forgejo-ops/.e2e-verifier-token
+/.zcode/
+.zcodeignore
+
+# Sanitized local E2E failure evidence (never source).
+/e2e-artifacts/

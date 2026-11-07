@@ -4,11 +4,6 @@ from __future__ import annotations
 
 from hyprial.shell.impl.cli.output import notice
 
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:  # deferred annotations only
-    from hyprial.identity import IdentityTransactionLock
-
 from hyprial.shell.impl.cli.commands.common.services import get_services
 
 from typing import Any
@@ -277,6 +272,33 @@ def _daemon_launch_log_summary(
     return summary
 
 
+def _discard_launch_capture(capture_path: Path) -> None:
+    """Best-effort removal of a per-launch alias; never a launch failure.
+
+    The daemon child keeps the capture open as its stdout.  An OS that cannot
+    delete an open file (Windows: WinError 32) then refuses the unlink for that
+    generation's lifetime, after the daemon is already serving.  The
+    compatibility path stays a hard link to the same bytes either way, and the
+    next locked launch sweeps the leftover alias.  Plain cross-platform code:
+    no platform branch, the refusal itself is the signal.
+    """
+    try:
+        capture_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _sweep_stale_launch_captures(state_dir: Path) -> None:
+    """Drop aliases left by earlier launches (caller holds daemon-launch.lock).
+
+    Only the serialized launch transaction may reclaim them: the capture
+    helper itself has concurrent callers whose live aliases must survive.  An
+    alias an older daemon still holds open is skipped and retried next time.
+    """
+    for stale in state_dir.glob(".daemon-launch.*.log"):
+        _discard_launch_capture(stale)
+
+
 def _daemon_launch_capture(state_dir: Path) -> tuple[Any, Path, bytes, int]:
     """Create a per-launch inode and atomically expose its compatibility path."""
     services = get_services()
@@ -295,8 +317,8 @@ def _daemon_launch_capture(state_dir: Path) -> tuple[Any, Path, bytes, int]:
         os.replace(temporary_link, compatibility_path)
     except BaseException:
         stream.close()
-        temporary_link.unlink(missing_ok=True)
-        capture_path.unlink(missing_ok=True)
+        _discard_launch_capture(temporary_link)
+        _discard_launch_capture(capture_path)
         raise
     return stream, capture_path, marker, offset
 
@@ -319,37 +341,44 @@ def _launch_daemon_process(
     ready_timeout: float,
     listen: str | None = None,
     connect: str | None = None,
-    identity_transaction: IdentityTransactionLock | None = None,
+    expected_identity_generation: int | None = None,
 ) -> DaemonLaunchResult:
-    """Probe and spawn under the home identity transaction OS lock.
+    """Start the daemon once: through the installed supervisor, else spawn it.
 
-    The delegated locked body preserves the one-launch endpoint overrides:
+    No identity lock is held or handed over here.  The daemon acquires the
+    home identity-transaction lock itself before reading identity; a login
+    passes ``expected_identity_generation`` so a daemon that lost the gap to a
+    later login exits stale instead of serving the superseded owner.
+
+    With an attributable per-user service installed (launchd/systemd) the
+    supervisor is the only launcher: a CLI spawn next to ``KeepAlive`` /
+    ``Restart=always`` would race it for the locks.  The delegated locked body
+    preserves the one-launch endpoint overrides:
     ``environment["HYPRIAL_ZENOH_LISTEN"] = listen`` and
     ``environment["HYPRIAL_ZENOH_CONNECT"] = connect``.  It also derives the
     child variables with ``daemon_forwarding_environment(...)`` and then
     ``environment.update(forwarding_environment)`` before spawn.
     """
-    from hyprial.identity import IdentityTransactionBusy, IdentityTransactionLock
     services = get_services()
+    from hyprial.shell.impl.cli.commands.daemon.service import (
+        installed_supervisor,
+        start_supervised_daemon,
+    )
 
-    if identity_transaction is not None:
-        return services._launch_daemon_process_locked(
-            ready_timeout=ready_timeout,
-            listen=listen,
-            connect=connect,
-            identity_transaction=identity_transaction,
+    supervisor = installed_supervisor()
+    if supervisor is not None:
+        return start_supervised_daemon(
+            supervisor,
+            idle_budget=ready_timeout,
+            endpoints_requested=listen is not None or connect is not None,
+            startup_progress=_daemon_startup_phase_summary,
         )
-    try:
-        transaction = IdentityTransactionLock.acquire(services._hyprial_home())
-    except IdentityTransactionBusy as error:
-        raise services.CliError(error.code, str(error)) from error
-    with transaction:
-        return services._launch_daemon_process_locked(
-            ready_timeout=ready_timeout,
-            listen=listen,
-            connect=connect,
-            identity_transaction=transaction,
-        )
+    return services._launch_daemon_process_locked(
+        ready_timeout=ready_timeout,
+        listen=listen,
+        connect=connect,
+        expected_identity_generation=expected_identity_generation,
+    )
 
 
 def _launch_daemon_process_locked(
@@ -357,7 +386,7 @@ def _launch_daemon_process_locked(
     ready_timeout: float,
     listen: str | None,
     connect: str | None,
-    identity_transaction: IdentityTransactionLock,
+    expected_identity_generation: int | None = None,
 ) -> DaemonLaunchResult:
     """Start ``daemon run`` detached from the invoking command's pipes.
 
@@ -371,7 +400,11 @@ def _launch_daemon_process_locked(
     what ``hyprial init --json`` emits.
     """
     from hyprial.daemon import ForwardingConfigurationError, daemon_forwarding_environment
-    from hyprial.identity import IDENTITY_TRANSACTION_FD_ENV
+    from hyprial.shell.impl.login.generation import (
+        IDENTITY_GENERATION_STALE_EXIT_CODE,
+        set_launch_generation,
+        set_launch_id,
+    )
     services = get_services()
 
     state_dir = services._state_dir()
@@ -415,6 +448,8 @@ def _launch_daemon_process_locked(
                 "on every start rather than remembered and going stale."
             )
 
+        # Only this locked launch transaction may reclaim earlier aliases.
+        _sweep_stale_launch_captures(state_dir)
         log_stream, capture_path, marker, launch_log_offset = _daemon_launch_capture(
             state_dir
         )
@@ -452,9 +487,13 @@ def _launch_daemon_process_locked(
 
             environment.pop(AUTOUPDATE_CHILD_ENV, None)
             environment.pop(AUTOUPDATE_TRIGGER_ENV, None)
-            environment[IDENTITY_TRANSACTION_FD_ENV] = str(
-                identity_transaction.fileno
-            )
+            set_launch_generation(environment, expected_identity_generation)
+            # This launch's identity for the readiness fence, on every
+            # platform: ``Popen.pid`` is not the daemon's pid behind a venv /
+            # uv ``python.exe`` redirector (Windows), so the child records the
+            # nonce in daemon.json instead.  Never forward an inherited one.
+            launch_id = services.uuid4().hex
+            set_launch_id(environment, launch_id)
             spawned_at = datetime.now(UTC)
             started_monotonic = services.time.monotonic()
             process = subprocess.Popen(
@@ -463,7 +502,6 @@ def _launch_daemon_process_locked(
                 stdout=log_stream,
                 stderr=subprocess.STDOUT,
                 close_fds=True,
-                pass_fds=(identity_transaction.fileno,),
                 start_new_session=True,
                 env=environment,
             )
@@ -471,6 +509,7 @@ def _launch_daemon_process_locked(
                 status = services._wait_for_daemon(
                     timeout=ready_timeout,
                     process=process,
+                    launch_id=launch_id,
                     startup_progress=lambda: _daemon_startup_phase_summary(
                         state_dir, spawned_at=spawned_at
                     ),
@@ -487,6 +526,28 @@ def _launch_daemon_process_locked(
                     ipc_errors.DAEMON_START_TIMEOUT,
                 }:
                     raise
+                stale_exit = getattr(process, "returncode", None)
+                if stale_exit == IDENTITY_GENERATION_STALE_EXIT_CODE:
+                    raise _launch_process_error(
+                        services.CliError(
+                            "IDENTITY_SUPERSEDED",
+                            "the launched daemon found a newer identity "
+                            "generation than the one this command committed "
+                            f"({expected_identity_generation}) and exited; a "
+                            "later login superseded it",
+                            {
+                                "phase": "startup",
+                                "errorType": "identitySuperseded",
+                                "exitCode": stale_exit,
+                                "expectedIdentityGeneration": (
+                                    expected_identity_generation
+                                ),
+                                "logPath": str(log_path),
+                            },
+                        ),
+                        process,
+                        process_identity,
+                    ) from error
                 diagnostics = _daemon_launch_log_summary(
                     log_stream,
                     marker=marker,
@@ -632,7 +693,7 @@ def _launch_daemon_process_locked(
                 ) from error
         finally:
             log_stream.close()
-            capture_path.unlink(missing_ok=True)
+            _discard_launch_capture(capture_path)
 
         # The readiness answer (``status``) is the daemon's flat ping
         # payload; the old code spread it by hand and carried a `zenoh`

@@ -1,0 +1,89 @@
+{
+  "format": "summary-v1",
+  "cases": [
+    {
+      "name": "ordinary_request",
+      "row": {
+        "messageId": "m-1",
+        "from": "agent:op:node:a",
+        "to": "agent:op:node:b",
+        "intent": "request",
+        "kind": "message",
+        "summary": "Please review the patch",
+        "bodyBytes": 15,
+        "message": "BODY-SENTINEL-ORD"
+      },
+      "expected": "summary: Please review the patch\n(intent: request, kind: message, messageId: m-1, bodyBytes: 15)\nFull body: harness_read_body(\"m-1\") or `hyprial message read m-1`. Reply with harness_reply(\"m-1\", …); if no reply is needed, harness_ack(\"m-1\")."
+    },
+    {
+      "name": "reply_intent",
+      "row": {
+        "messageId": "m-2",
+        "from": "agent:op:node:b",
+        "to": "agent:op:node:a",
+        "intent": "reply",
+        "kind": "message",
+        "summary": "ok, done",
+        "bodyBytes": 2,
+        "message": "BODY-SENTINEL-REPLY"
+      },
+      "expected": "summary: ok, done\n(intent: reply, kind: message, messageId: m-2, bodyBytes: 2)\nFull body: harness_read_body(\"m-2\") or `hyprial message read m-2`. Reply with harness_reply(\"m-2\", …); if no reply is needed, harness_ack(\"m-2\")."
+    },
+    {
+      "name": "no_summary",
+      "row": {
+        "messageId": "m-3",
+        "from": "agent:op:node:a",
+        "to": "agent:op:node:b",
+        "intent": "request",
+        "kind": "message",
+        "summary": null,
+        "bodyBytes": 2048,
+        "message": "BODY-SENTINEL-NOSUMMARY"
+      },
+      "expected": "summary: (none; the sender gave no summary)\n(intent: request, kind: message, messageId: m-3, bodyBytes: 2048)\nFull body: harness_read_body(\"m-3\") or `hyprial message read m-3`. Reply with harness_reply(\"m-3\", …); if no reply is needed, harness_ack(\"m-3\")."
+    },
+    {
+      "name": "notice",
+      "row": {
+        "messageId": "n-1",
+        "from": "system:daemon",
+        "to": "agent:op:node:b",
+        "intent": "system",
+        "kind": "notice",
+        "summary": "System notice: delivery failed",
+        "bodyBytes": 0,
+        "message": "BODY-SENTINEL-NOTICE"
+      },
+      "expected": "notice: System notice: delivery failed"
+    },
+    {
+      "name": "newline_and_non_ascii",
+      "row": {
+        "messageId": "m-5",
+        "from": "agent:op:node:a",
+        "to": "agent:op:node:b",
+        "intent": "request",
+        "kind": "message",
+        "summary": "第一行\n第二行 🙂",
+        "bodyBytes": 42,
+        "message": "BODY-SENTINEL-UTF8"
+      },
+      "expected": "summary: 第一行\n第二行 🙂\n(intent: request, kind: message, messageId: m-5, bodyBytes: 42)\nFull body: harness_read_body(\"m-5\") or `hyprial message read m-5`. Reply with harness_reply(\"m-5\", …); if no reply is needed, harness_ack(\"m-5\")."
+    },
+    {
+      "name": "zero_body_bytes",
+      "row": {
+        "messageId": "m-6",
+        "from": "agent:op:node:a",
+        "to": "agent:op:node:b",
+        "intent": "request",
+        "kind": "message",
+        "summary": "tiny",
+        "bodyBytes": 0,
+        "message": "BODY-SENTINEL-EMPTY"
+      },
+      "expected": "summary: tiny\n(intent: request, kind: message, messageId: m-6, bodyBytes: 0)\nFull body: harness_read_body(\"m-6\") or `hyprial message read m-6`. Reply with harness_reply(\"m-6\", …); if no reply is needed, harness_ack(\"m-6\")."
+    }
+  ]
+}

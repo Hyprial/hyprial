@@ -184,6 +184,20 @@ def _start_interactive_claude(
         provider=model_provider,
         model=model,
     )
+    stored_args = tuple(creation.get("agent", {}).get("harnessArgs", {}).get("claude", ()))
+    try:
+        provider_spec = provider_spec.with_default_args(stored_args)
+    except ValueError as error:
+        raise services.CliError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
+    runtime_args = provider_spec.args
+    _reject_claude_session_identity_args(runtime_args)
+    if stored_args:
+        from hyprial.shell.impl.cli.output import notice
+
+        notice(
+            "Using stored harness_args for claude; explicit launch options take precedence. "
+            "Persistent harness_args currently has no CLI editing option."
+        )
     handover = _handover_prompt(creation)
     runtime_environment = (
         runtime_payload
@@ -434,11 +448,18 @@ def _start_interactive_claude(
         profile_base = apply_runtime_environment_profile(
             os.environ, runtime_environment, secret_environment
         )
-        provider_environment = claude_provider_environment(
-            provider_spec,
-            os.environ if runtime_environment is None else profile_base,
-            allow_legacy_home_fallback=runtime_environment is None,
-        )
+        try:
+            provider_environment = claude_provider_environment(
+                provider_spec,
+                os.environ if runtime_environment is None else profile_base,
+                allow_legacy_home_fallback=runtime_environment is None,
+            )
+        except ValueError as error:
+            # A permanent start refusal (a missing agent-owned key) keeps its
+            # type so callers can name it; only argument errors are rewrapped.
+            if getattr(error, "permanent_start_failure", False):
+                raise
+            raise services.CliError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
         launch_environment = apply_runtime_environment_profile(
             os.environ,
             runtime_environment,

@@ -1,3 +1,19 @@
+# Re-serve/reuse decision record (2026-11-03, brief-replica.md Round 3, RM2
+# review REJECT 8e6a2d7701).
+#
+# Defect: `_create_or_reuse_replica`'s reuse branch primed the replica directly
+# (`existing.prime_from`) before looking at the mesh, and skipped
+# `attach_replica` when the mesh already served that same replica. The prime
+# therefore ran on the replica actor while the mesh stayed ready, so
+# ready-path mirror puts blocked behind the prime on the single effect lane —
+# exactly the serialization the Round 2 NOT-READY gate forbids.
+#
+# Decision: when a mesh exists, the reuse branch never primes directly. If the
+# mesh serves that replica, `refresh_replica` reruns the delta check inside
+# the same NOT-READY / non-blocking-mirror / backfill window as first attach;
+# otherwise `attach_replica` runs unchanged. Only mesh-less runtimes keep the
+# direct prime (no ingress state exists to gate).
+
 from __future__ import annotations
 
 
@@ -711,7 +727,13 @@ class RuntimeLifecycle:
                         "backend": existing_backend,
                     },
                 )
-            existing.reconcile_blobs()
+            mesh = self._mesh(space_id)
+            if mesh is None:
+                existing.prime_from(local_store, self.blobs)
+            elif mesh.replica_store is existing:
+                mesh.refresh_replica(existing)
+            else:
+                mesh.attach_replica(existing)
             for digest in existing.pinned_blobs():
                 self.blobs.pin(space_id, digest, "replica")
             self._reconcile_retirements(space_id)
@@ -751,9 +773,6 @@ class RuntimeLifecycle:
             event_callback=conflict_event, owner_notifier=owner_notice,
         )
         replica = ReplicaAuthority(replica_core, local_store, self.blobs)
-        replica.prime_from(local_store, self.blobs)
-        for digest in replica.pinned_blobs():
-            self.blobs.pin(space_id, digest, "replica")
         with self._resource_lock:
             if self._closing:
                 replica.close(timeout=5.0)
@@ -762,6 +781,10 @@ class RuntimeLifecycle:
         mesh = self._mesh(space_id)
         if mesh is not None:
             mesh.attach_replica(replica)
+        else:
+            replica.prime_from(local_store, self.blobs)
+        for digest in replica.pinned_blobs():
+            self.blobs.pin(space_id, digest, "replica")
         self._reconcile_retirements(space_id)
         return {
             "spaceId": space_id,

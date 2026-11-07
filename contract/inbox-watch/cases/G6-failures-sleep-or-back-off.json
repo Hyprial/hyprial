@@ -1,0 +1,188 @@
+{
+  "id": "G6",
+  "title": "A failed wait sleeps the interval; failed lists back off 1/2/4/5 s",
+  "config": {
+    "pollIntervalMs": 1000
+  },
+  "steps": [
+    {
+      "at": 0,
+      "lane": "poll",
+      "expect": {
+        "op": "register"
+      }
+    },
+    {
+      "at": 0,
+      "lane": "poll",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e1"
+        }
+      }
+    },
+    {
+      "at": 0,
+      "lane": "poll",
+      "expect": {
+        "op": "list"
+      }
+    },
+    {
+      "at": 0,
+      "lane": "poll",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e1",
+          "messages": []
+        }
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "wait",
+        "knownMessageIds": []
+      }
+    },
+    {
+      "lane": "poll",
+      "respond": {
+        "unreachable": true
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "sleep",
+        "ms": 1000
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "list"
+      },
+      "at": 1000
+    },
+    {
+      "lane": "poll",
+      "respond": {
+        "unreachable": true
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "sleep",
+        "ms": 1000
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "list"
+      },
+      "at": 2000
+    },
+    {
+      "lane": "poll",
+      "respond": {
+        "rejected": "DAEMON_UNAVAILABLE"
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "sleep",
+        "ms": 2000
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "list"
+      },
+      "at": 4000
+    },
+    {
+      "lane": "poll",
+      "respond": {
+        "unreachable": true
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "sleep",
+        "ms": 4000
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "list"
+      },
+      "at": 8000
+    },
+    {
+      "lane": "poll",
+      "respond": {
+        "unreachable": true
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "sleep",
+        "ms": 5000
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "list"
+      },
+      "at": 13000
+    },
+    {
+      "lane": "poll",
+      "respond": {
+        "unreachable": true
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "sleep",
+        "ms": 5000
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "list"
+      },
+      "at": 18000
+    },
+    {
+      "lane": "poll",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e1",
+          "messages": []
+        }
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "wait",
+        "knownMessageIds": []
+      }
+    }
+  ]
+}

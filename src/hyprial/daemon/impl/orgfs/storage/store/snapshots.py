@@ -1,5 +1,15 @@
-from __future__ import annotations
+# Frontier cache validity follows the durable meta-journal watermark.  Apply
+# only its suffix to each baseline and invalidate a token iff its CRDT state
+# changes.  Member updates can carry delete sets without advancing an owner
+# vector; retain all member updates when checking pending causal dependencies.
+# A missing watermark requires an authoritative replay of each legacy row.
+# Watermark advancement and token-scoped deletions commit atomically.  Readers
+# finish pending invalidation before trusting any cached membership baseline.
+# A complete replay also seeds a private native baseline, including pending
+# CRDT dependencies. Only the next journaled meta update may advance it; public
+# results receive serialized copies and never expose this derived baseline.
 
+from __future__ import annotations
 
 import hashlib
 
@@ -17,15 +27,238 @@ import json
 
 from typing import Any, Iterable, Mapping
 
+from pycrdt import Doc, get_state
 
 
-from hyprial.daemon.impl.orgfs.storage.store.vocabulary import CommitRecord, ExportPage, SnapshotManifest, StoreError, _LOG, _b64, _decode_state_vector, _doc_roots, _encode_state_vector, _now, _state_covers, _unb64, _wire_doc_id, _writer_is_safe
+from hyprial.daemon.impl.orgfs.storage.store.vocabulary import CommitRecord, ExportPage, SnapshotManifest, StoreError, _LOG, _MEMBERSHIP_MEMO_LIMIT, _MembershipBudgetExceeded, _b64, _decode_state_vector, _doc_roots, _encode_state_vector, _now, _state_covers, _unb64, _wire_doc_id, _writer_is_safe
+
+
+class _FrontierSnapshot(Doc):
+    """An independent cache baseline, decoded only when its CRDT is accessed.
+
+    Admission normally copies get_update() into its own trial document. Keep
+    that path from decoding the same snapshot twice, while returning a private
+    mutable document whenever a caller actually accesses shared types.
+    """
+
+    def __init__(self, update: bytes) -> None:
+        get_state(update)
+        self._baseline: bytes | None = None
+        super().__init__()
+        self._baseline = update
+
+    def _materialize(self) -> None:
+        if self._baseline is not None:
+            update, self._baseline = self._baseline, None
+            super().apply_update(update)
+
+    def transaction(self, origin=None):
+        self._materialize()
+        return super().transaction(origin)
+
+    def new_transaction(self, origin=None, timeout=None):
+        self._materialize()
+        return super().new_transaction(origin, timeout)
+
+    def get_update(self, state: bytes | None = None) -> bytes:
+        if self._baseline is not None and state is None:
+            return self._baseline
+        return super().get_update(state)
+
 
 class StoreSnapshots:
     """Responsibility methods on the sole LocalSpaceStore state host.
 
     This class never constructs, copies, or persists an independent host.
     """
+
+    def _advance_meta_baseline(self, update: bytes) -> None:
+        if self._meta_baseline is None:
+            return
+        previous, baseline = self._meta_baseline
+        head = self._meta_history_head()
+        if head[0] != previous[0] + 1 or head[1] <= previous[1]:
+            self._meta_baseline = None
+            return
+        baseline.apply_update(update)
+        self._meta_baseline = (head, baseline)
+
+    def _membership_from_baseline(self, token: bytes, head: tuple[int, int]):
+        if self._meta_baseline is None or self._meta_baseline[0] != head:
+            return None
+        if self._drain_budget_exceeded(self._membership_deadline):
+            raise _MembershipBudgetExceeded
+        owner = self._genesis_owner()
+        baseline = self._meta_baseline[1]
+        if owner is None or token != self._candidate_owner_frontier(baseline, owner):
+            return None
+        roots = _doc_roots(baseline)
+        members = roots.get("members")
+        return owner, members if isinstance(members, dict) else {}, _FrontierSnapshot(baseline.get_update())
+
+    def _drain_budget_exceeded(self, deadline: float | None) -> bool:
+        if deadline is None or self._monotonic() < deadline:
+            return False
+        now = self._monotonic()
+        if now - self._drain_budget_warning_at >= self._pending_drop_warning_interval_seconds:
+            self._drain_budget_warning_at = now
+            _LOG.warning("orgfs pending drain deferred by budget: space=%s", self.space_id)
+        return True
+
+    def _resume_meta_work(self, key, head, factory):
+        if getattr(self, "_meta_work_head", None) != head:
+            self._meta_work_head = head
+            self._meta_work = {}
+        work = self._meta_work
+        if key not in work:
+            if len(work) >= _MEMBERSHIP_MEMO_LIMIT:
+                work.clear()
+            work[key] = factory()
+        iterator = work[key]
+        while True:
+            if self._drain_budget_exceeded(self._membership_deadline):
+                raise _MembershipBudgetExceeded
+            try:
+                next(iterator)
+            except StopIteration as completed:
+                del work[key]
+                return completed.value
+
+    def _refresh_meta_frontiers(self) -> None:
+        if not self._meta_frontier_dirty:
+            return
+        head = self._meta_history_head()
+        row = self._db.execute(
+            "SELECT journal_rowid FROM meta_frontier_history WHERE singleton = 1"
+        ).fetchone()
+        after = int(row[0]) if row is not None else None
+        if after is None or after != head[1]:
+            if after is not None and after > head[1]:
+                after = None
+            invalid = self._resume_meta_work(
+                None, head, lambda: self._frontier_invalidations(after)
+            )
+            with self._db:
+                self._db.executemany(
+                    "DELETE FROM meta_frontiers WHERE token = ?",
+                    ((token,) for token in invalid),
+                )
+                self._db.execute(
+                    "INSERT OR REPLACE INTO meta_frontier_history VALUES (1, ?)",
+                    (head[1],),
+                )
+        self._meta_frontier_dirty = False
+
+    def _frontier_invalidations(self, after: int | None):
+        rows = self._db.execute(
+            "SELECT token FROM meta_frontiers"
+        ).fetchall()
+        invalid = []
+        if not rows:
+            return invalid
+        if after is None:
+            for row in rows:
+                token = bytes(row["token"])
+                result = yield from self._replay_membership(token)
+                cached = self._db.execute(
+                    "SELECT meta_update FROM meta_frontiers WHERE token = ?", (token,)
+                ).fetchone()
+                if result is None or result[2].get_update() != cached[0]:
+                    invalid.append(token)
+                yield
+            return invalid
+        owner = self._genesis_owner()
+        ignored = self._known_non_owner_client_ids(owner) - self._owner_client_ids(owner)
+        suffix = []
+        has_member = False
+        for row in self._db.execute(
+            "SELECT envelope_bytes FROM commits "
+            "WHERE doc_id = 'meta' AND rowid > ? ORDER BY rowid", (after,)
+        ):
+            value = self._decode_envelope(bytes(row[0]))
+            is_owner = str(value["origin"]["author"]) == owner
+            before = {
+                client: clock for client, clock in _decode_state_vector(
+                    _unb64(str(value["origin"]["metaFrontier"]))
+                ).items() if client not in ignored
+            }
+            suffix.append((is_owner, before, self._update_bytes(value)))
+            has_member = has_member or not is_owner
+            yield
+        member_updates = []
+        if has_member:
+            for row in self._db.execute(
+                "SELECT envelope_bytes FROM commits WHERE doc_id = 'meta' ORDER BY rowid"
+            ):
+                value = self._decode_envelope(bytes(row[0]))
+                if str(value["origin"]["author"]) != owner:
+                    member_updates.append(self._update_bytes(value))
+                yield
+        for row in rows:
+            token = bytes(row["token"])
+            target = {client: clock for client, clock in _decode_state_vector(token).items() if client not in ignored}
+            applicable = [
+                (is_owner, before, update) for is_owner, before, update in suffix
+                if not is_owner or self._state_map_covers(target, before)
+            ]
+            if not applicable:
+                yield
+                continue
+            cached = self._db.execute(
+                "SELECT meta_update FROM meta_frontiers WHERE token = ?", (token,)
+            ).fetchone()
+            if cached[0] is None:
+                invalid.append(token)
+                continue
+            baseline = bytes(cached[0])
+            doc = Doc()
+            try:
+                doc.apply_update(baseline)
+            except (TypeError, ValueError):
+                invalid.append(token)
+                continue
+            yield
+            for is_owner, before, update in applicable:
+                if not is_owner:
+                    doc.apply_update(update)
+                    yield
+                elif self._state_map_covers(target, before):
+                    trial = Doc()
+                    trial.apply_update(doc.get_update())
+                    yield
+                    trial.apply_update(update)
+                    yield
+                    projected = {client: clock for client, clock in _decode_state_vector(trial.get_state()).items() if client not in ignored}
+                    if self._state_map_covers(target, projected):
+                        doc = trial
+            if doc.get_update() == baseline and member_updates:
+                for update in member_updates:
+                    doc.apply_update(update)
+                    yield
+            if doc.get_update() != baseline:
+                invalid.append(token)
+            yield
+        return invalid
+
+    def _record_meta_frontier(self, token: bytes) -> None:
+        self._meta_frontier_dirty = True
+        try:
+            self._refresh_meta_frontiers()
+            if self._membership_at(token) is not None:
+                return
+        except _MembershipBudgetExceeded:
+            return
+        _LOG.warning(
+            "orgfs deferred metadata frontier materialization: space=%s", self.space_id
+        )
+
+    def _rebuild_meta_frontiers(self) -> None:
+        token = self._meta_frontier_for_commit()
+        if token:
+            self._record_meta_frontier(token)
+
+    def _meta_frontier_for_commit(self) -> bytes:
+        return self._project_frontier(self._docs["meta"], self._owner())
 
     def unbroadcast(self) -> Iterable[CommitRecord]:
         with self._lock:
@@ -345,6 +578,19 @@ class StoreSnapshots:
         with self._lock:
             counts, _latest = self._history_attribution(doc_id)
         return tuple(sorted(counts))
+
+
+    def document_history(self, doc_id: str) -> tuple[tuple[CommitRecord, ...], str]:
+        """Return one document's retained journal rows and its current head."""
+
+        _wire_doc_id(doc_id)
+        with self._lock:
+            self._raise_if_retired(doc_id)
+            rows = self._db.execute(
+                "SELECT * FROM commits WHERE doc_id = ? ORDER BY rowid", (doc_id,)
+            ).fetchall()
+            head = _b64(self._doc(doc_id).get_state())
+            return tuple(self._record_from_row(row) for row in rows), head
 
 
     def document_covers_member_add(self, doc_id: str, user: str) -> bool:

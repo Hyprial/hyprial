@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, contextmanager
 import time
 from typing import Any
 from hyprial.shell.impl.cli.commands.common.services import get_services
@@ -98,6 +99,42 @@ def daemon_start(
     services.runtime.execute(operation, json_output=json_output)
 
 
+class _IdentityHold:
+    """The identity lock ``daemon run`` holds until ready, droppable while it waits.
+
+    Lock order stays identity -> daemon.lock: :meth:`yielded` releases the
+    identity lock for one wait, then re-takes it and re-checks the expected
+    generation (a login may commit in that window) before the next fence try.
+    """
+
+    def __init__(
+        self, transaction: Any, acquire: Callable[[], Any], verify: Callable[[], None]
+    ) -> None:
+        self._transaction: Any | None = transaction
+        self._acquire = acquire
+        self._verify = verify
+
+    @contextmanager
+    def yielded(self) -> Iterator[None]:
+        self.close()
+        yield
+        self._transaction = self._acquire()
+        self._verify()
+
+    def detach(self) -> Any:
+        transaction = self._transaction
+        if transaction is None:
+            raise RuntimeError("identity transaction lock is not held")
+        self._transaction = None
+        return transaction.detach()
+
+    def close(self) -> None:
+        transaction = self._transaction
+        self._transaction = None
+        if transaction is not None:
+            transaction.close()
+
+
 def _acquire_daemon_fence(
     services: Any,
     state_dir: Any,
@@ -106,6 +143,8 @@ def _acquire_daemon_fence(
     sleep: Callable[[float], None] | None = None,
     log: Callable[[dict[str, object]], None] | None = None,
     json_output: bool = False,
+    wait_while_healthy: bool = True,
+    yield_identity: Callable[[], AbstractContextManager[None]] | None = None,
 ):
     """Take the daemon lock, waiting while a healthy daemon holds it.
 
@@ -115,6 +154,14 @@ def _acquire_daemon_fence(
     exiting -- exiting is what made launchd's KeepAlive restart the same losing
     process 2,900 times. The wait is observable: every poll reports
     `waiting-for-lock` with the holder pid.
+
+    ``wait_while_healthy=False`` (a daemon no supervisor relaunches) keeps
+    only the bounded first attempt: an unsupervised loser exits instead of
+    lingering as a second process behind a healthy owner.
+
+    ``yield_identity`` (``daemon run``): every wait -- the bounded first
+    attempt included -- happens inside it, so the identity lock is never held
+    across a sleep; each fence try is a single non-blocking attempt.
     """
 
     from hyprial.daemon import (
@@ -123,10 +170,29 @@ def _acquire_daemon_fence(
         wait_for_state_ownership,
     )
 
-    try:
-        return DaemonStateOwnershipFence.acquire(state_dir, timeout=timeout)
-    except DaemonOwnershipBusy:
-        pass
+    pause = sleep or time.sleep
+    if yield_identity is None:
+        try:
+            return DaemonStateOwnershipFence.acquire(state_dir, timeout=timeout)
+        except DaemonOwnershipBusy as error:
+            if not wait_while_healthy:
+                raise services.CliError(error.code, str(error)) from error
+        nap = pause
+    else:
+        def nap(seconds: float) -> None:
+            with yield_identity():
+                pause(seconds)
+
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            try:
+                return DaemonStateOwnershipFence.acquire(state_dir, timeout=0.0)
+            except DaemonOwnershipBusy as error:
+                if time.monotonic() >= deadline:
+                    if not wait_while_healthy:
+                        raise services.CliError(error.code, str(error)) from error
+                    break
+            nap(0.1)
 
     def _holder() -> int | None:
         try:
@@ -146,7 +212,7 @@ def _acquire_daemon_fence(
             state_dir,
             acquire=lambda path: DaemonStateOwnershipFence.acquire(path, timeout=0.0),
             probe_holder=_holder,
-            sleep=sleep or time.sleep,
+            sleep=nap,
             log=report,
         )
     except DaemonOwnershipBusy as error:
@@ -191,6 +257,20 @@ def daemon_run(
 
     stamp, stamped_stdio = daemon_stdio_stamp()
 
+    # Pop the launch expectation before anything else runs, so no descendant
+    # (worker, harness, autoupdate child) can inherit a stale generation.
+    from hyprial.shell.impl.login.generation import (
+        IDENTITY_GENERATION_STALE_EXIT_CODE,
+        IdentityGenerationStale,
+        service_managed,
+        take_expected_generation,
+        take_launch_id,
+        verify_expected_generation,
+    )
+
+    expected_generation = take_expected_generation(os.environ)
+    launch_id = take_launch_id(os.environ)
+
     def operation() -> JsonObject:
         from hyprial.identity import IdentityTransactionBusy
         services = get_services()
@@ -200,18 +280,54 @@ def daemon_run(
         from hyprial.identity import IdentityTransactionLock
 
         state_dir = services._state_dir()
+        home = services._hyprial_home()
+
+        def verify() -> None:
+            if expected_generation is None:
+                return
+            try:
+                verify_expected_generation(home, expected_generation)
+            except IdentityGenerationStale as error:
+                from hyprial.shell.impl.cli.output import report_error
+
+                report_error(
+                    services.CliError(
+                        error.code,
+                        str(error),
+                        {
+                            "expectedIdentityGeneration": error.expected,
+                            "identityGeneration": error.current,
+                        },
+                    ),
+                    json_output=json_output,
+                )
+                raise typer.Exit(code=IDENTITY_GENERATION_STALE_EXIT_CODE)
+
+        def acquire() -> Any:
+            try:
+                return IdentityTransactionLock.acquire(home, timeout=_lock_wait_timeout())
+            except IdentityTransactionBusy as error:
+                raise services.CliError(error.code, str(error)) from error
+
+        # Acquired here, by this process, before identity is read (no
+        # inherited descriptor): a login commits and releases first.  The one
+        # exception is a <=0.5.5.3.3 upgrade tail that still hands its held
+        # descriptor over; contending with it would deadlock on our own fd.
+        legacy = IdentityTransactionLock.adopt_legacy(home, os.environ)
+        hold = _IdentityHold(legacy if legacy is not None else acquire(), acquire, verify)
         try:
-            transaction = IdentityTransactionLock.acquire_or_adopt(
-                services._hyprial_home(), os.environ, timeout=_lock_wait_timeout()
-            )
-        except IdentityTransactionBusy as error:
-            raise services.CliError(error.code, str(error)) from error
-        with transaction:
+            verify()
             fence = _acquire_daemon_fence(
                 services,
                 state_dir,
                 timeout=_lock_wait_timeout(),
                 json_output=json_output,
+                wait_while_healthy=service_managed(os.environ),
+                # Never sit on the identity lock while waiting for daemon.lock:
+                # a login would see IDENTITY_TRANSACTION_BUSY for the whole
+                # wait.  The legacy descriptor is still shared with its
+                # launcher, so it cannot be dropped and re-taken.
+                yield_identity=None if legacy is not None else hold.yielded,
             )
             with fence:
                 from hyprial.shell.impl.daemon_wiring import daemon_dependencies, usage_factory
@@ -228,8 +344,11 @@ def daemon_run(
                 runtime.owns_process_exit()
                 runtime.run(
                     ownership_stream=fence.detach(),
-                    identity_transaction_stream=transaction.detach(),
+                    identity_transaction_stream=hold.detach(),
+                    launch_id=launch_id,
                 )
+        finally:
+            hold.close()
         return {"ok": True, "stopped": True}
 
     with stamped_stdio:

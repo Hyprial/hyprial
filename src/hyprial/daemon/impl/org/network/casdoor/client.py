@@ -75,8 +75,8 @@ def casdoor_user(member: str) -> str:
     """``user:<owner>`` (or a bare owner) -> ``hyprial/<owner>`` unchanged.
 
     Measured on production 2026-10-08 (infra-ops): Casdoor's ``user.name`` is
-    the full ``lin.yilun@hyprial.com`` (the OIDC preferred_username), and
-    ``hyprial/lin.yilun`` is "not found".
+    the full ``bob.smith@example.com`` (the OIDC preferred_username), and
+    ``hyprial/bob.smith`` is "not found".
     """
 
     return f"{CASDOOR_ORGANIZATION}/{member.removeprefix('user:')}"

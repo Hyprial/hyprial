@@ -552,18 +552,21 @@ class _LifecycleOpsMixin:
         # started with ``-- --approve`` starts the same way again.  This is the
         # single funnel for ``hyprial start``, daemon restore re-submission and
         # the routine coordinator's wake, which is why the merge lives here.
-        registered_agent = self.agents.get(name)
-        if registered_agent is not None:
+        registered_agent = self.agents.current(name)
+        try:
             spec = replace(
                 spec,
                 args=merge_harness_launch_args(
-                    registered_agent.args_for(harness), spec.args, harness=harness
+                    () if registered_agent is None else registered_agent.args_for(harness),
+                    spec.args, harness=harness,
                 ),
             )
+        except ValueError as error:
+            raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, str(error)) from error
         if resume_preflight:
             resume_ref = _required_string(params.get("sessionRef"), "sessionRef")
             self._require_resumable_session(spec, resume_ref)
-            existing_agent = self.agents.get(name)
+            existing_agent = registered_agent
             if existing_agent is None:
                 raise DaemonRequestError(
                     ipc_errors.AGENT_NOT_FOUND,
@@ -616,11 +619,6 @@ class _LifecycleOpsMixin:
                 ipc_errors.INVALID_ARGUMENT,
                 "start cannot create a foreign-owner entity; use transfer receive",
             )
-        # An explicit resume request: only when the CALLER sent a ref.
-        # A spec that merely carries one (every running spec does after
-        # sync_harness_session_refs) keeps #190's quiet fallback on the
-        # daemon-restart path; a person who asked for a conversation must
-        # get that conversation or a refusal, never a fresh session.
         resume_ref = spec.session_ref if "sessionRef" in params else None
         if params.get("replaceInteractive") is True and resume_ref is None:
             raise DaemonRequestError(
@@ -713,6 +711,23 @@ class _LifecycleOpsMixin:
                     spec, resume_error, last_error=last_error
                 ) from resume_error
         readiness_confirmed = self._observe_start_readiness(spec.harness, name)
+        if spec.harness == "claude" and spec.headless and self._harnesses is not None:
+            native_ref = self._harnesses.session_refs().get((spec.harness, spec.name))
+            current_agent = self.agents.get(actor_uri)
+            if (
+                native_ref is not None and current_agent is not None
+                and current_agent.last_harness == "claude"
+                and prior_agent is not None
+                and current_agent.entity_token == prior_agent.entity_token
+            ):
+                replacement = replace(current_agent, last_session_id=native_ref)
+                if replacement != current_agent and not self.agents.compare_and_swap(
+                    current_agent, replacement
+                ):
+                    raise DaemonRequestError(
+                        "AGENT_VERSION_CONFLICT",
+                        f"Claude session {native_ref!r} could not update the agent snapshot",
+                    )
         handover = (
             HandoverNotice(
                 actor=prior_agent.actor,
@@ -731,6 +746,11 @@ class _LifecycleOpsMixin:
             if row.get("runtime") == spec.harness and row.get("name") == spec.name
             for warning in row.get("warnings", ())
         ]
+        if registered_agent is not None and registered_agent.args_for(harness):
+            warnings.append(
+                f"Using stored harness_args for {harness}; explicit launch options take precedence. "
+                "Persistent harness_args currently has no CLI editing option."
+            )
         return {
             "ok": True,
             **({"warnings": warnings} if warnings else {}),

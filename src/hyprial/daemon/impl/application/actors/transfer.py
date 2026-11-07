@@ -716,17 +716,14 @@ class _TransferOpsMixin:
         if agent is not None and agent.config is not None:
             from hyprial.identity import AgentConfigError
             from hyprial.identity import AgentHomeError
-            from hyprial.identity import (
-                DEFAULT_AGENT_TOOL_PROFILE,
-                AgentRuntimeError,
-            )
+            from hyprial.identity import AgentRuntimeError
 
             try:
                 runtime_context = self._agent_session_domains.agent.prepare_runtime_context(
                     agent.actor,
                     spec.harness,
                     cwd,
-                    DEFAULT_AGENT_TOOL_PROFILE,
+                    None,
                     containerized=spec.containerized,
                     legacy_reporter=self._report_legacy_agent_home,
                 )
@@ -747,6 +744,7 @@ class _TransferOpsMixin:
                     f"agent-home P2 session root is unavailable for "
                     f"{spec.harness}:{spec.name}",
                 )
+            self._report_agent_runtime_notices(runtime_context)
         try:
             agent_dir = os.environ.get("PI_CODING_AGENT_DIR")
             if runtime_context is None and spec.harness == "pi" and agent_dir:

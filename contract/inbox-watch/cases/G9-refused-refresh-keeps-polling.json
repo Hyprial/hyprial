@@ -1,0 +1,257 @@
+{
+  "id": "G9",
+  "title": "A refused refresh backs off while listing and delivery go on (#1132)",
+  "steps": [
+    {
+      "at": 0,
+      "lane": "poll",
+      "expect": {
+        "op": "register"
+      }
+    },
+    {
+      "at": 0,
+      "lane": "poll",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e1"
+        }
+      }
+    },
+    {
+      "at": 0,
+      "lane": "poll",
+      "expect": {
+        "op": "list"
+      }
+    },
+    {
+      "at": 0,
+      "lane": "poll",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e1",
+          "messages": [
+            {
+              "messageId": "m1",
+              "deliveryId": "m1"
+            }
+          ]
+        }
+      },
+      "emit": {
+        "new": [
+          "m1"
+        ]
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "wait",
+        "knownMessageIds": [
+          "m1"
+        ]
+      }
+    },
+    {
+      "lane": "poll",
+      "at": 100,
+      "respond": {
+        "ok": {
+          "ok": true,
+          "changed": true,
+          "held": true,
+          "daemonEpoch": "e2"
+        }
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "refresh"
+      }
+    },
+    {
+      "lane": "poll",
+      "respond": {
+        "rejected": "SESSION_PERSISTENCE_OVERLOADED"
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "list"
+      }
+    },
+    {
+      "lane": "poll",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e2",
+          "messages": [
+            {
+              "messageId": "m1",
+              "deliveryId": "m1"
+            },
+            {
+              "messageId": "m2",
+              "deliveryId": "m2"
+            }
+          ]
+        }
+      },
+      "emit": {
+        "new": [
+          "m2"
+        ]
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "sleep",
+        "ms": 500
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "refresh"
+      },
+      "at": 600
+    },
+    {
+      "lane": "poll",
+      "respond": {
+        "rejected": "SESSION_PERSISTENCE_OVERLOADED"
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "list"
+      }
+    },
+    {
+      "lane": "poll",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e2",
+          "messages": [
+            {
+              "messageId": "m1",
+              "deliveryId": "m1"
+            },
+            {
+              "messageId": "m2",
+              "deliveryId": "m2"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "sleep",
+        "ms": 500
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "list"
+      },
+      "at": 1100
+    },
+    {
+      "lane": "poll",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e2",
+          "messages": [
+            {
+              "messageId": "m1",
+              "deliveryId": "m1"
+            },
+            {
+              "messageId": "m2",
+              "deliveryId": "m2"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "sleep",
+        "ms": 500
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "refresh"
+      },
+      "at": 1600
+    },
+    {
+      "lane": "poll",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e2"
+        }
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "list"
+      }
+    },
+    {
+      "lane": "poll",
+      "respond": {
+        "ok": {
+          "ok": true,
+          "daemonEpoch": "e2",
+          "messages": [
+            {
+              "messageId": "m1",
+              "deliveryId": "m1"
+            },
+            {
+              "messageId": "m2",
+              "deliveryId": "m2"
+            }
+          ]
+        }
+      },
+      "emit": {
+        "rewake": [
+          "m1",
+          "m2"
+        ],
+        "rewakeReason": "epoch"
+      }
+    },
+    {
+      "lane": "poll",
+      "expect": {
+        "op": "wait",
+        "knownMessageIds": [
+          "m1",
+          "m2"
+        ]
+      }
+    }
+  ]
+}

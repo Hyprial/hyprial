@@ -44,7 +44,7 @@ contract, each step has a test:
    line; under ``--json`` the flag itself is the confirmation (T8).
 9. Credential first, owner second — the one-way commit of design §2.2
    step 8: ``$HYPRIAL_HOME/secrets/login.json`` (0600, only
-   ``{version, issuer, refreshToken, obtainedAt}``, written via the
+   ``{version, issuer, refreshToken, obtainedAt, identityGeneration}``, written via the
    validate-then-write + restore-original-bytes pattern of
    ``adapter_registration``), then ``write_settings_owner``.  A failure of
    the owner write leaves the credential committed — ⚠️ deliberately:
@@ -158,7 +158,9 @@ CREDENTIAL_VERSION = 1
 # edge (U2b).  Polling rhythm follows only the server's interval/expires_in
 # (spec §1.2 step 4); RFC 8628 §3.5 slow_down adds 5s.
 
-_CREDENTIAL_KEYS = frozenset({"version", "issuer", "refreshToken", "obtainedAt"})
+_CREDENTIAL_KEYS = frozenset(
+    {"version", "issuer", "refreshToken", "obtainedAt", "identityGeneration"}
+)
 
 EmitFn = Callable[[str, dict[str, Any]], None]
 
@@ -179,14 +181,20 @@ class LoginCredential:
     issuer: str
     refresh_token: str
     obtained_at: str
+    #: Monotonic identity-commit counter (``generation.py``): rides the
+    #: credential's atomic write so a daemon can detect a newer login.
+    identity_generation: int | None = None
 
     def as_record(self) -> dict[str, Any]:
-        return {
+        record: dict[str, Any] = {
             "version": self.version,
             "issuer": self.issuer,
             "refreshToken": self.refresh_token,
             "obtainedAt": self.obtained_at,
         }
+        if self.identity_generation is not None:
+            record["identityGeneration"] = self.identity_generation
+        return record
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,6 +219,7 @@ class LoginResult:
     previous_owner: str | None = None
     dry_run: bool = False
     migration_preview: dict[str, Any] | None = None
+    identity_generation: int | None = None
 
 
 # -- paths and credential I/O -------------------------------------------------
@@ -292,11 +301,19 @@ def read_login_credential(
                 "CREDENTIAL_UNPARSEABLE",
                 f"{path}: {name} must be a non-empty string; got {value!r}",
             )
+    generation = record.get("identityGeneration")
+    if generation is not None and (type(generation) is not int or generation <= 0):
+        raise LoginError(
+            "CREDENTIAL_UNPARSEABLE",
+            f"{path}: identityGeneration must be a positive integer; "
+            f"got {generation!r}",
+        )
     return LoginCredential(
         version=CREDENTIAL_VERSION,
         issuer=issuer,
         refresh_token=refresh,
         obtained_at=obtained,
+        identity_generation=generation,
     )
 
 
@@ -742,11 +759,14 @@ def run_login(
             "TOKEN_RESPONSE_INVALID",
             "login token response has no usable refresh token",
         )
+    from hyprial.shell.impl.login.generation import next_identity_generation
+
     credential = LoginCredential(
         version=CREDENTIAL_VERSION,
         issuer=profile.issuer,
         refresh_token=refresh_token,
         obtained_at=now().isoformat(),
+        identity_generation=next_identity_generation(home),
     )
     _write_credential(credential, target)
     try:
@@ -782,6 +802,7 @@ def run_login(
         credential_path=target,
         switched=previous_owner is not None,
         previous_owner=previous_owner,
+        identity_generation=credential.identity_generation,
     )
 
 
@@ -852,13 +873,69 @@ def refresh_access_token(
         )
     rotated = payload.get("refresh_token")
     if isinstance(rotated, str) and rotated and rotated != credential.refresh_token:
-        _write_credential(
+        _write_rotated_credential(
+            credential,
             LoginCredential(
                 version=CREDENTIAL_VERSION,
                 issuer=profile.issuer,
                 refresh_token=rotated,
                 obtained_at=now().isoformat(),
+                identity_generation=credential.identity_generation,
             ),
-            credential_path(env, hyprial_home=hyprial_home),
+            env,
+            hyprial_home,
         )
     return access
+
+
+def _write_rotated_credential(
+    read: LoginCredential,
+    rotated: LoginCredential,
+    env: Mapping[str, str],
+    hyprial_home: Path | None,
+) -> None:
+    """Compare-and-swap the rotated refresh token under the identity lock.
+
+    The read happened before a network round trip; a login may have
+    committed a new identity (and generation) meanwhile.  Writing blindly
+    would restore the old account's refresh token *and* roll the generation
+    back -- making the newer login's daemon look superseded and letting the
+    next login reuse a generation number.  So the write lands only when the
+    file still holds exactly what was read; otherwise the rotation is
+    discarded and reported.
+    """
+
+    from hyprial.identity import IdentityTransactionBusy, IdentityTransactionLock
+
+    path = credential_path(env, hyprial_home=hyprial_home)
+    try:
+        transaction = IdentityTransactionLock.acquire(path.parent.parent)
+    except IdentityTransactionBusy as error:
+        raise LoginError(
+            "CREDENTIAL_WRITE_CONFLICT",
+            "an identity transaction is in progress; the rotated refresh token "
+            "was not saved -- retry, or re-run hyprial login",
+        ) from error
+    with transaction:
+        try:
+            current = read_login_credential(env, hyprial_home=hyprial_home)
+        except LoginError:
+            current = None
+        if (
+            current is None
+            or current.refresh_token != read.refresh_token
+            or current.identity_generation != read.identity_generation
+        ):
+            raise LoginError(
+                "CREDENTIAL_WRITE_CONFLICT",
+                "secrets/login.json changed while the access token was being "
+                "refreshed (a login or logout committed); the rotated refresh "
+                "token was discarded -- retry against the current identity",
+                data={
+                    "identityGeneration": read.identity_generation,
+                    "currentIdentityGeneration": (
+                        None if current is None else current.identity_generation
+                    ),
+                },
+            )
+        _write_credential(rotated, path)

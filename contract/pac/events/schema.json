@@ -1,0 +1,844 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:hyprial:pac:public-events:v1",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/snapshot"
+    },
+    {
+      "$ref": "#/$defs/event"
+    },
+    {
+      "$ref": "#/$defs/context"
+    }
+  ],
+  "$defs": {
+    "nullableString": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "nullableTime": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "attribution": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "at",
+        "by"
+      ],
+      "properties": {
+        "at": {
+          "type": "integer"
+        },
+        "by": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "flag": {
+      "type": "object",
+      "required": [
+        "flag",
+        "setBy",
+        "setAt",
+        "reasonRef",
+        "completedCount"
+      ],
+      "properties": {
+        "flag": {
+          "type": "boolean"
+        },
+        "setBy": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "setAt": {
+          "$ref": "#/$defs/nullableTime"
+        },
+        "reasonRef": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "completedCount": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "notification": {
+      "type": "object",
+      "required": [
+        "eventId",
+        "edge",
+        "kind",
+        "recipient",
+        "node",
+        "text",
+        "sender",
+        "at",
+        "messageId",
+        "deliveredAt",
+        "plan"
+      ],
+      "properties": {
+        "eventId": {
+          "type": "string"
+        },
+        "edge": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "turn",
+            "withdraw",
+            "overdue",
+            "launch_failed",
+            "actor_alert"
+          ]
+        },
+        "recipient": {
+          "type": "string"
+        },
+        "node": {
+          "type": "string"
+        },
+        "round": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "text": {
+          "type": "string"
+        },
+        "sender": {
+          "type": "string"
+        },
+        "at": {
+          "type": "integer"
+        },
+        "messageId": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "deliveredAt": {
+          "$ref": "#/$defs/nullableTime"
+        },
+        "plan": {
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "assignment": {
+      "type": "object",
+      "required": [
+        "activationId",
+        "nodeId",
+        "owner",
+        "round",
+        "requests",
+        "blockedOn"
+      ],
+      "properties": {
+        "activationId": {
+          "type": "string"
+        },
+        "nodeId": {
+          "type": "string"
+        },
+        "owner": {
+          "type": "string"
+        },
+        "round": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "requests": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/notification"
+          }
+        },
+        "blockedOn": {
+          "enum": [
+            "human",
+            "agent",
+            "none"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "contextPredecessor": {
+      "type": "object",
+      "required": [
+        "nodeId",
+        "owner",
+        "briefRef",
+        "flag",
+        "setBy",
+        "setAt",
+        "reasonRef"
+      ],
+      "properties": {
+        "nodeId": {
+          "type": "string"
+        },
+        "owner": {
+          "type": "string"
+        },
+        "briefRef": {
+          "type": "string"
+        },
+        "flag": {
+          "type": "boolean"
+        },
+        "setBy": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "setAt": {
+          "$ref": "#/$defs/nullableTime"
+        },
+        "reasonRef": {
+          "$ref": "#/$defs/nullableString"
+        }
+      },
+      "additionalProperties": false
+    },
+    "context": {
+      "type": "object",
+      "required": [
+        "ok",
+        "schemaVersion",
+        "type",
+        "graphId",
+        "nodeId",
+        "version",
+        "journalId",
+        "cursor",
+        "owner",
+        "kind",
+        "briefRef",
+        "flag",
+        "setBy",
+        "setAt",
+        "reasonRef",
+        "completedCount",
+        "currentActivation",
+        "predecessors",
+        "active",
+        "closed",
+        "requires",
+        "blockedOn"
+      ],
+      "properties": {
+        "ok": {
+          "const": true
+        },
+        "schemaVersion": {
+          "const": 1
+        },
+        "type": {
+          "const": "context"
+        },
+        "graphId": {
+          "type": "string"
+        },
+        "nodeId": {
+          "type": "string"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "journalId": {
+          "type": "string"
+        },
+        "cursor": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "owner": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "task",
+            "clock",
+            "actor",
+            "end"
+          ]
+        },
+        "briefRef": {
+          "type": "string"
+        },
+        "flag": {
+          "type": "boolean"
+        },
+        "setBy": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "setAt": {
+          "$ref": "#/$defs/nullableTime"
+        },
+        "reasonRef": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "completedCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "currentActivation": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/assignment"
+            }
+          ]
+        },
+        "predecessors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/contextPredecessor"
+          }
+        },
+        "active": {
+          "$ref": "#/$defs/attribution"
+        },
+        "closed": {
+          "$ref": "#/$defs/attribution"
+        },
+        "deadlineMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "actor": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/actor"
+            },
+            {
+              "required": [
+                "assignments"
+              ]
+            }
+          ]
+        },
+        "requires": {
+          "$ref": "#/$defs/requires"
+        },
+        "blockedOn": {
+          "enum": [
+            "human",
+            "agent",
+            "none"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "clock"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "deadlineMs"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "deadlineMs"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "snapshot": {
+      "type": "object",
+      "required": [
+        "schemaVersion",
+        "type",
+        "graphId",
+        "journalId",
+        "cursor",
+        "cursorFloor",
+        "version",
+        "structure",
+        "flags",
+        "active",
+        "closed",
+        "actors",
+        "assignments",
+        "notifications",
+        "blockedOn"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "type": {
+          "const": "snapshot"
+        },
+        "graphId": {
+          "type": "string"
+        },
+        "journalId": {
+          "type": "string"
+        },
+        "cursor": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cursorFloor": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "identityFormat": {
+          "type": "string",
+          "enum": [
+            "principal-uri-v1",
+            "mixed-legacy"
+          ],
+          "description": "OPTIONAL (additive, schemaVersion stays 1): the identity era of owner/createdBy values. principal-uri-v1: every owner and the creator are full principal URIs (user:<owner> or agent:<owner>:<machine>:<actor>). mixed-legacy: at least one pre-URI short name is stored verbatim. Absent = a writer older than the principal-URI era. Consumers must not infer the era from row content; the field is additive-optional so strict validators of the older schema reject new snapshots for ANY added field regardless -- the alternative (bumping schemaVersion) would break every current consumer hard (the sample client rejects schemaVersion != 1)."
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "structure": {
+          "type": "object",
+          "required": [
+            "name",
+            "createdBy",
+            "nodes",
+            "edges"
+          ],
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "createdBy": {
+              "type": "string"
+            },
+            "nodes": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "nodeId",
+                  "owner",
+                  "briefRef",
+                  "kind",
+                  "deadlineMs"
+                ],
+                "properties": {
+                  "nodeId": {
+                    "type": "string"
+                  },
+                  "owner": {
+                    "type": "string"
+                  },
+                  "briefRef": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": [
+                      "task",
+                      "clock",
+                      "actor",
+                      "end"
+                    ]
+                  },
+                  "deadlineMs": {
+                    "$ref": "#/$defs/nullableTime"
+                  },
+                  "actorName": {
+                    "type": "string"
+                  },
+                  "launchRef": {
+                    "type": "string"
+                  },
+                  "requires": {
+                    "$ref": "#/$defs/requires"
+                  },
+                  "guardedByNodeId": {
+                    "type": "string",
+                    "description": "Optional guarded clock target; overdue is suppressed after this node completes."
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "edges": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "from",
+                  "to",
+                  "kind"
+                ],
+                "properties": {
+                  "from": {
+                    "type": "string"
+                  },
+                  "to": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": [
+                      "forward",
+                      "back"
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "operationKey": {
+              "type": "string",
+              "description": "Optional durable graph publication idempotency key."
+            }
+          },
+          "additionalProperties": false
+        },
+        "flags": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/flag"
+          }
+        },
+        "active": {
+          "$ref": "#/$defs/attribution"
+        },
+        "closed": {
+          "$ref": "#/$defs/attribution"
+        },
+        "actors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/actor"
+          }
+        },
+        "assignments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/assignment"
+          }
+        },
+        "notifications": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/notification"
+          }
+        },
+        "blockedOn": {
+          "type": "object",
+          "additionalProperties": {
+            "enum": [
+              "human",
+              "agent",
+              "none"
+            ]
+          }
+        },
+        "assignmentFormat": {
+          "const": "workflow-request-v2",
+          "description": "Optional managed-workflow projection marker. Activation IDs are exact request IDs, not completed-flag rounds. Consumers rebootstrap these snapshots after new journal events instead of folding legacy edge assignments."
+        }
+      },
+      "additionalProperties": false
+    },
+    "event": {
+      "type": "object",
+      "required": [
+        "schemaVersion",
+        "seq",
+        "eventId",
+        "graphId",
+        "journalId",
+        "version",
+        "type",
+        "at",
+        "data"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "eventId": {
+          "type": "string"
+        },
+        "graphId": {
+          "type": "string"
+        },
+        "journalId": {
+          "type": "string"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "at": {
+          "type": "integer"
+        },
+        "type": {
+          "enum": [
+            "flag_set",
+            "flag_reset",
+            "notification_planned",
+            "delivery_changed",
+            "structure_changed",
+            "graph_activated",
+            "graph_closed",
+            "migration_baseline",
+            "launch_failed",
+            "actor_up",
+            "actor_down",
+            "actor_restored",
+            "actor_lost",
+            "actor_unowned",
+            "workflow_changed"
+          ]
+        },
+        "data": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "enum": [
+                  "flag_set",
+                  "flag_reset"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "required": [
+                  "nodeId",
+                  "action",
+                  "actor",
+                  "reasonRef"
+                ],
+                "properties": {
+                  "nodeId": {
+                    "type": "string"
+                  },
+                  "action": {
+                    "enum": [
+                      "set",
+                      "reset"
+                    ]
+                  },
+                  "actor": {
+                    "type": "string"
+                  },
+                  "reasonRef": {
+                    "$ref": "#/$defs/nullableString"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "notification_planned"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/notification"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "delivery_changed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "required": [
+                  "eventId",
+                  "edge",
+                  "messageId",
+                  "deliveredAt"
+                ],
+                "properties": {
+                  "eventId": {
+                    "type": "string"
+                  },
+                  "edge": {
+                    "type": "string"
+                  },
+                  "messageId": {
+                    "type": "string"
+                  },
+                  "deliveredAt": {
+                    "type": "integer"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "enum": [
+                  "graph_activated",
+                  "graph_closed"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/attribution"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "requires": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "tier"
+      ],
+      "properties": {
+        "tier": {
+          "enum": [
+            "fast",
+            "strong",
+            "super"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "actor": {
+      "type": "object",
+      "required": [
+        "nodeId",
+        "actorName",
+        "launchRef",
+        "activation"
+      ],
+      "properties": {
+        "nodeId": {
+          "type": "string"
+        },
+        "actorName": {
+          "type": "string"
+        },
+        "launchRef": {
+          "type": "string"
+        },
+        "activation": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "required": [
+            "incarnation",
+            "desired",
+            "op",
+            "effectId",
+            "operationId",
+            "identityMarker",
+            "daemonEpoch"
+          ],
+          "properties": {
+            "incarnation": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "desired": {
+              "enum": [
+                "up",
+                "down"
+              ]
+            },
+            "op": {
+              "enum": [
+                "pending",
+                "done"
+              ]
+            },
+            "effectId": {
+              "type": "string"
+            },
+            "operationId": {
+              "type": "string"
+            },
+            "identityMarker": {
+              "$ref": "#/$defs/nullableString"
+            },
+            "daemonEpoch": {
+              "$ref": "#/$defs/nullableString"
+            }
+          },
+          "additionalProperties": false
+        },
+        "assignments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/assignment"
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

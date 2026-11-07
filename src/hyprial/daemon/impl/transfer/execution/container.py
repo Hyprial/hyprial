@@ -277,7 +277,7 @@ def rewrite_inner_argv(
     """Container-mode argv[0]: the image's binary, never a host path.
 
     #259 pins ``resolved_command`` to the HOST absolute path (e.g.
-    ``/Users/yaosh/.local/bin/codex``); that path does not exist inside
+    ``/Users/amyws/.local/bin/codex``); that path does not exist inside
     the container, so appending it verbatim lands ENOENT for pi/codex
     (review §A; claude is immune because its argv[0] is already an
     image-fixed constant).  The image pins its own harness binaries on

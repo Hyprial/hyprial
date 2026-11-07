@@ -377,7 +377,8 @@ class _GenerationOpsMixin:
                 pinned_adapters=existing.pinned_adapters,
                 created_at_ms=existing.created_at_ms,
                 hosted_by=existing.hosted_by,
-            )
+            ),
+            preserve_harness_args=command.preserve_harness_args,
         )
         changed = agent != existing
         version = self.version.bump() if changed else self.version.read()

@@ -44,7 +44,7 @@ its original code.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, fields as _dc_fields
 from pathlib import Path
 from typing import Protocol
@@ -167,10 +167,11 @@ class RuntimeContextActivation:
         registry: object,
         *,
         harnesses: tuple[str, ...],
-        tool_profile: AgentToolProfile,
+        tool_profile: AgentToolProfile | None,
         base_environment: Mapping[str, str],
         cwd: str | None = None,
         containerized: bool = False,
+        notice_reporter: Callable[[AgentRuntimeContext], None] | None = None,
     ) -> None:
         selected = tuple(harnesses)
         if not selected or len(selected) != len(set(selected)):
@@ -183,6 +184,7 @@ class RuntimeContextActivation:
         self.base_environment = dict(base_environment)
         self.cwd = cwd
         self.containerized = containerized
+        self._notice_reporter = notice_reporter
         self._published: tuple[str, AgentConfig | None] | None = None
 
     def activate(self, actor: str, entity_token: str) -> ActivationReceipt:
@@ -223,6 +225,8 @@ class RuntimeContextActivation:
                     "runtime-context-unavailable", f"{harness}: no P2 context"
                 )
             self._validate_context(context, agent, home, config_source)
+            if self._notice_reporter is not None:
+                self._notice_reporter(context)
             environment = apply_runtime_environment_profile(
                 self.base_environment, context.environment()
             )

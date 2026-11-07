@@ -16,7 +16,7 @@ Environment="HYPRIAL_SERVICE_UNIT=hyprial.service"
 Restart=always
 RestartSec=5
 KillMode=control-group
-TimeoutStopSec=45
+TimeoutStopSec=120
 StandardOutput=append:{{STDOUT_ARG}}
 StandardError=append:{{STDERR_ARG}}
 

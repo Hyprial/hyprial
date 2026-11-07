@@ -1,0 +1,40 @@
+services:
+  app:
+    image: ${APP_IMAGE:?set APP_IMAGE to the operator-built application image}
+    expose:
+      - "${APP_INTERNAL_PORT:-8080}"
+
+  host:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    depends_on:
+      - app
+    network_mode: "service:app"
+    read_only: true
+    user: "65532:65532"
+    tmpfs:
+      - /tmp
+    volumes:
+      - host-state:/var/lib/hyprial-tailcat
+    configs:
+      - source: host-config
+        target: /etc/hyprial-tailcat/host.json
+    command: ["host", "--config", "/etc/hyprial-tailcat/host.json"]
+
+configs:
+  host-config:
+    content: |
+      {
+        "keyFile": "/var/lib/hyprial-tailcat/host.key",
+        "addressFile": "/var/lib/hyprial-tailcat/host.address",
+        "clientPublic": [],
+        "allowAny": false,
+        "exposures": [{
+          "port": ${TAILCAT_PORT:-18080},
+          "target": "tcp:127.0.0.1:${APP_INTERNAL_PORT:-8080}"
+        }]
+      }
+
+volumes:
+  host-state:

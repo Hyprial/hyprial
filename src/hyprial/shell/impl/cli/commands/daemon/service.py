@@ -7,12 +7,13 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from typing import Any
 
 import typer
 from hyprial.shell.impl.cli.commands.common.groups import group
 
-from hyprial.kernel import ipc_errors
+from hyprial.kernel import DaemonLaunchResult, ipc_errors
 from hyprial.shell.impl.cli.commands.common.services import get_services
 from hyprial.shell.impl.cli.commands.common.support import JsonObject
 from hyprial.shell.impl.cli.commands.daemon.commands import daemon_app
@@ -278,6 +279,23 @@ def restart_supervised_daemon(
             _lost_restart_data(before, reason),
         )
     if before.loaded is not True:
+        if before_pid is None and _serving_daemon_pid() is None:
+            # ``daemon stop`` / the login identity switch stop through the
+            # supervisor (``launchctl bootout`` unloads the LaunchAgent).  A
+            # restart of that stopped, owned service is a supervisor start --
+            # the same bootstrap ``daemon start`` uses -- not lost custody.
+            from hyprial.shell.impl.cli.commands.common.support import (
+                DAEMON_START_IDLE_BUDGET_SECONDS,
+            )
+
+            return start_supervised_daemon(
+                (manager, before),
+                idle_budget=(
+                    DAEMON_START_IDLE_BUDGET_SECONDS
+                    if timeout_seconds is None
+                    else timeout_seconds
+                ),
+            )
         raise services.CliError(
             "SERVICE_SUPERVISION_LOST",
             "the attributable daemon service is installed but not loaded",
@@ -353,8 +371,6 @@ def restart_supervised_daemon(
             f"{timeout_seconds:g}s",
             _lost_restart_data(after, "supervisor-start-hard-cap"),
         ) from error
-    from hyprial.kernel import DaemonLaunchResult
-
     launched = DaemonLaunchResult.existing(probe)
     # Let the one restart-verdict function diagnose an answering old daemon.
     # Turning this into generic custody loss here would hide the decisive
@@ -381,6 +397,197 @@ def restart_supervised_daemon(
             _lost_restart_data(after, "daemon-probe-pid-mismatch"),
         )
     return launched
+
+
+# --- supervisor-routed start/stop ---------------------------------------------
+#
+# With the per-user service installed, launchd (``KeepAlive``) / systemd
+# (``Restart=always``) relaunch the daemon within seconds of any exit.  A CLI
+# spawn next to it is a second launcher racing for the same locks, and an IPC
+# shutdown alone is undone by the supervisor.  So start and stop go through the
+# supervisor itself; an uninstalled service keeps the CLI spawn / IPC stop.
+
+# The unit templates give the daemon ``SUPERVISOR_EXIT_TIMEOUT_SECONDS``
+# (launchd ``ExitTimeOut``, systemd ``TimeoutStopSec``) between SIGTERM and
+# SIGKILL: at least the daemon's own close budget + exit backstop
+# (``TEARDOWN_BUDGETED_SECONDS``) plus margin, so a supervisor stop never cuts
+# the sqlite / journal / log-writer drain short.  The CLI waits a little
+# longer than the supervisor's own kill deadline.
+SUPERVISOR_EXIT_TIMEOUT_SECONDS = 120
+SUPERVISOR_STOP_TIMEOUT_SECONDS = SUPERVISOR_EXIT_TIMEOUT_SECONDS + 30.0
+
+
+def installed_supervisor() -> tuple[Any, Any] | None:
+    """``(manager, status)`` for an attributable installed service, else None."""
+
+    try:
+        manager = _service_manager()
+    except ServicePlatformUnsupported:
+        return None
+    if not manager.unit_path.is_file():
+        return None
+    try:
+        status = manager.inspect()
+    except (RuntimeError, OSError, subprocess.TimeoutExpired):
+        return None
+    if not status.installed or status.attributed is not True:
+        return None
+    return manager, status
+
+
+def _supervisor_command(manager: Any, command: tuple[str, ...], *, timeout: float) -> None:
+    services = get_services()
+    try:
+        result = manager.runner(command, timeout=timeout)
+    except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
+        raise services.CliError(
+            "SERVICE_MANAGER_FAILED",
+            f"daemon supervisor command failed: {' '.join(command)}: {error}",
+            {"reason": _manager_failure_reason(error), "command": list(command)},
+        ) from error
+    if result.returncode != 0:
+        raise services.CliError(
+            "SERVICE_MANAGER_FAILED",
+            f"daemon supervisor command failed ({result.returncode}): "
+            f"{' '.join(command)}: {(result.stderr or '').strip()}",
+            {"reason": "manager-command-failed", "command": list(command)},
+        )
+
+
+def request_supervised_start(supervisor: tuple[Any, Any]) -> None:
+    """Issue the supervisor's start command without waiting for readiness."""
+
+    manager, status = supervisor
+    if manager.platform == "launchd":
+        command: tuple[str, ...] = (
+            ("launchctl", "kickstart", f"gui/{manager.uid}/{status.unit}")
+            if status.loaded
+            else ("launchctl", "bootstrap", f"gui/{manager.uid}", str(status.unit_path))
+        )
+    else:
+        command = ("systemctl", "--user", "start", "hyprial.service")
+    _supervisor_command(manager, command, timeout=15.0)
+
+
+def start_supervised_daemon(
+    supervisor: tuple[Any, Any],
+    *,
+    idle_budget: float,
+    endpoints_requested: bool = False,
+    startup_progress: Any = None,
+) -> DaemonLaunchResult:
+    """Ask the installed supervisor to start the daemon, then wait for it."""
+
+    services = get_services()
+    manager, status = supervisor
+    try:
+        probe = services._daemon_probe(timeout=0.5)
+    except ipc_errors.DaemonUnavailableError:
+        pass
+    else:
+        if endpoints_requested:
+            raise services.CliError(
+                "DAEMON_ALREADY_RUNNING",
+                "stop the running daemon before changing zenoh endpoints",
+            )
+        return DaemonLaunchResult.existing(probe)
+    if endpoints_requested:
+        raise services.CliError(
+            "SERVICE_MANAGED_ENDPOINTS",
+            "--listen/--connect apply to a CLI-spawned daemon only, and the "
+            "installed per-user service launches this daemon: set "
+            "HYPRIAL_ZENOH_LISTEN / HYPRIAL_ZENOH_CONNECT in the service "
+            "environment, or uninstall the service first",
+            {"platform": status.platform, "unitPath": str(status.unit_path)},
+        )
+    from datetime import UTC, datetime
+
+    state_dir = services._state_dir()
+    spawned_at = datetime.now(UTC)
+    request_supervised_start(supervisor)
+    ready = services._wait_for_daemon(
+        timeout=idle_budget,
+        startup_progress=(
+            None
+            if startup_progress is None
+            else lambda: startup_progress(state_dir, spawned_at=spawned_at)
+        ),
+    )
+    return DaemonLaunchResult.launched(ready)
+
+
+def stop_supervised_daemon(
+    supervisor: tuple[Any, Any],
+    *,
+    expected_epoch: str | None = None,
+    require_known_pid: bool = False,
+    read_identity: Callable[[int], str | None] | None = None,
+) -> JsonObject:
+    """Stop through the supervisor so it does not relaunch the daemon.
+
+    Returns the same facts an IPC ``shutdown`` answer carries (``pid``,
+    ``epoch``, ``stateDir``, ``lockPath``) so the caller's teardown/exit
+    proof is unchanged.  The unit stays installed: the next ``daemon start``
+    (or login) starts it again through the supervisor.
+
+    Every refusal happens before the supervisor is asked: an epoch mismatch,
+    or (``require_known_pid``, the identity switch) a probe that named no
+    pid.  The old process identity is read *before* the stop command, while
+    the process still exists (``read_identity``), and returned as
+    ``processIdentity`` so the
+    caller's PID-reuse fence has something to compare against.
+    """
+
+    services = get_services()
+    manager, status = supervisor
+    try:
+        value = services._daemon_probe(timeout=1.0)
+    except (services.CliError, ipc_errors.TransientDaemonError, OSError):
+        value = None
+    daemon = value.get("daemon") if isinstance(value, dict) else None
+    source = daemon if isinstance(daemon, dict) else value
+    source = source if isinstance(source, dict) else {}
+    pid = source.get("pid") if type(source.get("pid")) is int else None
+    epoch = source.get("epoch") if isinstance(source.get("epoch"), str) else None
+    if expected_epoch is not None and epoch != expected_epoch:
+        raise services.CliError(
+            "DAEMON_EPOCH_MISMATCH",
+            "shutdown plan belongs to another daemon epoch",
+        )
+    if require_known_pid and (pid is None or pid <= 0):
+        raise services.CliError(
+            "DAEMON_STOP_IDENTITY_UNKNOWN",
+            "daemon shutdown did not identify the old pid; refusing to commit "
+            "an identity change without an exit fence",
+            {"oldPid": None, "teardownCompleted": False},
+        )
+    process_identity: str | None = None
+    if pid is not None and pid > 0 and read_identity is not None:
+        process_identity = read_identity(pid)
+    if manager.platform == "launchd":
+        if status.loaded:
+            _supervisor_command(
+                manager,
+                ("launchctl", "bootout", f"gui/{manager.uid}/{status.unit}"),
+                timeout=SUPERVISOR_STOP_TIMEOUT_SECONDS,
+            )
+    else:
+        _supervisor_command(
+            manager,
+            ("systemctl", "--user", "stop", "hyprial.service"),
+            timeout=SUPERVISOR_STOP_TIMEOUT_SECONDS,
+        )
+    state_dir = Path(services._state_dir())
+    return {
+        "ok": True,
+        "stopping": pid is not None,
+        "pid": pid if pid is not None and pid > 0 else None,
+        "epoch": epoch,
+        "stateDir": str(state_dir),
+        "lockPath": str(state_dir / "daemon.lock"),
+        "processIdentity": process_identity,
+        "supervisor": {"platform": manager.platform, "unit": status.unit},
+    }
 
 
 def _stop_stray_daemon(expected_pid: int) -> None:

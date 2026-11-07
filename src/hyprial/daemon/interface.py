@@ -45,11 +45,10 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.forwarding.membership.maintenance import TailnetMaintenance as TailnetMaintenance
     from hyprial.daemon.impl.forwarding.membership.hardening.offline import OfflineMembership as OfflineMembership
     from hyprial.daemon.impl.application.start_backoff import read_start_failures as read_start_failures
+    from hyprial.daemon.impl.forwarding.membership.migration import read_degraded_redemption as read_degraded_redemption
     from hyprial.daemon.impl.configuration.ownership import DaemonOwnershipBusy as DaemonOwnershipBusy
     from hyprial.daemon.impl.configuration.ownership import DaemonStateOwnershipFence as DaemonStateOwnershipFence
-    from hyprial.daemon.impl.configuration.ownership import (  # noqa: I001
-        wait_for_state_ownership as wait_for_state_ownership,
-    )
+    from hyprial.daemon.impl.configuration.ownership import wait_for_state_ownership as wait_for_state_ownership
     from hyprial.daemon.impl.desired_state.store import DesiredStateStore as DesiredStateStore
     from hyprial.daemon.impl.harnesses.dsh.api import DshHttpApi as DshHttpApi
     from hyprial.daemon.impl.operations.management import EnsureSquireRegistryCommand as EnsureSquireRegistryCommand
@@ -93,7 +92,7 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.application.ports import RoutineRuntime as RoutineRuntime
     from hyprial.daemon.impl.application.ports import RoutineRuntimeDeps as RoutineRuntimeDeps
     from hyprial.daemon.impl.application.ports import RoutineSchemaPortError as RoutineSchemaPortError
-    from hyprial.daemon.impl.squire.probe import RuntimeProber as RuntimeProber
+    from hyprial.daemon.impl.squire.probe import RuntimeProber as RuntimeProber, probe_combinations as probe_combinations
     from hyprial.daemon.impl.autoupdate import SCHEDULE as SCHEDULE
     from hyprial.daemon.impl.configuration.network_profile import SECRETS_DIRNAME as SECRETS_DIRNAME
     from hyprial.daemon.impl.adapters.lark.credentials.scopes import SENSITIVE_CAPABILITY_NOTES as SENSITIVE_CAPABILITY_NOTES
@@ -225,7 +224,6 @@ if TYPE_CHECKING:
     from hyprial.daemon.impl.transfer.archive.session_files import resolve_legacy_pi_resume_session as resolve_legacy_pi_resume_session
     from hyprial.daemon.impl.transfer.cleanup import plan_cleanup as plan_cleanup
     from hyprial.daemon.impl.pac.graphs.reactor import planned_to_json as planned_to_json
-    from hyprial.daemon.impl.squire.probe import probe_combinations as probe_combinations
     from hyprial.daemon.impl.transfer.execution.smolvm import probe_smolvm as probe_smolvm
     from hyprial.daemon.impl.processes.process_diagnostics import process_cpu_seconds as process_cpu_seconds
     from hyprial.daemon.impl.autoupdate import read_last_run as read_last_run
@@ -364,6 +362,7 @@ _FACADE_EXPORTS = {
     'TailnetMaintenance': ('hyprial.daemon.impl.forwarding.membership.maintenance', 'TailnetMaintenance'),
     'OfflineMembership': ('hyprial.daemon.impl.forwarding.membership.hardening.offline', 'OfflineMembership'),
     'read_start_failures': ('hyprial.daemon.impl.application.start_backoff', 'read_start_failures'),
+    'read_degraded_redemption': ('hyprial.daemon.impl.forwarding.membership.migration', 'read_degraded_redemption'),
     'DaemonOwnershipBusy': ('hyprial.daemon.impl.configuration.ownership', 'DaemonOwnershipBusy'),
     'DaemonStateOwnershipFence': ('hyprial.daemon.impl.configuration.ownership', 'DaemonStateOwnershipFence'),
     'wait_for_state_ownership': ('hyprial.daemon.impl.configuration.ownership', 'wait_for_state_ownership'),
@@ -712,6 +711,7 @@ __all__ = [
     'DaemonApplication',
     'TailnetMaintenance',
     'OfflineMembership',
+    'read_degraded_redemption',
     'read_start_failures',
     'DaemonOwnershipBusy',
     'DaemonStateOwnershipFence',

@@ -102,6 +102,7 @@ class _TransferP2Mixin:
             # landed/activated here (position only) and started later by the
             # target's own CLI (target_tui.drive_target_start).
             entrypoint=str(params.get("entrypoint") or ENTRYPOINT_HEADLESS),
+            notice_reporter=self._report_agent_runtime_notices,
         )
         payload: JsonObject = {
             "ok": True,

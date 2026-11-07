@@ -9,6 +9,7 @@ from hyprial.daemon import NetworkProfile
 from hyprial.identity import (
     BINDING_ASSERTION_CLIENT_ID,
     BINDING_ASSERTION_OWNER,
+    binding_assertion_audience_matches,
     binding_assertion_claims_unverified,
 )
 
@@ -107,6 +108,11 @@ def validate_binding_confirmation(
             "BINDING_PROOF_INVALID",
             "the binding confirmation returned an invalid assertion; will retry",
         ) from error
+    if not binding_assertion_audience_matches(claims, BINDING_ASSERTION_CLIENT_ID):
+        raise LoginError(
+            "BINDING_ACCOUNT_MISMATCH",
+            "the binding confirmation was issued for another application; will retry",
+        )
     if claims.get("owner") != BINDING_ASSERTION_OWNER:
         raise LoginError(
             "BINDING_ACCOUNT_MISMATCH",

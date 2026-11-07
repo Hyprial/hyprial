@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "source_root": "src/hyprial",
+  "modules": {
+    "kernel": {
+      "packages": ["actor_runtime", "contracts", "platform", "log", "hooks"],
+      "files": ["backoff.py", "duration.py", "uri.py", "persistent_config.py", "home.py", "_dsh_resolver.py"]
+    },
+    "identity": {
+      "packages": ["agents", "users", "provider_auth"],
+      "files": ["identity_transaction.py", "tailnet_identity.py"]
+    },
+    "daemon": {
+      "packages": ["daemon", "inbox", "transport", "mcp", "pac", "dispatch", "harnesses", "orgfs", "org", "adapters", "squire", "transfer", "installers", "autoupdate", "status"],
+      "files": ["adapter_registration.py", "assign.py", "assign_reconcile.py", "assign_store.py", "forwarding_config.py", "home_migration.py", "inbox_watchdog.py", "management.py", "management_actor.py", "network_profile.py", "peer_reachability.py", "process_diagnostics.py", "proxy_route.py", "tsnet_join.py", "tsnet_sidecar.py", "updates.py", "watchdog_actor.py"]
+    },
+    "biz": {
+      "packages": ["routine", "workflow"],
+      "files": ["alarm.py", "availability_loud.py", "cost_counters.py", "quota_watchdog.py", "turn_pulse.py", "usage.py", "usage_actor.py"]
+    },
+    "shell": {
+      "packages": ["cli_commands"],
+      "files": ["cli_inventory.py", "desktop_network.py", "gui_apps.py", "gui_bundle.py", "gui_product.py", "gui_runtime.py", "login.py", "login_preview.py", "onboarding.py", "onboarding_apply.py", "plugins.py"]
+    }
+  },
+  "retained_paths": {
+    "src/hyprial/__init__.py": {"owner": "kernel", "reason": "version metadata retained at package root"},
+    "src/hyprial/cli.py": {"owner": "shell", "reason": "public entrypoint; assembly layer retained at this path"},
+    "src/hyprial/gui_build_hook.py": {"owner": "shell", "reason": "build hook path referenced by pyproject.toml"}
+  },
+  "resource_only_directories": [
+    "src/hyprial/routine/templates",
+    "src/hyprial/autoupdate/services",
+    "src/hyprial/daemon/services",
+    "src/hyprial/skills"
+  ],
+  "historical_location_notes": [
+    "_dsh_resolver.py is classified kernel per the recommendation in plan section 3.2; the plan notes daemon is also plausible.",
+    "workflow is classified biz per the explicit resolution in plan section 3.1."
+  ]
+}

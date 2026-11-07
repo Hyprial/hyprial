@@ -1,0 +1,33 @@
+{
+  "ready": {"v": 1, "type": "ready", "kind": "user-proxy", "pid": 4242, "hyprialCommit": "3137ed2ad92e5bb2c4369661d660815b63ae787b", "scriptSha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+  "exchanges": [
+    {
+      "label": "someone else -> the person's DM",
+      "request": {"v": 1, "op": "call", "id": "msg-redacted-1", "payload": {"from": "agent:op:node-1:alice", "message": "build is green"}},
+      "responses": [
+        {"v": 1, "type": "metric", "id": "msg-redacted-1", "segment": "decode", "durationMs": 0, "ok": true},
+        {"v": 1, "type": "metric", "id": "msg-redacted-1", "segment": "call", "durationMs": 0, "ok": true},
+        {"v": 1, "type": "forward", "id": "msg-redacted-1", "ok": true, "to": "route:allen-feishu:allen-dm", "message": "build is green"}
+      ]
+    },
+    {
+      "label": "the person names a recipient",
+      "request": {"v": 1, "op": "call", "id": "msg-redacted-2", "payload": {"from": "adapter:lark:allen-feishu", "message": "@alice thanks"}},
+      "responses": [
+        {"v": 1, "type": "metric", "id": "msg-redacted-2", "segment": "decode", "durationMs": 0, "ok": true},
+        {"v": 1, "type": "metric", "id": "msg-redacted-2", "segment": "call", "durationMs": 0, "ok": true},
+        {"v": 1, "type": "forward", "id": "msg-redacted-2", "ok": true, "to": "alice", "message": "thanks"}
+      ]
+    },
+    {
+      "label": "the person names nobody",
+      "request": {"v": 1, "op": "call", "id": "msg-redacted-3", "payload": {"from": "adapter:lark:allen-feishu", "message": "thanks"}},
+      "responses": [
+        {"v": 1, "type": "metric", "id": "msg-redacted-3", "segment": "decode", "durationMs": 0, "ok": true},
+        {"v": 1, "type": "metric", "id": "msg-redacted-3", "segment": "call", "durationMs": 0, "ok": true},
+        {"v": 1, "type": "result", "id": "msg-redacted-3", "ok": true, "output": {"message": "HINT"}}
+      ]
+    }
+  ],
+  "route": "route:allen-feishu:allen-dm"
+}

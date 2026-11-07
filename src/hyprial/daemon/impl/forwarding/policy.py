@@ -12,16 +12,10 @@ from hyprial.kernel import MEMBERSHIP_BUDGETS, private_metadata_violation
 FORWARD_PROTOCOL_VERSION = 6
 
 
-_PROXY_KEYS = frozenset(
+_UNSUPPORTED_PROXY_KEYS = frozenset(
     {
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
         "ALL_PROXY",
-        "NO_PROXY",
-        "http_proxy",
-        "https_proxy",
         "all_proxy",
-        "no_proxy",
     }
 )
 
@@ -30,7 +24,7 @@ def _child_environment(environ: Mapping[str, str]) -> dict[str, str]:
     return {
         key: value
         for key, value in environ.items()
-        if not key.startswith("TS_") and key not in _PROXY_KEYS
+        if not key.startswith("TS_") and key not in _UNSUPPORTED_PROXY_KEYS
     }
 
 

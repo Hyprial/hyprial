@@ -1,0 +1,373 @@
+{
+  "schema_version": 1,
+  "policy": "shrinking-only-until-root-composition",
+  "exemptions": [
+    {
+      "path": "src/hyprial/daemon/impl/ipc/wire.py",
+      "owner": "_Stack.__exit__",
+      "operation": "close"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/ipc/wire.py",
+      "owner": "_Stack.close_service",
+      "operation": "close"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/ipc/wire.py",
+      "owner": "_Stack.service",
+      "operation": "construct"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/ipc/wire.py",
+      "owner": "_WireEvaluator._WG_001",
+      "operation": "receive"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/ipc/wire.py",
+      "owner": "_WireEvaluator._WG_001",
+      "operation": "submit"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/ipc/wire.py",
+      "owner": "_WireEvaluator._WG_002",
+      "operation": "receive"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/ipc/wire.py",
+      "owner": "_WireEvaluator._WG_003",
+      "operation": "ack"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/ipc/wire.py",
+      "owner": "_WireEvaluator._WG_003",
+      "operation": "receive"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/ipc/wire.py",
+      "owner": "_WireEvaluator._WG_004",
+      "operation": "receive"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/ipc/wire.py",
+      "owner": "_WireEvaluator._WG_005",
+      "operation": "receive"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/ipc/wire.py",
+      "owner": "_WireEvaluator._WG_006",
+      "operation": "receive"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/ipc/wire.py",
+      "owner": "_WireEvaluator._WG_007",
+      "operation": "receive"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/ipc/wire.py",
+      "owner": "_WireEvaluator._WG_008",
+      "operation": "receive"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/ipc/wire.py",
+      "owner": "_WireEvaluator._WG_009",
+      "operation": "ack"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/ipc/wire.py",
+      "owner": "_WireEvaluator._WG_009",
+      "operation": "receive"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/ipc/wire.py",
+      "owner": "_WireEvaluator._WG_010",
+      "operation": "submit"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/ipc/wire.py",
+      "owner": "_WireEvaluator._WG_011",
+      "operation": "submit"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/ipc/wire.py",
+      "owner": "_WireEvaluator._WG_012",
+      "operation": "submit"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/ipc/wire.py",
+      "owner": "_WireEvaluator._WG_013",
+      "operation": "ack"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/ipc/wire.py",
+      "owner": "_WireEvaluator._WG_013",
+      "operation": "receive"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/ipc/wire.py",
+      "owner": "_WireEvaluator._WG_014",
+      "operation": "retry_due"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/ipc/wire.py",
+      "owner": "_WireEvaluator._WG_014",
+      "operation": "submit"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/ipc/wire.py",
+      "owner": "_WireEvaluator._WG_015",
+      "operation": "receive"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/ipc/wire.py",
+      "owner": "_WireEvaluator._WG_016",
+      "operation": "fail"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/ipc/wire.py",
+      "owner": "_WireEvaluator._WG_016",
+      "operation": "receive"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/ipc/wire.py",
+      "owner": "_WireEvaluator._WG_024",
+      "operation": "receive"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/ipc/wire.py",
+      "owner": "_WireEvaluator._WG_028",
+      "operation": "ack"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/ipc/wire.py",
+      "owner": "_WireEvaluator._WG_028",
+      "operation": "receive"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/ipc/wire.py",
+      "owner": "_WireEvaluator._WG_029",
+      "operation": "ack"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/ipc/wire.py",
+      "owner": "_WireEvaluator._WG_032",
+      "operation": "receive"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/ipc/wire.py",
+      "owner": "_WireEvaluator._WG_033",
+      "operation": "receive"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/ipc/wire.py",
+      "owner": "_WireEvaluator._WG_037",
+      "operation": "receive"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/application/actors/agents_admin/destroys.py",
+      "owner": "DaemonApplication._destroy_agent_messages",
+      "operation": "ack"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/application/messaging/maintenance.py",
+      "owner": "DaemonApplication._flush_outbox_recipient_wakes",
+      "operation": "wake_outbox_recipient",
+      "reason": "Compatibility helper retained for original dev tests; no production source caller. The composed Inbox is DeliveryCustodyFacade and wake crosses WakeOutboxRecipientCommand to the Inbox owner. Production online wake uses RecipientWakeCoordinator; canonical _close retains unsettled wake dependencies."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/application/wiring/services.py",
+      "owner": "DaemonApplication._start_runtime",
+      "operation": "alarm_emitter"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/application/wiring/transport.py",
+      "owner": "DaemonApplication._start_runtime",
+      "operation": "receive"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/application/messaging/inbox_surface/queries.py",
+      "owner": "DaemonApplication.handle",
+      "operation": "ack"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/application/messaging/inbox_surface/queries.py",
+      "owner": "DaemonApplication.handle",
+      "operation": "dismiss_system_notice"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/application/messaging/inbox_surface/queries.py",
+      "owner": "DaemonApplication.handle",
+      "operation": "fetch_pending"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/application/messaging/inbox_surface/queries.py",
+      "owner": "DaemonApplication.handle",
+      "operation": "prune_outbox"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/application/messaging/inbox_surface/send.py",
+      "owner": "DaemonApplication.handle",
+      "operation": "submit"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/application/messaging/maintenance.py",
+      "owner": "DaemonApplication._raise_harness_failed_alarm",
+      "operation": "alarm_emitter"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/runtime/results.py",
+      "owner": "DaemonEventBridge._complete_harness_results",
+      "operation": "ack"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/runtime/results.py",
+      "owner": "DaemonEventBridge._settle_claimed_result_member",
+      "operation": "ack",
+      "reason": "2026-10-22 batch settlement extraction: ResultSettlementCoordinator still calls the injected DeliveryCustodyFacade once per real member; it submits AcknowledgeMessageCommand to the Inbox owner. Timeout retains the Harness result claim. This is a typed facade call, not direct InboxService mutation; composition and mutation-thread controls pin the boundary."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/runtime/reconcile.py",
+      "owner": "DaemonEventBridge._dispatch_harness_deliveries",
+      "operation": "dismiss_system_notice"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/runtime/reconcile.py",
+      "owner": "DaemonEventBridge._drain_dispatch_offer_outcomes",
+      "operation": "dismiss_system_notice",
+      "reason": "2026-09-28 actor composition: the dispatch cadence effect dismisses an accepted offer notice via DeliveryCustodyFacade and DismissSystemNoticeCommand. The Inbox owner remains the writer and shutdown drains offers before Inbox closure; this records the new actor-mode call site alongside the retained offline path."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/runtime/reconcile.py",
+      "owner": "DaemonEventBridge._refresh_queued_hold",
+      "operation": "refresh_hold"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/runtime/bridge.py",
+      "owner": "DaemonEventBridge.start",
+      "operation": "refresh_hold",
+      "reason": "2026-09-28 actor composition: this is bound-method capture for HoldRefreshCoordinator, not execution during start. Its bounded effect calls DeliveryCustodyFacade, submitting RefreshHoldCommand to the Inbox owner; native RX and maintenance do not perform the mutation."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/runtime/reconcile.py",
+      "owner": "DaemonEventBridge._publish_harness_progress",
+      "operation": "submit_progress_event"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/runtime/bridge.py",
+      "owner": "DaemonEventBridge.start",
+      "operation": "submit_progress_event",
+      "reason": "2026-09-28 actor composition: this is bound-method capture for ProgressPublishCoordinator. Its bounded effect calls DeliveryCustodyFacade and SubmitProgressCommand; local writes remain on Inbox owner and remote progress goes through DeliveryIoWorker. No raw service/native call is introduced here."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/runtime/results.py",
+      "owner": "DaemonEventBridge._complete_harness_results",
+      "operation": "fetch_pending",
+      "reason": "WP5-A (ruling 61): the headless turn end stamps the first fetched time and clears non-terminal failure retries for one already-injected row through DeliveryCustodyFacade's FetchPendingCommand(message_id, completed_turn=True). It is a typed facade call, not a raw InboxService mutation."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/runtime/results.py",
+      "owner": "DaemonEventBridge._settle_claimed_result_member",
+      "operation": "fetch_pending",
+      "reason": "WP5-A (ruling 61): each claimed-result member stamps the first fetched time and clears non-terminal failure retries for one already-injected row through DeliveryCustodyFacade's FetchPendingCommand(message_id, completed_turn=True). It is a typed facade call, not a raw InboxService mutation."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/runtime/forwards.py",
+      "owner": "DaemonEventBridge._confirm_mechanism_answer",
+      "operation": "ack"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/runtime/forwards.py",
+      "owner": "DaemonEventBridge._confirm_mechanism_answer",
+      "operation": "submit"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/runtime/results.py",
+      "owner": "DaemonEventBridge._settle_stranded_rows",
+      "operation": "ack",
+      "reason": "WP5-A rework (ruling 74): the one-shot startup sweep acks a stamped pending row only when settle_hint_for says ack. It is a typed DeliveryCustodyFacade ack, the same call the claimed-result settlement makes."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/runtime/forwards.py",
+      "owner": "DaemonEventBridge._submit_loud",
+      "operation": "submit",
+      "reason": "2026-09-21: the fail-loud notice to the original sender is a first-class inbox submission through the composed port (the same seam the mechanism answer functions use). It is not a raw service bypass; the notice is idempotent per attempt and never settles the original delivery."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/runtime/forwards.py",
+      "owner": "_BridgeForwardsMixin._log_missing_failure_route",
+      "operation": "alarm_emitter",
+      "reason": "2026-10-15 #1465 (#1463 finding 2) fail-loud alarm seam, same class as DaemonEventBridge._submit_loud: last-resort human alarm when a failed delivery has no pending row, no settlement tombstone and no ledger route. It reads the inbox's composed alarm_emitter port and emits through the existing throttle ledger; it never submits, acks or settles a delivery and introduces no raw service/native call, which is why it is a legitimate manifested raw bypass."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/runtime/bridge.py",
+      "owner": "DaemonEventBridge._prune_inbox",
+      "operation": "prune_inbox"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/runtime/reconcile.py",
+      "owner": "DaemonEventBridge._retry_pump_run",
+      "operation": "retry_due",
+      "reason": "2026-09-14: the tick only kicks; the blocking retry_due moved onto the dedicated delivery-pump thread so a stuck outbound send cannot hold the reconcile tick. Same cadence ownership, new call site."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/harnesses/dsh/api.py",
+      "owner": "_ResolverRequest.__init__",
+      "operation": "close",
+      "reason": "Closes the parent copy of a multiprocessing resolver Pipe sender; this is OS transport custody, not inbox state mutation."
+    },
+    {
+      "path": "src/hyprial/kernel/impl/processes/_dsh_resolver.py",
+      "owner": "resolve_hostname",
+      "operation": "close",
+      "reason": "Closes the child multiprocessing resolver Pipe sender; this is OS transport custody, not inbox state mutation."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/inbox/links/zenoh_link.py",
+      "owner": "ZenohInboxEndpoint._on_custody",
+      "operation": "accept_custody"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/inbox/links/zenoh_link.py",
+      "owner": "ZenohInboxEndpoint._on_fetch_receipt",
+      "operation": "retire_outbox_receipt"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/inbox/links/zenoh_link.py",
+      "owner": "ZenohInboxEndpoint._on_inbox",
+      "operation": "receive"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/inbox/links/zenoh_link.py",
+      "owner": "ZenohInboxEndpoint._on_progress_event",
+      "operation": "receive_progress_event"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/inbox/links/zenoh_link.py",
+      "owner": "ZenohInboxEndpoint._on_system_notice",
+      "operation": "receive_system_notice"
+    },
+    {
+      "path": "src/hyprial/daemon/impl/application/actors/transfer_p2.py",
+      "owner": "_TransferP2Mixin._transfer_override_alert",
+      "operation": "receive_system_notice",
+      "reason": "2026-10-10 transfer P2 C2: the owner-authenticated custody override writes its durable structured operator alert through the composed DeliveryCustodyFacade (ReceiveSystemNoticeCommand to the Inbox owner), never a raw InboxService. The journal audit row is the primary receipt; the alert must land durably before any hold is released."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/application/messaging/inbox_surface/reply_reminders.py",
+      "owner": "InboxReplyReminders.post_reply_reminder",
+      "operation": "receive_system_notice",
+      "reason": "2026-10-14 WP7: the reply reminder writes its durable system notice through the injected inbox port. In composition that port is the DeliveryCustodyFacade, whose receive_system_notice sends ReceiveSystemNoticeCommand to the Inbox owner; this adapter never constructs or mutates a raw InboxService."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/runtime/reconcile.py",
+      "owner": "_BridgeReconcileMixin._confirm_batch_fetched",
+      "operation": "fetch_pending",
+      "reason": "WP5-A accepted-only stamp: after a worker accepts a batch offer, the runtime asks the composed DeliveryCustodyFacade to stamp the accepted members via FetchPendingCommand. This is a typed facade call, not a raw InboxService mutation; it is idempotent, bounded to the accepted member set, and retried through the pending-fetch map without opening a second settlement path."
+    },
+    {
+      "path": "src/hyprial/daemon/impl/runtime/reconcile.py",
+      "owner": "_BridgeReconcileMixin._retry_batch_fetches",
+      "operation": "fetch_pending",
+      "reason": "WP5-A retry of the accepted-only stamp: a failed facade fetch is retried from the bounded in-memory pending map on the next tick. The composed DeliveryCustodyFacade submits FetchPendingCommand to the Inbox owner; this is not a raw service write and cannot revive a settled batch."
+    }
+  ]
+}

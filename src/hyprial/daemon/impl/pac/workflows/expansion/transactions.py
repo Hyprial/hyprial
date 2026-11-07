@@ -10,7 +10,9 @@ from hyprial.identity import (
     PAC_EXPANSION_ALREADY_BOUND,
     PAC_EXPANSION_INVALID,
     PacError,
+    parse_principal,
 )
+from hyprial.kernel import parse_agent_uri, parse_user_uri
 from hyprial.daemon.impl.pac.graphs.flags import write_flag_in_transaction
 from hyprial.daemon.impl.pac.storage.journal import append_event
 from hyprial.daemon.impl.pac.workflows.expansion.storage import (
@@ -271,6 +273,24 @@ __all__ = [
 ]
 
 
+def _local_identity(created_by: str, actor: str) -> tuple[str, str]:
+    """Resolve the child's local owner and machine without lossy URI splitting."""
+
+    parsed_agent = parse_agent_uri(created_by)
+    if parsed_agent is not None:
+        owner, machine, _ = parsed_agent
+        return owner, machine
+    parsed_user = parse_user_uri(created_by)
+    actor_parts = actor.split(":", 3)
+    actor_machine = actor_parts[2] if len(actor_parts) == 4 else "local"
+    if parsed_user is not None:
+        return parsed_user, actor_machine
+    if created_by and created_by.strip() == created_by and ":" not in created_by:
+        return created_by, actor_machine
+    parse_principal(created_by)
+    raise AssertionError("unresolved created_by passed principal validation")
+
+
 def complete_prepared_expansion(
     reactor,
     context,
@@ -287,9 +307,7 @@ def complete_prepared_expansion(
     )
 
     graph = reactor._require_graph(context.parent_graph_id)
-    actor_parts = actor.split(":", 3)
-    local_owner = graph["created_by"].split(":", 1)[-1]
-    machine = actor_parts[2] if len(actor_parts) == 4 else "local"
+    local_owner, machine = _local_identity(graph["created_by"], actor)
     db = reactor._store.write()
     try:
         event, alert_rows, _ = accept_prepared_expansion_in_transaction(

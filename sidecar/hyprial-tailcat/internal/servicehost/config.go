@@ -15,6 +15,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tailcat/internal/privatefs"
 )
 
 var nodePublic = regexp.MustCompile(`^nodekey:[0-9a-f]{64}$`)
@@ -120,12 +122,20 @@ func validateConfig(cfg Config) error {
 	return nil
 }
 
+// exposureLstat is a stat seam for private-target validation tests.
+var exposureLstat = os.Lstat
+
 func validateExposure(exposure Exposure) error {
 	if exposure.Port < 1 || exposure.Port > 65535 {
 		return fmt.Errorf("exposure port must be 1..65535")
 	}
 	if exposure.ProxyProtocol != "" && exposure.ProxyProtocol != "v2" {
 		return fmt.Errorf("proxyProtocol must be empty or v2")
+	}
+	if exposure.ProxyProtocol == "v2" {
+		if err := privatefs.ProxyTarget(exposure.Target, exposureLstat); err != nil {
+			return err
+		}
 	}
 	switch {
 	case strings.HasPrefix(exposure.Target, "tcp:"):

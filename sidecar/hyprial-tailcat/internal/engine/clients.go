@@ -16,18 +16,19 @@ import (
 	"time"
 
 	"github.com/tailscale/tailcat"
-	"tailscale.com/types/logger"
 
 	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tailcat/internal/keys"
 	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tailcat/internal/membership"
+	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tailcat/internal/outbound"
 	"go4.org/mem"
 	"tailscale.com/types/key"
 )
 
 type pooledClient struct {
+	network      *outbound.Diagnostics
 	poolKey      string
 	address      string
-	client       *tailcat.Client
+	client       *outbound.Client
 	refs         int
 	leases       map[*clientLease]struct{}
 	ready        atomic.Bool
@@ -66,12 +67,10 @@ func (e *Engine) acquireClientLocked(address string) (*clientLease, error) {
 		if err != nil {
 			return nil, err
 		}
-		client := &tailcat.Client{
-			Key: clientKey, Server: tailcat.Addr(address),
-			Logf: logger.Logf(quiet),
-		}
+		network := &outbound.Diagnostics{}
+		client := e.regionHints.NewClient(clientKey, tailcat.Addr(address), info, network)
 		replacement := &pooledClient{
-			poolKey: poolKey, address: address, client: client,
+			poolKey: poolKey, address: address, client: client, network: network,
 			leases: make(map[*clientLease]struct{}),
 		}
 		if entry != nil {
@@ -326,15 +325,25 @@ func (e *Engine) dialControl(ctx context.Context, a membership.Authority) (net.C
 		return nil, ErrNotUp
 	}
 	lease, err := e.acquireClientLocked(a.Address)
-	e.mu.Unlock()
 	if err != nil {
-		return nil, err
+		e.mu.Unlock()
+		detail := outbound.ControlFailure(err)
+		return nil, &membership.Error{Value: "AUTHORITY_UNREACHABLE", Detail: &detail}
 	}
+	network := lease.entry.network
+	e.mu.Unlock()
+	observation := network.Begin()
+	defer observation.Close()
 	release := func() { e.mu.Lock(); e.releaseClientLocked(lease); e.mu.Unlock() }
 	conn, err := e.dialTCPPort(ctx, lease, uint16(a.ControlPort))
 	if err != nil {
+		detail := observation.Failure(err)
+		observation.Close()
 		release()
-		return nil, err
+		if info, parseErr := parseClientAddress(a.Address); parseErr == nil {
+			detail.ProbeMissing(ctx, info.Region)
+		}
+		return nil, &membership.Error{Value: "AUTHORITY_UNREACHABLE", Detail: &detail}
 	}
 	return &controlConn{Conn: conn, release: release}, nil
 }

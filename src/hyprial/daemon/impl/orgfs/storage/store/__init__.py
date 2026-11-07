@@ -135,6 +135,9 @@ class LocalSpaceStore(StoreMembership, StoreJournal, StoreAdmission, StoreSnapsh
         self._drain_budget_warning_at = float("-inf")
         self._membership_memo_head: tuple[int, int] | None = None
         self._membership_memo: set[bytes] = set()
+        self._meta_baseline: tuple[tuple[int, int], Doc] | None = None
+        self._meta_frontier_dirty = True
+        self._membership_deadline: float | None = None
         self._local_registration_ids: dict[str, set[int]] = {}
         self._dirty_docs: set[str] = set()
         self._commits_since_checkpoint = 0
@@ -187,6 +190,10 @@ class LocalSpaceStore(StoreMembership, StoreJournal, StoreAdmission, StoreSnapsh
                 owner TEXT,
                 membership_json TEXT NOT NULL,
                 meta_update BLOB
+            );
+            CREATE TABLE IF NOT EXISTS meta_frontier_history (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                journal_rowid INTEGER NOT NULL
             );
             CREATE TABLE IF NOT EXISTS member_add_frontiers (
                 user TEXT NOT NULL,
@@ -291,6 +298,8 @@ class LocalSpaceStore(StoreMembership, StoreJournal, StoreAdmission, StoreSnapsh
     def close(self) -> None:
         with self._lock:
             if self._db is not None:
+                getattr(self, "_meta_work", {}).clear()
+                self._meta_baseline = None
                 self.checkpoint()
                 self._db.close()
                 self._db = None  # type: ignore[assignment]
@@ -604,6 +613,8 @@ class LocalSpaceStore(StoreMembership, StoreJournal, StoreAdmission, StoreSnapsh
         writer: str | None = None,
         import_doc: Doc | None = None,
     ) -> None:
+        if doc_id == "meta":
+            self._advance_meta_baseline(update)
         for key, working in self._writer_docs.items():
             if key[0] == doc_id and key[1] != writer:
                 working.apply_update(update)

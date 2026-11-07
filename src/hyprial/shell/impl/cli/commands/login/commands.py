@@ -2,11 +2,6 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:  # deferred annotations only
-    from hyprial.identity import IdentityTransactionLock
-
 from hyprial.shell.impl.cli.commands.common.services import get_services
 
 from hyprial.kernel import HYPRIALHomeNotInitialized
@@ -181,59 +176,55 @@ def login(
             home_was_missing = False
             org_warning = None
 
-        held_identity_transaction: list[IdentityTransactionLock] = []
+        committed_identity_generation: list[int] = []
         try:
-            try:
-                response = services._run_login_cli_flow(
-                    no_open=no_open,
-                    json_output=json_output,
-                    switch_account=switch_account,
-                    no_daemon=True,
-                    first_time_setup=True,
-                    held_identity_transaction=held_identity_transaction,
-                )
-            except KeyboardInterrupt as error:
-                if not home_was_missing:
-                    raise
-                raise services.CliError(
-                    "INTERRUPTED",
-                    "login was interrupted after home initialization; rerun `hyprial login`",
-                    data={"nextSteps": ["hyprial login"]},
-                ) from error
-            except services.CliError as error:
-                if not home_was_missing:
-                    raise
-                data = dict(error.data) if isinstance(error.data, dict) else {}
-                data["nextSteps"] = ["hyprial login"]
-                raise services.CliError(
-                    error.code,
-                    f"{error}; home is initialized, rerun `hyprial login`",
-                    data=data,
-                ) from error
-            if not no_daemon:
-                response["daemon"] = services._complete_initialization(
-                    ready_timeout=ready_timeout,
-                    listen=None,
-                    connect=None,
-                    org_warning=org_warning,
-                    login_when_missing=None,
-                    held_identity_transaction=held_identity_transaction,
-                )
-                migration = response["daemon"].get("migration")
-                if isinstance(migration, dict):
-                    response["migration"] = migration
-                # First login is the moment a new member has no squire and
-                # is watching the terminal: say it on stderr, not only in
-                # the nested JSON.
-                if not json_output:
-                    _announce_setup_guidance(response["daemon"])
-            steps = _organization_next_steps(services)
-            if steps is not None:
-                response["nextSteps"] = steps
-            return CliResult(response)
-        finally:
-            for transaction in held_identity_transaction:
-                transaction.close()
+            response = services._run_login_cli_flow(
+                no_open=no_open,
+                json_output=json_output,
+                switch_account=switch_account,
+                no_daemon=True,
+                first_time_setup=True,
+                committed_identity_generation=committed_identity_generation,
+            )
+        except KeyboardInterrupt as error:
+            if not home_was_missing:
+                raise
+            raise services.CliError(
+                "INTERRUPTED",
+                "login was interrupted after home initialization; rerun `hyprial login`",
+                data={"nextSteps": ["hyprial login"]},
+            ) from error
+        except services.CliError as error:
+            if not home_was_missing:
+                raise
+            data = dict(error.data) if isinstance(error.data, dict) else {}
+            data["nextSteps"] = ["hyprial login"]
+            raise services.CliError(
+                error.code,
+                f"{error}; home is initialized, rerun `hyprial login`",
+                data=data,
+            ) from error
+        if not no_daemon:
+            response["daemon"] = services._complete_initialization(
+                ready_timeout=ready_timeout,
+                listen=None,
+                connect=None,
+                org_warning=org_warning,
+                login_when_missing=None,
+                committed_identity_generation=committed_identity_generation,
+            )
+            migration = response["daemon"].get("migration")
+            if isinstance(migration, dict):
+                response["migration"] = migration
+            # First login is the moment a new member has no squire and
+            # is watching the terminal: say it on stderr, not only in
+            # the nested JSON.
+            if not json_output:
+                _announce_setup_guidance(response["daemon"])
+        steps = _organization_next_steps(services)
+        if steps is not None:
+            response["nextSteps"] = steps
+        return CliResult(response)
 
     services.runtime.execute(operation, json_output=json_output, allow_missing_home=True)
 

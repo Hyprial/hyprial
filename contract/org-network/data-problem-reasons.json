@@ -1,0 +1,13 @@
+{
+  "deviceRow": [
+    "content-pending",
+    "invalid-device-record"
+  ],
+  "lifecycleMarker": [
+    "invalid-json",
+    "invalid-object",
+    "invalid-state",
+    "missing-state",
+    "unknown-state"
+  ]
+}

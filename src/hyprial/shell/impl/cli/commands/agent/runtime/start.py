@@ -215,6 +215,33 @@ def start(
                     ipc_errors.INVALID_ARGUMENT, "jev does not support --tmux"
                 )
             headless = True
+        if harness_kind == "claude":
+            from hyprial.shell.impl.cli.commands.agent.runtime.rules.permission_rules import (
+                inert_path_rules,
+            )
+
+            rule_cwd = _resolved_agent_cwd(name, cwd)
+            findings = inert_path_rules(runtime_args, rule_cwd)
+            if findings.refuse:
+                raise services.CliError(
+                    ipc_errors.INVALID_ARGUMENT,
+                    "these claude permission rules would be accepted but would "
+                    "not do what they say. A path rule for Write, MultiEdit, "
+                    "NotebookEdit or Glob never matches (Edit covers the first "
+                    "three, Read covers Glob; to match every use of a tool "
+                    "regardless of path, write only the tool name); Edit covers "
+                    "every file-modifying tool, so a Write-only restriction "
+                    "cannot be expressed with a path rule. In a CLI flag a "
+                    f"single leading slash anchors at the working directory "
+                    f"({rule_cwd}), so an absolute path needs a double slash: "
+                    + "; ".join(f"{old} -> {new}" for old, new in findings.refuse),
+                )
+            for old, new in findings.warn:
+                warn(
+                    f"{old} anchors at the working directory ({rule_cwd}), not at "
+                    f"the filesystem root; if you meant the absolute path, write {new}",
+                    json_output=json_output,
+                )
         try:
             encoded_args = validate_model_selection(
                 harness_kind, model_provider, model,

@@ -566,23 +566,30 @@ def org_leave(
 def org_remove(
     org: str = typer.Argument(..., help="Organization name."),
     user: str = typer.Argument(..., help="Username to remove from the org."),
-    yes: bool = typer.Option(False, '--yes', help='Confirm cutoff of all user devices.'),
+    device: list[str] | None = typer.Option(None, '--device', help='Only revoke these active device IDs (repeatable); retain user memberships. Requires --yes. Refuses the last active device. Without this option, remove the user and all their devices.'),
+    yes: bool = typer.Option(False, '--yes', help='Confirm device cutoff.'),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
     """Remove OrgFS membership, then revoke fixed sidecar devices (owner/admin).
 
     Removing someone from the org also removes them from the org's Casdoor
     group, and with it from anything else that relies on that group.
+    Use --device to retain those memberships while removing selected devices.
     """
     services = get_services()
 
     def operation() -> JsonObject:
         services = get_services()
         from .removal import confirmed_removal
+        params = {'org': _validated_org(org), 'user': user}
+        if device is not None:
+            if not yes:
+                raise services.CliError('CONFIRMATION_REQUIRED', 'Re-run with --yes to confirm device removal.')
+            params['deviceIds'] = device
         result = confirmed_removal(
             services,
             'org.remove',
-            {'org': _validated_org(org), 'user': user},
+            params,
             yes=yes,
         )
         if not isinstance(result, dict):
