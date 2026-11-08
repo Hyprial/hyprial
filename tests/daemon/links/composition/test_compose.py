@@ -220,13 +220,9 @@ def test_close_reports_a_wedged_service(tmp_path: Path) -> None:
     app = stub_app(tmp_path, fs=fs)
     service = compose_link_service(app, None, fs=fs, inbox_port=FakeInboxPort())
     assert service is not None
-    real_close = service.close
     service.close = lambda timeout=LINK_SERVICE_CLOSE_TIMEOUT_S: False  # type: ignore[method-assign]
-    try:
-        with pytest.raises(RuntimeError):
-            close_link_service(app)
-    finally:
-        assert real_close()
+    with pytest.raises(RuntimeError):
+        close_link_service(app)
 
 
 # -- C9 -------------------------------------------------------------------
@@ -758,10 +754,8 @@ def test_a_hosted_agent_is_local_on_the_first_check_after_composition(
     )
     service = compose_link_service(app, None, fs=fs, inbox_port=FakeInboxPort())
     assert service is not None
-    try:
-        now = time.time_ns() // 1_000_000
-        assert service.admit_send(
-            sender=hosted, target=A, intent="request", reply_to=None, now_ms=now
-        ) == Mint(peer=A)
-    finally:
-        close_link_service(app)
+
+    now = time.time_ns() // 1_000_000
+    assert service.admit_send(
+        sender=hosted, target=A, intent="request", reply_to=None, now_ms=now
+    ) == Mint(peer=A)

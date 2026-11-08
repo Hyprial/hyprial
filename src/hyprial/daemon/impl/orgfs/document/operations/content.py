@@ -4,16 +4,12 @@ from __future__ import annotations
 
 
 
-import base64
-
 import difflib
 
 import fnmatch
 
 
 import hashlib
-
-import json
 
 
 
@@ -33,24 +29,18 @@ from pycrdt import Doc
 
 from hyprial.daemon.impl.orgfs.api  import (
     ChangeEvent,
-    JournalCommit,
-    JournalHistory,
     NodeInfo,
     NodeRef,
     OrgFsError,
     SpaceStatus,
     TextReadSnapshot)
 
-from hyprial.daemon.impl.orgfs.storage.blobs  import BlobError, BlobIntegrityError
+from hyprial.daemon.impl.orgfs.storage.blobs  import BlobIntegrityError
 
 
 
 
-from hyprial.daemon.impl.orgfs.storage.store  import (
-    StoreError,
-    decode_state_vector,
-    state_covers,
-)
+from hyprial.daemon.impl.orgfs.storage.store  import decode_state_vector, state_covers
 
 from hyprial.daemon.impl.orgfs.storage.space_authority import _ReadStore
 
@@ -135,131 +125,6 @@ class FacadeContent:
         if store is not None and hasattr(store, "document_covers_member_add"):
             return bool(store.document_covers_member_add(item.doc_id, user))
         return False
-
-
-    def journal_history(self, space_id: str, node: NodeRef) -> JournalHistory:
-        """Return one document's durable commit chain, not facade history.
-
-        The durable read runs outside the facade lock: the space authority is an
-        actor call, and holding the lock across it can deadlock with deferred
-        effect callbacks that re-enter the facade.
-        """
-
-        with self._space_lock(space_id):
-            space = self._space(space_id)
-            item = self._one(space, node, include_deleted=True)
-            if item.kind != "doc" or item.doc_id is None:
-                raise OrgFsError(
-                    "invalid-argument", {"message": "not a text document"}
-                )
-            doc_id = item.doc_id
-            current_version = item.version
-            document = space.contents.get(doc_id)
-            current_text = document.value() if document is not None else None
-        store = self._store(space_id)
-        if store is None:
-            return JournalHistory(
-                commits=(), frontier="", durable=False, head_current=False
-            )
-        authority = self.space_authority(space_id, store)
-        try:
-            if authority is not None:
-                retirements = tuple(authority.read(_ReadStore("retirement_records")))
-            else:
-                retirements = tuple(store.retirement_records())
-            plan_id = next(
-                (
-                    str(record.plan_id)
-                    for record in retirements
-                    if doc_id
-                    in (record.old_physical_doc_id, record.replacement_doc_id)
-                ),
-                None,
-            )
-            try:
-                if authority is not None:
-                    records, frontier = authority.read(
-                        _ReadStore("document_history", doc_id=doc_id)
-                    )
-                else:
-                    records, frontier = store.document_history(doc_id)
-            except StoreError as error:
-                if plan_id is not None and error.code == "snapshot-barrier":
-                    return JournalHistory(
-                        commits=(),
-                        frontier="",
-                        durable=True,
-                        head_current=False,
-                        plan_id=plan_id,
-                    )
-                raise
-            replay = _ContentDocument()
-            commits: list[JournalCommit] = []
-            for index, record in enumerate(records):
-                replay.update(self._journal_update(space_id, record.envelope_bytes))
-                commits.append(
-                    JournalCommit(
-                        journal_ref=f"journal:{doc_id}:{record.writer}:{record.seq}",
-                        durable_version=str(record.version),
-                        writer=str(record.writer),
-                        changed=(
-                            "created"
-                            if index == 0 and int(record.seq) == 0
-                            else "content"
-                        ),
-                        text=replay.value(),
-                    )
-                )
-        except OrgFsError:
-            raise
-        except (BlobError, KeyError, StoreError, TypeError, UnicodeError, ValueError) as error:
-            raise OrgFsError(
-                "unavailable", {"message": str(error)}
-            ) from error
-        head_text = commits[-1].text if commits else None
-        return JournalHistory(
-            commits=tuple(commits),
-            frontier=str(frontier),
-            durable=True,
-            head_current=bool(commits)
-            and self._same_state_vector(
-                commits[-1].durable_version, str(frontier)
-            )
-            and self._same_state_vector(
-                base64.b64encode(replay.doc.get_state()).decode("ascii"), str(frontier)
-            )
-            and head_text == current_text,
-            plan_id=plan_id,
-            snapshot_version=current_version,
-        )
-
-
-    @staticmethod
-    def _same_state_vector(left: str, right: str) -> bool:
-        """Compare two opaque state-vector encodings by value, not by bytes."""
-
-        try:
-            return decode_state_vector(base64.b64decode(left)) == decode_state_vector(
-                base64.b64decode(right)
-            )
-        except (ValueError, UnicodeError):
-            return False
-
-
-    def _journal_update(self, space_id: str, envelope_bytes: bytes) -> bytes:
-        envelope = json.loads(envelope_bytes)
-        if not isinstance(envelope, dict) or ("update" in envelope) == (
-            "updateBlob" in envelope
-        ):
-            raise OrgFsError(
-                "invalid-argument", {"message": "invalid journal envelope"}
-            )
-        if "update" in envelope:
-            return base64.b64decode(str(envelope["update"]), validate=True)
-        digest = str(envelope["updateBlob"])
-        if self.blobs is None:
-            raise OrgFsError("blob-unavailable", {"digest": digest})
-        return bytes(self.blobs.get(space_id, digest))
 
 
     @_facade_locked

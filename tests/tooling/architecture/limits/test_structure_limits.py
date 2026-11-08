@@ -162,7 +162,7 @@ class StructuralLimitsTests(unittest.TestCase):
         self.assertTrue(any(row["path"].endswith("first_party.rs") for row in GATE.scan(root)["violations"]))
 
     def test_ci_gate_also_runs_for_gui_and_desktop_only_changes(self):
-        workflow = (SCRIPT.parents[2] / ".forgejo/workflows/gate-python.yml").read_text()
+        workflow = (SCRIPT.parents[2] / ".forgejo/workflows/tests.yml").read_text()
         block = workflow.split("- name: Enforce product module and file size limits", 1)[1].split("- name:", 1)[0]
         self.assertNotIn("scope.outputs.python", block)
         self.assertNotIn("scope.outputs.unit", block)

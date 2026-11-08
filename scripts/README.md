@@ -4,7 +4,7 @@
 2026-10-02 起按用途分桶（重构方案 §5.2）：
 
 - `ci/` — CI 支撑：范围分类（ci-scope / ci-plan）、步骤封装（ci-step.sh、ci-conditions.sh）、
-  工具链就位（ci-ensure-*.sh）、pytest 分层选择（pytest_impact.py，见 docs/reference/pytest-impact-selection.md）、
+  工具链就位（ci-ensure-*.sh）、pytest 影响面选择（pytest_impact.py + pytest-impact-map.json）、
   公网发布门（github_publish.py）、文档判定（docs_only.py）。
 - `build/` — 构建：`build-wheel.sh`（发布 wheel，PEP 440 本地段 `X.Y.Z+g<short7>` 标记精确
   HEAD commit；印记用临时 `uv version` 写入并总是还原；pyproject/uv.lock 有未提交改动时拒绝运行。

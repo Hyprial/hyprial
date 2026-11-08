@@ -10,7 +10,7 @@ import yaml
 
 
 WORKFLOW = (
-    Path(__file__).resolve().parents[3] / '.forgejo/workflows/gate-pr-declarations.yml'
+    Path(__file__).resolve().parents[3] / '.forgejo/workflows/skill-declaration.yml'
 )
 
 
@@ -163,10 +163,7 @@ def test_updated_declaration_accepts_web_and_trailing_whitespace(line: str) -> N
 
 
 def test_skill_gate_never_embeds_the_run_token_in_a_remote_url() -> None:
-    # The declaration job only: since 2026-11-06 it shares gate-pr-declarations.yml
-    # with the contract-impact job, whose askpass legitimately names the user.
-    document = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-    text = yaml.safe_dump(document["jobs"]["declaration"], allow_unicode=True, width=10**6)
+    text = WORKFLOW.read_text(encoding="utf-8")
     assert "x-access-token" not in text
     assert "GIT_CONFIG_VALUE_0" in text
 
@@ -299,7 +296,7 @@ def test_the_gate_does_not_see_ordinary_files() -> None:
         "docs/reference/p4-squire.md",
         "notes/e2e-review-pr324.md",
         # The gate's own machinery is not capability-surface documentation.
-        ".forgejo/workflows/gate-pr-declarations.yml",
+        ".forgejo/workflows/skill-declaration.yml",
         'tests/shell/plugins/test_plugin_load.py',
     ]
     assert _gate_sees(ordinary) == set()

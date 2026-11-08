@@ -13,18 +13,15 @@ import json
 import socket
 import sys
 from pathlib import Path
-from unittest.mock import Mock
 
 import pytest
 
 import hyprial.kernel.impl.primitives.node_identity as node_identity_module
 from hyprial.identity.impl.agents import AgentRegistry, SecretSource
 from hyprial.identity.impl.agents.home.environment import (
-    BASE_CHILD_ENVIRONMENT_NAMES,
     GENERATED_CHILD_ENVIRONMENT_NAMES,
     ChildEnvironmentLaunch,
     build_complete_child_environment,
-    compose_worker_child_launch,
 )
 from hyprial.identity.impl.agents.runtime.secrets import SecretResolutionError
 from hyprial.daemon.impl.harnesses.worker_channel import WorkerChannel, build_worker_channel
@@ -403,81 +400,3 @@ def test_t07_launch_spec_projection_carries_no_private_env():
     rendered = json.dumps(projected)
     for needle in ("DEEPSEEK_API_KEY", "environment", "SENTINEL"):
         assert needle not in rendered
-
-
-def _host_claude_environment(registry, tmp_path):
-    return compose_worker_child_launch(
-        registry=registry,
-        hyprial_home=tmp_path / "home",
-        channel=_channel(tmp_path, actor="agent:p1b:node:alpha"),
-        environ={
-            "PATH": "/bin",
-            "HYPRIAL_CLAUDE_EXECUTABLE": "/untrusted/parent/claude",
-        },
-        agent_name="alpha",
-        harness="claude",
-    ).environment.for_exec()
-
-
-def test_host_claude_executable_is_generated_only():
-    name = "HYPRIAL_CLAUDE_EXECUTABLE"
-    assert name in GENERATED_CHILD_ENVIRONMENT_NAMES
-    assert name not in BASE_CHILD_ENVIRONMENT_NAMES
-    with pytest.raises(ValueError, match="base child environment"):
-        build_complete_child_environment(base={name: "/untrusted/parent/claude"}, generated={})
-
-
-def test_host_claude_executable_resolves_again_for_each_launch(tmp_path, monkeypatch):
-    registry = _seeded_registry(tmp_path)
-    which = Mock(side_effect=["/tmp/fake-claude-A", "/tmp/fake-claude-B"])
-    monkeypatch.setattr("shutil.which", which)
-
-    first = _host_claude_environment(registry, tmp_path)
-    second = _host_claude_environment(registry, tmp_path)
-
-    assert first["HYPRIAL_CLAUDE_EXECUTABLE"] == "/tmp/fake-claude-A"
-    assert second["HYPRIAL_CLAUDE_EXECUTABLE"] == "/tmp/fake-claude-B"
-    assert which.call_args_list == [(('claude',), {}), (('claude',), {})]
-
-
-def test_host_claude_executable_fixed_lookup_control(tmp_path, monkeypatch):
-    registry = _seeded_registry(tmp_path)
-    which = Mock(return_value="/tmp/fake-claude-A")
-    monkeypatch.setattr("shutil.which", which)
-
-    first = _host_claude_environment(registry, tmp_path)
-    second = _host_claude_environment(registry, tmp_path)
-
-    assert first["HYPRIAL_CLAUDE_EXECUTABLE"] == "/tmp/fake-claude-A"
-    assert second["HYPRIAL_CLAUDE_EXECUTABLE"] == "/tmp/fake-claude-A"
-    assert which.call_count == 2
-
-
-@pytest.mark.parametrize("discovered", ["/tmp/fake-claude-A", None, ""])
-def test_host_claude_executable_ignores_parent_and_logs_once(
-    tmp_path, monkeypatch, caplog, discovered
-):
-    registry = _seeded_registry(tmp_path)
-    which = Mock(return_value=discovered)
-    monkeypatch.setattr("shutil.which", which)
-    monkeypatch.setenv("HYPRIAL_CLAUDE_EXECUTABLE", "/untrusted/parent/claude")
-
-    with caplog.at_level("INFO", logger="hyprial.identity.impl.agents.home.environment"):
-        environment = _host_claude_environment(registry, tmp_path)
-
-    which.assert_called_once_with("claude")
-    assert environment.get("HYPRIAL_CLAUDE_EXECUTABLE") != "/untrusted/parent/claude"
-    if discovered:
-        assert environment["HYPRIAL_CLAUDE_EXECUTABLE"] == discovered
-        expected = f"系统 claude 路径: {discovered}"
-    else:
-        assert "HYPRIAL_CLAUDE_EXECUTABLE" not in environment
-        expected = "系统 claude 未找到,回退 SDK bundled"
-    messages = [
-        record.getMessage()
-        for record in caplog.records
-        if record.name == "hyprial.identity.impl.agents.home.environment"
-    ]
-    assert messages == [expected]
-    assert "/untrusted/parent/claude" not in caplog.text
-    assert "SENTINEL-ALPHA" not in caplog.text

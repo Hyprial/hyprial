@@ -580,19 +580,6 @@ class StoreSnapshots:
         return tuple(sorted(counts))
 
 
-    def document_history(self, doc_id: str) -> tuple[tuple[CommitRecord, ...], str]:
-        """Return one document's retained journal rows and its current head."""
-
-        _wire_doc_id(doc_id)
-        with self._lock:
-            self._raise_if_retired(doc_id)
-            rows = self._db.execute(
-                "SELECT * FROM commits WHERE doc_id = ? ORDER BY rowid", (doc_id,)
-            ).fetchall()
-            head = _b64(self._doc(doc_id).get_state())
-            return tuple(self._record_from_row(row) for row in rows), head
-
-
     def document_covers_member_add(self, doc_id: str, user: str) -> bool:
         """Whether any durable document update covers the latest member add."""
 

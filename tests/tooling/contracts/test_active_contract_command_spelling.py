@@ -26,12 +26,7 @@ import re
 
 from typer.main import get_command
 
-# The populated root: importing the CLI entry module registers every command
-# group on the shared Typer app. Importing only commands.common.root gave a bare
-# app whose commands existed only if an earlier test in the same process had
-# imported the entry (it passed in full runs, failed alone and under layered
-# selection; first seen on #2552 shard 3).
-from hyprial.shell.impl.cli.runtime.entry import app
+from hyprial.shell.impl.cli.commands.common.root import app
 
 ROOT = Path(__file__).resolve().parents[3]
 CONTRACT = ROOT / "contract"

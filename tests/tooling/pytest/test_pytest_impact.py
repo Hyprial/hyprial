@@ -1,4 +1,5 @@
-"""Exercise layered selection against real Git histories, including fail-closed cases."""
+"""Exercise impact selection against real Git histories, including fail-closed cases."""
+import copy
 import importlib.util
 import json
 import re
@@ -41,35 +42,40 @@ def event(base, head):
     return {"pull_request": {"base": {"sha": base}, "head": {"sha": head}}}
 
 
-LAYER_FILES = (
-    "src/hyprial/kernel/core.py", "src/hyprial/identity/ids.py", "src/hyprial/daemon/run.py",
-    "src/hyprial/biz/flow.py", "src/hyprial/shell/cli.py", "src/hyprial/cli.py",
-    "tests/kernel/test_k.py", "tests/identity/test_i.py", "tests/daemon/test_d.py",
-    "tests/biz/test_b.py", "tests/shell/test_s.py", "tests/integration/test_e2e.py",
-    "tests/tooling/test_t.py", "tests/scripts/test_sc.py", "tests/support/helper.py",
-    "tests/conftest.py", "scripts/ci/gate.py", "scripts/tool.py",
-    ".forgejo/workflows/gate-python.yml", "pyproject.toml", "README.md", "docs/guides/g.md",
-    "gui/src/app.ts",
-)
-
-
 @pytest.fixture
 def repo(tmp_path):
     git(tmp_path, "init")
     git(tmp_path, "config", "user.email", "fixture@example.invalid")
     git(tmp_path, "config", "user.name", "Impact fixture")
-    for path in LAYER_FILES:
+    for path in (
+        "src/hyprial/alpha.py", "src/hyprial/beta.py", "src/hyprial/shared.py",
+        "tests/test_alpha.py", "tests/test_alpha_extra.py", "tests/test_beta.py",
+        "tests/test_common.py", "README.md", "docs/notes/behavior.md",
+    ):
         write(tmp_path, path, "# original fixture\n")
     return tmp_path, commit(tmp_path, "base")
 
 
-def changed(repo, *paths, base_ref="dev"):
+@pytest.fixture
+def mapping(repo):
+    return {
+        "version": 1,
+        "auditCommit": repo[1],
+        "commonTests": ["tests/test_common.py"],
+        "groups": [
+            {"name": "alpha", "sourcePaths": ["src/hyprial/alpha.py"],
+             "tests": ["tests/test_alpha*.py"], "reason": "Alpha module and direct consumers"},
+            {"name": "beta", "sourcePaths": ["src/hyprial/beta.py"],
+             "tests": ["tests/test_beta.py", "tests/test_common.py"], "reason": "Beta consumers"},
+        ],
+    }
+
+
+def changed(repo, *paths):
     root, base = repo
     for path in paths:
         write(root, path, "# changed fixture\n")
-    payload = event(base, commit(root))
-    payload["pull_request"]["base"]["ref"] = base_ref
-    return root, payload
+    return root, event(base, commit(root))
 
 
 def assert_full(result):
@@ -78,113 +84,164 @@ def assert_full(result):
     assert result["reasons"], "Fallback must explain why selection was unsafe"
 
 
-def dirs(result):
+def test_one_module_selects_matching_tests_and_common_tests(impact, repo, mapping):
+    root, payload = changed(repo, "src/hyprial/alpha.py")
+    result = impact.plan(root, payload, "pull_request", mapping)
     assert result["mode"] == "selected", result
-    return sorted({"/".join(path.split("/")[:2]) for path in result["tests"]})
+    assert result["tests"] == ["tests/test_alpha.py", "tests/test_alpha_extra.py", "tests/test_common.py"]
+    assert result["groups"] == ["alpha"]
+    assert result["reasons"]
 
 
-@pytest.mark.parametrize("source,expected", [
-    ("src/hyprial/shell/cli.py", ["tests/integration", "tests/shell"]),
-    ("src/hyprial/biz/flow.py", ["tests/biz", "tests/integration", "tests/shell"]),
-    ("src/hyprial/daemon/run.py", ["tests/biz", "tests/daemon", "tests/integration", "tests/shell"]),
-    ("src/hyprial/identity/ids.py",
-     ["tests/biz", "tests/daemon", "tests/identity", "tests/integration", "tests/shell"]),
-    ("src/hyprial/kernel/core.py",
-     ["tests/biz", "tests/daemon", "tests/identity", "tests/integration", "tests/kernel", "tests/shell"]),
-])
-def test_a_layer_change_runs_that_layer_every_layer_above_and_integration(impact, repo, source, expected):
-    root, payload = changed(repo, source)
-    assert dirs(impact.plan(root, payload, "pull_request")) == expected
-
-
-@pytest.mark.parametrize("path,expected", [
-    ("tests/daemon/test_d.py", ["tests/daemon"]),
-    ("tests/integration/test_e2e.py", ["tests/integration"]),
-    (".forgejo/workflows/gate-python.yml", ["tests/tooling"]),
-    ("scripts/ci/gate.py", ["tests/tooling"]),
-    ("scripts/tool.py", ["tests/scripts", "tests/tooling"]),
-])
-def test_test_and_tooling_changes_run_only_their_own_tests(impact, repo, path, expected):
-    root, payload = changed(repo, path)
-    assert dirs(impact.plan(root, payload, "pull_request")) == expected
-
-
-def test_selections_union_across_changed_paths(impact, repo):
-    root, payload = changed(repo, "src/hyprial/shell/cli.py", ".forgejo/workflows/gate-python.yml")
-    assert dirs(impact.plan(root, payload, "pull_request")) == ["tests/integration", "tests/shell", "tests/tooling"]
-
-
-@pytest.mark.parametrize("path", [
-    "pyproject.toml", "tests/conftest.py", "tests/support/helper.py", "src/hyprial/cli.py",
-    "gui/src/app.ts", "src/hyprial/unknown_layer/x.py", "scripts/ci/pytest_impact.py",
-])
-def test_shared_or_unlayered_change_forces_full(impact, repo, path):
-    root, payload = changed(repo, "src/hyprial/shell/cli.py", path)
-    assert_full(impact.plan(root, payload, "pull_request"))
-
-
-def test_added_and_deleted_layer_files_stay_layered(impact, repo):
-    root, base = repo
-    write(root, "src/hyprial/shell/new_command.py", "# added\n")
-    (root / "tests/shell/test_s.py").unlink()
-    payload = event(base, commit(root))
-    payload["pull_request"]["base"]["ref"] = "dev"
-    assert dirs(impact.plan(root, payload, "pull_request")) == ["tests/integration"]
+def test_multiple_modules_form_sorted_deduplicated_union(impact, repo, mapping):
+    root, payload = changed(repo, "src/hyprial/alpha.py", "src/hyprial/beta.py")
+    result = impact.plan(root, payload, "pull_request", mapping)
+    assert result["mode"] == "selected", result
+    assert result["tests"] == [
+        "tests/test_alpha.py", "tests/test_alpha_extra.py", "tests/test_beta.py", "tests/test_common.py",
+    ]
+    assert set(result["groups"]) == {"alpha", "beta"}
 
 
 @pytest.mark.parametrize("name", ["push", "workflow_dispatch", "schedule", "pull_request_target", ""])
-def test_only_pull_requests_can_select(impact, repo, name):
-    root, payload = changed(repo, "src/hyprial/shell/cli.py")
-    assert_full(impact.plan(root, payload, name))
+def test_only_pull_requests_can_select(impact, repo, mapping, name):
+    root, payload = changed(repo, "src/hyprial/alpha.py")
+    assert_full(impact.plan(root, payload, name, mapping))
 
 
-@pytest.mark.parametrize("base_ref", ["main", "release/v0.5.5.4", "release/v0.5.5.3.4"])
-def test_release_gates_always_run_the_full_suite(impact, repo, base_ref):
-    root, payload = changed(repo, "src/hyprial/shell/cli.py", base_ref=base_ref)
-    assert_full(impact.plan(root, payload, "pull_request"))
+@pytest.mark.parametrize("extra", ["README.md", "docs/notes/behavior.md"])
+def test_documentation_can_accompany_a_known_module(impact, repo, mapping, extra):
+    root, payload = changed(repo, "src/hyprial/alpha.py", extra)
+    result = impact.plan(root, payload, "pull_request", mapping)
+    assert result["mode"] == "selected", result
+    assert result["groups"] == ["alpha"]
 
 
-@pytest.mark.parametrize("base_ref", ["dev", "intg/gui-live-0554", "refactor/reconstruct-modules"])
-def test_integration_lanes_select_by_layer(impact, repo, base_ref):
-    root, payload = changed(repo, "src/hyprial/shell/cli.py", base_ref=base_ref)
-    assert impact.plan(root, payload, "pull_request")["mode"] == "selected"
-
-
-@pytest.mark.parametrize("extra", ["README.md", "docs/guides/g.md"])
-def test_documentation_can_accompany_a_layer_change(impact, repo, extra):
-    root, payload = changed(repo, "src/hyprial/biz/flow.py", extra)
-    assert dirs(impact.plan(root, payload, "pull_request")) == ["tests/biz", "tests/integration", "tests/shell"]
-
-
-def test_documentation_only_does_not_produce_empty_pytest_command(impact, repo):
+def test_documentation_only_does_not_produce_empty_pytest_command(impact, repo, mapping):
     root, payload = changed(repo, "README.md")
-    assert_full(impact.plan(root, payload, "pull_request"))
+    assert_full(impact.plan(root, payload, "pull_request", mapping))
 
 
-def test_entire_pr_range_is_considered_not_only_latest_commit(impact, repo):
+@pytest.mark.parametrize("path", ["src/hyprial/shared.py", "pyproject.toml", "src/hyprial/unknown.py"])
+def test_shared_or_unknown_change_forces_full_even_with_known_module(impact, repo, mapping, path):
+    root, payload = changed(repo, "src/hyprial/alpha.py", path)
+    assert_full(impact.plan(root, payload, "pull_request", mapping))
+
+
+@pytest.mark.parametrize("kind", ["delete_source", "rename_source", "add_source", "delete_test", "rename_test", "add_test"])
+def test_file_structure_changes_fail_closed(impact, repo, mapping, kind):
     root, base = repo
-    write(root, "src/hyprial/daemon/run.py", "# first commit\n")
+    write(root, "src/hyprial/alpha.py", "# eligible change\n")
+    is_test = kind.endswith("test")
+    old = "tests/test_beta.py" if is_test else "src/hyprial/beta.py"
+    new = "tests/test_new.py" if is_test else "src/hyprial/new.py"
+    if kind.startswith("delete"):
+        (root / old).unlink()
+    elif kind.startswith("rename"):
+        (root / old).rename(root / new)
+    else:
+        write(root, new, "# new\n")
+        if not is_test:
+            mapping["groups"][0]["sourcePaths"].append(new)
+    assert_full(impact.plan(root, event(base, commit(root)), "pull_request", mapping))
+
+
+def test_entire_pr_range_is_considered_not_only_latest_commit(impact, repo, mapping):
+    root, base = repo
+    write(root, "src/hyprial/shared.py", "# earlier dangerous change\n")
+    commit(root, "shared change")
+    write(root, "src/hyprial/alpha.py", "# latest eligible change\n")
+    assert_full(impact.plan(root, event(base, commit(root)), "pull_request", mapping))
+
+
+def test_base_branch_advancement_uses_merge_base(impact, repo, mapping):
+    root, base = repo
+    write(root, "src/hyprial/alpha.py", "# feature change\n")
+    head = commit(root)
+    git(root, "checkout", "--detach", base)
+    write(root, "src/hyprial/shared.py", "# unrelated base advancement\n")
+    newer_base = commit(root)
+    git(root, "checkout", "--detach", head)
+    result = impact.plan(root, event(newer_base, head), "pull_request", mapping)
+    assert result["mode"] == "selected", result
+    assert result["groups"] == ["alpha"]
+
+
+@pytest.mark.parametrize("payload", [{}, {"pull_request": {}}, {"pull_request": {"base": {"sha": "f" * 40}, "head": {"sha": "e" * 40}}}])
+def test_missing_event_or_unavailable_history_fails_closed(impact, repo, mapping, payload):
+    assert_full(impact.plan(repo[0], payload, "pull_request", mapping))
+
+
+def test_checked_out_head_must_match_event(impact, repo, mapping):
+    root, payload = changed(repo, "src/hyprial/alpha.py")
+    write(root, "README.md", "# newer checkout\n")
     commit(root)
-    write(root, "tests/tooling/test_t.py", "# second commit\n")
-    payload = event(base, commit(root))
-    payload["pull_request"]["base"]["ref"] = "dev"
-    assert "tests/daemon" in dirs(impact.plan(root, payload, "pull_request"))
+    assert_full(impact.plan(root, payload, "pull_request", mapping))
 
 
-@pytest.mark.parametrize("payload", [{}, {"pull_request": {}}, {"pull_request": {"base": {"sha": "x"}, "head": {"sha": "y"}}}])
-def test_missing_event_or_unavailable_history_fails_closed(impact, repo, payload):
-    root, _ = repo
-    assert_full(impact.plan(root, payload, "pull_request"))
+@pytest.mark.parametrize("damage", ["version", "empty_groups", "missing_glob", "traversal", "absolute", "non_test", "not_python"])
+def test_invalid_mapping_cannot_silently_reduce_coverage(impact, repo, mapping, damage):
+    root, payload = changed(repo, "src/hyprial/alpha.py")
+    broken = copy.deepcopy(mapping)
+    if damage == "version":
+        broken["version"] = 999
+    elif damage == "empty_groups":
+        broken["groups"] = []
+    else:
+        invalid = {
+            "missing_glob": "tests/test_missing*.py", "traversal": "tests/../outside.py",
+            "absolute": "/tmp/test_absolute.py", "non_test": "src/hyprial/alpha.py",
+            "not_python": "tests/readme.txt",
+        }[damage]
+        broken["groups"][0]["tests"] = [invalid]
+    assert_full(impact.plan(root, payload, "pull_request", broken))
 
 
-def test_checked_out_head_must_match_event(impact, repo):
-    root, payload = changed(repo, "src/hyprial/shell/cli.py")
-    write(root, "src/hyprial/shell/cli.py", "# later local commit\n")
-    commit(root)
-    assert_full(impact.plan(root, payload, "pull_request"))
+def test_symlinked_test_cannot_escape_repository(impact, repo, mapping, tmp_path):
+    root, base = repo
+    outside = tmp_path.parent / f"{tmp_path.name}-outside.py"
+    outside.write_text("# must not be selected\n")
+    target = root / "tests/test_alpha.py"
+    target.unlink()
+    target.symlink_to(outside)
+    base = commit(root, "fixture symlink")
+    write(root, "src/hyprial/alpha.py", "# feature change\n")
+    assert_full(impact.plan(root, event(base, commit(root)), "pull_request", mapping))
 
 
-def test_real_runner_preserves_failures_and_push_runs_unselected_tests(repo):
+def test_unavailable_base_history_fails_closed_at_valid_head(impact, repo, mapping):
+    root, payload = changed(repo, "src/hyprial/alpha.py")
+    payload["pull_request"]["base"]["sha"] = "f" * 40
+    assert_full(impact.plan(root, payload, "pull_request", mapping))
+
+
+def test_source_paths_match_exactly_not_by_prefix(impact, repo, mapping):
+    root, base = repo
+    write(root, "src/hyprial/alpha.py_extra", "# preexisting unknown source\n")
+    base = commit(root)
+    write(root, "src/hyprial/alpha.py_extra", "# modified unknown source\n")
+    assert_full(impact.plan(root, event(base, commit(root)), "pull_request", mapping))
+
+
+def test_missing_common_test_is_not_silently_omitted(impact, repo, mapping):
+    root, payload = changed(repo, "src/hyprial/alpha.py")
+    mapping["commonTests"].append("tests/test_missing_common.py")
+    assert_full(impact.plan(root, payload, "pull_request", mapping))
+
+
+def test_symlinked_directory_cannot_supply_selected_tests(impact, repo, mapping, tmp_path):
+    root, base = repo
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-tests"
+    outside.mkdir()
+    (outside / "test_alpha.py").write_text("# external test\n")
+    (root / "tests/linked").symlink_to(outside, target_is_directory=True)
+    base = commit(root, "fixture linked directory")
+    mapping["groups"][0]["tests"] = ["tests/linked/test_alpha.py"]
+    write(root, "src/hyprial/alpha.py", "# feature change\n")
+    assert_full(impact.plan(root, event(base, commit(root)), "pull_request", mapping))
+
+
+def test_real_runner_preserves_failures_and_push_runs_unselected_tests(repo, mapping):
     import json
     import os
     import sys
@@ -192,43 +249,72 @@ def test_real_runner_preserves_failures_and_push_runs_unselected_tests(repo):
     root, _ = repo
     write(root, "scripts/ci/pytest_impact.py", (ROOT / "scripts/ci/pytest_impact.py").read_text())
     write(root, "scripts/git_environment.py", (ROOT / "scripts/git_environment.py").read_text())
-    write(root, "tests/shell/test_s.py", "def test_selected():\n    assert True\n")
-    write(root, "tests/kernel/test_k.py", "def test_unrelated():\n    assert False, 'full-suite sentinel'\n")
-    for path in LAYER_FILES:
-        if path.startswith("tests/") and path.endswith(".py") and path not in (
-                "tests/shell/test_s.py", "tests/kernel/test_k.py"):
-            write(root, path, "def test_ok():\n    assert True\n")
+    write(root, "scripts/ci/pytest-impact-map.json", json.dumps(mapping))
+    write(root, "tests/test_alpha.py", "def test_selected():\n    assert True\n")
+    write(root, "tests/test_unrelated.py", "def test_unrelated():\n    assert False, 'full-suite sentinel'\n")
     base = commit(root, "runner baseline")
-    write(root, "src/hyprial/shell/cli.py", "# eligible modification\n")
+    write(root, "src/hyprial/alpha.py", "# eligible modification\n")
     head = commit(root)
     payload = root / "event.json"
-    data = event(base, head)
-    data["pull_request"]["base"]["ref"] = "dev"
-    payload.write_text(json.dumps(data))
+    payload.write_text(json.dumps(event(base, head)))
     env = {**os.environ, "GITHUB_EVENT_PATH": str(payload), "GITHUB_EVENT_NAME": "pull_request"}
     env.pop("GITHUB_STEP_SUMMARY", None)
     env.pop("PYTEST_ADDOPTS", None)
 
     def run():
-        return subprocess.run([sys.executable, "scripts/ci/pytest_impact.py", "--", "-q", "-p", "no:cacheprovider"],
-                              cwd=root, env=env, capture_output=True, text=True, timeout=120)
+        return subprocess.run([sys.executable, "scripts/ci/pytest_impact.py", "--", "-q"],
+                              cwd=root, env=env, capture_output=True, text=True, timeout=60)
 
     selected = run()
     assert selected.returncode == 0, selected.stdout + selected.stderr
     assert '"mode": "selected"' in selected.stdout
     assert "full-suite sentinel" not in selected.stdout
-    # The very same comparison can never constrain a push: it runs everything.
+    # The very same comparison/mapping can never constrain a release push.
     env["GITHUB_EVENT_NAME"] = "push"
     release = run()
     assert release.returncode == 1, release.stdout + release.stderr
     assert '"mode": "full"' in release.stdout
     assert "full-suite sentinel" in release.stdout
-    # Failing selected tests must also fail the unit gate.
+    # Failing selected tests must also fail the existing unit gate.
     env["GITHUB_EVENT_NAME"] = "pull_request"
-    write(root, "tests/shell/test_s.py", "def test_selected():\n    assert False, 'selected failure sentinel'\n")
+    write(root, "tests/test_alpha.py", "def test_selected():\n    assert False, 'selected failure sentinel'\n")
     failed = run()
     assert failed.returncode == 1, failed.stdout + failed.stderr
     assert "selected failure sentinel" in failed.stdout
+
+
+
+def test_new_consumer_merged_before_pr_invalidates_old_audit(impact, repo, mapping):
+    root, _ = repo
+    # The new caller is already on the base, so an ordinary PR diff cannot
+    # reveal that the old source->test audit is stale.
+    write(root, "src/hyprial/new_consumer.py", "from hyprial.alpha import capability\n")
+    newer_base = commit(root, "new consumer landed")
+    write(root, "src/hyprial/alpha.py", "# current PR changes only eligible source\n")
+    result = impact.plan(root, event(newer_base, commit(root)), "pull_request", mapping)
+    assert_full(result)
+    assert "re-audit" in " ".join(result["reasons"])
+
+
+def test_missing_audit_revision_cannot_select(impact, repo, mapping):
+    root, payload = changed(repo, "src/hyprial/alpha.py")
+    mapping.pop("auditCommit")
+    assert_full(impact.plan(root, payload, "pull_request", mapping))
+
+
+@pytest.mark.parametrize("target", ["main", "intg/gui", "intg/gui-next"])
+def test_tier_full_gate_cannot_be_downgraded_by_consumer_mapping(impact, repo, mapping, target):
+    root, payload = changed(repo, "src/hyprial/alpha.py")
+    payload["pull_request"]["base"]["ref"] = target
+    result = impact.plan(root, payload, "pull_request", mapping)
+    assert_full(result)
+    assert "nested consumer selection disabled" in result["reasons"][0]
+
+
+def test_dev_pr_can_use_current_audited_mapping(impact, repo, mapping):
+    root, payload = changed(repo, "src/hyprial/alpha.py")
+    payload["pull_request"]["base"]["ref"] = "dev"
+    assert impact.plan(root, payload, "pull_request", mapping)["mode"] == "selected"
 
 
 def test_stages_cover_exact_collection_without_duplicates(impact, tmp_path, monkeypatch):
@@ -346,7 +432,7 @@ DECLARED_CONTROL_VARS = {
 
 
 def test_control_environment_is_forwarded_and_credentials_stay_out(impact):
-    """The six HYPRIAL_* controls declared by gate-python.yml reach the pytest child env."""
+    """The six HYPRIAL_* controls declared by tests.yml reach the pytest child env."""
     source = {**DECLARED_CONTROL_VARS, "GITHUB_TOKEN": "ghs_secret", "AWS_SECRET_ACCESS_KEY": "x", "PATH": "/usr/bin"}
     child = impact.pytest_subprocess_environment(source)
     for name, value in DECLARED_CONTROL_VARS.items():
@@ -427,11 +513,11 @@ def _declared_control_names(job_block: str) -> set[str]:
 
 
 def test_control_environment_set_matches_tests_yml(impact):
-    """PYTEST_CONTROL_ENVIRONMENT must equal what gate-python.yml actually declares (no drift)."""
-    workflow = (ROOT / ".forgejo/workflows/gate-python.yml").read_text()
+    """PYTEST_CONTROL_ENVIRONMENT must equal what tests.yml actually declares (no drift)."""
+    workflow = (ROOT / ".forgejo/workflows/tests.yml").read_text()
     declared = _declared_control_names(_pytest_shard_job_block(workflow))
     forwarded = set(impact.PYTEST_CONTROL_ENVIRONMENT)
     missing = sorted(declared - forwarded)
     extra = sorted(forwarded - declared)
-    assert not missing, f"gate-python.yml declares these but pytest_impact does not forward them: {missing}"
-    assert not extra, f"pytest_impact forwards these but gate-python.yml does not declare them: {extra}"
+    assert not missing, f"tests.yml declares these but pytest_impact does not forward them: {missing}"
+    assert not extra, f"pytest_impact forwards these but tests.yml does not declare them: {extra}"

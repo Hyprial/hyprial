@@ -33,13 +33,7 @@ def _interrupted_pair(tmp_path, monkeypatch, *, interrupt_after, cause):
     )
     session = bus.session("node-reader")
     presence = _Presence(session)
-    state = {
-        "applied": 0,
-        "interrupted": False,
-        "received_after_interrupt": 0,
-        "statuses": [],
-        "after_interrupt_statuses": [],
-    }
+    state = {"applied": 0, "interrupted": False, "received": 0}
 
     def recover():
         presence.online.add("node-owner")
@@ -62,15 +56,8 @@ def _interrupted_pair(tmp_path, monkeypatch, *, interrupt_after, cause):
         original_receive = mesh._receive
 
         def receive_then_flip(envelope, **kwargs):
-            after_interrupt = state["interrupted"]
-            if after_interrupt:
-                state["received_after_interrupt"] += 1
+            state["received"] += 1
             result = original_receive(envelope, **kwargs)
-            state["statuses"].append(
-                ("after-interrupt:" if after_interrupt else "") + str(result.status)
-            )
-            if after_interrupt:
-                state["after_interrupt_statuses"].append(result.status)
             if result.status == "applied":
                 state["applied"] += 1
                 if state["applied"] == interrupt_after and not state["interrupted"]:
@@ -123,8 +110,7 @@ def test_sync_fails_immediately_when_supplier_disappears_mid_page(
         assert error.value.details["reason"] == "supplier-not-online"
         assert state["interrupted"]
         assert state["callbackHistoryComplete"] is (cause != "callbacks-incomplete")
-        assert state["received_after_interrupt"] == 1, state["statuses"]
-        assert state["after_interrupt_statuses"] == ["rejected"], state["statuses"]
+        assert state["received"] == interrupt_after + 1
         assert not any(event == "orgfs.sync.completed" for event, _ in events)
         _assert_not_joined(reader, space.space_id)
         # Accepted journal entries remain useful; a new pull must finish them.

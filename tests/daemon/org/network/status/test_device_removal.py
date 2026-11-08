@@ -6,7 +6,6 @@ an isolated Casdoor protocol adapter, not acceptance of a deployed Casdoor.
 # ruff: noqa: F811
 import json
 import sqlite3
-from contextlib import closing
 
 import pytest
 
@@ -26,11 +25,11 @@ class SQLiteGroups:
     def __init__(self, path):
         self.path = path
         self.deletes = []
-        with closing(sqlite3.connect(path)) as connection, connection:
+        with sqlite3.connect(path) as connection:
             connection.execute('CREATE TABLE IF NOT EXISTS members (group_id, user_id, PRIMARY KEY (group_id, user_id))')
 
     def member_state(self, group, user):
-        with closing(sqlite3.connect(self.path)) as connection, connection:
+        with sqlite3.connect(self.path) as connection:
             row = connection.execute('SELECT 1 FROM members WHERE group_id=? AND user_id=?', (group, user)).fetchone()
         return 'member' if row else 'not-member'
 
@@ -38,12 +37,12 @@ class SQLiteGroups:
         assert self.member_state(group, user) == 'member'
 
     def add_member(self, group, user):
-        with closing(sqlite3.connect(self.path)) as connection, connection:
+        with sqlite3.connect(self.path) as connection:
             return bool(connection.execute('INSERT OR IGNORE INTO members VALUES (?, ?)', (group, user)).rowcount)
 
     def remove_member(self, group, user):
         self.deletes.append(('DELETE', group, user))
-        with closing(sqlite3.connect(self.path)) as connection, connection:
+        with sqlite3.connect(self.path) as connection:
             return bool(connection.execute('DELETE FROM members WHERE group_id=? AND user_id=?', (group, user)).rowcount)
 
 

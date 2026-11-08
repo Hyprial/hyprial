@@ -104,7 +104,7 @@ Each check is listed separately:
 
 ### Known coverage gap
 
-The E2E workflow (`.forgejo/workflows/e2e-macos-isolated.yml`) runs on `macos-host`, directly on this Mac, which is a production node. So from now on these two scenarios **run nowhere**, until they can be isolated or a runner with no production mesh exists. hq-adjutant is collecting the options for Allen. What goes unverified in the meantime:
+The E2E workflow (`.forgejo/workflows/e2e.yml`) runs on `macos-host`, directly on this Mac, which is a production node. So from now on these two scenarios **run nowhere**, until they can be isolated or a runner with no production mesh exists. hq-adjutant is collecting the options for Allen. What goes unverified in the meantime:
 
 - **E2E-005 (uv install / upgrade / uninstall).** Install with pre-rename PEP 610 metadata; prove that version and `hyprial daemon upgrade` use the canonical `HyprialOS/harness-bridge`; observe a newer dev commit through a disposable local bare remote; uninstall.
 - **E2E-010 (running upgrade continuity).** Upgrade a live disposable deployment across a real package/commit boundary, restart, and prove:

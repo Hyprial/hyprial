@@ -164,8 +164,7 @@ def render_link_list(data: Mapping[str, Any]) -> str:
         cells,
         truncate_column=0,
     )
-    empty = "\nNo links recorded." if data.get("links") == [] else ""
-    return f"{head}\n{table}{empty}"
+    return f"{head}\n{table}"
 
 
 def render_link_stats(data: Mapping[str, Any]) -> str:

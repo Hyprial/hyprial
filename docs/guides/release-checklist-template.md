@@ -77,7 +77,7 @@ candidate-owned temporary root. Do not let ambient `HYPRIAL_BIN`, `HYPRIAL_PYTHO
 - [ ] `uv sync --locked --python 3.12 --extra test` succeeds from the locked
   dependency set.
 - [ ] `uv run --locked --python 3.12 --extra test pytest tests/ -q` passes with no
-  exclusions that differ from `.forgejo/workflows/gate-python.yml`.
+  exclusions that differ from `.forgejo/workflows/tests.yml`.
 - [ ] The CI-equivalent Linux container command documented in
   `.forgejo/workflows/README.md` passes.
 - [ ] `env -u HYPRIAL_BIN -u HYPRIAL_PYTHON -u VIRTUAL_ENV ./contract/run-all.sh --isolated-only`
@@ -103,10 +103,10 @@ inference and unverified environmental explanations.
 
 - [ ] An authorized `ubuntu-latest` runner and, when required, a `macos-host`
   runner are online with the labels used by the repository workflows.
-- [ ] `.forgejo/workflows/gate-python.yml` checks out and passes the exact candidate
+- [ ] `.forgejo/workflows/tests.yml` checks out and passes the exact candidate
   SHA. `waiting`, `running`, skipped, cancelled, or a run from another SHA is
   not a pass.
-- [ ] The manually triggered or scheduled `.forgejo/workflows/e2e-macos-isolated.yml` run
+- [ ] The manually triggered or scheduled `.forgejo/workflows/e2e.yml` run
   checks out the exact candidate SHA and passes its full isolated macOS set.
 - [ ] Job logs retain the candidate SHA, environment diagnostics, commands,
   result counts, and failure output. This repository does not treat a missing

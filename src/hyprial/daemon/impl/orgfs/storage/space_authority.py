@@ -149,7 +149,6 @@ class _ReadStore:
         "holder_frontiers",
         "active_tree_doc_id",
         "document_authors",
-        "document_history",
         "document_covers_member_add",
     ]
     doc_id: str | None = None
@@ -487,8 +486,6 @@ class OrgSpaceAuthority:
                     value = store.active_tree_doc_id()
                 elif operation.kind == "document_authors":
                     value = tuple(store.document_authors(operation.doc_id or ""))
-                elif operation.kind == "document_history":
-                    value = store.document_history(operation.doc_id or "")
                 elif operation.kind == "document_covers_member_add":
                     value = store.document_covers_member_add(
                         operation.doc_id or "", operation.author or ""

@@ -36,6 +36,7 @@ from hyprial.kernel import parse_agent_uri, parse_user_uri
 
 _WORKFLOW_ID = re.compile(r"wf-[0-9a-f]{32}")
 _STALE_RETRY_ATTEMPTS = 3
+_HISTORY_PAGE_SIZE = 50
 _HISTORY_CACHE_SIZE = 512
 _HISTORY_CACHE_LOCK = threading.Lock()
 
@@ -47,8 +48,7 @@ class _WorkHistory:
     action_versions: tuple[str, ...]
     error: work_items.WorkItemError | None
     last_valid: work_items.WorkItem | None
-    last_valid_journal_ref: str | None
-    current_journal_ref: str | None
+    last_valid_version: str | None
 
 
 def _one_line(value: object, name: str) -> str:
@@ -196,58 +196,64 @@ class _WorkItemsMixin(_WorkConflictMixin):
                 cache.move_to_end(cache_key)
                 return cached
         node = f"id:{snapshot.node.node_id}"
-        try:
-            journal = fs.journal_history(space_id, node)
-        except OrgFsError as error:
-            return self._work_incomplete_history(
+        history: list[tuple[str, str]] = []
+        entries = []
+        before = None
+        while True:
+            page = fs.history(
                 space_id,
-                item_id,
-                snapshot.version,
-                unavailable=f"journal-{error.code}",
+                node,
+                limit=_HISTORY_PAGE_SIZE,
+                before=before,
             )
-        if not journal.durable:
+            if not page:
+                break
+            for entry in page:
+                entries.append(entry)
+                if entry.node.version == snapshot.version:
+                    continue
+                try:
+                    previous_text = fs.read_at(
+                        space_id, node, entry.node.version
+                    ).decode("utf-8")
+                except OrgFsError as error:
+                    if error.code not in {"purged", "unknown-doc"}:
+                        raise
+                    return self._work_incomplete_history(
+                        space_id, item_id, snapshot.version
+                    )
+                except UnicodeError as error:
+                    raise work_items.WorkItemError(
+                        "WORK_ITEM_INVALID",
+                        "previous work item version is not UTF-8",
+                    ) from error
+                history.append((entry.node.version, previous_text))
+            before = page[-1].node.version
+        if (
+            not entries
+            or entries[0].node.version != snapshot.version
+            or entries[-1].changed != "created"
+        ):
             return self._work_incomplete_history(
-                space_id,
-                item_id,
-                snapshot.version,
-                unavailable="no-durable-store",
+                space_id, item_id, snapshot.version
             )
-        if journal.plan_id is not None:
-            return self._work_incomplete_history(
-                space_id, item_id, snapshot.version, plan_id=journal.plan_id
-            )
-        commits = journal.commits
-        if not commits:
-            return self._work_incomplete_history(
-                space_id, item_id, snapshot.version, cause="journal-empty"
-            )
-        if journal.snapshot_version != snapshot.version or not journal.head_current:
-            return self._work_incomplete_history(
-                space_id, item_id, snapshot.version, cause="journal-head-version"
-            )
-        if commits[0].changed != "created":
-            return self._work_incomplete_history(
-                space_id, item_id, snapshot.version, cause="journal-created"
-            )
-        chain = [
-            (commit.journal_ref, commit.text) for commit in commits[:-1]
-        ] + [(commits[-1].journal_ref, snapshot.content)]
+        chain = [*reversed(history), (snapshot.version, snapshot.content)]
         last_valid: work_items.WorkItem | None = None
-        last_valid_journal_ref: str | None = None
+        last_valid_version: str | None = None
         action_versions: list[str] = []
-        invalid_journal_ref: str | None = None
+        invalid_version: str | None = None
         latest_error: work_items.WorkItemError | None = None
         valid = False
-        for journal_ref, text in chain:
+        for version, text in chain:
             try:
                 candidate = work_items.parse_work_item(text)
                 if last_valid is None:
                     work_items.validate_work_item_state(candidate)
-                    if invalid_journal_ref is not None:
+                    if invalid_version is not None:
                         raise work_items.WorkItemError(
                             "WORK_ITEM_INVALID", "no validating version precedes repair"
                         )
-                    new_action_versions = [journal_ref] * len(
+                    new_action_versions = [version] * len(
                         candidate.head["ownerActions"]
                     )
                 elif valid:
@@ -255,32 +261,32 @@ class _WorkItemsMixin(_WorkConflictMixin):
                     added = len(candidate.head["ownerActions"]) - len(
                         last_valid.head["ownerActions"]
                     )
-                    new_action_versions = [*action_versions, *([journal_ref] * added)]
+                    new_action_versions = [*action_versions, *([version] * added)]
                 else:
-                    assert invalid_journal_ref is not None
-                    assert last_valid_journal_ref is not None
+                    assert invalid_version is not None
+                    assert last_valid_version is not None
                     if not work_items.is_exact_repair(
                         last_valid,
                         candidate,
-                        invalid_journal_ref=invalid_journal_ref,
-                        restored_journal_ref=last_valid_journal_ref,
+                        invalid_version=invalid_version,
+                        restored_version=last_valid_version,
                     ):
                         raise work_items.WorkItemError(
                             "WORK_ITEM_INVALID",
                             "invalid history was not restored by an exact repair",
                         )
-                    new_action_versions = [*action_versions, journal_ref]
+                    new_action_versions = [*action_versions, version]
             except work_items.WorkItemError as error:
                 if valid or latest_error is None:
                     latest_error = error
                 valid = False
-                invalid_journal_ref = journal_ref
+                invalid_version = version
                 continue
             last_valid = candidate
-            last_valid_journal_ref = journal_ref
+            last_valid_version = version
             action_versions = new_action_versions
             valid = True
-            invalid_journal_ref = None
+            invalid_version = None
             latest_error = None
         if valid and last_valid is not None and last_valid.id != item_id:
             latest_error = work_items.WorkItemError(
@@ -294,8 +300,7 @@ class _WorkItemsMixin(_WorkConflictMixin):
             action_versions=tuple(action_versions),
             error=latest_error,
             last_valid=last_valid,
-            last_valid_journal_ref=last_valid_journal_ref,
-            current_journal_ref=commits[-1].journal_ref,
+            last_valid_version=last_valid_version,
         )
         with _HISTORY_CACHE_LOCK:
             cache[cache_key] = inspected
@@ -305,56 +310,26 @@ class _WorkItemsMixin(_WorkConflictMixin):
         return inspected
 
     def _work_incomplete_history(
-        self,
-        space_id: str,
-        item_id: str,
-        version: str,
-        *,
-        cause: str | None = None,
-        unavailable: str | None = None,
-        plan_id: str | None = None,
+        self, space_id: str, item_id: str, version: str
     ) -> _WorkHistory:
-        """Report missing validation evidence without inventing a purge.
-
-        ``unavailable`` means the evidence could not be read; ``cause`` means
-        the journal was read and does not hold a complete chain; ``plan_id``
-        is set only for a committed purge retirement, which is the sole reason
-        that may name a purge.
-        """
-
         self._log(
             "warn",
             "daemon",
             "daemon.work.history_incomplete",
             spaceId=space_id,
             itemId=item_id,
-            cause=cause or unavailable,
-            purgePlan=plan_id,
         )
-        if unavailable is not None:
-            reason = f"history_unavailable:{unavailable}"
-        elif plan_id is not None:
-            reason = "work item history is incomplete after purge"
-        else:
-            reason = f"work item history is incomplete: {cause or 'unknown'}"
-        data: JsonObject = {
-            "unverifiedOperator": True,
-            "historyIncomplete": True,
-        }
-        if plan_id is not None:
-            data["purgePlanId"] = plan_id
         return _WorkHistory(
             current=None,
             current_version=version,
             action_versions=(),
             error=work_items.WorkItemError(
                 "WORK_ITEM_INVALID",
-                reason,
-                data,
+                "work item history is incomplete after purge",
+                {"unverifiedOperator": True, "historyIncomplete": True},
             ),
             last_valid=None,
-            last_valid_journal_ref=None,
-            current_journal_ref=None,
+            last_valid_version=None,
         )
 
     def _work_read(
@@ -392,7 +367,7 @@ class _WorkItemsMixin(_WorkConflictMixin):
                     and row.get("spaceId") == space_id
                     and row.get("action") == action["action"]
                     and row.get("caller") == action["actor"]
-                    and row.get("producedJournalRef") == action_version
+                    and row.get("producedVersion") == action_version
                 ),
                 None,
             )
@@ -524,24 +499,10 @@ class _WorkItemsMixin(_WorkConflictMixin):
         space_id: str,
         produced_version: str,
         caller_verified: bool,
-        invalid_journal_ref: str | None = None,
-        restored_journal_ref: str | None = None,
+        invalid_version: str | None = None,
+        restored_version: str | None = None,
     ) -> None:
         offset = len(before.head["ownerActions"]) if before is not None else 0
-        if len(after.head["ownerActions"]) == offset:
-            return
-        try:
-            journal = self._require_orgfs_runtime().facade.journal_history(
-                space_id, _path(after.id)
-            )
-        except OrgFsError:
-            return
-        if (
-            not journal.commits
-            or not journal.head_current
-            or journal.snapshot_version != produced_version
-        ):
-            return
         ledger = WorkVerificationLedger(
             self.state_dir / "work-verification-ledger.json"
         )
@@ -552,14 +513,13 @@ class _WorkItemsMixin(_WorkConflictMixin):
                 "spaceId": space_id,
                 "caller": str(action["actor"]),
                 "producedVersion": produced_version,
-                "producedJournalRef": journal.commits[-1].journal_ref,
                 "callerVerified": caller_verified,
             }
             if action["action"] == "repair":
                 row.update(
                     {
-                        "invalidJournalRef": invalid_journal_ref,
-                        "restoredJournalRef": restored_journal_ref,
+                        "invalidVersion": invalid_version,
+                        "restoredVersion": restored_version,
                     }
                 )
             try:
@@ -780,8 +740,8 @@ class _WorkItemsMixin(_WorkConflictMixin):
                     f"work item {item_id} already passes validation",
                 )
             restored = history.last_valid
-            restored_journal_ref = history.last_valid_journal_ref
-            if restored is None or restored_journal_ref is None:
+            restored_version = history.last_valid_version
+            if restored is None or restored_version is None:
                 # OrgFS history retirement is an explicit owner-reviewed purge,
                 # never routine retention. With no surviving validating version,
                 # repair must fail closed instead of blessing the replacement head.
@@ -794,14 +754,13 @@ class _WorkItemsMixin(_WorkConflictMixin):
                     "WORK_ITEM_OWNER_REQUIRED",
                     "only the work item owner may repair it",
                 )
-            invalid_journal_ref = history.current_journal_ref
-            assert invalid_journal_ref is not None
+            invalid_version = history.current_version
             repaired = work_items.append_owner_action(
                 restored,
                 action="repair",
                 actor=caller,
-                invalid_journal_ref=invalid_journal_ref,
-                restored_journal_ref=restored_journal_ref,
+                invalid_version=invalid_version,
+                restored_version=restored_version,
             )
             repaired = work_items.replace_log(
                 repaired,
@@ -809,7 +768,7 @@ class _WorkItemsMixin(_WorkConflictMixin):
                     *restored.log,
                     _log_line(
                         caller,
-                        f"repair {invalid_journal_ref} -> {restored_journal_ref}"
+                        f"repair {invalid_version} -> {restored_version}"
                         + (
                             " (unverified operator)"
                             if unverified_operator
@@ -823,7 +782,7 @@ class _WorkItemsMixin(_WorkConflictMixin):
                     space_id,
                     _path(item_id),
                     work_items.serialize_work_item(repaired),
-                    expect_version=history.current_version,
+                    expect_version=invalid_version,
                 )
             except OrgFsError as error:
                 if error.code != "stale-write":
@@ -836,15 +795,15 @@ class _WorkItemsMixin(_WorkConflictMixin):
                     ) from error
                 continue
             data = self._orgfs_json(written)
-            produced_version = str(data.get("version") or history.current_version)
+            produced_version = str(data.get("version") or invalid_version)
             self._work_record_owner_actions(
                 restored,
                 repaired,
                 space_id=space_id,
                 produced_version=produced_version,
                 caller_verified=not unverified_operator,
-                invalid_journal_ref=invalid_journal_ref,
-                restored_journal_ref=restored_journal_ref,
+                invalid_version=invalid_version,
+                restored_version=restored_version,
             )
             current, version, action_versions = self._work_read_snapshot(
                 space_id, item_id

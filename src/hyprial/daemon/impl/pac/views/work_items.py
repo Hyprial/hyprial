@@ -141,10 +141,7 @@ def _owner_actions(value: object) -> list[dict[str, object]]:
             )
         normalized: dict[str, object] = {"action": action, "actor": actor}
         if action == "repair":
-            names = ("invalidJournalRef", "restoredJournalRef")
-            if not any(name in trusted for name in names):
-                names = ("invalidVersion", "restoredVersion")
-            for name in names:
+            for name in ("invalidVersion", "restoredVersion"):
                 version = trusted.get(name)
                 if not isinstance(version, str) or not version:
                     raise _invalid(
@@ -345,8 +342,8 @@ def append_owner_action(
     *,
     action: str,
     actor: str,
-    invalid_journal_ref: str | None = None,
-    restored_journal_ref: str | None = None,
+    invalid_version: str | None = None,
+    restored_version: str | None = None,
 ) -> WorkItem:
     actions = [*item.head["ownerActions"]]
     actions.append(
@@ -355,8 +352,8 @@ def append_owner_action(
             "actor": actor,
             **(
                 {
-                    "invalidJournalRef": invalid_journal_ref,
-                    "restoredJournalRef": restored_journal_ref,
+                    "invalidVersion": invalid_version,
+                    "restoredVersion": restored_version,
                 }
                 if action == "repair"
                 else {}
@@ -400,8 +397,8 @@ def is_exact_repair(
     restored: WorkItem,
     candidate: WorkItem,
     *,
-    invalid_journal_ref: str,
-    restored_journal_ref: str,
+    invalid_version: str,
+    restored_version: str,
 ) -> bool:
     """Recognize the deterministic content written by ``work.repair``."""
 
@@ -410,9 +407,9 @@ def is_exact_repair(
     repair = candidate.log[-1]
     match = re.fullmatch(
         r"- \S+ (.+): repair "
-        + re.escape(invalid_journal_ref)
+        + re.escape(invalid_version)
         + r" -> "
-        + re.escape(restored_journal_ref)
+        + re.escape(restored_version)
         + r"(?: \(unverified operator\))?",
         repair,
     )
@@ -424,8 +421,8 @@ def is_exact_repair(
             restored,
             action="repair",
             actor=caller,
-            invalid_journal_ref=invalid_journal_ref,
-            restored_journal_ref=restored_journal_ref,
+            invalid_version=invalid_version,
+            restored_version=restored_version,
         )
         expected = replace_log(expected, [*restored.log, repair])
         validate_work_item_state(expected)

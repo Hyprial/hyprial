@@ -22,13 +22,6 @@ from .support import (
 )
 
 _PUMP_IDLE_BUDGET_SECONDS = 30.0
-# stop() joins the pump thread for the StreamingTurnProcess stop budget (product
-# default 2.0s). Even with the pump idle, shard 4 of #2527 (run 50607) and of
-# #2543 (head 060be5dae) still expired it: 3-CPU cgroup, load 8-11, cgroup
-# throttling and heavy gen-0 GC on the xdist worker. The join measures only
-# scheduler time here, so this test gives it the same bound as the idle wait;
-# a pump that never exits still fails, bounded. The product default is unchanged.
-_PUMP_STOP_BUDGET_SECONDS = 30.0
 
 
 def test_codex_interactive_carrier_retries_unsettled_final_without_second_turn(
@@ -504,7 +497,6 @@ def test_codex_interactive_carrier_reconciles_captured_completed_turn(
         state_path=tmp_path / "carrier.sqlite3",
         poll_seconds=0.01,
     )
-    carrier._pump._stop_timeout_seconds = _PUMP_STOP_BUDGET_SECONDS
     carrier.start()
     deadline = time.monotonic() + 2.0
     while time.monotonic() < deadline and not replies:
