@@ -10263,7 +10263,7 @@
       "directHidden": false,
       "executable": true,
       "callbackModule": "hyprial.shell.impl.cli.commands.org.commands",
-      "help": "Create the org directory and ACL spaces, then publish this device.",
+      "help": "Create local org spaces, then initialize Tailcat and publish when available.",
       "params": [
         {
           "opts": [

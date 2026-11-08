@@ -22,6 +22,9 @@
 | KP-017 | 合成 Anthropic provider 的 message_start 缺少 model，真实 Claude SDK 读 turn 失败 | 待修（测试 fixture，本轮不修） |
 | KP-018 | 受限 macOS 全量验证存在共同基线失败与顺序相关超时 | 待测（本轮不修，整套不得判 PASS） |
 | KP-019 | 隔离全量 pytest 的关闭收尾出现长耗时与 teardown 错误，独立单例不复现 | 待测（本单留证，不改日志/测试基础设施） |
+| KP-020 | 单独收集 OrgFS HTTP CLI 检查测试时，Typer 根命令未注册 | 待修（测试入口，独立于 journal validity hotfix） |
+| KP-021 | post-install profile 调用差异未定位，真实 CI 风险未验 | 独立待立项；CI 恢复后的第一道门 |
+| KP-022 | 完整测试组合中子 pytest 长期驻留，外层等待无 timeout | 独立待立项；组合根因未定位 |
 
 ## KP-001 tailscale.com derphttp 经 HTTP 代理时被拒区域慢失败
 
@@ -159,3 +162,32 @@
 - 决定：待测；本单只修参数持久意图与启动快照，不修改日志关闭逻辑，不延长断言预算或增加 skip。源码随后因 CLI import ratchet 修正而更新，该全量被停止并报告 INCOMPLETE。
 - 依据：[参数启动报告](../notes/harness-args-start-2026-11-05/report-v2.md)，其中保留执行环境、独立对照与中断事实；具体根因 UNKNOWN。
 - 负责人：hyprial-cli-developer（交付协调者，后续独立排查）。
+
+## KP-020 单独收集 OrgFS HTTP CLI 检查测试时根命令未注册
+
+- 现象：`uv run pytest tests/daemon/orgfs/server/http/request_contracts/test_request_contracts.py::test_fs_web_check_cli` 报 `RuntimeError: Could not get a command for this Typer instance`；全 OrgFS 目录收集同样失败。测试直接把 `shell.impl.cli.commands.common.root.app` 交给 `CliRunner`；入口注册差异是待确认的原因，不将其推断为产品 CLI 故障。
+- 影响：本机 Python 3.14.2 / Typer 0.27.2 的独立焦点门；未修改 dev `db184708b45ad90efa9b557314f87e1c2d099fca` 和 journal validity 候选均复现同一异常。真实入口的隔离 CLI 契约 14/14 通过；本条不能推出全量套件必然失败或通过。
+- 规避：报告该独立门 FAIL 并保留基线对照；使用正式 CLI 入口的契约结果单独列出，不用其冒充该测试通过。
+- 决定：待修，独立于 `hotfix/orgfs-validity-from-journal-v2`；不为此改动产品命令注册或放宽断言。
+- 依据：`docs/notes/orgfs-validity-from-journal-v2-2026-11-05.md`；候选全 OrgFS 读数 `1 failed, 763 passed, 3 xfailed`，基线单测 `1 failed`，显式 loopback NO_PROXY 下仍复现。
+- 负责人：R&D 负责人（CLI 测试维护）。
+
+
+## KP-021 post-install profile 调用差异：CI 风险未验
+
+- 现象：精确断言 `tests/shell/cli/installation/restart/post_install/test_post_install_fence.py::test_every_profiled_function_rejects_a_new_lazy_import_under_m2[hyprial.daemon.impl.autoupdate.alert:record_alert_outcome-child-exited]` 在候选默认调用两次出现原有 90 秒 `subprocess.TimeoutExpired`；未改 dev 自有环境单跑 1 passed/3.78s，base 源码配 candidate 项目环境 1 passed/4.04s，candidate 源码配 base 项目环境 1 passed/4.18s。两环境包名/版本集合无差分。
+- 影响与边界：候选自有环境显式 `PYTHONPATH=.../dev-tree/src` 得 1 passed/3.60s；经 CI 同一 `pytest_subprocess_environment`、无 PYTHONPATH 的本机调用也得 1 passed/3.76s。因此未设 PYTHONPATH 不是充分触发条件，根因仍 UNKNOWN；不能归为已证既有红或已证本 PR 回归。真实 Linux/Python 3.12 CI 未验，本机为 macOS/Python 3.14.2。
+- 规避：保持 CI 风险未验，不把本地通过、单跑通过或字节一致当放行证据。生产调用环境未读取、结论 UNKNOWN。
+- 决定：独立待立项；不在 journal validity hotfix 中改产品、断言或测试阈值。CI 恢复后的第一道门是在 PR 最终 head、真实 Linux/Python 3.12、shard 同一安全环境和 python -m pytest 形态下先跑此精确断言。合并前须取得该真实 CI 读数，或由合并权人显式接受风险；不预测其必然失败。
+- 依据：`docs/notes/orgfs-validity-from-journal-v2-2026-11-05.md`；独立本地证据仓库 `/private/tmp/pac-orgfs-validity/verification-evidence` 的 profile 观察与实际命令回执。实际 CI action 401 阻断来自调度方报告，不冒充本机读取过关联 job 日志。
+- 负责人：R&D 负责人（升级/profile 与 CI 验证线，待立项指派）。
+
+## KP-022 完整测试组合中的无上界子进程等待
+
+- 现象：`tests/tooling/contracts/test_contract_python_resolver.py::test_key_mutations_are_killed[regular-file-fence]` 的外层 `subprocess.run`（887–899 行）没有 timeout，等候复制目录内的子 pytest。默认全量的 case 目录建立于 2026-11-04 18:31:13 UTC；子进程 PID 30622 的原生出生时刻为 18:31:15.886187 UTC，后续仍驻留其 mutant 目录。进程链为 uv 9808 → pytest controller 10272 → worker 11801 → 子 pytest 30622，证据包含 PPID 与 cwd 快照。
+- 影响：完整 tests/ 调用可能长期无法获得终态与完整计数；三种调用必须分列，不能相加为通过率。无 timeout 的代码在未改 dev 已存在，但这不证明组合阻塞与本 PR 无交互。
+- 对照：同一精确 case 经 CI 同一安全环境、单 worker 单跑，在未改 dev 得 1 passed/17.79s，在候选得 1 passed/21.83s；两次外层 120s 诊断预算均未触发，未改任何测试阈值。单跑通过不排除组合条件下挂起，根因 UNKNOWN。
+- 规避：调度方批准以固定请求 deadline 减 10 分钟（2026-11-04 20:56:27.275 UTC）为本轮停跑线。未获得完整终态时保留 INCOMPLETE/BLOCKED 与缺失信息；不以中途百分比推导实测测试数，不设全量 PASS 或可合并标记。
+- 决定：独立待立项。调度方另报告上午 31% 停滞/Pykka dump 与 log writer 未 drain 两起，建议按无上界等待的共同形状合并调查；这两起不是本机复现，也没有证实共同根因或第三方归因。
+- 依据：`docs/notes/orgfs-validity-from-journal-v2-2026-11-05.md`、`verification-evidence/observations/process-tree-current.txt`、原生 PID 出生记录与两侧独立诊断回执。
+- 负责人：R&D 负责人（测试 runner/进程退出线，待立项指派）。

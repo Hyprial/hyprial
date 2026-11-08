@@ -424,19 +424,19 @@ def test_repeated_ls_reuses_validation_for_the_same_item_head(
         version = str(written["version"])
     calls = 0
     facade_type = type(facade)
-    original = facade_type.read_at
+    original = facade_type.journal_history
 
     def counted(self, *args, **kwargs):  # type: ignore[no-untyped-def]
         nonlocal calls
         calls += 1
         return original(self, *args, **kwargs)
 
-    monkeypatch.setattr(facade_type, "read_at", counted)
+    monkeypatch.setattr(facade_type, "journal_history", counted)
     app.handle("work.ls", {"spaceId": space_id, "actor": "user:allen"})
     first_calls = calls
     app.handle("work.ls", {"spaceId": space_id, "actor": "user:allen"})
 
-    assert first_calls >= 3
+    assert first_calls >= 1
     assert calls == first_calls
 
 
@@ -466,13 +466,13 @@ def test_history_cache_key_includes_physical_document_id(
     def cache_miss(*_args, **_kwargs):  # type: ignore[no-untyped-def]
         raise CacheMissReached
 
-    monkeypatch.setattr(facade_type, "history", cache_miss)
+    monkeypatch.setattr(facade_type, "journal_history", cache_miss)
 
     with pytest.raises(CacheMissReached):
         app._work_inspect_history(space_id, item_id)
 
 
-def test_non_purge_history_read_error_is_re_raised(
+def test_non_purge_history_read_error_is_not_raised_as_a_request_failure(
     r8_work_daemon, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app, space_id = r8_work_daemon
@@ -493,14 +493,18 @@ def test_non_purge_history_read_error_is_re_raised(
     def fail_read_at(*_args, **_kwargs):  # type: ignore[no-untyped-def]
         raise OrgFsError("unavailable", {"message": "injected read failure"})
 
-    monkeypatch.setattr(type(facade), "read_at", fail_read_at)
+    monkeypatch.setattr(type(facade), "journal_history", fail_read_at)
 
-    with pytest.raises(OrgFsError) as failed:
-        app._work_inspect_history(space_id, item_id)
-    assert failed.value.code == "unavailable"
+    inspection = app._work_inspect_history(space_id, item_id)
+
+    assert inspection.error is not None
+    assert str(inspection.error).startswith("history_unavailable:journal-unavailable")
+    assert inspection.error.data["historyIncomplete"] is True
 
 
-def test_purged_history_cannot_become_a_new_valid_baseline(r8_work_daemon) -> None:
+def test_forgetting_facade_history_does_not_launder_a_rewrite(
+    r8_work_daemon,
+) -> None:
     app, space_id = r8_work_daemon
     added = _add(
         app,
@@ -542,8 +546,7 @@ def test_purged_history_cannot_become_a_new_valid_baseline(r8_work_daemon) -> No
     )
 
     assert shown["item"]["invalid"] is True
-    assert "incomplete" in shown["item"]["reason"]
-    assert shown["item"]["unverifiedOperator"] is True
+    assert "rewritten" in shown["item"]["reason"]
 
 
 def test_parser_strips_verified_like_keys_without_projection() -> None:

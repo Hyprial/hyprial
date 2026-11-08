@@ -18,6 +18,7 @@ from hyprial.shell.impl.cli.commands.common.services import get_services
 from hyprial.shell.impl.cli.commands.common.support import (
     JsonObject,
     _message_claim_params,
+    _message_query_params,
 )
 from hyprial.shell.impl.cli.commands.link.render import (
     render_link_change,
@@ -56,7 +57,7 @@ def link_list(
 
         services = get_services()
         return _result(
-            services.runtime.request(IPC_LINK_LIST, _message_claim_params(source)),
+            services.runtime.request(IPC_LINK_LIST, _message_query_params(source)),
             render_link_list,
         )
 
@@ -81,7 +82,7 @@ def link_stats(
 
         services = get_services()
         return _result(
-            services.runtime.request(IPC_LINK_STATS, _message_claim_params(source)),
+            services.runtime.request(IPC_LINK_STATS, _message_query_params(source)),
             render_link_stats,
         )
 

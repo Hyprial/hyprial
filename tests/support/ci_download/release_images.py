@@ -68,3 +68,64 @@ RETIRED_HOSTED_RENAME_IMAGE_CONTEXTS = {
 INTRODUCED_HOSTED_RENAME_IMAGE_CONTEXTS = {
     (".forgejo/workflows/mock-model-harness-e2e.yml", "hosted", "runner-image ubuntu-latest"),
 }
+
+# 2026-11-06: workflow file names say what they gate (gate-* merge gates, e2e-*,
+# release-*, ops-*). tests.yml split into gate-python.yml (its `tailcat` job is
+# now `tailcat-go`) and gate-pr-hygiene.yml; the three body/diff declaration
+# gates merged into gate-pr-declarations.yml (ci-light host: no image context).
+# Every renamed path retires its old context and introduces the new one; the
+# frozen baseline is never rewritten. wheel-release.yml, github-publish.yml and
+# homepage-changelog-sync.yml keep their names: other workflows dispatch them by
+# file name against track tags that predate any rename.
+RETIRED_GATE_RENAME_IMAGE_CONTEXTS = {
+    (".forgejo/workflows/cancel-on-pr-close.yml", "cancel", "runner-image ubuntu-latest"),
+    (".forgejo/workflows/gui.yml", "gui-unit", "runner-image ubuntu-latest"),
+    (".forgejo/workflows/gui.yml", "release-package", "runner-image ubuntu-latest"),
+    (".forgejo/workflows/install-scripts.yml", "drift", "runner-image ubuntu-latest"),
+    (".forgejo/workflows/install-scripts.yml", "publish", "runner-image ubuntu-latest"),
+    (".forgejo/workflows/main-release.yml", "dispatch", "runner-image ubuntu-latest"),
+    (".forgejo/workflows/nightly-promote.yml", "promote", "runner-image ubuntu-latest"),
+    (".forgejo/workflows/tests.yml", "checks", "runner-image release-ci"),
+    (".forgejo/workflows/tests.yml", "checks", "runner-image ubuntu-latest"),
+    (".forgejo/workflows/tests.yml", "cli-help-inventory", "runner-image release-ci"),
+    (".forgejo/workflows/tests.yml", "cli-help-inventory", "runner-image ubuntu-latest"),
+    (".forgejo/workflows/tests.yml", "pr-hygiene", "runner-image release-ci"),
+    (".forgejo/workflows/tests.yml", "pytest-shard[shard=1]", "runner-image release-ci"),
+    (".forgejo/workflows/tests.yml", "pytest-shard[shard=1]", "runner-image ubuntu-latest"),
+    (".forgejo/workflows/tests.yml", "pytest-shard[shard=2]", "runner-image release-ci"),
+    (".forgejo/workflows/tests.yml", "pytest-shard[shard=2]", "runner-image ubuntu-latest"),
+    (".forgejo/workflows/tests.yml", "pytest-shard[shard=3]", "runner-image release-ci"),
+    (".forgejo/workflows/tests.yml", "pytest-shard[shard=3]", "runner-image ubuntu-latest"),
+    (".forgejo/workflows/tests.yml", "pytest-shard[shard=4]", "runner-image release-ci"),
+    (".forgejo/workflows/tests.yml", "pytest-shard[shard=4]", "runner-image ubuntu-latest"),
+    (".forgejo/workflows/tests.yml", "tailcat", "runner-image release-ci"),
+    (".forgejo/workflows/tests.yml", "tailcat", "runner-image ubuntu-latest"),
+    (".forgejo/workflows/tests.yml", "unit", "runner-image release-ci"),
+    (".forgejo/workflows/tests.yml", "unit", "runner-image ubuntu-latest"),
+}
+INTRODUCED_GATE_RENAME_IMAGE_CONTEXTS = {
+    (".forgejo/workflows/ops-cancel-on-pr-close.yml", "cancel", "runner-image ubuntu-latest"),
+    (".forgejo/workflows/gate-gui.yml", "gui-unit", "runner-image ubuntu-latest"),
+    (".forgejo/workflows/gate-gui.yml", "release-package", "runner-image ubuntu-latest"),
+    (".forgejo/workflows/release-install-scripts.yml", "drift", "runner-image ubuntu-latest"),
+    (".forgejo/workflows/release-install-scripts.yml", "publish", "runner-image ubuntu-latest"),
+    (".forgejo/workflows/release-main-dispatch.yml", "dispatch", "runner-image ubuntu-latest"),
+    (".forgejo/workflows/release-nightly-promote.yml", "promote", "runner-image ubuntu-latest"),
+    (".forgejo/workflows/gate-python.yml", "checks", "runner-image release-ci"),
+    (".forgejo/workflows/gate-python.yml", "checks", "runner-image ubuntu-latest"),
+    (".forgejo/workflows/gate-python.yml", "cli-help-inventory", "runner-image release-ci"),
+    (".forgejo/workflows/gate-python.yml", "cli-help-inventory", "runner-image ubuntu-latest"),
+    (".forgejo/workflows/gate-pr-hygiene.yml", "pr-hygiene", "runner-image release-ci"),
+    (".forgejo/workflows/gate-python.yml", "pytest-shard[shard=1]", "runner-image release-ci"),
+    (".forgejo/workflows/gate-python.yml", "pytest-shard[shard=1]", "runner-image ubuntu-latest"),
+    (".forgejo/workflows/gate-python.yml", "pytest-shard[shard=2]", "runner-image release-ci"),
+    (".forgejo/workflows/gate-python.yml", "pytest-shard[shard=2]", "runner-image ubuntu-latest"),
+    (".forgejo/workflows/gate-python.yml", "pytest-shard[shard=3]", "runner-image release-ci"),
+    (".forgejo/workflows/gate-python.yml", "pytest-shard[shard=3]", "runner-image ubuntu-latest"),
+    (".forgejo/workflows/gate-python.yml", "pytest-shard[shard=4]", "runner-image release-ci"),
+    (".forgejo/workflows/gate-python.yml", "pytest-shard[shard=4]", "runner-image ubuntu-latest"),
+    (".forgejo/workflows/gate-python.yml", "tailcat-go", "runner-image release-ci"),
+    (".forgejo/workflows/gate-python.yml", "tailcat-go", "runner-image ubuntu-latest"),
+    (".forgejo/workflows/gate-python.yml", "unit", "runner-image release-ci"),
+    (".forgejo/workflows/gate-python.yml", "unit", "runner-image ubuntu-latest"),
+}

@@ -464,6 +464,8 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
   daemon 起来后确认 `HYPRIAL_NETWORK_ISOLATED` 生效（由 daemon 实际生效的状态算出,⛔ 不是回显环境变量）:
   一级 `hyprial ps` 已随 R7 退役；测试/工具读 daemon IPC `ps` 的 `zenoh.isolated`,操作员看 `hyprial doctor --json` 的
   `zenoh` 检查项。只靠 `HYPRIAL_PEER_DISCOVERY=0` ⛔ 不算隔离。
+  隔离 daemon 的 `org create` 只建本地 org/directory/ACL space，返回 `tailnetInitialized=false` 和 null 发布字段；
+  不启动 sidecar，也不能用 `org invite`/`org join`。需要真实 membership 时改用 `tailcat_forwarding=True` 的本机 labrelay 拓扑。
 - `hyprial agent start user-proxy --name <person>-proxy -- --route route:<adapter>:<dm-route>`
   —— 一人一个的消息中转 agent(打包的转发程序,无模型、无凭据、串行保序)。别人发给它的消息
   转进该人的飞书 DM(帖子标明"转述自 <原发送者>");该人在 DM 里回复时**必须以 `@收件人` 开头**

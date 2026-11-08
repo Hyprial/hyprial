@@ -253,7 +253,7 @@ def org_create(
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
-    """Create the org directory and ACL spaces, then publish this device."""
+    """Create local org spaces, then initialize Tailcat and publish when available."""
     services = get_services()
 
     def operation() -> JsonObject:
@@ -262,7 +262,8 @@ def org_create(
         if not isinstance(result, dict):
             raise services.CliError("INVALID_RESPONSE", "org.create must return an object")
         published = result.get("published", result.get("devicePublished"))
-        return {"ok": published is not False, **result}
+        local_create = result.get("tailnetInitialized") is False
+        return {"ok": local_create or published is not False, **result}
 
     services.runtime.execute(operation, json_output=json_output)
 

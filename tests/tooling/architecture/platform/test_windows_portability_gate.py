@@ -24,7 +24,7 @@ SPEC.loader.exec_module(GATE)
 
 # Ceiling on the baseline's total finding count.  It may only be LOWERED (when
 # findings are fixed); raising it to admit a new finding defeats the ratchet.
-# The per-key ratchet against the PR base is ``--base-ref`` (tests.yml).
+# The per-key ratchet against the PR base is ``--base-ref`` (gate-python.yml).
 MAX_BASELINE_FINDINGS = 350
 PROBE = "src/hyprial/daemon/impl/probe.py"
 
@@ -382,7 +382,7 @@ def test_the_baseline_only_shrinks_and_every_entry_is_reviewed() -> None:
 
 def test_rule_ids_agree_across_gate_ci_and_pr_template() -> None:
     assert sorted(GATE.AST_RULES) == [f"W{n:03d}" for n in (*range(1, 16), 19)]
-    workflow = (ROOT / ".forgejo" / "workflows" / "tests.yml").read_text(encoding="utf-8")
+    workflow = (ROOT / ".forgejo" / "workflows" / "gate-python.yml").read_text(encoding="utf-8")
     template = (ROOT / ".forgejo" / "PULL_REQUEST_TEMPLATE.md").read_text(encoding="utf-8")
     assert "W001-W015, W019" in workflow and "--base-ref" in workflow
     for rule in ("W015", "W017", "W018", "W019"):

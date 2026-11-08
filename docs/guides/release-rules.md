@@ -10,7 +10,7 @@ Allen 于 2026-10-28 确认以下四条规则。从 0.5.5.2 起执行；工作�
 > 1. internal track总是跟随dev,dev更新即全网更新
 
 精确定义：仅在 **dev push 的 `unit` 汇总门通过**后，
-`tests.yml::unit` 的 `Move the track tags to the unit-green dev head` 步把
+`gate-python.yml::unit` 的 `Move the track tags to the unit-green dev head` 步把
 `internal` 原位移到该次测试的完整 SHA。不接受 PR、main、release/* push 或
 手动 dispatch；失败或取消不移动。旧运行不得覆盖已前进的指针。
 随后的 dispatch 步分别启动 `wheel-release.yml` 和 `github-publish.yml`。
@@ -18,8 +18,8 @@ Allen 于 2026-10-28 确认以下四条规则。从 0.5.5.2 起执行；工作�
 
 > 2. nightly track 总是指向最后一次通过E2E的internal tag
 
-`nightly-promote.yml::promote` 读取 `ci/gate-status` 上两份 marker：
-`e2e.yml` 与 `e2e-controlled.yml` 必须在定时运行中全绿，SHA 相同且均在
+`release-nightly-promote.yml::promote` 读取 `ci/gate-status` 上两份 marker：
+`e2e-macos-isolated.yml` 与 `e2e-macos-credentialed.yml` 必须在定时运行中全绿，SHA 相同且均在
 4 小时内。候选固定为 marker SHA，不重新解析已经移动的 internal/dev。
 单边绿、不同 SHA、过期或缺失 marker 不产生候选。
 保留 10-26 的 **stable 保底**：没有新双绿时 nightly 跟随 stable；若 nightly
@@ -28,7 +28,7 @@ Allen 于 2026-10-28 确认以下四条规则。从 0.5.5.2 起执行；工作�
 
 > 3. dev 合入main的时候,更新stable track,tag打上最新的version号(这和当前的流程不一样,本次豁免,但从0.5.5.2 开始执行。后续当release/v* 合入dev的时候,不更新stable)
 
-独立 `main-release.yml` 只监听 main push，从 **pushed SHA** 读取 `VERSION`。
+独立 `release-main-dispatch.yml` 只监听 main push，从 **pushed SHA** 读取 `VERSION`。
 若 `v<VERSION>` 已存在，记录 no-op；否则显式 dispatch `release-tag.yml`，
 输入为 `tag=v<VERSION>`、`sha=<pushed SHA 的完整 40 位>`、`dry_run=false`。
 不依据 dev 的当前版本猜测，也不在 dev 或 release/* push 上运行。
@@ -69,7 +69,7 @@ Actions token 推 tag 不触发后续 workflow，所以各写入方必须显式 
 ## 3. 不变量与红线
 
 - `v*` 不可变；已存在不能覆盖、删除重建或借重跑替换内容。
-- 每个 tag 只有一个写入权威：internal 为 `tests.yml::unit`；stable 为
+- 每个 tag 只有一个写入权威：internal 为 `gate-python.yml::unit`；stable 为
   `github-publish.yml` 的正式发布步；nightly 为共享 `Tracks.nightly` writer。
 - 可移动 tag 原位更新，绝不先删再建；使用 lease 防并发覆盖。
 - stable 只接受当前 stable 的后代（或首次创建）；旧候选不能回滚轨道。

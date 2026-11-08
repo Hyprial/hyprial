@@ -473,14 +473,15 @@ class _RegistryCore:
         reserved = self._store.reserved_removals()
         for row in self._store.list_routines():
             if (
-                not row.enabled
-                or row.name in reserved
+                row.name in reserved
                 or row.quarantine_reason is not None
-                or command.observed_at_ms < row.next_due_ms
             ):
                 continue
             active = self._active.get(row.name)
             if active is None:
+                continue
+            if not row.enabled or command.observed_at_ms < row.next_due_ms:
+                self._poll_in_flight(row, active)
                 continue
             interval_ms = int(active.spec.interval_seconds * 1000)
             slot = row.next_due_ms

@@ -36,6 +36,13 @@ def _eventually(action, *, timeout: float = 8.0):
     raise AssertionError("condition did not become true")
 
 
+
+def _broadcast_drained(store) -> None:
+    """The live broadcast is a post-commit network effect: wait until it has
+    left while the peer is really offline, or it reaches the restarted peer
+    instead and the catch-up under test never runs."""
+    assert not tuple(store.unbroadcast())
+
 def _read_with_content_wait(
     runtime: OrgFsRuntime, space_id: str, node_id: str
 ) -> str:
@@ -603,6 +610,7 @@ def test_delete_only_commit_catches_up_after_offline_live_broadcast(tmp_path) ->
         online.remove("node-peer")
         owner.facade.write_text(space.space_id, f"id:{created.node_id}", "")
         assert owner.stores[space.space_id].unconfirmed_commits() > 0
+        _eventually(lambda: _broadcast_drained(owner.stores[space.space_id]))
 
         restarted_peer = OrgFsRuntime(
             tmp_path / "d1-peer", node_id="node-peer", author="user:peer",
@@ -686,6 +694,7 @@ def test_restore_to_empty_catches_up_after_offline_live_broadcast(tmp_path, monk
         # Mutation: removing commit_many's _advance_commit_clock marker makes
         # this delete-only batch look covered by the peer's stale state vector.
         assert owner.stores[space.space_id].unconfirmed_commits() > 0
+        _eventually(lambda: _broadcast_drained(owner.stores[space.space_id]))
 
         # Keep the measured explicit pull first: bind-time holder catch-up can
         # otherwise win the race and legitimately make sync_from return zero.

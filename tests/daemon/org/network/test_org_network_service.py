@@ -394,6 +394,44 @@ def test_create_makes_the_org_space_and_publishes_this_device(
     # A Casdoor failure now fails the command: tests/daemon/org/test_org_casdoor_first.py.
 
 
+def test_create_on_isolated_daemon_builds_only_local_org(tmp_path: Path) -> None:
+    fs = FakeFs()
+    service = _service(
+        fs,
+        tmp_path,
+        network_isolated=True,
+        membership_request=None,
+        read_own_address=lambda: None,
+    )
+
+    created = service.create("group-acme")
+
+    assert created["tailnetInitialized"] is False
+    assert created["published"] is created["devicePublished"] is None
+    assert fs.membership_sidecar.tailnets == {}
+    assert json.loads(fs.docs[(created["spaceId"], ORG_META_DOC)])["state"] == "active"
+    assert set(fs.space_ids) == {"group-acme", "group-acme-acl"}
+
+    retried = service.create("group-acme")
+    assert retried["existed"] is True
+    assert retried["spaceId"] == created["spaceId"]
+    assert retried["aclSpaceId"] == created["aclSpaceId"]
+    assert retried["tailnetInitialized"] is False
+
+
+def test_create_after_isolated_creation_initializes_tailnet(home: Path) -> None:
+    fs = FakeFs()
+    isolated = _service(fs, home, network_isolated=True, membership_request=None)
+    created = isolated.create("group-acme")
+
+    networked = _service(fs, home)
+    upgraded = networked.create("group-acme")
+
+    assert upgraded["tailnetInitialized"] is True
+    assert upgraded["published"] is upgraded["devicePublished"] is True
+    assert set(fs.membership_sidecar.tailnets) == {created["spaceId"]}
+
+
 def test_create_is_idempotent_for_an_existing_space(home: Path) -> None:
     fs = FakeFs()
     service = _service(fs, home)

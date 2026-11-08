@@ -59,6 +59,33 @@ def test_org_create_publish_failure_is_reported_and_exits_nonzero(
     }
 
 
+def test_org_create_isolated_local_result_is_success(monkeypatch, tmp_path: Path) -> None:
+    _org_ipc_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        _cli_support,
+        "_daemon_request",
+        lambda *_args, **_kwargs: {
+            "org": "group-foo",
+            "spaceId": "space-1",
+            "tailnetInitialized": False,
+            "published": None,
+            "devicePublished": None,
+        },
+    )
+
+    result = CliRunner().invoke(_cli_root_app, ["org", "create", "foo", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout) == {
+        "ok": True,
+        "org": "group-foo",
+        "spaceId": "space-1",
+        "tailnetInitialized": False,
+        "published": None,
+        "devicePublished": None,
+    }
+
+
 def test_org_create_accepts_a_bare_name_and_derives_the_space_id(
     monkeypatch, tmp_path: Path
 ) -> None:

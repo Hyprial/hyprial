@@ -320,7 +320,7 @@ if [ -n "${BAD:-}" ]; then
   [ "$UNREAD" = 0 ] || { echo "   ⛔ $UNREAD UNREADABLE red task(s) ⇒ NOT decidable (neither a pass nor a content failure) ⇒ rerun, do not land"; ok=0; }
   [ "$INFLIGHT" = 0 ] || { echo "   ⏳ $INFLIGHT task(s) STILL IN-FLIGHT ⇒ this head has no verdict yet ⇒ WAIT (⛔ rerun, ⛔ land)"; ok=0; inflight_only=1; }
 fi
-[ "$DEV" = "$TAGDEV" ] || echo "   ⚠️ tag lag ≠ 0 ⇒ find the CAUSE, not just the fact: the tag moves only when tests.yml's unit job greens on the new head, so a transport failure can pin it. Clients that track tags/$BASE are then behind by $(git rev-list --count "$TAGDEV..$DEV" 2>/dev/null) commit(s)."
+[ "$DEV" = "$TAGDEV" ] || echo "   ⚠️ tag lag ≠ 0 ⇒ find the CAUSE, not just the fact: the tag moves only when gate-python.yml's unit job greens on the new head, so a transport failure can pin it. Clients that track tags/$BASE are then behind by $(git rev-list --count "$TAGDEV..$DEV" 2>/dev/null) commit(s)."
 [ -n "$MT" ] || ok=0
 [ "$M" = "$E" ] || ok=0
 # ⭐ 2026-09-18:判决【只由共用 helper 产生】—— 此前这里有一份本地的第二份(第二份正是今晚两次假判的根因)。

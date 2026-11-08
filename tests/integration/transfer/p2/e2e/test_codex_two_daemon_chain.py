@@ -52,7 +52,7 @@ from .test_two_daemon_chain import (
 
 # Temporary CI-only mask: the pytest-shard job container has no unprivileged
 # user namespaces, so the real codex bwrap sandbox this chain smokes cannot
-# start there. Only that job sets the flag (tests.yml); everywhere else this
+# start there. Only that job sets the flag (gate-python.yml); everywhere else this
 # file runs and fails loudly. Removal is tracked by the re-enable WIP PR.
 _CI_NO_USERNS_MASK = pytest.mark.skipif(
     os.environ.get("HYPRIAL_CI_NO_USERNS_CODEX_SANDBOX") == "1",

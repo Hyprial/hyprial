@@ -93,7 +93,7 @@ Rust 测试要求 GUI 依赖已安装且 PATH 有 Node ≥24。结构门覆盖 `
 Python 跨域只消费 `kernel/identity/daemon/biz/shell` 的公共面；GUI 集成实现位于
 `src/hyprial/shell/impl/gui`，根 `cli.py`/`gui_build_hook.py` 保持薄入口。
 
-`.forgejo/workflows/gui.yml` 运行 GUI package 与 release 安全检查；
+`.forgejo/workflows/gate-gui.yml` 运行 GUI package 与 release 安全检查；
 旧 desktop 验证/分发面（`desktop-check.yml`/`desktop-release.yml`）已随 app 树退役，不再存在。
 仓库早期 CI 运行结构与 Python 公共边界门。先跑直接覆盖改动的测试，再按 AGENTS.md
 跑 Python 全套与 Ruff；CI 绿、静态门绿和 mock 绿都不是 browser/E2E 结论。

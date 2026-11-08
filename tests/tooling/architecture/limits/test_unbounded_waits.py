@@ -209,7 +209,7 @@ def shutdown(thread):
         self.assertTrue(report["parseErrors"])
 
     def test_ci_runs_the_gate_before_dependency_install(self) -> None:
-        workflow = (SCRIPT.parents[2] / ".forgejo/workflows/tests.yml").read_text(
+        workflow = (SCRIPT.parents[2] / ".forgejo/workflows/gate-python.yml").read_text(
             encoding="utf-8"
         )
         command = (

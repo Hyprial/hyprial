@@ -10,8 +10,9 @@ The daemon executes an admitted IPC request to completion before writing the
 response. Therefore client timeout or disconnect is an unknown outcome, not
 cancellation; callers retry with the same org name. Once the directory space
 exists, creation writes `directory/org.json` with `state: creating` before
-creating the ACL space. It writes `state: active` only after all create steps,
-including the device publication attempt, have finished.
+creating the ACL space. It writes `state: active` only after all applicable
+create steps have finished. The normal path includes tailnet initialization and
+the device publication attempt; the isolated path includes only local creation.
 
 `org.list` exposes lifecycle state. Only explicit `state: creating` and
 `state: partial` markers classify an otherwise bound org as incomplete. A
@@ -45,11 +46,23 @@ event for each observed data problem, and `hyprial doctor` reports them as
 but is not an `org.network` unavailable reason: the lifecycle classification
 for that unbound space is `partial`.
 
-The create result includes `published` and the compatibility alias
-`devicePublished`. A publication failure returns both as `false`; `org create`
-then emits `ok:false` and exits 1 without claiming that device publication
-succeeded. The completed org remains retryable and a same-creator retry does
-not create another directory or ACL space.
+The create result includes `tailnetInitialized`, `published`, and the
+compatibility alias `devicePublished`. On the normal path,
+`tailnetInitialized` is `true` after membership initialization. Device
+publication returns `true` on success and `false` when an attempted publication
+fails; a failure makes `org create` emit `ok:false` and exit 1 without claiming
+that publication succeeded. The completed org remains retryable and a
+same-creator retry does not create another directory or ACL space.
+
+With `HYPRIAL_NETWORK_ISOLATED=1`, `org.create` completes only the local org,
+directory space, ACL space, policy, and directory roots. It does not start the
+forwarding supervisor, initialize a tailnet, or attempt device publication. The
+result has `tailnetInitialized:false` and `published` / `devicePublished` set to
+null, meaning not attempted rather than failed. The CLI emits `ok:true` and
+exits 0. Lifecycle state `active` means local creation is complete, not that
+cross-node networking is ready. `org.invite` and `org.join` still return
+`MEMBERSHIP_NOT_INITIALIZED`. Repeating `org.create` after normal forwarding is
+available initializes the missing tailnet without creating duplicate spaces.
 
 `org.repair {org?, apply?}` is the recovery inspection surface. `apply`
 defaults to `false`. Its result is:

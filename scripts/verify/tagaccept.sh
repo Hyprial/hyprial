@@ -32,7 +32,7 @@ echo "  [①] live: heads/dev = ${HD:0:12}   tags/dev = ${TG:0:12}"
 if [ "$TG" = "$HD" ]; then C1=yes; echo "      ✓ [①]=yes the tag reached the branch head"; else echo "      ✗ [①]=no: tag is $(git rev-list --count "$TG..$HD" 2>/dev/null) commit(s) behind (all-count)"; fi
 echo "  [②] does the tag point at the sha we tested?"
 if [ "$TG" = "$EXP" ]; then C2=yes; echo "      ✓ [②]=yes it points at the sha we tested (${EXP:0:12})"; else echo "      ✗ [②]=no — tag=${TG:0:12} expected=${EXP:0:12}"; fi
-echo "  [③] does the GREEN carry its own summary line?  (the mover is tests.yml's unit job on a push to dev)"
+echo "  [③] does the GREEN carry its own summary line?  (the mover is gate-python.yml's unit job on a push to dev)"
 RAW=$(tea_json "repos/HyprialOS/harness-bridge/actions/tasks?limit=1000")
 # ⚠️ The response is ~2.3 MB and jq TRUNCATES it. Learned the hard way: this script (written *after* the
 # rule was named) reproduced the very defect -- an unread instrument rendered as "no summary line",

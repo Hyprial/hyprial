@@ -28,7 +28,20 @@ def _row(result: str, code: int) -> dict[str, Any]:
     return {"scenario": "hosted-upgrade", "exitCode": code, "result": result}
 
 
-def test_recorded_signature_is_known_fail_not_red(suite: Any) -> None:
+def _track_synthetic_gap(suite: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(
+        suite.KNOWN_FAILURES,
+        "hosted-upgrade",
+        {
+            "signature": "MEMBERSHIP_NOT_INITIALIZED",
+            "reason": "classifier fixture",
+            "tracking": "https://code.hyprial.com/HyprialOS/harness-bridge/pulls/2539",
+        },
+    )
+
+
+def test_recorded_signature_is_known_fail_not_red(suite: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    _track_synthetic_gap(suite, monkeypatch)
     row = _row("FAIL", 1)
     report = {"traceback": "AssertionError: org create returned no space id: "
                            "{'ok': False, 'code': 'MEMBERSHIP_NOT_INITIALIZED'}"}
@@ -37,19 +50,26 @@ def test_recorded_signature_is_known_fail_not_red(suite: Any) -> None:
     assert row["knownFailure"]["tracking"].endswith("/pulls/2539")
 
 
-def test_other_failure_of_a_listed_scenario_stays_red(suite: Any) -> None:
+def test_other_failure_of_a_listed_scenario_stays_red(suite: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    _track_synthetic_gap(suite, monkeypatch)
     row = _row("FAIL", 1)
     assert suite.classify_known_failure("hosted-upgrade", row, {"traceback": "rollback mismatch"}) is True
     assert row["result"] == "FAIL"
 
 
 @pytest.mark.parametrize("result", ["INCONCLUSIVE", "NOT_RUN"])
-def test_non_fail_outcomes_are_never_absorbed(suite: Any, result: str) -> None:
+def test_non_fail_outcomes_are_never_absorbed(
+    suite: Any, result: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _track_synthetic_gap(suite, monkeypatch)
     report = {"traceback": "MEMBERSHIP_NOT_INITIALIZED"}
     assert suite.classify_known_failure("hosted-upgrade", _row(result, 1), report) is True
 
 
-def test_unexpected_pass_is_red_until_the_entry_is_removed(suite: Any) -> None:
+def test_unexpected_pass_is_red_until_the_entry_is_removed(
+    suite: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _track_synthetic_gap(suite, monkeypatch)
     row = _row("PASS", 0)
     assert suite.classify_known_failure("hosted-upgrade", row, {}) is True
     assert row["result"] == "UNEXPECTED-PASS"
@@ -63,4 +83,4 @@ def test_unlisted_scenarios_keep_the_plain_rule(suite: Any) -> None:
 
 
 def test_only_the_tracked_gap_is_listed(suite: Any) -> None:
-    assert set(suite.KNOWN_FAILURES) == {"hosted-upgrade"}
+    assert set(suite.KNOWN_FAILURES) == set()

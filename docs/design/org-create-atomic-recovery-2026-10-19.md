@@ -37,9 +37,12 @@ ACL ID 绑定和 `directory/org.json`。任一步失败都不会回滚此前 com
 7. 幂等写默认 `policy/role-grants.json`，把实际 `aclSpaceId` 写入 directory
    space 的 owner-only meta，并创建共享目录 roots。任一步失败都保留 intent；同一
    创建者重试从已有 ID 继续。
-8. 删除 intent 后尝试发布设备，最后才把 lifecycle 更新为 `state=active`。发布失败返回
-   `published:false`（兼容字段 `devicePublished:false`），CLI 以 `ok:false` 和退出 1
-   报告，但不撤销已完成的组织；同名重试只重试缺失步骤，不重复创建 space。
+8. 正常路径先初始化 tailnet，删除 intent 后尝试发布设备，最后才把 lifecycle 更新为
+   `state=active`，并返回 `tailnetInitialized:true`。发布失败返回 `published:false`
+   （兼容字段 `devicePublished:false`），CLI 以 `ok:false` 和退出 1 报告，但不撤销已完成的组织；
+   同名重试只重试缺失步骤，不重复创建 space。`HYPRIAL_NETWORK_ISOLATED=1` 时只完成本地创建，
+   不初始化 tailnet、不尝试发布，返回 `tailnetInitialized:false` 和 null 发布字段；
+   null 表示未尝试，CLI 以 `ok:true` 和退出 0 报告。`active` 不表示跨节点网络已就绪。
 
 已有的 pre-fix orphan 没有 intent。唯一同名 directory space 的 owner 等于当前
 owner 且 ACL 绑定缺失/失效时，允许该 owner 建立一条 recovery intent 并恢复；其他

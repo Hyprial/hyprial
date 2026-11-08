@@ -58,7 +58,7 @@ its companion `.sha256` object contains the script hash.
 
 ## Direct R2 publication and drift check
 
-`install-scripts.yml` runs on relevant `dev` changes and manual `dev` dispatches.
+`release-install-scripts.yml` runs on relevant `dev` changes and manual `dev` dispatches.
 It generates and uploads only `install.sh`, `install.sh.sha256`, `install.ps1`,
 and `install.ps1.sha256`, each script before its checksum. The separate `drift`
 job runs afterward even if publication failed; it compares anonymous public reads
@@ -138,7 +138,7 @@ scripts/build/build-wheel.sh [outdir]   # trap 恢复 pyproject/uv.lock;树脏�
 CI(`.forgejo/workflows/wheel-release.yml`):
 
 - `nightly`/`stable`:由 `on.push.tags` 的字面 tag push 触发。
-- CI 自己写 tag 不会再触发 tag-push workflow。`tests.yml` 在核对 internal
+- CI 自己写 tag 不会再触发 tag-push workflow。`gate-python.yml` 在核对 internal
   指针后直接 dispatch `wheel-release`，再 dispatch 独立的 `github-publish`；
   GitHub 失败不阻塞 R2。正式版本的 stable/nightly writer 和 nightly 晋升
   同样先派发 wheel，再派发 GitHub。三轨均传轨道名和已固定的完整 `source_sha`。
@@ -270,5 +270,5 @@ GitHub snapshot commit,其 commit message 记录原仓 source 为
 
 正式发版的不可变 `vX.Y.Z` tag + release 对象是否另开一条 wheel 发布轨
 (如在过滤中加 `v*` 或单独 workflow)?当前 `wheel-release.yml` 只服务
-nightly/stable 轨;`v*` 不在其过滤内,up-gate 侧 `e2e.yml` 的 `v*` 闸与
+nightly/stable 轨;`v*` 不在其过滤内,up-gate 侧 `e2e-macos-isolated.yml` 的 `v*` 闸与
 本链路面无交集。

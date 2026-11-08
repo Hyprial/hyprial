@@ -175,6 +175,7 @@ def _build_service(
         read_own_address=read_own_address,
         forwarding_status=lambda: app._forwarding_status_json(),
         membership_request=membership_request,
+        network_isolated=bool(getattr(app, "network_isolated", False)),
         # Casdoor group membership is the authority (design §2): owner-side
         # commands write it first; absent config = not this node's job.
         casdoor=casdoor_groups_for_home(Path(app.hyprial_home)),

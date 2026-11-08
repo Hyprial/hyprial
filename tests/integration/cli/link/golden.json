@@ -78,7 +78,7 @@
     ],
     "exitCode": 0,
     "stderr": "",
-    "stdout": "agent:a03-owner:a03-node:alice   k 2   W 2   in-flight 0/2   agent links 0/2\nPEER  STATE  CWND  IN-FLIGHT  LIFECYCLE  LAST USED\n—     owner  —     —          —          —\n"
+    "stdout": "agent:a03-owner:a03-node:alice   k 2   W 2   in-flight 0/2   agent links 0/2\nPEER  STATE  CWND  IN-FLIGHT  LIFECYCLE  LAST USED\n—     owner  —     —          —          —\nNo links recorded.\n"
   },
   "stats_json": {
     "argv": [

@@ -28,7 +28,7 @@
 - ✅ `v0.4.2.dev7` 发布后 —— **第 1 轮三条已全部实测通过**(见文末「状态与证据」);
 - ⬜ `v0.4.2.dev8` 发布后。
 **两次都要跑,不能只跑一次。**
-⚠️ **跑 `e2e-controlled.yml` 闸门 ≠ 跑完 G1** —— 闸门矩阵不含 E2E-011 / E2E-007。
+⚠️ **跑 `e2e-macos-credentialed.yml` 闸门 ≠ 跑完 G1** —— 闸门矩阵不含 E2E-011 / E2E-007。
 
 ### 怎么跑(照抄即可)
 ```bash
@@ -42,7 +42,7 @@ uv run --locked --python 3.12 python contract/e2e/run-lark-app-onboarding.py
 # E2E-007:四个 Lark adapter 恢复 online(不需要真实凭据,但同族,一并跑)
 uv run --locked --python 3.12 python contract/e2e/run-four-lark-adapters.py
 ```
-或整条 credentialed 闸门:`fj actions dispatch e2e-controlled.yml <当前 dev tip 或 tag>`。
+或整条 credentialed 闸门:`fj actions dispatch e2e-macos-credentialed.yml <当前 dev tip 或 tag>`。
 
 ### 通过判据
 - **E2E-004**:用户请求到达预期 actor(OnIt 之前);adapter 回复是**带路由头的原生 reply**;
@@ -132,15 +132,15 @@ HYPRIAL_NETWORK_ISOLATED=1 uv run --python 3.12 pytest -q \
 
 ## G1 · 状态与证据
 
-✅ **G1 第 1 轮（`v0.4.2.dev7`，2026-08-23）完成**：E2E-004 PASS 16/16（`e2e-controlled.yml` #505）、
-E2E-011 PASS 16/16、E2E-007 PASS 6/6×3（后两者 `e2e.yml` #497 + 本机隔离复核）。
+✅ **G1 第 1 轮（`v0.4.2.dev7`，2026-08-23）完成**：E2E-004 PASS 16/16（`e2e-macos-credentialed.yml` #505）、
+E2E-011 PASS 16/16、E2E-007 PASS 6/6×3（后两者 `e2e-macos-isolated.yml` #497 + 本机隔离复核）。
 完整实测记录（含 BLOCKED 误判史、flake 特征、现场路径）：[docs/notes/roadmap/g1-execution-log-2026-08-23.md](docs/notes/roadmap/g1-execution-log-2026-08-23.md)。
 
 ⬜ **G1 第 2 轮（dev8 / 下一次发版）未开始** —— 触发条件是下一次发版,不是日期。
 
 > ⚠️ 给下一个执行的人 —— **两条闸门,别混为一谈**:
-> - **`e2e.yml`**(免凭据,tag 触发的发版准入)跑 **E2E-007 / E2E-011**,还有 001/002/003/005/010;
-> - **`e2e-controlled.yml`**(要真凭据)跑 **E2E-004** / 006 / 008 / 012 / 013 / 014。
+> - **`e2e-macos-isolated.yml`**(免凭据,tag 触发的发版准入)跑 **E2E-007 / E2E-011**,还有 001/002/003/005/010;
+> - **`e2e-macos-credentialed.yml`**(要真凭据)跑 **E2E-004** / 006 / 008 / 012 / 013 / 014。
 >
 > ⇒ **G1 三条分布在两条闸门上。** 想确认 G1,两条闸门在**同一个 tag 上**都要绿;
 > 手动补跑时**先确认隔离**(`HYPRIAL_HOME` / `HARNESS_STATE_DIR` / 端口 / accounts stub),

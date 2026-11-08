@@ -6,7 +6,8 @@
 
 ## 定义
 
-- 对象：一个组织由 Casdoor group、OrgFS 空间及 tailnet 组成。一个用户的 home 可以同时属于多个组织。
+- 对象：一个组织由 Casdoor group 和 OrgFS 空间组成。一个用户的 home 可以同时属于多个组织。
+- 网络能力：tailnet 是组织跨节点通信和同步的能力，不是组织本体；无 tailnet 的本地 org 可以存在，但不具备完整跨节点协作能力。
 - 拥有者：组织所有者创建、设置和改名；只有所有者能邀请或移除成员。删除组织的后端能力仍在修复。
 - 衔接对象：[成员](member.md)、[成员邀请](member-invite.md)、[设备](device.md)、[Agent](agent.md)。
 - 边界：“当前组织”是 home 级本地选择，不是组织的生命周期状态；“已离开”是用户与组织的关系，不表示组织已删除。
@@ -53,10 +54,10 @@ stateDiagram-v2
 | 步骤 | 角色 | 操作 | 预期结果（状态） | CLI 命令 | daemon 方法 | 现状 | 依据 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 1 | 用户 | 填写组织名并提交 | 创建中；阻止重复提交 | `hyprial org create <org>` | `org.create` | 有差异 | dev@4d676ec37 `src/hyprial/daemon/impl/org/network/service.py:162-202`；契约：有差异：无契约（MethodSpec 未声明）。行为/字段：同名创建可恢复且串行；表单防重由客户端负责 |
-| 2 | 系统 | 建立组织的 Casdoor group、OrgFS 空间和 tailnet | 全部完成才显示组织可用 | `hyprial org create <org>`；`hyprial org repair <org>`（修复预览） | `org.create`；`org.repair` | 有差异 | dev@4d676ec37 `src/hyprial/daemon/impl/org/network/service.py:202-256`；契约（两方法）：有差异：无契约（MethodSpec 未声明）。行为/字段：发布设备失败可返回 `devicePublished=false` 并写 active，非设计要求的整体失败 |
+| 2 | 系统 | 正常路径建立组织的 Casdoor group、OrgFS 空间和 tailnet；隔离测试路径只建立本地组织数据 | 正常路径全部完成后显示组织可用；隔离路径只表示本地创建完成，不表示跨节点就绪 | `hyprial org create <org>`；`hyprial org repair <org>`（修复预览） | `org.create`；`org.repair` | 有差异 | dev@4d676ec37 `src/hyprial/daemon/impl/org/network/service.py:202-256`；契约（两方法）：有差异：无契约（MethodSpec 未声明）。行为/字段：`tailnetInitialized` 区分网络初始化；发布设备失败可返回 `devicePublished=false` 并写 active，非设计要求的整体失败 |
 | 3 | 用户 | 决定是否设为当前组织 | 新组织不会自动覆盖当前组织 | `hyprial org use <org>`（仅明确选择时；PR #2217） | `org.use`（HTTP 未开放） | 已有（PR #2217，未合） | PR #2217@06a2aee3b `src/hyprial/daemon/impl/org/membership/context/resolver.py:52-58`；`src/hyprial/daemon/impl/request_catalog/org/context.py:160-182` |
 
-异常：设备发布失败时整体创建失败，可用同名重试。`creating` 或 `partial` 时显示“创建未完成”；修复先预览再确认。账号服务不可用或额度已满时显示原因并保留输入。
+异常：设备发布失败时整体创建失败，可用同名重试。隔离路径的 null 发布字段表示未尝试，不是失败。`creating` 或 `partial` 时显示“创建未完成”；修复先预览再确认。账号服务不可用或额度已满时显示原因并保留输入。
 
 衔接：[成员邀请](member-invite.md)和[成员](member.md)。
 

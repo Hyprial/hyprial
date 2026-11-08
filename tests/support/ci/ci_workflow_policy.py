@@ -251,7 +251,7 @@ def tail_upload_step(job: dict[str, Any]) -> dict[str, Any]:
 
     Matrix instances share ``github.job``, so the verbatim step would make
     every instance upload one artifact name and overwrite each other's file
-    (2026-10-04, ``tests.yml::pytest-shard``). Only the artifact NAME gains the
+    (2026-10-04, ``gate-python.yml::pytest-shard``). Only the artifact NAME gains the
     matrix value; every other field, and every non-matrix job, stays verbatim.
     """
 
@@ -271,13 +271,13 @@ def tail_upload_step(job: dict[str, Any]) -> dict[str, Any]:
 # are unneeded -- "deliberately out of scope" and "nobody thought about it"
 # look identical afterwards, and only the written reason separates them.
 TAIL_EXEMPT_JOBS: dict[str, str] = {
-    "cancel-on-pr-close.yml::cancel": (
+    "ops-cancel-on-pr-close.yml::cancel": (
         "class: PR-close API maintenance, one step with per-run HTTP receipts "
         "in the job summary, no suite and no checkout of PR-controlled code. "
         "deferred: host-condition instrumentation would add a source bootstrap "
         "and artifact dependency to the cancellation path"
     ),
-    "contract-impact.yml::impact": (
+    "gate-pr-declarations.yml::impact": (
         "class: PR-metadata gate (pull_request only, one step, no suite). "
         "deferred: the instrumented set is pinned at the 2026-09-14 twelve for "
         "this ticket; instrumenting it is a follow-up, not a verdict that its "
@@ -287,8 +287,8 @@ TAIL_EXEMPT_JOBS: dict[str, str] = {
         "class: tag-triggered publish pipeline (no suite; its transport story "
         "is an API comment because #503 log loss, see P3/P4). deferred as above"
     ),
-    "gui.yml::gui-unit": "class: independent GUI/Node package job. deferred as above",
-    "gui.yml::release-package": (
+    "gate-gui.yml::gui-unit": "class: independent GUI/Node package job. deferred as above",
+    "gate-gui.yml::release-package": (
         "class: separate GUI/Node package job. deferred as above"
     ),
     "release-tag.yml::tag": (
@@ -299,7 +299,7 @@ TAIL_EXEMPT_JOBS: dict[str, str] = {
         "dispatches the trusted guard and derives its evidence from that run). "
         "deferred as above"
     ),
-    "release-changelog.yml::changelog": (
+    "gate-pr-declarations.yml::changelog": (
         "class: PR-metadata gate (pull_request only, one python3 step, no suite). "
         "deferred: it exists precisely because the instrumented job set is the "
         "heavy one this gate must not depend on (no uv, no artifact upload); "

@@ -141,6 +141,35 @@ class HistoryEntry:
 
 
 @dataclass(frozen=True, slots=True)
+class JournalCommit:
+    """One retained durable commit of a document, oldest first in a chain."""
+
+    journal_ref: str
+    durable_version: str
+    writer: str
+    changed: Literal["created", "content"]
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class JournalHistory:
+    """A document's journal chain, its durable head, and any purge retirement.
+
+    ``commits`` comes from the space journal, never from the facade's
+    process-local version list.  ``durable`` is false when the space has no
+    durable store, so a caller can tell "cannot read" from "nothing retained".
+    ``plan_id`` is set only when a committed purge retired this document.
+    """
+
+    commits: tuple[JournalCommit, ...]
+    frontier: str
+    durable: bool
+    head_current: bool
+    plan_id: str | None = None
+    snapshot_version: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ChangeEvent:
     space_id: str
     kind: ChangeKind
@@ -288,6 +317,8 @@ class OrgFs(Protocol):
     def history(
         self, space_id: str, node: NodeRef, limit: int = 50, before: str | None = None
     ) -> tuple[HistoryEntry, ...]: ...
+
+    def journal_history(self, space_id: str, node: NodeRef) -> JournalHistory: ...
 
     def read_at(self, space_id: str, node: NodeRef, version: str) -> bytes: ...
 

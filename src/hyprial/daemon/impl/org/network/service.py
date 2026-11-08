@@ -117,6 +117,7 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
         casdoor: CasdoorGroups | None = None,
         forwarding_status: Callable[[], Mapping[str, Any] | None] | None = None,
         membership_request: Callable[[str, dict], dict] | None = None,
+        network_isolated: bool = False,
         logger: _Logger | None = None,
         invite_ttl_seconds: float = DEFAULT_INVITE_TTL_SECONDS,
         join_timeout_seconds: float = DEFAULT_JOIN_TIMEOUT_SECONDS,
@@ -156,6 +157,7 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
         self._casdoor = casdoor
         self._forwarding_status = forwarding_status
         self._membership_request = membership_request
+        self._network_isolated = network_isolated
         self._invite_ttl_seconds = invite_ttl_seconds
         self._join_timeout_seconds = join_timeout_seconds
         self._join_budget: JoinBudget | None = None
@@ -223,15 +225,21 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
                 write_default_acl_policy(self._fs, acl_info.space_id)
             self._fs.update_space_meta(info.space_id, {"aclSpaceId": acl_info.space_id})
         self._store.ensure_org_directory_roots(org)
-        self._ensure_new_tailnet(info)
+        if not self._network_isolated:
+            self._ensure_new_tailnet(info)
         finish_org_create(self._home, org)
-        try:
-            published = self._publish_into(org)
-        except OrgNetworkError as error:
-            published = False
-            self._log(
-                "warn", "org", "org.create.publish-skipped", org=org, reason=error.code
-            )
+        if self._network_isolated:
+            tailnet_initialized = False
+            published = None
+        else:
+            tailnet_initialized = True
+            try:
+                published = self._publish_into(org)
+            except OrgNetworkError as error:
+                published = False
+                self._log(
+                    "warn", "org", "org.create.publish-skipped", org=org, reason=error.code
+                )
         self._store.put_org_meta(org, {"state": "active"})
         self._log("info", "org", "org.create", org=org, spaceId=info.space_id)
         return {
@@ -243,6 +251,7 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
             "existed": existing is not None,
             "aclExisted": acl_existed,
             "casdoorGroup": casdoor,
+            "tailnetInitialized": tailnet_initialized,
             "published": published,
             "devicePublished": published,
         }
@@ -261,6 +270,10 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
     def invite(self, org: str, user: str) -> dict[str, Any]:
         """Invite one user and return the encoded one-time link (§2.4)."""
 
+        if self._network_isolated:
+            raise OrgNetworkError(
+                "MEMBERSHIP_NOT_INITIALIZED", "Tailnet sidecar unavailable."
+            )
         member_uri = _canonical_member_uri(user)
         self._require_allows(
             org=org, action=ACTION_INVITE, resource=RESOURCE_ORG_MEMBERS

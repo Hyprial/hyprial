@@ -6,7 +6,9 @@ so P1b consumers can replace, rather than merge with, an ambient environment.
 
 from __future__ import annotations
 
+import logging
 import re
+import shutil
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -148,6 +150,7 @@ GENERATED_CHILD_ENVIRONMENT_NAMES = frozenset(
         "HYPRIAL_WORKER_SESSION_REF",
         "HYPRIAL_WORKER_SESSION_REF_FILE",
         "HYPRIAL_AGENT_SESSION",
+        "HYPRIAL_CLAUDE_EXECUTABLE",
         # P1b B1 (L3): the three daemon-authority variables.  All three are
         # minted by the daemon (owner/node resolution in
         # DaemonApplication.__init__), never passed through from a parent
@@ -215,6 +218,7 @@ P2_CONTROLLED_ENVIRONMENT_NAMES = frozenset(
     }
 )
 
+_LOGGER = logging.getLogger(__name__)
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _GIT_TRIPLE = frozenset(
     {"GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"}
@@ -443,6 +447,12 @@ def compose_worker_child_launch(
         agent_name=agent_name,
     )
     generated = dict(channel.identity_environment())
+    claude_executable = shutil.which("claude")
+    if claude_executable:
+        generated["HYPRIAL_CLAUDE_EXECUTABLE"] = claude_executable
+        _LOGGER.info("系统 claude 路径: %s", claude_executable)
+    else:
+        _LOGGER.warning("系统 claude 未找到,回退 SDK bundled")
     try:
         generated["HYPRIAL_AGENT_DIR"] = str(
             registry.home_receipt(agent_name).path

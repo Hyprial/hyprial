@@ -41,6 +41,22 @@ switch does not use that rule for empty values.
   - zenoh gossip;
   - the usage fetcher.
 
+### Org operations
+
+`org create` is a local operation in this mode. It creates the org's directory
+space, ACL space, policy, and directory roots without starting the forwarding
+supervisor, initializing a tailnet, or publishing a device. The result reports
+`tailnetInitialized:false` and null `published` / `devicePublished`; null means
+publication was not attempted. Lifecycle state `active` covers local creation
+only and is not a cross-node readiness claim. `org invite` and `org join` still
+require membership and return `MEMBERSHIP_NOT_INITIALIZED`.
+
+A daemon with normal forwarding keeps the full creation path: initialize the
+tailnet and attempt device publication. Repeating `org create` for a locally
+created org after forwarding becomes available initializes its missing tailnet
+without duplicating spaces. Tests that need real membership use the explicit
+`tailcat_forwarding=True` loopback topology instead of weakening this switch.
+
 ### Reporting
 
 `ping` and `ps` report `zenoh.isolated` and `zenoh.isolation`. The value is
@@ -104,7 +120,7 @@ Each check is listed separately:
 
 ### Known coverage gap
 
-The E2E workflow (`.forgejo/workflows/e2e.yml`) runs on `macos-host`, directly on this Mac, which is a production node. So from now on these two scenarios **run nowhere**, until they can be isolated or a runner with no production mesh exists. hq-adjutant is collecting the options for Allen. What goes unverified in the meantime:
+The E2E workflow (`.forgejo/workflows/e2e-macos-isolated.yml`) runs on `macos-host`, directly on this Mac, which is a production node. So from now on these two scenarios **run nowhere**, until they can be isolated or a runner with no production mesh exists. hq-adjutant is collecting the options for Allen. What goes unverified in the meantime:
 
 - **E2E-005 (uv install / upgrade / uninstall).** Install with pre-rename PEP 610 metadata; prove that version and `hyprial daemon upgrade` use the canonical `HyprialOS/harness-bridge`; observe a newer dev commit through a disposable local bare remote; uninstall.
 - **E2E-010 (running upgrade continuity).** Upgrade a live disposable deployment across a real package/commit boundary, restart, and prove:

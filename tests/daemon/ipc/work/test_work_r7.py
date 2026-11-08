@@ -49,6 +49,13 @@ def _parsed(app, space_id: str, item_id: str):  # type: ignore[no-untyped-def]
     return work_items.parse_work_item(text)
 
 
+def _journal_ref(app, space_id: str, item_id: str) -> str:
+    journal = app._require_orgfs_runtime().facade.journal_history(
+        space_id, f"work/{item_id}.md"
+    )
+    return journal.commits[-1].journal_ref
+
+
 def test_raw_verified_field_is_ignored_but_guarded_done_is_verified(
     r7_work_daemon,
 ) -> None:
@@ -205,6 +212,7 @@ def test_repair_restores_latest_valid_version_and_records_proof(r7_work_daemon) 
             **_session(OWNER, "owner-session"),
         },
     )
+    restored_ref = _journal_ref(app, space_id, item_id)
     invalid = work_items.replace_head(
         _parsed(app, space_id, item_id),
         checklist=[{"text": "ship", "done": False}],
@@ -212,6 +220,7 @@ def test_repair_restores_latest_valid_version_and_records_proof(r7_work_daemon) 
     invalid_version = _raw_write(
         app, space_id, item_id, invalid, checked["version"]
     )
+    invalid_ref = _journal_ref(app, space_id, item_id)
 
     repaired = app.handle(
         "work.repair",
@@ -221,7 +230,7 @@ def test_repair_restores_latest_valid_version_and_records_proof(r7_work_daemon) 
     assert repaired["version"] not in {invalid_version, checked["version"]}
     assert repaired["item"]["checklist"] == [{"text": "ship", "done": True}]
     assert repaired["item"]["log"][-1].endswith(
-        f"{OWNER}: repair {invalid_version} -> {checked['version']}"
+        f"{OWNER}: repair {invalid_ref} -> {restored_ref}"
     )
     assert repaired["item"]["ownerActions"][-1]["verification"] == (
         "verified (LAX same-uid)"
@@ -233,9 +242,10 @@ def test_repair_restores_latest_valid_version_and_records_proof(r7_work_daemon) 
         "action": "repair",
         "itemId": item_id,
         "caller": OWNER,
-        "invalidVersion": invalid_version,
-        "restoredVersion": checked["version"],
+        "invalidJournalRef": invalid_ref,
+        "restoredJournalRef": restored_ref,
         "producedVersion": repaired["version"],
+        "producedJournalRef": _journal_ref(app, space_id, item_id),
     }.items() <= rows[-1].items()
 
     shown = app.handle(
@@ -282,12 +292,15 @@ def test_unverified_operator_can_repair_and_is_flagged(r7_work_daemon) -> None:
         owner="user:allen",
         checklist=["ship"],
     )
+    item_id = added["item"]["id"]
+    restored_ref = _journal_ref(app, space_id, item_id)
     invalid = work_items.replace_head(
         _parsed(app, space_id, added["item"]["id"]), status="done", closed=123
     )
-    invalid_version = _raw_write(
+    _raw_write(
         app, space_id, added["item"]["id"], invalid, added["version"]
     )
+    invalid_ref = _journal_ref(app, space_id, item_id)
 
     repaired = app.handle(
         "work.repair",
@@ -296,7 +309,7 @@ def test_unverified_operator_can_repair_and_is_flagged(r7_work_daemon) -> None:
     assert repaired["item"]["unverifiedOperator"] is True
     assert repaired["item"]["ownerActions"][-1]["verification"] == "unverified"
     assert repaired["item"]["log"][-1].endswith(
-        f"user:allen: repair {invalid_version} -> {added['version']} "
+        f"user:allen: repair {invalid_ref} -> {restored_ref} "
         "(unverified operator)"
     )
 
