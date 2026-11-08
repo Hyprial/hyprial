@@ -124,8 +124,9 @@ pyproject: 0.4.2          →  wheel: hyprial-0.4.2+g8cd97b4-py3-none-any.whl
 - Forgejo registry 已实证**完整保留** `+` 本地段,且
   `uv pip install 'hyprial==0.4.2+g8cd97b4'` 精确 pin 命中(Gitea 系早期版本
   对 `+` 的规范化坑在 15.0.5 不复现)。
-- registry **拒收重复版本文件**:同一 tag 重复钉同一 SHA 的 CI 重跑会在
-  发布步响亮失败 —— 这是防覆盖的正确行为,换 SHA 再发。
+- registry **拒收内容不同的重复版本文件**:发布步用 `uv publish --check-url`,
+  字节相同的同名文件(重跑,或 nightly==stable SHA)幂等跳过;sha256 不一致则
+  响亮失败 —— 这是防覆盖的正确行为,查明不可复现的原因,绝不删除重传。
 
 ## 构建
 

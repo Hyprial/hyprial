@@ -13,6 +13,12 @@ All notable changes to hyprial (Harness Bridge) are documented here.
 ## [0.5.5.4] - 2026-11-03
 
 ### Fixed
+- ci(release)：发布链不再因不影响分发的原因判红（v0.5.5.3.4 收尾，runs 51606/51622/51727）。
+  wheel-release 的 registry 发布改用 `uv publish --check-url`，字节相同的同名文件幂等跳过
+  （stable floor 让 nightly==stable SHA 时不再 409），sha256 不同仍响亮失败；workflow
+  artifact 上传失败只在 registry 发布 success 时降级为 warning；Go/npm/uv 缓存与 CPython
+  3.12 镜像持久化，构建步 30 分钟上限、job 55 分钟；github-publish 等待 registry 的时长按
+  job 剩余预算计算，上游缺件时明确 NOT EVALUABLE 而非被 runner 强杀。
 - orgfs：修复 replica 挂接窗口永久吞信封的缺陷。`OrgFsMesh.attach_replica` 先 prime 后赋值，
   prime 期间到达并已落 store 的信封被 `_store_replica_envelope` 丢弃（`replica_store` 仍为 None），
   而赋值后 serving 又优先读 replica——窗口内只落在 store 的文档对 clone/catch-up 永久不可见
