@@ -3,6 +3,9 @@
 #   a current member (``not-a-member`` otherwise, for a removed and for a
 #   never-invited author alike); a node that is not a current member itself
 #   requests no blob and asks for no content.
+# - Package F8 (R5-1): close finishes the broadcast being applied and
+#   discards the queued ones (counted in ``ingress_dropped``; the next pull
+#   recovers them) instead of applying all of them first.
 """Close, rebuild, legacy keys, scheduling, maintain, announce, read-first, blobs."""
 
 from __future__ import annotations
@@ -33,7 +36,7 @@ def _close(*nodes) -> None:
         node.close()
 
 
-def test_close_drains_admitted_broadcasts_then_never_calls_the_host(bus: Bus) -> None:
+def test_close_discards_queued_broadcasts_then_never_calls_the_host(bus: Bus) -> None:
     a = make_node(bus, "node-a")
     b = make_node(bus, "node-b")
     gate = threading.Event()
@@ -42,7 +45,8 @@ def test_close_drains_admitted_broadcasts_then_never_calls_the_host(bus: Bus) ->
         a.host.write_text(f"doc-{index}", "x")
     threading.Timer(0.2, gate.set).start()
     b.sync.close(timeout=5.0)
-    assert sum(1 for name, _doc in b.host.calls if name == "apply_remote") == 20
+    assert sum(1 for name, _doc in b.host.calls if name == "apply_remote") == 1
+    assert b.sync.ingress_dropped == 19
     b.host.closed = True
     a.host.write_text("doc-late", "late")
     assert not bus.sessions["node-b"].query(KeySpace().orgfs3_sync(SPACE, "node-b"), b"{}")

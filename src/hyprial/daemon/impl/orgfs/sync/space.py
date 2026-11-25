@@ -54,6 +54,15 @@
 #   and every known member peer of the space, and an accepted meta update
 #   that re-admits another member's known node pulls from it
 #   (``_meta_accepted``; the rule is written out in ``sync/pull.py``).
+# - Package F8 (real-node finding R5-1): a holder that keeps writing keeps
+#   the ingress queue full, and each queued broadcast can take tens of
+#   milliseconds to apply on a large space, so waiting for the queue to
+#   empty could outlast any close budget.  Once close sets
+#   ``_ingress_closing``, broadcasts still queued are discarded unapplied and
+#   counted in ``ingress_dropped`` (as an overflow is): every broadcast
+#   stays durable on its sender and the next pull of any sync of the space
+#   recovers it.  Close therefore waits only for the one apply already
+#   running and for in-flight query handlers (one page each).
 """StateSpaceSync: the protocol 3 SpaceSync implementation for one space."""
 
 from __future__ import annotations
@@ -356,7 +365,12 @@ class StateSpaceSync(SupplierSyncMixin, SyncPullMixin, SyncBlobMixin):
 
     def _process_update(self, payload: bytes) -> None:
         try:
-            self._receive_update(payload)
+            with self._ingress_guard:
+                discard = self._ingress_closing
+                if discard:
+                    self._ingress_dropped += 1
+            if not discard:
+                self._receive_update(payload)
         except Exception as exc:  # noqa: BLE001 - one bad frame never kills ingress
             self._log("warn", "orgfs.update.failed", spaceId=self.space_id, detail=str(exc))
         finally:
