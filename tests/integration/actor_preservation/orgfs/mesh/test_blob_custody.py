@@ -3,7 +3,7 @@
 #   ``tests/daemon/orgfs/mesh/replication/blobs/test_blobs.py`` and of the
 #   R4a/R4b tests in ``.../presence/test_presence.py``.  The six twins that
 #   failed on the state runtime are deleted; their daemon-side copies run on
-#   ``StateOrgFsRuntime`` (R4a, R4b, R5 inbound, the large-update fetch once,
+#   ``OrgFsRuntime`` (R4a, R4b, R5 inbound, the large-update fetch once,
 #   the failed fetch), and the update-blob queue test is replaced by
 #   ``sync/test_lifecycle.py::test_request_blob_queue_is_bounded`` (update
 #   blobs are fetched inside the pull round; see the daemon-side file).

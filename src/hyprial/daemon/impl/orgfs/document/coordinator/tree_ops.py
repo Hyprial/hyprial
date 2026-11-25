@@ -76,7 +76,6 @@ from hyprial.daemon.impl.orgfs.document.model import (
     _facade_locked,
     _node_uri,
 )
-from hyprial.daemon.impl.orgfs.document.projection import _REQUIRED
 from hyprial.daemon.impl.orgfs.membership import (
     LocalWrite,
     check_local_write,
@@ -88,6 +87,8 @@ from hyprial.daemon.impl.orgfs.membership import (
     vector_covers,
     vector_digest,
 )
+
+_REQUIRED: Any = object()
 
 CURSOR_PREFIX = "evt:"
 
@@ -108,7 +109,7 @@ def _int_or_none(value: object) -> int | None:
 
 
 class StateTreeOps:
-    """Version, read, trash and restore methods of ``StateOrgFs``."""
+    """Version, read, trash and restore methods of ``LocalOrgFs``."""
 
     def _sync_nodes(self, space: _Space, registry: DocRegistry) -> tuple[list[str], list[str]]:
         """Bring ``space.nodes`` in line with the tree; return added and vanished ids."""

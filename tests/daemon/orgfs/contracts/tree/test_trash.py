@@ -105,10 +105,6 @@ def test_directory_restore_respects_recursive_flag(orgfs_impl) -> None:
     assert fs.read_text(space.space_id, f"id:{second.node_id}")[0] == "two"
 
 
-@pytest.mark.legacy_xfail(
-    reason="design §6: restore(recursive=True) restores the descendants removed with the "
-    "node; legacy restore(version) with the trash-listed version only restores the node"
-)
 def test_recursive_directory_restore_brings_back_the_subtree(orgfs_impl) -> None:
     fs = orgfs_impl.make_facade("user:owner")
     space = fs.create_space("team")

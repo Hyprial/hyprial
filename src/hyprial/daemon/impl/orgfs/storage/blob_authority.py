@@ -33,7 +33,6 @@ from hyprial.daemon.impl.orgfs.storage.blobs  import (
     BlobIntegrityError,
     BlobMissing,
     BlobPayload,
-    BlobPurged,
     BlobRangeError,
     BlobStore)
 
@@ -389,8 +388,6 @@ class BlobAuthority:
         details = dict(error.details)
         if error.error_type == "BlobMissing":
             return BlobMissing(str(details.get("digest", "")))
-        if error.error_type == "BlobPurged":
-            return BlobPurged(str(details.get("digest", "")))
         if error.error_type == "BlobRangeError":
             return BlobRangeError(error.message, details=details)
         if error.error_type == "BlobIntegrityError":
@@ -519,29 +516,6 @@ class BlobAuthority:
     def handle_request(self, request: bytes | Mapping[str, Any]) -> bytes:
         return self._call(_HandleBlobRequest(self._freeze_request(request)))
 
-    def register_purge_checker(self, space_id: str, checker: Any) -> None:
-        # This is immutable callback configuration, not a DB operation. Keep
-        # it outside mailbox payloads and invoke it without holding its map lock.
-        with self._lock:
-            if self._closing or self._closed:
-                raise BlobError("blob authority is closed")
-        self._store.register_purge_checker(space_id, checker)
-
-    def register_purge_projection(
-        self, space_id: str, digests: tuple[str, ...] | frozenset[str]
-    ) -> None:
-        """Install a versioned immutable purge projection for one space."""
-
-        with self._lock:
-            if self._closing or self._closed:
-                raise BlobError("blob authority is closed")
-        self._store.register_purge_projection(space_id, digests)
-
-    def unregister_purge_projection(self, space_id: str) -> None:
-        with self._lock:
-            if self._closing or self._closed:
-                raise BlobError("blob authority is closed")
-        self._store.unregister_purge_projection(space_id)
 
     def close(self, timeout: float = 5.0) -> bool:
         deadline = time.monotonic() + max(0.0, timeout)

@@ -1,27 +1,19 @@
-"""The announce filter only checks ``protocol`` once a host sets it.
+"""The directory accepts only protocol 3 announces.
 
 Decision (phase D construction plan §3.3, package D0): the state host's
-directory sets ``_ANNOUNCE_PROTOCOL``; the legacy directory accepts any.
+directory set ``_ANNOUNCE_PROTOCOL``; the legacy directory accepted any.
 Decision (phase D, package T3): the D0 content-hook test, which subclassed the
-legacy facade, was deleted; ``StateOrgFs`` is the host those hooks served and
+legacy facade, was deleted; ``LocalOrgFs`` is the host those hooks served and
 the contract suite (``tests/daemon/orgfs/contracts``) runs it directly.
+Decision (package S, 2026-11-25): the hook lost its legacy half;
+``RuntimeDirectory`` itself requires ``protocol: 3`` (design §4.1, §9 R15).
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-import pytest
-
 from hyprial.daemon.impl.orgfs.composition.directory import RuntimeDirectory
-
-
-class _Directory(RuntimeDirectory):
-    pass
-
-
-class _ProtocolDirectory(RuntimeDirectory):
-    _ANNOUNCE_PROTOCOL = 3
 
 
 def _announce(**extra: Any) -> dict[str, Any]:
@@ -34,13 +26,8 @@ def _announce(**extra: Any) -> dict[str, Any]:
     }
 
 
-@pytest.mark.parametrize("extra", [{}, {"protocol": 3}, {"protocol": 2}])
-def test_the_legacy_announce_filter_ignores_protocol(extra: dict[str, Any]) -> None:
-    assert _Directory()._announce_shape_ok(_announce(**extra), "peer")
-
-
-def test_a_host_with_an_announce_protocol_drops_other_protocols() -> None:
-    directory = _ProtocolDirectory()
+def test_the_directory_drops_announces_of_other_protocols() -> None:
+    directory = RuntimeDirectory()
 
     assert directory._announce_shape_ok(_announce(protocol=3), "peer")
     assert not directory._announce_shape_ok(_announce(), "peer")

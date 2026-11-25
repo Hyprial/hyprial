@@ -1,6 +1,6 @@
 # Decisions:
 # - Phase D T1: the device-row and protected-directory tests run on the state
-#   host (``StateOrgFs``) only.  An org directory space ``group-acme`` with the
+#   host (``LocalOrgFs``) only.  An org directory space ``group-acme`` with the
 #   shared roots is created by the owner, the members are invited, and every
 #   member gets a node cloned from the owner's durable state (the D1
 #   coordinator support's ``clone_node``), joined by its in-process ``Cluster``.

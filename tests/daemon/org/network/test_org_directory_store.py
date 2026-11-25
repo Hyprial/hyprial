@@ -1,10 +1,12 @@
 # Decisions:
-# - Phase D T1: three tests run on ``StateOrgFsRuntime`` (``state_runtime``)
+# - Phase D T1: three tests run on ``OrgFsRuntime`` (``state_runtime``)
 #   whatever the rehearsal switch says.  Document authors are read through
 #   ``facade.document_authors`` instead of a journal store; a member's write
 #   of another user's ``people`` row is ``protected-path`` (design §3.4); the
 #   record whose owner disagrees with its path is written by the path's own
 #   user through the facade instead of being planted in a projection.
+# - Package S (2026-11-25): ``test_directory_scan_does_not_replay_commit_history``
+#   read the journal store's commit history and was deleted with it.
 """OrgFsDirectoryStore against a real local OrgFS runtime (no transport)."""
 
 from __future__ import annotations
@@ -14,7 +16,6 @@ from dataclasses import replace
 import base64
 import hashlib
 import json
-import sqlite3
 from pathlib import Path
 from threading import Event, Thread
 import time
@@ -22,9 +23,7 @@ import time
 import pytest
 
 from hyprial.daemon.impl.orgfs.api import OrgFsError
-from hyprial.daemon.impl.orgfs.composition.state import StateOrgFsRuntime
-from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
-from hyprial.daemon.impl.orgfs.storage.store import LocalSpaceStore
+from hyprial.daemon.impl.orgfs.composition.state import OrgFsRuntime
 from hyprial.daemon.impl.org.network.directory import (
     InvalidDeviceQuarantine,
     OrgFsDirectoryStore,
@@ -77,8 +76,8 @@ def _as(runtime: OrgFsRuntime, owner: str):
 
 
 @pytest.fixture
-def state_runtime(tmp_path: Path) -> StateOrgFsRuntime:
-    runtime = StateOrgFsRuntime(
+def state_runtime(tmp_path: Path) -> OrgFsRuntime:
+    runtime = OrgFsRuntime(
         tmp_path / "state", node_id="node-a", author="user:owner@example"
     )
     yield runtime
@@ -126,7 +125,7 @@ def test_orgs_lists_only_org_spaces(runtime: OrgFsRuntime) -> None:
 
 
 def test_raw_orgfs_write_of_a_people_row_has_no_publication_time_gate(
-    state_runtime: StateOrgFsRuntime,
+    state_runtime: OrgFsRuntime,
 ) -> None:
     """R3: nothing publishes or reads a binding row any more; ``people`` stays a
     protected section, so its author rule still holds, but a row is admitted
@@ -157,7 +156,7 @@ def test_list_devices_on_a_fresh_org_is_empty(runtime: OrgFsRuntime) -> None:
 
 
 def test_reader_skips_prefixed_row_when_path_record_and_authors_disagree(
-    state_runtime: StateOrgFsRuntime,
+    state_runtime: OrgFsRuntime,
 ) -> None:
     """A record naming another owner is warning-only and never reaches consumers."""
 
@@ -558,7 +557,7 @@ def test_reader_ignores_a_non_deterministic_doc_link_with_warning(
 
 
 def test_put_device_reuses_the_deterministic_document_id(
-    state_runtime: StateOrgFsRuntime,
+    state_runtime: OrgFsRuntime,
 ) -> None:
     """Round 3 removes M2 replacement: authorization prevents pollution."""
 
@@ -720,47 +719,3 @@ def test_invites_member_grants_and_device_rows_with_real_names(tmp_path: Path) -
         reopened.close()
 
 
-def test_directory_scan_does_not_replay_commit_history(
-    runtime: OrgFsRuntime, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    space = runtime.facade.create_space("group-acme")
-    journal = Path(runtime.state_dir) / "orgfs" / "spaces" / space.space_id / "journal.sqlite3"
-    db = sqlite3.connect(journal)
-    try:
-        db.executemany(
-            "INSERT INTO commits(writer, seq, doc_id, envelope_bytes, version, "
-            "committed_at, broadcast_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (
-                (
-                    "node-a",
-                    index,
-                    "tree-bulk-history",
-                    b"{}",
-                    b"",
-                    "2026-10-29T00:00:00+00:00",
-                    "2026-10-29T00:00:00+00:00",
-                )
-                for index in range(300_000)
-            ),
-        )
-        db.commit()
-    finally:
-        db.close()
-
-    calls = 0
-    real_decode = LocalSpaceStore._decode_envelope
-
-    def counting_decode(self, raw):
-        nonlocal calls
-        calls += 1
-        return real_decode(self, raw)
-
-    monkeypatch.setattr(LocalSpaceStore, "_decode_envelope", counting_decode)
-    start = time.perf_counter()
-    devices, pending = OrgFsDirectoryStore(runtime.facade).scan_devices("group-acme")
-    elapsed = time.perf_counter() - start
-
-    assert devices == []
-    assert pending == {"contentPending": [], "parkedCommits": []}
-    assert calls == 0, "directory scan replayed committed history"
-    assert elapsed < 1.0, f"directory scan took {elapsed:.2f}s with 300k commits"

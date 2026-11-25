@@ -3,7 +3,7 @@
 #   inside the `document/operations/spaces` module. Rebinding uuid4 on the
 #   shared uuid module would give every actor on the single orgfs host the same
 #   handle id, and the engine could then no longer resolve any of them.
-# - Phase D T1: rewritten onto two file-backed ``StateOrgFsRuntime`` nodes on
+# - Phase D T1: rewritten onto two file-backed ``OrgFsRuntime`` nodes on
 #   the contract suite's in-process network (``runtime_state/support.Peers``,
 #   trust on as in the old pair of stores).  The member joins and pulls the
 #   owner's tree; every protected row of the agent inventory, re-signed by the

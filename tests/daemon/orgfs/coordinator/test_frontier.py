@@ -3,7 +3,7 @@
 #   document converge once every node has pulled, and the repair writes stop
 #   after convergence.  Broadcasts are dropped on purpose: convergence must
 #   come from pulls alone, the case that diverged under the first rule.
-"""Frontier repair: convergence and termination across StateOrgFs nodes."""
+"""Frontier repair: convergence and termination across LocalOrgFs nodes."""
 
 from __future__ import annotations
 

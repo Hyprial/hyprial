@@ -9,8 +9,9 @@
 #   restart into the production configuration).
 # - Node gate ruling (F1): the state runtime gets a fake ``device_owner_hint``
 #   standing in for the tailnet roster both nodes hold once the invite is
-#   redeemed (owner and member devices, nothing else); the legacy runtime has
-#   no such source and is unchanged.
+#   redeemed (owner and member devices, nothing else).
+# - Package S (2026-11-25): the journal runtime is deleted, so only the
+#   ``state`` implementation is probed.
 # - Every step records an outcome instead of asserting, so one run yields the
 #   whole row; the test pins the rows.
 """Two-node production-config probe shared by the F1 gate tests."""
@@ -22,7 +23,6 @@ import time
 from typing import Any
 
 from hyprial.daemon.impl.org.network.directory import OrgFsDirectoryStore
-from hyprial.daemon.impl.orgfs.composition.state import StateOrgFsRuntime
 from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
 from hyprial.identity import DirectoryDevice
 
@@ -36,11 +36,11 @@ MEMBER_NODE = "node-member"
 ROSTER = {OWNER_NODE: OWNER, MEMBER_NODE: MEMBER}
 
 
-def _state_runtime(state_dir: Any, **kwargs: Any) -> StateOrgFsRuntime:
-    return StateOrgFsRuntime(state_dir, device_owner_hint=ROSTER.get, **kwargs)
+def _state_runtime(state_dir: Any, **kwargs: Any) -> OrgFsRuntime:
+    return OrgFsRuntime(state_dir, device_owner_hint=ROSTER.get, **kwargs)
 
 
-IMPLS = {"legacy": OrgFsRuntime, "state": _state_runtime}
+IMPLS = {"state": _state_runtime}
 KINDS = ("plain", "directory", "acl")
 SPACE_NAMES = {"plain": "notes", "directory": ORG, "acl": f"{ORG}-acl"}
 
@@ -87,7 +87,7 @@ def gate(peer: Peer, space_id: str, node: str) -> str:
     mesh = runtime._mesh(space_id)  # noqa: SLF001 - the space's sync object
     if mesh is None:
         return "no-sync"
-    if isinstance(runtime, StateOrgFsRuntime):
+    if isinstance(runtime, OrgFsRuntime):
         return "pass" if mesh.host.supplier_allowed(node) else "refuse"
     return "pass" if mesh._supplier_member_allowed(node) else "refuse"  # noqa: SLF001
 

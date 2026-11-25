@@ -1,13 +1,6 @@
 from __future__ import annotations
 
 
-
-
-
-
-
-
-
 import inspect
 
 
@@ -32,23 +25,14 @@ from hyprial.kernel import (
 from hyprial.kernel import EffectCompleted, EffectRequest
 
 
-
-
 from hyprial.daemon.impl.orgfs.api  import (
     OrgFsError)
 
 
+from hyprial.daemon.impl.orgfs.storage.vocabulary import StoreError
 
 
-from hyprial.daemon.impl.orgfs.storage.space_authority  import (
-    _JsonProjection)
-
-
-
-from hyprial.daemon.impl.orgfs.storage.store  import StoreError
-
-
-from hyprial.daemon.impl.orgfs.document.model import _AcknowledgePurge, _ApplyContentUpdate, _ApplyEnvelope, _ApplyTreeUpdate, _CreateSpace, _HydrateContentSnapshot, _InstallReplacement, _InviteMember, _LoadSpace, _Mkdir, _Move, _Purge, _PurgePlanCommand, _RemoveMember, _RemoveNode, _Restore, _SPACE_STATE_CAPACITY, _SpaceStateCommand, _SpaceStateFailure, _SpaceStateOperation, _SpaceStateOutcome, _SpaceStateOwner, _SpaceStateWaiter, _Unban, _WriteBytes, _WriteText
+from hyprial.daemon.impl.orgfs.document.model import _CreateSpace, _InviteMember, _LoadSpace, _Mkdir, _Move, _RemoveMember, _RemoveNode, _Restore, _SPACE_STATE_CAPACITY, _SpaceStateCommand, _SpaceStateFailure, _SpaceStateOperation, _SpaceStateOutcome, _SpaceStateOwner, _SpaceStateWaiter, _WriteBytes, _WriteText
 
 class FacadeSpaceState:
     """Responsibility methods on the sole LocalOrgFs state host.
@@ -71,15 +55,6 @@ class FacadeSpaceState:
             return _InviteMember(values["space_id"], values["user"], values["mode"])
         if name == "remove_member":
             return _RemoveMember(values["space_id"], values["user"])
-        if name == "apply_envelope":
-            return _ApplyEnvelope(values["space_id"], bytes(values["envelope"]))
-        if name == "install_replacement_snapshot":
-            return _InstallReplacement(
-                values["space_id"], values["old_doc_id"], values["new_doc_id"],
-                bytes(values["snapshot_bytes"]),
-            )
-        if name == "acknowledge_purge":
-            return _AcknowledgePurge(values["space_id"], values["plan_id"])
         if name == "write_text":
             return _WriteText(
                 values["space_id"], values["node"], values["content"],
@@ -102,27 +77,6 @@ class FacadeSpaceState:
                 values["space_id"], values["node"], values["version"],
                 bool(values["recursive"]),
             )
-        if name == "purge_plan":
-            targets = tuple(
-                tuple(sorted(self._freeze_space_value(dict(item))))
-                for item in values["targets"]
-            )
-            return _PurgePlanCommand(values["space_id"], targets)
-        if name == "purge":
-            return _Purge(values["space_id"], values["plan_id"])
-        if name == "unban":
-            return _Unban(values["space_id"], values["sha"])
-        if name == "apply_tree_update":
-            return _ApplyTreeUpdate(values["space_id"], bytes(values["update"]))
-        if name == "apply_content_update":
-            return _ApplyContentUpdate(
-                values["space_id"], values["node"], bytes(values["update"])
-            )
-        if name == "hydrate_content_snapshot":
-            return _HydrateContentSnapshot(
-                values["space_id"], values["node"], values["expected_doc_id"],
-                bytes(values["snapshot"])
-            )
         raise ValueError(f"no frozen OrgSpace command for {name}")
 
 
@@ -140,22 +94,6 @@ class FacadeSpaceState:
         if value is None or isinstance(value, (str, bytes, int, float, bool, Path)):
             return value
         return str(value)
-
-
-    @staticmethod
-    def _thaw_space_value(value: object) -> object:
-        if isinstance(value, _JsonProjection):
-            return value.decode()
-        if isinstance(value, tuple) and all(
-            isinstance(item, tuple)
-            and len(item) == 2
-            and isinstance(item[0], str)
-            for item in value
-        ):
-            return {key: FacadeSpaceState._thaw_space_value(item) for key, item in value}
-        if isinstance(value, tuple):
-            return [FacadeSpaceState._thaw_space_value(item) for item in value]
-        return value
 
 
     def _ensure_space_state_owner(self, space_id: str) -> _SpaceStateOwner:
@@ -229,14 +167,6 @@ class FacadeSpaceState:
             return type(self).invite.__wrapped__(self, operation.space_id, operation.user, operation.mode)
         if isinstance(operation, _RemoveMember):
             return type(self).remove_member.__wrapped__(self, operation.space_id, operation.user)
-        if isinstance(operation, _ApplyEnvelope):
-            return type(self).apply_envelope.__wrapped__(self, operation.space_id, operation.envelope)
-        if isinstance(operation, _InstallReplacement):
-            return type(self).install_replacement_snapshot.__wrapped__(
-                self, operation.space_id, operation.old_doc_id, operation.new_doc_id, operation.snapshot
-            )
-        if isinstance(operation, _AcknowledgePurge):
-            return type(self).acknowledge_purge.__wrapped__(self, operation.space_id, operation.plan_id)
         if isinstance(operation, _WriteText):
             return type(self).write_text.__wrapped__(
                 self, operation.space_id, operation.node, operation.content,
@@ -260,24 +190,6 @@ class FacadeSpaceState:
             return type(self).restore.__wrapped__(
                 self, operation.space_id, operation.node, operation.version,
                 recursive=operation.recursive,
-            )
-        if isinstance(operation, _PurgePlanCommand):
-            targets = tuple(self._thaw_space_value(target) for target in operation.targets)
-            return type(self).purge_plan.__wrapped__(self, operation.space_id, targets)
-        if isinstance(operation, _Purge):
-            return type(self).purge.__wrapped__(self, operation.space_id, operation.plan_id)
-        if isinstance(operation, _Unban):
-            return type(self).unban.__wrapped__(self, operation.space_id, operation.sha)
-        if isinstance(operation, _ApplyTreeUpdate):
-            return type(self).apply_tree_update.__wrapped__(self, operation.space_id, operation.update)
-        if isinstance(operation, _ApplyContentUpdate):
-            return type(self).apply_content_update.__wrapped__(
-                self, operation.space_id, operation.node, operation.update
-            )
-        if isinstance(operation, _HydrateContentSnapshot):
-            return type(self).hydrate_content_snapshot.__wrapped__(
-                self, operation.space_id, operation.node, operation.snapshot,
-                expected_doc_id=operation.expected_doc_id,
             )
         raise TypeError(f"unsupported OrgSpace operation: {type(operation).__name__}")
 

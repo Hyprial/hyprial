@@ -27,7 +27,7 @@ import time
 
 import pytest
 
-from hyprial.daemon.impl.orgfs.composition.state import StateOrgFsRuntime
+from hyprial.daemon.impl.orgfs.composition.state import OrgFsRuntime
 from hyprial.daemon.impl.orgfs.composition.state.sync import VERIFY_BATCH
 
 from ...runtime_state.support import Peers
@@ -49,7 +49,7 @@ def _unverified(peer, space_id: str) -> int:
 def _settle(state_dir: Path, space_id: str) -> int:
     """Verify once so the synthetic rows' lagging frontiers are repaired on disk."""
 
-    runtime = StateOrgFsRuntime(state_dir, node_id="node-a", author=AUTHOR)
+    runtime = OrgFsRuntime(state_dir, node_id="node-a", author=AUTHOR)
     try:
         registry = runtime.facade._registry(space_id)  # noqa: SLF001
         before = registry.generation

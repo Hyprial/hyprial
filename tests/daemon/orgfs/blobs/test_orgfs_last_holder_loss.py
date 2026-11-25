@@ -1,5 +1,5 @@
 # Decisions:
-# - Phase D, package T2: rewritten onto ``StateOrgFsRuntime``.  Restore of an
+# - Phase D, package T2: rewritten onto ``OrgFsRuntime``.  Restore of an
 #   old version is gone (design §6: restore brings back the last state) and
 #   ``status.durable_holders_seen`` is deleted (design §1.1), so the honest
 #   report is re-stated for the current file: when the only holder loses the
@@ -16,7 +16,7 @@ import hashlib
 import pytest
 
 from hyprial.daemon.impl.orgfs.api import OrgFsError
-from hyprial.daemon.impl.orgfs.composition.state import StateOrgFsRuntime
+from hyprial.daemon.impl.orgfs.composition.state import OrgFsRuntime
 
 
 @pytest.fixture(autouse=True)
@@ -27,7 +27,7 @@ def isolated_orgfs_environment(monkeypatch: pytest.MonkeyPatch, tmp_path) -> Non
 
 
 def test_last_holder_loss_reported_honestly(tmp_path) -> None:
-    runtime = StateOrgFsRuntime(tmp_path / "runtime", node_id="node-a", author="user:owner")
+    runtime = OrgFsRuntime(tmp_path / "runtime", node_id="node-a", author="user:owner")
     try:
         space = runtime.facade.create_space("team")
         payload = b"only holder"

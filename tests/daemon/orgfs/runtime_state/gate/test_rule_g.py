@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import Any
 
 from hyprial.daemon.impl.org.network.directory import OrgFsDirectoryStore
-from hyprial.daemon.impl.orgfs.composition.state import StateOrgFsRuntime
+from hyprial.daemon.impl.orgfs.composition.state import OrgFsRuntime
 
 from ..support import Peer, Peers
 from .probe import OWNER, device
@@ -23,8 +23,8 @@ MEMBER = "user:member@example"
 HINT: dict[str, str] = {}
 
 
-def _runtime(state_dir: Any, **kwargs: Any) -> StateOrgFsRuntime:
-    return StateOrgFsRuntime(state_dir, device_owner_hint=HINT.get, **kwargs)
+def _runtime(state_dir: Any, **kwargs: Any) -> OrgFsRuntime:
+    return OrgFsRuntime(state_dir, device_owner_hint=HINT.get, **kwargs)
 
 
 def _owner(peers: Peers, hint: dict[str, str] | None = None) -> Peer:

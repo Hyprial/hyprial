@@ -1,5 +1,5 @@
 # Decisions:
-# - Phase D, package T2: the large-update tests run on ``StateOrgFsRuntime``.
+# - Phase D, package T2: the large-update tests run on ``OrgFsRuntime``.
 #   Protocol 3 sends an update larger than the frame bound as a vector-only
 #   broadcast; the peer pulls, and the supplier's reply carries the update as
 #   a temporary blob (reason ``sync``) that the requester fetches and verifies
@@ -34,8 +34,7 @@ import time
 import pytest
 
 from hyprial.daemon.impl.orgfs.api import OrgFsError
-from hyprial.daemon.impl.orgfs.composition.state import StateOrgFsRuntime
-from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
+from hyprial.daemon.impl.orgfs.composition.state import OrgFsRuntime
 from hyprial.daemon.impl.transport import KeySpace, ZenohConfig, ZenohTransport
 from tests.daemon.orgfs.mesh.replication.state_support import (
     StatePeers,
@@ -73,8 +72,8 @@ def test_review_fix_6_fetches_missing_update_blob_and_retries_once(tmp_path) -> 
     endpoint = f"tcp/127.0.0.1:{_port()}"
     owner_transport = ZenohTransport(ZenohConfig(listen=(endpoint,)))
     reader_transport = ZenohTransport(ZenohConfig(connect=(endpoint,)))
-    owner = StateOrgFsRuntime(tmp_path / "owner", node_id="node-a", author="user:owner", trust_tailnet_members=True)
-    reader = StateOrgFsRuntime(tmp_path / "reader", node_id="node-b", author="user:reader", trust_tailnet_members=True)
+    owner = OrgFsRuntime(tmp_path / "owner", node_id="node-a", author="user:owner", trust_tailnet_members=True)
+    reader = OrgFsRuntime(tmp_path / "reader", node_id="node-b", author="user:reader", trust_tailnet_members=True)
     try:
         time.sleep(0.3)
 

@@ -1,6 +1,6 @@
 # Decisions:
 # - Phase D, package T2: every test above the strict xfail runs on
-#   ``StateOrgFsRuntime`` over loopback Zenoh.  The announce buffering and
+#   ``OrgFsRuntime`` over loopback Zenoh.  The announce buffering and
 #   liveliness promotion they pin live in ``RuntimeDirectory``, which the state
 #   runtime composes unchanged, so the two "pending" (triage) tests F5 and F7
 #   are kept: they bound what an unauthenticated announce flood can make a
@@ -21,7 +21,6 @@ import time
 import pytest
 from hyprial.daemon.impl.orgfs.api import OrgFsError
 from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
-from hyprial.daemon.impl.orgfs.composition.state import StateOrgFsRuntime
 from hyprial.daemon.impl.configuration.identity import classify_target_identity
 from hyprial.daemon.impl.transport import KeySpace, LivelinessDirectory, ZenohConfig, ZenohTransport
 from hyprial.kernel.impl.primitives.uri import TARGET_KIND_HOST
@@ -43,8 +42,8 @@ def test_round4_f5_buffers_announce_until_announcer_liveliness(tmp_path) -> None
     owner_transport = ZenohTransport(ZenohConfig(listen=(endpoint,)))
     reader_transport = ZenohTransport(ZenohConfig(connect=(endpoint,)))
     # Private-path policy (§7) leaves the tested presence gate active.
-    owner = StateOrgFsRuntime(tmp_path / "owner", node_id="node-a", author="user:owner", trust_tailnet_members=True)
-    reader = StateOrgFsRuntime(tmp_path / "reader", node_id="node-b", author="user:reader", trust_tailnet_members=True)
+    owner = OrgFsRuntime(tmp_path / "owner", node_id="node-a", author="user:owner", trust_tailnet_members=True)
+    reader = OrgFsRuntime(tmp_path / "reader", node_id="node-b", author="user:reader", trust_tailnet_members=True)
     owner_token = None
     try:
         time.sleep(0.3)
@@ -111,7 +110,7 @@ def test_final_f7_pending_announces_are_bounded_counted_and_still_apply(
     publisher = ZenohTransport(ZenohConfig(listen=(endpoint,)))
     reader_transport = ZenohTransport(ZenohConfig(connect=(endpoint,)))
     events: list[tuple[str, str, dict[str, object]]] = []
-    reader = StateOrgFsRuntime(
+    reader = OrgFsRuntime(
         tmp_path / "reader",
         node_id="node-reader",
         author="user:reader",
@@ -241,8 +240,8 @@ def test_round4_f6_liveliness_auto_sync_recovers_dropped_startup_broadcast(
     owner_transport = ZenohTransport(ZenohConfig(listen=(endpoint,)))
     reader_transport = ZenohTransport(ZenohConfig(connect=(endpoint,)))
     # Restart presence recovery after private sidecar admission (§7).
-    owner = StateOrgFsRuntime(tmp_path / "owner", node_id="node-a", author="user:owner", trust_tailnet_members=True)
-    reader = StateOrgFsRuntime(tmp_path / "reader", node_id="node-b", author="user:reader", trust_tailnet_members=True)
+    owner = OrgFsRuntime(tmp_path / "owner", node_id="node-a", author="user:owner", trust_tailnet_members=True)
+    reader = OrgFsRuntime(tmp_path / "reader", node_id="node-b", author="user:reader", trust_tailnet_members=True)
     restarted_transport = None
     restarted = None
     owner_token = None
@@ -270,7 +269,7 @@ def test_round4_f6_liveliness_auto_sync_recovers_dropped_startup_broadcast(
         reader_transport.close()
         restarted_transport = ZenohTransport(ZenohConfig(connect=(endpoint,)))
         time.sleep(0.3)
-        restarted = StateOrgFsRuntime(
+        restarted = OrgFsRuntime(
             tmp_path / "reader", node_id="node-b", author="user:reader",
             trust_tailnet_members=True,  # Same private-path fixture after restart (§7).
         )
@@ -328,8 +327,8 @@ def test_round3_r4a_announces_all_held_spaces_without_evicting_omissions(
     owner_transport = ZenohTransport(ZenohConfig(listen=(endpoint,)))
     reader_transport = ZenohTransport(ZenohConfig(connect=(endpoint,)))
     # Holder discovery after private sidecar admission (§7), not enrollment.
-    owner = StateOrgFsRuntime(tmp_path / "owner", node_id="node-a", author="user:owner", trust_tailnet_members=True)
-    reader = StateOrgFsRuntime(tmp_path / "reader", node_id="node-b", author="user:reader", trust_tailnet_members=True)
+    owner = OrgFsRuntime(tmp_path / "owner", node_id="node-a", author="user:owner", trust_tailnet_members=True)
+    reader = OrgFsRuntime(tmp_path / "reader", node_id="node-b", author="user:reader", trust_tailnet_members=True)
     owner_presence = reader_presence = None
     owner_token = reader_token = announce_registration = None
     announcements: list[dict[str, object]] = []
@@ -424,8 +423,8 @@ def test_round3_r4b_restart_accepts_live_peer_without_join_or_sync(tmp_path) -> 
     owner_transport = ZenohTransport(ZenohConfig(listen=(endpoint,)))
     reader_transport = ZenohTransport(ZenohConfig(connect=(endpoint,)))
     # Restart holder discovery on the private sidecar-admitted path (§7).
-    owner = StateOrgFsRuntime(tmp_path / "owner", node_id="node-a", author="user:owner", trust_tailnet_members=True)
-    reader = StateOrgFsRuntime(tmp_path / "reader", node_id="node-b", author="user:reader", trust_tailnet_members=True)
+    owner = OrgFsRuntime(tmp_path / "owner", node_id="node-a", author="user:owner", trust_tailnet_members=True)
+    reader = OrgFsRuntime(tmp_path / "reader", node_id="node-b", author="user:reader", trust_tailnet_members=True)
     owner_presence = reader_presence = None
     owner_token = reader_token = None
     restarted_transport = None
@@ -465,7 +464,7 @@ def test_round3_r4b_restart_accepts_live_peer_without_join_or_sync(tmp_path) -> 
             KeySpace().orgfs_announce("node-a"),
             lambda sample: announcements.append(json.loads(sample.payload)),
         )
-        restarted = StateOrgFsRuntime(
+        restarted = OrgFsRuntime(
             tmp_path / "reader", node_id="node-b", author="user:reader",
             trust_tailnet_members=True,  # Same private-path fixture after restart (§7).
         )

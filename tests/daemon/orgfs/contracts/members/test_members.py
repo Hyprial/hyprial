@@ -165,11 +165,6 @@ def test_owner_membership_changes_reach_a_connected_member(orgfs_impl, tmp_path)
     eventually(lambda: _assert_mode(member.facade, space.space_id, "user:carol", "ro"))
 
 
-@pytest.mark.legacy_xfail(
-    reason="design §2.5 step 3 / §4.4: every local commit is published after it is "
-    "durable; legacy update_space_meta is not broadcast and reaches peers only with a "
-    "later tree or content write"
-)
 def test_owner_meta_update_reaches_a_connected_member(orgfs_impl, tmp_path) -> None:
     owner, member, _connection, space = _joined(orgfs_impl, tmp_path, "rw")
 

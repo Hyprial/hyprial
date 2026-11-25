@@ -24,6 +24,7 @@ from ...address_errors import AGENT_ADDRESS_RETIRED_ERROR
 from .wire import (
     MEMBER,
     NODE,
+    LAYOUT_UNSUPPORTED_ERRORS,
     ORG_CONTEXT_ERRORS,
     PATH_ERRORS,
     PURGE_ERRORS,
@@ -280,36 +281,38 @@ def _write_spec(
     )
 
 
+_SPACE_WRITE_ERRORS = WRITE_ERRORS + LAYOUT_UNSUPPORTED_ERRORS
+
 ORGFS_CREATE_SPEC = _write_spec("orgfs.create", _CREATE_PARAMS, SPACE)
-ORGFS_WRITE_SPEC = _write_spec("orgfs.write", _WRITE_PARAMS, NODE)
+ORGFS_WRITE_SPEC = _write_spec("orgfs.write", _WRITE_PARAMS, NODE, errors=_SPACE_WRITE_ERRORS)
 ORGFS_EXPORT_SPEC = _write_spec(
     "orgfs.export",
     _EXPORT_PARAMS,
     NODE,
     # The path policy authenticates ``from`` (address admission).
-    errors=PATH_ERRORS + ORG_CONTEXT_ERRORS + (AGENT_ADDRESS_RETIRED_ERROR,),
+    errors=PATH_ERRORS + ORG_CONTEXT_ERRORS + LAYOUT_UNSUPPORTED_ERRORS + (AGENT_ADDRESS_RETIRED_ERROR,),
     identity=IdentityBinding("local-owner-selector", "from"),
 )
 ORGFS_IMPORT_SPEC = _write_spec(
     "orgfs.import",
     _IMPORT_PARAMS,
     NODE,
-    errors=PATH_ERRORS + SESSION_ERRORS + (AGENT_ADDRESS_RETIRED_ERROR,),
+    errors=PATH_ERRORS + SESSION_ERRORS + LAYOUT_UNSUPPORTED_ERRORS + (AGENT_ADDRESS_RETIRED_ERROR,),
     identity=IdentityBinding("local-owner-selector", "from"),
 )
-ORGFS_MKDIR_SPEC = _write_spec("orgfs.mkdir", _MKDIR_PARAMS, NODE)
-ORGFS_MOVE_SPEC = _write_spec("orgfs.move", _MOVE_PARAMS, NODE)
-ORGFS_REMOVE_SPEC = _write_spec("orgfs.remove", _REMOVE_PARAMS, _OK)
-ORGFS_RESTORE_SPEC = _write_spec("orgfs.restore", _RESTORE_PARAMS, NODE)
+ORGFS_MKDIR_SPEC = _write_spec("orgfs.mkdir", _MKDIR_PARAMS, NODE, errors=_SPACE_WRITE_ERRORS)
+ORGFS_MOVE_SPEC = _write_spec("orgfs.move", _MOVE_PARAMS, NODE, errors=_SPACE_WRITE_ERRORS)
+ORGFS_REMOVE_SPEC = _write_spec("orgfs.remove", _REMOVE_PARAMS, _OK, errors=_SPACE_WRITE_ERRORS)
+ORGFS_RESTORE_SPEC = _write_spec("orgfs.restore", _RESTORE_PARAMS, NODE, errors=_SPACE_WRITE_ERRORS)
 ORGFS_SPACE_PURGE_SPEC = _write_spec(
     "orgfs.space_purge", _SPACE_PARAMS, _SPACE_PURGE_RESULT, errors=PURGE_ERRORS
 )
 ORGFS_CHECKOUT_SPEC = _write_spec(
     "orgfs.checkout", _CHECKOUT_PARAMS, _CHECKOUT_RESULT
 )
-ORGFS_INVITE_SPEC = _write_spec("orgfs.invite", _INVITE_PARAMS, MEMBER)
+ORGFS_INVITE_SPEC = _write_spec("orgfs.invite", _INVITE_PARAMS, MEMBER, errors=_SPACE_WRITE_ERRORS)
 ORGFS_REMOVE_MEMBER_SPEC = _write_spec(
-    "orgfs.remove_member", _REMOVE_MEMBER_PARAMS, _OK
+    "orgfs.remove_member", _REMOVE_MEMBER_PARAMS, _OK, errors=_SPACE_WRITE_ERRORS
 )
 ORGFS_JOIN_SPEC = _write_spec("orgfs.join", _JOIN_PARAMS, SPACE)
 

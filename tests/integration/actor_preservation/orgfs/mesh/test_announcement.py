@@ -2,11 +2,11 @@
 # - Phase D, package T2.  This file was the production-entry (``bind_admitted``)
 #   twin of ``tests/daemon/orgfs/mesh/replication/presence/test_presence.py``.
 #   The twins of F5, F7 (triage "pending", kept) and F6 are deleted here: the
-#   daemon-side copies now run on ``StateOrgFsRuntime`` over the same loopback
+#   daemon-side copies now run on ``OrgFsRuntime`` over the same loopback
 #   Zenoh, and ``bind_admitted`` only adds the admitted-peer binding, which
 #   the directory tests already go through.
 # - ``test_d2_restart_retries_failed_catchup_then_accepts_live_delivery`` has
-#   no twin and is rewritten onto ``StateOrgFsRuntime``: the forced first
+#   no twin and is rewritten onto ``OrgFsRuntime``: the forced first
 #   failure is the sync package's ``SyncError`` and the journal client-id
 #   registration check is removed.  Protocol 3 may pull once more after the
 #   retry (an online edge and the retried round both schedule one), so the
@@ -18,7 +18,7 @@ from __future__ import annotations
 import threading
 import time
 import pytest
-from hyprial.daemon.impl.orgfs.composition.state import StateOrgFsRuntime
+from hyprial.daemon.impl.orgfs.composition.state import OrgFsRuntime
 from hyprial.daemon.impl.orgfs.sync import SyncError
 from hyprial.daemon.impl.transport import (
     KeySpace,
@@ -44,8 +44,8 @@ def test_d2_restart_retries_failed_catchup_then_accepts_live_delivery(
     endpoint = f"tcp/127.0.0.1:{_port()}"
     owner_transport = ZenohTransport(ZenohConfig(listen=(endpoint,)))
     reader_transport = ZenohTransport(ZenohConfig(connect=(endpoint,)))
-    owner = StateOrgFsRuntime(tmp_path / "owner", node_id="node-a", author="user:owner")
-    reader = StateOrgFsRuntime(tmp_path / "reader", node_id="node-b", author="user:reader")
+    owner = OrgFsRuntime(tmp_path / "owner", node_id="node-a", author="user:owner")
+    reader = OrgFsRuntime(tmp_path / "reader", node_id="node-b", author="user:reader")
     owner_presence = reader_presence = None
     owner_token = reader_token = None
     restarted_transport = None
@@ -85,7 +85,7 @@ def test_d2_restart_retries_failed_catchup_then_accepts_live_delivery(
 
         restarted_transport = ZenohTransport(ZenohConfig(connect=(endpoint,)))
         time.sleep(0.3)
-        restarted = StateOrgFsRuntime(
+        restarted = OrgFsRuntime(
             tmp_path / "reader", node_id="node-b", author="user:reader"
         )
         restarted_presence, restarted_token = _bind_with_daemon_presence(

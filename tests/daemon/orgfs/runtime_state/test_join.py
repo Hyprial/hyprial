@@ -8,7 +8,7 @@
 #   ``reason: supplier-not-online`` (the retryable shape of
 #   ``OrgNetworkService._join_with_retry``).  Unlike legacy, none leaves a
 #   directory on disk, and a later join of the same space succeeds.
-"""Join of ``StateOrgFsRuntime``: success and the three failures."""
+"""Join of ``OrgFsRuntime``: success and the three failures."""
 
 from __future__ import annotations
 

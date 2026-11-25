@@ -38,7 +38,7 @@ from hyprial.daemon.impl.orgfs.document.model import _Space, _SpaceStateCommand,
 from hyprial.daemon.impl.orgfs.membership import Pending
 
 if TYPE_CHECKING:
-    from hyprial.daemon.impl.orgfs.document.coordinator import StateOrgFs
+    from hyprial.daemon.impl.orgfs.document.coordinator import LocalOrgFs
 
 EMPTY_VECTOR = b"\x00"
 
@@ -165,7 +165,7 @@ class StateDispatch:
 class AdmissionViewOf:
     """``AdmissionView`` over the current state of one space (design §3.6)."""
 
-    def __init__(self, facade: "StateOrgFs", space: _Space) -> None:
+    def __init__(self, facade: "LocalOrgFs", space: _Space) -> None:
         self._facade = facade
         self._space = space
         self.space_id = space.info.space_id
@@ -207,10 +207,10 @@ class AdmissionViewOf:
 
 
 class SpaceSyncHost:
-    """The ``SyncHost`` of one space of a ``StateOrgFs`` (design §4.7)."""
+    """The ``SyncHost`` of one space of a ``LocalOrgFs`` (design §4.7)."""
 
     def __init__(
-        self, facade: "StateOrgFs", space_id: str, node_gate: Callable[[str], bool]
+        self, facade: "LocalOrgFs", space_id: str, node_gate: Callable[[str], bool]
     ) -> None:
         self._facade = facade
         self.space_id = space_id

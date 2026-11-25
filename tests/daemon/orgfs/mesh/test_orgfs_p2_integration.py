@@ -1,6 +1,6 @@
 # Decisions:
 # - Phase D, package T2: the four tests that failed on the state runtime are
-#   rewritten onto ``StateOrgFsRuntime``:
+#   rewritten onto ``OrgFsRuntime``:
 #   * attribution over Zenoh is read where a user sees it (``stat``'s
 #     ``modified_by`` and the ``modified`` events of ``changes_since``), not
 #     from journal envelope origins;
@@ -28,8 +28,7 @@ import time
 import pytest
 
 from hyprial.daemon.impl.orgfs.api import OrgFsError
-from hyprial.daemon.impl.orgfs.composition.state import StateOrgFsRuntime
-from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
+from hyprial.daemon.impl.orgfs.composition.state import OrgFsRuntime
 from hyprial.daemon.impl.transport import KeySpace, TransportSample, ZenohConfig, ZenohTransport
 from tests.daemon.orgfs.mesh.replication.state_support import (
     StatePeers,
@@ -75,7 +74,7 @@ def state_peers(tmp_path, monkeypatch: pytest.MonkeyPatch) -> Iterator[StatePeer
     yield from open_state_peers(tmp_path, monkeypatch)
 
 
-def _modified(runtime: StateOrgFsRuntime, space_id: str, node_id: str) -> set[tuple[str | None, str | None]]:
+def _modified(runtime: OrgFsRuntime, space_id: str, node_id: str) -> set[tuple[str | None, str | None]]:
     return {
         (event.node.modified_by, event.node.modified_via)
         for event in runtime.facade.changes_since(space_id)
@@ -87,8 +86,8 @@ def test_text_writes_replicate_with_attribution_over_zenoh(tmp_path) -> None:
     endpoint = f"tcp/127.0.0.1:{_port()}"
     owner_transport = ZenohTransport(ZenohConfig(listen=(endpoint,)))
     peer_transport = ZenohTransport(ZenohConfig(connect=(endpoint,)))
-    owner = StateOrgFsRuntime(tmp_path / "owner", node_id="node-owner", author="user:owner", trust_tailnet_members=True)
-    peer = StateOrgFsRuntime(tmp_path / "peer", node_id="node-peer", author="user:peer", trust_tailnet_members=True)
+    owner = OrgFsRuntime(tmp_path / "owner", node_id="node-owner", author="user:owner", trust_tailnet_members=True)
+    peer = OrgFsRuntime(tmp_path / "peer", node_id="node-peer", author="user:peer", trust_tailnet_members=True)
     try:
         time.sleep(0.3)
         online = {"node-owner", "node-peer"}.__contains__
@@ -181,7 +180,7 @@ def test_reader_never_observes_partial_apply(state_peers: StatePeers) -> None:
 
 def test_announce_landing_during_liveliness_flip_not_stranded(tmp_path) -> None:
     state = {"online": False, "injected": False}
-    runtime = StateOrgFsRuntime(
+    runtime = OrgFsRuntime(
         tmp_path / "runtime", node_id="node-local", author="user:owner"
     )
     runtime._supplier_online = lambda _node: state["online"]

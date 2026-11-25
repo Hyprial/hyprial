@@ -207,7 +207,7 @@ def test_the_cover_check_does_not_consult_the_journal_relation(
     def refuse(*_args: object, **_kwargs: object) -> bool:
         raise AssertionError("document_covers_member_add must not be called")
 
-    monkeypatch.setattr(runtime.facade, "document_covers_member_add", refuse)
+    monkeypatch.setattr(runtime.facade, "document_covers_member_add", refuse, raising=False)
 
     assert store.leave_request_covers_current_add(ORG, BOB) is True
 

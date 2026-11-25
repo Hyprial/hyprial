@@ -7,9 +7,8 @@
 #   write advances the vector.
 # - Vectors are read through ``orgfs_impl.document_vector`` and compared only
 #   after decoding to {client: clock} (plan §10).
-# - Legacy has no commit clock; a Yjs pure deletion leaves the vector
-#   unchanged (pycrdt 0.14.9, see the C4 report), so the deletion-only
-#   entries are legacy_xfail.
+# - A Yjs pure deletion alone leaves the vector unchanged (pycrdt 0.14.9,
+#   see the C4 report); the deletion-only entries pin the commit clock.
 """State-vector advance contract for every facade write entry (design §3.3)."""
 
 from __future__ import annotations
@@ -17,12 +16,6 @@ from __future__ import annotations
 import pytest
 
 from ..support import strictly_advanced
-
-PURE_DELETION = pytest.mark.legacy_xfail(
-    reason="design §3.3: the commit helper bumps __orgfs__.c so a pure deletion "
-    "advances the content state vector; legacy has no commit clock"
-)
-
 
 def _seed(fs) -> str:
     space_id = fs.create_space("vectors").space_id
@@ -69,7 +62,6 @@ def test_every_write_entry_advances_the_modified_document(orgfs_impl, entry: str
     assert strictly_advanced(before, after), (before, after)
 
 
-@PURE_DELETION
 @pytest.mark.parametrize("entry", sorted(DELETIONS))
 def test_a_pure_deletion_edit_advances_the_content_vector(orgfs_impl, entry: str) -> None:
     fs = orgfs_impl.make_facade("user:owner")
@@ -82,10 +74,6 @@ def test_a_pure_deletion_edit_advances_the_content_vector(orgfs_impl, entry: str
     assert strictly_advanced(before, after), (before, after)
 
 
-@pytest.mark.legacy_xfail(
-    reason="design §3.3: creating a document goes through the commit helper, which "
-    "bumps __orgfs__.c; legacy creates an empty text document with an empty vector"
-)
 def test_a_new_empty_document_is_born_with_a_nonempty_vector(orgfs_impl) -> None:
     fs = orgfs_impl.make_facade("user:owner")
     space_id = _seed(fs)

@@ -36,7 +36,7 @@ from hyprial.daemon.impl.orgfs.sync import SyncError
 
 
 class StateContent:
-    """Status and content provisioning of ``StateOrgFsRuntime``."""
+    """Status and content provisioning of ``OrgFsRuntime``."""
 
     def status(self, space_id: str) -> StateSpaceStatus:
         base = self.facade.status(space_id)

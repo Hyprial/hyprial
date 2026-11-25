@@ -11,7 +11,7 @@
 #   switched off; the runtime reads the flag at every gate call.
 # - A member removed while partitioned keeps writing; after healing, the owner
 #   and the remaining member refuse its node and never show its writes.
-"""Node gate of ``StateOrgFsRuntime`` over a real org directory space."""
+"""Node gate of ``OrgFsRuntime`` over a real org directory space."""
 
 from __future__ import annotations
 

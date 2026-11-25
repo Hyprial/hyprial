@@ -1,6 +1,6 @@
 # Decisions:
 # - Phase D, package T2: ``test_text_required_frontier_blocks_stale_read_then_converges``
-#   runs on ``StateOrgFsRuntime`` (plan §5: the text ``content-pending`` and
+#   runs on ``OrgFsRuntime`` (plan §5: the text ``content-pending`` and
 #   its convergence had no test on the new runtime).  Broadcasts are dropped;
 #   the reader gets the owner's newer tree row through the sync host (the
 #   seam every pulled update crosses) while the owner is partitioned, so the
@@ -279,50 +279,6 @@ def test_text_required_frontier_blocks_stale_read_then_converges(state_peers: St
     network.heal("node-owner")
     eventually(lambda: _equal(text(peer.fs, space_id, f"id:{node.node_id}"), "AB"))
     assert peer.fs.stat(space_id, f"id:{node.node_id}").content_state == "arrived"
-
-
-def test_legacy_entries_are_honestly_unverifiable_or_unknown_size(tmp_path) -> None:
-    runtime = OrgFsRuntime(
-        tmp_path / "runtime", node_id="node-owner", author="user:owner"
-    )
-    try:
-        space = runtime.facade.create_space("legacy")
-        blob = runtime.facade.write_bytes(space.space_id, "old.bin", b"legacy")
-        doc = runtime.facade.write_text(space.space_id, "old.md", "legacy text")
-        live = runtime.facade._space(space.space_id)
-
-        def write_legacy_entries() -> None:
-            for item in (live.nodes[blob.node_id], live.nodes[doc.node_id]):
-                item.size = None
-                item.required_content_frontier = None
-                item.ref_size = None
-                item.ref_sha256 = None
-                live.tree._write_node(
-                    {
-                        "node_id": item.node_id,
-                        "parent": item.parent,
-                        "name": item.name,
-                        "kind": item.kind,
-                        "doc_id": item.doc_id,
-                        "blob_hash": item.blob_hash,
-                        "deleted": item.deleted,
-                    }
-                )
-
-        runtime.facade._commit(live, live.tree_doc_id, write_legacy_entries)
-        blob_info = runtime.facade.stat(space.space_id, f"id:{blob.node_id}")
-        assert blob_info.size is None
-        assert blob_info.content_state == "arrived"
-        assert runtime.facade.read_bytes(space.space_id, f"id:{blob.node_id}") == b"legacy"
-        doc_info = runtime.facade.stat(space.space_id, f"id:{doc.node_id}")
-        assert doc_info.content_state == "unverifiable"
-        assert runtime.facade.read_text(space.space_id, f"id:{doc.node_id}")[0] == "legacy text"
-        healed = runtime.facade.write_text(
-            space.space_id, f"id:{doc.node_id}", "legacy text"
-        )
-        assert healed.content_state == "arrived"
-    finally:
-        runtime.close()
 
 
 def test_daemon_orgfs_json_uses_content_state_wire_key() -> None:

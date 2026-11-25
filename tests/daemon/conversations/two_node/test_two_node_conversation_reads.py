@@ -38,13 +38,12 @@ from tests.daemon.conversations.document.document_support import caller, cell_of
 from tests.daemon.conversations.two_node.support import (
     NODE_A,
     announce_until_held,
-    broadcast_drained,
     close,
     entry,
     eventually,
-    ingress_drained,
     record,
     start_pair,
+    updates_dropped,
 )
 from tests.support.golden.app import ALPHA, BETA, golden_daemon as golden_daemon
 
@@ -172,9 +171,8 @@ def test_second_node_history_misses_a_lost_live_update_until_the_online_edge(
 
         bus.drop_updates = True
         record(a, cell, _lines(cell, "m2", 2), seq=0)
-        eventually(lambda: broadcast_drained(a, home))
+        eventually(lambda: updates_dropped(bus, 1))
         bus.drop_updates = False
-        eventually(lambda: ingress_drained(b, home))
         assert ids(_history(reader, cell)) == ["m1"]
 
         b.presence.emit_online(NODE_A)

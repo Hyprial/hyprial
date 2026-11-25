@@ -1,3 +1,14 @@
+# Decision record (phase D, package S, 2026-11-25):
+# - ``orgfs.status`` returns the state runtime's status (design §1.1):
+#   ``space_id``, ``synced`` (``null`` until a holder was observed),
+#   ``holders_online``, ``content_pending`` and ``rejected_updates``.  The
+#   journal fields (``unconfirmed_commits``, ``durable_holders_seen``,
+#   ``parked_commits``) left with the journal store.
+# - ``ORGFS_LAYOUT_UNSUPPORTED`` (design §2.7) is declared, with its own data
+#   schema, only on the methods that look a space up by ``spaceId``: those
+#   are the ones that reach a space the startup scan refused.  Its data names
+#   the space, the ``reason`` and the migration ``guide``; a corrupt file also
+#   names its ``path``.
 """Shared JSON schemas and error vocabulary for the orgfs.* MethodSpecs.
 
 The orgfs runtime exposes one closed error vocabulary (``ORGFS_ERROR_CODES``)
@@ -80,6 +91,34 @@ ORG_CONTEXT_ERRORS = (
         description="the caller has no org-context grant for the accepted document",
     ),
     *SESSION_ERRORS,
+)
+
+LAYOUT_UNSUPPORTED_DATA = {
+    "type": "object",
+    "properties": {
+        "spaceId": String,
+        "reason": {
+            "type": "string",
+            "enum": [
+                "legacy-journal",
+                "unknown-space-json",
+                "space-id-mismatch",
+                "corrupt-file",
+            ],
+        },
+        "guide": String,
+        "path": String,
+    },
+    "required": ["spaceId", "reason", "guide"],
+    "additionalProperties": False,
+}
+
+LAYOUT_UNSUPPORTED_ERRORS = (
+    MethodError(
+        ipc_errors.ORGFS_LAYOUT_UNSUPPORTED,
+        LAYOUT_UNSUPPORTED_DATA,
+        description="the space is stored in a layout this daemon does not open; see guide",
+    ),
 )
 
 #: Error data is an object owned by the producer.  The contract freezes the
@@ -177,25 +216,17 @@ SPACE_STATUS = {
     "type": "object",
     "properties": {
         "space_id": String,
-        "unconfirmed_commits": Integer,
-        "durable_holders_seen": {"type": "array", "items": String},
+        "synced": {"type": ["boolean", "null"]},
         "holders_online": {"type": "array", "items": String},
-        "parked_commits": {
-            "type": "array",
-            "items": {
-                "type": "array",
-                "items": {"type": ["string", "integer"]},
-                "minItems": 2,
-                "maxItems": 2,
-            },
-        },
+        "content_pending": {"type": "integer", "minimum": 0},
+        "rejected_updates": {"type": "integer", "minimum": 0},
     },
     "required": [
         "space_id",
-        "unconfirmed_commits",
-        "durable_holders_seen",
+        "synced",
         "holders_online",
-        "parked_commits",
+        "content_pending",
+        "rejected_updates",
     ],
     "additionalProperties": False,
 }

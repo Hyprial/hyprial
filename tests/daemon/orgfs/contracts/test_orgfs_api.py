@@ -1,7 +1,7 @@
 # Decisions (phase D, package T3, 2026-11-25):
 # - The cases that the contract suite now covers were deleted rather than
 #   rewritten (C4 report §5); the T3 report lists each one with its contract.
-# - The two rewritten cases build ``StateOrgFs`` directly, so they run the new
+# - The two rewritten cases build ``LocalOrgFs`` directly, so they run the new
 #   facade whether or not ``HYPRIAL_ORGFS_IMPL`` is set.
 # - Serialization of a remote apply with a local write is observed through the
 #   facade's ``store_factory`` seam (a test store that parks one commit) and the
@@ -14,7 +14,7 @@ import threading
 
 from hyprial.daemon.impl.orgfs import LocalOrgFs, OrgFs
 from hyprial.daemon.impl.orgfs.composition.vocabulary import _SpaceMetaWatcher
-from hyprial.daemon.impl.orgfs.document.coordinator import MemoryStores, StateOrgFs
+from hyprial.daemon.impl.orgfs.document.coordinator import MemoryStores
 from hyprial.daemon.impl.orgfs.membership import Accepted
 
 from tests.daemon.orgfs.membership.support import forge_content
@@ -64,7 +64,7 @@ def test_facade_serializes_inbound_apply_without_swapping_local_identity() -> No
 
     gate = _Gate()
     stores = MemoryStores()
-    fs = StateOrgFs(
+    fs = LocalOrgFs(
         author="user:owner",
         actor="agent:local",
         store_factory=lambda space_id, create: _ParkingStore(stores(space_id, create), gate),
@@ -118,16 +118,12 @@ def test_facade_serializes_inbound_apply_without_swapping_local_identity() -> No
         assert fs.close_effects()
 
 
-def test_a_reinvite_keeps_added_at_and_the_owner_keeps_the_space_birth(monkeypatch) -> None:
+def test_a_reinvite_keeps_added_at_and_the_owner_keeps_the_space_birth() -> None:
     """added_at orders who dials whom between org devices (org.network.dialing),
     so a re-invite of a current member (a second device, a mode change) must
     not move it, and the owner's row stays at the space's creation time."""
 
-    from hyprial.daemon.impl.orgfs.document.operations import spaces as spaces_module
-
-    ticks = iter(f"2026-10-0{day}T00:00:00+00:00" for day in range(1, 10))
-    monkeypatch.setattr(spaces_module, "_now", lambda: next(ticks))
-    fs = StateOrgFs(author="user:owner", actor="agent:owner:test")
+    fs = LocalOrgFs(author="user:owner", actor="agent:owner:test")
     try:
         space = fs.create_space("team")
 

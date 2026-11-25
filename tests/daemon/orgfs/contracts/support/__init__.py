@@ -3,7 +3,6 @@
 from .factory import (
     Connection,
     InjectedWriteFailure,
-    LegacyImpl,
     OrgFsImpl,
     RuntimeHandle,
     StateImpl,
@@ -16,7 +15,6 @@ __all__ = [
     "FakeNetwork",
     "FakeSession",
     "InjectedWriteFailure",
-    "LegacyImpl",
     "OrgFsImpl",
     "RuntimeHandle",
     "StateImpl",

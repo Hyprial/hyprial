@@ -1,5 +1,5 @@
 # Decisions:
-# - Phase D2 brief: two and three ``StateOrgFsRuntime`` nodes on the in-process
+# - Phase D2 brief: two and three ``OrgFsRuntime`` nodes on the in-process
 #   network write to each other, catch up after a partition (pure deletion
 #   included), converge on concurrent edits of one document with the
 #   frontier repair terminating (design §4.2), recover a write that was never
@@ -11,7 +11,7 @@
 # - Catch-up is driven by the presence edges the network emits on heal, or,
 #   where a test needs a bounded sequence, by explicit pull rounds
 #   (``Peers.pull_all``), which is what anti-entropy does.
-"""Multi-node behaviour of ``StateOrgFsRuntime`` over the in-process network."""
+"""Multi-node behaviour of ``OrgFsRuntime`` over the in-process network."""
 
 from __future__ import annotations
 

@@ -4,6 +4,9 @@ Decision record (daemon-request-examples, 2026-11-03): use canonical identifiers
 relative paths and real opaque versions. Empty collections are declared only
 where the producer returns them; missing paths are errors. Synthetic identifiers
 and timestamps are normalized by the producer replay tests, never output fields.
+Package S (2026-11-25): an OrgFS version is an opaque digest over rows with
+random ids, so the replay binds each distinct version to ``orgfs-version-N`` in
+first-seen order; the examples use those placeholders.
 """
 
 from __future__ import annotations
@@ -16,8 +19,8 @@ __all__ = ["ORGFS_READ_EXAMPLES"]
 
 _SPACE_ID = "b363d762-a06e-496d-94d0-e4695b66e206"
 _NODE_ID = "89fd8adf4f8f43f48f475bef6914c61f"
-_VERSION = "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
-_REMOVED_VERSION = "eyJjb250ZW50RnJvbnRpZXIiOjIsInRyZWVGcm9udGllciI6Mn0"
+_VERSION = "orgfs-version-1"
+_REMOVED_VERSION = "orgfs-version-2"
 _AT = "2026-11-03T09:00:00Z"
 _SPACE = {
     "space_id": _SPACE_ID, "name": "example-space", "owner": "user:example",
@@ -125,8 +128,8 @@ ORGFS_READ_EXAMPLES = (
     ),
     _set(
         "orgfs.status", {"spaceId": _SPACE_ID},
-        {"space_id": _SPACE_ID, "unconfirmed_commits": 5, "durable_holders_seen": [], "holders_online": [], "parked_commits": []},
-        producer="daemon/impl/orgfs/composition/content.py:RuntimeContent.status -> FacadeContent.status (fresh durable space plus one write, no remote holders)",
+        {"space_id": _SPACE_ID, "synced": None, "holders_online": [], "content_pending": 0, "rejected_updates": 0},
+        producer="daemon/impl/orgfs/composition/state/content.py:StateContent.status -> StateSpaces.status (fresh durable space plus one write, no remote holders)",
         gap="status always returns a populated space status record; empty holder arrays are fields, not an absent status",
     ),
     _set(

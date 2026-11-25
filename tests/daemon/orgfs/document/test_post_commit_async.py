@@ -1,6 +1,6 @@
 # Decisions:
 # - Phase D, package T2: the three tests that read the journal's broadcast
-#   outbox run on ``StateOrgFsRuntime``.  The daemon builds its runtime in
+#   outbox run on ``OrgFsRuntime``.  The daemon builds its runtime in
 #   ``orgfs_bridge``; ``_application(..., state=True)`` points that module's
 #   ``OrgFsRuntime`` name at the state runtime for the test (no rehearsal
 #   switch).  The controlled session black-holes protocol 3 update puts
@@ -19,7 +19,6 @@
 
 from __future__ import annotations
 
-from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from fnmatch import fnmatch
 import threading
@@ -29,8 +28,7 @@ import pytest
 
 from hyprial.daemon.impl.application import DaemonApplication
 from hyprial.daemon.impl.application.messaging import orgfs_bridge
-from hyprial.daemon.impl.orgfs.composition.state import StateOrgFsRuntime
-from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
+from hyprial.daemon.impl.orgfs.composition.state import OrgFsRuntime
 from hyprial.daemon.impl.transport import TransportSample
 from hyprial.shell.impl.daemon_wiring import (
     daemon_dependencies as _deep_module_daemon_dependencies,
@@ -105,7 +103,7 @@ def _eventually(predicate, timeout: float = 2.0) -> None:  # type: ignore[no-unt
 
 def _application(tmp_path, *, actor_host, monkeypatch=None) -> DaemonApplication:  # type: ignore[no-untyped-def]
     if monkeypatch is not None:
-        monkeypatch.setattr(orgfs_bridge, "OrgFsRuntime", StateOrgFsRuntime)
+        monkeypatch.setattr(orgfs_bridge, "OrgFsRuntime", OrgFsRuntime)
     app = DaemonApplication(
         state_dir=tmp_path / "state",
         socket_path=tmp_path / "daemon.sock",
@@ -207,47 +205,6 @@ def test_write_ipc_releases_capacity_while_real_mesh_broadcast_is_black_holed(
         session.release_logs.set()
         app._close()
         app._close_home_lease()
-
-
-def test_restart_binding_drains_the_durable_commit_journal(tmp_path) -> None:
-    state = tmp_path / "state"
-    first = OrgFsRuntime(state, node_id="node-owner", author="user:owner")
-    space_id = ""
-    try:
-        space = first.facade.create_space("team")
-        space_id = space.space_id
-        first.facade.write_text(space_id, "restart.md", "durable")
-        assert tuple(first.stores[space_id].unbroadcast())
-    finally:
-        first.close()
-
-    restarted = OrgFsRuntime(state, node_id="node-owner", author="user:owner")
-    session = _ControlledSession()
-    try:
-        unbroadcast = tuple(restarted.stores[space_id].unbroadcast())
-        assert unbroadcast
-        replay_record = unbroadcast[-1]
-        assert restarted.facade._publication_records(  # noqa: SLF001
-            space_id, (replay_record,), broadcast=False
-        ) == ()
-        replay = restarted.facade._publication_records(  # noqa: SLF001
-            space_id, (replay_record,), broadcast=True
-        )
-        replay_keys = [
-            (record.writer, record.seq, record.envelope_bytes) for record in replay
-        ]
-        assert len(replay_keys) == len(set(replay_keys))
-        assert replay_keys.count(
-            (replay_record.writer, replay_record.seq, replay_record.envelope_bytes)
-        ) == 1
-        restarted.bind_transport(session, supplier_online=lambda _node: True)
-        _eventually(lambda: bool(session.published_logs))
-        _eventually(lambda: not tuple(restarted.stores[space_id].unbroadcast()))
-        counts = Counter(session.published_logs)
-        assert counts and max(counts.values()) == 1, counts
-    finally:
-        restarted.close()
-
 
 
 def test_a_burst_with_a_black_holed_mesh_keeps_the_network_queue_bounded(

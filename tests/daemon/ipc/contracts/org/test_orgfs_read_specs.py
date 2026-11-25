@@ -76,10 +76,10 @@ _RESULTS = {
     "orgfs.read": {"node": _NODE, "text": "hello", "version": "frontier-2"},
     "orgfs.status": {
         "space_id": "space-x",
-        "unconfirmed_commits": 0,
-        "durable_holders_seen": [],
+        "synced": None,
         "holders_online": [],
-        "parked_commits": [],
+        "content_pending": 0,
+        "rejected_updates": 0,
     },
     "orgfs.trash": {"nodes": []},
     "orgfs.watch": {

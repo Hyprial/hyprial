@@ -2,9 +2,9 @@
 # - ``TailnetDeviceOwners`` is the assembly's ``device_owner_hint``: active
 #   tailnet members only, owner names normalised to ``user:`` principals, one
 #   status per TTL, no answer when the sidecar fails or two tailnets disagree.
-# - The bridge binds it only on a runtime offering ``bind_device_owner_hint``
-#   (the state runtime); the legacy runtime is constructed as before.  The
-#   runtime class is replaced by a recorder so no daemon is started.
+# - Package S (2026-11-25): there is one runtime, so the bridge always binds
+#   the hint through ``bind_device_owner_hint``.  The runtime class is
+#   replaced by a recorder so no daemon is started.
 """The bridge's tailnet-roster hint for the state runtime's node gate."""
 
 from __future__ import annotations
@@ -94,15 +94,11 @@ def test_a_failing_sidecar_and_a_conflicting_roster_give_no_principal() -> None:
 class _StateLike:
     def __init__(self, state_dir: Any, **kwargs: Any) -> None:
         self.kwargs = kwargs
+        self.logger = kwargs.get("logger")
         self.hint: Any = None
 
     def bind_device_owner_hint(self, hint: Any) -> None:
         self.hint = hint
-
-
-class _LegacyLike:
-    def __init__(self, state_dir: Any, **kwargs: Any) -> None:
-        self.kwargs = kwargs
 
 
 class _App(orgfs_bridge._OrgFsBridgeMixin):  # noqa: SLF001 - the bridge mixin under test
@@ -118,16 +114,12 @@ class _App(orgfs_bridge._OrgFsBridgeMixin):  # noqa: SLF001 - the bridge mixin u
         return None
 
 
-@pytest.mark.parametrize("runtime_class", [_StateLike, _LegacyLike])
-def test_the_bridge_binds_the_hint_only_where_the_runtime_offers_it(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Any, runtime_class: type
+def test_the_bridge_binds_the_hint_on_the_runtime(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
 ) -> None:
-    monkeypatch.setattr(orgfs_bridge, "OrgFsRuntime", runtime_class)
+    monkeypatch.setattr(orgfs_bridge, "OrgFsRuntime", _StateLike)
     runtime = _App(tmp_path)._require_orgfs_runtime()
 
     assert "device_owner_hint" not in runtime.kwargs
-    if runtime_class is _StateLike:
-        assert isinstance(runtime.hint, TailnetDeviceOwners)
-        assert runtime.hint("node-owner") is None
-    else:
-        assert not hasattr(runtime, "hint")
+    assert isinstance(runtime.hint, TailnetDeviceOwners)
+    assert runtime.hint("node-owner") is None

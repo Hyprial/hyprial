@@ -3,7 +3,7 @@
 #   runtime are deleted: ``test_concurrent_text_edits_from_same_base_do_not_duplicate_base``
 #   is contract ``multinode/test_convergence.py::test_concurrent_edits_from_one_base_keep_both_changes``
 #   (C4 report §5); ``test_review_fix_6_fetches_missing_update_blob_and_retries_once``
-#   runs on ``StateOrgFsRuntime`` over loopback Zenoh in
+#   runs on ``OrgFsRuntime`` over loopback Zenoh in
 #   ``tests/daemon/orgfs/mesh/replication/blobs/test_blobs.py`` (its ``replica``
 #   reference reason belonged to the journal's update-blob recovery; protocol
 #   3 pins a temporary update blob under ``sync``).

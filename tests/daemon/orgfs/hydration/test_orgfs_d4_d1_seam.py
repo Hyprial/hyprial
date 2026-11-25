@@ -1,13 +1,13 @@
 # Decisions:
-# - Phase D, package T2: the two seam tests run on ``StateOrgFsRuntime``.
+# - Phase D, package T2: the two seam tests run on ``OrgFsRuntime``.
 #   Delivery stays hand-driven: the in-process network drops every broadcast
 #   and the test moves state only with explicit pull rounds
 #   (``StatePeers.pull_all``), so the order of arrival is fixed and no
 #   journal envelope is read or imported.  The property is unchanged: the
 #   creator, the editor and a third writer all read the merged text, and the
 #   creator's ``await_content`` succeeds.
-# - ``test_committed_update_refuses_a_retired_document`` is journal-only
-#   (``snapshot-barrier``) and is left for package S.
+# - Package S deleted ``test_committed_update_refuses_a_retired_document``
+#   (journal-only, ``snapshot-barrier``).
 """D4 x D1 seam: the creating node can read after a peer edits its text.
 
 Regression for docs/notes/orgfs-fix-round/d4-d1-seam.md, actor-line adaptation
@@ -32,7 +32,6 @@ import time
 import pytest
 
 from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
-from hyprial.daemon.impl.orgfs.storage.store import StoreError
 from tests.daemon.orgfs.mesh.replication.state_support import (
     StatePeers,
     open_state_peers,
@@ -98,25 +97,3 @@ def test_creator_and_editor_read_after_third_writer(state_peers: StatePeers) -> 
     assert "line-C" in only and "line-D" in only
 
 
-def test_committed_update_refuses_a_retired_document(tmp_path) -> None:
-    runtime = _runtime(tmp_path, "node-a", "user:owner")
-    try:
-        space = runtime.facade.create_space("retired")
-        node = runtime.facade.write_text(space.space_id, "gone.md", "old")
-        plan = runtime.purge_plan(
-            space.space_id,
-            [
-                {
-                    "kind": "doc-range",
-                    "node": f"id:{node.node_id}",
-                    "from": "all",
-                    "to": "all",
-                }
-            ],
-        )
-        runtime.purge(space.space_id, plan.plan_id)
-        with pytest.raises(StoreError) as caught:
-            runtime.stores[space.space_id].committed_update(node.doc_id, b"\x00")
-        assert caught.value.code == "snapshot-barrier"
-    finally:
-        runtime.close()

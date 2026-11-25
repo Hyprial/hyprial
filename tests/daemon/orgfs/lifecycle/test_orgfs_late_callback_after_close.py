@@ -1,5 +1,5 @@
 # Decisions:
-# - Phase D, package T2: rewritten onto ``StateOrgFsRuntime``.  The late work
+# - Phase D, package T2: rewritten onto ``OrgFsRuntime``.  The late work
 #   is no longer a journal log callback reaching the mesh's on-applied hook:
 #   every inbound update reaches the coordinator through the space's sync
 #   host (``SyncHost.apply_remote``), so the test keeps a reference to the

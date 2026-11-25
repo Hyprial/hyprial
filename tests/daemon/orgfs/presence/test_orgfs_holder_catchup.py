@@ -1,6 +1,6 @@
 # Decisions:
 # - Phase D, package T2: ``test_four_member_sequential_join_converges_by_announce_catch_up_without_f2``
-#   runs on ``StateOrgFsRuntime`` (it is red under the rehearsal switch).  The
+#   runs on ``OrgFsRuntime`` (it is red under the rehearsal switch).  The
 #   online edges of non-holders still pull nothing; once Carol's and Dave's
 #   announces land, Bob pulls from them.  A device row whose tree entry
 #   arrived before its content is read first (design §4.2, read-first), so
@@ -14,7 +14,7 @@ late announce must not keep it from pulling a space it holds."""
 from __future__ import annotations
 
 from hyprial.daemon.impl.org.network.directory import OrgFsDirectoryStore
-from hyprial.daemon.impl.orgfs.composition.state import StateOrgFsRuntime
+from hyprial.daemon.impl.orgfs.composition.state import OrgFsRuntime
 
 from .test_orgfs_rebuild_catchup import (
     _Bus,
@@ -96,7 +96,7 @@ def test_four_member_sequential_join_converges_by_announce_catch_up_without_f2(
     bus = _Bus()
     nodes = ("alice", "bob", "carol", "dave")
     runtimes = {
-        name: StateOrgFsRuntime(
+        name: OrgFsRuntime(
             tmp_path / name, node_id=f"node-{name}", author=f"user:{name}@example",
             trust_tailnet_members=True,  # Holder catch-up after private admission (§7).
         )

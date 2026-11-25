@@ -1,11 +1,10 @@
 # Decision record (phase D, package D1, 2026-11-25):
-# - Design §9 "dual host" / plan §3.3: ``StateOrgFs`` composes the new mixins
-#   in front of the retained legacy mixins, without ``FacadePurge``; the
-#   legacy ``LocalOrgFs`` and the default assembly are untouched.
-# - The instance attributes the retained mixins read are the ones
-#   ``LocalOrgFs.__init__`` sets; the journal-only ones (authorities, pending
-#   outbox, purge plans) stay as empty containers because the shared
-#   ``detach_space`` / ``close_effects`` iterate them.
+# - Design §9 "dual host" / plan §3.3: the state host composes the new mixins
+#   in front of the retained shared mixins, without the content-purge mixin.
+# - Package S (2026-11-25): the journal host is deleted and this class took
+#   over the public name ``LocalOrgFs`` (``orgfs/docs.py`` re-exports it).
+#   The journal-only instance containers (space authorities, pending outbox,
+#   purge plans, the store registry) are gone with the code that read them.
 # - The store factory is ``factory(space_id, create) -> StateStore``; the
 #   default keeps one ``MemoryStateStore`` backing per space (D1 scope; D2
 #   passes the file store).  ``store_discard`` forgets a failed creation.
@@ -46,7 +45,7 @@ def _silent(_level: str, _event: str, **_fields: object) -> None:
     return None
 
 
-class StateOrgFs(
+class LocalOrgFs(
     StateDispatch,
     StateCommit,
     StateRemote,
@@ -78,7 +77,6 @@ class StateOrgFs(
         if store_factory is None:
             memory = MemoryStores()
             store_factory, store_discard = memory, memory.discard
-        self.stores = None
         self.mesh = None
         self.blobs = blobs
         self.author = author
@@ -120,17 +118,14 @@ class StateOrgFs(
         self._watchers: dict[str, Any] = {}
         self._meta_watchers: dict[str, Any] = {}
         self._spaces: dict[str, Any] = {}
-        self._space_authorities: dict[str, Any] = {}
         self._clock = 0
         self._events: dict[str, list[Any]] = {}
-        self._purge_plans: dict[str, Any] = {}
-        self._pending_outbox: dict[str, list[Any]] = {}
 
 
 __all__ = [
     "AdmissionViewOf",
     "MemoryStores",
     "SpaceSyncHost",
-    "StateOrgFs",
+    "LocalOrgFs",
     "StateSpaceStatus",
 ]

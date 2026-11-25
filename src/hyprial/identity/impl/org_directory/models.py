@@ -6,6 +6,9 @@
 # admission refuses this node's own writes to the legacy document and tree
 # row in every space and a peer's in org-directory spaces; peer history in
 # leftover non-org spaces still replicates (orgfs/storage/store/admission.py).
+# Package S (2026-11-25): that journal admission is deleted; a journal space is
+# refused as a whole (ORGFS_LAYOUT_UNSUPPORTED).  Whether the legacy-id
+# decoders are still needed is left for stage E to re-check.
 """Organization directory semantics: devices, org names, space naming.
 
 Pure model plus naming rules — no storage, no daemon imports.  The storage

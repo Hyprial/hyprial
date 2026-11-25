@@ -8,7 +8,7 @@
 #   after ``batch.pending`` became durable is redone at the next start
 #   (``orgfs.state.batch-recovered``); a torn ``batch.pending`` is discarded
 #   (``orgfs.state.batch-discarded``); the space stays usable either way.
-"""Startup scan and crash recovery of ``StateOrgFsRuntime``."""
+"""Startup scan and crash recovery of ``OrgFsRuntime``."""
 
 from __future__ import annotations
 
@@ -22,9 +22,9 @@ import uuid
 import pytest
 
 from hyprial.daemon.impl.orgfs import OrgFsError
-from hyprial.daemon.impl.orgfs.composition.state import StateOrgFsRuntime
+from hyprial.daemon.impl.orgfs.composition.state import OrgFsRuntime
 from hyprial.daemon.impl.orgfs.state import FileStateStore
-from hyprial.daemon.impl.orgfs.storage.store.vocabulary import StoreError
+from hyprial.daemon.impl.orgfs.storage.vocabulary import StoreError
 from hyprial.kernel import ipc_errors
 
 from .support import Events, snapshot, text
@@ -32,8 +32,8 @@ from .support import Events, snapshot, text
 UNSUPPORTED = ipc_errors.ORGFS_LAYOUT_UNSUPPORTED
 
 
-def _runtime(state_dir: Path, events: Events | None = None) -> StateOrgFsRuntime:
-    return StateOrgFsRuntime(state_dir, node_id="node-a", author="user:owner", logger=events)
+def _runtime(state_dir: Path, events: Events | None = None) -> OrgFsRuntime:
+    return OrgFsRuntime(state_dir, node_id="node-a", author="user:owner", logger=events)
 
 
 def _space_dir(state_dir: Path, space_id: str) -> Path:

@@ -22,12 +22,12 @@
 #   the tree's ``directory/devices`` rows, the trash and the member table, so
 #   this invalidates it after every accepted update that can change it (the
 #   ruling's "any accepted update"); a content-only update cannot.  The
-#   rebuild drops the legacy cache entry and its meta watch first, so the
-#   retained builder never stacks watches.
+#   rebuild drops the cache entry of ``RuntimeDirectory._device_owner_index``
+#   and its meta watch first, so that builder never stacks watches.
 # - An abandoned join forgets the device index it may have cached for the
 #   temporary space.
-# - D0 hooks: ``_ANNOUNCE_PROTOCOL = 3``; ``_maintain_spaces`` (the due
-#   anti-entropy tick) calls each sync's ``maintain(now)``, verifies one batch
+# - ``_maintain_spaces`` (the due anti-entropy tick of ``RuntimeDirectory``)
+#   calls each sync's ``maintain(now)``, verifies one batch
 #   through ``SyncHost.pending_content`` and schedules one pull from an online
 #   holder when content is pending.
 # - F1 round 2 (ruling on F1 item 4): the verification backlog does not wait
@@ -74,8 +74,9 @@
 #   sync pulls anything, removed and fsynced once the join completed), so a
 #   crash in between leaves a directory the startup scan discards instead of
 #   a space that skipped the member and node-gate checks.
-# - Journal-only runtime calls the legacy facade made (``broadcast_pending``,
-#   ``broadcast_records``, retirement and replica reconciliation) do nothing.
+# - Package S: the journal-only runtime calls (``broadcast_pending``,
+#   ``broadcast_records``, retirement and replica reconciliation) are deleted
+#   together with the journal facade that made them.
 """Per-space sync assembly, node gate and join of the state runtime."""
 
 from __future__ import annotations
@@ -113,9 +114,7 @@ def _join_error_rank(error: OrgFsError) -> int:
 
 
 class StateLifecycle:
-    """Sync assembly and join of ``StateOrgFsRuntime``."""
-
-    _ANNOUNCE_PROTOCOL: int | None = 3
+    """Sync assembly and join of ``OrgFsRuntime``."""
 
     def _log(self, level: str, event: str, **fields: object) -> None:
         if self.logger is None:
@@ -467,18 +466,6 @@ class StateLifecycle:
             )
         values = {str(key): value for key, value in dict(details or {}).items()}
         return OrgFsError(code, {**values, "spaceId": space_id, "supplier": holder, "message": message})
-
-    def broadcast_pending(self, space_id: str) -> int:
-        return 0
-
-    def broadcast_records(self, space_id: str, records: tuple[Any, ...]) -> int:
-        return 0
-
-    def reconcile_replica_blobs(self, space_id: str) -> tuple[str, ...]:
-        return ()
-
-    def _reconcile_retirements(self, space_id: str) -> None:
-        return None
 
 
 __all__ = [

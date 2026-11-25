@@ -1,3 +1,10 @@
+# Decision record (phase D, package S, 2026-11-25):
+# - The D0 hooks lost their legacy half: announces must carry
+#   ``protocol: 3`` (design §4.1, §9 R15), and the per-space maintenance of a
+#   due anti-entropy tick is the state runtime's ``_maintain_spaces``.  The
+#   journal supplier resolver bound to one space id (``_supplier_owner_for_space``,
+#   which matched a space id against the org directory name rule) is deleted;
+#   the node gate is ``composition/state/sync.py``.
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -5,8 +12,6 @@ from collections.abc import Callable
 
 import json
 import random
-
-
 
 
 import time
@@ -34,7 +39,7 @@ from hyprial.daemon.impl.orgfs.api  import OrgFsError
 from hyprial.daemon.impl.orgfs.projection.checkout_authority  import CheckoutAuthority
 
 
-from hyprial.daemon.impl.orgfs.network.protocol  import (
+from hyprial.daemon.impl.orgfs.composition.vocabulary import (
     ORGFS_ANNOUNCE_BUFFER_LIMIT,
     ORGFS_ANNOUNCE_SPACES_PER_ENTRY_LIMIT,
     ORGFS_DIRECTORY_SYNC_INTERVAL_SECONDS,
@@ -46,10 +51,6 @@ from hyprial.identity import (
     is_org_acl_space,
     is_org_directory_space,
 )
-
-
-
-
 
 
 from hyprial.daemon.impl.orgfs.composition.vocabulary import _DirectoryCommand, _DirectoryEffect, _DirectoryEffectBatch, _SpaceMetaWatcher
@@ -68,16 +69,6 @@ def _directory_sync_jitter() -> float:
 _SUPPLIER_TRASH_SCAN_LIMIT = 4096
 
 
-def _supplier_directory_space(space_id: str) -> str | None:
-    """The org directory space backing an org space's supplier gate."""
-
-    if is_org_directory_space(space_id):
-        return space_id
-    if is_org_acl_space(space_id):
-        return space_id[: -len("-acl")]
-    return None
-
-
 def _next_directory_sync_due(now: float) -> float:
     return now + ORGFS_DIRECTORY_SYNC_INTERVAL_SECONDS * (1.0 + _directory_sync_jitter())
 
@@ -87,7 +78,7 @@ class RuntimeDirectory:
     This class never constructs, copies, or persists an independent host.
     """
 
-    _ANNOUNCE_PROTOCOL: int | None = None
+    _ANNOUNCE_PROTOCOL = 3
 
     @staticmethod
     def _directory_mailbox_capacity() -> int:
@@ -272,10 +263,7 @@ class RuntimeDirectory:
                 self._release_directory_credit(request.operation_id, request.generation)
 
     def _announce_shape_ok(self, value: Any, node: str) -> bool:
-        """Whether an announce payload is well formed for the key's ``node``.
-
-        ``_ANNOUNCE_PROTOCOL`` is a hook: ``None`` accepts any ``protocol``.
-        """
+        """Whether an announce payload is a protocol 3 announce for the key's ``node``."""
 
         return not (
             not isinstance(value, dict)
@@ -285,10 +273,7 @@ class RuntimeDirectory:
             or not node
             or "/" in node
             or not isinstance(value.get("spaces"), list)
-            or (
-                self._ANNOUNCE_PROTOCOL is not None
-                and value.get("protocol") != self._ANNOUNCE_PROTOCOL
-            )
+            or value.get("protocol") != self._ANNOUNCE_PROTOCOL
         )
 
     def _apply_announcement_command(
@@ -425,16 +410,6 @@ class RuntimeDirectory:
                 self.logger("warn", "orgfs.anti_entropy.failed", error=repr(exc))
             return 0
 
-    def _maintain_spaces(self, now: float) -> None:
-        """Hook: per-space maintenance on a due anti-entropy tick.
-
-        Legacy: expire the stores' pending envelopes and apply drained ones.
-        """
-
-        for store in self.stores.snapshot():
-            store.expire_pending()
-            for envelope in store.take_drained():
-                self.facade.apply_envelope(store.space_id, envelope)
 
     def _anti_entropy_tick(self, now: float) -> int:
         with self._pending_announces_lock:
@@ -616,27 +591,6 @@ class RuntimeDirectory:
                 self._transport_rebuild_completed
             )
 
-    def _supplier_owner_for_space(
-        self, space_id: str
-    ) -> Callable[[str], str | None]:
-        """R1 supplier-gate resolver bound to one replica space.
-
-        A mesh imports only from devices whose directory device row belongs to
-        a current member.  The resolver answers ``supplier node -> owning
-        member principal`` from the org's directory space. With transitional
-        tailnet trust disabled, ``None`` refuses the unresolved supplier.
-        The explicit private-tailnet policy bypasses this membership lookup,
-        but retains the removal-wins author judgment and document validation.
-        """
-
-        directory_space = _supplier_directory_space(space_id)
-
-        def resolve(supplier: str) -> str | None:
-            if directory_space is None or not supplier:
-                return None
-            return self._device_owner_index(directory_space).get(supplier)
-
-        return resolve
 
     def _device_owner_index(self, directory_space: str) -> dict[str, str]:
         """Map every known device id to its owning member principal.

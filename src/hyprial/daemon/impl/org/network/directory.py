@@ -7,6 +7,10 @@
 # - 2026-11-25 (C5): parkedCommits is read only through
 #   parked_commits_diagnostic, the one place phase D re-sources from
 #   status.rejected_updates before the field is removed.
+# - 2026-11-25 (package S, minimal change for package O): the journal facade
+#   that answered parked_commits is deleted; on the state host the read
+#   raises an explicit OrgFsError("unavailable"), which the diagnostic logs
+#   as directory.parked_unavailable and reports as unknown (None).
 """The OrgFS-backed ``DirectoryStore``: org directories as OrgFS documents.
 
 Each organization occupies one OrgFS directory space named ``group-NAME``
@@ -332,10 +336,17 @@ class OrgFsDirectoryStore:
         320k rows); parked rows are independent of that history.
         """
 
+        space_id = self._space_id(org)
+        read = getattr(self._fs, "parked_commits", None)
+        if read is None:
+            raise OrgFsError(
+                "unavailable",
+                {"spaceId": space_id, "message": "the OrgFS state host keeps no parked commits"},
+            )
         return [
             # Rows parked before the author column existed carry ''.
             {"author": author or "unknown", "commits": count}
-            for author, count in self._fs.parked_commits(self._space_id(org))
+            for author, count in read(space_id)
         ]
 
     def put_device(self, org: str, device: DirectoryDevice) -> None:

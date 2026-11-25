@@ -1,7 +1,7 @@
 # Decisions:
 # - Phase D, package T2 (plan §5 "跨节点新建文档不先以空内容出现", marked
 #   missing and assigned to T2 as a watch event sequence).  On
-#   ``StateOrgFsRuntime`` a document created on another node reaches a
+#   ``OrgFsRuntime`` a document created on another node reaches a
 #   watcher as exactly one ``created`` event, and a read made from inside
 #   that callback already returns the text: it never shows up empty first.
 # - Both arrival orders are driven by hand through the receiver's sync host

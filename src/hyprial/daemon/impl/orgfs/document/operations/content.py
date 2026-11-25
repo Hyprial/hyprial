@@ -17,53 +17,28 @@
 from __future__ import annotations
 
 
-
-
-
-
 import difflib
 
-import fnmatch
 
 
 import hashlib
 
 
-
-
-
-
-
-
 from typing import Callable
-
-
-
-
-
-
 
 
 from hyprial.daemon.impl.orgfs.api  import (
     ChangeEvent,
     NodeInfo,
     NodeRef,
-    OrgFsError,
-    SpaceStatus,
-    TextReadSnapshot)
+    OrgFsError)
 
 from hyprial.daemon.impl.orgfs.storage.blobs  import BlobIntegrityError
 
 
 
 
-
-from hyprial.daemon.impl.orgfs.storage.space_authority import _ReadStore
-
-
-
-
-from hyprial.daemon.impl.orgfs.document.model import ORGFS_TEXT_MAX, _ContentDocument, _Node, _Space, _Watch, _decode_content_frontier, _facade_locked, _version_number
+from hyprial.daemon.impl.orgfs.document.model import ORGFS_TEXT_MAX, _Node, _Space, _Watch, _facade_locked
 
 def _line_changes(base: list[str], other: list[str]) -> list[tuple[int, int, int, int]]:
     matcher = difflib.SequenceMatcher(a=base, b=other, autojunk=False)
@@ -152,71 +127,11 @@ class FacadeContent:
         )
         return tuple(self._node_info(space, child.node_id) for child in children)
 
-    @_facade_locked
-    def document_authors(self, space_id: str, node: NodeRef) -> tuple[str, ...]:
-        """Return durable content authors for one document node."""
-
-        space = self._space(space_id)
-        item = self._one(space, node)
-        if item.kind != "doc" or item.doc_id is None:
-            raise OrgFsError("invalid-argument", {"message": "not a text document"})
-        store = self._store(space_id)
-        authority = self.space_authority(space_id, store)
-        if authority is not None:
-            return tuple(
-                authority.read(_ReadStore("document_authors", doc_id=item.doc_id))
-            )
-        if store is not None and hasattr(store, "document_authors"):
-            return tuple(store.document_authors(item.doc_id))
-        return tuple(
-            sorted({entry.author for entry in space.history.get(item.node_id, ())})
-        )
-
-
-    @_facade_locked
-    def document_covers_member_add(
-        self, space_id: str, node: NodeRef, user: str
-    ) -> bool:
-        """Read the document's durable causal relation to the latest member add."""
-
-        space = self._space(space_id)
-        item = self._one(space, node)
-        if item.kind != "doc" or item.doc_id is None:
-            raise OrgFsError("invalid-argument", {"message": "not a text document"})
-        store = self._store(space_id)
-        authority = self.space_authority(space_id, store)
-        if authority is not None:
-            return bool(
-                authority.read(
-                    _ReadStore(
-                        "document_covers_member_add",
-                        doc_id=item.doc_id,
-                        author=user,
-                    )
-                )
-            )
-        if store is not None and hasattr(store, "document_covers_member_add"):
-            return bool(store.document_covers_member_add(item.doc_id, user))
-        return False
-
 
     @_facade_locked
     def read_text(self, space_id: str, node: NodeRef) -> tuple[str, str]:
         _space, item, content = self._read_text_value(space_id, node)
         return content, item.version
-
-
-    @_facade_locked
-    def read_text_snapshot(self, space_id: str, node: NodeRef) -> TextReadSnapshot:
-        """Return text, version, and canonical identity from one owner snapshot."""
-
-        space, item, content = self._read_text_value(space_id, node)
-        return TextReadSnapshot(
-            content=content,
-            version=item.version,
-            node=self._node_info(space, item.node_id),
-            content_revision=hashlib.sha256(self._content_doc(space, item.doc_id).export()).hexdigest(),
-        )
 
 
     def _read_text_value(
@@ -234,17 +149,6 @@ class FacadeContent:
             raise self._content_pending(space, item)
         return space, item, content.value()
 
-
-    def _base_text(self, space: _Space, node: _Node, base_version: str) -> str:
-        """Hook: the text ``base_version`` names for a three-way merge.
-
-        Legacy: the node's entry in the in-memory version snapshot.
-        """
-
-        snapshot = space.snapshots.get(base_version)
-        if snapshot is None or node.node_id not in snapshot:
-            raise OrgFsError("stale-write", {"baseVersion": base_version})
-        return snapshot[node.node_id].content.decode(errors="replace")
 
     def _three_way(self, base: str, current: str, requested: str) -> str:
         if current == base:
@@ -400,10 +304,6 @@ class FacadeContent:
         except BlobIntegrityError as exc:
             raise self._content_pending(space, item, local_state="corrupt") from exc
         except Exception as exc:
-            if getattr(exc, "code", None) == "purged":
-                raise OrgFsError(
-                    "purged", dict(getattr(exc, "details", {}) or {})
-                ) from exc
             raise self._content_pending(space, item) from exc
 
 
@@ -438,14 +338,7 @@ class FacadeContent:
             )
         digest = hashlib.sha256(content).hexdigest()
         if self.blobs is not None and hasattr(self.blobs, "put"):
-            try:
-                digest = self.blobs.put(space_id, content, reason="own-write") or digest
-            except Exception as exc:
-                if getattr(exc, "code", None) == "purged":
-                    raise OrgFsError(
-                        "purged", dict(getattr(exc, "details", {}) or {})
-                    ) from exc
-                raise
+            digest = self.blobs.put(space_id, content, reason="own-write") or digest
         created_new = existing is None
         if existing is None:
             parent, name = self._parent_for_new(space, node)
@@ -514,180 +407,3 @@ class FacadeContent:
         return watcher
 
 
-    @_facade_locked
-    def changes_since(
-        self, space_id: str, glob: str = "*", since_version: str | None = None
-    ) -> tuple[ChangeEvent, ...]:
-        """Return the polling watch projection in commit order."""
-
-        self._space(space_id)
-        cutoff = _version_number(since_version) if since_version is not None else -1
-        with self._lock:
-            events = tuple(self._events.get(space_id, ()))
-        return tuple(
-            event
-            for event in events
-            if _version_number(event.node.version) > cutoff
-            and fnmatch.fnmatch(event.node.path, glob)
-        )
-
-
-    @_facade_locked
-    def status(self, space_id: str) -> SpaceStatus:
-        self._space(space_id)
-        store = self._store(space_id)
-        unconfirmed = (
-            int(store.unconfirmed_commits())
-            if store and hasattr(store, "unconfirmed_commits")
-            else 0
-        )
-        holders: tuple[tuple[str, bool], ...] = (
-            tuple(store.holders_seen())
-            if store and hasattr(store, "holders_seen")
-            else ()
-        )
-        parked: tuple[tuple[str, int], ...] = (
-            tuple(store.parked_commits())
-            if store and hasattr(store, "parked_commits")
-            else ()
-        )
-        return SpaceStatus(
-            space_id,
-            unconfirmed,
-            tuple(node for node, durable in holders if durable),
-            tuple(node for node, _durable in holders),
-            parked,
-        )
-
-
-    @_facade_locked
-    def parked_commits(self, space_id: str) -> tuple[tuple[str, int], ...]:
-        """Read only the pending table; never scan committed history."""
-
-        self._space(space_id)
-        store = self._store(space_id)
-        return (
-            tuple(store.parked_commits())
-            if store is not None and hasattr(store, "parked_commits")
-            else ()
-        )
-
-
-    def export_tree_update(self, space_id: str, state: bytes | None = None) -> bytes:
-        return self._space(space_id).tree.get_update(state)
-
-
-    @_facade_locked
-    def apply_tree_update(self, space_id: str, update: bytes) -> None:
-        space = self._space(space_id)
-        space.tree.apply_update(update)
-        materialized = space.tree.materialize()
-        for node_id, raw in materialized.items():
-            if node_id not in space.nodes:
-                space.nodes[node_id] = _Node(
-                    node_id=node_id,
-                    parent=raw.get("parent"),
-                    name=raw.get("name", ""),
-                    kind=raw.get("kind", "doc"),
-                    doc_id=raw.get("doc_id"),
-                    blob_hash=raw.get("blob_hash"),
-                    size=(
-                        raw.get("size") if type(raw.get("size")) is int else None
-                    ),
-                    required_content_frontier=_decode_content_frontier(
-                        raw.get("contentFrontier")
-                    ),
-                    ref_size=(
-                        raw.get("refSize")
-                        if type(raw.get("refSize")) is int
-                        else None
-                    ),
-                    ref_sha256=(
-                        raw.get("refSha256")
-                        if isinstance(raw.get("refSha256"), str)
-                        else None
-                    ),
-                    deleted=bool(raw.get("deleted", False)),
-                    modified_by=self.author,
-                )
-                if (
-                    raw.get("doc_id")
-                    and self._content_doc(space, raw["doc_id"], None) is None
-                ):
-                    self._put_content_doc(space, raw["doc_id"], _ContentDocument())
-            else:
-                node = space.nodes[node_id]
-                node.parent = raw.get("parent")
-                node.name = raw.get("name", node.name)
-                node.kind = raw.get("kind", node.kind)
-                node.doc_id = raw.get("doc_id", node.doc_id)
-                node.blob_hash = raw.get("blob_hash", node.blob_hash)
-                node.size = (
-                    raw.get("size") if type(raw.get("size")) is int else None
-                )
-                node.required_content_frontier = _decode_content_frontier(
-                    raw.get("contentFrontier")
-                )
-                node.ref_size = (
-                    raw.get("refSize")
-                    if type(raw.get("refSize")) is int
-                    else None
-                )
-                node.ref_sha256 = (
-                    raw.get("refSha256")
-                    if isinstance(raw.get("refSha256"), str)
-                    else None
-                )
-                node.deleted = raw.get("deleted", node.deleted)
-
-
-    def export_content_update(self, space_id: str, node: NodeRef) -> bytes:
-        space = self._space(space_id)
-        item = self._one(space, node)
-        if item.kind != "doc":
-            raise OrgFsError("invalid-argument")
-        return self._content_doc(space, item.doc_id or "").export()
-
-
-    @_facade_locked
-    def hydrate_content_snapshot(
-        self, space_id: str, node: NodeRef, snapshot: bytes, *, expected_doc_id: str
-    ) -> None:
-        """Merge a fetched snapshot only into its captured document incarnation."""
-
-        space = self._space(space_id)
-        item = self._one(space, node)
-        if item.kind != "doc":
-            raise OrgFsError("invalid-argument", {"message": "not a text document"})
-        if item.doc_id != expected_doc_id:
-            raise OrgFsError(
-                "snapshot-barrier",
-                {"retiredDocId": expected_doc_id, "replacementDocId": item.doc_id},
-            )
-        if self._content_doc(space, item.doc_id, None) is None:
-            raise OrgFsError("invalid-argument", {"message": "not a text document"})
-        self._content_doc(space, item.doc_id).doc.apply_update(snapshot)
-        pending = space.birth_pending.get(item.node_id)
-        if (
-            pending is not None
-            and not self._remote_birth_content_pending(space, item)
-        ):
-            # Snapshot hydration is the other way a held-back remote birth's
-            # content can arrive; finalize it with the origin's attribution.
-            space.birth_pending.pop(item.node_id, None)
-            self._finish(
-                space, [item.node_id], "created", author=pending[0], actor=pending[1]
-            )
-
-
-    @_facade_locked
-    def apply_content_update(
-        self, space_id: str, node: NodeRef, update: bytes
-    ) -> NodeInfo:
-        space = self._space(space_id)
-        item = self._one(space, node)
-        if item.kind != "doc":
-            raise OrgFsError("invalid-argument")
-        self._content_doc(space, item.doc_id or "").update(update)
-        self._finish(space, [item.node_id], "content")
-        return self._node_info(space, item.node_id)

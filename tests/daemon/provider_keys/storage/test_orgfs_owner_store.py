@@ -9,7 +9,7 @@ import pytest
 from hyprial.daemon.impl.orgfs.api import OrgFsError
 from hyprial.daemon.impl.orgfs.docs import LocalOrgFs
 from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
-from hyprial.daemon.impl.orgfs.storage.store.vocabulary import StoreError
+from hyprial.daemon.impl.orgfs.storage.vocabulary import StoreError
 from hyprial.daemon.impl.provider_keys import storage
 from hyprial.daemon.impl.provider_keys.storage.orgfs import OrgFsOwnerStore
 from hyprial.identity import ProviderKeys

@@ -8,8 +8,9 @@
 # - A rejection is observed as "nothing changes for a settle period" after a
 #   positive sync point (the member has seen the new member table), using
 #   ``holds``.  Forged updates are C2's ``forge_update`` territory.
-# - Legacy judges the demoted member's write against the member table the
-#   writer had seen (causal meta frontier) and accepts it: legacy_xfail (Q2).
+# - Design §3.1 / §9 R18: a member demoted to read-only while apart still
+#   passes the node gate, so the writes it made before it learned of the
+#   demotion are accepted (known problem).  That contract stays a strict xfail.
 """Remote-write admission contracts observed through the facade."""
 
 from __future__ import annotations
@@ -59,9 +60,11 @@ def test_a_read_only_member_cannot_change_the_owner_state(orgfs_impl, tmp_path) 
     holds(lambda: _assert_text(owner.facade, space_id, "shared.md", before[1]))
 
 
-@pytest.mark.legacy_xfail(
-    reason="plan Q2 / design §3.1: writes are judged by the receiver's current member "
-    "table; legacy accepts a write the member made before it learned of its demotion"
+@pytest.mark.xfail(
+    strict=True,
+    reason="design §3.1: a member demoted to read-only while apart still passes the node "
+    "gate, so its writes made before it learned of the demotion are accepted "
+    "(known problem, design §9 R18)",
 )
 def test_writes_of_a_member_demoted_while_apart_do_not_change_the_owner(
     orgfs_impl, tmp_path

@@ -1,7 +1,7 @@
 """Durable reopen and source adapter regressions without personal orgs.
 
 Decision (phase D, package T3, 2026-11-25): the durable work space is held by
-``StateOrgFsRuntime`` (built directly, independent of ``HYPRIAL_ORGFS_IMPL``),
+``OrgFsRuntime`` (built directly, independent of ``HYPRIAL_ORGFS_IMPL``),
 not by a journal store handed to the legacy facade.  The companion
 ``test_revision.py`` was deleted: the contract suite's ``content/test_revision.py``
 pins the same durable content revision on every implementation.
@@ -9,7 +9,7 @@ pins the same durable content revision on every implementation.
 import json
 from dataclasses import replace
 
-from hyprial.daemon.impl.orgfs.composition.state import StateOrgFsRuntime
+from hyprial.daemon.impl.orgfs.composition.state import OrgFsRuntime
 from tests.daemon.org_membership.migration.test_migration import OWNER, fixture, implementation, run_step
 
 
@@ -43,7 +43,7 @@ def test_report_is_private_and_source_exception_is_not_empty_done(tmp_path):
 def test_durable_work_space_migration_survives_reopen(tmp_path):
     implementation()
     sid = "00000000-0000-0000-0000-000000000021"
-    runtime = StateOrgFsRuntime(tmp_path / "disk", node_id="node", author="user:" + OWNER)
+    runtime = OrgFsRuntime(tmp_path / "disk", node_id="node", author="user:" + OWNER)
     fs = runtime.facade
     try:
         work = fs.create_space("group-team", space_id=sid)

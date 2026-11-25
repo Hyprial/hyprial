@@ -1,5 +1,5 @@
 # Decisions:
-# - Phase D2: runtime-level tests build ``StateOrgFsRuntime`` nodes on the
+# - Phase D2: runtime-level tests build ``OrgFsRuntime`` nodes on the
 #   contract suite's in-process ``FakeNetwork`` (presence ``online_for``,
 #   online edges ``observe_for``), the same seam ``StateImpl.connect`` uses.
 # - ``Peers`` keeps every node of one test, closes them in reverse order and
@@ -8,7 +8,7 @@
 #   builds a real org directory space with device rows and then turns trust
 #   off (the runtime reads the flag at every gate call, as the mesh did).
 # - Phase F1: ``Peer``/``Peers.add`` take an optional ``runtime_class`` (default
-#   ``StateOrgFsRuntime``) so one test can run the legacy ``OrgFsRuntime`` on
+#   ``OrgFsRuntime``) so one test can run the legacy ``OrgFsRuntime`` on
 #   the same network seam.
 # - ``pull_all`` runs one design §4.3 round between every ordered pair of
 #   online nodes, which is what anti-entropy would do eventually.
@@ -23,7 +23,7 @@ import time
 from typing import Any, TypeVar
 
 from hyprial.daemon.impl.orgfs import OrgFsError
-from hyprial.daemon.impl.orgfs.composition.state import StateOrgFsRuntime
+from hyprial.daemon.impl.orgfs.composition.state import OrgFsRuntime
 from hyprial.daemon.impl.orgfs.state.layout import document_paths
 from hyprial.daemon.impl.orgfs.sync import SyncError
 
@@ -46,11 +46,11 @@ class Events:
 
 
 class Peer:
-    """One ``StateOrgFsRuntime`` bound to a ``FakeNetwork``."""
+    """One ``OrgFsRuntime`` bound to a ``FakeNetwork``."""
 
     def __init__(
         self, network: FakeNetwork, root: Path, node_id: str, author: str, *, trust: bool,
-        runtime_class: Any = StateOrgFsRuntime,
+        runtime_class: Any = OrgFsRuntime,
     ) -> None:
         self.network = network
         self.runtime_class = runtime_class
@@ -59,10 +59,10 @@ class Peer:
         self.author = author
         self.trust = trust
         self.events = Events()
-        self.runtime: StateOrgFsRuntime | None = None
+        self.runtime: OrgFsRuntime | None = None
         self.open()
 
-    def open(self) -> StateOrgFsRuntime:
+    def open(self) -> OrgFsRuntime:
         runtime = self.runtime_class(
             self.state_dir,
             node_id=self.node_id,
@@ -91,7 +91,7 @@ class Peer:
             self.network.forget(self.node_id)
             runtime.close()
 
-    def reopen(self) -> StateOrgFsRuntime:
+    def reopen(self) -> OrgFsRuntime:
         self.close()
         return self.open()
 
@@ -118,7 +118,7 @@ class Peers:
         self.nodes: list[Peer] = []
 
     def add(
-        self, node_id: str, author: str, *, trust: bool = True, runtime_class: Any = StateOrgFsRuntime,
+        self, node_id: str, author: str, *, trust: bool = True, runtime_class: Any = OrgFsRuntime,
     ) -> Peer:
         self.network.add_node(node_id)
         peer = Peer(self.network, self.root, node_id, author, trust=trust, runtime_class=runtime_class)

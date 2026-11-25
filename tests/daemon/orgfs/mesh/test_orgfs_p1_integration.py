@@ -1,6 +1,6 @@
 # Decisions:
 # - Phase D, package T2: the P1 acceptance scenarios that remain run on
-#   ``StateOrgFsRuntime`` over isolated loopback Zenoh (the cold-cache blob
+#   ``OrgFsRuntime`` over isolated loopback Zenoh (the cold-cache blob
 #   fetch, which is the only place ``await_content`` on a blob crosses the real
 #   transport) or over the in-process network (the restarted owner).
 # - Deleted, each covered elsewhere on the new runtime:
@@ -34,7 +34,7 @@ import time
 import pytest
 
 from hyprial.daemon.impl.orgfs.api import OrgFsError
-from hyprial.daemon.impl.orgfs.composition.state import StateOrgFsRuntime
+from hyprial.daemon.impl.orgfs.composition.state import OrgFsRuntime
 from hyprial.daemon.impl.transport import ZenohConfig, ZenohTransport
 from tests.daemon.orgfs.mesh.replication.state_support import StatePeers, open_state_peers
 from tests.daemon.orgfs.runtime_state.support import Peer, eventually, text
@@ -66,9 +66,9 @@ def test_cold_cache_blob_unavailable_then_fetches_when_holder_returns(tmp_path) 
     is_online = online.__contains__
     owner_transport = ZenohTransport(ZenohConfig(listen=(endpoint,)))
     reader_transport = ZenohTransport(ZenohConfig(connect=(endpoint,)))
-    owner = StateOrgFsRuntime(tmp_path / "owner", node_id="node-owner", author="user:owner", trust_tailnet_members=True)
-    reader = StateOrgFsRuntime(tmp_path / "reader", node_id="node-reader", author="user:reader", trust_tailnet_members=True)
-    returned_owner: StateOrgFsRuntime | None = None
+    owner = OrgFsRuntime(tmp_path / "owner", node_id="node-owner", author="user:owner", trust_tailnet_members=True)
+    reader = OrgFsRuntime(tmp_path / "reader", node_id="node-reader", author="user:reader", trust_tailnet_members=True)
+    returned_owner: OrgFsRuntime | None = None
     try:
         time.sleep(0.3)
         owner.bind_transport(owner_transport, supplier_online=is_online)
@@ -98,7 +98,7 @@ def test_cold_cache_blob_unavailable_then_fetches_when_holder_returns(tmp_path) 
         )
 
         online.add("node-owner")
-        returned_owner = StateOrgFsRuntime(
+        returned_owner = OrgFsRuntime(
             tmp_path / "owner", node_id="node-owner", author="user:owner", trust_tailnet_members=True
         )
         time.sleep(0.2)

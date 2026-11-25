@@ -13,7 +13,6 @@ from hyprial.daemon.impl.orgfs.api import (
     SpaceStatus)
 from hyprial.daemon.impl.orgfs.docs import LocalOrgFs
 from hyprial.daemon.impl.orgfs.document.model import TreeDocument
-from hyprial.daemon.impl.orgfs.mesh import OrgFsMesh
 
 __all__ = [
     "ChangeEvent",
@@ -25,7 +24,6 @@ __all__ = [
     "NodeRef",
     "OrgFs",
     "OrgFsError",
-    "OrgFsMesh",
     "SpaceInfo",
     "SpaceStatus",
     "TreeDocument",

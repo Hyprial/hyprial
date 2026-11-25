@@ -3,7 +3,10 @@
 The bridge receives an already admitted operator with a real operator path
 policy. Daemon authentication is not simulated; HTTP projection/auth boundaries
 are exercised separately. Only opaque IDs, clock/frontier values and the
-isolated filesystem root are normalized, never content, versions or receipts.
+isolated filesystem root are normalized, never content or receipts.  Package S
+(2026-11-25): an OrgFS ``version`` is an opaque digest over rows that carry
+random ids, so each distinct version is bound to the next ``orgfs-version-N``
+placeholder in the order it is first seen (a setup node's version first).
 """
 
 from __future__ import annotations
@@ -24,10 +27,10 @@ SPACE = "b363d762-a06e-496d-94d0-e4695b66e206"
 NODE = "89fd8adf4f8f43f48f475bef6914c61f"
 DOC = "doc-b6fa1d65-6c38-4232-a3ab-15cdc45f8949"
 AT = "2026-11-03T09:00:00Z"
+VERSIONS = tuple(f"orgfs-version-{index}" for index in range(1, 9))
 ROOT = "/tmp/hyprial-write-example"
 CONTENT = b"example-not-a-credential"
 SHA = hashlib.sha256(CONTENT).hexdigest()
-VERSION = "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
 URI = f"orgfs:example:{SPACE}:{NODE}"
 HANDLERS = {spec.name: handler for spec, handler in BATCH4_ORGFS_BINDINGS}
 
@@ -73,6 +76,8 @@ class Observation:
             assert actual.startswith("doc-") and str(UUID(actual[4:])) == actual[4:]
         elif fixed == AT:
             assert actual.endswith("Z")
+        elif fixed in VERSIONS:
+            assert isinstance(actual, str) and actual
         else:
             raise AssertionError("only opaque values may be normalized")
         self.replacements[actual] = fixed
@@ -95,6 +100,24 @@ class Observation:
         self.bind(node.node_id, NODE)
         if node.doc_id:
             self.bind(node.doc_id, DOC)
+        self.bind_version(node.version)
+
+    def bind_version(self, actual):
+        if actual in self.replacements:
+            return
+        bound = sum(1 for fixed in self.replacements.values() if fixed in VERSIONS)
+        self.bind(actual, VERSIONS[bound])
+
+    def bind_versions(self, value):
+        if isinstance(value, Mapping):
+            for key, item in value.items():
+                if key == "version" and isinstance(item, str):
+                    self.bind_version(item)
+                else:
+                    self.bind_versions(item)
+        elif isinstance(value, (tuple, list)):
+            for item in value:
+                self.bind_versions(item)
 
     def call(self, method, params):
         result = HANDLERS[method](self.app, self.transform(params, inverse=True))
@@ -108,6 +131,7 @@ class Observation:
                 self.bind(result["node_id"], NODE)
                 if result.get("doc_id"):
                     self.bind(result["doc_id"], DOC)
+        self.bind_versions(result)
         return self.transform(result)
 
 

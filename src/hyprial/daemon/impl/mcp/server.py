@@ -481,7 +481,7 @@ def create_mcp_server(
             params["sinceVersion"] = sinceVersion
         return await invoke(ctx, "orgfs.watch", params, mutation=False)
 
-    @server.tool(description="Show orgfs holders and unconfirmed commits.")
+    @server.tool(description="Show orgfs sync state, online holders, pending content and rejected updates.")
     async def orgfs_status(spaceId: NonEmpty, ctx: Context) -> dict[str, Any]:
         return await invoke(ctx, "orgfs.status", {"spaceId": spaceId}, mutation=False)
 

@@ -1,6 +1,6 @@
 # Decisions:
 # - Phase D T1: ``test_member_written_directory_document_binding_is_ignored``
-#   runs on ``StateOrgFsRuntime`` (``state_apps``) whatever the rehearsal
+#   runs on ``OrgFsRuntime`` (``state_apps``) whatever the rehearsal
 #   switch says.  A member's write of the org meta record is refused locally
 #   with ``protected-path`` (design §3.4), not ``not-a-member``; the reader
 #   must still ignore the binding.
@@ -28,8 +28,7 @@ from hyprial.daemon.impl.org.network.ipc import (
 )
 from hyprial.daemon.impl.org.network.policy import ACL_POLICY_DOC
 from hyprial.daemon.impl.orgfs.api import OrgFsError
-from hyprial.daemon.impl.orgfs.composition.state import StateOrgFsRuntime
-from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
+from hyprial.daemon.impl.orgfs.composition.state import OrgFsRuntime
 from hyprial.identity import ORG_META_DOC, default_role_grants_document
 from hyprial.identity.impl.device import DeviceRecord, address_path, write_device_record
 from hyprial.kernel import DaemonRequestError
@@ -81,7 +80,7 @@ def apps(tmp_path: Path):
 
 @pytest.fixture
 def state_apps(tmp_path: Path):
-    yield from _apps(tmp_path, StateOrgFsRuntime)
+    yield from _apps(tmp_path, OrgFsRuntime)
 
 
 def _apps(tmp_path: Path, runtime_class: Any):
@@ -702,7 +701,7 @@ def test_member_written_directory_document_binding_is_ignored(state_apps) -> Non
 
     state = owner.hyprial_home / "state"
     owner._runtime.close()
-    member_runtime = StateOrgFsRuntime(
+    member_runtime = OrgFsRuntime(
         state, node_id="node-b", author=f"user:{BOB}"
     )
     try:
@@ -720,7 +719,7 @@ def test_member_written_directory_document_binding_is_ignored(state_apps) -> Non
     finally:
         member_runtime.close()
 
-    reopened = StateOrgFsRuntime(
+    reopened = OrgFsRuntime(
         state, node_id="node-a", author=f"user:{OWNER}"
     )
     try:

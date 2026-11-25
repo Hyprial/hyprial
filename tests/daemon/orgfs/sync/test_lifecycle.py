@@ -123,10 +123,11 @@ def test_legacy_journal_keys_have_no_subscriber_and_no_answer(bus: Bus, tmp_path
     declared = [expression for _node, expression, _cb in bus.subscribers + bus.handlers]
     assert all("/org/fs3/" in e or e == keys.prefix + "/org/fs/blob/*" for e in declared)
     probe = bus.session("node-probe")
-    assert not probe.query(keys.orgfs_sync(SPACE, "node-a"), b"{}")
-    assert not probe.query(keys.orgfs_log_writer(SPACE, "tree", "w"), b"{}")
-    assert bus.deliver("node-probe", keys.orgfs_log(SPACE, "tree", "w", 1), b"{}") == 0
-    assert bus.deliver("node-probe", keys.orgfs_log_any(SPACE).replace("**", "x"), b"{}") == 0
+    journal = f"{keys.prefix}/org/fs/{SPACE}"
+    assert not probe.query(f"{journal}/sync/node-a", b"{}")
+    assert not probe.query(f"{journal}/log/tree/w/*", b"{}")
+    assert bus.deliver("node-probe", f"{journal}/log/tree/w/1", b"{}") == 0
+    assert bus.deliver("node-probe", f"{journal}/log/x", b"{}") == 0
     assert a.host.calls == []
     a.close()
 

@@ -1,7 +1,7 @@
 # Decisions:
 # - Phase D, package T2: the two tests that failed on the state runtime (the
 #   late-binding replay, and the non-host replay that must not use directory
-#   credit) construct ``StateOrgFsRuntime``; the replayed supplier is observed
+#   credit) construct ``OrgFsRuntime``; the replayed supplier is observed
 #   on ``StateSpaceSync.sync_from`` and the announce carries ``protocol: 3``.
 #   The presence ordering they pin is ``RuntimeDirectory``'s and unchanged.
 #   The other tests pass on both runtimes and still name ``OrgFsRuntime``,
@@ -15,8 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from hyprial.daemon.impl.orgfs.composition.state import StateOrgFsRuntime
-from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
+from hyprial.daemon.impl.orgfs.composition.state import OrgFsRuntime
 from hyprial.daemon.impl.orgfs.sync.space import StateSpaceSync
 from hyprial.daemon.impl.transport import KeySpace, LivelinessDirectory, TransportSample
 from hyprial.daemon.impl.transport.presence_actor import PresenceAuthority
@@ -279,7 +278,7 @@ def test_committed_supplier_delete_still_fences_queued_sync(tmp_path, monkeypatc
 def test_late_binding_replays_supplier_without_replacing_inbox_wake(tmp_path, monkeypatch):
     session = ControlledSession()
     directory = LivelinessDirectory(session)
-    runtime = StateOrgFsRuntime(tmp_path / "reader", node_id="node-b", author="user:reader")
+    runtime = OrgFsRuntime(tmp_path / "reader", node_id="node-b", author="user:reader")
     observed = threading.Event()
     inbox_wakes = []
     try:
@@ -308,7 +307,7 @@ def test_late_binding_replays_supplier_without_replacing_inbox_wake(tmp_path, mo
 def test_non_host_replay_cannot_consume_directory_credit_or_drop_announce(tmp_path, monkeypatch):
     session = ControlledSession()
     directory = LivelinessDirectory(session)
-    runtime = StateOrgFsRuntime(tmp_path / "reader", node_id="node-b", author="user:reader")
+    runtime = OrgFsRuntime(tmp_path / "reader", node_id="node-b", author="user:reader")
     entered, release, applied = (threading.Event() for _ in range(3))
     original_command = runtime._on_directory_command
     original_apply = runtime._apply_announce

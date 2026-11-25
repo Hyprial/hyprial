@@ -1,6 +1,6 @@
 # Decisions:
 # - Phase D, package T2: ``test_d3_liveliness_flicker_settles_holder_and_fetches_blob``
-#   runs on ``StateOrgFsRuntime`` over loopback Zenoh.  Its hand-written
+#   runs on ``OrgFsRuntime`` over loopback Zenoh.  Its hand-written
 #   withdraw announce carries ``protocol: 3``, and the forced fetch failure
 #   raises the sync package's ``SyncError`` (the state runtime catches that,
 #   not the journal's ``StoreError``).  ``test_d5...`` passes on both runtimes
@@ -17,8 +17,7 @@ import time
 import pytest
 
 from hyprial.daemon.impl.orgfs.api import OrgFsError
-from hyprial.daemon.impl.orgfs.composition.state import StateOrgFsRuntime
-from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
+from hyprial.daemon.impl.orgfs.composition.state import OrgFsRuntime
 from hyprial.daemon.impl.orgfs.sync import SyncError
 from hyprial.daemon.impl.transport import KeySpace, ZenohConfig, ZenohTransport
 
@@ -69,9 +68,9 @@ def test_d3_liveliness_flicker_settles_holder_and_fetches_blob(
     owner_transport = ZenohTransport(ZenohConfig(listen=(endpoint,)))
     reader_transport = ZenohTransport(ZenohConfig(connect=(endpoint,)))
     # Holder settlement models private sidecar admission (§7), retaining presence gates.
-    owner = StateOrgFsRuntime(tmp_path / "owner", node_id="node-a", author="user:owner", trust_tailnet_members=True)
+    owner = OrgFsRuntime(tmp_path / "owner", node_id="node-a", author="user:owner", trust_tailnet_members=True)
     events: list[tuple[str, str, dict[str, object]]] = []
-    reader = StateOrgFsRuntime(
+    reader = OrgFsRuntime(
         tmp_path / "reader",
         node_id="node-b",
         author="user:reader",

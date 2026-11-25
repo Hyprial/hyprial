@@ -1,3 +1,7 @@
+# Decision record (OrgFS package S, 2026-11-25): the journal key builders
+# (``orgfs_log*``, ``orgfs_sync``, ``orgfs_snapshot``) are deleted with the
+# journal mesh.  Generic query tests use the protocol 3 sync key; the journal
+# key layout is spelled literally where a test still proves it is unused.
 """Key layout of the OrgFS protocol 3 sync and broadcast channels."""
 
 from __future__ import annotations
@@ -33,8 +37,8 @@ def test_orgfs3_keys_reject_unsafe_segments(space_id: str, node: str) -> None:
 def test_orgfs3_keys_are_disjoint_from_the_journal_keys() -> None:
     keys = KeySpace()
     legacy = (
-        keys.orgfs_log_any("space"),
-        keys.orgfs_sync("space", "node"),
+        f"{keys.prefix}/org/fs/space/log/**",
+        f"{keys.prefix}/org/fs/space/sync/node",
         keys.orgfs_announce("node"),
     )
     for expression in legacy:

@@ -12,7 +12,6 @@ import pytest
 from hyprial.daemon.impl.orgfs.storage.blobs import (
     BlobIntegrityError,
     BlobMissing,
-    BlobPurged,
     BlobStore)
 
 
@@ -74,19 +73,6 @@ def test_review_fix_14_integrity_failure_uses_frozen_wire_code(tmp_path: Path) -
         )
         assert response["code"] == "unknown-blob"
         assert response["details"] == {"digest": digest}
-
-
-def test_purge_checker_is_space_specific_and_does_not_delete_bytes(tmp_path: Path) -> None:
-    digest = hashlib.sha256(b"retained").hexdigest()
-    with BlobStore(tmp_path, purge_checker=lambda space, value: space == "purged" and value == digest) as blobs:
-        blobs.put("kept", b"retained", reason="tree-ref")
-        # The P1 provider hook can reject one space while another still reads
-        # the same content-addressed bytes.
-        with pytest.raises(BlobPurged) as purged:
-            blobs.get("purged", digest)
-        assert purged.value.code == "purged"
-        assert blobs.get("kept", digest) == b"retained"
-        assert blobs.has(digest)
 
 
 def _unpin_fixture(blobs) -> str:

@@ -1,5 +1,5 @@
 # Decision (phase D, package T3, 2026-11-25): the daemon surface test builds
-# the daemon's OrgFS runtime as ``StateOrgFsRuntime`` (the bridge's runtime
+# the daemon's OrgFS runtime as ``OrgFsRuntime`` (the bridge's runtime
 # class is replaced for the test, independent of ``HYPRIAL_ORGFS_IMPL``) and
 # checks the refused read-only write through the request surface instead of
 # the journal's commit table.
@@ -15,13 +15,12 @@ from hyprial.shell.impl.cli.commands.common.root import app
 from hyprial.kernel.impl.contracts.daemon.ipc_errors import DaemonRequestError
 from hyprial.daemon.impl.application import DaemonApplication
 from hyprial.daemon.impl.application.messaging import orgfs_bridge
-from hyprial.daemon.impl.orgfs.composition.state import StateOrgFsRuntime
-from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
+from hyprial.daemon.impl.orgfs.composition.state import OrgFsRuntime
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _deep_module_daemon_dependencies
 
 
 def test_daemon_orgfs_surface_and_local_ro_gate(tmp_path, monkeypatch):
-    monkeypatch.setattr(orgfs_bridge, "OrgFsRuntime", StateOrgFsRuntime)
+    monkeypatch.setattr(orgfs_bridge, "OrgFsRuntime", OrgFsRuntime)
     application = DaemonApplication(
         state_dir=tmp_path / "state",
         socket_path=tmp_path / "daemon.sock",
@@ -52,7 +51,7 @@ def test_daemon_orgfs_surface_and_local_ro_gate(tmp_path, monkeypatch):
                 "orgfs.write", {"spaceId": space_id, "path": "blocked.md", "text": "no"}
             )
         assert rejected.value.code == "not-a-member"
-        assert isinstance(application._orgfs_runtime, StateOrgFsRuntime)
+        assert isinstance(application._orgfs_runtime, OrgFsRuntime)
         listed = application._handle_orgfs("orgfs.ls", {"spaceId": space_id, "path": ""})
         assert [entry["path"] for entry in listed["nodes"]] == ["readme.md"]
     finally:

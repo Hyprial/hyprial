@@ -1,7 +1,7 @@
 # Decisions:
 # - Phase D, package T2: the tests that read the journal store or the legacy
 #   mesh (``stores[...]``, ``unbroadcast``, ``_meshes``, a monkeypatched
-#   ``_mesh``) run on ``StateOrgFsRuntime`` through ``state_peers``
+#   ``_mesh``) run on ``OrgFsRuntime`` through ``state_peers``
 #   (``mesh/replication/state_support.py``) and assert only reads, device rows,
 #   logged events and errors.  The other tests here construct ``OrgFsRuntime``
 #   and pass under the rehearsal switch; package S points that name at the new
@@ -21,6 +21,13 @@
 #   until the next drain.
 # - The rejected-supplier event of protocol 3 names the sender as ``peer``
 #   (``orgfs.update.rejected`` with ``reason=supplier-offline``).
+# - Package S: the bus's ``drop_updates`` hole drops protocol 3 update puts
+#   (it named the deleted journal ``/log/`` keys) and counts them in ``dropped``;
+#   only the conversations two-node probes use it.
+# - Package S: ``anti_entropy_tick`` on the state runtime first drains the
+#   verification backlog (F1 round 2) and then runs the due tick; a broken
+#   ``spaces()`` makes both log ``orgfs.anti_entropy.failed``, so the test
+#   asserts every failure is a warning naming the cause, not a count of one.
 """Deterministic OrgFS catch-up after transport callback replay completes."""
 
 from __future__ import annotations
@@ -66,6 +73,7 @@ class _Bus:
         self.subscribers = []
         self.handlers = []
         self.drop_updates = False
+        self.dropped = 0
         self.blocked_updates: set[tuple[str, str]] = set()
 
     def session(self, node: str = "") -> "_Session":
@@ -83,7 +91,8 @@ class _Session:
         return SimpleNamespace(callbacks_complete=self.callbacks_complete, closed=False)
 
     def put(self, key, payload):
-        if self.bus.drop_updates and "/org/fs/" in key and "/log/" in key:
+        if self.bus.drop_updates and "/org/fs3/update/" in key:
+            self.bus.dropped += 1
             return
         for target, expression, callback in tuple(self.bus.subscribers):
             if (self.node, target) in self.bus.blocked_updates:
@@ -737,8 +746,8 @@ def test_anti_entropy_tick_never_raises(tmp_path, monkeypatch) -> None:
         monkeypatch.setattr(runtime.facade, "spaces", broken_spaces)
         assert runtime.anti_entropy_tick(100.0 + _DIRECTORY_SYNC_INTERVAL_SECONDS) == 0
         failures = [row for row in events if row[1] == "orgfs.anti_entropy.failed"]
-        assert [level for level, _event, _fields in failures] == ["warn"]
-        assert "fixture spaces failure" in failures[0][2]["error"]
+        assert failures and {level for level, _event, _fields in failures} == {"warn"}
+        assert all("fixture spaces failure" in row[2]["error"] for row in failures)
     finally:
         runtime.close()
 

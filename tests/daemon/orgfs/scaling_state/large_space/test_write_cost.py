@@ -6,7 +6,7 @@
 #   with counters that do not depend on the machine: the nodes visited
 #   through ``space.nodes`` during one write, and the peak bytes Python
 #   allocates during it (a table copy allocates in proportion to its size).
-# - Built through ``StateOrgFsRuntime`` with fsync skipped for the fill only;
+# - Built through ``OrgFsRuntime`` with fsync skipped for the fill only;
 #   ``ORGFS_SCALING_WRITE_DOCS`` changes the large space (default 10,000).
 # - Each operation is measured several times and the median is compared, so
 #   an occasional tree compaction (every 500 tree records, design §2.3) or a
@@ -22,7 +22,7 @@ import time
 import tracemalloc
 from typing import Any, Callable, Iterator
 
-from hyprial.daemon.impl.orgfs.composition.state import StateOrgFsRuntime
+from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
 
 from ..fsprobe import fsync_disabled
 
@@ -53,8 +53,8 @@ class _CountingNodes(dict):
         return self._count(iter(super().keys()))
 
 
-def _space(path: Path, documents: int) -> tuple[StateOrgFsRuntime, str]:
-    runtime = StateOrgFsRuntime(path, node_id="node-cost", author="user:cost")
+def _space(path: Path, documents: int) -> tuple[OrgFsRuntime, str]:
+    runtime = OrgFsRuntime(path, node_id="node-cost", author="user:cost")
     facade = runtime.facade
     space_id = facade.create_space("cost").space_id
     with fsync_disabled():
@@ -67,7 +67,7 @@ def _space(path: Path, documents: int) -> tuple[StateOrgFsRuntime, str]:
     return runtime, space_id
 
 
-def _operations(runtime: StateOrgFsRuntime, space_id: str) -> dict[str, Callable[[int], object]]:
+def _operations(runtime: OrgFsRuntime, space_id: str) -> dict[str, Callable[[int], object]]:
     facade = runtime.facade
     return {
         "create": lambda i: facade.write_text(space_id, f"d{i % 100:03d}/new{i}.md", "y" * 600),

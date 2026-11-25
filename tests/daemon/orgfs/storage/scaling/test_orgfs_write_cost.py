@@ -1,6 +1,6 @@
 # Decisions (phase D, package T3, 2026-11-25):
 # - The scale-invariance, no-op-rewrite and lock-hold tests build the new
-#   ``StateOrgFsRuntime`` / ``StateOrgFs`` directly (independent of
+#   ``OrgFsRuntime`` / ``LocalOrgFs`` directly (independent of
 #   ``HYPRIAL_ORGFS_IMPL``).  The new store has no state-file checkpoint and no
 #   per-version snapshot layer, so the write cost is the fsync count and the
 #   bytes ``os.write`` puts on disk for one overwrite and one create, compared
@@ -11,8 +11,9 @@
 #   process exit is C1's ``state/test_state_crash.py``
 #   ``test_a_real_process_exit_keeps_confirmed_writes_and_batch_atomicity`` and
 #   the runtime's recovery is ``runtime_state/test_startup.py``.
-# - The two snapshot-layer tests and the history test still describe the
-#   journal store and are left for its deletion (package S).
+# - Package S (2026-11-25): the two snapshot-layer tests and the journal
+#   history test were deleted with the journal store and its per-version
+#   snapshots.
 """One orgfs write must cost the same however large the space is.
 
 2026-10-06: every write rewrote and fsynced the state file of every document
@@ -31,29 +32,13 @@ import threading
 import time
 
 import pytest
-from pycrdt import Doc, Map, Text
 
-from hyprial.daemon.impl.orgfs.composition.state import StateOrgFsRuntime
-from hyprial.daemon.impl.orgfs.document.coordinator import MemoryStores, StateOrgFs
 from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
-from hyprial.daemon.impl.orgfs.storage.store import LocalSpaceStore
+from hyprial.daemon.impl.orgfs.document.coordinator import MemoryStores, LocalOrgFs
 
 
-_HISTORY_DOC_ID = "doc-00000000-0000-0000-0000-000000000001"
-_HISTORY_TREE_ID = "tree-00000000-0000-0000-0000-000000000001"
-
-
-def _space_with_files(path: Path, count: int) -> tuple[OrgFsRuntime, str]:
+def _state_space_with_files(path: Path, count: int) -> tuple[OrgFsRuntime, str]:
     runtime = OrgFsRuntime(path, node_id="node-cost", author="user:cost")
-    space_id = runtime.facade.create_space("cost").space_id
-    for index in range(count):
-        runtime.facade.write_text(space_id, f"file-{index}.md", "x" * 200)
-    runtime.facade.write_text(space_id, "probe.md", "before")
-    return runtime, space_id
-
-
-def _state_space_with_files(path: Path, count: int) -> tuple[StateOrgFsRuntime, str]:
-    runtime = StateOrgFsRuntime(path, node_id="node-cost", author="user:cost")
     space_id = runtime.facade.create_space("cost").space_id
     for index in range(count):
         runtime.facade.write_text(space_id, f"file-{index}.md", "x" * 200)
@@ -108,46 +93,6 @@ def test_a_write_costs_the_same_in_a_small_and_a_large_space(
         assert small_fsyncs == large_fsyncs, (small, large)
         assert abs(large_bytes - small_bytes) <= 64, (small, large)
         assert large_bytes < 4096, (small, large)
-
-
-def test_unchanged_files_share_their_snapshot_entry_across_versions(
-    tmp_path: Path,
-) -> None:
-    runtime, space_id = _space_with_files(tmp_path, 5)
-    try:
-        space = runtime.facade._spaces[space_id]  # noqa: SLF001
-        first = runtime.facade.write_text(space_id, "probe.md", "one")
-        second = runtime.facade.write_text(space_id, "probe.md", "two")
-        old, new = space.snapshots[first.version], space.snapshots[second.version]
-        untouched = next(
-            node_id for node_id in new if new[node_id].name == "file-0.md"
-        )
-        assert new[untouched] is old[untouched]
-        assert old[first.node_id].content == b"one"
-        assert new[second.node_id].content == b"two"
-    finally:
-        runtime.close()
-
-
-def test_a_delete_only_content_change_is_not_shared_from_the_old_version(
-    tmp_path: Path,
-) -> None:
-    # Reuse is decided per node from its metadata and a content fingerprint.
-    # The CRDT state vector does not move on a delete-only edit, so change the
-    # text that way with the node's metadata untouched: the next version must
-    # still carry the new text, not the previous entry.
-    runtime, space_id = _space_with_files(tmp_path, 1)
-    try:
-        facade = runtime.facade
-        space = facade._spaces[space_id]  # noqa: SLF001
-        node = facade.write_text(space_id, "probe.md", "hello world")
-        del space.contents[node.doc_id].text[0:6]
-
-        layer = facade._snapshot(space)  # noqa: SLF001
-
-        assert layer[node.node_id].content == b"world"
-    finally:
-        runtime.close()
 
 
 class _CommitRecorder:
@@ -228,7 +173,7 @@ class _HoldProbe:
 @pytest.mark.perf_bound
 def test_identical_directory_documents_create_no_tree_commits() -> None:
     store = _CommitRecorder()
-    facade = StateOrgFs(author="user:cost", store_factory=store, store_discard=store.discard)
+    facade = LocalOrgFs(author="user:cost", store_factory=store, store_discard=store.discard)
     try:
         space_id = facade.create_space("noop-writes").space_id
         documents = {
@@ -251,7 +196,7 @@ def test_identical_directory_documents_create_no_tree_commits() -> None:
 
 @pytest.mark.perf_bound
 def test_space_authority_lock_hold_stays_below_250ms_during_list_write_mix() -> None:
-    facade = StateOrgFs(author="user:cost")
+    facade = LocalOrgFs(author="user:cost")
     try:
         space_id = facade.create_space("lock-hold").space_id
         facade.write_text(space_id, "probe.md", "seed")
@@ -287,87 +232,3 @@ def test_space_authority_lock_hold_stays_below_250ms_during_list_write_mix() -> 
         assert facade.close_effects()
 
 
-def _store_with_content_history(path: Path, commits: int) -> LocalSpaceStore:
-    store = LocalSpaceStore(path, "space-history", node_id="node-history")
-    store.commit(
-        "meta",
-        lambda doc: (
-            doc["space"].__setitem__("owner", "user:cost"),
-            doc["space"].__setitem__("spaceId", "space-history"),
-            doc["space"].__setitem__("name", "cost"),
-            doc["members"].__setitem__(
-                "user:cost", Map({"mode": "rw", "removedAt": None})
-            ),
-            doc["docs"].__setitem__(
-                "tree",
-                Map(
-                    {
-                        "active": _HISTORY_TREE_ID,
-                        "activatedAt": "genesis",
-                        "planId": None,
-                    }
-                ),
-            ),
-        ),
-        author="user:cost",
-        actor=None,
-    )
-
-    def replace(value: str):
-        def mutate(doc: Doc) -> None:
-            text = doc.get("text", type=Text)
-            del text[:]
-            text += value
-
-        return mutate
-
-    store.commit(
-        _HISTORY_DOC_ID,
-        lambda doc: doc.__setitem__("text", Text("0")),
-        author="user:cost",
-        actor="agent:history",
-    )
-    for index in range(commits):
-        store.commit(
-            _HISTORY_DOC_ID,
-            replace(str(index + 1)),
-            author="user:cost",
-            actor="agent:history",
-        )
-    return store
-
-
-def _next_commit_baseline_bytes(
-    store: LocalSpaceStore, monkeypatch: pytest.MonkeyPatch
-) -> int:
-    applied = 0
-    original = Doc.apply_update
-
-    def count_applied(self: Doc, update: bytes) -> None:
-        nonlocal applied
-        applied += len(update)
-        original(self, update)
-
-    monkeypatch.setattr(Doc, "apply_update", count_applied)
-    store.commit(
-        _HISTORY_DOC_ID,
-        lambda doc: doc.get("text", type=Text).__iadd__("x"),
-        author="user:cost",
-        actor="agent:history",
-    )
-    monkeypatch.undo()
-    return applied
-
-
-def test_steady_state_commit_does_not_reapply_document_history(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    small = _store_with_content_history(tmp_path / "history-small", 50)
-    large = _store_with_content_history(tmp_path / "history-large", 500)
-    try:
-        small_bytes = _next_commit_baseline_bytes(small, monkeypatch)
-        large_bytes = _next_commit_baseline_bytes(large, monkeypatch)
-        assert large_bytes <= small_bytes + 256, (small_bytes, large_bytes)
-    finally:
-        small.close()
-        large.close()

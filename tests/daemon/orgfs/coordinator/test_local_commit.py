@@ -6,7 +6,7 @@
 # - "Only through the commit helper" is observed two ways: every write entry
 #   calls ``membership.local_commit`` once per document it appends, and each
 #   entry makes exactly one ``StateStore.commit``.
-"""Local commits of StateOrgFs: helper, failures, ordering, versions."""
+"""Local commits of LocalOrgFs: helper, failures, ordering, versions."""
 
 from __future__ import annotations
 

@@ -2,7 +2,7 @@
 
 2026-11-25 (D2, brief item 6): the store-level tests in this package measure
 ``FileStateStore`` alone; this one measures the real assembly reachable from
-the runtime (``StateOrgFsRuntime`` -> ``StateOrgFs.load_space`` ->
+the runtime (``OrgFsRuntime`` -> ``LocalOrgFs.load_space`` ->
 ``FileStateStore``).  The space is written with the C6 synthetic generators
 (a 50,000 row tree, 25,000 content files) under a runtime state directory.
 Asserted: constructing and closing the runtime opens no file under ``docs/``
@@ -17,7 +17,7 @@ from pathlib import Path
 import time
 import uuid
 
-from hyprial.daemon.impl.orgfs.composition.state import StateOrgFsRuntime
+from hyprial.daemon.impl.orgfs.composition.state import OrgFsRuntime
 from hyprial.daemon.impl.orgfs.state import Batch, FileStateStore
 from pycrdt import Map
 
@@ -58,7 +58,7 @@ def test_the_runtime_opens_a_large_space_without_reading_any_content_file(
     probe = FsProbe(space_dir)
     started = time.perf_counter()
     with probe.active():
-        runtime = StateOrgFsRuntime(state_dir, node_id="node-a", author=AUTHOR)
+        runtime = OrgFsRuntime(state_dir, node_id="node-a", author=AUTHOR)
         try:
             opened = time.perf_counter() - started
             spaces = runtime.facade.spaces()

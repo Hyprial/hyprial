@@ -1,6 +1,6 @@
 # Decisions:
 # - Phase D T1: ``test_process_leave_requests_ignores_a_foreign_author_set``
-#   runs on ``StateOrgFsRuntime`` whatever the rehearsal switch says.  A
+#   runs on ``OrgFsRuntime`` whatever the rehearsal switch says.  A
 #   leave record co-written by another member cannot exist on the state host
 #   (local write ``protected-path``, design §3.4; the same row from a peer is
 #   ``Rejected("protected-path")``, §3.6), so the test now has Bob try to file
@@ -25,9 +25,8 @@ import pytest
 
 from hyprial.kernel import DaemonRequestError
 from hyprial.daemon.impl.orgfs.api import OrgFsError
-from hyprial.daemon.impl.orgfs.composition.state import StateOrgFsRuntime
+from hyprial.daemon.impl.orgfs.composition.state import OrgFsRuntime
 from hyprial.daemon.impl.orgfs.membership import Accepted, Rejected
-from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
 from hyprial.daemon.impl.org.network.directory import (
     InvalidDeviceQuarantine,
     OrgFsDirectoryStore,
@@ -613,7 +612,7 @@ def test_r11_stale_leave_does_not_remove_a_rejoined_member_with_skewed_clocks(
         )
     runtime.facade.remove_member(space_id, f"user:{BOB}")
     monkeypatch.setattr(
-        "hyprial.daemon.impl.orgfs.document.operations.spaces._now",
+        "hyprial.daemon.impl.orgfs.document.coordinator.spaces.timestamp",
         lambda: "2000-01-01T00:00:00+00:00",
     )
     runtime.facade.invite(space_id, f"user:{BOB}", "rw")
@@ -636,7 +635,7 @@ def test_r11_fresh_leave_records_pending_removal_with_skewed_clocks(
     runtime.facade.invite(space_id, f"user:{BOB}", "rw")
     runtime.facade.remove_member(space_id, f"user:{BOB}")
     monkeypatch.setattr(
-        "hyprial.daemon.impl.orgfs.document.operations.spaces._now",
+        "hyprial.daemon.impl.orgfs.document.coordinator.spaces.timestamp",
         lambda: "2099-01-01T00:00:00+00:00",
     )
     runtime.facade.invite(space_id, f"user:{BOB}", "rw")
@@ -721,8 +720,8 @@ def test_left_orgs_file_is_local_state_under_the_home(
 
 
 @pytest.fixture
-def state_runtime(tmp_path: Path) -> StateOrgFsRuntime:
-    runtime = StateOrgFsRuntime(
+def state_runtime(tmp_path: Path) -> OrgFsRuntime:
+    runtime = OrgFsRuntime(
         tmp_path / "state", node_id=NODE_ID, author=f"user:{OWNER}"
     )
     yield runtime
@@ -730,7 +729,7 @@ def state_runtime(tmp_path: Path) -> StateOrgFsRuntime:
 
 
 def test_process_leave_requests_ignores_a_foreign_author_set(
-    state_runtime: StateOrgFsRuntime,
+    state_runtime: OrgFsRuntime,
     home: Path,
 ) -> None:
     """R3-B: a leave record for one member written by another is never fulfilled."""

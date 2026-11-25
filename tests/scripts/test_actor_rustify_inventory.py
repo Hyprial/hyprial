@@ -85,6 +85,10 @@
 # - S3c (2026-11-24) deletes the user profile authority actor
 #   (daemon/impl/identity/profiles.py UserProfileAuthority) with the users
 #   profile: actor_spec 61->60, total 80->79. No other kind changes.
+# - OrgFS package S (2026-11-25) deletes the journal store's space authority
+#   (orgfs/storage/space_authority.py), the replica authority
+#   (orgfs/storage/replica_authority.py) and the journal mesh ingress actor
+#   (orgfs/mesh.py): actor_spec 60->57, total 79->76. No other kind changes.
 """Pins the actor-rustify P1 inventory counts and determinism contract."""
 
 from __future__ import annotations
@@ -108,7 +112,7 @@ SPEC.loader.exec_module(MODULE)
 
 EXPECTED_COUNTS = {
     "actor_runtime": 0,
-    "actor_spec": 60,
+    "actor_spec": 57,
     "effect_lane": 0,
     "effect_lane_generic": 0,
     "effect_lane_variant": 1,
@@ -117,7 +121,7 @@ EXPECTED_COUNTS = {
     "event_sink_runtime": 0,
     "expected_actor_error": 6,
 }
-EXPECTED_SITE_TOTAL = 79
+EXPECTED_SITE_TOTAL = 76
 EFFECT_SITE_KINDS = frozenset(
     {"effect_lane", "effect_lane_generic", "effect_lane_variant"}
 )

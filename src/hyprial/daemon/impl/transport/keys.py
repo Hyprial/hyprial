@@ -183,44 +183,6 @@ class KeySpace:
 
     # --- shared-folder (orgfs) ---------------------------------------------
 
-    def orgfs_log(self, space_id: str, doc_id: str, writer: str, seq: int) -> str:
-        if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0:
-            raise ValueError("seq must be a non-negative integer")
-        return (
-            f"{self.prefix}/org/fs/"
-            f"{_orgfs_segment(space_id, name='space_id')}/log/"
-            f"{_orgfs_segment(doc_id, name='doc_id')}/"
-            f"{_orgfs_segment(writer, name='writer')}/{seq}"
-        )
-
-    def orgfs_log_writer(self, space_id: str, doc_id: str, writer: str) -> str:
-        return (
-            f"{self.prefix}/org/fs/"
-            f"{_orgfs_segment(space_id, name='space_id')}/log/"
-            f"{_orgfs_segment(doc_id, name='doc_id')}/"
-            f"{_orgfs_segment(writer, name='writer')}/*"
-        )
-
-    def orgfs_log_any(self, space_id: str) -> str:
-        return (
-            f"{self.prefix}/org/fs/"
-            f"{_orgfs_segment(space_id, name='space_id')}/log/**"
-        )
-
-    def orgfs_sync(self, space_id: str, node: str) -> str:
-        return (
-            f"{self.prefix}/org/fs/"
-            f"{_orgfs_segment(space_id, name='space_id')}/sync/"
-            f"{_orgfs_segment(node, name='node')}"
-        )
-
-    def orgfs_snapshot(self, space_id: str, doc_id: str, snapshot_id: str) -> str:
-        return (
-            f"{self.prefix}/org/fs/"
-            f"{_orgfs_segment(space_id, name='space_id')}/snapshot/"
-            f"{_orgfs_segment(doc_id, name='doc_id')}/"
-            f"{_orgfs_segment(snapshot_id, name='snapshot_id')}"
-        )
 
     def orgfs_blob(self, digest: str) -> str:
         return (

@@ -1,6 +1,6 @@
 # Decisions:
-# - Phase D T1: five tests run on the state host (``StateOrgFs`` /
-#   ``StateOrgFsRuntime``) whatever the rehearsal switch says.  A slow or
+# - Phase D T1: five tests run on the state host (``LocalOrgFs`` /
+#   ``OrgFsRuntime``) whatever the rehearsal switch says.  A slow or
 #   interrupted commit is injected by replacing ``commit`` on the space's
 #   ``FileStateStore`` instance (D2 report §10); the space command loop's
 #   actor cell (``_space_state_owners``) is the restart seam, as the space
@@ -25,13 +25,10 @@ from hyprial.daemon.impl.orgfs.api import ChangeEvent, OrgFsError
 from hyprial.daemon.impl.orgfs.storage.blob_authority import BlobAuthority
 from hyprial.daemon.impl.orgfs.storage.blobs import BlobError
 from hyprial.daemon.impl.orgfs.docs import LocalOrgFs
-from hyprial.daemon.impl.orgfs.composition.state import StateOrgFsRuntime
-from hyprial.daemon.impl.orgfs.document.coordinator import StateOrgFs
-from hyprial.daemon.impl.orgfs.runtime import (
-    OrgFsRuntime,
-)
+from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
 from hyprial.daemon.impl.orgfs.composition.vocabulary import (
     _DirectoryCommand,
+    _SpaceResourceHandle,
     _DirectoryEffect)
 from hyprial.daemon.impl.transport import TransportSample
 
@@ -430,9 +427,8 @@ def test_mesh_creation_custody_coalesces_same_space_but_not_other_spaces(tmp_pat
             calls.append(space_id)
         entered[space_id].set()
         assert release.wait(3)
-        return runtime_module._SpaceResourceHandle(space_id, 1)
+        return _SpaceResourceHandle(space_id, 1)
 
-    import hyprial.daemon.impl.orgfs.runtime as runtime_module
 
     runtime._create_mesh_sync = create  # type: ignore[method-assign]
     try:
@@ -500,7 +496,7 @@ def test_directory_effect_overload_defers_without_blocking_completion(tmp_path) 
 
 
 def test_membership_meta_watch_runs_after_commit_and_can_be_closed() -> None:
-    facade = StateOrgFs(author="user:owner")
+    facade = LocalOrgFs(author="user:owner")
     space = facade.create_space("membership watch")
     delivered = threading.Event()
     observed: list[set[str]] = []
@@ -522,7 +518,7 @@ def test_membership_meta_watch_runs_after_commit_and_can_be_closed() -> None:
     facade.close_effects(timeout=5.0)
 
 
-def _block_commits(runtime: StateOrgFsRuntime, space_id: str) -> tuple[threading.Event, threading.Event, list[int]]:
+def _block_commits(runtime: OrgFsRuntime, space_id: str) -> tuple[threading.Event, threading.Event, list[int]]:
     """Make the space's store wait in ``commit`` until released (failure seam, D2 §10)."""
 
     store = runtime.stores.get(space_id)
@@ -543,7 +539,7 @@ def _block_commits(runtime: StateOrgFsRuntime, space_id: str) -> tuple[threading
 
 
 def test_space_authority_restarts_without_repeating_an_admitted_commit(tmp_path) -> None:
-    runtime = StateOrgFsRuntime(tmp_path, node_id="node-space", author="user:owner")
+    runtime = OrgFsRuntime(tmp_path, node_id="node-space", author="user:owner")
     release = threading.Event()
     try:
         space = runtime.facade.create_space("space authority")
@@ -570,7 +566,7 @@ def test_space_authority_restarts_without_repeating_an_admitted_commit(tmp_path)
     finally:
         release.set()
         runtime.close()
-    reopened = StateOrgFsRuntime(tmp_path, node_id="node-space", author="user:owner")
+    reopened = OrgFsRuntime(tmp_path, node_id="node-space", author="user:owner")
     try:
         assert reopened.facade.read_text(space.space_id, "seed.md")[0] == "committed once"
     finally:
@@ -578,7 +574,7 @@ def test_space_authority_restarts_without_repeating_an_admitted_commit(tmp_path)
 
 
 def test_slow_space_commit_does_not_hold_other_space_facade_lock(tmp_path) -> None:
-    runtime = StateOrgFsRuntime(tmp_path, node_id="node-sharded", author="user:owner")
+    runtime = OrgFsRuntime(tmp_path, node_id="node-sharded", author="user:owner")
     release = threading.Event()
     try:
         first_space = runtime.facade.create_space("first")
@@ -615,7 +611,7 @@ def test_slow_space_commit_does_not_hold_other_space_facade_lock(tmp_path) -> No
 def test_runtime_lazy_store_registry_is_singleton_under_cross_space_admission(
     tmp_path,
 ) -> None:
-    runtime = StateOrgFsRuntime(tmp_path, node_id="node-registry", author="user:owner")
+    runtime = OrgFsRuntime(tmp_path, node_id="node-registry", author="user:owner")
     try:
         space = runtime.facade.create_space("same-space")
         with ThreadPoolExecutor(max_workers=8) as pool:
@@ -632,7 +628,7 @@ def test_runtime_lazy_store_registry_is_singleton_under_cross_space_admission(
         assert len({node.node_id for node in written}) == 32
     finally:
         runtime.close()
-    reopened = StateOrgFsRuntime(tmp_path, node_id="node-registry", author="user:owner")
+    reopened = OrgFsRuntime(tmp_path, node_id="node-registry", author="user:owner")
     try:
         assert {node.path for node in reopened.facade.listdir(space.space_id, "")} == {
             f"f-{index}.md" for index in range(32)
@@ -643,7 +639,7 @@ def test_runtime_lazy_store_registry_is_singleton_under_cross_space_admission(
 
 
 def test_broadcast_runs_after_space_authority_lock_is_released() -> None:
-    facade = StateOrgFs(author="user:owner")
+    facade = LocalOrgFs(author="user:owner")
     space = facade.create_space("broadcast boundary")
     observed: list[tuple[bool, bool]] = []
     delivered = threading.Event()

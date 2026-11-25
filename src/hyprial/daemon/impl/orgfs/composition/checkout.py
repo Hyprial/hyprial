@@ -1,17 +1,7 @@
 from __future__ import annotations
 
 
-
 import json
-
-
-
-
-
-from typing import Any
-
-
-
 
 
 
@@ -22,12 +12,6 @@ from hyprial.daemon.impl.orgfs.api  import OrgFsError
 from hyprial.daemon.impl.orgfs.projection.checkout_authority  import CheckoutAuthority
 
 
-
-
-
-
-
-
 from hyprial.daemon.impl.orgfs.composition.vocabulary import _CheckoutSpace
 
 class RuntimeCheckout:
@@ -35,23 +19,6 @@ class RuntimeCheckout:
 
     This class never constructs, copies, or persists an independent host.
     """
-
-    def purge_plan(self, space_id: str, targets: list[dict[str, Any]]) -> Any:
-        return self.facade.purge_plan(space_id, targets)
-
-
-    def purge(self, space_id: str, plan_id: str) -> Any:
-        result = self.facade.purge(space_id, plan_id)
-        self._reconcile_retirements(space_id)
-        return result
-
-
-    def purge_status(self, space_id: str, plan_id: str) -> Any:
-        return self.facade.purge_status(space_id, plan_id)
-
-
-    def unban(self, space_id: str, sha: str) -> None:
-        self.facade.unban(space_id, sha)
 
 
     def _write_checkout_config(self) -> None:

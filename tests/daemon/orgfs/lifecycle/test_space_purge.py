@@ -1,9 +1,11 @@
 # Decisions (phase D, package T3, 2026-11-25):
-# - The runtime is ``StateOrgFsRuntime`` (built directly, independent of
+# - The runtime is ``OrgFsRuntime`` (built directly, independent of
 #   ``HYPRIAL_ORGFS_IMPL``); a space's files are the design §2.1 layout, so the
 #   "store files" whose descriptors must be released are every file under the
 #   space directory plus the blob reference database, and the file that proves
 #   a refused purge left the space alone is ``space.json``.
+# - Package S (2026-11-25): the runtime has no replica registry any more, so
+#   the residue checks no longer look for one.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
@@ -14,7 +16,7 @@ import pytest
 
 from hyprial.daemon.impl.orgfs.api import OrgFsError
 from hyprial.daemon.impl.orgfs.composition import space_purge as space_purge_module
-from hyprial.daemon.impl.orgfs.composition.state import StateOrgFsRuntime
+from hyprial.daemon.impl.orgfs.composition.state import OrgFsRuntime
 from hyprial.kernel import link_directory
 
 
@@ -22,7 +24,7 @@ OWNER = "user:owner"
 
 
 def _runtime(tmp_path, *, binding=None):
-    return StateOrgFsRuntime(
+    return OrgFsRuntime(
         tmp_path / "state",
         node_id="node-a",
         author=OWNER,
@@ -129,7 +131,6 @@ def test_space_purge_main_preserves_acl_across_restart(tmp_path):
     assert [item.space_id for item in runtime.facade.spaces()] == [acl.space_id]
     assert main.space_id not in runtime.stores
     assert main.space_id not in runtime._meshes
-    assert main.space_id not in runtime._replicas
     assert main.space_id not in runtime._checkouts
     runtime.close()
 
@@ -221,7 +222,6 @@ def test_space_purge_preserves_paired_space_for_every_ordering(
     assert (tmp_path / "state" / "orgfs" / "spaces" / second_id).is_dir()
     assert first_id not in runtime.stores
     assert first_id not in runtime._meshes
-    assert first_id not in runtime._replicas
     assert first_id not in runtime._checkouts
 
     if restart_between:

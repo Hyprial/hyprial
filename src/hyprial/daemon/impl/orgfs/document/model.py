@@ -10,7 +10,6 @@ core required by P1 and makes concurrent ``A -> B``/``B -> A`` deterministic.
 from __future__ import annotations
 
 import base64
-import collections.abc
 from dataclasses import dataclass, field
 from contextlib import nullcontext
 from datetime import datetime, timezone
@@ -42,7 +41,6 @@ from hyprial.daemon.impl.orgfs.api  import (
     NodeRef,
     OrgFsError,
     SpaceInfo)
-from hyprial.daemon.impl.orgfs.storage.store  import CommitRecord
 
 ORGFS_TEXT_MAX = 4 * 1024 * 1024
 _FACADE_EFFECT_CAPACITY = 32
@@ -55,21 +53,12 @@ _MUTATING_FACADE_METHODS = frozenset(
         "remove_member",
         "join",
         "load_space",
-        "apply_envelope",
-        "install_replacement_snapshot",
-        "acknowledge_purge",
         "write_text",
         "write_bytes",
         "mkdir",
         "move",
         "remove",
         "restore",
-        "purge_plan",
-        "purge",
-        "unban",
-        "apply_tree_update",
-        "apply_content_update",
-        "hydrate_content_snapshot",
     }
 )
 _SPACE_STATE_METHODS = frozenset(
@@ -78,21 +67,12 @@ _SPACE_STATE_METHODS = frozenset(
         "load_space",
         "invite",
         "remove_member",
-        "apply_envelope",
-        "install_replacement_snapshot",
-        "acknowledge_purge",
         "write_text",
         "write_bytes",
         "mkdir",
         "move",
         "remove",
         "restore",
-        "purge_plan",
-        "purge",
-        "unban",
-        "apply_tree_update",
-        "apply_content_update",
-        "hydrate_content_snapshot",
     }
 )
 
@@ -109,26 +89,9 @@ class _MetaWatchNotification:
 
 
 @dataclass(frozen=True, slots=True)
-class _BroadcastPending:
-    space_id: str
-    records: tuple[CommitRecord, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class _ReconcileReplicaBlobs:
-    space_id: str
-
-
-@dataclass(frozen=True, slots=True)
 class _FacadeEffectBatch:
     sequence: int
-    effects: tuple[
-        _WatchNotification
-        | _MetaWatchNotification
-        | _ReconcileReplicaBlobs
-        | _BroadcastPending,
-        ...,
-    ]
+    effects: tuple[_WatchNotification | _MetaWatchNotification, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,26 +129,6 @@ class _LoadSpace:
 class _RemoveMember:
     space_id: str
     user: str
-
-
-@dataclass(frozen=True, slots=True)
-class _ApplyEnvelope:
-    space_id: str
-    envelope: bytes
-
-
-@dataclass(frozen=True, slots=True)
-class _InstallReplacement:
-    space_id: str
-    old_doc_id: str
-    new_doc_id: str
-    snapshot: bytes
-
-
-@dataclass(frozen=True, slots=True)
-class _AcknowledgePurge:
-    space_id: str
-    plan_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,65 +176,17 @@ class _Restore:
     recursive: bool
 
 
-@dataclass(frozen=True, slots=True)
-class _PurgePlanCommand:
-    space_id: str
-    targets: tuple[tuple[tuple[str, object], ...], ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _Purge:
-    space_id: str
-    plan_id: str
-
-
-@dataclass(frozen=True, slots=True)
-class _Unban:
-    space_id: str
-    sha: str
-
-
-@dataclass(frozen=True, slots=True)
-class _ApplyTreeUpdate:
-    space_id: str
-    update: bytes
-
-
-@dataclass(frozen=True, slots=True)
-class _ApplyContentUpdate:
-    space_id: str
-    node: NodeRef
-    update: bytes
-
-
-@dataclass(frozen=True, slots=True)
-class _HydrateContentSnapshot:
-    space_id: str
-    node: NodeRef
-    expected_doc_id: str
-    snapshot: bytes
-
-
 _SpaceStateOperation = (
     _CreateSpace
     | _LoadSpace
     | _InviteMember
     | _RemoveMember
-    | _ApplyEnvelope
-    | _InstallReplacement
-    | _AcknowledgePurge
     | _WriteText
     | _WriteBytes
     | _Mkdir
     | _Move
     | _RemoveNode
     | _Restore
-    | _PurgePlanCommand
-    | _Purge
-    | _Unban
-    | _ApplyTreeUpdate
-    | _ApplyContentUpdate
-    | _HydrateContentSnapshot
 )
 
 
@@ -422,26 +317,6 @@ def _facade_locked(method: Callable[..., Any]) -> Callable[..., Any]:
     return locked
 
 
-def _version(tree_frontier: int, content_frontier: int) -> str:
-    """Encode a version as an opaque, URL-safe JSON value."""
-
-    raw = json.dumps(
-        {"treeFrontier": tree_frontier, "contentFrontier": content_frontier},
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode()
-    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
-
-
-def _version_number(value: str) -> int:
-    try:
-        padded = value + "=" * (-len(value) % 4)
-        decoded = json.loads(base64.urlsafe_b64decode(padded))
-        return int(decoded["treeFrontier"])
-    except (ValueError, KeyError, TypeError, json.JSONDecodeError):
-        return -1
-
-
 def _encode_content_frontier(value: bytes) -> str:
     return base64.b64encode(value).decode("ascii")
 
@@ -474,112 +349,9 @@ class _Node:
     content_frontier: int = 0
 
 
-@dataclass(frozen=True)
-class _NodeSnapshot:
-    node_id: str
-    parent: str | None
-    name: str
-    kind: NodeKind
-    doc_id: str | None
-    blob_hash: str | None
-    size: int | None
-    required_content_frontier: bytes | None
-    ref_size: int | None
-    ref_sha256: str | None
-    deleted: bool
-    version: str
-    modified_by: str
-    modified_via: str | None
-    content: bytes
-
-
 #: A version layer that drops a node present in the layer below it.
-_ABSENT_NODE: Any = object()
 #: Layers stacked before a version is flattened back to one full map.  Bounds
 #: lookup depth; flattening copies pointers only, never content.
-_SNAPSHOT_FLATTEN_DEPTH = 64
-
-
-class _SpaceSnapshot(collections.abc.Mapping):
-    """One version of a space: the nodes that changed, over the previous one.
-
-    Every write records a version.  Copying the whole space per version made
-    each write cost O(space) and kept that copy forever; a layer holds only
-    what changed and shares every unchanged ``_NodeSnapshot`` with the layer
-    below.  Readers see an ordinary read-only ``node_id -> _NodeSnapshot`` map.
-    """
-
-    __slots__ = ("_base", "_changes", "_depth")
-
-    def __init__(
-        self,
-        base: "_SpaceSnapshot | None",
-        changes: dict[str, Any],
-    ) -> None:
-        if base is not None and base._depth + 1 >= _SNAPSHOT_FLATTEN_DEPTH:
-            flat = base._materialize()
-            for node_id, entry in changes.items():
-                if entry is _ABSENT_NODE:
-                    flat.pop(node_id, None)
-                else:
-                    flat[node_id] = entry
-            base, changes = None, flat
-        self._base = base
-        self._changes = changes
-        self._depth = 0 if base is None else base._depth + 1
-
-    def _materialize(self) -> dict[str, _NodeSnapshot]:
-        layers: list[_SpaceSnapshot] = []
-        layer: _SpaceSnapshot | None = self
-        while layer is not None:
-            layers.append(layer)
-            layer = layer._base
-        result: dict[str, _NodeSnapshot] = {}
-        for layer in reversed(layers):
-            for node_id, entry in layer._changes.items():
-                if entry is _ABSENT_NODE:
-                    result.pop(node_id, None)
-                else:
-                    result[node_id] = entry
-        return result
-
-    def __getitem__(self, node_id: str) -> _NodeSnapshot:
-        layer: _SpaceSnapshot | None = self
-        while layer is not None:
-            if node_id in layer._changes:
-                entry = layer._changes[node_id]
-                if entry is _ABSENT_NODE:
-                    raise KeyError(node_id)
-                return entry
-            layer = layer._base
-        raise KeyError(node_id)
-
-    def __iter__(self) -> collections.abc.Iterator[str]:
-        return iter(self._materialize())
-
-    def __len__(self) -> int:
-        return len(self._materialize())
-
-
-def _content_fingerprint(document: "_ContentDocument") -> tuple[bytes, bytes]:
-    """Identify a content state without encoding its text.
-
-    The state vector alone misses delete-only edits; the update relative to
-    that state vector carries exactly the delete set, so the pair identifies
-    the document state.
-    """
-
-    state = document.doc.get_state()
-    return state, document.doc.get_update(state)
-
-
-@dataclass
-class _History:
-    node: _NodeSnapshot
-    changed: str
-    author: str
-    actor: str | None
-    at: str
 
 
 @dataclass
@@ -868,16 +640,8 @@ class _Space:
     contents: dict[str, _ContentDocument]
     members: dict[str, MemberInfo]
     removed_members: set[str]
-    history: dict[str, list[_History]]
-    snapshots: dict[str, Mapping[str, _NodeSnapshot]]
-    revision: int = 0
     watches: list[_Watch] = field(default_factory=list)
     meta_watches: list[_MetaWatch] = field(default_factory=list)
-    #: node_id -> (entry in the latest version, content object, fingerprint);
-    #: lets the next version reuse an entry whose node and content are unchanged.
-    snapshot_marks: dict[str, tuple[_NodeSnapshot, Any, Any]] = field(
-        default_factory=dict
-    )
     #: Remote doc births whose tree envelope was projected before the birth
     #: content envelope; node_id -> (origin author, origin actor).  The birth
     #: history entry is finalized only once the local content document covers
@@ -903,7 +667,6 @@ def _node_uri(info: SpaceInfo, node_id: str) -> str:
             {"message": "space owner is not a user: identity"},
         )
     return canonical_orgfs_uri(owner, info.space_id, node_id)
-
 
 
 def _raise_invalid(message: str) -> Any:

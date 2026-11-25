@@ -4,6 +4,10 @@
 #   + os.scandir calls with lstat & manysys.path_is_reparse verification plus
 #   stdlib shutil.rmtree (safe fd-based deletion on POSIX, non-traversing link
 #   and junction removal on Windows) and manysys.fsync_directory.
+# - Package S (2026-11-25): resident replicas are gone with ``storage/replica*``,
+#   so no replica authority is detached any more.  The ``state/orgfs/replica/
+#   <space>`` directory is still fenced and removed: older versions may have
+#   left it on disk (A5 report §5).
 """Crash-resumable, local-only removal of one OrgFS space replica."""
 
 from __future__ import annotations
@@ -288,12 +292,8 @@ class RuntimeSpacePurge:
             raise TimeoutError("orgfs facade did not detach")
         with self._resource_lock:
             mesh = self._meshes.pop(space_id, None)
-            replica = self._replicas.pop(space_id, None)
-            self._replica_creation_locks.pop(space_id, None)
         if mesh is not None:
             mesh.close(timeout=5.0)
-        if replica is not None and not replica.close(timeout=5.0):
-            raise TimeoutError("orgfs replica did not detach")
 
         with self._supplier_device_lock:
             watch = self._supplier_device_watches.pop(space_id, None)
@@ -441,14 +441,12 @@ class RuntimeSpacePurge:
         for digest in digests:
             self.blobs.release(space_id, digest)
             self.blobs.delete_if_unreferenced(digest)
-        self.blobs.unregister_purge_projection(space_id)
 
     def _space_purge_readback(self, space_id: str) -> None:
         space_path, replica_path = self._space_storage_paths(space_id)
         with self._resource_lock:
             registered = (
                 space_id in self._meshes
-                or space_id in self._replicas
                 or space_id in self._mesh_creations
             )
         with self._checkout_lock:

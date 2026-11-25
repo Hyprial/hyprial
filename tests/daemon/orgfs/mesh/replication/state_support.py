@@ -1,6 +1,6 @@
 # Decisions:
 # - Phase D, package T2: the sync, presence and catch-up tests that used the
-#   journal mesh's private buses run on ``StateOrgFsRuntime`` through the
+#   journal mesh's private buses run on ``OrgFsRuntime`` through the
 #   contract suite's ``FakeNetwork`` and D2's ``Peer`` / ``Peers``; this module
 #   only adds the three transport conditions those tests need and the
 #   in-process network does not model:

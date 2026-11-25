@@ -1,5 +1,5 @@
 # Decisions (phase D, package T3, 2026-11-25):
-# - Replicas are ``StateOrgFs`` nodes (built directly, independent of
+# - Replicas are ``LocalOrgFs`` nodes (built directly, independent of
 #   ``HYPRIAL_ORGFS_IMPL``) from the coordinator tests' in-process helpers
 #   (``tests/daemon/orgfs/coordinator/support.py``, imported read-only): the
 #   owner sets the space up, every other replica is a clone of the owner's
@@ -19,7 +19,7 @@ from typing import Callable
 import pytest
 
 from hyprial.daemon.impl.orgfs import OrgFsError
-from hyprial.daemon.impl.orgfs.document.coordinator import StateOrgFs
+from hyprial.daemon.impl.orgfs.document.coordinator import LocalOrgFs
 
 from tests.daemon.orgfs.coordinator.support import Cluster, Node, clone_node
 
@@ -43,7 +43,7 @@ _OWNED: list[list[Node]] = []
 
 @dataclass
 class Replica:
-    fs: StateOrgFs
+    fs: LocalOrgFs
     node: Node
 
 
@@ -61,7 +61,7 @@ def _seed_values(name: str, fixed: tuple[int, ...]) -> tuple[int, ...]:
 
 def _make_replicas(
     count: int,
-    setup: Callable[[StateOrgFs, str], None],
+    setup: Callable[[LocalOrgFs, str], None],
 ) -> tuple[str, list[Replica], Cluster]:
     owner = Node("user:0", "node-0", actor="agent:0:test:orgfs")
     _OWNED[-1].append(owner)
@@ -92,13 +92,13 @@ def _exchange_all(cluster: Cluster, replicas: list[Replica], seed: int) -> None:
     cluster.settle()
 
 
-def _space_id(fs: StateOrgFs) -> str:
+def _space_id(fs: LocalOrgFs) -> str:
     spaces = fs.spaces()
     assert len(spaces) == 1
     return spaces[0].space_id
 
 
-def _visible_snapshot(fs: StateOrgFs, space_id: str) -> tuple[tuple[object, ...], ...]:
+def _visible_snapshot(fs: LocalOrgFs, space_id: str) -> tuple[tuple[object, ...], ...]:
     rows: list[tuple[object, ...]] = []
     seen: set[str] = set()
 
@@ -120,7 +120,7 @@ def test_two_replica_randomized_public_api_operations_converge() -> None:
     """Review item 15a: fixed seeds 0x15A001..3 plus ORGFS_OP_FUZZ_SEED."""
 
     for seed in _seed_values("ORGFS_OP_FUZZ_SEED", OP_FUZZ_SEEDS):
-        def setup(fs: StateOrgFs, space_id: str) -> None:
+        def setup(fs: LocalOrgFs, space_id: str) -> None:
             for index in range(2):
                 fs.mkdir(space_id, f"r{index}")
                 fs.mkdir(space_id, f"r{index}/nest")
@@ -190,7 +190,7 @@ def test_three_replica_randomized_concurrent_moves_converge_without_loss() -> No
     for seed in _seed_values("ORGFS_MOVE_FUZZ_SEED", MOVE_FUZZ_SEEDS):
         node_ids: list[str] = []
 
-        def setup(fs: StateOrgFs, space_id: str) -> None:
+        def setup(fs: LocalOrgFs, space_id: str) -> None:
             for index in range(7):
                 node_ids.append(fs.mkdir(space_id, f"n{index}").node_id)
 
@@ -221,7 +221,7 @@ def test_mutual_move_uses_facade_and_real_updates_without_cycles() -> None:
 
     ids: dict[str, str] = {}
 
-    def setup(fs: StateOrgFs, space_id: str) -> None:
+    def setup(fs: LocalOrgFs, space_id: str) -> None:
         ids["a"] = fs.mkdir(space_id, "a").node_id
         ids["b"] = fs.mkdir(space_id, "b").node_id
 
@@ -240,7 +240,7 @@ def test_concurrent_text_writes_preserve_both_insertions() -> None:
 
     node_id = ""
 
-    def setup(fs: StateOrgFs, space_id: str) -> None:
+    def setup(fs: LocalOrgFs, space_id: str) -> None:
         nonlocal node_id
         node_id = fs.write_text(space_id, "shared.txt", "").node_id
 

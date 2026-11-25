@@ -1,3 +1,10 @@
+# Decision record (phase D, package S, 2026-11-25; design §8 phase D/E todo):
+# - The supplier sync constants moved here from the deleted journal
+#   ``network/protocol.py``; this module is their only owner.  Below the
+#   failure threshold a failure is ordinary jitter handled by the retry
+#   ladder; at or past it the supplier is held off for
+#   ``base * 2**(failures - threshold)`` seconds, capped, and a recovered sync
+#   clears the hold.
 """Shared supplier-sync health across every orgfs space on one daemon.
 
 The hold exists because an unreachable supplier fails in milliseconds, so
@@ -15,15 +22,15 @@ from dataclasses import dataclass
 from functools import partial
 from threading import Lock
 
-from hyprial.daemon.impl.orgfs.network.protocol import (
-    ORGFS_SCHEDULED_SYNC_ATTEMPT_SECONDS,
-    ORGFS_SCHEDULED_SYNC_BUDGET_SECONDS,
-    ORGFS_SUPPLIER_SYNC_FAILURE_THRESHOLD,
-    ORGFS_SYNC_QUEUE_LIMIT,
-    ORGFS_SYNC_RETRY_BACKOFF_SECONDS,
-    ORGFS_SUPPLIER_SYNC_HOLD_BASE_SECONDS,
-    ORGFS_SUPPLIER_SYNC_HOLD_MAX_SECONDS,
-)
+from typing import Final
+
+ORGFS_SYNC_QUEUE_LIMIT: Final[int] = 32
+ORGFS_SYNC_RETRY_BACKOFF_SECONDS: Final[tuple[float, ...]] = (0.25,)
+ORGFS_SUPPLIER_SYNC_FAILURE_THRESHOLD: Final[int] = 3
+ORGFS_SUPPLIER_SYNC_HOLD_BASE_SECONDS: Final[float] = 5.0
+ORGFS_SUPPLIER_SYNC_HOLD_MAX_SECONDS: Final[float] = 120.0
+ORGFS_SCHEDULED_SYNC_ATTEMPT_SECONDS: Final[float] = 2.0
+ORGFS_SCHEDULED_SYNC_BUDGET_SECONDS: Final[float] = 4.5
 
 
 @dataclass(slots=True)

@@ -2,8 +2,8 @@
 # - Paths follow design section 2.1: ``space.json``, ``batch.pending``,
 #   ``meta.{state,delta}`` and ``tree.{state,delta}`` at the space root, content
 #   documents under ``docs/<stem>.{state,delta}`` with the stem from the existing
-#   ``document_file_stem`` (reused from the old store's vocabulary, not copied;
-#   stage E has to move it when ``storage/store`` is deleted).
+#   ``document_file_stem`` (moved with ``StoreError`` to ``storage/vocabulary.py``
+#   when package S deleted ``storage/store``).
 # - Temporary files have fixed names (``<file>.tmp``) so a leftover is found by
 #   name: ``batch.pending.tmp`` is removed when the space is opened, a state temp
 #   is overwritten by the next compaction of that document.  Nothing at open time
@@ -35,7 +35,7 @@ from hyprial.daemon.impl.orgfs.state.interface import (
     MIGRATION_GUIDE,
     ORGFS_LAYOUT_UNSUPPORTED,
 )
-from hyprial.daemon.impl.orgfs.storage.store.vocabulary import StoreError, document_file_stem
+from hyprial.daemon.impl.orgfs.storage.vocabulary import StoreError, document_file_stem
 
 SpaceDirectoryKind = Literal["v3", "legacy", "invalid", "uninitialized"]
 

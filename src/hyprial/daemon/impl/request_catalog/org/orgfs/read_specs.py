@@ -28,6 +28,7 @@ from .wire import (
     READ_ERRORS,
     SESSION_PROPERTIES,
     SPACE,
+    LAYOUT_UNSUPPORTED_ERRORS,
     SPACE_STATUS,
     String,
 )
@@ -262,10 +263,11 @@ def _spec(
 #: The application enforces org-context on exactly these reads.  The session
 #: fence can also answer STALE_SESSION / SESSION_SUPERSEDED before the grant
 #: check, so those two are declared here rather than on every orgfs method.
-_ORG_CONTEXT_READ_ERRORS = READ_ERRORS + ORG_CONTEXT_ERRORS
+_ORG_CONTEXT_READ_ERRORS = READ_ERRORS + ORG_CONTEXT_ERRORS + LAYOUT_UNSUPPORTED_ERRORS
+_SPACE_READ_ERRORS = READ_ERRORS + LAYOUT_UNSUPPORTED_ERRORS
 
 ORGFS_SPACES_SPEC = _spec("orgfs.spaces", _SPACES_PARAMS, _SPACES_RESULT)
-ORGFS_RESOLVE_SPEC = _spec("orgfs.resolve", _RESOLVE_PARAMS, _nodes_result())
+ORGFS_RESOLVE_SPEC = _spec("orgfs.resolve", _RESOLVE_PARAMS, _nodes_result(), _SPACE_READ_ERRORS)
 ORGFS_LS_SPEC = _spec(
     "orgfs.ls", _LS_PARAMS, _nodes_result(), _ORG_CONTEXT_READ_ERRORS
 )
@@ -275,10 +277,10 @@ ORGFS_STAT_SPEC = _spec(
 ORGFS_READ_SPEC = _spec(
     "orgfs.read", _READ_PARAMS, _READ_RESULT, _ORG_CONTEXT_READ_ERRORS
 )
-ORGFS_STATUS_SPEC = _spec("orgfs.status", _STATUS_PARAMS, SPACE_STATUS)
-ORGFS_TRASH_SPEC = _spec("orgfs.trash", _TRASH_PARAMS, _nodes_result())
-ORGFS_WATCH_SPEC = _spec("orgfs.watch", _WATCH_PARAMS, _WATCH_RESULT)
-ORGFS_MEMBERS_SPEC = _spec("orgfs.members", _MEMBERS_PARAMS, _MEMBERS_RESULT)
+ORGFS_STATUS_SPEC = _spec("orgfs.status", _STATUS_PARAMS, SPACE_STATUS, _SPACE_READ_ERRORS)
+ORGFS_TRASH_SPEC = _spec("orgfs.trash", _TRASH_PARAMS, _nodes_result(), _SPACE_READ_ERRORS)
+ORGFS_WATCH_SPEC = _spec("orgfs.watch", _WATCH_PARAMS, _WATCH_RESULT, _SPACE_READ_ERRORS)
+ORGFS_MEMBERS_SPEC = _spec("orgfs.members", _MEMBERS_PARAMS, _MEMBERS_RESULT, _SPACE_READ_ERRORS)
 
 BATCH3_ORGFS_BINDINGS = (
     (ORGFS_SPACES_SPEC, orgfs_spaces),

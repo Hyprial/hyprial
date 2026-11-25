@@ -2,7 +2,7 @@
 # - Phase D, package T2 (triage "pending", decided: keep).  The announce
 #   handling these diagnostics observe (buffering, holder promotion, the
 #   held-space re-announce) is ``RuntimeDirectory``'s, which
-#   ``StateOrgFsRuntime`` composes unchanged, so the switch and the
+#   ``OrgFsRuntime`` composes unchanged, so the switch and the
 #   logger-failure isolation still matter and run on the state runtime.
 # - Samples carry ``protocol: 3`` (the state runtime drops other protocols).
 # - ``announce.published`` was logged by the journal mesh's ``announce``;
@@ -18,7 +18,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from hyprial.daemon.impl.orgfs.composition.state import StateOrgFsRuntime
+from hyprial.daemon.impl.orgfs.composition.state import OrgFsRuntime
 from hyprial.daemon.impl.orgfs.composition.vocabulary import _DirectoryEffectBatch
 from hyprial.daemon.impl.transport import KeySpace, TransportSample
 
@@ -63,7 +63,7 @@ def _exercise_announce_events(
     def record(level: str, event: str, **fields: Any) -> None:
         events.append((level, event, fields))
 
-    runtime = StateOrgFsRuntime(
+    runtime = OrgFsRuntime(
         state_dir,
         node_id="reader-node",
         author="user:reader@example.com",
@@ -111,7 +111,7 @@ def test_announce_instrumentation_logger_failure_cannot_change_observed_flow(
     def broken_logger(_level: str, _event: str, **_fields: Any) -> None:
         raise RuntimeError("diagnostic sink failed")
 
-    runtime = StateOrgFsRuntime(
+    runtime = OrgFsRuntime(
         tmp_path,
         node_id="reader-node",
         author="user:reader@example.com",

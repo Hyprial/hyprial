@@ -2,14 +2,15 @@
 # - The table pins what each runtime does with ``trust_tailnet_members=False``
 #   (``trust_upper_layers`` is constantly ``False``) for a plain space, the
 #   org directory space and its ACL space.
-# - Legacy rows are evidence of the dev regression (nothing joins or syncs:
-#   the resolver is asked about a UUID); the legacy runtime is not fixed.
+# - Package S (2026-11-25): the journal runtime and its rows are deleted.
+#   They were the evidence of the dev regression (nothing joins or syncs: the
+#   resolver was asked about a UUID; F1 gate report).
 # - State rows follow the node gate ruling (rule G): every kind syncs both
 #   ways, and with trust off from the start the member's device row reaches
 #   the owner.  Before the ruling the plain rows were refused and the cold
 #   rows never carried member -> owner (reports/f1-gate.md, §1).
 # - ``F1_MATRIX_OUT`` appends every observed row as JSON for the report.
-"""Production-configuration node gate: legacy and state runtimes side by side."""
+"""Production-configuration node gate of the state runtime."""
 
 from __future__ import annotations
 
@@ -21,16 +22,8 @@ import pytest
 from .probe import IMPLS, KINDS, run_cell
 
 COLUMNS = ("join_directory", "join_target", "member_row_at_owner", "owner_to_member", "member_to_owner")
-REFUSED = "err:not-a-member/supplier-not-member"
-NOTHING = (REFUSED, REFUSED, "no", "n/a", "n/a")
 BOTH_WAYS = ("ok", "ok", "yes", "yes", "yes")
 EXPECTED = {
-    ("legacy", "plain", "cold"): NOTHING,
-    ("legacy", "directory", "cold"): NOTHING,
-    ("legacy", "acl", "cold"): NOTHING,
-    ("legacy", "plain", "warm"): ("ok", "ok", "yes", "no", "no"),
-    ("legacy", "directory", "warm"): ("ok", "ok", "yes", "no", "no"),
-    ("legacy", "acl", "warm"): ("ok", "ok", "yes", "no", "no"),
     ("state", "plain", "cold"): BOTH_WAYS,
     ("state", "directory", "cold"): BOTH_WAYS,
     ("state", "acl", "cold"): BOTH_WAYS,

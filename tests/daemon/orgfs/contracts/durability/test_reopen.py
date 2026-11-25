@@ -4,13 +4,11 @@
 #   every facade-visible record: tree, text, bytes, members, meta and trash.
 #   Only a normal close is covered here; crash points are C1's (design §7).
 # - Design §3.3: ``NodeInfo.modified_by`` reads the tree row's ``author`` and
-#   stays the last writer after reopen.  Legacy rebuilds it as the owner on
-#   load (operations/spaces.py), so that contract is a legacy_xfail.
+#   stays the last writer after reopen.
 """Normal close / reopen contracts."""
 
 from __future__ import annotations
 
-import pytest
 
 from ..support import eventually
 
@@ -77,10 +75,6 @@ def test_document_authors_lists_the_local_writer(orgfs_impl, tmp_path) -> None:
     assert node.reopen().document_authors(space.space_id, "a.md") == ("user:owner",)
 
 
-@pytest.mark.legacy_xfail(
-    reason="design §3.3: modified_by reads the tree row author and survives reopen; "
-    "legacy resets it to the space owner when the space is loaded"
-)
 def test_modified_by_survives_reopen(orgfs_impl, tmp_path) -> None:
     owner = orgfs_impl.make_runtime(tmp_path / "owner", "node-owner", "user:owner")
     member = orgfs_impl.make_runtime(tmp_path / "member", "node-member", "user:member")

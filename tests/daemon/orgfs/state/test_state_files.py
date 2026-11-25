@@ -19,7 +19,7 @@ from hyprial.daemon.impl.orgfs.state import (
     is_space_directory_name,
     space_directory_kind,
 )
-from hyprial.daemon.impl.orgfs.storage.store.vocabulary import StoreError, document_file_stem
+from hyprial.daemon.impl.orgfs.storage.vocabulary import StoreError, document_file_stem
 
 from .conftest import SPACE_ID, StoreFactory, Writer, content_doc_id, invite_doc_id, materialize
 

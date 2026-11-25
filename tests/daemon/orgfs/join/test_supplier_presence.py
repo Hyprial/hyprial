@@ -1,5 +1,5 @@
 # Decisions:
-# - Phase D, package T2: rewritten onto ``StateOrgFsRuntime``.  The join no
+# - Phase D, package T2: rewritten onto ``OrgFsRuntime``.  The join no
 #   longer runs through the space's mesh (design §9 R5: a temporary space and
 #   a temporary sync), so the interruption is placed on the reader's
 #   ``apply_remote`` (the seam every pulled update crosses), as D2's

@@ -1,16 +1,10 @@
-# Resident-holder removal (2026-11-25, orgfs-minimal-plan Q3 / A5, owner).
-#
-# `serve`, `_ServeSpace` and the replica create/reuse/re-serve path are gone:
-# OrgFS keeps no resident holder role.  The mesh-open attach branch and the
-# purge/retirement replica branches below still read `_replicas`; nothing can
-# populate it any more, and they are left for stage E together with
-# `storage/replica*` because they touch purge, blob pins and `durable`.
-
+# Decision record (phase D, package S, 2026-11-25):
+# - The journal mesh, replica attach, retirement reconciliation and the
+#   outbox broadcast entry points are deleted with the journal store.  This
+#   mixin keeps the per-space lifecycle actor (open, join, checkout commands)
+#   that the state runtime drives; ``composition/state/sync.py`` supplies the
+#   per-space ``SpaceSync`` creation and the join.
 from __future__ import annotations
-
-
-
-
 
 
 import threading
@@ -32,18 +26,7 @@ from hyprial.kernel import (
 from hyprial.kernel import EffectCompleted, EffectRequest
 
 
-
 from hyprial.daemon.impl.orgfs.api  import OrgFsError, SpaceInfo
-
-
-
-
-from hyprial.daemon.impl.orgfs.mesh  import (
-    OrgFsMesh)
-
-from hyprial.daemon.impl.orgfs.storage.space_authority  import _ReadStore
-
-from hyprial.daemon.impl.orgfs.storage.store  import CommitRecord, StoreError
 
 
 from hyprial.daemon.impl.orgfs.composition.vocabulary import _CheckoutSpace, _DirectoryCallOperation, _JoinSpace, _LifecycleAuthority, _LifecycleCommand, _LifecycleFailure, _LifecycleOutcome, _LifecycleWaiter, _MeshCreation, _OpenSpaceMesh, _SpaceResourceHandle
@@ -416,83 +399,7 @@ class RuntimeLifecycle:
         return handle
 
 
-    def _create_mesh_sync(self, space_id: str) -> _SpaceResourceHandle | None:
-        with self._resource_lock:
-            session = self._session
-            if self._closing or session is None:
-                return None
-            existing = self._meshes.get(space_id)
-        if existing is not None:
-            return _SpaceResourceHandle(space_id, self._directory_generation)
-
-        def applied(envelope: bytes) -> tuple[str, ...]:
-            self.facade.apply_envelope(space_id, envelope)
-            self._reconcile_retirements(space_id)
-            return self.facade.retained_blob_digests(space_id)
-
-        def replacement(
-            old_doc_id: str, new_doc_id: str, snapshot_bytes: bytes
-        ) -> None:
-            if space_id in self.facade._spaces:  # noqa: SLF001
-                self.facade.install_replacement_snapshot(
-                    space_id, old_doc_id, new_doc_id, snapshot_bytes
-                )
-                self._reconcile_retirements(space_id)
-
-        mesh = OrgFsMesh(
-            session,
-            self.stores.get(space_id),
-            self.node_id,
-            author=self.author,
-            blob_store=self.blobs,
-            supplier_online=self._supplier_online,
-            supplier_owner=(None if self._trust_tailnet_members else self._supplier_owner_for_space(space_id)),
-            trust_tailnet_members=self._trust_tailnet_members,
-            announcement_source=self._announcement_spaces,
-            holder_discovery=lambda: self._holder_snapshot(space_id),
-            recovery_candidates=lambda: (
-                *self._holder_snapshot(space_id), *self._holder_candidates()
-            ),
-            on_applied=applied,
-            on_replacement=replacement,
-            logger=self.logger,
-            announce_instrumentation_enabled=self._announce_instrumentation_enabled,
-            supplier_sync_health=self._supplier_sync_health,
-            actor_host=self._actor_hosts.host,
-            space_authority=self.facade.space_authority(
-                space_id, self.stores.get(space_id)
-            ),
-        )
-        if mesh._supplier_sync_health is not self._supplier_sync_health:
-            raise RuntimeError(
-                "orgfs mesh was built without the daemon-wide supplier health"
-            )
-        with self._resource_lock:
-            if self._closing or self._session is not session:
-                current = None
-                discard = True
-            else:
-                current = self._meshes.get(space_id)
-                if current is None:
-                    current = mesh
-                    self._meshes[space_id] = mesh
-                discard = current is not mesh
-            replica = self._replicas.get(space_id)
-        if discard:
-            mesh.close()
-            return (
-                _SpaceResourceHandle(space_id, self._directory_generation)
-                if current is not None
-                else None
-            )
-        if replica is not None:
-            mesh.attach_replica(replica)
-        self.facade.request_broadcast_drain(space_id)
-        self._announce_all()
-        return _SpaceResourceHandle(space_id, self._directory_generation)
-
-
-    def _mesh(self, space_id: str) -> OrgFsMesh | None:
+    def _mesh(self, space_id: str) -> Any:
         with self._resource_lock:
             if self._closing or self._session is None:
                 return None
@@ -511,151 +418,8 @@ class RuntimeLifecycle:
             return self._meshes.get(handle.space_id)
 
 
-    def _reconcile_retirements(self, space_id: str) -> None:
-        """Finish G2 cleanup and ack after all replacement bytes are local."""
-
-        store = self.stores.get(space_id)
-        authority = self.facade.space_authority(space_id, store)
-        records = tuple(authority.read(_ReadStore("retirement_records")))
-        if authority.read(_ReadStore("pending_replacements")):
-            return
-        with self._resource_lock:
-            replica = self._replicas.get(space_id)
-        purge_entries = dict(authority.read(_ReadStore("purge_list_entries")))
-        retirement_plan_ids = {record.plan_id for record in records}
-        for record in records:
-            snapshot = authority.read(
-                _ReadStore("snapshot", doc_id=record.replacement_doc_id)
-            )
-            if replica is not None:
-                plan_blobs = tuple(
-                    {"sha": digest}
-                    for digest, plan_id in sorted(purge_entries.items())
-                    if plan_id == record.plan_id
-                )
-                replica.apply_retirement(
-                    {
-                        "oldPhysicalDocId": record.old_physical_doc_id,
-                        "replacementDocId": record.replacement_doc_id,
-                        "snapshotId": record.snapshot_id,
-                        "replacementSnapshotBytes": snapshot.snapshot_bytes,
-                    },
-                    {
-                        # R4: this replicated purge-list inventory is owner-authored
-                        # and survives replica log retention.  Reconstructing the
-                        # delete set from remaining rows loses trimmed updateBlob
-                        # digests and can acknowledge with forbidden residue.
-                        "blobs": plan_blobs,
-                    },
-                )
-            authority.delete_retired_objects(record.old_physical_doc_id)
-            if authority.read(
-                _ReadStore("retired_residue", doc_id=record.old_physical_doc_id)
-            ):
-                raise StoreError("invalid-argument", "retired document residue remains")
-
-        if replica is not None:
-            replica.apply_blob_purge(
-                digest
-                for digest, plan_id in purge_entries.items()
-                if plan_id not in retirement_plan_ids
-            )
-            for doc_id in authority.read(_ReadStore("document_ids")):
-                if authority.read(_ReadStore("snapshot_point", doc_id=doc_id)) is not None:
-                    replica.apply_retention(doc_id)
-        for digest in purge_entries:
-            self.blobs.release(space_id, digest)
-            self.blobs.delete_if_unreferenced(digest)
-
-        plans = {record.plan_id for record in records} | set(purge_entries.values())
-        for plan_id in sorted(plans):
-            if any(
-                record.plan_id == plan_id
-                and authority.read(
-                    _ReadStore("retired_residue", doc_id=record.old_physical_doc_id)
-                )
-                for record in records
-            ):
-                continue
-            self.facade.acknowledge_purge(space_id, plan_id)
-
-
-    def broadcast_pending(self, space_id: str) -> int:
-        with self._resource_lock:
-            mesh = self._meshes.get(space_id)
-        if mesh is None:
-            mesh = self._mesh(space_id)
-        return 0 if mesh is None else mesh.broadcast_pending()
-
-
-    def broadcast_records(
-        self, space_id: str, records: tuple[CommitRecord, ...]
-    ) -> int:
-        with self._resource_lock:
-            mesh = self._meshes.get(space_id)
-        if mesh is None:
-            mesh = self._mesh(space_id)
-        if mesh is None:
-            return 0
-        if "broadcast_pending" in vars(mesh):
-            return mesh.broadcast_pending(space_id)
-        return mesh.broadcast_records(records)
-
-
-    def reconcile_replica_blobs(self, space_id: str) -> tuple[str, ...]:
-        """Reconcile retained local blob refs through the per-space authority."""
-
-        with self._resource_lock:
-            replica = self._replicas.get(space_id)
-        if replica is None:
-            return ()
-        reconciled = replica.reconcile_blobs()
-        for digest in reconciled:
-            self.blobs.pin(space_id, digest, "replica")
-        return reconciled
-
-
     def join(self, space_id: str, *, timeout: float | None = None) -> SpaceInfo:
         return self._ask_lifecycle(_JoinSpace(space_id), timeout=timeout)  # type: ignore[return-value]
-
-
-    def _join_sync(self, space_id: str) -> SpaceInfo:
-        holders = sorted(
-            {
-                *(
-                    node
-                    for node in self._holder_snapshot(space_id)
-                    if node != self.node_id
-                ),
-                *(node for node in self._holder_candidates() if node != self.node_id),
-            }
-        )
-        if not holders:
-            raise OrgFsError("no-holder-online", {"spaceId": space_id})
-        mesh = self._mesh(space_id)
-        assert mesh is not None
-        last_error: Exception | None = None
-        for holder in holders:
-            try:
-                mesh.sync_from(holder)
-                info = self.facade.load_space(space_id)
-                self._reconcile_retirements(space_id)
-                self._announce_all()
-                return info
-            except (StoreError, OrgFsError) as exc:
-                last_error = exc
-        if last_error is not None:
-            code = str(getattr(last_error, "code", "no-holder-online"))
-            message = str(last_error).removeprefix(f"{code}: ")
-            details = getattr(last_error, "details", {})
-            raise OrgFsError(
-                code,
-                {
-                    **(dict(details) if isinstance(details, dict) else {}),
-                    "message": message,
-                },
-            ) from last_error
-        raise OrgFsError("no-holder-online", {"spaceId": space_id})
 
 
     def watch_events(

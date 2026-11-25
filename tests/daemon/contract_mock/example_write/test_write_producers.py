@@ -1,3 +1,8 @@
+# Decision record (OrgFS package S, 2026-11-25): an OrgFS version is opaque
+# (a digest), so the projection check only requires a non-empty string.  The
+# two examples whose behaviour changes with D4b (join of a non-UUID id, restore
+# with a version) are strict xfails named in ``D4B_PENDING`` until D4b
+# re-records them.
 """Example values must be obtainable from real write producers."""
 
 from __future__ import annotations
@@ -11,8 +16,36 @@ from .producers import observation, plain
 
 CASES = [(item.method, case) for item in ORGFS_WRITE_EXAMPLES for case in item.cases if case.kind != "invalid-params"]
 
+D4B_PENDING = {
+    "orgfs.join:missing-space": (
+        "D4b: the state runtime answers a join of a space id that is not a UUID with "
+        "unknown-space (reason not-a-uuid); the example still records the journal "
+        "runtime's no-holder-online"
+    ),
+    "orgfs.restore:missing-version": (
+        "D4b: restore loses its version argument; the state host ignores it and "
+        "restores the node, so the journal-era unknown-doc example no longer replays"
+    ),
+}
 
-@pytest.mark.parametrize("method,case", CASES, ids=[f"{method}:{case.name}" for method, case in CASES])
+
+def _replay_params(cases):
+    return [
+        pytest.param(
+            method,
+            case,
+            id=f"{method}:{case.name}",
+            marks=(
+                [pytest.mark.xfail(strict=True, reason=D4B_PENDING[f"{method}:{case.name}"])]
+                if f"{method}:{case.name}" in D4B_PENDING
+                else []
+            ),
+        )
+        for method, case in cases
+    ]
+
+
+@pytest.mark.parametrize("method,case", _replay_params(CASES))
 def test_examples_replay_real_write_producer(method, case, tmp_path):
     with observation(tmp_path / "isolated", method, case.name) as observed:
         if case.error is None:
@@ -34,8 +67,6 @@ def test_binary_digest_has_a_public_reproducible_input():
 
 
 def test_node_uri_and_content_projection_invariants():
-    import base64
-    import json
     from hyprial.kernel import parse_orgfs_uri
     from .producers import SHA
 
@@ -47,8 +78,7 @@ def test_node_uri_and_content_projection_invariants():
         assert (owner, space, node) == ("example", value["space_id"], value["node_id"])
         assert not value["path"].startswith("/")
         assert value["modified_via"] is None
-        version = json.loads(base64.urlsafe_b64decode(value["version"] + "=="))
-        assert set(version) == {"contentFrontier", "treeFrontier"}
+        assert isinstance(value["version"], str) and value["version"]
         if value["kind"] == "doc":
             assert value["doc_id"].startswith("doc-") and value["blob_hash"] is None
         elif value["kind"] == "blob":

@@ -101,7 +101,7 @@ def row_value(node: _Node, batch: str | None) -> dict[str, Any]:
 
 
 class StateCommit:
-    """Commit coordinator mixin: the single local write path of ``StateOrgFs``."""
+    """Commit coordinator mixin: the single local write path of ``LocalOrgFs``."""
 
     def _registry(self, space_id: str) -> DocRegistry:
         with self._lock:

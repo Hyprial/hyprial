@@ -46,6 +46,8 @@ import time
 import uuid
 from typing import Any, Callable, Mapping
 
+from pycrdt import Map
+
 from hyprial.kernel import ORGFS_CONTENT_PENDING
 
 from hyprial.daemon.impl.orgfs.api import (
@@ -63,7 +65,6 @@ from hyprial.daemon.impl.orgfs.document.coordinator.host import (
 )
 from hyprial.daemon.impl.orgfs.document.coordinator.registry import DocRegistry, SealedContents
 from hyprial.daemon.impl.orgfs.document.model import _Node, _Space, _facade_locked
-from hyprial.daemon.impl.orgfs.document.operations.spaces import FacadeSpaces
 from hyprial.daemon.impl.orgfs.membership import (
     LocalWrite,
     ProtectionPolicy,
@@ -115,7 +116,7 @@ class MemoryStores:
 
 
 class StateSpaces:
-    """Space creation and loading, members, authors and status of ``StateOrgFs``."""
+    """Space creation and loading, members, authors and status of ``LocalOrgFs``."""
 
     _store_factory: Callable[[str, bool], StateStore]
     _store_discard: Callable[[str], None] | None
@@ -130,8 +131,6 @@ class StateSpaces:
             SealedContents(),
             {},
             set(),
-            {},
-            {},
         )
         registry.on_meta = lambda doc: setattr(space, "meta", doc)
         return space
@@ -208,12 +207,23 @@ class StateSpaces:
         with self._lock:
             self._refused_spaces[space_id] = (code, dict(details))
 
+    @_facade_locked
     def join(self, space_id: str, *, timeout: float | None = None) -> SpaceInfo:
         with self._lock:
             joining = space_id in self._joining
         if joining:
             raise OrgFsError("unavailable", {"spaceId": space_id, "message": "join in progress"})
-        return super().join(space_id, timeout=timeout)
+        existing = self._existing_space(space_id)
+        if existing is not None:
+            return existing.info
+        if self.mesh is None:
+            raise OrgFsError("no-holder-online")
+        info = self.mesh.join(space_id) if timeout is None else self.mesh.join(space_id, timeout=timeout)
+        if not isinstance(info, SpaceInfo):
+            raise OrgFsError(
+                "invalid-argument", {"message": "mesh returned invalid space info"}
+            )
+        return info
 
     def begin_join(self, space_id: str) -> None:
         """Open the temporary space a join fills (design §9 R5)."""
@@ -388,9 +398,30 @@ class StateSpaces:
     def update_space_meta(
         self, space_id: str, values: Mapping[str, object]
     ) -> Mapping[str, object]:
-        """The legacy owner-only meta merge, run as a space command."""
+        """Merge owner-only application metadata into the space meta, as a space command."""
 
-        return FacadeSpaces.update_space_meta.__wrapped__(self, space_id, values)
+        space = self._space(space_id)
+        require_space_owner(self.author, space.info)
+        if not isinstance(values, Mapping) or not values:
+            raise OrgFsError(
+                "invalid-argument", {"message": "space metadata values are required"}
+            )
+        if any(not isinstance(key, str) or not key for key in values):
+            raise OrgFsError(
+                "invalid-argument", {"message": "space metadata keys must be strings"}
+            )
+        if {"name", "owner", "createdAt", "spaceId"}.intersection(values):
+            raise OrgFsError(
+                "invalid-argument", {"message": "core space metadata is immutable"}
+            )
+
+        def operation() -> None:
+            meta = space.meta.get("space", type=Map)
+            for key, value in values.items():
+                meta[key] = value
+
+        self._commit(space, "meta", operation)
+        return self.space_meta(space_id)
 
     @_facade_locked
     def remove_member(self, space_id: str, user: str) -> None:

@@ -19,7 +19,7 @@ from typing import Any
 import pytest
 
 from hyprial.daemon.impl.orgfs import OrgFsError
-from hyprial.daemon.impl.orgfs.composition.state import StateOrgFsRuntime
+from hyprial.daemon.impl.orgfs.composition.state import OrgFsRuntime
 
 from ..support import Peers, eventually, holds, text
 
@@ -30,7 +30,7 @@ OWNERS = {
 }
 
 
-class _FixedOwnerRuntime(StateOrgFsRuntime):
+class _FixedOwnerRuntime(OrgFsRuntime):
     def _device_owner_resolver(self, space_id: str) -> Any:
         return OWNERS.get
 

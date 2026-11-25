@@ -1,16 +1,9 @@
 from __future__ import annotations
 
 
-
 from contextlib import contextmanager
 
 
-
-
-
-
-
-import json
 
 
 import threading
@@ -21,7 +14,6 @@ import uuid
 
 import weakref
 
-from typing import Any, Mapping
 
 
 from hyprial.kernel import (
@@ -31,23 +23,11 @@ from hyprial.kernel import (
 from hyprial.kernel import EffectCompleted, EffectRequest
 
 
-
-
 from hyprial.daemon.impl.orgfs.api  import (
     OrgFsError)
 
 
-
-
-from hyprial.daemon.impl.orgfs.storage.space_authority  import (
-    OrgSpaceAuthority)
-
-
-
-from hyprial.daemon.impl.orgfs.storage.store  import CommitRecord
-
-
-from hyprial.daemon.impl.orgfs.document.model import _BroadcastPending, _FACADE_EFFECT_CAPACITY, _FACADE_NETWORK_EFFECT_CAPACITY, _FacadeEffectBatch, _FacadeEffectResult, _MetaWatchNotification, _ReconcileReplicaBlobs, _Space, _WatchNotification
+from hyprial.daemon.impl.orgfs.document.model import _FACADE_EFFECT_CAPACITY, _FACADE_NETWORK_EFFECT_CAPACITY, _FacadeEffectBatch, _FacadeEffectResult, _MetaWatchNotification, _WatchNotification
 
 class FacadeEffects:
     """Responsibility methods on the sole LocalOrgFs state host.
@@ -55,13 +35,7 @@ class FacadeEffects:
     This class never constructs, copies, or persists an independent host.
     """
 
-    def _defer_effect(
-        self,
-        effect: _WatchNotification
-        | _MetaWatchNotification
-        | _ReconcileReplicaBlobs
-        | _BroadcastPending,
-    ) -> None:
+    def _defer_effect(self, effect: object) -> None:
         pending = getattr(self._effect_context, "pending", None)
         if pending is None:
             raise RuntimeError("orgfs effect was produced without a reservation scope")
@@ -79,88 +53,7 @@ class FacadeEffects:
             has_meta_watcher = any(
                 not watcher.closed for watcher in self._meta_watchers.values()
             )
-        return (
-            has_watcher
-            or has_meta_watcher
-            or (self.mesh is not None and self.stores is not None)
-        )
-
-
-    def _broadcast_is_enabled(self) -> bool:
-        if self.mesh is None or not hasattr(self.mesh, "broadcast_pending"):
-            return False
-        method = getattr(self.mesh, "broadcast_pending")
-        implementation = getattr(type(self.mesh), "broadcast_pending", None)
-        # Capture explicit instance overrides before the asynchronous effect
-        # runs, preserving suppression/admission seams without caller closures.
-        return implementation is None or getattr(method, "__func__", None) is implementation
-
-
-    def _publish_effects(
-        self,
-        space: _Space,
-        doc_ids: tuple[str, ...],
-        current: tuple[CommitRecord, ...],
-        *,
-        broadcast: bool,
-    ) -> None:
-        """Hook: defer the post-commit publication of one committed batch.
-
-        Legacy: the journal outbox rows through ``_publication_records``, a
-        ``_ReconcileReplicaBlobs`` after a tree write, then ``_BroadcastPending``.
-        """
-
-        space_id = space.info.space_id
-        records = self._publication_records(space_id, current, broadcast=broadcast)
-        if space.tree_doc_id in doc_ids:
-            self._defer_effect(_ReconcileReplicaBlobs(space_id))
-        if records or (
-            not current and broadcast and self._broadcast_is_enabled()
-        ):
-            self._defer_effect(_BroadcastPending(space_id, records))
-
-
-    def _publication_records(
-        self,
-        space_id: str,
-        current: tuple[CommitRecord, ...],
-        *,
-        broadcast: bool,
-    ) -> tuple[CommitRecord, ...]:
-        if not current:
-            return ()
-        enabled = broadcast and self._broadcast_is_enabled()
-        # Publish durable outbox rows through the current journal transaction's
-        # rowid frontier. This includes earlier writer registrations on another
-        # lane that the current CRDT delta causally depends on, while excluding
-        # later commits that happen to be visible in the database already.
-        if enabled:
-            store = self._store(space_id)
-            keys: list[tuple[str, int, str]] = []
-            for record in current:
-                try:
-                    doc_id = str(json.loads(record.envelope_bytes)["docId"])
-                except (KeyError, TypeError, UnicodeDecodeError, json.JSONDecodeError):
-                    continue
-                keys.append((record.writer, record.seq, doc_id))
-            authority = self._space_authorities.get(space_id)
-            if keys and authority is not None and hasattr(authority, "unbroadcast_through"):
-                current = (*current, *authority.unbroadcast_through(tuple(keys)))
-            elif keys and store is not None and hasattr(store, "unbroadcast_through"):
-                current = (*current, *store.unbroadcast_through(tuple(keys)))
-        with self._lock:
-            if not current:
-                return ()
-            pending = self._pending_outbox.setdefault(space_id, [])
-            if not enabled:
-                pending.extend(current)
-                return ()
-            combined = (*pending, *current)
-            pending.clear()
-        unique: dict[tuple[str, int, bytes], CommitRecord] = {}
-        for record in combined:
-            unique[(record.writer, record.seq, record.envelope_bytes)] = record
-        return tuple(unique.values())
+        return has_watcher or has_meta_watcher
 
 
     def _ensure_effect_lane(self) -> None:
@@ -250,48 +143,11 @@ class FacadeEffects:
                             )
                         if callback is not None:
                             callback()
-                    elif isinstance(effect, _ReconcileReplicaBlobs):
-                        mesh = self.mesh
-                        if mesh is not None and hasattr(
-                            mesh, "reconcile_replica_blobs"
-                        ):
-                            mesh.reconcile_replica_blobs(effect.space_id)
                 except Exception as exc:
                     failures.append(type(exc).__name__)
             return _FacadeEffectResult(tuple(failures))
         finally:
             self._effect_context.in_effect_worker = False
-
-
-    def _space_has_unbroadcast(self, space_id: str) -> bool:
-        try:
-            store = self._store(space_id)
-            return bool(
-                store is not None
-                and hasattr(store, "unbroadcast")
-                and tuple(store.unbroadcast())
-            )
-        except Exception:
-            return True
-
-
-    def _execute_network_effect(self, space_id: str) -> _FacadeEffectResult:
-        failures: list[str] = []
-        with self._lock:
-            detached = space_id in self._detached_spaces
-        if self._network_effect_stop.is_set() or detached:
-            return _FacadeEffectResult(())
-        try:
-            mesh = self.mesh
-            if mesh is not None and hasattr(mesh, "broadcast_pending"):
-                mesh.broadcast_pending(space_id)
-        except Exception as exc:
-            failures.append(type(exc).__name__)
-        with self._lock:
-            detached = space_id in self._detached_spaces
-        if not detached and self._space_has_unbroadcast(space_id):
-            self._network_effect_stop.wait(0.05)
-        return _FacadeEffectResult(tuple(failures))
 
 
     def _pump_network_effects(self) -> None:
@@ -367,18 +223,9 @@ class FacadeEffects:
         generation: int,
         effects: tuple[object, ...],
     ) -> bool:
-        callbacks = tuple(
-            effect for effect in effects if not isinstance(effect, _BroadcastPending)
-        )
-        broadcasts = {
-            effect.space_id
-            for effect in effects
-            if isinstance(effect, _BroadcastPending)
-        }
+        callbacks = tuple(effects)
         lane = self._effect_lane
-        for space_id in broadcasts:
-            self.request_broadcast_drain(space_id)
-        submitted_callbacks = lane is not None and bool(callbacks or broadcasts)
+        submitted_callbacks = lane is not None and bool(callbacks)
         if submitted_callbacks:
             with self._lock:
                 self._effect_sequence += 1
@@ -445,7 +292,7 @@ class FacadeEffects:
 
 
     def detach_space(self, space_id: str, timeout: float = 5.0) -> bool:
-        """Fence one space, drain its authorities, and drop its facade state."""
+        """Fence one space, drain its command loop and effects, and drop its facade state."""
 
         deadline = time.monotonic() + timeout
         with self._lock:
@@ -479,12 +326,6 @@ class FacadeEffects:
             time.sleep(0.005)
         else:
             return False
-        with self._lock:
-            authority = self._space_authorities.get(space_id)
-        if authority is not None and not authority.close(
-            timeout=max(0.0, deadline - time.monotonic())
-        ):
-            return False
         with self._space_lock(space_id):
             with self._lock:
                 space = self._spaces.pop(space_id, None)
@@ -494,14 +335,7 @@ class FacadeEffects:
                         self._watchers.pop(watcher.watch_id, None)
                         self._meta_watchers.pop(watcher.watch_id, None)
                 self._space_state_owners.pop(space_id, None)
-                self._space_authorities.pop(space_id, None)
                 self._events.pop(space_id, None)
-                self._pending_outbox.pop(space_id, None)
-                self._purge_plans = {
-                    plan_id: saved
-                    for plan_id, saved in self._purge_plans.items()
-                    if saved[0].space_id != space_id
-                }
                 self._space_locks.pop(space_id, None)
         return True
 
@@ -513,7 +347,6 @@ class FacadeEffects:
             lane = self._effect_lane
             network_lane = self._network_effect_lane
             cell = self._effect_cell
-            authorities = tuple(self._space_authorities.values())
         deadline = time.monotonic() + timeout
         for _space_id, owner in state_owners:
             while time.monotonic() < deadline:
@@ -552,11 +385,7 @@ class FacadeEffects:
                 self._effect_lane = None
                 self._network_effect_lane = None
                 self._effect_cell = None
-        for authority in authorities:
-            if not authority.close(timeout=max(0.0, deadline - time.monotonic())):
-                return False
         with self._lock:
-            self._space_authorities.clear()
             self._space_state_owners.clear()
         return self._actor_hosts.shutdown(max(0.0, deadline - time.monotonic()))
 
@@ -616,19 +445,6 @@ class FacadeEffects:
                 self._wait_for_effect(operation_id)
 
 
-    def _store(self, space_id: str) -> Any:
-        if self.stores is None:
-            return None
-        if hasattr(self.stores, "commit"):
-            return self.stores
-        if isinstance(self.stores, Mapping):
-            with self._lock:
-                if space_id in self._detached_spaces:
-                    return None
-            return self.stores.get(space_id)
-        return None
-
-
     def _space_lock(self, space_id: str) -> threading.RLock:
         with self._lock:
             lock = self._space_locks.get(space_id)
@@ -638,19 +454,3 @@ class FacadeEffects:
             return lock
 
 
-    def space_authority(self, space_id: str, store: Any | None = None) -> OrgSpaceAuthority | None:
-        if self._effect_closed and not getattr(
-            self._space_state_context, "running", False
-        ):
-            raise OrgFsError("unavailable", {"message": "orgfs is closing"})
-        store = store if store is not None else self._store(space_id)
-        if store is None or not hasattr(store, "commit_with_outbox"):
-            return None
-        with self._lock:
-            authority = self._space_authorities.get(space_id)
-            if authority is None:
-                authority = OrgSpaceAuthority(
-                    space_id, store, actor_host=self._actor_hosts.host
-                )
-                self._space_authorities[space_id] = authority
-            return authority

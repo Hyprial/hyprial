@@ -1,5 +1,5 @@
 # Decisions:
-# - Phase D1: coordinator tests drive ``StateOrgFs`` only through its public
+# - Phase D1: coordinator tests drive ``LocalOrgFs`` only through its public
 #   facade, its ``SyncHost`` (``sync_host``) and the in-memory store backings.
 #   A second node is made by copying the first node's backing (a clone) and
 #   ``load_space``; join is D2.
@@ -18,7 +18,7 @@ import threading
 import time
 from typing import Any, Callable
 
-from hyprial.daemon.impl.orgfs.document.coordinator import MemoryStores, StateOrgFs
+from hyprial.daemon.impl.orgfs.document.coordinator import MemoryStores, LocalOrgFs
 from hyprial.daemon.impl.orgfs.membership import Accepted, decode_vector, vector_covers
 from hyprial.daemon.impl.orgfs.state import MemoryBacking
 from hyprial.daemon.impl.orgfs.sync import PeerObservation
@@ -70,14 +70,14 @@ class RecordingSync:
 
 
 class Node:
-    """One ``StateOrgFs`` with its own store backings."""
+    """One ``LocalOrgFs`` with its own store backings."""
 
     def __init__(self, author: str, node_id: str, **options: Any) -> None:
         self.author = author
         self.node_id = node_id
         self.stores = MemoryStores()
         self.blobs = MemoryBlobs()
-        self.fs = StateOrgFs(
+        self.fs = LocalOrgFs(
             author=author,
             node_id=node_id,
             blobs=self.blobs,
@@ -216,11 +216,11 @@ def eventually(check: Callable[[], Any], *, timeout: float = 5.0) -> Any:
             time.sleep(0.01)
 
 
-def vector(fs: StateOrgFs, space_id: str, doc_id: str) -> dict[int, int]:
+def vector(fs: LocalOrgFs, space_id: str, doc_id: str) -> dict[int, int]:
     return decode_vector(fs.sync_host(space_id).read_vectors((doc_id,))[doc_id])
 
 
-def doc_id_of(fs: StateOrgFs, space_id: str, ref: str) -> str:
+def doc_id_of(fs: LocalOrgFs, space_id: str, ref: str) -> str:
     doc_id = fs.stat(space_id, ref).doc_id
     assert doc_id is not None
     return doc_id

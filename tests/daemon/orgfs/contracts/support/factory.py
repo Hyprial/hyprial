@@ -1,45 +1,29 @@
 # Decisions:
-# - Triage §5.1: the contract seam is a facade/runtime factory, never the old
-#   store protocol commit(doc_id, mutate, author, actor).  Every contract test
-#   constructs OrgFS only through an OrgFsImpl from the ``orgfs_impl`` fixture.
-# - Two implementations: ``legacy`` wraps today's LocalOrgFs / OrgFsRuntime;
-#   ``state`` is the phase D assembly (``StateOrgFs`` / ``StateOrgFsRuntime``).
+# - Triage §5.1: the contract seam is a facade/runtime factory, never a store
+#   protocol.  Every contract test constructs OrgFS only through an
+#   ``OrgFsImpl`` from the ``orgfs_impl`` fixture.
+# - Package S (2026-11-25): the journal implementation and its ``LegacyImpl``
+#   are deleted; ``StateImpl`` is the only implementation.  The fixture keeps
+#   its ``state`` parameter id so test ids stay comparable across the switch.
 # - Everything implementation specific lives here and nowhere in the tests:
-#   failure injection, multi-node wiring, the restore(version) adapter
-#   (design §6 removes ``version`` in phase D) and the state-vector probe used
-#   by the design §3.3 contract.  Phase D replaces these bodies only.
-# - Legacy ``restore_last`` passes the version the trash listing reports for
-#   the node.  That is the post-deletion version, so the legacy snapshot it
-#   names has the descendants marked deleted; recursive restore therefore
-#   does not bring them back (a legacy_xfail on design §6).
-# - Legacy failure injection for a pure in-memory facade temporarily attaches
-#   a commit store whose next commit raises; for a runtime it wraps the
-#   commit entry points of the space stores that exist on entry.  Both are
-#   one-shot: later commits inside the block succeed.
-# - The legacy in-memory facade gets an in-memory content-addressed blob
-#   store; without one LocalOrgFs accepts write_bytes but can never read the
-#   bytes back (content-pending), which is not the facade contract.
-# - Phase D1 (plan §3.4 step 2, design §9 R17): ``StateImpl`` builds
-#   ``StateOrgFs`` over per-facade ``MemoryStateStore`` backings.  Failure
-#   injection wraps every store the facade opens, including the store of a
-#   space created inside the block; the vector probe reads
-#   ``SyncHost.read_vectors`` (C4 report §7-3).
-# - Phase D2: ``StateImpl.make_runtime`` builds ``StateOrgFsRuntime`` (file
-#   state store, protocol 3 sync) through the same ``RuntimeHandle`` as the
-#   legacy runtime, and ``connect`` binds it to the same ``FakeNetwork``
-#   (presence ``online_for``, online edges ``observe_for``).  Runtime failure
-#   injection wraps ``commit`` of the space stores open on entry, as the legacy
-#   variant does.
-# - The state runtime runs with ``trust_tailnet_members=False``, the daemon's
-#   production setting: in the state design the node gate (§3.5) is the only
-#   receiver-side check against a removed member, so trusting the tailnet
-#   would test a configuration that accepts such writes by design.  The
-#   contract network has no org directory, so ``_ContractStateRuntime``
-#   resolves a node to its device owner from the authors the factory created
-#   the runtimes with (the stand-in for device rows).
-# - Legacy runtimes are built with trust_tailnet_members=True because the
-#   contract network has no org directory device rows; the node gate is a C3
-#   concern, the contracts here judge facade-visible results.
+#   failure injection, multi-node wiring, the trash restore adapter and the
+#   state-vector probe used by the design §3.3 contract.
+# - ``make_facade`` builds ``LocalOrgFs`` over per-facade ``MemoryStateStore``
+#   backings.  Failure injection wraps every store the facade opens,
+#   including the store of a space created inside the block; the vector probe
+#   reads ``SyncHost.read_vectors`` (C4 report §7-3).  The in-memory facade
+#   gets an in-memory content-addressed blob store; without one it accepts
+#   write_bytes but can never read the bytes back.
+# - ``make_runtime`` builds ``OrgFsRuntime`` (file state store, protocol 3
+#   sync) and ``connect`` binds runtimes to one ``FakeNetwork`` (presence
+#   ``online_for``, online edges ``observe_for``).  Runtime failure injection
+#   wraps ``commit`` of the space stores open on entry, once.
+# - The runtime runs with ``trust_tailnet_members=False``, the daemon's
+#   production setting: the node gate (§3.5) is the only receiver-side check
+#   against a removed member.  The contract network has no org directory, so
+#   ``_ContractStateRuntime`` resolves a node to its device owner from the
+#   authors the factory created the runtimes with (the stand-in for device
+#   rows).
 """Parameterized OrgFS implementation factories for the contract suite."""
 
 from __future__ import annotations
@@ -51,8 +35,7 @@ from pathlib import Path
 from typing import Any
 
 from hyprial.daemon.impl.orgfs import LocalOrgFs, NodeInfo, OrgFs, OrgFsError
-from hyprial.daemon.impl.orgfs.composition.state import StateOrgFsRuntime
-from hyprial.daemon.impl.orgfs.document.coordinator import MemoryStores, StateOrgFs
+from hyprial.daemon.impl.orgfs.document.coordinator import MemoryStores
 from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
 
 from .network import FakeNetwork
@@ -67,11 +50,11 @@ class RuntimeHandle:
 
     def __init__(
         self,
-        impl: "LegacyImpl | StateImpl",
+        impl: "StateImpl",
         state_dir: Path,
         node_id: str,
         author: str,
-        runtime_class: Any = OrgFsRuntime,
+        runtime_class: Any,
     ) -> None:
         self._impl = impl
         self.state_dir = Path(state_dir)
@@ -87,7 +70,6 @@ class RuntimeHandle:
             self.state_dir,
             node_id=self.node_id,
             author=self.author,
-            trust_tailnet_members=True,
         )
         if self.network is not None:
             self._bind(self.network)
@@ -124,8 +106,8 @@ class RuntimeHandle:
             runtime.close()
 
 
-class _ContractStateRuntime(StateOrgFsRuntime):
-    """``StateOrgFsRuntime`` whose device owners come from the contract factory."""
+class _ContractStateRuntime(OrgFsRuntime):
+    """``OrgFsRuntime`` whose device owners come from the contract factory."""
 
     device_owners: dict[str, str] = {}
 
@@ -135,7 +117,7 @@ class _ContractStateRuntime(StateOrgFsRuntime):
 
 
 def _state_runtime_class(owners: dict[str, str]) -> Any:
-    def build(state_dir: Path, **kwargs: Any) -> StateOrgFsRuntime:
+    def build(state_dir: Path, **kwargs: Any) -> OrgFsRuntime:
         kwargs["trust_tailnet_members"] = False
         runtime = _ContractStateRuntime(state_dir, **kwargs)
         runtime.device_owners = owners
@@ -158,28 +140,8 @@ class Connection:
         self.network.heal(handle.node_id)
 
 
-class _FailingCommitStore:
-    """Legacy in-memory commit store whose first commit raises."""
-
-    def __init__(self) -> None:
-        self.failed = False
-
-    def _gate(self) -> None:
-        if not self.failed:
-            self.failed = True
-            raise InjectedWriteFailure("injected persistence failure")
-
-    def commit(self, doc_id: str, mutate: Any, *, author: str, actor: str | None) -> None:
-        self._gate()
-        mutate(None)
-
-    def commit_many(self, mutations: Any, *, author: str, actor: str | None) -> tuple[()]:
-        self._gate()
-        return ()
-
-
 class _MemoryBlobs:
-    """Content-addressed in-memory blobs for the legacy in-memory facade."""
+    """Content-addressed in-memory blobs for the in-memory facade."""
 
     def __init__(self) -> None:
         self.values: dict[str, bytes] = {}
@@ -235,88 +197,6 @@ def _fail_runtime_stores(handle: RuntimeHandle, names: tuple[str, ...]) -> Itera
             delattr(store, name)
 
 
-class LegacyImpl:
-    """Today's journal-backed LocalOrgFs / OrgFsRuntime."""
-
-    name = "legacy"
-
-    def __init__(self) -> None:
-        self._facades: list[LocalOrgFs] = []
-        self._handles: list[RuntimeHandle] = []
-
-    def make_facade(self, author: str, actor: str | None = None) -> OrgFs:
-        facade = LocalOrgFs(blobs=_MemoryBlobs(), author=author, actor=actor)
-        self._facades.append(facade)
-        return facade
-
-    def make_runtime(self, state_dir: Path, node_id: str, author: str) -> RuntimeHandle:
-        handle = RuntimeHandle(self, state_dir, node_id, author)
-        self._handles.append(handle)
-        return handle
-
-    @contextmanager
-    def inject_write_failure(self, target: OrgFs | RuntimeHandle) -> Iterator[None]:
-        if isinstance(target, RuntimeHandle):
-            with self._fail_runtime(target):
-                yield
-            return
-        if not isinstance(target, LocalOrgFs) or target.stores is not None:
-            raise TypeError("inject_write_failure needs a make_facade or make_runtime target")
-        target.stores = _FailingCommitStore()
-        try:
-            yield
-        finally:
-            target.stores = None
-
-    @contextmanager
-    def _fail_runtime(self, handle: RuntimeHandle) -> Iterator[None]:
-        with _fail_runtime_stores(
-            handle, ("commit", "commit_with_outbox", "commit_many", "commit_many_with_outbox")
-        ):
-            yield
-
-    def connect(self, *handles: RuntimeHandle) -> Connection:
-        return _connect(handles)
-
-    def restore_last(self, fs: OrgFs, space_id: str, node: str, *, recursive: bool = True) -> NodeInfo:
-        """Restore a trashed node's last state (design §6, no version)."""
-
-        node_id = node.removeprefix("id:") if node.startswith("id:") else None
-        trash = fs.trash(space_id, limit=100_000)
-        target = next(
-            (
-                entry
-                for entry in trash
-                if entry.node_id == node_id or (node_id is None and entry.path == node)
-            ),
-            None,
-        )
-        if target is None:
-            raise OrgFsError("unknown-doc", {"node": node})
-        return fs.restore(space_id, f"id:{target.node_id}", target.version, recursive=recursive)
-
-    def document_vector(self, fs: OrgFs, space_id: str, doc: str) -> dict[int, int]:
-        """Decoded state vector of ``meta``, ``tree`` or the content of a node ref."""
-
-        space = fs._spaces[space_id]  # type: ignore[attr-defined]  # noqa: SLF001
-        if doc == "meta":
-            raw = space.meta.get_state()
-        elif doc == "tree":
-            raw = space.tree.doc.get_state()
-        else:
-            doc_id = fs.stat(space_id, doc).doc_id
-            if doc_id is None:
-                raise OrgFsError("invalid-argument", {"message": f"{doc} has no content document"})
-            raw = space.contents[doc_id].doc.get_state()
-        return decode_state_vector(bytes(raw))
-
-    def close(self) -> None:
-        for handle in reversed(self._handles):
-            handle.close()
-        for facade in self._facades:
-            facade.close_effects(timeout=5.0)
-
-
 class _FailGate:
     """One state facade's one-shot persistence failure switch."""
 
@@ -358,15 +238,15 @@ class _GatedStore:
 class StateImpl:
     """Phase D assembly over StateStore / Admission / SpaceSync.
 
-    ``make_facade`` is ``StateOrgFs`` over ``MemoryStateStore``;
-    ``make_runtime`` is ``StateOrgFsRuntime`` over ``FileStateStore`` and
+    ``make_facade`` is ``LocalOrgFs`` over ``MemoryStateStore``;
+    ``make_runtime`` is ``OrgFsRuntime`` over ``FileStateStore`` and
     ``connect`` binds runtimes to one in-process network.
     """
 
     name = "state"
 
     def __init__(self) -> None:
-        self._facades: list[StateOrgFs] = []
+        self._facades: list[LocalOrgFs] = []
         self._gates: dict[int, _FailGate] = {}
         self._handles: list[RuntimeHandle] = []
         self._device_owners: dict[str, str] = {}
@@ -389,7 +269,7 @@ class StateImpl:
         def factory(space_id: str, create: bool) -> _GatedStore:
             return _GatedStore(stores(space_id, create), gate)
 
-        facade = StateOrgFs(
+        facade = LocalOrgFs(
             blobs=_MemoryBlobs(),
             author=author,
             actor=actor,
@@ -441,7 +321,7 @@ class StateImpl:
             doc_id = fs.stat(space_id, doc).doc_id
             if doc_id is None:
                 raise OrgFsError("invalid-argument", {"message": f"{doc} has no content document"})
-        if not isinstance(fs, StateOrgFs):
+        if not isinstance(fs, LocalOrgFs):
             raise TypeError("document_vector needs a state facade")
         host = fs.sync_host(space_id)
         return decode_state_vector(bytes(host.read_vectors((doc_id,))[doc_id]))
@@ -453,12 +333,11 @@ class StateImpl:
             facade.close_effects(timeout=5.0)
 
 
-OrgFsImpl = LegacyImpl | StateImpl
+OrgFsImpl = StateImpl
 
 __all__ = [
     "Connection",
     "InjectedWriteFailure",
-    "LegacyImpl",
     "OrgFsImpl",
     "RuntimeHandle",
     "StateImpl",

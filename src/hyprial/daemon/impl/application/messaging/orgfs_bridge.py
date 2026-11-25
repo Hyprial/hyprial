@@ -10,8 +10,11 @@
 #   tailnet, and removal revokes the device.  ``TailnetDeviceOwners`` maps
 #   active members only, caches one status for a few seconds (gate calls run
 #   on sync threads), answers nothing when the sidecar fails or two tailnets
-#   name different owners for one device, and is bound only on a runtime that
-#   offers ``bind_device_owner_hint`` (the legacy runtime is unchanged).
+#   name different owners for one device.
+# - Package S (2026-11-25): the journal runtime is deleted, so the hint is
+#   bound on every runtime; there is no longer a second assembly branch.
+#   ``orgfs.create`` no longer asks the runtime to broadcast the journal
+#   outbox: the state runtime publishes every commit itself.
 """OrgFs runtime bridge: the orgfs.* IPC family, owner notices and the org-context bridge.
 
 R2 (owner ruling 2026-11-19): an OrgFS owner notice to this node's owner is
@@ -298,14 +301,12 @@ class _OrgFsBridgeMixin:
                 ),
                 actor_host=self._actor_hosts.host_for("orgfs"),
             )
-            bind_hint = getattr(self._orgfs_runtime, "bind_device_owner_hint", None)
-            if callable(bind_hint):
-                from hyprial.daemon.impl.forwarding.membership.projection import status_for_app
+            from hyprial.daemon.impl.forwarding.membership.projection import status_for_app
 
-                bind_hint(TailnetDeviceOwners(
-                    lambda: status_for_app(self, timeout=_TAILNET_STATUS_TIMEOUT_S),
-                    log=getattr(self._orgfs_runtime, "logger", None),
-                ))
+            self._orgfs_runtime.bind_device_owner_hint(TailnetDeviceOwners(
+                lambda: status_for_app(self, timeout=_TAILNET_STATUS_TIMEOUT_S),
+                log=self._orgfs_runtime.logger,
+            ))
         return self._orgfs_runtime
 
 
@@ -454,7 +455,6 @@ class _OrgFsBridgeMixin:
                 return {"spaces": self._orgfs_json(fs.spaces())}
             if method == "orgfs.create":
                 info = fs.create_space(required("name"))
-                runtime.broadcast_pending(info.space_id)
                 from hyprial.daemon.impl.org.orgfs_migration import ORG_CONTEXT_SPACE_NAME
 
                 if info.name == ORG_CONTEXT_SPACE_NAME:

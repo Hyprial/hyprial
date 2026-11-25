@@ -442,7 +442,7 @@ def fs_status(
     space_id: str = typer.Argument(..., help="Space UUID."),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
-    """Show online holders and unconfirmed local commits."""
+    """Show whether the space is synced, online holders, pending content and rejected updates."""
     _fs_run("orgfs.status", {"spaceId": space_id}, json_output=json_output)
 
 

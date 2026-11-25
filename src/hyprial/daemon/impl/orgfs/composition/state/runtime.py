@@ -1,9 +1,10 @@
 # Decision record (phase D, package D2, 2026-11-25):
-# - Design §9 "dual host" / plan §3.3: ``StateOrgFsRuntime`` composes the new
-#   mixins in front of the retained runtime mixins and owns a ``StateOrgFs``
-#   over one ``FileStateStore`` per space.  ``OrgFsRuntime`` stays untouched;
-#   this class repeats its attribute set because the legacy constructor opens
-#   journal stores while it scans.
+# - Design §9 "dual host" / plan §3.3: the state runtime composes the new
+#   mixins in front of the retained runtime mixins and owns a ``LocalOrgFs``
+#   over one ``FileStateStore`` per space.
+# - Package S (2026-11-25): the journal runtime is deleted and this class took
+#   over the public name ``OrgFsRuntime`` (``orgfs/runtime.py`` re-exports
+#   it); the content mixin of the journal runtime is gone.
 # - The facade's ``mesh`` is this runtime (as in the legacy assembly), so
 #   ``facade.join`` reaches the runtime's join.
 # - Startup (design §2.3, §2.7, §9 R6): classify ``spaces/``; refuse a space
@@ -21,7 +22,7 @@
 #   assembly's bootstrap source for the node gate; ``bind_device_owner_hint``
 #   sets it after construction for an assembly that builds the runtime class
 #   chosen by the rehearsal switch.
-"""``StateOrgFsRuntime``: the OrgFS runtime over the state store and protocol 3 sync."""
+"""``OrgFsRuntime``: the OrgFS runtime over the state store and protocol 3 sync."""
 
 from __future__ import annotations
 
@@ -37,7 +38,6 @@ from hyprial.kernel import ActorCell, EffectRequest, ipc_errors
 
 from hyprial.daemon.impl.orgfs.api import OrgFsError
 from hyprial.daemon.impl.orgfs.composition.checkout import RuntimeCheckout
-from hyprial.daemon.impl.orgfs.composition.content import RuntimeContent
 from hyprial.daemon.impl.orgfs.composition.directory import RuntimeDirectory
 from hyprial.daemon.impl.orgfs.composition.lifecycle import RuntimeLifecycle
 from hyprial.daemon.impl.orgfs.composition.space_purge import RuntimeSpacePurge
@@ -50,13 +50,13 @@ from hyprial.daemon.impl.orgfs.composition.vocabulary import (
     _LifecycleAuthority,
     _MeshCreation,
 )
-from hyprial.daemon.impl.orgfs.document.coordinator import StateOrgFs
+from hyprial.daemon.impl.orgfs.document.coordinator import LocalOrgFs
 from hyprial.daemon.impl.orgfs.instrumentation import AnnounceInstrumentation
 from hyprial.daemon.impl.orgfs.network.supplier_health import SupplierSyncHealth
 from hyprial.daemon.impl.orgfs.projection.checkout_authority import CheckoutAuthority
 from hyprial.daemon.impl.orgfs.state import FileStateStore
 from hyprial.daemon.impl.orgfs.storage.blob_authority import BlobAuthority
-from hyprial.daemon.impl.orgfs.storage.store.vocabulary import StoreError
+from hyprial.daemon.impl.orgfs.storage.vocabulary import StoreError
 from hyprial.daemon.impl.transport import KeySpace, Registration, TransportSession
 
 if TYPE_CHECKING:
@@ -65,13 +65,12 @@ if TYPE_CHECKING:
 CLOSE_TIMEOUT_SECONDS = 5.0
 
 
-class StateOrgFsRuntime(
+class OrgFsRuntime(
     AnnounceInstrumentation,
     StateLifecycle,
     StateContent,
     RuntimeDirectory,
     RuntimeLifecycle,
-    RuntimeContent,
     RuntimeCheckout,
     RuntimeSpacePurge,
 ):
@@ -110,7 +109,7 @@ class StateOrgFsRuntime(
         self.blobs = BlobAuthority(self.state_dir, actor_host=self._actor_hosts.host)
         self.stores = StateStoreRegistry()
         self._spaces_root = self.state_dir / "orgfs" / "spaces"
-        self.facade = StateOrgFs(
+        self.facade = LocalOrgFs(
             author=author,
             actor=actor,
             node_id=node_id,
@@ -130,8 +129,6 @@ class StateOrgFsRuntime(
         self._checkout_config_lock = Lock()
         self._checkout_closing = False
         self._checkout_config = self.state_dir / "orgfs" / "checkouts.json"
-        self._replicas: dict[str, Any] = {}
-        self._replica_creation_locks: dict[str, Lock] = {}
         self._mesh_creations: dict[str, _MeshCreation] = {}
         self._purging_spaces: set[str] = set(self._pending_space_purge_ids())
         self._lifecycle_lock = Lock()
@@ -346,4 +343,4 @@ class StateOrgFsRuntime(
             pass
 
 
-__all__ = ["StateOrgFsRuntime"]
+__all__ = ["OrgFsRuntime"]

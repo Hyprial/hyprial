@@ -11,7 +11,7 @@
 #   do not read before ``stat``, since a read itself marks the document.
 # - Deadlines are asserted as upper bounds with generous slack; outcomes, not
 #   timings, are the contract.
-"""Content provisioning of ``StateOrgFsRuntime``: await, fetch, refresh, holders."""
+"""Content provisioning of ``OrgFsRuntime``: await, fetch, refresh, holders."""
 
 from __future__ import annotations
 
@@ -150,9 +150,9 @@ def test_refresh_space_with_no_online_holder_is_true_and_unbound_is_false(peers:
     assert member.runtime is not None
     assert member.runtime.refresh_space(space_id, timeout=1.0) is True
 
-    from hyprial.daemon.impl.orgfs.composition.state import StateOrgFsRuntime
+    from hyprial.daemon.impl.orgfs.composition.state import OrgFsRuntime
 
-    unbound = StateOrgFsRuntime(tmp_path / "unbound", node_id="node-unbound", author=OWNER)
+    unbound = OrgFsRuntime(tmp_path / "unbound", node_id="node-unbound", author=OWNER)
     try:
         assert unbound.refresh_space(space_id, timeout=1.0) is False
     finally:
